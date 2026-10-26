@@ -318,16 +318,26 @@ export class ReleaseOperationService {
     if (reviewedMain != null) throw new Error("Use separate original amendments for reviewed main and test selection");
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
-    const selection = testSelection == null ? effectiveTestSelection(current) : normalizeTestSelection(testSelection);
-    const selectedTaskIds = taskIds == null ? effectiveReleaseTaskIds(current) : normalizeReleaseTaskIds(taskIds);
+    const requestArguments = { expectedRevision, expectedGeneration,
+      ...(testSelection == null ? {} : { testSelection: normalizeTestSelection(testSelection) }),
+      ...(taskIds == null ? {} : { taskIds: normalizeReleaseTaskIds(taskIds) }),
+    };
     requiredText(requestId, "amendment requestId");
     const previous = current.testSelectionAmendments?.find(item => item.requestId === requestId);
     if (previous) {
+      // Omitted arguments belong to this original request, never to a later
+      // effective selection. Old records without explicit argument capture
+      // retain their saved outcome as that original boundary.
+      const selection = testSelection == null ? previous.selection : requestArguments.testSelection;
+      const selectedTaskIds = taskIds == null ? previous.taskIds : requestArguments.taskIds;
       if (previous.priorRevision !== expectedRevision || previous.priorGeneration !== expectedGeneration
+          || previous.requestArguments != null && releaseIdentitySha256(previous.requestArguments) !== releaseIdentitySha256(requestArguments)
           || releaseIdentitySha256(previous.selection) !== releaseIdentitySha256(selection)
           || JSON.stringify(previous.taskIds) !== JSON.stringify(selectedTaskIds)) throw new Error("Amendment request identity changed");
-      return { accepted: true, duplicate: true, operationId, amendment: previous, revision: current.revision };
+      return { accepted: true, duplicate: true, operationId, amendment: previous, revision: previous.priorRevision + 1 };
     }
+    const selection = testSelection == null ? effectiveTestSelection(current) : requestArguments.testSelection;
+    const selectedTaskIds = taskIds == null ? effectiveReleaseTaskIds(current) : requestArguments.taskIds;
     if (expectedRevision !== current.revision || expectedGeneration !== current.currentGeneration) {
       return { accepted: false, reason: "stale-revision", operation: current };
     }
@@ -344,7 +354,7 @@ export class ReleaseOperationService {
       readbacks.push({ targetId: target.targetId, generation: current.currentGeneration, evidence });
     }
     await validateBeforeCommit();
-    const contents = { requestId, selection, taskIds: selectedTaskIds, taskSelection, priorRevision: current.revision, priorGeneration: current.currentGeneration,
+    const contents = { requestId, requestArguments, selection, taskIds: selectedTaskIds, taskSelection, priorRevision: current.revision, priorGeneration: current.currentGeneration,
       authorizationFingerprint: current.authorization.fingerprint,
       priorFailure: { state: current.state, completedAt: current.completedAt, error: current.lastError },
       priorPublicationEffects: current.publicationEffects, priorWaitReason: current.waitReason, priorResumeState: current.resumeState, readbacks };

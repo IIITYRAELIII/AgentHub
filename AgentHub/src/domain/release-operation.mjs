@@ -236,7 +236,8 @@ function normalizedReviewedMain(value, operation) {
       || !value.priorFailure?.completedAt || !value.planRevision
       || !Number.isSafeInteger(value.priorGeneration) || value.priorGeneration < 1 || value.priorGeneration > operation.currentGeneration
       || !Array.isArray(value.selectedResults) || !Array.isArray(value.preparedCandidates)
-      || JSON.stringify(value.selectedResults.map(item => item.taskId).sort()) !== JSON.stringify(effectiveReleaseTaskIds(operation))
+      || JSON.stringify(value.selectedResults.map(item => item.taskId).sort())
+        !== JSON.stringify(releaseTaskIdsAtBoundary(operation, value.priorRevision, value.priorGeneration))
       || !Array.isArray(value.readbacks) || value.readbacks.length !== operation.authorization.approvedTargets.length
       || operation.authorization.approvedTargets.some(target => value.readbacks.filter(item =>
         item.targetId === target.targetId && item.generation === value.priorGeneration && item.evidence?.status === "not_applied").length !== 1)) {
@@ -480,6 +481,7 @@ export function normalizeTestSelectionAmendment(value, operation) {
       || contents.selection != null && releaseIdentitySha256(normalizeTestSelection(contents.selection)) !== releaseIdentitySha256(contents.selection)
       || releaseIdentitySha256(normalizeReleaseTaskIds(contents.taskIds)) !== releaseIdentitySha256(contents.taskIds)
       || contents.taskSelection != null && JSON.stringify([...new Set(contents.taskSelection.map(item => item.taskId))].sort()) !== JSON.stringify(contents.taskIds)
+      || contents.requestArguments != null && !validAmendmentRequest(contents)
       || !Array.isArray(contents.readbacks) || contents.readbacks.length !== operation.authorization.approvedTargets.length
       || operation.authorization.approvedTargets.some(target => contents.readbacks.filter(item => item.targetId === target.targetId
         && item.generation === contents.priorGeneration && item.evidence?.status === "not_applied").length !== 1)) {
@@ -500,4 +502,25 @@ export function normalizeReleaseTaskIds(value) {
 
 export function effectiveReleaseTaskIds(operation) {
   return operation.testSelectionAmendments?.at(-1)?.taskIds ?? operation.authorization.taskIds;
+}
+
+function releaseTaskIdsAtBoundary(operation, revision, generation) {
+  let taskIds = operation.authorization.taskIds;
+  for (const amendment of operation.testSelectionAmendments ?? []) {
+    // Its CAS changes revision r to r+1. A historical proof at revision r
+    // therefore still belongs to the membership preceding that amendment.
+    if (amendment.priorRevision >= revision) continue;
+    if (amendment.priorGeneration > generation) throw new Error("Reviewed-main generation membership changed");
+    taskIds = amendment.taskIds;
+  }
+  return taskIds;
+}
+
+function validAmendmentRequest(contents) {
+  const args = contents.requestArguments;
+  return args && typeof args === "object" && !Array.isArray(args)
+    && Object.keys(args).every(key => ["expectedRevision", "expectedGeneration", "testSelection", "taskIds"].includes(key))
+    && args.expectedRevision === contents.priorRevision && args.expectedGeneration === contents.priorGeneration
+    && (args.testSelection === undefined || releaseIdentitySha256(normalizeTestSelection(args.testSelection)) === releaseIdentitySha256(contents.selection))
+    && (args.taskIds === undefined || releaseIdentitySha256(normalizeReleaseTaskIds(args.taskIds)) === releaseIdentitySha256(contents.taskIds));
 }

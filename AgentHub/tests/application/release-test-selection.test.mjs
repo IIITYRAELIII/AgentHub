@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { normalizeTestSelection, resolveTestSelection, verifyTestPlan } from "../../src/domain/test-selection.mjs";
-import { createCandidateGeneration, restoreReleaseOperation, effectiveReleaseTaskIds } from "../../src/domain/release-operation.mjs";
+import { createCandidateGeneration, createReleaseOperation, restoreReleaseOperation, effectiveReleaseTaskIds, releaseIdentitySha256 } from "../../src/domain/release-operation.mjs";
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
@@ -234,4 +234,114 @@ test("standalone native-custody originals cannot be adopted or stripped by ordin
     expectedRevision: current.revision, expectedGeneration: current.currentGeneration }), /source-owner-fenced/);
   assert.equal(database.prepare("SELECT operation_json FROM release_operations WHERE operation_id=?").get("original").operation_json, bytes);
   database.close();
+});
+
+
+function amendedContents(current, requestId, taskIds) {
+  const contents = { requestId, selection: selection("none"), taskIds: [...taskIds].sort(),
+    taskSelection: taskIds.map(taskId => ({ taskId, resultCommit: `${taskId}-accepted` })),
+    priorRevision: current.revision, priorGeneration: current.currentGeneration,
+    authorizationFingerprint: current.authorization.fingerprint,
+    priorFailure: { state: current.state, completedAt: current.completedAt, error: current.lastError },
+    priorPublicationEffects: current.publicationEffects, priorWaitReason: current.waitReason, priorResumeState: current.resumeState,
+    readbacks: [{ targetId: "target", generation: current.currentGeneration, evidence: { status: "not_applied" } }],
+  };
+  return { ...contents, identitySha256: releaseIdentitySha256(contents) };
+}
+
+test("historical reviewed-main membership survives actual Store amendment/reopen and a later reviewed-main recovery", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "351-historical-main-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new ReleaseOperationStore({ dataDir: root });
+  const createdAt = "2026-10-26T00:00:00.000Z";
+  const authorization = { taskIds: ["task"], validationMode: "full",
+    approvedTargets: [{ targetId: "target", kind: "agent-hub-publication", repositoryRoot: "synthetic-repo" }] };
+  const original = createReleaseOperation({ operationId: "historical", requestId: "historical-start", workspaceId: "workspace",
+    streamId: "stream", threadId: "thread", runnerVersion: "test", createdAt, state: "waiting", currentGeneration: 2,
+    resumeState: "compose", waitReason: { code: "validation_failed" }, lastError: { message: "retained failure" }, authorization });
+  const approvedRepositories = [{ projectRoot: "synthetic-repo", approvedLocalMainCommit: "a".repeat(40), approvedOriginMainCommit: "a".repeat(40) }];
+  const proofContents = { requestId: "old-reviewed-main", authorizationFingerprint: original.authorization.fingerprint,
+    priorRevision: 2, priorGeneration: 1, priorFailure: { completedAt: createdAt, error: { message: "original stale main" } },
+    planRevision: "old-plan", selectedResults: [{ taskId: "task", resultCommit: "task-accepted" }], preparedCandidates: [], approvedRepositories,
+    readbacks: [{ targetId: "target", generation: 1, evidence: { status: "not_applied" } }] };
+  const proof = { ...proofContents, identitySha256: releaseIdentitySha256(proofContents) };
+  store.create({ ...original, reviewedMain: proof });
+  for (let i = 0; i < 5; i++) {
+    const current = store.get("historical");
+    assert.equal(store.transition("historical", { nextAction: "historical progression" }, { expectedRevision: current.revision }).applied, true);
+  }
+  let current = store.get("historical");
+  assert.ok(current.revision > proof.priorRevision);
+  const result = store.transition("historical", { state: "compose", currentStep: "compose", lastError: null, publicationEffects: {} },
+    { expectedRevision: current.revision, testSelectionAmendment: amendedContents(current, "add-board", ["board", "task"]) });
+  assert.equal(result.applied, true);
+  current = store.get("historical");
+  assert.ok(current, "committed operation must remain readable");
+  assert.deepEqual(current.reviewedMain, proof);
+  assert.deepEqual(current.authorization, original.authorization);
+  assert.deepEqual(new ReleaseOperationStore({ dataDir: root }).get("historical"), current);
+  assert.deepEqual(restoreReleaseOperation(JSON.parse(JSON.stringify(current))), current);
+  store.putGeneration({ ...generationInput, operationId: "historical", generation: 2, runnerVersion: "test", createdAt });
+  const lease = store.acquire("historical", "fixture-owner", { processId: process.pid }).operation.owner;
+  const cause = Object.assign(new Error("explicit reviewed-main approval is stale for synthetic-repo"), { code: "RELEASE_MAIN_APPROVAL_STALE" });
+  for (const [generation, stepId] of [[3, "compose"], [2, "publish:target"]]) {
+    const receipt = store.beginStep({ operationId: "historical", generation, stepId, input: {}, expectedOwner: lease }).receipt;
+    store.finishStep(receipt, { status: "failed", error: cause, effect: { status: "not_applied" }, expectedOwner: lease });
+  }
+  current = store.get("historical");
+  const failed = store.transition("historical", { state: "failed", currentStep: "compose",
+    lastError: { message: cause.message, code: cause.code, step: "compose" } }, { expectedRevision: current.revision, expectedOwner: lease }).operation;
+  const service = new ReleaseOperationService({ store, processAlive: () => false, schedule: () => {},
+    compose: async () => assert.fail("no composition"), validate: async () => {}, publishTarget: async () => assert.fail("no publication"),
+    readTarget: async () => ({ status: "not_applied" }), finalize: async () => {},
+    withReviewedMainRecovery: async ({ commit }) => commit({ planRevision: "new-plan", approvedRepositories,
+      selectedResults: ["board", "task"].map(taskId => ({ taskId, resultCommit: `${taskId}-accepted` })), preparedCandidates: [] }, async () => {}),
+  });
+  assert.equal((await service.continue("historical", { requestId: "new-reviewed-main", reviewedMain: { expectedRevision: failed.revision, approvedRepositories } })).accepted, true);
+  current = store.get("historical");
+  const laterProof = current.reviewedMain;
+  assert.deepEqual(laterProof.selectedResults.map(item => item.taskId), ["board", "task"]);
+  assert.equal(laterProof.previousBinding, proof.identitySha256);
+  current = store.transition("historical", { state: "waiting", resumeState: "compose", waitReason: { code: "validation_failed" } },
+    { expectedRevision: current.revision }).operation;
+  assert.equal(store.transition("historical", { state: "compose", currentStep: "compose", lastError: null, publicationEffects: {} },
+    { expectedRevision: current.revision, testSelectionAmendment: amendedContents(current, "remove-board", ["task"]) }).applied, true);
+  current = new ReleaseOperationStore({ dataDir: root }).get("historical");
+  assert.deepEqual(current.reviewedMain, laterProof, "later membership cannot retarget its earlier proof");
+  assert.deepEqual(effectiveReleaseTaskIds(current), ["task"]);
+  assert.equal(restoreReleaseOperation({ ...current, reviewedMain: { ...laterProof, identitySha256: "0".repeat(64) } }), null);
+  const { identitySha256, ...drift } = laterProof;
+  drift.selectedResults = [{ taskId: "task", resultCommit: "task-accepted" }];
+  assert.equal(restoreReleaseOperation({ ...current, reviewedMain: { ...drift, identitySha256: releaseIdentitySha256(drift) } }), null,
+    "even a recomputed digest cannot replace historical membership with today's set");
+  assert.equal(restoreReleaseOperation({ ...current, reviewedMain: { ...laterProof, approvedRepositories: [] } }), null);
+});
+
+for (const omitted of ["taskIds", "testSelection"]) test(`original replay retains omitted ${omitted} after a later effective selection`, async t => {
+  const f = await fixture(t, { withTaskSelection: async ({ taskIds, commit }) => commit(taskIds.map(taskId => ({ taskId, resultCommit: `${taskId}-accepted` }))) });
+  const initial = f.store.get("original");
+  const first = { requestId: `original-omitted-${omitted}`, expectedRevision: initial.revision, expectedGeneration: 1,
+    ...(omitted === "taskIds" ? { testSelection: selection("none") } : { taskIds: ["task"] }) };
+  const accepted = await f.service.continue("original", first);
+  f.scheduled.shift()();
+  await f.service.drain("original");
+  const boundary = f.store.get("original");
+  assert.equal((await f.service.continue("original", { requestId: `later-${omitted}`, expectedRevision: boundary.revision, expectedGeneration: 2,
+    testSelection: selection("all"), taskIds: ["board", "task"] })).accepted, true);
+  const before = f.store.snapshot("original");
+  const scheduled = f.scheduled.length;
+  const replay = await f.service.continue("original", first);
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.revision, accepted.revision);
+  assert.deepEqual(replay.amendment, accepted.amendment);
+  assert.deepEqual(f.store.snapshot("original"), before);
+  assert.equal(f.scheduled.length, scheduled);
+  // Supplying a previously omitted value is a different captured request,
+  // even when its value equals the original outcome.
+  await assert.rejects(f.service.continue("original", { ...first,
+    [omitted]: omitted === "taskIds" ? ["task"] : selection("all") }), /identity changed/);
+  await assert.rejects(f.service.continue("original", { ...first,
+    ...(omitted === "taskIds" ? { testSelection: selection("include", ["tests/a.test.mjs"]) } : { taskIds: ["board", "task"] }) }), /identity changed/);
+  assert.deepEqual(f.store.snapshot("original"), before);
+  assert.equal(f.scheduled.length, scheduled);
 });
