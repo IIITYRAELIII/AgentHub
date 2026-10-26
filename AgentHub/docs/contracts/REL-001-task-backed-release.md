@@ -2778,3 +2778,19 @@ returns its saved amendment and committed revision without a write or scheduling
 Older retained amendments without argument capture resolve omissions only against
 their own saved outcome, never against a later effective selection; their bytes
 and identity stay unchanged. No stored record is enriched during readback.
+
+## Release notes for an explicitly amended generation
+
+The existing RM continuation amendment may also carry `release_metadata`, using
+the same source-path, byte-length, raw and LF-normalized SHA-256 envelope as
+initial authorization. It requires the same exact operation revision/generation,
+idle owner and positive `not_applied` readbacks. Its complete normalized request
+and payload identity join the existing append-only amendment digest. Initial
+authorization, old metadata artifacts, failed generations and receipts never change.
+Composition verifies the most recent explicitly amended payload before preparing
+the new generation. A later omission retains that payload; original request replay
+uses its captured arguments, never current effective notes. Old amendments gain no
+metadata authority. Candidate freeze still owns and binds the actual bytes, version,
+tree and manifest. This supplies the consolidated entry for changed Task membership
+without rewriting the initial authorization or silently generating release notes.
+See ADR-HUB-351-release-metadata-amendment.

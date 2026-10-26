@@ -899,6 +899,18 @@ export class HubMcpService {
         test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
           mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
         } },
+        release_metadata: {
+          type: "object",
+          description: "Exact prepared CHANGELOG artifact identity; the existing release owner verifies its bytes before composition.",
+          additionalProperties: false,
+          properties: {
+            sourcePath: { type: "string", minLength: 1 },
+            byteLength: { type: "integer", minimum: 1, maximum: MAX_RELEASE_METADATA_BYTES },
+            rawSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            canonicalSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          },
+          required: ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"],
+        },
         task_ids: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string" } },
         expected_revision: { type: "integer", minimum: 1 },
         expected_generation: { type: "integer", minimum: 1 },
@@ -2224,7 +2236,7 @@ export class HubMcpService {
     this.#workspace(context, snapshot.operation.workspaceId);
     return this.#releaseOperation().continue(operationId, {
       requestId: args.request_id, reviewedMain: args.reviewed_main,
-      testSelection: args.test_selection, taskIds: args.task_ids, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
+      testSelection: args.test_selection, taskIds: args.task_ids, releaseMetadata: args.release_metadata, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
     });
   }
 

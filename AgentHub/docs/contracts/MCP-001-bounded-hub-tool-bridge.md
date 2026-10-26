@@ -679,3 +679,13 @@ freezes `authorizedTaskIds` and must contain exactly those selected results. The
 existing Task-operation index retains historical membership for retrospective
 proof, while active correction wake filters by the effective set. No all-Await
 expansion, absorption, hidden source import or new publisher is implied.
+
+The same `hub_release_continue` amendment optionally carries `release_metadata`
+with the existing initial-authorization artifact schema. It is forwarded through
+the same RM command/service owner with `expected_revision`, `expected_generation`
+and original request ID; no separate publisher or metadata writer is introduced.
+Captured argument identity includes whether it was supplied. Omitting, changing
+or adding it on replay cannot retarget an existing amendment. Composition verifies
+the full effective artifact bytes before preparing the next generation. Initial
+authorization and old generations remain immutable. See REL-001 and
+ADR-HUB-351-release-metadata-amendment.

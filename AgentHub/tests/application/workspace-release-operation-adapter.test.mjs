@@ -110,3 +110,28 @@ test("composition replays exact referenced release metadata and rejects changed 
   await writeFile(sourcePath, "changed\n", "utf8");
   await assert.rejects(adapter.compose({ operation, generation: 2 }), /metadata artifact identity changed/u);
 });
+
+test("composition reads only the effective amended release notes and detects byte drift before preparing", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-amended-metadata-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const originalFile = path.join(root, "original.md"), amendedFile = path.join(root, "amended.md");
+  const original = Buffer.from("original notes\r\n"), amended = Buffer.from("notes for all selected Tasks\r\n");
+  await writeFile(originalFile, original); await writeFile(amendedFile, amended);
+  const metadata = (sourcePath, bytes) => ({ sourcePath, byteLength: bytes.length,
+    rawSha256: createHash("sha256").update(bytes).digest("hex"),
+    canonicalSha256: createHash("sha256").update(bytes.toString("utf8").replace(/\r\n/gu, "\n")).digest("hex") });
+  const calls = [];
+  const adapter = fixture([]).adapter;
+  adapter.releasePreflight.prepareOperationGeneration = async input => { calls.push(input); return { releaseCandidates: [], planRevision: "plan" }; };
+  const operation = { operationId: "same-original", workspaceId: "workspace", selectedResults: [],
+    authorization: { taskIds: ["task-a"], approvedTargets: [], fingerprint: "original", releaseMetadata: metadata(originalFile, original) },
+    testSelectionAmendments: [{ taskIds: ["task-a", "task-b"], releaseMetadata: metadata(amendedFile, amended) }, { taskIds: ["task-a", "task-b"] }] };
+  const authorization = structuredClone(operation.authorization);
+  await adapter.compose({ operation, generation: 2 });
+  assert.deepEqual(calls[0].changelogContent, amended);
+  assert.deepEqual(calls[0].taskIds, ["task-a", "task-b"]);
+  assert.deepEqual(operation.authorization, authorization);
+  await writeFile(amendedFile, "different bytes");
+  await assert.rejects(adapter.compose({ operation, generation: 3 }), /metadata artifact identity changed/);
+  assert.equal(calls.length, 1, "no preparation after a changed payload");
+});
