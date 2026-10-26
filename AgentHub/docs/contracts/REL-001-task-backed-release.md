@@ -503,6 +503,17 @@ final check. Genuine overlapping conflict choices retain native resolution
 authority; this check is not a claim of semantic equivalence of arbitrary code.
 An authenticated compatibility correction permits only the exact mode/blob
 afterimage bound by its verified merge diff, never another body at that path.
+
+For unchanged automatic context, an additional `selected-content-compatibility-v1`
+binding in a new authenticated native review must match the owner's complete final
+replay obligations: ordered Task/base/result identities, final commit/tree, replay
+tree, expected and retained mode/type/OID or absence, and the exact prefix and real
+automatic entry. Only explicitly accepted obligations retaining that automatic
+entry are exempt. Every other missing effect still refuses. Original v1 reviews
+gain no authority; source/base/body/selection drift and stale proofs refuse.
+An undelivered capture retains its original v1 review and adds the separately
+authenticated compatibility review only after full validation, before delivery.
+Prepared and historical readback repeat both authentication and the full replay.
 Text conflict resolution also preserves Git's clean context outside its marker
 ranges; replacing a whole conflicted file does not grant permission to discard
 those bytes. Such extra changes use the existing exact compatibility-review

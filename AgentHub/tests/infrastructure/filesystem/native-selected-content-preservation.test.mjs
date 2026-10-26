@@ -219,3 +219,115 @@ test("exact authenticated compatibility cleanup remains valid", async t => {
   await assertNativePreparedComposition({ git: (args, options) => gitAt(value.root, args, options),
     baseCommit: base, tasks, merges: value.merges, head: target, tree: binding.tree, identity, verifyReview });
 });
+
+test("exact signed replay obligations preserve automatic context without widening v1 authority", async t => {
+  const f=await fixture(t);
+  for(const file of ["registry.txt","context2.txt","context3.txt"]) await writeFile(path.join(f.sourceRoot,file),"base\n");
+  const taskBase=await commit(f.sourceRoot,"complete Task base");
+  await f.create("dependency context","dependency\n",taskBase);
+  for(const file of ["context2.txt","context3.txt"]) await writeFile(path.join(f.sourceRoot,file),"dependency\n");
+  const dependency=await commit(f.sourceRoot,"inherited dependency context");
+  await f.create("independent dev restoration","old selected\n",dependency);
+  for(const file of ["context2.txt","context3.txt"]) await writeFile(path.join(f.sourceRoot,file),"base\n");
+  await writeFile(path.join(f.sourceRoot,"registry.txt"),"dev\n");
+  const dev=await commit(f.sourceRoot,"dev registry and context");
+  await gitAt(f.sourceRoot,["checkout","--detach",dependency]);
+  await writeFile(path.join(f.sourceRoot,"feature.txt"),"own feature\n");
+  await writeFile(path.join(f.sourceRoot,"registry.txt"),"selected\n");
+  const result=await commit(f.sourceRoot,"own feature and registry");
+  const tasks=[{taskId:"selected",baseCommit:taskBase,resultCommit:result}];
+  let repository;
+  await assert.rejects(f.compose(dev,tasks),error=>{
+    assert.equal(error.code,"RELEASE_NATIVE_MERGE_CONFLICT");repository=error.conflictRoot;return true;
+  });
+  await writeFile(path.join(repository,"registry.txt"),"dev+selected\n");
+  const head=await commit(repository,"exact registry union");
+  const tree=await gitAt(repository,["rev-parse","HEAD^{tree}"]);
+  const automaticTree=(await gitAt(repository,["merge-tree","--write-tree","--name-only","-z",dev,result],
+    {acceptableExitCodes:[1]})).split("\0")[0];
+  const identity={policy:NATIVE_RELEASE_POLICY,baseCommit:dev,tasks};
+  const binding={identityHash:taskGitIdentityHash(identity),parents:[dev,result],commit:head,tree,automaticTree,
+    diffSha256:createHash("sha256").update(await gitAt(repository,["diff","--binary","--full-index","--no-renames",automaticTree,tree],
+      {rawOutput:true})).digest("hex")};
+  const text=capability=>`<native-merge-review>${JSON.stringify({kind:"native-merge-review-v1",verdict:"ACCEPT",binding,
+    ...(capability?{selectedContentCompatibility:capability}:{})})}</native-merge-review>`;
+  const v1={requestId:"independent-v1",text:text(null)};
+  const authenticated=new Set([v1.text]);
+  const verifyReview=async(input,actual)=>{assert.ok(authenticated.has(input.text),"whole review must be authenticated");assert.deepEqual(actual,binding);};
+  let derived;
+  await assert.rejects(f.compose(dev,tasks,{resolutionReview:v1,verifyReview}),error=>{
+    assert.equal(error.code,"RELEASE_SELECTED_CONTENT_MISSING");derived=error.selectedContentCompatibilityBinding;return true;
+  });
+  assert.ok(derived,"the owner exposes complete derived replay obligations");
+  assert.equal(derived.kind,"selected-content-compatibility-v1");
+  assert.deepEqual(derived.selectedTasks,tasks);
+  assert.deepEqual(derived.obligations.map(row=>row.path),["context2.txt","context3.txt","selection.txt"]);
+  for(const row of derived.obligations){assert.equal(row.retainedEntry,row.automaticEntry);assert.notEqual(row.expectedEntry,row.retainedEntry);
+    assert.equal(row.prefixCommit,dev);assert.equal(row.automaticTree,automaticTree);assert.match(row.replayTree,/^[a-f0-9]{40}$/u);}
+  const before=await readJson(path.join(f.root,"capture","merge.json"));
+  const partial={requestId:"independent-partial",text:text({binding:derived,acceptedObligations:[0,1]})};
+  authenticated.add(partial.text);
+  await assert.rejects(f.compose(dev,tasks,{resolutionReview:partial,verifyReview}),error=>
+    error.code==="RELEASE_SELECTED_CONTENT_MISSING"&&error.missingPaths.includes("selection.txt"));
+  assert.deepEqual(await readJson(path.join(f.root,"capture","merge.json")),before,"failed partial proof cannot replace the capture");
+  const capability={binding:derived,acceptedObligations:[0,1,2]};
+  const approval={requestId:"independent-exact-context",text:text(capability)};authenticated.add(approval.text);
+  const value=await f.compose(dev,tasks,{resolutionReview:approval,verifyReview});
+  assert.equal(value.head,head);assert.equal(value.tree,tree);
+  assert.equal(await gitAt(repository,["show","HEAD:selection.txt"]),"old selected");
+  assert.equal(await gitAt(repository,["show","HEAD:feature.txt"]),"own feature");
+  const after=await readJson(path.join(f.root,"capture","merge.json"));
+  assert.deepEqual(after.merges[0].reviewedResolution.review,v1,"original v1 review stays immutable");
+  assert.deepEqual(after.merges[0].reviewedResolution.compatibilityReview,approval);
+  const readback={git:(args,options)=>gitAt(repository,args,options),baseCommit:dev,tasks,merges:value.merges,head,tree,identity,verifyReview};
+  await assertNativePreparedComposition(readback);
+  assert.equal((await f.compose(dev,tasks,{verifyReview})).head,head);
+  const noCapability=structuredClone(value.merges);delete noCapability[0].reviewedResolution.compatibilityReview;
+  await assert.rejects(assertNativePreparedComposition({...readback,merges:noCapability}),{code:"RELEASE_SELECTED_CONTENT_MISSING"});
+  const mutations=[proof=>proof.binding.selectedTasks[0].baseCommit=dependency,
+    proof=>proof.binding.selectedTasks.push({taskId:"foreign",baseCommit:taskBase,resultCommit:result}),
+    proof=>proof.binding.obligations[0].expectedEntry=null,proof=>proof.binding.obligations[0].retainedEntry=null,
+    proof=>proof.binding.obligations[0].replayTree=dependency,proof=>proof.binding.obligations[0].automaticTree=tree,
+    proof=>proof.binding.candidateCommit=result,proof=>proof.acceptedObligations=[0,0,1,2]];
+  for(const mutate of mutations){const bad=structuredClone(capability);mutate(bad);const badText=text(bad);authenticated.add(badText);
+    const merges=structuredClone(value.merges);merges[0].reviewedResolution.compatibilityReview={requestId:"signed-but-stale",text:badText};
+    await assert.rejects(assertNativePreparedComposition({...readback,merges}),{code:"RELEASE_NATIVE_REVIEW_REQUIRED"});}
+  assert.equal((await f.compose(dev,tasks,{resolutionReview:approval,verifyReview,deliveredHead:head})).head,head);
+  const replacement={...approval,requestId:"different fresh authenticated review"};
+  await assert.rejects(f.compose(dev,tasks,{resolutionReview:replacement,verifyReview,deliveredHead:head}),
+    {code:"RELEASE_NATIVE_CHECKOUT_CHANGED"});
+  assert.deepEqual(await readJson(path.join(f.root,"capture","merge.json")),after);
+  // The dependency is a separately selected Task in this readback. A proof for
+  // the single feature Task cannot authorize its six replay obligations.
+  const fullTasks=[{taskId:"dependency",baseCommit:taskBase,resultCommit:dependency},...tasks];
+  const fullIdentity={policy:NATIVE_RELEASE_POLICY,baseCommit:dev,tasks:fullTasks};
+  const fullBinding={...binding,identityHash:taskGitIdentityHash(fullIdentity)};
+  const fullText=capability=>`<native-merge-review>${JSON.stringify({kind:"native-merge-review-v1",verdict:"ACCEPT",binding:fullBinding,
+    ...(capability?{selectedContentCompatibility:capability}:{})})}</native-merge-review>`;
+  const fullV1={requestId:"independent-full-selection-v1",text:fullText(null)};
+  const fullSigned=new Set([fullV1.text]);
+  const fullVerifier=async(input,actual)=>{assert.ok(fullSigned.has(input.text));assert.deepEqual(actual,fullBinding);};
+  const fullStep=structuredClone(value.merges[0]);
+  fullStep.reviewedResolution={...fullStep.reviewedResolution,binding:fullBinding,review:fullV1};
+  delete fullStep.reviewedResolution.compatibilityReview;
+  const fullMerges=[{taskId:"dependency",resultCommit:dependency,commit:dev,contained:true},fullStep];
+  const fullReadback={...readback,tasks:fullTasks,identity:fullIdentity,merges:fullMerges,verifyReview:fullVerifier};
+  let fullDerived;
+  await assert.rejects(assertNativePreparedComposition(fullReadback),error=>{
+    assert.equal(error.code,"RELEASE_SELECTED_CONTENT_MISSING");fullDerived=error.selectedContentCompatibilityBinding;return true;
+  });
+  assert.equal(fullDerived.obligations.length,6);
+  const rejectedOld={requestId:"independent-but-wrong-selection",text:fullText(capability)};fullSigned.add(rejectedOld.text);
+  const oldProof=structuredClone(fullMerges);oldProof[1].reviewedResolution.compatibilityReview=rejectedOld;
+  await assert.rejects(assertNativePreparedComposition({...fullReadback,merges:oldProof}),{code:"RELEASE_NATIVE_REVIEW_REQUIRED"});
+  const onlyFeature={requestId:"independent-feature-only",text:fullText({binding:fullDerived,acceptedObligations:[3,4,5]})};
+  fullSigned.add(onlyFeature.text);const partialFull=structuredClone(fullMerges);partialFull[1].reviewedResolution.compatibilityReview=onlyFeature;
+  await assert.rejects(assertNativePreparedComposition({...fullReadback,merges:partialFull}),error=>
+    error.code==="RELEASE_SELECTED_CONTENT_MISSING"&&error.taskId==="dependency");
+  const allFull={requestId:"independent-all-exact-obligations",text:fullText({binding:fullDerived,acceptedObligations:[0,1,2,3,4,5]})};
+  fullSigned.add(allFull.text);const acceptedFull=structuredClone(fullMerges);acceptedFull[1].reviewedResolution.compatibilityReview=allFull;
+  await assertNativePreparedComposition({...fullReadback,merges:acceptedFull});
+  const forged=structuredClone(value.merges);forged[0].reviewedResolution.compatibilityReview={requestId:"forged",text:text({...capability,extra:true})};
+  await assert.rejects(assertNativePreparedComposition({...readback,merges:forged}),/whole review must be authenticated/u);
+  assert.equal(await gitAt(f.sourceRoot,["show-ref","--heads"]),`${taskBase} refs/heads/main`);
+});
