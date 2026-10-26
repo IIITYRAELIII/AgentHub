@@ -53,6 +53,26 @@ test("repeated quiet samples cannot accumulate a later CPU-bound cohort", async 
   assert.equal((await f.admission.close()).peakActive, 4);
 });
 
+test("resource close preserves sampling and removal errors and cannot later become success", async () => {
+  const primary = new Error("sample failed");
+  const cleanup = new Error("CPU control removal failed");
+  let closes = 0;
+  const admission = await testResourceAdmission({ monitor: {
+    sample: async () => { throw primary; },
+    close: async () => { closes += 1; throw cleanup; },
+  } });
+  let original;
+  await assert.rejects(admission.close(), (error) => {
+    original = error;
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors, [primary, cleanup]);
+    assert.equal(error.cause, primary);
+    return true;
+  });
+  await assert.rejects(admission.close(), (error) => error === original);
+  assert.equal(closes, 1);
+});
+
 test("40 percent is a test-tree budget and uses physical RAM, with other-app headroom", async () => {
   const f = await fixture({ cpuFraction: 0.1, hostCpuFraction: 0.75 });
   assert.equal(await f.admission.canStart(), true, "other applications over 40 percent do not stop admission by themselves");

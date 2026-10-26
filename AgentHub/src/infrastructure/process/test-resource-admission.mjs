@@ -19,6 +19,7 @@ export async function testResourceAdmission({
   let memoryEstimate = process.memoryUsage().rss;
   let peakActive = 0;
   let closed = false;
+  let closePromise = null;
   let refreshing = null;
   let blockedSince = null;
   const metrics = { budget: TEST_RESOURCE_BUDGET, samples: 0, peakCpuFraction: 0, peakRssBytes: 0,
@@ -80,13 +81,26 @@ export async function testResourceAdmission({
       await wait(Math.max(1, intervalMs - (clock() - sampledAt)));
       await refresh(true);
     },
-    async close() {
-      if (closed) return metrics;
-      try { await refresh(true); } finally { closed = true; await monitor.close(); }
-      if (blockedSince !== null) metrics.waitMs += clock() - blockedSince;
-      metrics.peakActive = peakActive;
-      metrics.meanCpuFraction = measuredMs > 0 ? weightedCpu / measuredMs : 0;
-      return { ...metrics };
+    close() {
+      if (closePromise) return closePromise;
+      closePromise = (async () => {
+        let sampleFailure;
+        try { await refresh(true); } catch (error) { sampleFailure = error; }
+        closed = true;
+        try { await monitor.close(); } catch (cleanupFailure) {
+          if (sampleFailure && sampleFailure !== cleanupFailure) {
+            throw new AggregateError([sampleFailure, cleanupFailure],
+              "Test resource sampling and cleanup failed", { cause: sampleFailure });
+          }
+          throw cleanupFailure;
+        }
+        if (sampleFailure) throw sampleFailure;
+        if (blockedSince !== null) metrics.waitMs += clock() - blockedSince;
+        metrics.peakActive = peakActive;
+        metrics.meanCpuFraction = measuredMs > 0 ? weightedCpu / measuredMs : 0;
+        return { ...metrics };
+      })();
+      return closePromise;
     },
   };
 }

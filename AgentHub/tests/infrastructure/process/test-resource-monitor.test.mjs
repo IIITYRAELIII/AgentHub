@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
+import childProcess, { spawn } from "node:child_process";
+import { once, EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
+import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import { createTestResourceMonitor, parsePosixProcessAccounting } from "../../../src/infrastructure/process/test-resource-monitor.mjs";
 
@@ -98,3 +100,51 @@ test("Windows CPU quota applies to one owned low-load child and clears without k
     await monitor.close();
   }
 });
+
+for (const exitCode of [0, 1]) {
+  test(`native CPU cleanup protocol preserves close outcome ${exitCode}`, {
+    skip: process.platform !== "win32",
+  }, async (t) => {
+    const originalSpawn = childProcess.spawn;
+    const commands = [];
+    childProcess.spawn = () => {
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      const sample = () => child.stdout.write(`${JSON.stringify({ cpuMs: 10,
+        rssBytes: 1024, processes: 2, totalProcesses: 2, limitFlags: 0,
+        cpuControlFlags: 5, cpuRate: 4000 })}\n`);
+      child.stdin = new Writable({ write(data, encoding, callback) {
+        const command = data.toString().trim();
+        commands.push(command);
+        queueMicrotask(() => {
+          if (command === "sample") sample();
+          else if (command === "close") {
+            if (exitCode) child.stderr.write("CPU control clear/readback failed");
+            child.stdout.end(); child.stderr.end(); child.emit("close", exitCode, null);
+          }
+        });
+        callback();
+      } });
+      queueMicrotask(sample);
+      return child;
+    };
+    syncBuiltinESMExports();
+    t.after(() => { childProcess.spawn = originalSpawn; syncBuiltinESMExports(); });
+    const monitor = await createTestResourceMonitor();
+    await monitor.sample();
+    if (exitCode) {
+      let original;
+      await assert.rejects(monitor.close(), (error) => {
+        original = error;
+        assert.match(error.message, /CPU control clear\/readback failed/);
+        return true;
+      });
+      await assert.rejects(monitor.close(), (error) => error === original);
+    } else {
+      await monitor.close();
+      await monitor.close();
+    }
+    assert.equal(commands.filter(command => command === "close").length, 1);
+  });
+}

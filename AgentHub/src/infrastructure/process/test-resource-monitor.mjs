@@ -17,6 +17,7 @@ async function windowsAccounting(cpuBudget) {
   });
   let failure;
   let closed = false;
+  let closePromise = null;
   let stderr = "";
   let pending;
   child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4_096); });
@@ -27,9 +28,15 @@ async function windowsAccounting(cpuBudget) {
       const value = JSON.parse(line);
       if (pending) { const { resolve } = pending; pending = null; resolve(value); }
       else values.push(value);
-    } catch (error) { failure = error; pending?.reject(error); pending = null; }
+    } catch (error) { failed(error); }
   });
-  const failed = (error) => { failure = error; pending?.reject(error); pending = null; };
+  function failed(error) {
+    failure = failure && failure !== error
+      ? new AggregateError([failure, error], "Test resource accounting and cleanup failed", { cause: failure })
+      : error;
+    pending?.reject(failure);
+    pending = null;
+  }
   child.on("error", failed);
   child.stdin.on("error", failed);
   const exited = once(child, "close").then(([code]) => {
@@ -43,14 +50,29 @@ async function windowsAccounting(cpuBudget) {
     if (values.length) return values.shift();
     return new Promise((resolve, reject) => { pending = { resolve, reject }; });
   }
-  try { await receive(); } catch (error) { child.stdin.end(); await exited; throw error; }
+  try { await receive(); } catch (error) {
+    try { child.stdin.end(); await exited; }
+    finally { lines.close(); }
+    throw failure ?? error;
+  }
   return {
     sample: () => {
       if (closed) return Promise.reject(new Error("Test resource accounting is closed"));
       if (!failure) child.stdin.write("sample\n");
       return receive();
     },
-    close: async () => { if (closed) return; closed = true; child.stdin.end("close\n"); await exited; lines.close(); },
+    close: () => {
+      if (closePromise) return closePromise;
+      closed = true;
+      closePromise = (async () => {
+        try {
+          child.stdin.end("close\n");
+          await exited;
+          if (failure) throw failure;
+        } finally { lines.close(); }
+      })();
+      return closePromise;
+    },
   };
 }
 
