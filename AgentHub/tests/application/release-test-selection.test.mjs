@@ -1,3 +1,5 @@
+import { DatabaseSync } from "node:sqlite";
+import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -218,4 +220,18 @@ test("same amendment binds only explicit accepted Task membership and preserves 
   const current = f.store.get("original");
   await assert.rejects(f.service.continue("original", { ...options, requestId: "drift", expectedRevision: current.revision, expectedGeneration: 2 }), /changed before amendment/);
   assert.deepEqual(f.store.get("original"), current);
+});
+
+test("standalone native-custody originals cannot be adopted or stripped by ordinary amendment", async t => {
+  const f = await fixture(t);
+  const database = new DatabaseSync(runtimeDatabasePath(f.root));
+  const raw = JSON.parse(database.prepare("SELECT operation_json FROM release_operations WHERE operation_id=?").get("original").operation_json);
+  raw.nativeOwnerRecovery = { immutable: "source-custody" };
+  const bytes = JSON.stringify(raw);
+  database.prepare("UPDATE release_operations SET operation_json=? WHERE operation_id=?").run(bytes, "original");
+  const current = f.store.get("original");
+  await assert.rejects(f.service.continue("original", { requestId: "cannot-adopt", testSelection: selection("none"),
+    expectedRevision: current.revision, expectedGeneration: current.currentGeneration }), /source-owner-fenced/);
+  assert.equal(database.prepare("SELECT operation_json FROM release_operations WHERE operation_id=?").get("original").operation_json, bytes);
+  database.close();
 });

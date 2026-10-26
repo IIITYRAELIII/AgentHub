@@ -424,6 +424,10 @@ export class ReleaseOperationStore {
             return receipt?.status !== "failed" || receipt.effect?.status !== "not_applied";
           })) throw new Error("Reviewed-main recovery requires terminal not-applied publication receipts");
         }
+        if (testSelectionAmendment && expectedRevision === current.revision) {
+          const raw = JSON.parse(row.operation_json);
+          if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("Test selection amendment is source-owner-fenced");
+        }
         if (testSelectionAmendment && expectedRevision === current.revision
             && database.prepare("SELECT 1 FROM release_candidate_generations WHERE operation_id=? AND generation=?")
               .get(id, current.currentGeneration + 1)) throw new Error("Test selection cannot replace an immutable next generation");
