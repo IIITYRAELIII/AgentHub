@@ -398,3 +398,41 @@ for (const mode of ["missing", "tampered"]) test(`public freeze wrapper rejects 
     ? /payload is missing or invalid/u
     : /payload digest changed/u);
 });
+
+
+test("frozen candidate projection carries original artifact identity into Android preparation", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze();
+  const raw = await readFile(frozen.manifestFile);
+  const publication = JSON.parse(raw).publication;
+  const observed = await f.service.frozenCandidate(f.primary);
+  assert.deepEqual(observed.manifest.publication, publication);
+  const operationId = "fefefefe-fefe-4efe-8efe-fefefefefefe";
+  const input = releaseOperationRuntimePublicationInput({
+    operation: { operationId }, generation: { operationId, generation: 2 },
+    candidate: { commit: observed.preReleaseHead, manifest: observed.manifest },
+  });
+  assert.equal(input.version, publication.runtimeReleaseVersion);
+  assert.equal(input.sourceCommit, publication.head);
+  const { createPublicationArtifactSteps } = await import("../../../src/infrastructure/process/publication-artifacts.mjs");
+  let builds = 0;
+  const artifacts = createPublicationArtifactSteps({
+    sourceRoot: path.join(f.candidate.releaseRoot, "AgentHub"),
+    runtimeRoot: path.join(f.primary, "..", "runtime-artifacts"),
+    runtimePublication: input,
+    journal: { read: async () => null, updateProgress: async () => {} },
+    run: async step => {
+      builds++;
+      assert.equal(step.label, "Сборка Agent Hub Mobile");
+      assert.deepEqual(step.args.slice(-3), ["--", "-ArtifactVersion", publication.runtimeReleaseVersion]);
+      throw new Error("captured Android input before build");
+    },
+  });
+  const steps = await artifacts.steps(publicationSteps({ skipTests: true, skipWorker: true }),
+    { revision: observed.preReleaseHead });
+  await assert.rejects(steps[0].execute(), /captured Android input before build/u);
+  assert.equal(builds, 1);
+  assert.deepEqual(await readFile(frozen.manifestFile), raw);
+  assert.deepEqual((await f.service.frozenCandidate(f.primary)).manifest.publication, publication);
+});

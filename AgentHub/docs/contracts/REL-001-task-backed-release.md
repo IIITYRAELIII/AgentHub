@@ -18,6 +18,11 @@ history; `reviewedMain` and the recovery event are appended by the same store.
 UNKNOWN/partial/applied/live/source-owned effects refuse. No work executes inside
 rebinding; ordinary composition and publication guards still own the next attempt.
 
+The frozen candidate read projection retains the hash-verified manifest
+publication binding unchanged, so immutable generation capture and the artifact
+owner receive the same original version and source. A historical manifest
+without that binding remains absent; readback does not allocate or enrich it.
+
 ## Semantic public version and original build (ADR-HUB-334)
 
 New installer publications migrate recognized calendar versions to public

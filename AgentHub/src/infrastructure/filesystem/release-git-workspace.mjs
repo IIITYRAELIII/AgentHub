@@ -2954,6 +2954,7 @@ export class ReleaseGitWorkspaceService {
         ...(manifest.merges ? { merges: manifest.merges } : {}),
         ...(manifest.cutover ? { cutover: manifest.cutover } : {}),
         ...(manifest.preparedCandidate ? { preparedCandidate: manifest.preparedCandidate } : {}),
+        ...(manifest.publication ? { publication: structuredClone(manifest.publication) } : {}),
         tasks: manifestTasks.map((task) => ({
           taskId: task.taskId,
           taskRevision: task.taskRevision,
