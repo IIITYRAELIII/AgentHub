@@ -128,16 +128,6 @@ runner when no explicit dependency root was configured. Frozen Worker children
 resolve the candidate-pinned CLI version through the same existing resolver;
 this does not copy dependencies, change the frozen tree or relax version checks.
 
-The frozen candidate read projection retains the hash-verified manifest
-publication binding unchanged, so immutable generation capture and the artifact
-owner receive the same original version and source. A historical manifest
-without that binding remains absent; readback does not allocate or enrich it.
-
-The stable publication owner passes its own dependency root to the isolated
-runner when no explicit dependency root was configured. Frozen Worker children
-resolve the candidate-pinned CLI version through the same existing resolver;
-this does not copy dependencies, change the frozen tree or relax version checks.
-
 ## Semantic public version and original build (ADR-HUB-334)
 
 New installer publications migrate recognized calendar versions to public
@@ -199,6 +189,22 @@ identity and stopped-writer checks remain mandatory. Old calendar receipt
 read/retry remains supported at its original checkpoint; it is not authority
 for a new calendar downgrade after migration. The release publisher must refuse
 overwriting a previously published public tag with another build.
+
+## Frozen standalone artifact preparation
+
+The existing publication artifact checkpoint may bind an explicit original
+operation/generation/source and runtime artifact version. Canonical preparation
+checks that version against its next suffix under the same installation lease
+before copying, compiling Host or installing locked dependencies. A different
+result refuses instead of changing the frozen version or manifest. Publication
+version remains distinct from the runtime artifact version.
+
+The packager's PREPARED receipt is derived from that same hash-pinned artifact
+and verified runtime, not from a second allocation or acceptance owner. Reuse
+validates the original source/version/manifest and complete payload before any
+new preparation. A lost preparation reply may reuse its verified completed body;
+a partial body without a manifest or changed inputs remains preserved/refused.
+This receipt grants no Git, installation, restart or remote publication authority.
 
 ## Native transport retirement (ADR-0126)
 
@@ -429,6 +435,13 @@ prepared reuse and freeze. This does not adopt future origin or move primary.
 Native metadata validation distinguishes inherited metadata from Task edits.
 CHANGELOG entries must equal a complete Git mode/blob entry at the registered
 Task base, verified installed source or that Task's explicitly adopted commit.
+An explicitly verified installed-source base may incorporate later agreed main
+metadata. Its existing owner also retains the installed manifest's exact source
+revision as a metadata base: the hash-pinned manifest, unchanged clean source
+HEAD and ancestry into the verified new base must all agree. This grants no
+arbitrary historical revision or caller-supplied authority. Ordinary exact
+path/mode/blob and package-version rules still apply; merge-side authority,
+selection and Task acceptance remain unchanged (ADR-HUB-321).
 Metadata paths use raw NUL records and literal pathspecs; quoted presentation
 names, malformed or ambiguous tree lookups grant no inherited identity.
 Existing package versions must match one of those same sources. Arbitrary Task
@@ -524,6 +537,31 @@ success returns the same receipt without composition. Response loss after
 terminal persistence is recoverable by that readback. Missing terminal or
 ambiguous persistence remains UNKNOWN; no newer checkpoint, timeout or absent
 lock settles it or authorizes automatic Git replay.
+
+ADR-0130 adds explicit same-original `hub_release_prepare_resume` using the
+original `request_id`, `expected_arguments_hash` and exact
+`expected_preparation_revision`. It creates no second MCP intake or journal.
+The existing MCP row holds the original envelope, fixed source root/custody,
+revision and bounded owner stage. Only the existing Await -> Task -> repository
+lease boundary may checkpoint or resume it. The immutable original argument
+hash, caller and source closure remain binding; a newer approved mechanism may
+read that retained original closure without importing it or relabelling it.
+New attempts checkpoint `checking` before composition and `composing` before
+admitting any candidate effect. A caught pre-compose interruption records
+`paused`. A lost checkpoint reply can leave `checking`; reacquiring the same
+leases and exact revision CAS proves exclusive ownership before resumption.
+Current plan/rows/publication and candidate/main/source guards still apply.
+Main audit is not repeated or credited as no effect by resume. Bootstrap of
+accepted main into dev is a separate normal lease/CAS operation and never
+settles a preparation receipt.
+
+`composing` and provisional `terminal-intent` do not authorize replay. Candidate
+rollback remains live until the terminal transaction, so even a saved proposed
+result cannot turn an ambiguous terminal write into success. Only the existing
+successful original receipt supplies terminal readback. Legacy originals with
+no owner stage retain UNKNOWN and report the exact missing checkpoint; a later
+bootstrap, absent candidate, timeout or current refs cannot reconstruct it.
+No automatic startup recovery, original-ID replacement or SQL override is added.
 
 Affected commands:
 `node --test --test-name-pattern=preparation-only tests/application/hub-mcp-service.test.mjs tests/application/release-preparation-admission.test.mjs tests/infrastructure/persistence/workspace-catalog-store.test.mjs` and
@@ -1475,6 +1513,15 @@ repository mismatch or other error stays unknown. The compatibility classifier
 may be removed only after supported journals can no longer contain unknown claim
 receipts from that source version.
 
+Ordinary claim's first repository-lock timeout is terminal only when its live
+Task Git owner proves that the preparation callback never entered and the Task
+lease remains owned. The existing MCP receipt seals that exact refusal before
+the Task lease is released; its Task CAS and operation identity exclude prior
+assignment/lifecycle admission. Durable readback fences late claim writers and
+never repeats preparation. Timeouts after preparation entry or in dependency
+work retain UNKNOWN semantics. Historical unsealed timeouts require their own
+positive original-bound proof; the new type alone does not settle them.
+
 Dependency proof traversal is bounded before queue growth and directory
 expansion: each source or hidden package lock is at most 16 MiB, with at most
 16 nested `node_modules` levels, 10,000 physical package roots, 5,000 entries
@@ -1726,6 +1773,22 @@ unknown historical effect. A foreign legacy intent leaves both its recovery
 evidence and the current Task status unchanged.
 
 ## Task Git reference and CAS
+
+Ordinary expected revision/status refusal before lifecycle admission seals a
+bounded `NO_EFFECT` outcome through the existing Task SQLite owner. It cannot
+overwrite an admitted/terminal operation or authorize replay. Fresh-intake and
+lease authority must still hold, and preparation/effects must not have started.
+The MCP classifier/startup/canonical original-ID reconciler use the exact sealed
+identity, not an error string or present-day Task/Git state. A crash between that
+outcome and receipt settlement never requires repeating the refused operation.
+Exact immutable refusal settlement is only the existing SQLite receipt CAS,
+including database-only/null-root workspaces; it does not acquire release/Git
+authority or invoke recovery. Ordinary Git reconciliation keeps its existing
+workflow, root, process guard and owner requirements.
+Legacy missing-admission UNKNOWN without this evidence remains UNKNOWN; no manual
+certificate, guard bypass, SQL repair or historical effects inference is allowed.
+The reconciler's own proven pre-effect refusal is terminal without altering the
+original ambiguous operation. See MCP-001 and ADR-0085.
 
 The server-side Git boundary owns:
 
@@ -2949,31 +3012,31 @@ outcome without new Git effects. This migration is removable once the pending
 ordinary native Awaits lacking their own preparation intent are settled; it
 does not relax ordinary dirty-checkout rejection or authorize publication.
 
-## Explicit test selection (ADR-HUB-351)
 
-An explicit typed selection is `all`, `include`, `exclude`, or `none`, with exact
-inventory IDs. Omission retains prescribed focused/full/quick behavior. Selection
-is separate from immutable initial release authorization. The same RM continue
-owner can append an idempotent request-addressed amendment under exact operation
-revision and prior-generation CAS after its original target readbacks prove
-not-applied and no live release owner remains. Unknown, partial, applied or active
-effects are not reset. The amendment retains prior failure, publication boundary
-and wait state; failed generations, receipts and authorization are not rewritten.
+## Managed source custody after a forward claim fence
 
-The next composition freezes the full candidate inventory, selected/not-selected
-IDs and digest, amendment identity and exact repository candidates into its
-generation identity. The publication runner consumes that frozen plan and checks
-it against the candidate inventory. No explicit selection silently expands to
-focused/full/unknown-path validation. `none` dispatches no syntax, RC/contour, full,
-file test or Worker verification child. Artifact preparation, provenance, Git CAS,
-publication and runtime identity/readiness owners remain unchanged.
+ADR-0131 does not admit a new Git result, acceptance, release or cleanup. The
+existing Task Git owner holds its Task lease across ordinary prepare-to-claim;
+a forward successor instead verifies the exact already managed clean source,
+registered base/branch and declared ignored WIP inventory under that lease.
+It performs no dependency ensure, branch alignment or source materialization.
+A durable exact-cohort retirement certificate and existing claim writer authorize
+only the predeclared successor binding. WIP/history and the legacy UNKNOWN remain
+preserved, and active/queued previous-executor work still blocks actual assignment.
+Publication/installed capability and the public release set are unaffected.
 
-The existing test runner filters before dependencies/accounting/children and keeps
-its cwd, isolation, shared-resource admission and per-file checkpoint owners. A
-manual run cannot inherit successful checkpoints from a different selection.
-Unselected IDs are reported `not-selected`; they create no PASS/cache entry.
-Publication identity, checkpoint scope and result retain the frozen plan. This is
-no second publisher, automatic release, GUI or global validation bypass.
+The explicitly authorized `isolated-source-v1` forward-custody admission stages
+an independent full-object Git source and hash-verified retained WIP under an
+owner-bound epoch. Original/base history is pinned; no alternates, common mutable
+Git, linked checkout or old deterministic ref namespace grants authority. The old
+root remains preserved at capture but is not immutable. Persistent SQL fences
+isolate every supported old Task writer; an atomic full Task-state pin detects
+intervening effects. Ordinary Test imports private objects through the existing
+native owner and writes epoch result refs while preserving logical repository,
+base, publication lineage and normal lifecycle receipts. Old shared Task refs
+never become current successor authority. Generic cleanup cannot retire this
+retained custody snapshot/WIP; its owning retirement must be proved separately.
+The general busy guard and fresh operational authorization still apply.
 
 For a separately authorized open/new unassigned intake, the same Git owner may
 pin the registered project local-main commit as both source and base when no

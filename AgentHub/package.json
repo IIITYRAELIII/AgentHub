@@ -48,6 +48,7 @@
     "pretest": "node test-suite.mjs architecture",
     "test": "node test-suite.mjs unit",
     "test:installer": "python -m unittest install_test.py",
+    "test:distribution": "python -m unittest discover -s distribution -p \"*_test.py\" -v && python -m unittest discover -s tools -p source_export_test.py -v",
     "test:e2e": "node test-suite.mjs e2e",
     "test:vscode": "node test-suite.mjs vscode",
     "test:visual": "node test-suite.mjs visual",
