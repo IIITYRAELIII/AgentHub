@@ -1,7 +1,7 @@
 {
   "name": "agent-hub",
   "private": true,
-  "version": "2026.10.12",
+  "version": "2.0.0",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
