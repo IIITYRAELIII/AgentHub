@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,34 @@ import { COHORT_FILES } from "../../src/runtime/sqlite-cohort-snapshot.mjs";
 import { captureSqliteCohortInProcess } from "../../src/runtime/sqlite-cohort-capture-process.mjs";
 
 const blockedWorker = fileURLToPath(new URL("../fixtures/sqlite-capture-blocked-worker.mjs", import.meta.url));
+const startupHeldWorker = fileURLToPath(new URL("../fixtures/sqlite-capture-startup-held-worker.mjs", import.meta.url));
+
+// A real 500ms deadline can expire before a cold child reaches the phase under
+// test. Drive the existing parent timer only after its required IPC checkpoint;
+// native spawn, SQLite pins, SIGKILL and close confirmation remain real.
+function checkpointDeadline(t, accepts) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let child;
+  let closed;
+  let advanced = false;
+  t.after(async () => {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await closed;
+    assert.equal(advanced, true, "worker never reached the deadline test checkpoint");
+  });
+  return (...args) => {
+    child = spawn(...args);
+    closed = new Promise((resolve) => child.once("close", resolve));
+    child.on("message", (message) => {
+      if (advanced || !accepts(message)) return;
+      advanced = true;
+      // Let the production message handler and onProgress microtask run first,
+      // including retention of a reported worker failure before termination.
+      setImmediate(() => t.mock.timers.tick(500));
+    });
+    return child;
+  };
+}
 async function fixture(t, suffix = "source") {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-capture-process-"));
   const sourceDataDirectory = path.join(root, suffix);
@@ -47,6 +76,7 @@ test("process-owned SQLite capture returns only after worker exit and completed 
 });
 
 test("hard deadline kills a blocked backup process and releases real WAL read pins before rejection", { timeout: 5000 }, async (t) => {
+  const spawnImpl = checkpointDeadline(t, (message) => message?.type === "progress" && message.progress?.phase === "copying");
   const f = await fixture(t);
   let copyingObserved = false;
   let locked = null;
@@ -58,7 +88,7 @@ test("hard deadline kills a blocked backup process and releases real WAL read pi
       for (const db of f.writers) db.exec("UPDATE state SET generation=2");
       locked = checkpoint(f.writers[0]).busy;
     },
-  }, { workerEntry: blockedWorker }), (error) => {
+  }, { workerEntry: blockedWorker, spawnImpl }), (error) => {
     assert.equal(error.code, "CAPTURE_DEADLINE_EXCEEDED");
     assert.equal(error.supervision.workerExitConfirmed, true);
     assert.equal(error.supervision.phase, "failed");
@@ -78,11 +108,12 @@ test("hard deadline kills a blocked backup process and releases real WAL read pi
 });
 
 test("large-file hashing remains inside the same hard process deadline", { timeout: 5000 }, async (t) => {
+  const spawnImpl = checkpointDeadline(t, (message) => message?.type === "progress" && message.progress?.phase === "hashing");
   const f = await fixture(t, "source-block-hash");
   let hashingObserved = false;
   await assert.rejects(captureSqliteCohortInProcess({ ...f, deadlineMs: 500, terminationTimeoutMs: 1000,
     onProgress: (progress) => { if (progress.phase === "hashing") hashingObserved = true; },
-  }, { workerEntry: blockedWorker }), (error) => {
+  }, { workerEntry: blockedWorker, spawnImpl }), (error) => {
     assert.equal(hashingObserved, true);
     assert.equal(error.code, "CAPTURE_DEADLINE_EXCEEDED");
     assert.equal(error.supervision.workerExitConfirmed, true);
@@ -121,12 +152,29 @@ test("worker failure is preserved and pre-cancelled capture starts no worker", {
 });
 
 test("reported failure cannot disarm the deadline while a worker still owns SQLite handles", { timeout: 5000 }, async (t) => {
+  const spawnImpl = checkpointDeadline(t, (message) => message?.type === "failure");
   const f = await fixture(t, "source-reported-failure");
-  await assert.rejects(captureSqliteCohortInProcess({ ...f, deadlineMs: 500, terminationTimeoutMs: 1000 }, { workerEntry: blockedWorker }), (error) => {
+  await assert.rejects(captureSqliteCohortInProcess({ ...f, deadlineMs: 500, terminationTimeoutMs: 1000 }, { workerEntry: blockedWorker, spawnImpl }), (error) => {
     assert.equal(error.code, "CAPTURE_WORKER_FAILED");
     assert.match(error.message, /reported failure/);
     assert.equal(error.supervision.workerExitConfirmed, true);
     assertDead(error.supervision.workerPid);
+    for (const db of f.writers) assert.equal(checkpoint(db).busy, 0);
+    return true;
+  });
+});
+
+test("real hard deadline includes an unready worker before any capture phase", { timeout: 5000 }, async (t) => {
+  const f = await fixture(t);
+  const progress = [];
+  await assert.rejects(captureSqliteCohortInProcess({ ...f, deadlineMs: 500, terminationTimeoutMs: 1000,
+    onProgress: (value) => progress.push(value.phase),
+  }, { workerEntry: startupHeldWorker }), (error) => {
+    assert.equal(error.code, "CAPTURE_DEADLINE_EXCEEDED");
+    assert.equal(error.supervision.deadlineMs, 500);
+    assert.equal(error.supervision.workerExitConfirmed, true);
+    assertDead(error.supervision.workerPid);
+    assert.deepEqual(progress, []);
     for (const db of f.writers) assert.equal(checkpoint(db).busy, 0);
     return true;
   });

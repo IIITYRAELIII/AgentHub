@@ -35,6 +35,7 @@ test("server controller composes live process, restart and autostart state", asy
     releaseId: "release",
     activeCount: 3,
     version: AGENT_HUB_VERSION,
+    versionLabel: AGENT_HUB_VERSION,
   });
   assert.deepEqual(snapshot.restart, { pending: true, waiting: true, blockingCount: 2 });
   assert.deepEqual(snapshot.autostart, { supported: true, enabled: true });

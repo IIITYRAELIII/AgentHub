@@ -14,6 +14,22 @@ const startupScreenSource = readFileSync(
   "utf8",
 );
 
+test("startup shows the current backend provider error without rewriting completed startup history", () => {
+  for (const state of ["completed", "failed"]) {
+    const snapshot = { ready: false, status: "unready", capabilities: [
+      { name: "provider", critical: true, state: "failed", error: "Required Codex code-mode host is missing" },
+    ], startup: { startedAtMs: 1000, operations: [{ id: "provider", label: "Provider", state, error: "" }] } };
+    const original = structuredClone(snapshot);
+    const model = createStartupScreenModel(snapshot);
+    assert.equal(model.operations[0].state, state);
+    assert.equal(model.failedOperations.length, 1);
+    assert.equal(model.failedOperations[0].error, snapshot.capabilities[0].error);
+    assert.equal(model.failed, true);
+    assert.deepEqual(snapshot, original);
+    assert.equal(shouldShowStartupScreen(model), true);
+  }
+});
+
 test("startup screen projects one active operation and ordered surrounding stages", () => {
   const model = createStartupScreenModel({
     ready: false,

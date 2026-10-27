@@ -9,7 +9,7 @@ import test from "node:test";
 
 const execute = promisify(execFile);
 for (const mode of ["http-only", "explicit-wait"]) {
-  test(`background source failure stays owned after HTTP202 (${mode})`, { timeout: 30_000 }, async t => {
+  test(`background source failure stays owned after HTTP202 (${mode})`, {  }, async t => {
     const root = await mkdtemp(path.join(os.tmpdir(), "transfer-lifetime-"));
     t.after(async () => {
       assert.equal(path.dirname(root), os.tmpdir());

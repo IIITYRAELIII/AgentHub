@@ -1422,6 +1422,9 @@
   }
 
   function closeTaskCard() {
+    taskDetailsOpening += 1;
+    openTaskDetails.clear();
+    pendingTaskDetails.clear();
     taskCardBackdrop?.remove();
     taskCardBackdrop = null;
     const openedTaskId = state.openTaskId;
@@ -1736,13 +1739,28 @@
     else if (selection.oversized) window.AgentHub?.toast?.("Файлы больше 20 МБ пропущены.");
   }
 
+  const openTaskDetails = new Map();
+  const pendingTaskDetails = new Map();
+  let taskDetailsOpening = 0;
+
+  function requestOpenTaskDetails() {
+    const task = state.tasks.find(item => item.id === state.openTaskId);
+    if (!task?.detailsDeferred || openTaskDetails.get(task.id)?.revision === task.detailsRevision
+      || pendingTaskDetails.get(task.id)?.revision === task.detailsRevision) return;
+    const request = { revision: task.detailsRevision, opening: taskDetailsOpening };
+    pendingTaskDetails.set(task.id, request);
+    emit("read", { id: task.id, ...request });
+  }
+
   function renderOpenTaskCard() {
     if (!taskCardModal) return;
-    const task = state.tasks.find((item) => item.id === state.openTaskId);
+    let task = state.tasks.find((item) => item.id === state.openTaskId);
     if (!task) {
       if (state.openTaskId) closeTaskCard();
       return;
     }
+    const detail = openTaskDetails.get(task.id);
+    if (task.detailsDeferred && detail?.revision === task.detailsRevision && detail.task) task = detail.task;
     taskCardSource.textContent = task.source === "telegram" ? "Telegram" : "Hub";
     const previewNumber = document.querySelector("[data-task-preview-number]");
     const previewTitle = document.querySelector("[data-task-preview-title]");
@@ -1805,7 +1823,8 @@
             },
           }) : node("span", { text: entry.summary || "Без итогового описания." })]),
         ]))
-        : [node("p", { class: "task-card-detail-empty", text: "Пока нет записей о выполненной работе." })]));
+        : [node("p", { class: "task-card-detail-empty",
+          text: task.detailsDeferred ? (detail?.error || "Загружаю историю задачи…") : "Пока нет записей о выполненной работе." })]));
     }
     const actions = [];
     if (task.status !== "done" && taskWorkflowStatus(task) !== "done" && task.bucket === "workspace") {
@@ -1842,6 +1861,10 @@
   }
 
   function openTaskCard(task, { modal = false } = {}) {
+    taskDetailsOpening += 1;
+    // Full history belongs only to the open card, never to every card visited.
+    pendingTaskDetails.clear();
+    openTaskDetails.clear();
     modal = state.taskOpenMode === "modal" || (modal && state.taskOpenMode === "both");
     if (modal && taskCardIsDocked()) dockedScrollTop = taskCardContent?.scrollTop ?? 0;
     state.taskCardModalRequested = modal;
@@ -1856,6 +1879,7 @@
     syncTaskCardPlacement();
     if (taskCardContent) taskCardContent.scrollTop = 0;
     scheduleTaskCardEditorSizing();
+    requestOpenTaskDetails();
   }
 
   let firstBoardClick = null;
@@ -2724,6 +2748,28 @@
   });
 
   window.AgentHubTaskBoard = Object.freeze({
+    showDetails({ id, revision, opening, result, error }) {
+      const pending = pendingTaskDetails.get(id);
+      if (!pending || pending.revision !== revision || pending.opening !== opening) return;
+      pendingTaskDetails.delete(id);
+      const task = state.tasks.find(item => item.id === id);
+      if (state.openTaskId !== id || taskDetailsOpening !== opening || task?.detailsRevision !== revision) return;
+      if (error) {
+        openTaskDetails.set(id, { revision, error });
+      } else if (result?.task?.id === id && result.task.detailsRevision === revision) {
+        openTaskDetails.set(id, { revision, task: result.task });
+      } else {
+        // A newer server result waits for the normal canonical board snapshot.
+        // Do not overwrite newer metadata, edits or another opening with it.
+        return;
+      }
+      const trace = window.AgentHubCommandTrace;
+      const commandId = trace?.objectId(result);
+      const started = trace?.now();
+      renderOpenTaskCard();
+      if (commandId) trace.afterPaint("ui-render", "task-card-details", started, commandId,
+        { count: result.task?.workLog?.length || 0 });
+    },
     showDiff({ id, generation, result, error }) {
       if (id !== state.openTaskId || generation !== diffGeneration || !taskCardDiff) return;
       taskCardDiff.replaceChildren();
@@ -2766,7 +2812,10 @@
       // card measurements and can stall typing in the chat surface.
       if (changes.boardChanged) renderBoard();
       if (changes.panelChanged) renderWorkspacePanel();
-      if (changes.openTaskChanged) renderOpenTaskCard();
+      if (changes.openTaskChanged) {
+        renderOpenTaskCard();
+        requestOpenTaskDetails();
+      }
     },
     finishAction({ type, id, succeeded, requestId = null, operation = null, itemId = null } = {}) {
       const pendingMove = pendingBoardMoves.get(id);

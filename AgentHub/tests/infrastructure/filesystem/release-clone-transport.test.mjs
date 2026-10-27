@@ -15,7 +15,7 @@ async function commit(cwd) {
   return git(cwd, "rev-parse", "HEAD");
 }
 
-test("ordinary release clone preserves source hooks and clone protection through bundle transport", { timeout: 90_000 }, async t => {
+test("ordinary release clone preserves source hooks and clone protection through bundle transport", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-clone-transport-"));
   t.after(async () => {
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));

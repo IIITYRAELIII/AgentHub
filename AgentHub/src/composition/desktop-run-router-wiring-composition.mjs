@@ -286,6 +286,7 @@ export function createDesktopRunRouterWiring({
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),
+      boardTaskRead: (params) => taskBoardController.read(params),
       boardTaskDiff: (params) => taskBoardController.diff(params),
       boardTaskChecklist: (params) => taskBoardController.checklist(params),
       boardTaskChecklistLinkedAction: (params) => taskBoardController.checklistLinkedTaskAction(params),

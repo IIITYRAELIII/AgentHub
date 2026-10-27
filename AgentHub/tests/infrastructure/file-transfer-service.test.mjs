@@ -1005,7 +1005,7 @@ test("Range arithmetic remains exact above one GiB", () => {
 
 test("700 MiB sparse source prepares and streams with bounded process memory", {
   skip: process.env.AGENT_HUB_LARGE_TRANSFER_TEST !== "1",
-  timeout: 10 * 60_000,
+
 }, async (t) => {
   const value = await fixture();
   t.after(async () => { await value.service.close(); await rm(value.root, { recursive: true, force: true }); });

@@ -55,7 +55,7 @@ async function fixture(t, { versioned = false } = {}) {
   return { root, primary, base, service, result, request, branches, environment };
 }
 
-test("reopen rejects a forged completed native prefix even with exact merge parents", { timeout: 60000 }, async t => {
+test("reopen rejects a forged completed native prefix even with exact merge parents", async t => {
   const f = await fixture(t), a = await f.result("A", "a.txt", "a\n");
   const root = path.join(f.root, "native");
   const request = { root, sourceRoot: f.primary, baseCommit: f.base, tasks: [a],
@@ -223,7 +223,7 @@ test("native merge selects exact independent main branches and complete correcti
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
-test("native transport retains exact selected objects imported without intermediate refs", { timeout: 60000 }, async t => {
+test("native transport retains exact selected objects imported without intermediate refs", async t => {
   const f = await fixture(t), selected = await f.result("A", "a.txt", "selected exact result\n");
   const retainedRef = "refs/agent-hub/task-results/A";
   await git(f.primary, "update-ref", retainedRef, selected.resultCommit);
@@ -240,7 +240,7 @@ test("native transport retains exact selected objects imported without intermedi
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
-test("joint file uses Git merge; conflict retains last candidate and normal resolution commit resumes", { timeout: 60000 }, async (t) => {
+test("joint file uses Git merge; conflict retains last candidate and normal resolution commit resumes", async (t) => {
   const f = await fixture(t);
   const a = await f.result("A", "shared.txt", "A\nsecond\nthird\n");
   const b = await f.result("B", "shared.txt", "B\nsecond\nthird\n");
@@ -263,7 +263,7 @@ test("joint file uses Git merge; conflict retains last candidate and normal reso
   assert.equal((await git(candidate.releaseRoot, "show", "-s", "--format=%P", resolution)).split(" ")[1], b.resultCommit);
 });
 
-test("foreign merge side and release-owned metadata require explicit migration", { timeout: 60000 }, async (t) => {
+test("foreign merge side and release-owned metadata require explicit migration", async (t) => {
   const f = await fixture(t);
   const foreign = await f.result("Foreign", "foreign.txt", "unselected\n");
   const task = await f.result("Task", "own.txt", "own\n");
@@ -275,7 +275,7 @@ test("foreign merge side and release-owned metadata require explicit migration",
   await assert.rejects(f.service.prepareCandidate(f.request([metadata])), /release-owned CHANGELOG/u);
 });
 
-test("native candidate refuses existing package version changes but accepts dependency edits", { timeout: 60000 }, async t => {
+test("native candidate refuses existing package version changes but accepts dependency edits", async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.primary, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0" }));
   await writeFile(path.join(f.primary, "package-lock.json"), JSON.stringify({ version: "1.0.0",
@@ -296,7 +296,7 @@ test("native candidate refuses existing package version changes but accepts depe
   assert.equal(JSON.parse(await git(candidate.releaseRoot, "show", "PreRelease:package.json")).devDependencies.fixture, "1.2.3");
 });
 
-test("native checkout preserves ignored private bytes and uses Git EOL", { timeout: 60000 }, async (t) => {
+test("native checkout preserves ignored private bytes and uses Git EOL", async (t) => {
   const f = await fixture(t);
   const a = await f.result("A", "a.txt", "first\r\nsecond\r\n");
   const prior = await f.service.prepareCandidate(f.request([a], "prior"));
@@ -308,7 +308,7 @@ test("native checkout preserves ignored private bytes and uses Git EOL", { timeo
   assert.equal((await readFile(path.join(next.releaseRoot, "a.txt"))).toString(), "first\nsecond\n");
 });
 
-test("proven Task CAS refusal restores candidate through Git; unknown outcome retains original target", { timeout: 60000 }, async (t) => {
+test("proven Task CAS refusal restores candidate through Git; unknown outcome retains original target", async (t) => {
   const f = await fixture(t);
   const a = await f.result("A", "a.txt", "a\n");
   const prior = await f.service.prepareCandidate(f.request([a], "prior"));
@@ -330,7 +330,7 @@ test("proven Task CAS refusal restores candidate through Git; unknown outcome re
   assert.equal(commits, 1);
 });
 
-test("one-time native cutover retains exact old snapshot and original results", { timeout: 60000 }, async t => {
+test("one-time native cutover retains exact old snapshot and original results", async t => {
   const f = await fixture(t), a = await f.result("A", "a.txt", "a\n");
   const prior = await f.service.prepareCandidate(f.request([a], "legacy"));
   const checkpointFile = path.join(path.dirname(prior.releaseRoot), "checkpoint.json");
@@ -360,7 +360,7 @@ test("one-time native cutover retains exact old snapshot and original results", 
   assert.deepEqual(await readFile(manifestFile), bytes);
 });
 
-test("immutable generation promotion uses native checkout and preserves private collision", { timeout: 120000 }, async t => {
+test("immutable generation promotion uses native checkout and preserves private collision", async t => {
   const f = await fixture(t), a = await f.result("A", "a.txt", "a\n");
   const prior = await f.service.prepareCandidate(f.request([a], "prior"));
   await f.result("B", "b.txt", "b\n");
@@ -385,7 +385,7 @@ test("immutable generation promotion uses native checkout and preserves private 
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
-test("generation promotion reopens its original target after lost SQLite response without another Git CAS", { timeout: 120000 }, async t => {
+test("generation promotion reopens its original target after lost SQLite response without another Git CAS", async t => {
   const f = await fixture(t), a = await f.result("A", "a.txt", "a\n");
   const prior = await f.service.prepareCandidate(f.request([a], "prior"));
   const b = await f.result("B", "b.txt", "b\n");

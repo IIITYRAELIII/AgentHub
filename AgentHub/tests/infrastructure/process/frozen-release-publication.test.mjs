@@ -251,7 +251,7 @@ test("publication base uses only the sealed provenance and keeps local source se
     baseProvenance: { ...p, arbitraryAuthority: true } }), /exact installed/u);
 });
 
-test("real Git approved incoming publication preserves source, remote lease and lost-response identity", { timeout: 120000 }, async t => {
+test("real Git approved incoming publication preserves source, remote lease and lost-response identity", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "approved-publication-base-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const remote = path.join(root, "origin.git"), repo = path.join(root, "release", "repository");

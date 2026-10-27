@@ -475,7 +475,13 @@ async function stopOwnedChild(child) {
   }
   const deadline = Date.now() + CHILD_SHUTDOWN_TIMEOUT_MS;
   let current = await readOwnedProcessTree(owner.root, owner.known, { rootExited: closedChildren.has(child) });
+  // EOF can close the retained child while the process-table query is pending.
+  // Rebind that observed terminal lifetime; disappearance alone is not proof.
+  if (!Array.isArray(current) && closedChildren.has(child)) {
+    current = await readOwnedProcessTree(owner.root, owner.known, { rootExited: true });
+  }
   if (!Array.isArray(current)) throw new Error(`Cannot inspect owned Codex child tree ${pid}`);
+  if (current.length === 0 && closedChildren.has(child)) return;
   for (const item of current) {
     if (!owner.known.some((known) => Number(known.pid) === Number(item.pid))) owner.known.push(item);
   }
@@ -513,6 +519,8 @@ function shutdown(exitCode = 0) {
   if (shutdownPromise) return shutdownPromise;
   shuttingDown = true;
   shutdownPromise = (async () => {
+    // Close the exact spawned transports before considering forced tree stop.
+    for (const child of Object.values(children)) child.stdin.end();
     const outcomes = await Promise.allSettled(Object.values(children).map(stopOwnedChild));
     const failures = outcomes.filter((outcome) => outcome.status === "rejected");
     for (const failure of failures) process.stderr.write(`Codex child shutdown failed: ${failure.reason?.message ?? failure.reason}\n`);

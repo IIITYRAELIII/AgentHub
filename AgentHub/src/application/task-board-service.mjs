@@ -19,6 +19,13 @@ function withPinnedLast(order, workspaceId) {
   return [...order.filter((id) => id !== workspaceId), workspaceId];
 }
 
+function publicTaskCard(task) {
+  const sourceDetails = { ...(task.sourceDetails ?? {}) };
+  const attachments = taskAttachmentDescriptors(task);
+  delete sourceDetails.attachments;
+  return { ...task, sourceDetails, attachments, text: taskDisplayText(task) };
+}
+
 export class TaskBoardService {
   #triageTail = Promise.resolve();
   #checklistEventRecovery = Promise.resolve();
@@ -93,18 +100,12 @@ export class TaskBoardService {
     return task;
   }
 
-  snapshot() {
-    return this.store.list().map((task) => {
-      const sourceDetails = { ...(task.sourceDetails ?? {}) };
-      const attachments = taskAttachmentDescriptors(task);
-      delete sourceDetails.attachments;
-      return {
-        ...task,
-        sourceDetails,
-        attachments,
-        text: taskDisplayText(task),
-      };
-    });
+  card(id) {
+    return publicTaskCard(this.task(id));
+  }
+
+  snapshot({ includeDetails = false } = {}) {
+    return this.store.list({ includeDetails }).map(publicTaskCard);
   }
 
   workspaces() {

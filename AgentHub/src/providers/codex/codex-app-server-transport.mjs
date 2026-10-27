@@ -205,7 +205,8 @@ export class CodexAppServerTransport {
       }
     } catch (error) {
       child?.kill();
-      throw new Error(`Codex app-server failed to start: ${error.message}`, { cause: error });
+      throw Object.assign(new Error(`Codex app-server failed to start: ${error.message}`, { cause: error }),
+        { ...(error?.code ? { code: error.code } : {}) });
     }
 
     this.child = child;

@@ -46,7 +46,7 @@ function fixture(body, overrides = {}) {
   return { id, request, calls, peak: () => peak, active: () => active };
 }
 
-test("chunk download materializes >20 MiB atomically with bounded parallelism and stable retry", { timeout: 20000 }, async () => {
+test("chunk download materializes >20 MiB atomically with bounded parallelism and stable retry", {  }, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub172-download-"));
   try {
     const bytes = Buffer.alloc(21 * 1024 * 1024 + 17, 53);

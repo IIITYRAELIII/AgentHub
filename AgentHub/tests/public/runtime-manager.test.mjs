@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -99,6 +102,57 @@ test("canonical runtime source membership retains JSON and assets but excludes t
   for (const file of ["syntax-check.mjs", "helper.test.mjs", "helper.test.cjs", "helper.e2e.test.mjs",
     "src/application/ignored.test.mjs", "tools/ignored.mjs"]) assert.equal(included.has(file), false, file);
   await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
+});
+
+test("prepared runtime ships native test accounting and its own monitor consumes it", async (t) => {
+  if (process.platform !== "win32") return t.skip("Native job accounting is Windows-only");
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const monitorPath = "src/infrastructure/process/test-resource-monitor.mjs";
+  const nativePath = "src/infrastructure/process/test-resource-accounting.cs";
+  await mkdir(path.dirname(path.join(sourceRoot, monitorPath)), { recursive: true });
+  for (const relative of [monitorPath, nativePath]) {
+    await cp(path.join(ROOT, relative), path.join(sourceRoot, relative));
+  }
+  await writeFile(path.join(sourceRoot, "src/infrastructure/process/unrelated.cs"), "not a module asset");
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "native-test-accounting" });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  for (const relative of [monitorPath, nativePath]) {
+    assert.ok(manifest.files.some((entry) => entry.path === relative), `manifest retains ${relative}`);
+    assert.deepEqual(await readFile(path.join(prepared.releaseRoot, relative)), await readFile(path.join(sourceRoot, relative)));
+  }
+  await assert.rejects(readFile(path.join(prepared.releaseRoot, "src/infrastructure/process/unrelated.cs")), /ENOENT/u);
+  // Resolve from the prepared artifact in a separate consumer process: the
+  // source checkout and its already available C# sibling cannot mask omission.
+  const consumer = `
+    import {createTestResourceMonitor} from ${JSON.stringify(pathToFileURL(path.join(prepared.releaseRoot, monitorPath)).href)};
+    const monitor = await createTestResourceMonitor();
+    try { process.stdout.write(JSON.stringify(await monitor.sample())); }
+    finally { await monitor.close(); }
+  `;
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", consumer], {
+    cwd: path.dirname(runtimeRoot), windowsHide: true,
+  });
+  assert.equal(stderr, "");
+  const sample = JSON.parse(stdout);
+  assert.ok(Number.isFinite(sample.cpuFraction));
+  assert.ok(sample.rssBytes > 0);
+  assert.ok(sample.processes >= 1);
+  assert.equal(sample.limitFlags, 0, "shipment must not introduce OS execution limits");
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
+});
+
+test("runtime preparation refuses a missing native test accounting asset without publication", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const relative = "src/infrastructure/process/test-resource-monitor.mjs";
+  await mkdir(path.dirname(path.join(sourceRoot, relative)), { recursive: true });
+  await cp(path.join(ROOT, relative), path.join(sourceRoot, relative));
+  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "missing-test-accounting" }), {
+    message: "Runtime module asset is missing: src/infrastructure/process/test-resource-accounting.cs",
+  });
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
+  await assert.rejects(stat(path.join(runtimeRoot, "releases", "missing-test-accounting")), /ENOENT/u);
 });
 
 test("frozen runtime version refuses before build and uses the canonical next suffix", async t => {
@@ -209,6 +263,35 @@ test("actual fresh install has no private sync default; changed old source refus
   assert.equal(JSON.parse(await readFile(path.join(fresh, "config.json"))).usageSyncServerUrl, "");
 });
 
+test("semantic frozen preparation observes retained pre-migration suffixes without rewriting them", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await writeFile(path.join(sourceRoot, "package.json"), JSON.stringify({ name: "agent-hub", version: "2.0.0" }));
+  const priorFiles = [];
+  for (const n of [1, 2]) {
+    const old = path.join(runtimeRoot, "releases", `legacy-${n}`);
+    await mkdir(old, { recursive: true });
+    const file = path.join(old, "runtime-manifest.json");
+    const bytes = Buffer.from(JSON.stringify({ releaseId: `legacy-${n}`, version: "2.0.0",
+      releaseVersion: `2.0.0.${n}`, files: [] }));
+    await writeFile(file, bytes); priorFiles.push({ file, bytes });
+  }
+  let calls = 0;
+  const options = { sourceRoot, runtimeRoot, expectedReleaseVersion: "2.0.0+build.3",
+    beforeManifest: async () => { calls++; } };
+  const prepared = await prepareRuntime({ ...options, releaseId: "semantic-after-legacy" });
+  const raw = await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"));
+  const manifest = JSON.parse(raw);
+  assert.equal(manifest.releaseVersion, options.expectedReleaseVersion);
+  assert.equal(manifest.versionScheme, "semver-build-v1");
+  assert.equal(manifest.buildNumber, 3);
+  await assert.rejects(prepareRuntime({ ...options, releaseId: "competing-after-legacy" }), /Frozen runtime version/u);
+  assert.equal(calls, 1);
+  await assert.rejects(stat(path.join(runtimeRoot, "releases/competing-after-legacy")), /ENOENT/u);
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json")), raw);
+  for (const prior of priorFiles) assert.deepEqual(await readFile(prior.file), prior.bytes);
+});
+
 test("prepared runtime carries its retirement owner and refuses wrong native custody", async (t) => {
   if (process.platform !== "win32") return t.skip("Native Windows custody");
   const { sourceRoot, runtimeRoot } = await fixture();
@@ -263,6 +346,67 @@ test("runtime preparation refuses a missing verified deletion asset before publi
   await writeFile(path.join(sourceRoot, relative), "export const deletionOwner = true;\n");
   await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "missing-delete-source" }), /Runtime module asset is missing/u);
   await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
+});
+
+test("prepared runtime carries Codex custody asset and its actual native consumer protects a safe tool", async (t) => {
+  if (process.platform !== "win32") return t.skip("Native Windows bundle custody");
+  const { sourceRoot, runtimeRoot } = await fixture();
+  const root = path.dirname(runtimeRoot);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const helper = "src/infrastructure/process/codex-executable-custody";
+  for (const name of [`${helper}.mjs`, `${helper}.cs`, "src/infrastructure/process/system-boot-identity.mjs"]) {
+    const target = path.join(sourceRoot, name);
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(path.join(ROOT, name), target);
+  }
+  const foreign = "src/infrastructure/process/unrelated.cs";
+  await writeFile(path.join(sourceRoot, foreign), "not a runtime asset");
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "codex-bundle-custody" });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  const native = manifest.files.find(entry => entry.path === `${helper}.cs`);
+  assert.ok(native, "required custody CS must be manifested by ordinary preparation");
+  const sourceBytes = await readFile(path.join(sourceRoot, `${helper}.cs`));
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, `${helper}.cs`)), sourceBytes);
+  assert.equal(native.sha256, createHash("sha256").update(sourceBytes).digest("hex"));
+  assert.equal(manifest.files.some(entry => entry.path === foreign), false);
+  await assert.rejects(readFile(path.join(prepared.releaseRoot, foreign)), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), { code: "ENOENT" });
+
+  const bundle = path.join(root, "own-bundle"); await mkdir(bundle);
+  const target = path.join(bundle, "codex-code-mode-host.exe");
+  await cp(path.join(process.env.SystemRoot, "System32", "cmd.exe"), target);
+  const bytes = await readFile(target), sha256 = createHash("sha256").update(bytes).digest("hex").toUpperCase();
+  const { acquireCodexExecutableCustody } = await import(pathToFileURL(path.join(prepared.releaseRoot, `${helper}.mjs`)));
+  const custody = await acquireCodexExecutableCustody({ root: bundle, installRoot: bundle,
+    files: [{ name: "codex-code-mode-host.exe", sha256 }] });
+  try {
+    custody.assertAlive();
+    await assert.rejects(unlink(target));
+    const { stdout } = await promisify(execFile)(target, ["/d", "/c", "echo HUB348_PREPARED_SAFE_TOOL"], { windowsHide: true });
+    assert.equal(stdout.trim(), "HUB348_PREPARED_SAFE_TOOL");
+    assert.deepEqual(await readFile(target), bytes);
+  } finally { await custody.release(); }
+  await unlink(target);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), { code: "ENOENT" });
+});
+
+test("runtime preparation refuses a missing Codex custody asset before dependencies, manifest or application", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const helper = "src/infrastructure/process/codex-executable-custody.mjs";
+  for (const name of [helper, "src/infrastructure/process/system-boot-identity.mjs"]) {
+    const target = path.join(sourceRoot, name);
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(path.join(ROOT, name), target);
+  }
+  let manifestCalls = 0, dependencyCalls = 0;
+  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "missing-codex-custody",
+    beforeManifest: async () => { manifestCalls += 1; },
+    installProductionDependencies: async () => { dependencyCalls += 1; },
+  }), /Runtime module asset is missing: src\/infrastructure\/process\/codex-executable-custody\.cs/u);
+  assert.equal(manifestCalls, 0); assert.equal(dependencyCalls, 0);
+  await assert.rejects(stat(path.join(runtimeRoot, "releases", "missing-codex-custody")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), { code: "ENOENT" });
 });
 
 test("preparing a runtime leaves the current installation intact; applying consumes exact prepared bytes", async (t) => {
@@ -591,7 +735,7 @@ test("deployRuntime restores a missing RuntimeHost without changing user data", 
   const configFile = path.join(runtimeRoot, "config.json");
   const journalFile = path.join(runtimeRoot, "data", "journal.sqlite");
   await mkdir(path.dirname(journalFile), { recursive: true });
-  await writeFile(configFile, '{"provider":"codex","customSetting":true,"usageSyncServerUrl":""}\n');
+  await writeFile(configFile, '{"provider":"codex","customSetting":true}\n');
   await writeFile(journalFile, "retained journal bytes");
   const configBefore = await readFile(configFile);
   const journalBefore = await readFile(journalFile);

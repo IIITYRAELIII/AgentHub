@@ -11,6 +11,8 @@ import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash,
 import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
+import { readAgentHubVersion } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
+import { nextRuntimeReleaseVersion } from "../../../src/infrastructure/filesystem/runtime-release-version.mjs";
 import { runtimeHostSourceHash } from "../../../src/infrastructure/process/runtime-host-builder.mjs";
 import { ReleasePreparationRejectedError } from "../../../src/domain/release-preparation.mjs";
 
@@ -59,9 +61,11 @@ async function fixture(t, { conflict = false } = {}) {
   const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
   const runtimeRoot = defaultRuntimeRoot({ environment });
   const release = path.join(runtimeRoot, "releases", "installed-repair");
+  const version = readAgentHubVersion({ packageFile: path.join(carry, "AgentHub", "package.json") });
+  const releaseVersion = await nextRuntimeReleaseVersion({ releasesDir: path.dirname(release), packageVersion: version });
   const physical = Buffer.from("export const repair = 1;\r\n");
   await save(release, "server.mjs", physical);
-  const manifest = Buffer.from(JSON.stringify({ releaseId: "installed-repair",
+  const manifest = Buffer.from(JSON.stringify({ releaseId: "installed-repair", version, releaseVersion,
     files: [{ path: "server.mjs", bytes: physical.length, sha256: hash(physical) }] }));
   await save(release, "runtime-manifest.json", manifest);
   await save(runtimeRoot, "current.json", JSON.stringify({ current: "installed-repair" }));
@@ -115,7 +119,7 @@ test("installed source preserves exact inherited repository files from agreed ma
   await assert.rejects(f.verifyInherited(), /origin differs from the pinned OWN publication/u);
 });
 
-test("installed source refuses changed, added, deleted or mode-shifted inherited repository files", { timeout: 90000 }, async t => {
+test("installed source refuses changed, added, deleted or mode-shifted inherited repository files", async t => {
   const f = await inheritedRepositoryFixture(t);
   for (const change of ["changed", "added", "deleted", "mode"]) {
     await git(f.carry, ["checkout", "--detach", f.source]);
@@ -136,7 +140,7 @@ test("installed source refuses changed, added, deleted or mode-shifted inherited
   }
 });
 
-test("inherited repository proof refuses malformed or oversized raw Git manifests", { timeout: 90000 }, async t => {
+test("inherited repository proof refuses malformed or oversized raw Git manifests", async t => {
   const f = await inheritedRepositoryFixture(t);
   for (const defect of ["unterminated", "duplicate", "oversized", 41, 63, 65]) {
     await assert.rejects(f.verifyInherited({ git: async (args, options) => {
@@ -238,7 +242,7 @@ test("compiled Host refuses changed, missing or unmanifested physical artifacts"
   }
 });
 
-test("preparation native conflict is a definite refusal with prior candidate pins intact", { timeout: 180000 }, async t => {
+test("preparation native conflict is a definite refusal with prior candidate pins intact", async t => {
   const f = await fixture(t, { conflict: true });
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
   const common = { projectRoot: f.primary, workspaceId: "workspace", planRevision: f.p.planRevision, frozenTasks: f.tasks };
@@ -268,7 +272,7 @@ test("preparation native conflict is a definite refusal with prior candidate pin
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
-test("installed local source rejects substituted pins, selection, source and actual runtime bytes", { timeout: 90000 }, async t => {
+test("installed local source rejects substituted pins, selection, source and actual runtime bytes", async t => {
   const f = await fixture(t);
   assert.equal((await f.verify()).runtimeFiles, 1);
   for (const key of ["sourceBaseTree", "sourcePatchSha256", "installedManifestSha256"]) {
@@ -307,7 +311,7 @@ test("installed local source rejects substituted pins, selection, source and act
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
-test("native candidate retains installed local source and selected result through reuse, generation and freeze", { timeout: 180000 }, async t => {
+test("native candidate retains installed local source and selected result through reuse, generation and freeze", async t => {
   const f = await fixture(t);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
   const request = { projectRoot: f.primary, workspaceId: "workspace", planRevision: f.p.planRevision,

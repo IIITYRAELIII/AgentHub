@@ -179,6 +179,7 @@ test("pending gateway starts the configured Worker and fallback menu without com
   service.DirectGatewayControllerClass = class extends DirectGatewayController {
     constructor(settings, diagnostics) {
       super(settings, { ...diagnostics, logger: { warn() {}, error() {}, log() {} },
+        probeImpl: async () => true, handoffImpl: async () => { throw pendingGatewayError(); },
         spawnImpl: () => { spawned += 1; assert.fail("Pending gateway cannot launch another listener"); },
         scheduleHealthCheckImpl: () => { scheduled += 1; return { unref() {} }; }, cancelHealthCheckImpl() {} });
     }

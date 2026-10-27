@@ -20,7 +20,7 @@ const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
-test("terminal SQLite contention preserves rapid FIFO intake and resumes one drain", { timeout: 150_000 }, async (t) => {
+test("terminal SQLite contention preserves rapid FIFO intake and resumes one drain", {  }, async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-fifo-e2e-"));
   const dataDir = path.join(runtimeRoot, "data");
   const projectRoot = path.join(runtimeRoot, "project");

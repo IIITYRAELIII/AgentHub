@@ -60,7 +60,7 @@ async function snapshot(directory) {
   return files;
 }
 
-test("composition validation excludes unrelated branch payloads without changing source or prepared state", { timeout: 60000 }, async t => {
+test("composition validation excludes unrelated branch payloads without changing source or prepared state", async t => {
   const f = await fixture(t);
   const unrelated = await f.result("unrelated-payload", randomBytes(256_000));
   const blob = await git(f.primary, "rev-parse", `${unrelated}:app.txt`);

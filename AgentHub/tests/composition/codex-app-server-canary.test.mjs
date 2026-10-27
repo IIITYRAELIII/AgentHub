@@ -14,6 +14,20 @@ const FAKE_APP_SERVER = path.resolve(
   "codex-update-canary-app-server.mjs",
 );
 
+test("an ordinary MCP success is not evidence of actual safe tool execution", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub348-canary-no-shell-"));
+  const sourceHome = path.join(root, "source-home");
+  await mkdir(sourceHome); await writeFile(path.join(sourceHome, "auth.json"), "{}\n");
+  context.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  await assert.rejects(runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
+    dataDir: path.join(root, "data"), executableArgs: [FAKE_APP_SERVER, "--no-safe-tool"],
+    environment: { ...process.env, CODEX_HOME: sourceHome }, protectDirectory: async () => {},
+    rpcTimeoutMs: 3000, totalTimeoutMs: 15000, logger: { error() {} },
+  }), /safe-tool/u);
+  const evidence = JSON.parse(await readFile(path.join(root, "data/codex-executable-canary/last-failure.json"), "utf8"));
+  assert.equal(evidence.phase, "safe-tool"); // Reached only after exactly one confirmed MCP read.
+});
+
 test("compatibility canary executes health, MCP, cancel, next-turn and restart/resume", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-canary-test-"));
   const dataDir = path.join(root, "data");
@@ -35,9 +49,10 @@ test("compatibility canary executes health, MCP, cancel, next-turn and restart/r
   assert.equal(result.ok, true);
   assert.equal(result.evidence.healthRead, true);
   assert.equal(result.evidence.mcpReadCount, 1);
+  assert.equal(result.evidence.safeToolCount, 1);
   assert.equal(result.evidence.restartResume, true);
   assert.deepEqual(Object.keys(result.evidence.turnIds), [
-    "ordinary", "mcp", "interrupted", "afterCancel", "afterResume",
+    "ordinary", "mcp", "tool", "interrupted", "afterCancel", "afterResume",
   ]);
   assert.deepEqual(await readdir(path.join(dataDir, "codex-executable-canary")), []);
 });

@@ -1,5 +1,25 @@
 # PERF-001 — Local command latency
 
+## SQLite capture deadline coverage
+
+The process-owned capture deadline begins before child launch and includes
+startup, IPC, read pinning, copying, hashing and confirmed termination. Reaching
+a later phase within 500 ms is not a separate startup guarantee. Tests of a
+particular blocked phase drive the existing parent timeout after that real IPC
+checkpoint, retaining actual SQLite pins, native termination and close checks.
+A separate unmocked 500 ms control verifies that an unready child is terminated
+before any capture phase. Production deadlines and failure precedence remain
+unchanged; phase-specific coverage cannot replace the real startup bound.
+
+## Isolated Windows test-root cleanup
+
+ADR-HUB-314-owned-windows-cleanup permits the existing isolated test owner to
+use Node's bounded recursive-removal retries (three, 100ms linear delay) on its
+own minted Windows temporary root after command close. Execution and assertions
+are never retried. Actual removal is required before successful checkpoint;
+persistent cleanup failure still fails and retains both original errors.
+This is not a claim that any historical BITS/Edge holder has been identified.
+
 ## Bounded background storage work
 
 Policy v1 admits at most three artifact units per pass and checks a cooperative
@@ -283,17 +303,62 @@ requests or repository publication. Queue/lease time, stage duration, retries,
 waiting reason and per-target effect are separate measurements; transport timeout
 is not operation latency and cannot create a second operation.
 
-Release validation may run at most two test-file processes concurrently, and
-only when the host reports at least four logical CPUs and 4 GiB of free memory.
-A file is parallel-eligible only when its reviewed v2 input declaration proves
-disposable filesystem, lock, Git, port and browser-profile ownership; every
-child receives a unique temporary environment root. Undeclared files remain
-exclusive, and matching shared-resource tags serialize only the files that name
-that resource. This bound protects Hub CPU and memory headroom while allowing
-independent Git and browser fixtures to overlap. Cache decisions report a
+Release validation admits independent files against a target of 40% of total
+machine CPU capacity and 40% of physical RAM for the whole test process tree,
+including Git, browsers and helpers. Other applications reduce available
+headroom. Admission retains one-core and estimated resident-memory demand until
+each active file settles; a quiet I/O sample cannot clear that reservation.
+Measured load and reserved demand are combined by maximum, without counting the
+same active work twice. The count follows machine capacity, not a fixed worker
+setting. On Windows the existing accounting Job also applies CPU rate4000 with
+ENABLE|HARD_CAP to the suite tree, including its accounting helper. No second
+Job, process termination, kill-on-close, memory limit or priority change is used.
+Closing the monitor removes and verifies its owned CPU control before closing
+the Job handle. Setup/readback failure refuses admission. POSIX retains measured
+cooperative admission and does not claim an OS CPU cap. Other jobs/apps are not
+controlled; a stricter ancestor Job can reduce available CPU further. Short
+accounting samples are not a per-instant CPU guarantee. Measurements report
+overshoots. Accounting failure stops new admission and drains started tests with
+their original outcomes/checkpoints. See ADR-0346.
+
+Native-Git correctness scenarios do not assert a total wall-clock
+latency SLO over fixture creation plus several independently bounded operations.
+Their aggregate Node-case and nested whole-scenario stopwatches are removed;
+actual command, lease, readiness and explicitly timed behavior bounds remain.
+All original behavioral assertions still execute, and historical cancellations
+remain failures. This policy applies to the whole native-Git correctness
+family, including newly added cases; it is not a list of scenarios that
+already timed out. Explicitly timed behavior keeps its actual polling,
+protocol and operation assertions. See ADR-HUB-314-native-correctness-stopwatches.
+
+Every file receives a separate process and disposable temp/home/state root.
+The runner observes child `close` before removing that root. A cleanup failure
+remains a failure and retains its OS code, phase and owned path; when execution
+also failed, both original errors remain available without replaying the test.
+The existing per-file timing event reports bounded failure codes, execution versus
+cleanup phase, owned temporary paths and the original Node child spawn/exit/close
+observations as soon as that file settles, before remaining files finish. It excludes
+arguments, environment values, output and arbitrary error text; truncated paths
+are explicitly marked and are not exact identities for holder queries.
+Native process-guard fixtures revoke only after the real descendant is ready;
+their controlled late mutation and child-close receipts replace elapsed sleeps
+as fixture readiness and cleanup evidence. Guard, lease and recovery assertions
+remain authoritative.
+Local-control E2E failure diagnostics use the checkout's ignored WIP artifact
+area outside that disposable root. Bounded redacted process output, generation
+timestamps, control-attempt outcomes and existing startup trace scalars survive
+outer cleanup; neither missing diagnostics nor a timeout proves a startup cause.
+Database, Git, endpoint and browser fixtures own their temporary resources;
+only actual shared mutable resources require matching serialization tags.
+Parallel safety is independent from cache eligibility. A missing cache
+declaration means uncached execution, not exclusive execution. The full runner
+has one checkpoint owner across concurrent groups; syntax preflight and locked
+dependency preparation remain prerequisites. Every selected file still runs
+exactly once or reuses a content-proven success. Cache decisions report a
 stable content-free reason (`absent`, `fingerprint changed`, or the exact
 uncacheable policy reason); they never print environment values or fabricate
-reusable evidence.
+reusable evidence. See ADR-0346. Existing frozen/admitted generations retain
+their original runner; this policy applies only to subsequent compositions.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
@@ -506,6 +571,15 @@ projected a snapshot, exact ledger-owned pending inputs, queued inputs and
 receipts are omitted from raw `runtime_state` JSON and overlaid from the ledger
 on read; non-ledger records remain in the snapshot. A failed writer revision
 rejects only its covered waiters and must not poison a later save.
+
+Periodic Test Contour journal comparison and full Mini App journal publication
+must remain separate from card-list reads. Board snapshots carry only card
+metadata/checklist state and per-Task detail revision counters, not work logs or
+Git details. The existing journal/binding write transactions maintain the derived
+Task-turn SQL projection once per addressed identity; one atomic migration covers
+retained history. Opening a card performs one exact details read, fenced against
+another opening and newer revisions; closing releases the full history. See
+ADR-HUB-350-card-history-projection.
 
 Periodic Test Contour journal comparison and full Mini App journal publication
 must not scan, materialize, stringify or compress the journal on the Hub event

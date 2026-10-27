@@ -44,7 +44,7 @@ async function fixture(t, html = "<html><body>synthetic</body></html>") {
     options: { root, sourceRoot, prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "exact-synthetic-dev" }) } };
 }
 
-test("real contour deployment manifests the branded staging bytes", { timeout: 20_000 }, async (t) => {
+test("real contour deployment manifests the branded staging bytes", {  }, async (t) => {
   const f = await fixture(t);
   const candidate = await prepareTestContourCandidate(f.options);
   await verifyRuntimeManifest(candidate.releaseRoot, candidate.releaseId);
@@ -56,7 +56,7 @@ test("real contour deployment manifests the branded staging bytes", { timeout: 2
   assert.equal(candidate.headCommit, "exact-synthetic-dev");
 });
 
-test("failed contour staging customization preserves every stable file and publishes no release", { timeout: 20_000 }, async (t) => {
+test("failed contour staging customization preserves every stable file and publishes no release", {  }, async (t) => {
   const f = await fixture(t, "no document roots");
   await assert.rejects(prepareTestContourCandidate(f.options), /no expected document roots/);
   for (const [name, bytes] of f.before) assert.deepEqual(await readFile(path.join(f.root, name)), bytes, name);

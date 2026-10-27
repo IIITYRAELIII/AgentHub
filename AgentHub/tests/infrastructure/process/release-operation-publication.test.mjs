@@ -124,7 +124,7 @@ test("stable publication runner preserves the initiating Stream and Thread for s
   ]);
 });
 
-test("stable runner refuses publication when the exact generation lacks the required contour", { timeout: 60000 }, async (t) => {
+test("stable runner refuses publication when the exact generation lacks the required contour", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-runner-process-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const remote = path.join(root, "origin.git");

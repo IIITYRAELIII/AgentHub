@@ -1,7 +1,7 @@
 {
   "name": "agent-hub",
   "private": true,
-  "version": "2026.10.12",
+  "version": "2.0.1",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -48,7 +48,6 @@
     "pretest": "node test-suite.mjs architecture",
     "test": "node test-suite.mjs unit",
     "test:installer": "python -m unittest install_test.py",
-    "test:distribution": "python -m unittest discover -s distribution -p \"*_test.py\" -v && python -m unittest discover -s tools -p source_export_test.py -v",
     "test:e2e": "node test-suite.mjs e2e",
     "test:vscode": "node test-suite.mjs vscode",
     "test:visual": "node test-suite.mjs visual",

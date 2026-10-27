@@ -245,7 +245,7 @@ test("editorial Task changes reuse prepared and frozen candidate identities", { 
   assert.equal(f.store.task(task.id).workflowStatus, "done");
 });
 
-test("Task work advances live PreRelease while the prior frozen commit remains immutable", { timeout: 90000 }, async (t) => {
+test("Task work advances live PreRelease while the prior frozen commit remains immutable", async (t) => {
   const f = await fixture(t);
   const accepted = await f.testedTask("Release", "release.txt", "release\n");
   const { response, prepared, candidate } = await acceptAndPrepare(f, accepted, "accept-release");
@@ -277,7 +277,9 @@ test("Task work advances live PreRelease while the prior frozen commit remains i
   assert.equal(await git(candidate.releaseRoot, "rev-parse", `${frozen.preReleaseHead}^{tree}`), frozenTree);
 });
 
-test("Await membership prepares the candidate and fences changed agreed-main evidence before acceptance", { timeout: 90000 }, async (t) => {
+// Await, return and re-acceptance exercise finite Git/SQLite transitions. Await
+// their assertions and cleanup instead of cancelling the scenario by wall time.
+test("Await membership prepares the candidate and fences changed agreed-main evidence before acceptance", async (t) => {
   const { root, origin, taskBoard, taskGitWorkspaces, lifecycle, testedTask, primary } = await fixture(t);
   const unaccepted = await testedTask("Unaccepted", "unaccepted.txt", "not accepted\n");
   const accepted = await testedTask("Accepted", "accepted.txt", "accepted\n");
@@ -347,7 +349,7 @@ test("Await membership prepares the candidate and fences changed agreed-main evi
 
 // Real Test/Await/withdrawal performs repeated native Git proofs; the former
 // 90-second budget expired while those proofs were still executing.
-test("Await and withdrawal retain the published base despite unreviewed origin movement", { timeout: 180000 }, async (t) => {
+test("Await and withdrawal retain the published base despite unreviewed origin movement", async (t) => {
   const f = await fixture(t);
   const published = f.publication.repositories[0].revision;
   await f.testedTask("Unaccepted", "unaccepted.txt", "unaccepted\n");
@@ -380,7 +382,7 @@ test("Await and withdrawal retain the published base despite unreviewed origin m
   assert.equal(f.taskBoard.task(second.id).workflowStatus, "awaiting_implementation");
 });
 
-test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it after a lost committed reply", { timeout: 180000 }, async (t) => {
+test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it after a lost committed reply", async (t) => {
   const f = await fixture(t);
   f.releaseGitWorkspaces.prepareGeneration = async () => assert.fail("Await must reuse live PreRelease");
   const first = await f.testedTask("First", "first.txt", "first\n");
@@ -416,7 +418,7 @@ test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it a
   )), []);
 });
 
-test("concurrent Await acceptances serialize in existing PreRelease without cloning a hooked primary", { timeout: 120000 }, async (t) => {
+test("concurrent Await acceptances serialize in existing PreRelease without cloning a hooked primary", async (t) => {
   const f = await fixture(t);
   const seed = await f.testedTask("Seed", "seed.txt", "seed\n");
   const { candidate } = await acceptAndPrepare(f, seed, "seed");
@@ -460,7 +462,7 @@ test("concurrent Await acceptances serialize in existing PreRelease without clon
   assert.equal(await git(f.primary, "config", "--local", "--get", "core.hooksPath"), hooks);
 });
 
-test("ambiguous Await preserves its pending operation and rebuilds the candidate during recovery", { timeout: 90000 }, async (t) => {
+test("ambiguous Await preserves its pending operation and rebuilds the candidate during recovery", async (t) => {
   const f = await fixture(t);
   const task = await f.testedTask("Recover", "recover.txt", "recover\n");
   const commitStatus = f.taskBoard.commitWorkflowTransition.bind(f.taskBoard);
@@ -512,7 +514,7 @@ test("ambiguous Await preserves its pending operation and rebuilds the candidate
   assert.equal(await git(candidate.releaseCandidates[0].releaseRoot, "show", "PreRelease:recover.txt"), "recover");
 });
 
-test("same-status Await refuses an unrecognized native candidate ref rewind", { timeout: 90000 }, async (t) => {
+test("same-status Await refuses an unrecognized native candidate ref rewind", async (t) => {
   const f = await fixture(t);
   const accepted = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
   const { candidate } = await acceptAndPrepare(f, accepted, "accept-stale");
@@ -538,7 +540,7 @@ test("same-status Await refuses an unrecognized native candidate ref rewind", { 
   assert.equal(await git(candidate.releaseRoot, "rev-parse", "PreRelease"), candidate.baseCommit);
 });
 
-test("a frozen candidate keeps its identity while a later Await enters the next generation", { timeout: 90000 }, async (t) => {
+test("a frozen candidate keeps its identity while a later Await enters the next generation", async (t) => {
   const f = await fixture(t);
   const accepted = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
   const { prepared, candidate } = await acceptAndPrepare(f, accepted, "accept-freeze-retry");

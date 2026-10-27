@@ -145,6 +145,13 @@ const openForm = async (page, scope) => {
   await page.waitForFunction(() => document.querySelector("[data-prompt-templates-modal]")?.open === true);
 };
 
+const openSettings = async page => {
+  if (await page.locator('[data-mobile-dialogs-tab="more"]').isVisible()) {
+    await page.locator('[data-mobile-dialogs-tab="more"]').click();
+    await page.locator('[data-mobile-more-sheet]').getByRole('button', { name: 'Настройки AgentHub', exact: true }).click();
+  } else await page.locator('[data-panel-open="settings"]').click();
+};
+
 const savedQuickMessages = (page) => page.evaluate(() => window.__promptTemplateIntents
   .filter((item) => item.type === "selection:set" && item.key === "quickMessages")
   .at(-1)?.value ?? null);
@@ -201,10 +208,10 @@ test("общая форма открывается из настроек, кар
     await page.locator('[data-panel-open="settings"]').click();
     assert.equal(await page.locator(MODAL).isVisible(), false);
     assert.equal(await page.locator('.settings-panel [data-quick-message-action-mode]').count(), 0);
-    assert.equal(await page.locator('.quick-messages-settings-row .setting-name').textContent(), 'Prompt-шаблоны');
-    assert.equal(await page.locator('.quick-messages-settings-row').getByRole('button').count(), 1);
-    assert.equal(await page.locator('.quick-messages-settings-row').getByRole('button', { name: 'Настроить шаблоны' }).count(), 0);
-    const heading = page.locator('.quick-messages-settings-row').getByRole('button', { name: /Prompt-шаблоны/u });
+    const entry = page.locator(ENTRY.global);
+    assert.equal(await entry.locator('.setting-name').textContent(), 'Prompt-шаблоны');
+    assert.equal(await entry.getByRole('button', { name: 'Настроить шаблоны' }).count(), 0);
+    const heading = entry;
     for (const key of ['Enter', 'Space']) {
       await heading.focus();
       await page.keyboard.press(key);
@@ -663,7 +670,7 @@ for (const [surface, viewport] of [
         streams: {},
       });
 
-      await page.locator('[data-panel-open="settings"]').click();
+      await openSettings(page);
       const panel = await page.evaluate(() => {
         const body = document.querySelector(".settings-body");
         return {

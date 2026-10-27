@@ -261,7 +261,17 @@
         "src/composition/command-trace-composition.mjs",
         "src/interfaces/web/http-read-timing.mjs",
         "tests/application/runtime-cpu-sample.test.mjs",
-        "tests/interfaces/web/http-read-timing.test.mjs"
+        "tests/interfaces/web/http-read-timing.test.mjs",
+        "test-suite.mjs",
+        "src/infrastructure/process/test-resource-*",
+        "src/interfaces/web/journal-publication.mjs",
+        "src/interfaces/web/journal-publication-worker.mjs",
+        "src/interfaces/web/mini-app-publisher.mjs",
+        "src/interfaces/web/mini-app-lifecycle-service.mjs",
+        "tests/infrastructure/persistence/task-board-journal-scalars.test.mjs",
+        "tests/interfaces/web/journal-publication.test.mjs",
+        "src/infrastructure/persistence/task-turn-projection.mjs",
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
       ]
     },
     {
@@ -380,7 +390,14 @@
         "docs/decisions/ADR-0132-normal-release-continuation.md",
         "docs/decisions/ADR-HUB-329-partial-git-publication-origin.md",
         "tests/fixtures/own-git-publication-fixture.mjs",
-        "tests/infrastructure/persistence/own-git-publication.test.mjs"
+        "tests/infrastructure/persistence/own-git-publication.test.mjs",
+        "src/composition/publication-freeze.mjs",
+        "src/infrastructure/filesystem/runtime-release-version.mjs",
+        "tests/infrastructure/filesystem/runtime-release-version.test.mjs",
+        "tests/public/runtime-manager.test.mjs",
+        "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
+        "src/infrastructure/persistence/task-turn-projection.mjs",
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
       ]
     },
     {

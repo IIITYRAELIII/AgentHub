@@ -15,7 +15,7 @@ import { TaskOperationReconciliationService } from "../../src/application/task-o
 
 const exec = promisify(execFile);
 const git = async (cwd, ...args) => String((await exec("git", args, { cwd, windowsHide: true })).stdout).trim();
-test("original native Test metadata recovery is terminal-only, fenced and idempotent", { timeout: 180_000 }, async (t) => {
+test("original native Test metadata recovery is terminal-only, fenced and idempotent", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-metadata-"));
   const primary = path.join(root, "primary"), dataDir = path.join(root, "data");
   await mkdir(primary); await git(primary, "init", "--initial-branch=main");

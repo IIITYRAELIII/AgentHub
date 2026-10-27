@@ -123,6 +123,7 @@ export class MiniAppLifecycleService {
     if (this.config.miniApp.worker.enabled) {
       this.publisher ??= new this.MiniAppPublisherClass({
         journalDatabaseFile: this.journalDatabaseFile,
+        recordCommandTrace: this.recordCommandTrace,
         ...this.config.miniApp.worker,
         controlHandler: this.controlHandler,
         snapshotUserIds: [...this.config.allowedUserIds],

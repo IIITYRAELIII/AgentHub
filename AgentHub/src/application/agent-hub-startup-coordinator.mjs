@@ -9,6 +9,28 @@ export function retryAgentHubStartup(params) {
   return activeStartupCoordinator.requestRetry(params);
 }
 
+// Called only by the real lifecycle after successful initialize. It is not a
+// second retry owner and never resubmits provider/metadata/recovery commands.
+export function observeAgentHubProviderInitialized() {
+  activeStartupCoordinator?.providerInitialized();
+}
+
+export function observeAgentHubProviderInitializing() {
+  activeStartupCoordinator?.providerInitializing();
+}
+
+export function observeAgentHubProviderInitializationFailure(error) {
+  activeStartupCoordinator?.providerInitializationFailed(error);
+}
+
+export async function observeAgentHubRunRecovery(recoverRuns) {
+  const coordinator = activeStartupCoordinator;
+  const failure = coordinator?.captureRunRecoveryFailure();
+  const result = await recoverRuns();
+  if (coordinator === activeStartupCoordinator) coordinator?.runsRecovered(failure);
+  return result;
+}
+
 export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
   { id: "release", label: "Проверка установленного релиза", state: "completed" },
   { id: "configuration", label: "Загрузка конфигурации и хранилищ", state: "completed" },
@@ -34,6 +56,8 @@ export class AgentHubStartupCoordinator {
   #retryPromise = null;
   #metadataPromise = null;
   #metadataAbort = null;
+  #providerInitializeObserved = false;
+  #providerUpdatePending = false;
 
   constructor({
     telegramEnabled,
@@ -323,6 +347,7 @@ export class AgentHubStartupCoordinator {
 
     this.health.complete();
     this.#initialStartupFinished = true;
+    if (this.#providerInitializeObserved) this.providerInitialized();
     if (!providerFailed && providerRunning) this.#startMetadataBackfill();
     const status = this.health.snapshot();
     if (status.status === "ready") this.log(this.readyMessage());
@@ -332,6 +357,57 @@ export class AgentHubStartupCoordinator {
       .join(", ") || "unknown"}`);
     if (this.telegramEnabled) return this.pollTelegram();
     return this.waitForever();
+  }
+
+  providerInitializing() {
+    if (!this.#initialStartupFinished) return;
+    this.#providerUpdatePending = true;
+    const failure = this.health.snapshot().startup.operations.find(operation => operation.id === "runs" && operation.state === "failed");
+    if (!failure) this.health.setCapability("provider", { critical: true, state: "pending" });
+  }
+
+  captureRunRecoveryFailure() {
+    if (!this.#initialStartupFinished) return null;
+    const snapshot = this.health.snapshot();
+    const operation = snapshot.startup.operations.find(entry => entry.id === "runs");
+    return operation?.state === "failed" ? { startedAtMs: snapshot.startup.startedAtMs,
+      completedAtMs: operation.completedAtMs, error: operation.error } : null;
+  }
+
+  runsRecovered(failure) {
+    if (!failure || !this.#initialStartupFinished || !this.#providerInitializeObserved || !this.providerIsRunning()) return;
+    const snapshot = this.health.snapshot();
+    const operation = snapshot.startup.operations.find(entry => entry.id === "runs");
+    if (failure.startedAtMs !== snapshot.startup.startedAtMs || operation?.state !== "failed"
+      || failure.completedAtMs !== operation.completedAtMs || failure.error !== operation.error) return;
+    this.health.retryOperation("runs", { background: true });
+    this.health.completeOperation("runs");
+    if (snapshot.startup.operations.find(entry => entry.id === "provider")?.state === "completed") {
+      this.health.setCapability("provider", { critical: true, state: "ready" });
+      this.#startMetadataBackfill();
+    }
+  }
+
+  providerInitializationFailed(error) {
+    if (!this.#initialStartupFinished || !this.#providerUpdatePending) return;
+    this.health.setCapability("provider", { critical: true, state: "failed", error: error.message });
+  }
+
+  providerInitialized() {
+    this.#providerInitializeObserved = true;
+    if (!this.#initialStartupFinished || !this.providerIsRunning()) return;
+    const snapshot = this.health.snapshot();
+    const operation = snapshot.startup.operations.find(entry => entry.id === "provider");
+    if (operation?.state !== "failed" && !this.#providerUpdatePending) return;
+    if (operation?.state === "failed") {
+      this.health.retryOperation("provider", { background: true });
+      this.health.completeOperation("provider");
+    }
+    this.#providerUpdatePending = false;
+    const recoveryFailure = snapshot.startup.operations.find(entry => entry.id === "runs" && entry.state === "failed");
+    this.health.setCapability("provider", { critical: true,
+      state: recoveryFailure ? "failed" : "ready", error: recoveryFailure?.error });
+    if (!recoveryFailure) this.#startMetadataBackfill();
   }
 
   #startMetadataBackfill() {

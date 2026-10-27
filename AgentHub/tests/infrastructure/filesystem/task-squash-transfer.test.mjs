@@ -46,7 +46,7 @@ function argumentsHash(value) {
   return createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
 }
 
-test("exact squash transfer adds the selected delta once and preserves foreign dev bytes", { timeout: 180_000 }, async (context) => {
+test("exact squash transfer adds the selected delta once and preserves foreign dev bytes", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-squash-"));
   const dataDir = `${root}-data`;
   const releaseDataDir = `${root}-release-data`;
@@ -479,7 +479,7 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
   assert.equal(await git(root, "for-each-ref", "--format=%(refname)", `refs/heads/${sourceWorkspace.branch}`), "");
 });
 
-test("Git-applied squash reconciles its real SQLite transition without an invented process guard", { timeout: 90_000 }, async (context) => {
+test("Git-applied squash reconciles its real SQLite transition without an invented process guard", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-squash-reconcile-"));
   const dataDir = `${root}-data`;
   const databaseFile = path.join(dataDir, "tasks.sqlite");

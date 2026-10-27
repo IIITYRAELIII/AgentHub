@@ -4168,6 +4168,13 @@ agentHub.on("directory:browse", ({ initialPath, resolve, reject }) => {
 });
 document.addEventListener("agenthub:board-action", (event) => {
   const detail = event.detail ?? {};
+  if (detail.type === "read") {
+    void control("board-task-read", { id: detail.id }).then(
+      result => window.AgentHubTaskBoard.showDetails({ ...detail, result }),
+      error => window.AgentHubTaskBoard.showDetails({ ...detail, error: String(error?.message ?? error) }),
+    );
+    return;
+  }
   if (detail.type === "diff") {
     void control("board-task-diff", { id: detail.id }).then(
       (result) => window.AgentHubTaskBoard.showDiff({ ...detail, result }),
@@ -5201,6 +5208,9 @@ agentHub.on("hub:restart", () => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Перезапуск Agent Hub запрошен");
 }));
+// Same authenticated control/IPC owner as recovery; the public /health probe
+// intentionally strips local provider errors and is only a liveness fallback.
+window.__agentHubStartupRuntimeHealth = () => control("runtime-health");
 document.addEventListener("agenthub:startup-recovery", (event) => {
   const { action, startedAtMs } = event.detail ?? {};
   if (!["retry-startup", "restart-server"].includes(action)) return;

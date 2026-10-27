@@ -23,13 +23,27 @@ import {
   stopProcessTree,
 } from "../../../src/providers/claude/claude-run-io.mjs";
 
-async function withTempDir(run) {
+async function withTempDir(run, { remove = rm } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "claude-run-io-"));
+  let result;
+  let failed = false;
+  let failure;
   try {
-    return await run(directory);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+    result = await run(directory);
+  } catch (error) {
+    failed = true;
+    failure = error;
   }
+  try {
+    await remove(directory, { recursive: true, force: true,
+      maxRetries: process.platform === "win32" ? 3 : 0, retryDelay: 100 });
+  } catch (cleanupError) {
+    if (failed) throw new AggregateError([failure, cleanupError],
+      "Claude fixture execution and cleanup failed", { cause: failure });
+    throw cleanupError;
+  }
+  if (failed) throw failure;
+  return result;
 }
 
 async function waitFor(read, message, { timeoutMs = 5_000 } = {}) {
@@ -45,9 +59,39 @@ async function waitFor(read, message, { timeoutMs = 5_000 } = {}) {
 function waitForExit(child) {
   return new Promise((resolve, reject) => {
     child.once("error", reject);
-    child.once("exit", (code) => resolve(code));
+    child.once("close", (code) => resolve(code));
   });
 }
+
+test("Claude fixture keeps its execution error when directory cleanup also fails", async () => {
+  const original = new Error("fixture body failed");
+  const cleanup = new Error("fixture cleanup failed");
+  let root;
+  let calls = 0;
+  try {
+    await assert.rejects(withTempDir(async (directory) => {
+      root = directory; calls += 1; throw original;
+    }, { remove: async () => { throw cleanup; } }), (error) => {
+      assert.deepEqual(error.errors, [original, cleanup]);
+      assert.equal(error.cause, original);
+      return true;
+    });
+    assert.equal(calls, 1);
+  } finally {
+    if (root) await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude fixture waits for child close after exit before cleanup", async () => {
+  const child = new EventEmitter();
+  let settled = false;
+  const closed = waitForExit(child).then((code) => { settled = true; return code; });
+  child.emit("exit", 0);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  child.emit("close", 0);
+  assert.equal(await closed, 0);
+});
 
 test("run output paths live in a dedicated directory", () => {
   assert.equal(

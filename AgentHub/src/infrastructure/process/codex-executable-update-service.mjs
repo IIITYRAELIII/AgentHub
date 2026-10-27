@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { validCodexBundle } from "./codex-executable-bundle.mjs";
+import { acquireCodexExecutableCustody } from "./codex-executable-custody.mjs";
 
 import {
   codexExecutableRejectionMessage,
@@ -20,15 +22,20 @@ function identity(candidate) {
     sha256: String(candidate.sha256),
     publisher: String(candidate.publisher ?? ""),
     source: String(candidate.source ?? ""),
+    ...(candidate.bundle ? { bundle: structuredClone(candidate.bundle) } : {}),
   };
 }
 
-function sameIdentity(left, right) {
+function sameCoreIdentity(left, right) {
   return Boolean(left && right
     && String(left.path).toLowerCase() === String(right.path).toLowerCase()
     && left.version === right.version
     && left.sha256 === right.sha256
-    && left.publisher === right.publisher);
+    && left.publisher === right.publisher && left.source === right.source);
+}
+
+function sameIdentity(left, right) {
+  return sameCoreIdentity(left, right) && (left.bundle?.digest ?? null) === (right.bundle?.digest ?? null);
 }
 
 function validIdentity(value) {
@@ -36,7 +43,8 @@ function validIdentity(value) {
     && typeof value.path === "string" && value.path
     && typeof value.version === "string" && value.version
     && typeof value.sha256 === "string" && /^[A-F0-9]{64}$/.test(value.sha256)
-    && typeof value.publisher === "string" && value.publisher;
+    && typeof value.publisher === "string" && value.publisher
+    && (value.bundle === undefined || validCodexBundle(value.bundle));
 }
 
 function initialState() {
@@ -69,6 +77,10 @@ export class CodexExecutableUpdateService {
   #refreshPromise = null;
   #backgroundTimer = null;
   #backgroundGeneration = 0;
+  #selectionCustody = null;
+  #recoverUnavailable = false;
+  #rediscoverOnStart = false;
+  #custodyReleased = Promise.resolve();
 
   constructor({
     stateFile,
@@ -87,6 +99,10 @@ export class CodexExecutableUpdateService {
     mkdirImpl = mkdir,
     logger = console,
     platform = process.platform,
+    acquireCustody = acquireCodexExecutableCustody,
+    canRecoverUnavailableSelection = () => false,
+    executableArgs = [],
+    rpcTimeoutMs = 30_000,
   }) {
     if (!stateFile) throw new TypeError("Codex executable state file is required");
     if (typeof runCanary !== "function") throw new TypeError("Codex compatibility canary is required");
@@ -107,6 +123,8 @@ export class CodexExecutableUpdateService {
       mkdirImpl,
       logger,
       platform,
+      acquireCustody: bundle => acquireCustody(bundle, { timeoutMs: rpcTimeoutMs }),
+      canRecoverUnavailableSelection, executableArgs,
     });
   }
 
@@ -178,14 +196,78 @@ export class CodexExecutableUpdateService {
   }
 
   async #select(candidate, status, reason = null) {
+    const previous = this.#selectionCustody;
     this.#selection = identity(candidate);
+    const custody = candidate.bundle ? {
+      identity: identity(candidate), bound: false,
+      lease: await this.acquireCustody(candidate.bundle),
+    } : null;
+    try {
+      if (candidate.bundle?.codeModeHost && !(this.#state.canary?.status === "passed"
+        && sameIdentity(this.#state.canary.identity, candidate) && this.#state.canary.evidence?.safeToolCount === 1)) {
+        const startedAt = this.now().toISOString();
+        const result = await this.runCanary(candidate);
+        if (result?.ok !== true || result.evidence?.safeToolCount !== 1) {
+          throw new Error("Codex compatibility canary did not confirm safe tool execution");
+        }
+        custody.lease.assertAlive();
+        this.#state.canary = { identity: identity(candidate), status: "passed", startedAt,
+          completedAt: this.now().toISOString(), evidence: result.evidence };
+      }
+    } catch (error) { await custody?.lease.release(); throw error; }
     this.#state.selected = identity(candidate);
     this.#state.status = status;
     this.#state.reason = reason;
     this.#state.lastError = null;
-    await this.#save();
+    try { await this.#save(); }
+    catch (error) { await custody?.lease.release(); throw error; }
+    this.#selectionCustody = custody;
+    if (previous && !previous.bound) await previous.lease.release();
     return candidate.path;
   }
+
+  async #freshRecorded(candidate) {
+    const verified = await this.verifyRecorded(candidate, { executableArgs: this.executableArgs });
+    if (!sameCoreIdentity(candidate, verified)) throw new Error("Recorded Codex executable identity changed");
+    return verified;
+  }
+
+  async #usableRecorded(candidate, { prepared = false } = {}) {
+    try { return await this.#freshRecorded(candidate); }
+    catch (error) {
+      this.#state.lastError = codexExecutableRejectionMessage(error);
+      if (!prepared && !["ENOENT", "ENOTDIR", "CODEX_BUNDLE_UNAVAILABLE"].includes(error?.code)) {
+        this.#state.status = "selection-rejected";
+        this.#state.reason = "recorded-identity-unverified";
+        await this.#save();
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  bindSpawnedProcess(child) {
+    const custody = this.#selectionCustody;
+    if (!custody) return;
+    custody.lease.assertAlive();
+    custody.bound = true;
+    const closed = new Promise(resolve => child.once("close", () => {
+      void custody.lease.release().then(resolve);
+      if (this.#selectionCustody === custody) this.#selectionCustody = null;
+    }));
+    this.#custodyReleased = Promise.all([this.#custodyReleased, closed]).then(() => {});
+    return closed;
+  }
+
+  async releaseUnboundSelection() {
+    const custody = this.#selectionCustody;
+    if (custody && !custody.bound) {
+      await custody.lease.release();
+      if (this.#selectionCustody === custody) this.#selectionCustody = null;
+    }
+  }
+
+  waitForCustodyRelease() { return this.#custodyReleased; }
 
   async selectForStart() {
     if (this.requestedExecutable) {
@@ -201,29 +283,42 @@ export class CodexExecutableUpdateService {
       this.#state.reason = "official-install-discovery-is-windows-only";
       return "codex";
     }
+    if (this.#rediscoverOnStart) {
+      this.#rediscoverOnStart = false;
+      return this.#bootstrapSelection();
+    }
 
     if (this.#rollbackIdentity) {
       const rollback = this.#rollbackIdentity;
       this.#rollbackIdentity = null;
-      return this.#select(rollback, "rollback-starting", "candidate-startup-failed");
+      const verified = await this.#usableRecorded(rollback);
+      if (verified) return this.#select(verified, "rollback-starting", "candidate-startup-failed");
     }
     const prepared = this.#state.prepared;
     if (this.autoUpdateEnabled && validIdentity(prepared)
       && (!this.versionPin || prepared.version === this.versionPin)
       && !sameIdentity(prepared, this.#state.failedIdentity) && !this.#hasActiveCodexRuns()) {
-      return this.#select(prepared, "candidate-starting", "background-verified");
+      const verified = await this.#usableRecorded(prepared, { prepared: true });
+      if (verified) return this.#select(verified, "candidate-starting", "background-verified");
     }
     const lastKnownGood = this.#state.lastKnownGood;
     if (validIdentity(lastKnownGood) && (!this.versionPin || lastKnownGood.version === this.versionPin)) {
-      return this.#select(lastKnownGood, !this.autoUpdateEnabled ? "disabled"
+      const verified = await this.#usableRecorded(lastKnownGood);
+      if (verified) return this.#select(verified, !this.autoUpdateEnabled ? "disabled"
         : this.#hasActiveCodexRuns() && prepared ? "deferred-active-runs"
           : this.versionPin ? "pinned" : "current");
+      this.#recoverUnavailable = this.canRecoverUnavailableSelection() === true;
+    }
+    if (this.#recoverUnavailable && this.autoUpdateEnabled && validIdentity(prepared)
+      && (!this.versionPin || prepared.version === this.versionPin) && !sameIdentity(prepared, this.#state.failedIdentity)) {
+      const verified = await this.#usableRecorded(prepared, { prepared: true });
+      if (verified) return this.#select(verified, "candidate-starting", "unavailable-recorded-bundle-recovery");
     }
     return this.#bootstrapSelection();
   }
 
   async #bootstrapSelection() {
-    const discovery = await this.discover({ trustedCandidates: this.#state.trustedCandidates });
+    const discovery = await this.discover(this.#discoveryOptions());
     this.#verifiedCandidates = discovery.candidates ?? [];
     this.#state.trustedCandidates = this.#verifiedCandidates.map(identity);
     let candidates = this.#verifiedCandidates;
@@ -268,7 +363,7 @@ export class CodexExecutableUpdateService {
       }
       return this.#select(fallback, "candidate-blocked", "failed-identity-unchanged");
     }
-    if (this.#hasActiveCodexRuns()) {
+    if (this.#hasActiveCodexRuns() && !this.#recoverUnavailable) {
       const fallback = verifiedLkg ?? legacy;
       if (!fallback) {
         this.#state.status = "deferred-active-runs";
@@ -281,9 +376,12 @@ export class CodexExecutableUpdateService {
 
     const startedAt = this.now().toISOString();
     try {
-      const result = await this.runCanary(candidate);
+      const custody = candidate.bundle ? await this.acquireCustody(candidate.bundle) : null;
+      let result;
+      try { result = await this.runCanary(candidate); }
+      finally { await custody?.release(); }
       if (result?.ok !== true) throw new Error(result?.error || "compatibility canary did not pass");
-      const confirmedDiscovery = await this.discover({ trustedCandidates: this.#state.trustedCandidates });
+      const confirmedDiscovery = await this.discover(this.#discoveryOptions());
       const confirmedCandidates = confirmedDiscovery.candidates ?? [];
       const confirmed = confirmedCandidates.find((entry) => sameIdentity(entry, candidate));
       if (!confirmed) throw new Error("Codex executable identity changed after compatibility canary");
@@ -319,12 +417,7 @@ export class CodexExecutableUpdateService {
         await this.#save();
         throw new Error(`Codex ${candidate.version} compatibility canary failed: ${error.message}`);
       }
-      this.#selection = identity(fallback);
-      this.#state.selected = identity(fallback);
-      this.#state.status = "canary-failed-using-last-known-good";
-      this.#state.reason = `candidate-${candidate.version}`;
-      await this.#save();
-      return fallback.path;
+      return this.#select(fallback, "canary-failed-using-last-known-good", `candidate-${candidate.version}`);
     }
   }
 
@@ -344,15 +437,23 @@ export class CodexExecutableUpdateService {
       throw new Error("Durable selected Codex executable identity changed before process spawn");
     }
 
-    const verified = await this.verifyRecorded(selected);
+    if (this.#selectionCustody && sameIdentity(this.#selectionCustody.identity, selected)) {
+      this.#selectionCustody.lease.assertAlive();
+      return selected.path;
+    }
+    const verified = await this.verifyRecorded(selected, { executableArgs: this.executableArgs });
     if (!sameIdentity(verified, selected)) throw new Error("Selected Codex executable identity changed before process spawn");
     return verified.path;
   }
 
-  startBackgroundChecks({ canCheck = () => true, intervalMs = 60_000 } = {}) {
+  startBackgroundChecks({ canCheck = () => true, onPrepared = async () => {}, intervalMs = 60_000 } = {}) {
     if (this.#backgroundTimer || this.requestedExecutable || this.platform !== "win32") return;
     this.#backgroundTimer = setInterval(() => {
-      if (canCheck()) void this.refreshInBackground().catch(() => {});
+      const generation = this.#backgroundGeneration;
+      if (canCheck()) void this.refreshInBackground().then(() => {
+        if (generation !== this.#backgroundGeneration || !this.#backgroundTimer) return;
+        if (this.#state.prepared && !sameIdentity(this.#state.prepared, this.#state.active)) return onPrepared();
+      }).catch(() => {});
     }, intervalMs);
     this.#backgroundTimer.unref?.();
   }
@@ -369,12 +470,17 @@ export class CodexExecutableUpdateService {
     return this.#refreshPromise;
   }
 
+  #discoveryOptions() {
+    return { trustedCandidates: this.#state.trustedCandidates,
+      ...(this.executableArgs.length ? { executableArgs: this.executableArgs } : {}) };
+  }
+
   async #refresh(generation) {
     if (this.requestedExecutable || this.platform !== "win32") return;
     await this.#load();
     this.#state.background = { status: "checking", startedAt: this.now().toISOString(), error: null };
     try {
-      const discovery = await this.discover({ trustedCandidates: this.#state.trustedCandidates });
+      const discovery = await this.discover(this.#discoveryOptions());
       if (generation !== this.#backgroundGeneration) return;
       this.#state.trustedCandidates = (discovery.candidates ?? []).map(identity);
       this.#state.rejected = (discovery.rejected ?? []).map((entry) => ({
@@ -385,18 +491,31 @@ export class CodexExecutableUpdateService {
       if (!candidate) throw new Error("No trusted installed official Codex executable was found");
       if (!this.autoUpdateEnabled || sameIdentity(candidate, this.#state.lastKnownGood)
         || sameIdentity(candidate, this.#state.prepared)) {
-        this.#state.background.status = "current";
+        this.#state.background.status = this.autoUpdateEnabled && sameIdentity(candidate, this.#state.prepared)
+          && !sameIdentity(candidate, this.#state.active) ? "prepared-for-next-start" : "current";
       } else if (sameIdentity(candidate, this.#state.failedIdentity)) {
         this.#state.background.status = "candidate-blocked";
-      } else if (this.#hasActiveCodexRuns()) {
-        this.#state.background.status = "deferred-active-runs";
       } else {
+        if (this.#hasActiveCodexRuns()) {
+          const repairingLostTransport = this.canRecoverUnavailableSelection() === true
+            && validIdentity(this.#state.lastKnownGood)
+            && await this.#usableRecorded(this.#state.lastKnownGood) === null;
+          if (!repairingLostTransport) {
+            this.#state.background.status = "deferred-active-runs";
+            this.#state.background.completedAt = this.now().toISOString();
+            await this.#save(); return;
+          }
+          this.#recoverUnavailable = true;
+        }
         const startedAt = this.now().toISOString();
         this.#state.background.status = "canary";
         try {
-          const result = await this.runCanary(candidate);
+          const custody = candidate.bundle ? await this.acquireCustody(candidate.bundle) : null;
+          let result;
+          try { result = await this.runCanary(candidate); }
+          finally { await custody?.release(); }
           if (result?.ok !== true) throw new Error("Codex compatibility canary did not pass");
-          const verified = await this.verifyRecorded(candidate);
+          const verified = await this.verifyRecorded(candidate, { executableArgs: this.executableArgs });
           if (!sameIdentity(verified, candidate)) throw new Error("Codex executable identity changed after compatibility canary");
           if (generation !== this.#backgroundGeneration) return;
           this.#state.canary = { identity: identity(candidate), status: "passed", startedAt,
@@ -431,19 +550,29 @@ export class CodexExecutableUpdateService {
     this.#state.status = this.#state.status === "rollback-starting" ? "rolled-back" : "ready";
     this.#state.reason = null;
     this.#state.lastError = null;
+    this.#recoverUnavailable = false;
     await this.#save();
   }
 
   async markStartupFailure(error) {
+    await this.releaseUnboundSelection();
     if (!validIdentity(this.#selection)) return false;
     await this.#load();
-    this.#state.failedIdentity = identity(this.#selection);
+    const lost = [error, error?.cause].some(value => ["ENOENT", "ENOTDIR", "CODEX_BUNDLE_UNAVAILABLE"].includes(value?.code));
+    if (!lost) this.#state.failedIdentity = identity(this.#selection);
     this.#state.lastError = String(error?.message ?? error);
     const verifiedLkg = this.#state.lastKnownGood;
-    if (!verifiedLkg || sameIdentity(verifiedLkg, this.#selection)) {
+    if (!verifiedLkg || sameCoreIdentity(verifiedLkg, this.#selection)) {
       this.#state.status = "startup-failed";
       this.#state.reason = "rollback-unavailable";
       await this.#save();
+      if (lost && this.autoUpdateEnabled && !this.requestedExecutable) {
+        this.#recoverUnavailable = this.canRecoverUnavailableSelection() === true;
+        this.#rediscoverOnStart = true;
+        // The lifecycle owns one retry. Rediscovery/canary still owns trust;
+        // no command or tool invocation is retried by executable recovery.
+        return true;
+      }
       return false;
     }
     this.#rollbackIdentity = identity(verifiedLkg);

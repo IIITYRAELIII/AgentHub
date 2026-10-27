@@ -346,10 +346,17 @@ async function refresh() {
   clearConnectionTimer();
   connectionTimer = window.setTimeout(showDisconnectedState, CONNECTION_STALE_MS);
   try {
-    const response = await fetch("/health", { cache: "no-store" });
+    let health;
+    const readAuthenticated = window.__agentHubStartupRuntimeHealth;
+    if (typeof readAuthenticated === "function") {
+      try { health = await readAuthenticated(); } catch { /* Public fallback grants no error disclosure. */ }
+    }
+    if (!health || typeof health.ready !== "boolean") {
+      const response = await fetch("/health", { cache: "no-store" });
+      if (!response.ok) throw new Error(`health ${response.status}`);
+      health = await response.json();
+    }
     clearConnectionTimer();
-    if (!response.ok) throw new Error(`health ${response.status}`);
-    const health = await response.json();
     if (restartExpected && restartWaitFailed(health, waitingSinceMs)) {
       restartExpected = false;
       waitingSinceMs = 0;

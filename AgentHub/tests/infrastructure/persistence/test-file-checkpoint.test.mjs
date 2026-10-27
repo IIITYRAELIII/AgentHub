@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import os from "node:os";
+import path from "node:path";
 
 import { runCheckpointedTestFiles } from "../../../src/infrastructure/persistence/test-file-checkpoint.mjs";
 
@@ -12,6 +14,51 @@ function memoryCheckpoint() {
     value: () => value,
   };
 }
+
+test("failed file reports bounded owner facts before a running sibling and preserves its exact error", async () => {
+  let releaseSibling, reportFailure;
+  const sibling = new Promise(resolve => { releaseSibling = resolve; });
+  const reported = new Promise(resolve => { reportFailure = resolve; });
+  const original = Object.assign(new Error("private message must not enter the timing log"), {
+    code: "EBUSY", syscall: "unlink", testPhase: "cleanup", testExecutionSucceeded: true,
+    testRoot: path.join(os.tmpdir(), "ah-owned-report"),
+    testChild: { pid: 123, closedAt: "2026-10-25T00:00:01.000Z", code: 0, arguments: "private arguments" },
+  });
+  original.path = path.join(original.testRoot, "owned.lock");
+  original.cause = original;
+  original.errors = Array(12).fill(original);
+  original.errors[0] = Object.assign(new Error("private foreign failure"), {
+    testRoot: original.testRoot, path: path.join(original.testRoot, "..", "private-foreign-path"),
+  });
+  const checkpoint = memoryCheckpoint();
+  const operation = runCheckpointedTestFiles(["failed", "sibling"], {
+    suite: "unit", identity: "release", checkpoint, concurrency: 2,
+    execution: async () => ({ parallel: true, shared: [] }), log: () => {},
+    run: async file => { if (file === "failed") throw original; await sibling; },
+    onFile: event => { if (event.outcome === "failed") reportFailure(event); },
+  });
+  const terminal = operation.then(() => null, error => error);
+  try {
+    const event = await reported;
+    assert.equal(event.failure.code, "EBUSY");
+    assert.equal(event.failure.testExecutionSucceeded, true);
+    assert.equal(event.failure.path, original.path);
+    assert.equal(event.failure.child.pid, 123);
+    assert.equal(event.failure.child.code, 0);
+    assert.equal(event.failure.errors.length, 4);
+    assert.equal(event.failure.omittedErrors, 8);
+    const serialized = JSON.stringify(event);
+    assert.equal(serialized.includes("private message"), false);
+    assert.equal(serialized.includes("private arguments"), false);
+    assert.equal(serialized.includes("private-foreign-path"), false);
+    assert.ok(serialized.length < 32_768);
+    assert.equal(checkpoint.value().suites.unit.completedFingerprints.failed, undefined);
+  } finally { releaseSibling(); }
+  const result = await terminal;
+  assert.ok(result instanceof AggregateError);
+  assert.equal(result.errors[0], original);
+  assert.equal(checkpoint.value().suites.unit.completedFingerprints.failed, undefined);
+});
 
 test("test files report every failure and resume only failed files", async () => {
   const checkpoint = memoryCheckpoint();

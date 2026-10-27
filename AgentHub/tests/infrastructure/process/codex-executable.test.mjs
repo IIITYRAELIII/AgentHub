@@ -85,6 +85,7 @@ function installedCandidate(source, name) {
 
 function inspectionOptions(calls) {
   return {
+    inspectBundle: async () => null, // These cases isolate main-executable trust; bundle has its own native cases.
     realpathImpl: async (value) => value,
     statImpl: async () => ({ isFile: () => true }),
     hashFile: async (file) => { calls.push(["hash", file]); return "A".repeat(64); },
@@ -255,7 +256,7 @@ test("recorded verification detects actual replacement of the same installed fil
   await writeFile(executable, contents, "utf8");
   const { recorded } = recordedFixture();
   const identity = { ...recorded, path: executable, sha256: createHash("sha256").update(contents).digest("hex").toUpperCase() };
-  const options = { environment: { LOCALAPPDATA: root }, platform: "win32" };
+  const options = { environment: { LOCALAPPDATA: root }, platform: "win32", inspectBundle: async () => null };
   assert.equal(await verifyRecordedCodexExecutable(identity, options), identity);
   await writeFile(executable, "replacement bytes; never executed", "utf8");
   await assert.rejects(verifyRecordedCodexExecutable(identity, options), /Recorded Codex executable SHA-256 changed/);

@@ -1578,7 +1578,7 @@ export class HubMcpService {
     const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
     return {
       workspaceId: context.workspaceId,
-      tasks: this.taskBoard.snapshot()
+      tasks: this.taskBoard.snapshot({ includeDetails: true })
         .filter((task) => includeCompleted || task.status !== "done")
         .slice(0, boundedLimit)
         .map(compactTask),

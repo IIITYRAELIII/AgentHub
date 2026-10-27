@@ -7,6 +7,7 @@ import { readClaimCustodyFence, configureClaimCustodyBindingFences, configureCla
 import { claimCustodyState, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { nativeTestMetadataDrift } from "../../domain/native-test-terminal-recovery.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { configureTaskTurnProjection } from "./task-turn-projection.mjs";
 
 import {
   LEGACY_TELEGRAM_BUNDLE_PREFIX,
@@ -590,6 +591,7 @@ function configure(database) {
       END;
   `);
   configureTaskChecklist(database);
+  configureTaskTurnProjection(database);
   // Revision-changing edits are fenced, including updates via the existing
   // revision trigger. Opening a store may perform a no-op housekeeping UPDATE.
   database.exec(`
@@ -1320,21 +1322,35 @@ export class TaskBoardStore {
     });
     // The journal owns terminal turns; exact Task bindings own membership.
     // Read scalar fields only: prompts, bodies and diffs do not belong in board snapshots.
-    if (this.#tableExists(database, "journal_records")) {
-      const rows = database.prepare(`
-        SELECT DISTINCT j.provider, j.thread_id AS threadId, j.turn_id AS turnId,
-          j.task_thread_id AS taskThreadId, j.project_root AS projectRoot,
-          j.completed_at_ms AS completedAtMs,
-          substr(json_extract(j.record_json, '$.title'), 1, 2000) AS summary,
-          json_extract(j.record_json, '$.status') AS status
-        FROM hub_task_turn_bindings b
-        JOIN journal_records j ON j.provider = b.provider
-          AND j.thread_id = b.provider_thread_id AND j.turn_id = b.turn_id
-        WHERE b.task_id = ? AND json_valid(j.record_json)
-          AND j.completed_at_ms IS NOT NULL
-          AND coalesce(json_extract(j.record_json, '$.provisional'), 0) = 0
-          AND coalesce(json_extract(j.record_json, '$.aggregateOnly'), 0) = 0
-          AND json_extract(j.record_json, '$.status') IN ('completed', 'failed', 'cancelled', 'interrupted')
+    // Materialize the small scalar tuple once; inlining would make each filter
+    // traverse the large retained record again on the synchronous snapshot path.
+    if (this.#tableExists(database, "hub_task_turn_projection") || this.#tableExists(database, "journal_records")) {
+      // The raw-journal branch is only compatibility for read-only pre-migration
+      // release evidence. Writable runtime stores install the derived SQL index.
+      const rows = database.prepare(this.#tableExists(database, "hub_task_turn_projection") ? `
+        SELECT DISTINCT provider, thread_id AS threadId, turn_id AS turnId,
+          task_thread_id AS taskThreadId, project_root AS projectRoot,
+          completed_at_ms AS completedAtMs, summary, status
+        FROM hub_task_turn_projection WHERE task_id = ?
+      ` : `
+        WITH bound_records AS MATERIALIZED (
+          SELECT DISTINCT j.provider, j.thread_id AS threadId, j.turn_id AS turnId,
+            j.task_thread_id AS taskThreadId, j.project_root AS projectRoot,
+            j.completed_at_ms AS completedAtMs,
+            json_extract(j.record_json, '$.title', '$.status', '$.provisional', '$.aggregateOnly') AS scalars
+          FROM hub_task_turn_bindings b
+          JOIN journal_records j ON j.provider = b.provider
+            AND j.thread_id = b.provider_thread_id AND j.turn_id = b.turn_id
+          WHERE b.task_id = ? AND json_valid(j.record_json)
+            AND j.completed_at_ms IS NOT NULL
+        )
+        SELECT provider, threadId, turnId, taskThreadId, projectRoot, completedAtMs,
+          substr(json_extract(scalars, '$[0]'), 1, 2000) AS summary,
+          json_extract(scalars, '$[1]') AS status
+        FROM bound_records
+        WHERE coalesce(json_extract(scalars, '$[2]'), 0) = 0
+          AND coalesce(json_extract(scalars, '$[3]'), 0) = 0
+          AND json_extract(scalars, '$[1]') IN ('completed', 'failed', 'cancelled', 'interrupted')
       `).all(taskId);
       const key = (row) => JSON.stringify([row.provider, row.threadId, row.turnId]);
       const current = new Map(rows.map((row) => [key(row), {
@@ -1375,7 +1391,15 @@ export class TaskBoardStore {
     if (!task) return null;
     const checklist = (checklistProjections ?? taskChecklistProjectionMap(database, [task.id])).get(task.id)
       ?? { checklist: [], checklistParent: null };
-    return { ...task, ...this.#releaseDetails(database, task.id), ...checklist };
+    return { ...task, ...this.#releaseDetails(database, task.id), ...checklist,
+      detailsRevision: this.#taskDetailsRevision(database, row) };
+  }
+
+  #taskDetailsRevision(database, row, projected = null) {
+    const history = projected ?? (this.#tableExists(database, "hub_task_turn_projection_versions")
+      ? database.prepare("SELECT revision FROM hub_task_turn_projection_versions WHERE task_id=?")
+        .get(row.id) : null);
+    return [row.row_revision || 1, row.updated_at_ms, history?.revision || 0].join(":");
   }
 
   #withChecklistWrite(operation) {
@@ -1640,7 +1664,7 @@ export class TaskBoardStore {
     ));
   }
 
-  list({ includeDone = true } = {}) {
+  list({ includeDone = true, includeDetails = true } = {}) {
     return this.#withDatabase((database) => {
       const rows = database.prepare(`
         SELECT * FROM hub_board_tasks
@@ -1649,7 +1673,16 @@ export class TaskBoardStore {
           bucket, workspace_id, board_order, created_at_ms, id
       `).all();
       const checklistProjections = taskChecklistProjectionMap(database, rows.map((row) => row.id));
-      return rows.map((row) => this.#taskWithRelease(database, row, checklistProjections));
+      if (includeDetails) return rows.map((row) => this.#taskWithRelease(database, row, checklistProjections));
+      const history = this.#tableExists(database, "hub_task_turn_projection_versions")
+        ? new Map(database.prepare("SELECT task_id, revision FROM hub_task_turn_projection_versions")
+          .all().map(row => [row.task_id, row])) : new Map();
+      return rows.map(row => ({
+        ...taskFromRow(row),
+        ...(checklistProjections.get(row.id) ?? { checklist: [], checklistParent: null }),
+        detailsDeferred: true,
+        detailsRevision: this.#taskDetailsRevision(database, row, history.get(row.id) ?? { count: 0, revision: 0 }),
+      }));
     });
   }
 

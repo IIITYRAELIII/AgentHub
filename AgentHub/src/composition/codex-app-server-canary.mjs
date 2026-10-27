@@ -12,6 +12,8 @@ import { mcpElicitationAcceptResponse } from "../providers/codex/codex-approvals
 import { CodexAppServerTransport } from "../providers/codex/codex-app-server-transport.mjs";
 import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
 import { buildCodexApplicationContext } from "../providers/codex/codex-settings.mjs";
+import { trustedWindowsPowerShellPath } from "../infrastructure/process/system-boot-identity.mjs";
+import { verifyOpenAiAuthenticode } from "../infrastructure/process/codex-executable.mjs";
 
 const DEFAULT_TOTAL_TIMEOUT_MS = 180_000;
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
@@ -35,6 +37,7 @@ const SAFE_PROTOCOL_METHODS = new Set([
   "mcpServer/startupStatus/updated",
   "mcpServer/elicitation/request",
   "serverRequest/resolved",
+  "item/commandExecution/requestApproval",
 ]);
 const SAFE_TURN_STATUSES = new Set(["inProgress", "completed", "failed", "interrupted", "cancelled"]);
 const SAFE_FAILURE_CODES = new Set([
@@ -104,6 +107,15 @@ function diagnosticIdentity(candidate) {
     .map((key) => [key, String(candidate[key])]));
 }
 
+export function exactCanarySafeCommand(command, nonce, shell) {
+  if (typeof command !== "string" || !/^HUB_CANARY_TOOL_[a-f0-9]{24}$/u.test(nonce) || !shell) return false;
+  // Only this fixed argv display grammar, never a general shell parser. The
+  // nonce is an alphanumeric PowerShell argument, so no expression is needed.
+  const match = command.match(/^(?:"([^"]+)"|'([^']+)'|([^\s]+))\s+(?:-NoProfile\s+)?-Command\s+(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\r\n]*))$/u);
+  return Boolean(match && path.win32.normalize(match[1] ?? match[2] ?? match[3]).toLowerCase() === path.win32.normalize(shell).toLowerCase()
+    && (match[4] ?? match[5] ?? match[6]) === `Write-Output ${nonce}`);
+}
+
 export async function runCodexAppServerCompatibilityCanary(candidate, {
   dataDir,
   executableArgs = [],
@@ -149,6 +161,26 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
     await copyFile(path.join(sourceHome, "auth.json"), path.join(codexHome, "auth.json"));
 
     let mcpReadCount = 0;
+    let safeToolCount = 0;
+    const safeToolItems = new Map();
+    const safeToolNonce = `HUB_CANARY_TOOL_${randomBytes(12).toString("hex")}`;
+    const safeToolShell = process.platform === "win32" ? trustedWindowsPowerShellPath(environment) : null;
+    const programFiles = path.win32.normalize(String(environment.ProgramFiles ?? ""));
+    const safeToolPwsh = /^[a-z]:\\Program Files$/iu.test(programFiles)
+      ? path.win32.join(programFiles, "PowerShell", "7", "pwsh.exe") : null;
+    let safeToolOpen = false, approvedToolItem = null;
+    let bindSafeToolTurn;
+    const safeToolBinding = new Promise(resolve => { bindSafeToolTurn = resolve; });
+    const observedToolItems = new Map();
+    const safeToolChecks = [];
+    const verifySafeCommand = async command => {
+      if (exactCanarySafeCommand(command, safeToolNonce, safeToolShell)) return true;
+      if (!safeToolPwsh || !exactCanarySafeCommand(command, safeToolNonce, safeToolPwsh)) return false;
+      // Same fixed-shell trust for requested approval and an already executed
+      // direct command. OpenAI's boolean is irrelevant to Microsoft shell trust.
+      const signature = await verifyOpenAiAuthenticode(safeToolPwsh, { powershellExecutable: safeToolShell });
+      return signature.status === "Valid" && /(?:^|,\s*)O=Microsoft Corporation(?:,|$)/u.test(signature.publisher);
+    };
     const canaryContextToken = randomBytes(24).toString("base64url");
     mcpServer = new HubMcpServer({
       secret: randomBytes(32).toString("base64url"),
@@ -192,6 +224,43 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         request: message?.id != null,
       });
       if (message?.id != null) {
+        if (message.method === "item/commandExecution/requestApproval") {
+          const p = message.params ?? {}, owner = transport;
+          const refuse = (reason = "scope") => {
+            record("safe-tool-approval-refused", { reason });
+            return Object.assign(new Error("Codex canary received an unbound safe-command approval"), { code: "CODEX_CANARY_PROTOCOL" });
+          };
+          const systemShell = exactCanarySafeCommand(p.command, safeToolNonce, safeToolShell);
+          const microsoftShell = safeToolPwsh && exactCanarySafeCommand(p.command, safeToolNonce, safeToolPwsh);
+          if (!safeToolOpen || phase !== "safe-tool" || p.threadId !== canaryThreadId
+            || typeof p.cwd !== "string" || !path.isAbsolute(p.cwd)
+            || path.normalize(p.cwd).toLowerCase() !== path.normalize(projectRoot).toLowerCase()
+            || (!systemShell && !microsoftShell)
+            || (p.kind != null && p.kind !== "command") || p.approvalId != null
+            || (p.environmentId != null && p.environmentId !== "local")
+            || p.networkApprovalContext != null
+            || (p.availableDecisions != null && (!Array.isArray(p.availableDecisions) || !p.availableDecisions.includes("accept")))
+            || typeof p.itemId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(p.itemId)) {
+            record("safe-tool-approval-scope", { thread: p.threadId === canaryThreadId,
+              cwd: typeof p.cwd === "string" && path.normalize(p.cwd).toLowerCase() === path.normalize(projectRoot).toLowerCase(),
+              command: Boolean(systemShell || microsoftShell), environment: p.environmentId == null || p.environmentId === "local",
+              approval: p.approvalId == null, network: p.networkApprovalContext == null,
+              kind: p.kind == null || p.kind === "command" });
+            throw refuse();
+          }
+          const bound = await withTimeout(safeToolBinding, rpcTimeoutMs, "Codex canary safe turn binding timed out");
+          if (!bound || !safeToolOpen || phase !== "safe-tool" || transport !== owner
+            || p.turnId !== bound || approvedToolItem || !observedToolItems.get(bound)?.has(p.itemId)) throw refuse("turn-item");
+          // Freeze one exact item before writing. An ambiguous reply is never
+          // retried as a second command/session approval or policy amendment.
+          approvedToolItem = p.itemId;
+          if (!await verifySafeCommand(p.command)) throw refuse("shell-signature");
+          if (!safeToolOpen || phase !== "safe-tool" || transport !== owner) throw refuse("closed");
+          await owner.respond(message.id, { decision: "accept" }, { expectedGeneration: owner.generation });
+          record("safe-tool-approval-response-flushed", { threadId: canaryThreadId, turnId: bound,
+            method: message.method, decision: "accept" });
+          return;
+        }
         if (message.method !== "mcpServer/elicitation/request") {
           throw Object.assign(new Error("Unexpected Codex canary client request"), {
             code: "CODEX_CANARY_PROTOCOL",
@@ -229,6 +298,34 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
           startWaiters.delete(id);
         }
         return;
+      }
+      if (message?.method === "item/started" && message.params?.item?.type === "commandExecution"
+        && safeToolOpen && message.params.threadId === canaryThreadId && safeIdentifier(message.params.turnId)) {
+        const items = observedToolItems.get(message.params.turnId) ?? new Set();
+        items.add(message.params.item.id); observedToolItems.set(message.params.turnId, items);
+      }
+      if (message?.method === "item/completed" && message.params?.item?.type === "commandExecution"
+        && safeToolOpen && phase === "safe-tool"
+        && message.params.threadId === canaryThreadId && safeIdentifier(message.params.turnId)
+        && message.params.item.exitCode === 0
+        && String(message.params.item.aggregatedOutput ?? "").trim() === safeToolNonce
+        && typeof message.params.item.id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(message.params.item.id)) {
+        const p = message.params, owner = transport;
+        const check = (async () => {
+          const bound = await safeToolBinding;
+          if (!bound || p.turnId !== bound || !observedToolItems.get(bound)?.has(p.item.id)) return;
+          if (approvedToolItem) {
+            if (p.item.id !== approvedToolItem) return;
+          } else if (typeof p.item.cwd !== "string" || !path.isAbsolute(p.item.cwd)
+            || path.normalize(p.item.cwd).toLowerCase() !== path.normalize(projectRoot).toLowerCase()
+            || (p.item.environmentId != null && p.item.environmentId !== "local")
+            || !await verifySafeCommand(p.item.command)) return;
+          if (!safeToolOpen || phase !== "safe-tool" || owner !== transport) return;
+          const items = safeToolItems.get(bound) ?? new Set();
+          items.add(p.item.id); safeToolItems.set(bound, items);
+        })();
+        safeToolChecks.push(check);
+        await check;
       }
       if (message?.method !== "turn/completed") return;
       const id = String(message.params?.turn?.id ?? message.params?.turnId ?? "").trim();
@@ -358,6 +455,7 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         ...codexTurnSandboxSettings("workspace-write", projectRoot),
       }, { timeoutMs: rpcTimeoutMs });
       const idOfTurn = turnId(result);
+      if (turnPhase === "safe-tool") bindSafeToolTurn(idOfTurn);
       record("turn-accepted", { phase: turnPhase, turnId: idOfTurn });
       return {
         id: idOfTurn,
@@ -396,6 +494,20 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
       await expectSuccessfulTurn(mcp);
       if (mcpReadCount !== 1) throw new Error(`Canary expected one Agent Hub MCP read, observed ${mcpReadCount}`);
 
+      let tool;
+      safeToolOpen = true;
+      try {
+        tool = await startTurn(createdThreadId,
+          `Use a shell execution tool exactly once. Use ${safeToolShell ?? "the standard shell"}${safeToolPwsh ? ` or Microsoft PowerShell at ${safeToolPwsh}` : ""} with -Command (optionally -NoProfile). The exact command body is on the next line:\nWrite-Output ${safeToolNonce}\nEnd of command body. Do not add quotes around the nonce, statements, redirection or other commands. Do not read or modify files, use MCP or call other tools. Then reply CANARY_TOOL_OK.`,
+          "safe-tool");
+        await expectSuccessfulTurn(tool);
+        // turn/completed may precede asynchronous fixed-shell verification.
+        // Settle the observed completion proof before closing this phase.
+        await Promise.all(safeToolChecks);
+      } finally { safeToolOpen = false; bindSafeToolTurn(null); }
+      safeToolCount = safeToolItems.get(tool.id)?.size ?? 0;
+      if (safeToolCount !== 1) throw new Error("Canary safe tool execution was not confirmed");
+
       const interrupted = await startTurn(
         createdThreadId,
         "Produce a detailed response of at least 10000 words.",
@@ -433,11 +545,14 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         turnIds: {
           ordinary: ordinary.id,
           mcp: mcp.id,
+          tool: tool.id,
           interrupted: interrupted.id,
           afterCancel: afterCancel.id,
           afterResume: afterResume.id,
         },
         mcpReadCount,
+        safeToolCount,
+        safeToolApprovalCount: approvedToolItem ? 1 : 0,
         healthRead: true,
         restartResume: true,
         protocolEvents,

@@ -54,9 +54,13 @@ async function fixture(context, {
   taskOperationReconciliation = null,
   releaseOperations = null,
   measureOperation = measureTaskOperation,
+  beforeRemoveDirectory = async () => {},
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(async () => {
+    await beforeRemoveDirectory();
+    await rm(directory, { recursive: true, force: true });
+  });
   const projectRoot = path.join(directory, "project");
   const streamWorkingDirectory = path.join(directory, "stream-working-directory");
   const workspaceWorkingDirectory = path.join(directory, "workspace-working-directory");
@@ -543,23 +547,14 @@ async function fixture(context, {
 
 async function preparationFixture(t) {
   const setup = await fixture(t, { releaseWorkflowEnabled: true });
-  setup.workspaceCatalog.checkpointMcpPreparation = (requestId, { state, expectedRevision }) => {
-    const row = setup.operations.get(requestId);
-    assert.equal(row.preparationState?.revision ?? 0, expectedRevision);
-    row.preparationState = structuredClone(state);
-    return structuredClone(row);
-  };
   const envelope = preparationEnvelope(setup.projectRoot);
   envelope.sourceClosureHash = (await readPreparationSourceClosure()).hash;
   setup.tasks.get("task-current").workflowStatus = "awaiting_implementation";
   let calls = 0;
-  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ validate, commitPrepared, requestId,
-    ownPreparation, beforeCompose }) => {
+  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ validate, commitPrepared, requestId }) => {
     calls += 1;
     assert.equal(setup.operations.get(requestId).status, "pending", "intake precedes composer");
     await validate();
-    await ownPreparation();
-    await beforeCompose();
     return commitPrepared({ planRevision: envelope.planRevision, taskIds: ["task-current"],
       releaseCandidates: [{ repositoryRoot: setup.projectRoot, preReleaseHead: "8".repeat(40),
         tree: envelope.repositories[0].approvedTree, baseCommit: envelope.repositories[0].approvedBaseCommit,
@@ -1916,7 +1911,7 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
   }]);
   const schema = service.tools().find((tool) => tool.name === "hub_task_operation_reconcile").inputSchema;
   assert.deepEqual(schema.required, [
-    "context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile",
+    "context_token", "request_id", "task_id", "operation_request_id", "project_root", "confirm_reconcile",
   ]);
   const terminalArgs = { ...args, request_id: "reconcile-command-terminal" };
   delete terminalArgs.guard_id;
@@ -2110,6 +2105,7 @@ test("HubMcpService claim keeps an unproven process-tree guard before every Task
 }, async (context) => {
   let guarded;
   const state = await fixture(context, {
+    beforeRemoveDirectory: () => guarded?.close(),
     taskGitWorkspacesFactory: async ({ directory, streamWorkingDirectory }) => {
       await initializeTaskGitRepository(streamWorkingDirectory);
       guarded = await unprovenProcessTaskGit({

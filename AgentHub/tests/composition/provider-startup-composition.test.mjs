@@ -47,6 +47,12 @@ test("provider startup can skip the empty Telegram bootstrap Thread", async () =
   ]);
 });
 
+test("an idle transport update with no selected Thread never creates a replacement through the fenced ordinary port", async () => {
+  const { service, calls } = fixture();
+  assert.equal(await service.attachCodexThread({ sendRpc: async () => { throw new Error("unexpected RPC"); } }), false);
+  assert.deepEqual(calls, []);
+});
+
 test("failed startup catalog retries in background and a later complete response becomes available", async () => {
   const attempts = [];
   const { service } = fixture({ createInitialThreadOnStartup: false }, async ({ source }) => {

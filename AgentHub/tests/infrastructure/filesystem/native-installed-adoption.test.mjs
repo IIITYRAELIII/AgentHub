@@ -249,10 +249,10 @@ async function terminalAuthority(t, agreedOrigin = false, ownPublishedOrigin = f
 }
 
 test("ordinary Await checks native authority inside actual Task persistence and terminal repeat has no Git effects",
-  { timeout: 300000 }, t => terminalAuthority(t));
+  t => terminalAuthority(t));
 
 test("already agreed main origin reaches actual Await terminal CAS without invented adoption receipts",
-  { timeout: 300000 }, t => terminalAuthority(t, true));
+  t => terminalAuthority(t, true));
 
 test("own partial Git publication reaches actual Await CAS and preserves origin fencing",
   { timeout: 300000 }, t => terminalAuthority(t, false, true));
@@ -263,14 +263,14 @@ test("late native history completion keeps origin fencing before the actual Task
   const result = await run(process.execPath, ["--import",
     new URL("../../helpers/native-history-observer.mjs", import.meta.url).href,
     "--test", "--test-name-pattern=^already agreed main origin reaches", import.meta.filename],
-  { env: environment, windowsHide: true, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+  { env: environment, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /tests 3/u);
   assert.match(result.stdout, /pass 3/u);
   assert.match(result.stdout, /fail 0/u);
 });
 
-test("already agreed main origin survives Test and candidate reuse but refuses drift and malformed authority", { timeout: 240000 }, async t => {
+test("already agreed main origin survives Test and candidate reuse but refuses drift and malformed authority", async t => {
   const f = await fixture(t, undefined, undefined, true);
   assert.deepEqual(f.adoptions, []);
   assert.equal(f.p.approvedOriginMainCommit, f.main);
@@ -307,7 +307,7 @@ test("already agreed main origin survives Test and candidate reuse but refuses d
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
-test("ordinary Await derives exact selected adoption and installed source through existing owners", { timeout: 120000 }, async t => {
+test("ordinary Await derives exact selected adoption and installed source through existing owners", async t => {
   const f = await fixture(t);
   const base = await f.service.releaseBaseEvidence({ projectRoot: f.primary,
     publishedBaseCommit: f.published, tasks: f.tasks });
@@ -383,7 +383,7 @@ test("native installed source and exact ordinary adoption survive Test, candidat
   assert.equal(terminalWrites, 0);
 });
 
-test("native composition rejects substituted receipts, changed snapshot and post-validation origin drift", { timeout: 240000 }, async t => {
+test("native composition rejects substituted receipts, changed snapshot and post-validation origin drift", async t => {
   const f = await fixture(t), verify = () => assertInstalledLocalSourceBaseline({ provenance: f.p, git: f.port,
     repositoryRoot: f.primary, primaryMainCommit: f.main, publishedRevision: f.published,
     planRevision: "exact", tasks: f.tasks, runtimeRoot: f.runtimeRoot });
@@ -420,7 +420,7 @@ test("native composition rejects substituted receipts, changed snapshot and post
   assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
 });
 
-test("an exact adoption never waives Task notes, modes, version changes or a foreign merge side", { timeout: 120000 }, async t => {
+test("an exact adoption never waives Task notes, modes, version changes or a foreign merge side", async t => {
   const f = await fixture(t);
   const verify = async label => {
     const resultCommit = await git(f.task.projectRoot, ["rev-parse", "HEAD"]);

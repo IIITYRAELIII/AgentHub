@@ -39,8 +39,42 @@ export function testFileCheckpointStore(file = testFileCheckpointFile()) {
   };
 }
 
+function testFailureFacts(error, depth = 0) {
+  if (!error || typeof error !== "object") return { name: "NonErrorFailure" };
+  try {
+    const facts = Object.fromEntries(
+      ["name", "code", "signal", "syscall", "killed", "testPhase", "testExecutionSucceeded", "processTreeStopped"]
+        .filter(key => ["string", "number", "boolean"].includes(typeof error[key]))
+        .map(key => [key, typeof error[key] === "string" ? error[key].slice(0, 128) : error[key]]));
+    if (typeof error.testRoot === "string") {
+      facts.testRoot = error.testRoot.slice(0, 1024);
+      if (error.testRoot.length > 1024) facts.testRootTruncated = true;
+      if (typeof error.path === "string") {
+        const relative = path.relative(error.testRoot, error.path);
+        if (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`)) {
+          facts.path = error.path.slice(0, 1024);
+          if (error.path.length > 1024) facts.pathTruncated = true;
+        }
+      }
+    }
+    if (error.testChild) facts.child = Object.fromEntries(
+      ["pid", "requestedAt", "spawnedAt", "exitedAt", "closedAt", "code", "signal", "errorCode"]
+        .filter(key => ["string", "number"].includes(typeof error.testChild[key]))
+        .map(key => [key, typeof error.testChild[key] === "string" ? error.testChild[key].slice(0, 128) : error.testChild[key]]));
+    if (depth < 2) {
+      if (error.cause) facts.cause = testFailureFacts(error.cause, depth + 1);
+      if (Array.isArray(error.errors)) {
+        facts.errors = error.errors.slice(0, 4).map(value => testFailureFacts(value, depth + 1));
+        if (error.errors.length > 4) facts.omittedErrors = error.errors.length - 4;
+      }
+    }
+    return facts;
+  } catch { return { name: "UninspectableFailure" }; }
+}
+
 export async function runCheckpointedTestFiles(files, {
   suite,
+  suiteForFile = () => suite,
   identity = "",
   run,
   checkpoint = null,
@@ -51,6 +85,8 @@ export async function runCheckpointedTestFiles(files, {
   maxEntries = 2_000,
   concurrency = 1,
   execution = async () => ({ parallel: false, shared: [] }),
+  admission = null,
+  onFile = () => {},
 } = {}) {
   const saved = checkpoint && identity ? await checkpoint.read() : null;
   // Legacy hashes omitted IO inputs and toolchains, so never upgrade them into
@@ -73,15 +109,23 @@ export async function runCheckpointedTestFiles(files, {
     value.completedFingerprints[entry.file] = entry.fingerprint;
     value.completedAt[entry.file] = entry.timestamp;
   }
-  const savedSuite = state.suites?.[suite];
-  const selected = new Set(files);
-  const completedFingerprints = Object.fromEntries(Object.entries(savedSuite?.completedFingerprints ?? {}).filter(([file]) => selected.has(file)));
-  const completedAt = { ...(savedSuite?.completedAt ?? {}) };
+  const suites = new Map();
+  for (const file of files) {
+    const name = suiteForFile(file);
+    if (!suites.has(name)) {
+      const savedSuite = state.suites[name];
+      suites.set(name, { savedSuite,
+        completedFingerprints: { ...(savedSuite?.completedFingerprints ?? {}) },
+        completedAt: { ...(savedSuite?.completedAt ?? {}) } });
+    }
+  }
   const failures = [];
   const pending = [];
   const normalizedConcurrency = Math.max(1, Math.floor(Number(concurrency) || 1));
 
   for (const [index, file] of files.entries()) {
+    const suiteName = suiteForFile(file);
+    const { savedSuite, completedFingerprints, completedAt } = suites.get(suiteName);
     const fingerprintResult = await fingerprint(file);
     const currentFingerprint = typeof fingerprintResult === "string"
       ? fingerprintResult : fingerprintResult?.fingerprint ?? null;
@@ -101,8 +145,10 @@ export async function runCheckpointedTestFiles(files, {
     const policy = await execution(file);
     pending.push({
       file,
+      suiteName,
       index,
       currentFingerprint,
+      queuedAt: now(),
       parallel: policy?.parallel === true,
       shared: new Set(Array.isArray(policy?.shared) ? policy.shared : []),
     });
@@ -111,14 +157,13 @@ export async function runCheckpointedTestFiles(files, {
   let persist = Promise.resolve();
   let persistenceError = null;
   const persistState = () => {
-    state.suites = {
-      ...state.suites,
-      [suite]: {
-        completedFingerprints,
-        completedAt,
-        failedFiles: failures.map((failure) => failure.file),
-      },
-    };
+    for (const [name, value] of suites) {
+      state.suites[name] = {
+        completedFingerprints: value.completedFingerprints,
+        completedAt: value.completedAt,
+        failedFiles: failures.filter((failure) => failure.suiteName === name).map((failure) => failure.file),
+      };
+    }
     // Enforce the same count bound as new results arrive, not only next run.
     const all = Object.entries(state.suites).flatMap(([name, value]) => Object.keys(value.completedFingerprints).map((key) => ({ name, key, at: value.completedAt[key] })));
     for (const entry of all.sort((a, b) => b.at - a.at).slice(maxEntries)) {
@@ -145,22 +190,35 @@ export async function runCheckpointedTestFiles(files, {
   ];
   const executeOne = async (item) => {
     let error = null;
+    const startedAt = now();
     try {
       await run(item.file);
       if (item.currentFingerprint) {
+        const { completedFingerprints, completedAt } = suites.get(item.suiteName);
         completedFingerprints[item.file] = item.currentFingerprint;
         completedAt[item.file] = now();
       }
     } catch (caught) {
       error = caught;
-      failures.push({ file: item.file, error: caught, index: item.index });
+      failures.push({ file: item.file, suiteName: item.suiteName, error: caught, index: item.index });
     } finally {
       active.delete(item);
+      admission?.finished();
+      const finishedAt = now();
       await persistState();
+      onFile({ file: item.file, suite: item.suiteName, waitMs: startedAt - item.queuedAt,
+        runMs: finishedAt - startedAt, outcome: error ? "failed" : "passed",
+        ...(error ? { failure: testFailureFacts(error) } : {}),
+      });
     }
     return error;
   };
   const running = new Set();
+  let resourceChange = null;
+  let admissionError = null;
+  const changed = () => resourceChange ??= admission.changed()
+    .finally(() => { resourceChange = null; });
+  try {
   while (ordered.length || running.size) {
     if (persistenceError) {
       await Promise.all(running);
@@ -170,18 +228,36 @@ export async function runCheckpointedTestFiles(files, {
     while (ordered.length && running.size < normalizedConcurrency) {
       const candidateIndex = ordered.findIndex((item) => !conflicts(item));
       if (candidateIndex < 0) break;
+      if (admission && !await admission.canStart()) break;
       const [item] = ordered.splice(candidateIndex, 1);
       active.add(item);
+      admission?.started();
       const operation = executeOne(item).finally(() => running.delete(operation));
       running.add(operation);
       launched = true;
     }
-    if (running.size) await Promise.race(running);
+    if (admission) await Promise.race([...running, changed()]);
+    else if (running.size) await Promise.race(running);
     else if (!launched && ordered.length) throw new Error("Test scheduler cannot make progress");
+  }
+  } catch (error) {
+    // Monitoring/persistence failure stops new admission. In-flight tests keep
+    // their original execution and successful checkpoints; never retry them.
+    admissionError = error;
+    await Promise.all(running);
+  } finally {
+    if (resourceChange) {
+      try { await resourceChange; } catch (error) { admissionError ??= error; }
+    }
   }
 
   // A wholly reused suite still persists pruning and its current release ID.
   if (checkpoint && identity) await persistState();
+
+  if (admissionError) {
+    throw new AggregateError([admissionError, ...(persistenceError ? [persistenceError] : []), ...failures.map(({ error }) => error)],
+      `${suite}: resource admission failed; ${ordered.length} file(s) not started: ${admissionError.message}`);
+  }
 
   if (persistenceError) {
     if (!failures.length) throw persistenceError;
