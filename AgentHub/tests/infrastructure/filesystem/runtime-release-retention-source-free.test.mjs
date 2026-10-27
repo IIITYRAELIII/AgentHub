@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -113,6 +115,69 @@ test("source-free recipient updates retire exact old versions through original b
   assert.equal(store.get(admitted.operationId).revision, settledRevision);
   assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), pointerBytes);
   await service.close();
+});
+
+test("source-free classification refuses a manifest changed between classification and custody reads", async t => {
+  if (process.platform !== "win32") return t.skip("Windows recipient custody");
+  const f = await recipient(t);
+  await f.install(1);
+  const rollback = await f.prepare(2);
+  const rollbackFile = path.join(rollback.releaseRoot, "runtime-manifest.json");
+  const rollbackManifest = JSON.parse(await readFile(rollbackFile, "utf8"));
+  rollbackManifest.sourceRoot = path.join(f.root, "independent-source");
+  await mkdir(rollbackManifest.sourceRoot);
+  await writeFile(rollbackFile, JSON.stringify(rollbackManifest));
+  await installPreparedRuntime({ runtimeRoot: f.runtimeRoot, ...rollback });
+  const current = await f.prepare(3);
+  const currentFile = path.join(current.releaseRoot, "runtime-manifest.json");
+  const manifest = JSON.parse(await readFile(currentFile, "utf8"));
+  manifest.sourceRoot = path.join(f.runtimeRoot, "releases/zip-1");
+  await writeFile(currentFile, JSON.stringify(manifest));
+  await installPreparedRuntime({ runtimeRoot: f.runtimeRoot, ...current });
+  assert.equal(await verifyInstalledRuntime({ runtimeRoot: f.runtimeRoot, ...current }), true);
+  const original = await readFile(currentFile);
+  const { owner, service } = await f.open();
+  t.after(() => service.close());
+  const candidate = (await owner.list({ limit: 3, context: f.context })).items[0];
+  assert.deepEqual(await owner.preview({ candidate, context: f.context }),
+    { status: "retained", reason: "runtime-source-pinned" });
+  const sourceFree = JSON.parse(original);
+  delete sourceFree.sourceRoot;
+  const changed = Buffer.from(JSON.stringify(sourceFree));
+  const pointer = await readRuntimePointer(f.runtimeRoot);
+  assert.notEqual(hash(changed), pointer.runtimeRetention.current.manifestSha256);
+  assert.equal(hash(original), pointer.runtimeRetention.current.manifestSha256);
+  await writeFile(currentFile, changed);
+  const actualOpen = fs.open;
+  let firstOpened = false, restored = false;
+  // Real handles/bytes/custody; restore the installed source dependency only
+  // after the classification read closes, before the second capture opens it.
+  fs.open = async (...args) => {
+    const handle = await actualOpen(...args);
+    if (firstOpened || path.resolve(String(args[0])) !== path.resolve(currentFile)) return handle;
+    firstOpened = true;
+    const close = handle.close.bind(handle);
+    handle.close = async () => {
+      await close();
+      await writeFile(currentFile, original);
+      restored = true;
+    };
+    return handle;
+  };
+  syncBuiltinESMExports();
+  let observed;
+  try { observed = await owner.preview({ candidate, context: f.context }); }
+  finally {
+    fs.open = actualOpen;
+    syncBuiltinESMExports();
+    await writeFile(currentFile, original);
+  }
+  assert.equal(restored, true);
+  assert.deepEqual(await readFile(currentFile), original);
+  assert.deepEqual(observed, { status: "retained", reason: "runtime-pin-manifest-unknown" });
+  assert.deepEqual(await owner.preview({ candidate, context: f.context }),
+    { status: "retained", reason: "runtime-source-pinned" });
+  assert.ok(await readFile(path.join(f.runtimeRoot, "releases/zip-1/assets/000.txt")));
 });
 
 test("source-free pins reject changed custody, malformed manifests and unselected prepared bodies", async t => {

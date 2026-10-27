@@ -43,8 +43,8 @@ export class RuntimeReleaseRetention {
       // Every unretired/prepared manifest remains a conservative source pin.
       if (retired.has(entry.name) && !keep.has(entry.name)) continue;
       if (!entry.isDirectory() || entry.isSymbolicLink() || entry.name.includes(".staging-")) return "runtime-preparation-unresolved";
-      let manifest;
-      try { ({ manifest } = await readRuntimeManifest(path.join(runtimeLayout(this.runtimeRoot).releasesDir, entry.name))); }
+      let manifest, manifestSha256;
+      try { ({ manifest, sha256: manifestSha256 } = await readRuntimeManifest(path.join(runtimeLayout(this.runtimeRoot).releasesDir, entry.name))); }
       catch { return "runtime-pin-manifest-unavailable"; }
       if (manifest.releaseId !== entry.name) return "runtime-pin-manifest-unknown";
       if (!Object.hasOwn(manifest, "sourceRoot")) {
@@ -57,7 +57,9 @@ export class RuntimeReleaseRetention {
         let actual;
         try { actual = await captureRuntimeReleaseBinding(path.join(runtimeLayout(this.runtimeRoot).releasesDir, entry.name), entry.name); }
         catch { return "runtime-pin-manifest-unknown"; }
-        if (!sameRuntimeBinding(actual, installed)) return "runtime-pin-manifest-unknown";
+        // Classify the SAME raw manifest that matched installed custody, never
+        // an earlier source-free observation followed by a restored source pin.
+        if (manifestSha256 !== actual.manifestSha256 || !sameRuntimeBinding(actual, installed)) return "runtime-pin-manifest-unknown";
         continue;
       }
       if (!path.isAbsolute(manifest.sourceRoot ?? "")) return "runtime-pin-manifest-unknown";

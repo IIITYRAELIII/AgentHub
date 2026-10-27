@@ -24,6 +24,13 @@ Current/rollback/running pins, the installation lease, original pruning child,
 bounded native batches, partial reconciliation and unknown-data refusal remain.
 No repeated whole-body hash or production cleanup is part of this correction.
 
+Source-free classification and installed custody must refer to the same raw
+manifest SHA-256. If the manifest changes between classification and physical
+binding capture, the pin remains unknown even when the later bytes match the
+installed binding. A restored absolute source dependency cannot be skipped by
+an earlier source-free observation. A real-handle close barrier regression
+checks that refusal without invoking deletion or introducing a production seam.
+
 Behavioral coverage invokes the real recipient installation and verification
 contracts for four successive source-free manifests, then the existing service
 and native bounded retirement owner on isolated declared fixture bytes. It
