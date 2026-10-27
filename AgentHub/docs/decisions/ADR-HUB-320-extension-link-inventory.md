@@ -23,6 +23,12 @@ or replacing it. That write boundary is unchanged, including refusal when a new
 destination is itself redirected. Source revision ordering, exact rollback CAS,
 prepared-plan comparison, artifact hashes and retry identity remain unchanged.
 
+Inventory retains the validated registration name independently of its resolved
+read target. A current plan uses that registration name even when external
+storage has a different basename; current application and prepared duplicates
+resolve the existing registration to the actual installed directory. Neither
+the registration nor the external storage is rewritten.
+
 ## Evidence and limits
 
 A real Windows junction reproduces the original inventory refusal. The same

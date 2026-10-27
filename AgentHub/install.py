@@ -525,6 +525,7 @@ def _installed_vscode_extensions(package: dict, extensions_root: Path) -> list[d
                 installed_fingerprint = None
             installed.append({
                 "target": resolved,
+                "registrationName": candidate.name,
                 "version": installed_version,
                 "fingerprint": installed_fingerprint,
                 "provenance": read_extension_provenance(candidate),
@@ -584,7 +585,7 @@ def vscode_extension_install_plan(
             "provenance": newest["provenance"],
             "sourceFingerprint": newest["fingerprint"],
             "installedIdentity": installed_identity,
-            "targetName": newest["target"].name,
+            "targetName": newest["registrationName"],
         }
     if expected and expected != installed_identity:
         raise RuntimeError(
