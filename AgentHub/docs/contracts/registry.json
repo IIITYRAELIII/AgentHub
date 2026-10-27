@@ -305,7 +305,10 @@
         "tests/infrastructure/filesystem/runtime-release-retention*.test.mjs",
         "tests/infrastructure/filesystem/sealed-runtime-release.test.mjs",
         "src/infrastructure/persistence/task-turn-projection.mjs",
-        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs",
+        "docs/decisions/ADR-HUB-329-partial-git-publication-origin.md",
+        "tests/fixtures/own-git-publication-fixture.mjs",
+        "tests/infrastructure/persistence/own-git-publication.test.mjs"
       ]
     },
     {

@@ -258,6 +258,21 @@ No equal-main adoption receipt is created. Missing origin fields retain the
 original publication pin; foreign origin, non-array or substituted empty
 authority refuses. A sealed envelope never switches modes after drift.
 OWN publication remains an ancestor of the local source base.
+
+A validated OWN generation may already have published its exact Git candidate
+while runtime delivery remains partial or has been rolled back. The existing
+read-only release store can derive `ownGitPublication` from that original
+operation, immutable generation, applied validation and admitted exact publication
+target. The current remote commit/tree must equal that candidate; authorization,
+selected results, repository, agreed main and published baseline must agree.
+This is a Git fact, never full publication, runtime readiness or an adoption
+receipt. It neither resumes the original operation nor changes its hold, receipts,
+installed manifest, local main or Task base. The installed-source proof remains
+mandatory. Only the exact published commit supplies its historical metadata and
+history context. The same proof and current origin are reread before native Test,
+Await terminal CAS, prepared reuse and generation capture; drift refuses.
+Unrelated upstream commits retain ordinary audit/adoption requirements. See
+ADR-HUB-329-partial-git-publication-origin.
 Missing, substituted or changed pins refuse before promotion.
 
 The existing RM-only `hub_release_prepare` repository envelope may carry

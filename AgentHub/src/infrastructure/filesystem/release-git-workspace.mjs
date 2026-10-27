@@ -8,8 +8,9 @@ import { ReleasePreparationRejectedError } from "../../domain/release-preparatio
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
+import { readOwnGitPublicationOrigin } from "../persistence/release-operation-store.mjs";
 import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline,
-  assertInstalledAgreedMainOrigin, sourceBlobs } from "./local-source-baseline.mjs";
+  assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, sourceBlobs } from "./local-source-baseline.mjs";
 import { isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure } from "./runtime-manifest-verifier.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { inspectPublishedNotesArchive, archivePublishedNotesCheckout } from "./native-await-published-notes-recovery.mjs";
@@ -718,6 +719,7 @@ export class ReleaseGitWorkspaceService {
   #validationBundle = null;
   #validationReferenceRoot = null;
 
+  #publicationDataDir;
   constructor({
     dataDir, contourExternalEffects = null, environment = process.env,
     recoveryEvidenceWrite = (handle, value) => handle.writeFile(value, "utf8"),
@@ -728,6 +730,7 @@ export class ReleaseGitWorkspaceService {
     this.#recoveryEvidenceWrite = recoveryEvidenceWrite;
     this.#recoveryPhase = recoveryPhase;
     this.dataDir = canonicalPath(String(dataDir ?? ""));
+    this.#publicationDataDir = this.dataDir;
     this.verifyNativeResolutionReview = verifyNativeResolutionReview;
     this.releaseRepositoriesRoot = path.join(this.dataDir, "release-repositories");
     this.lastReconciliation = {
@@ -963,6 +966,7 @@ export class ReleaseGitWorkspaceService {
         environment: this.#environment,
         verifyNativeResolutionReview: this.verifyNativeResolutionReview,
       });
+      isolated.#publicationDataDir = this.#publicationDataDir;
       // Copy Git objects/refs only, never local repository configuration or
       // hooks. Git's clone protection remains enabled for the bundle transport.
       // The live primary still supplies identity and invariant checks.
@@ -1022,6 +1026,10 @@ export class ReleaseGitWorkspaceService {
       if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
         git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }),
         adoptions: historyAuthority.adoptions, originCommit: manifest.baseProvenance.approvedOriginMainCommit });
+      else if (manifest.baseProvenance?.ownGitPublication) await assertOwnGitPublicationOrigin({
+        provenance: manifest.baseProvenance, repositoryRoot: projectRoot, tasks,
+        readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }),
+        git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }) });
       else if (manifest.baseProvenance?.adoptions) await assertInstalledAgreedMainOrigin({
         provenance: manifest.baseProvenance,
         git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }) });
@@ -1113,6 +1121,7 @@ export class ReleaseGitWorkspaceService {
           environment: this.#environment,
           verifyNativeResolutionReview: this.verifyNativeResolutionReview,
         });
+        isolated.#publicationDataDir = this.#publicationDataDir;
         if (ephemeral) isolated.#validationReferenceRoot = sourceRoot;
         else isolated.#validationBundle = bundle;
         const validatePrepared = async () => {
@@ -1552,7 +1561,8 @@ export class ReleaseGitWorkspaceService {
     const provenance = await installedNativeHistoryBaseline({ git,
       sourceGit: (cwd, args) => runGit(args, { cwd, timeoutMs: 300_000 }),
       repositoryRoot: initial.root, primaryMainCommit: initial.mainCommit, publishedRevision,
-      runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual });
+      runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual,
+      readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }) });
     if (!provenance && pins.length) throw new Error("Ordinary adopted Await has no verified installed source baseline");
     return provenance;
   }
@@ -1563,6 +1573,7 @@ export class ReleaseGitWorkspaceService {
     this.#assertAvailable("assertPrimaryInvariant");
     assertPrimarySnapshot(initial, "local source baseline verification");
     return assertInstalledLocalSourceBaseline({ provenance, planRevision, tasks,
+      readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }),
       repositoryRoot: initial.root,
       primaryMainCommit: initial.mainCommit,
       publishedRevision: await durablePublishedRevision(this.#environment, initial.root),
@@ -1574,7 +1585,8 @@ export class ReleaseGitWorkspaceService {
   async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks }) {
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
       const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
-      return { bases: [verified.provenance.sourceBaseCommit], metadataBases: [verified.provenance.sourceBaseCommit],
+      return { bases: [verified.provenance.sourceBaseCommit,
+        ...(verified.provenance.ownGitPublication ? [verified.provenance.ownGitPublication.commit] : [])], metadataBases: verified.metadataBases,
         adoptions: verified.adoptions ?? [] };
     }
     const initial = await primarySnapshot(projectRoot);
@@ -1704,6 +1716,7 @@ export class ReleaseGitWorkspaceService {
       }
       const validateLocalSource = async () => {
         if (localSource) await assertInstalledLocalSourceBaseline({ provenance: localSource, git,
+          readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }),
           repositoryRoot: initial.root,
           adoptionGit: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
           primaryMainCommit: (await primarySnapshot(initial.root)).mainCommit,
@@ -1802,6 +1815,10 @@ export class ReleaseGitWorkspaceService {
         if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
           git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
           adoptions: historyAuthority.adoptions, originCommit: localSource.approvedOriginMainCommit });
+        else if (localSource?.ownGitPublication) await assertOwnGitPublicationOrigin({ provenance: localSource,
+          repositoryRoot: initial.root, tasks,
+          readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }),
+          git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }) });
         else if (localSource?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: localSource,
           git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }) });
         if (nativeAwaitRecovery) {

@@ -51,6 +51,22 @@ function normalizedAdoption(value) {
   return adoption;
 }
 
+export function normalizedOwnGitPublication(value) {
+  const fields = ["kind", "operationId", "generation", "identitySha256", "repositoryRoot",
+    "publishedBaseCommit", "agreedMainCommit", "commit", "tree"];
+  if (!value || Object.keys(value).length !== fields.length || fields.some(key => !Object.hasOwn(value, key))) {
+    throw new Error("Invalid exact OWN Git publication proof");
+  }
+  const proof = Object.fromEntries(fields.map(key => [key, key === "generation" ? value[key] : text(value[key])]));
+  if (proof.kind !== "validated-own-git-publication-v1" || !proof.operationId || proof.operationId.length > 200
+      || !Number.isSafeInteger(proof.generation) || proof.generation < 1 || !proof.repositoryRoot
+      || !/^[a-f0-9]{64}$/u.test(proof.identitySha256)
+      || !["publishedBaseCommit", "agreedMainCommit", "commit", "tree"].every(key => COMMIT.test(proof[key]))) {
+    throw new Error("Invalid OWN Git publication pins");
+  }
+  return proof;
+}
+
 export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null) {
   if (value == null) return null;
   const kind = text(value?.kind);
@@ -59,10 +75,12 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
       "sourceBaseTree", "sourcePatchSha256", "installedReleaseId", "installedManifestSha256", "planRevision", "selectionHash"];
     const adopted = value.approvedOriginMainCommit != null || value.adoptions != null;
     if (adopted) fields.push("approvedOriginMainCommit", "adoptions");
+    if (value.ownGitPublication != null) fields.push("ownGitPublication");
     if (Object.keys(value).some(key => !fields.includes(key)) || fields.some(key => !Object.hasOwn(value, key))) {
       throw new Error("Invalid exact installed local source provenance");
     }
     const normalized = Object.fromEntries(fields.map(key => [key, key === "schemaVersion" ? value[key]
+      : key === "ownGitPublication" ? normalizedOwnGitPublication(value[key])
       : key === "adoptions" ? (Array.isArray(value[key]) ? value[key].map(normalizedAdoption)
         .sort((a, b) => a.taskId.localeCompare(b.taskId)) : []) : text(value[key])]));
     if (normalized.schemaVersion !== 1
@@ -75,11 +93,17 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
       throw new Error("Invalid installed local source provenance pins");
     }
     if (adopted && (!Array.isArray(value.adoptions) || !COMMIT.test(normalized.approvedOriginMainCommit)
-        || !normalized.adoptions.length && normalized.approvedOriginMainCommit !== normalized.agreedMainCommit
+        || !normalized.adoptions.length && normalized.approvedOriginMainCommit !== (normalized.ownGitPublication?.commit ?? normalized.agreedMainCommit)
         || new Set(normalized.adoptions.map(a => a.taskId)).size !== normalized.adoptions.length
         || normalized.adoptions.some(a => a.acceptedLocalMainCommit !== normalized.agreedMainCommit
           || a.adoptedCommit !== normalized.approvedOriginMainCommit))) {
       throw new Error("Invalid installed source selected adoption pins");
+    }
+    if (normalized.ownGitPublication && (!adopted || normalized.adoptions.length
+        || normalized.ownGitPublication.publishedBaseCommit !== normalized.publishedBaseCommit
+        || normalized.ownGitPublication.agreedMainCommit !== normalized.agreedMainCommit
+        || normalized.ownGitPublication.commit !== normalized.approvedOriginMainCommit)) {
+      throw new Error("Invalid installed source OWN Git publication binding");
     }
     return normalized;
   }

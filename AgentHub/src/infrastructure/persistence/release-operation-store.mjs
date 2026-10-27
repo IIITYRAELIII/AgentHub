@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { selectedCompositionIdentity } from "../../domain/task-selected-composition.mjs";
+import { normalizedOwnGitPublication } from "../../domain/release-base-provenance.mjs";
 
 import {
   createCandidateGeneration,
@@ -10,6 +11,7 @@ import {
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
+  releaseApprovedTargets,
   releaseOperationIsTerminal,
   restoreReleaseOperation,
   transitionReleaseOperation,
@@ -18,6 +20,68 @@ import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.
 import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
 
 const LEGACY_MIGRATION_PREFIX = "release-operation:legacy:";
+
+// Git publication is a narrower fact than successful runtime delivery. Reuse
+// existing immutable generation/receipt authority; never advance publication
+// state, main, an operation, or an installed runtime from this read.
+export function readOwnGitPublicationOrigin({ dataDir, repositoryRoot, localMainCommit,
+  publishedRevision, originCommit, taskIds = [] } = {}) {
+  if (![localMainCommit, publishedRevision, originCommit].every(value => /^[a-f0-9]{40}$/u.test(value ?? ""))
+      || !taskIds.length || !existsSync(runtimeDatabasePath(dataDir))) return null;
+  const rootKey = value => path.resolve(String(value)).replaceAll("\\", "/").toLowerCase();
+  const db = new DatabaseSync(runtimeDatabasePath(dataDir), { readOnly: true });
+  try {
+    db.exec("BEGIN");
+    if (db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('release_operations','release_operation_tasks','release_candidate_generations','release_step_receipts')").get().count !== 4) return null;
+    const rows = db.prepare(`SELECT o.operation_json, g.generation_json, g.identity_sha256
+      FROM release_operations o JOIN release_candidate_generations g ON g.operation_id=o.operation_id
+      WHERE EXISTS (SELECT 1 FROM release_operation_tasks t WHERE t.operation_id=o.operation_id
+        AND t.task_id IN (${taskIds.map(() => "?").join(",")}))
+      AND EXISTS (SELECT 1 FROM json_each(g.generation_json, '$.candidates') c
+        WHERE json_extract(c.value, '$.commit')=?)`).all(...taskIds, originCommit);
+    const matches = [];
+    for (const row of rows) {
+      const operation = JSON.parse(row.operation_json), generation = JSON.parse(row.generation_json);
+      const { fingerprint, ...authorization } = operation.authorization;
+      if (releaseIdentitySha256(authorization) !== fingerprint) throw new Error("OWN Git publication authorization changed");
+      const { identitySha256, ...contents } = generation;
+      if (identitySha256 !== row.identity_sha256 || releaseIdentitySha256(contents) !== identitySha256) {
+        throw new Error("OWN Git publication generation changed");
+      }
+      if (generation.operationId !== operation.operationId) continue;
+      const selected = items => items.map(item => `${item.taskId}:${item.resultCommit}`).sort();
+      if (JSON.stringify([...(generation.authorizedTaskIds ?? authorization.taskIds)].sort())
+          !== JSON.stringify(generation.selectedResults.map(item => item.taskId).sort())) continue;
+      const candidates = generation.candidates.filter(item => rootKey(item.repositoryRoot) === rootKey(repositoryRoot)
+        && item.commit === originCommit);
+      if (candidates.length !== 1) continue;
+      const candidate = candidates[0], manifest = candidate.manifest, provenance = manifest?.baseProvenance;
+      if (manifest?.workspaceId !== operation.workspaceId || manifest.compositionPolicy !== "main-selected-git-merge-v1"
+          || provenance?.publishedBaseCommit !== publishedRevision || provenance.agreedMainCommit !== localMainCommit
+          || JSON.stringify(selected(manifest.tasks ?? [])) !== JSON.stringify(selected(generation.selectedResults))) continue;
+      const targets = releaseApprovedTargets(restoreReleaseOperation(operation)).filter(target => target.kind === "agent-hub-publication"
+        && rootKey(target.repositoryRoot) === rootKey(repositoryRoot) && target.approvedLocalMainCommit === localMainCommit
+        && target.approvedOriginMainCommit === (provenance.approvedOriginMainCommit ?? publishedRevision));
+      if (targets.length !== 1) continue;
+      const receipts = db.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND generation=? AND step_id IN (?, ?)")
+        .all(operation.operationId, generation.generation, "validate", `publish:${targets[0].targetId}`)
+        .map(record => JSON.parse(record.receipt_json));
+      const exact = receipt => receipt.operationId === operation.operationId && receipt.generation === generation.generation
+        && receipt.input?.candidate === identitySha256 && receipt.inputSha256 === releaseIdentitySha256(receipt.input);
+      if (!receipts.some(receipt => exact(receipt) && receipt.stepId === "validate" && receipt.status === "applied")
+          || !receipts.some(receipt => exact(receipt) && receipt.stepId === `publish:${targets[0].targetId}`
+            && releaseIdentitySha256(receipt.input.target) === releaseIdentitySha256(targets[0]))) continue;
+      matches.push(normalizedOwnGitPublication({ kind: "validated-own-git-publication-v1",
+        operationId: operation.operationId, generation: generation.generation, identitySha256,
+        repositoryRoot: candidate.repositoryRoot, publishedBaseCommit: publishedRevision,
+        agreedMainCommit: localMainCommit, commit: candidate.commit, tree: candidate.tree }));
+    }
+    if (matches.length > 1) throw new Error("OWN Git publication origin is ambiguous");
+    return matches[0] ?? null;
+  } finally {
+    try { db.exec("ROLLBACK"); } finally { db.close(); }
+  }
+}
 
 // Read-only OWN publication fact: immutable original, validated generation and
 // descriptor matching the actual remote, independent of later operation state.
