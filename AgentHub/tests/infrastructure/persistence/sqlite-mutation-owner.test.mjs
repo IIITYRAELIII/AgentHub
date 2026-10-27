@@ -11,6 +11,7 @@ import { StreamHandoffService } from "../../../src/application/stream-handoff-se
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { HubMcpService } from "../../../src/application/hub-mcp-service.mjs";
 import { WorkspaceReleaseService } from "../../../src/application/workspace-release-service.mjs";
+import { ReleaseOperationFinalization } from "../../../src/application/release-operation-finalization.mjs";
 import { taskReleasePlan } from "../../../src/domain/task-release-snapshot.mjs";
 import { ProviderTaskCatalogBuilder } from "../../../src/providers/provider-task-catalog-builder.mjs";
 import { CodexSparkTaskClassifier } from "../../../src/providers/codex/codex-spark-task-classifier.mjs";
@@ -435,6 +436,69 @@ test("public MCP checklist success has a durable receipt and exact replay after 
     }), /revision changed/u);
     assert.deepEqual(board.task(parent.id), beforeRefusal);
   } finally { reopened.close(); }
+});
+
+test("durable release finalization uses the production Task mutation owner under contention", async (context) => {
+  const { root, databaseFile, rawTasks, taskOwner, taskBoard, workspace } = await fixture(context);
+  const accepted = await taskBoard.create({
+    text: "Published current result", source: "test", bucket: "workspace", workspaceId: workspace.id,
+  });
+  const corrected = await taskBoard.create({
+    text: "Later independent correction", source: "test", bucket: "workspace", workspaceId: workspace.id,
+  });
+  const unselected = await taskBoard.create({
+    text: "Unselected accepted result", source: "test", bucket: "workspace", workspaceId: workspace.id,
+  });
+  for (const [task, result] of [[accepted, "a"], [corrected, "b"], [unselected, "c"]]) {
+    await taskBoard.recordTaskGitReference({ taskId: task.id, projectRoot: root, branch: task.taskNumber,
+      resultSnapshot: { repoRoot: root, tree: result.repeat(40) } });
+  }
+  await taskBoard.setWorkflowStatus({ id: accepted.id, status: "awaiting_implementation" });
+  await taskBoard.setWorkflowStatus({ id: unselected.id, status: "awaiting_implementation" });
+  const correctionBefore = taskBoard.task(corrected.id);
+  const unselectedBefore = taskBoard.task(unselected.id);
+  const identities = [];
+  const runMutation = rawTasks.runMutation.bind(rawTasks);
+  rawTasks.runMutation = (operation, options) => {
+    identities.push(options);
+    return runMutation(operation, options);
+  };
+  const finalizer = new ReleaseOperationFinalization({
+    taskBoard,
+    releaseGitWorkspaces: { verifyPublishedPrimary: async () => ({ status: "preserved" }) },
+    taskGitWorkspaces: { synchronizeMainIntoDev: async () => ({ integrated: true }) },
+  });
+  const operation = { operationId: "production-owner-release", workspaceId: workspace.id,
+    authorization: { approvedTargets: [{ targetId: "production" }] },
+    publicationEffects: { targets: { production: { status: "applied", revision: "published" } } } };
+  const generation = { generation: 1, candidates: [{ repositoryRoot: root, commit: "published", planRevision: "plan" }],
+    selectedResults: [{ taskId: accepted.id, resultCommit: "a".repeat(40) },
+      { taskId: corrected.id, resultCommit: "a".repeat(40) }] };
+  await assert.rejects(() => finalizer.finalize({
+    operation: { ...operation, publicationEffects: { targets: {} } }, generation,
+  }), /missing target effects/u);
+  assert.equal(identities.length, 0);
+  const first = await underContention(databaseFile, () => finalizer.finalize({ operation, generation }));
+  assert.equal(first.status, "completed");
+  assert.equal(first.tasks.deliveries[0].closedCurrentTask, true);
+  assert.equal(first.tasks.deliveries[1].closedCurrentTask, false);
+  assert.equal(taskBoard.task(accepted.id).workflowStatus, "done");
+  assert.equal(taskBoard.task(accepted.id).status, "done");
+  assert.deepEqual(taskBoard.task(corrected.id), correctionBefore);
+  assert.deepEqual(taskBoard.task(unselected.id), unselectedBefore);
+  const acceptedAfter = taskBoard.task(accepted.id);
+  const replay = await finalizer.finalize({ operation, generation });
+  assert.equal(replay.tasks.alreadyFinalized, true);
+  assert.deepEqual(replay.tasks.deliveries, first.tasks.deliveries);
+  assert.deepEqual(taskBoard.task(accepted.id), acceptedAfter);
+  assert.deepEqual(taskBoard.task(corrected.id), correctionBefore);
+  assert.deepEqual(taskBoard.task(unselected.id), unselectedBefore);
+  const completions = identities.filter((value) => value.method === "completeReleaseOperation");
+  assert.equal(completions.length, 2);
+  assert.equal(new Set(completions.map((value) => value.requestId)).size, 1);
+  assert.ok(rawTasks.mutationDiagnostics().retries > 0);
+  assert.equal(isTaskBoardMutationOwner(taskOwner), true);
+  assert.equal(taskOwner.runMutation, undefined);
 });
 
 test("ordinary SQL owner still rejects an asynchronous callback", async (context) => {

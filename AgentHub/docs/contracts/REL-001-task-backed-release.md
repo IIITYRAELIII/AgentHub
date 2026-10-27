@@ -876,6 +876,12 @@ delivery evidence for the exact published result and marks Done only when the
 Task still names that result. A newer result or workflow transition is never
 overwritten by an older generation.
 
+The production Task mutation owner classifies `completeReleaseOperation` as a
+synchronous SQL mutation. Its existing bounded queue retries that transaction
+under contention with the same operation/generation identity; publication and
+Git synchronization remain outside SQL retry. Repetition reads the existing
+finalization marker and cannot close a newer or unselected Task result.
+
 No prepared, freezing, frozen, failed or awaiting-finalization snapshot blocks
 Task edits or Await acceptance. Await preparation serializes under its
 Workspace/Task/repository locks (ADR-0079); release validation and publication
