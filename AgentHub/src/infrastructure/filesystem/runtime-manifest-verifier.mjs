@@ -8,6 +8,12 @@ import { manifestVersionIdentity } from "../../domain/agent-hub-version.mjs";
 
 const MODULE_FILE_PATTERN = /\.(?:cjs|mjs)$/iu;
 
+export const RELEASE_PROGRESS_RUNTIME_ASSETS = Object.freeze([
+  "release-progress/server.mjs", "release-progress/reader.mjs", "release-progress/identity.mjs",
+  "release-progress/index.html", "release-progress/app.js", "release-progress/style.css",
+]);
+const RELEASE_PROGRESS_RUNTIME_FILES = new Set(RELEASE_PROGRESS_RUNTIME_ASSETS);
+
 const RUNTIME_TOP_LEVEL_FILES = new Set([
   "AGENT_HUB_GUIDE.md",
   "package.json",
@@ -36,7 +42,7 @@ function normalizedRelative(value) {
 export function isRuntimeSourceModule(relative) {
   const file = normalizedRelative(relative);
   const name = path.posix.basename(file);
-  if (file.startsWith("assets/")) return MODULE_FILE_PATTERN.test(name);
+  if (file.startsWith("assets/") || RELEASE_PROGRESS_RUNTIME_FILES.has(file)) return MODULE_FILE_PATTERN.test(name);
   return /\.(?:cjs|mjs)$/u.test(name) && ((!file.includes("/") || file.startsWith("src/"))
       && !/\.(?:test|e2e\.test)\.(?:cjs|mjs)$/u.test(name)
       && file !== "syntax-check.mjs");
@@ -44,7 +50,8 @@ export function isRuntimeSourceModule(relative) {
 
 export function isRuntimeSourceFile(relative) {
   const file = normalizedRelative(relative);
-  return RUNTIME_TOP_LEVEL_FILES.has(file) || file.startsWith("assets/") || isRuntimeSourceModule(file);
+  return RUNTIME_TOP_LEVEL_FILES.has(file) || file.startsWith("assets/")
+    || RELEASE_PROGRESS_RUNTIME_FILES.has(file) || isRuntimeSourceModule(file);
 }
 
 export async function verifyRuntimeImportClosure(releaseRoot, files, {

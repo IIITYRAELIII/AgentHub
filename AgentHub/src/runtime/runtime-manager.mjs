@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { artifactVersionIdentity, SEMVER_BUILD_SCHEME } from "../domain/agent-hub-version.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
-import { isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
+import { RELEASE_PROGRESS_RUNTIME_ASSETS, isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { nextRuntimeReleaseVersion } from "../infrastructure/filesystem/runtime-release-version.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
@@ -34,8 +34,8 @@ const RUNTIME_MODULE_ASSETS = [
     "src/infrastructure/process/test-resource-accounting.cs"],
   ["src/infrastructure/process/codex-executable-custody.mjs",
     "src/infrastructure/process/codex-executable-custody.cs"],
-  ...['server.mjs', 'reader.mjs', 'identity.mjs', 'index.html', 'app.js', 'style.css']
-    .map(name => ['src/infrastructure/process/release-progress-monitor.mjs', `release-progress/${name}`]),
+  ...RELEASE_PROGRESS_RUNTIME_ASSETS
+    .map(asset => ["src/infrastructure/process/release-progress-monitor.mjs", asset]),
   ["src/infrastructure/filesystem/sealed-runtime-release.mjs",
     "src/infrastructure/filesystem/sealed-runtime-release.cs"],
   ["src/infrastructure/filesystem/sealed-transport-delete.mjs",
