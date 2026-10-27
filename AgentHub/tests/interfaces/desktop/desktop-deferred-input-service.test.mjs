@@ -24,6 +24,48 @@ function createService(item, overrides = {}) {
   return new DesktopDeferredInputService(dependencies);
 }
 
+test("an existing queued release event steers under its original IDs and an accepted retry has no effect", async () => {
+  const item = { id: "original-deferred", provider: "codex", threadId: "thread-original", streamId: "stream-original",
+    clientUserMessageId: "release:operation-original:88:operation.progress", conflictKind: "message-intake",
+    input: '<agent-hub-release-event>\n{"operationId":"operation-original","revision":88,"eventKind":"operation.progress"}\n</agent-hub-release-event>' };
+  const original = structuredClone(item);
+  const queuedInputs = new Map([[item.id, item]]);
+  const pendingInputs = new Map();
+  const calls = [];
+  let receipt;
+  const service = createService(item, {
+    pendingInputs, queuedInputs,
+    findReceiptByResultId: id => id === item.id && receipt ? { result: receipt } : null,
+    steerActiveInput: async request => {
+      calls.push(request);
+      assert.equal(pendingInputs.get(item.id), item, "existing owner persists the same item before provider dispatch");
+      return { accepted: true, steered: true, turnId: "current-turn", clientUserMessageId: request.clientUserMessageId };
+    },
+    updateReceipt: (value, state, result) => {
+      assert.equal(value.id, original.id);
+      assert.equal(value.clientUserMessageId, original.clientUserMessageId);
+      assert.equal(state, "steered");
+      receipt = { id: value.id, ...result };
+    },
+  });
+  const accepted = await service.handle({ id: original.id, action: "steer" });
+  assert.equal(accepted.steered, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].input, original.input);
+  assert.equal(calls[0].clientUserMessageId, original.clientUserMessageId);
+  assert.equal(item.input, original.input);
+  assert.equal(queuedInputs.has(original.id), false);
+  assert.equal(pendingInputs.has(original.id), false);
+  assert.equal((await service.handle({ id: original.id, action: "steer" })).steered, true);
+  assert.equal(calls.length, 1);
+
+  item.dispatchingAt = "2026-10-19T01:00:00.000Z";
+  queuedInputs.set(item.id, item);
+  await assert.rejects(service.handle({ id: original.id, action: "steer" }), /уже отправляется/u);
+  assert.equal(calls.length, 1);
+  assert.equal(queuedInputs.get(original.id), item);
+});
+
 test("Desktop deferred composer transfer preserves the whole structured draft before removal", async () => {
   const origin = {
     kind: "interstream",

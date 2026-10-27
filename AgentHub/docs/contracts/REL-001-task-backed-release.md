@@ -945,6 +945,22 @@ plus canonical digests rather than base64-expanding the document through the
 control transport. Composition re-reads and verifies the complete supported
 repository release notes without a separate byte ceiling; callers do not truncate or summarize them.
 
+Release-operation events use the existing Stream messenger's `steer` mode:
+an active managed turn receives durable exact-turn steering; without an active
+turn, ordinary Stream admission applies. Payload, event kinds, frequency and
+`release:<operationId>:<revision>:<eventKind>` identities remain unchanged.
+Intake/outbox acknowledgement is not provider-acceptance evidence. Completion,
+rotation, restart and ambiguous delivery retain the message owner's original
+identity and explicit reconciliation/decision rules. Existing queued events may
+use the supported explicit steer action only while unaccepted and not already
+dispatching; their original IDs and history are preserved. This never replays
+release effects or creates a replacement event/channel.
+The existing CommandTrace records event creation and intake under that same
+message ID, separately from the deferred owner's provider-dispatch span. Intake
+success is labelled separately from provider acceptance; failed/ambiguous intake
+retains its original error. Diagnostics contain bounded identity/status metadata,
+not event payloads or error messages, and sink failure cannot affect delivery.
+
 An already imported evidence-only orphan checkpoint may later receive a
 `primarySynchronizationProof` annotation from the primary synchronization owner.
 Replay first checks the complete evidence hash. Only an unowned `waiting`

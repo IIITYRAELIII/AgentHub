@@ -28,6 +28,276 @@ import { normalizedTaskSquashTransfer } from "../../src/domain/task-squash-trans
 import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
 import { taskRepositoryKey } from "../../src/domain/task-git-reference.mjs";
 
+import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
+import { DeferredInputController } from "../../src/application/deferred-input-controller.mjs";
+import { DeferredInputService } from "../../src/application/deferred-input-service.mjs";
+import { DeferredInputStore } from "../../src/application/deferred-input-store.mjs";
+import { MessageCommandLedgerStore } from "../../src/infrastructure/persistence/message-command-ledger-store.mjs";
+import { messageRequestFingerprint } from "../../src/infrastructure/persistence/message-receipts.mjs";
+import { CommandTraceSpanStore } from "../../src/infrastructure/persistence/command-trace-span-store.mjs";
+
+async function releaseDeliveryFixture(t) {
+  let deliver;
+  const traces = [];
+  const { service } = await fixture(t, {
+    releaseOperations: { setEventDelivery(value) { deliver = value; } },
+    recordCommandTrace: value => traces.push(value),
+  });
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub-release-delivery-"));
+  let ledger = new MessageCommandLedgerStore({ dataDir });
+  const store = new DeferredInputStore();
+  const receipts = new Map();
+  const providerReceipts = new Map();
+  const providerCalls = [];
+  const admissions = [];
+  const active = { id: "event-run", provider: "codex", streamId: "stream-1",
+    threadId: "thread-1", turnId: "event-turn", status: "running", executionOwner: "hub" };
+  let run = active;
+  let blocked = false;
+  let providerBehavior = async () => {};
+  const trace = {
+    recordBestEffort: value => traces.push(value),
+    startBestEffortSpan: value => ({ finish: result => traces.push({ ...value, ...result }) }),
+  };
+  const persist = async () => ledger.projectSnapshot({
+    pendingInputs: [...store.pending.values()], queuedInputs: [...store.queued.values()],
+    desktopMessageReceipts: [...receipts.values()],
+    activeRuns: run ? [run] : [],
+  });
+  const intake = new DeferredInputService({
+    store, persist, removeFiles: async () => {}, notify: async () => null, commandTrace: trace,
+    persistIntake: async (item, destination, receipt) => {
+      const result = ledger.accept({ item, destination, receipt });
+      if (!result.duplicate && receipt) receipts.set(item.clientUserMessageId, receipt);
+      return result;
+    },
+  });
+  const coordinator = new RunCoordinator({
+    taskRuns: { forTask: () => run && ["running", "finishing"].includes(run.status) ? run : null },
+    providers: { call: async (_provider, method, request) => {
+      assert.equal(method, "steerTurn");
+      providerCalls.push({ method, id: request.clientUserMessageId, turnId: request.run.turnId, input: request.input });
+      await providerBehavior(request);
+      const result = { accepted: true, steered: true, runId: request.run.id,
+        threadId: request.target.threadId, turnId: request.run.turnId,
+        clientUserMessageId: request.clientUserMessageId };
+      providerReceipts.set(request.clientUserMessageId, result);
+      return { turnId: result.turnId };
+    } },
+    externalActivity: async () => ({ state: "inactive" }), repositoryConflict: async () => null,
+    deferInput: (...args) => intake.defer(...args),
+    beginRun: async (_input, target) => ({ ...target, id: "idle-run", status: "running", executionOwner: "hub" }),
+    rollbackAdmission: async () => {},
+    launchTurn: async (next, input) => {
+      providerCalls.push({ method: "startTurn", id: next.clientUserMessageId, input });
+      next.turnId = "idle-turn";
+      next.providerStart = { turnId: next.turnId, state: "accepted-awaiting-first-event" };
+      run = next;
+    },
+    isRestartPending: () => blocked,
+  });
+  const controller = new DeferredInputController({
+    pendingInputs: store.pending, queuedInputs: store.queued,
+    isBlocked: async () => Boolean(coordinator.activeRun(active)) || blocked,
+    occupancy: target => coordinator.deferredOccupancy(target),
+    isSteerDispatchBlocked: async () => blocked,
+    steer: item => coordinator.steer({ input: item.input, target: item, clientUserMessageId: item.clientUserMessageId }),
+    start: item => coordinator.startDeferred(item),
+    findSteered: async item => providerReceipts.get(item.clientUserMessageId) ?? null,
+    persist, updateMessage: async () => {}, pendingKeyboard: () => ({}), notifyReturned: async () => {},
+    onStateChange: (item, state, result) => {
+      const prior = receipts.get(item.clientUserMessageId);
+      if (!prior) return;
+      if (state === "steered") receipts.set(item.clientUserMessageId, { ...prior, result });
+      if (state === "started") receipts.set(item.clientUserMessageId, { ...prior,
+        result: { accepted: true, runId: result.id, turnId: result.turnId, providerAccepted: true } });
+    },
+    commandTrace: trace, setTimeoutImpl: () => 0, clearTimeoutImpl: () => {},
+  });
+  service.setStreamMessenger(async (params, context) => {
+    admissions.push({ params: structuredClone(params), context: structuredClone(context) });
+    const target = { provider: "codex", streamId: params.streamId, threadId: run?.threadId ?? "thread-1",
+      clientSource: context.source, telegramDeliveryRequested: false, messageOrigin: context.messageOrigin };
+    return coordinator.acceptClientInput({ input: params.text, target,
+      clientUserMessageId: params.clientUserMessageId, followUpMode: params.followUpMode,
+      messageFingerprint: await messageRequestFingerprint(params) });
+  });
+  t.after(async () => { ledger.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const event = { operationId: "release-original", revision: 7, eventKind: "operation.progress",
+    createdAt: new Date().toISOString(),
+    streamId: "stream-1", threadId: "thread-1", payload: { state: "validate", nextAction: "validate candidate" } };
+  return { event, active, store, controller, coordinator, service, providerCalls, providerReceipts, admissions, traces,
+    deliver: (value = event) => deliver(value),
+    ledger: () => ledger,
+    setRun: value => { run = value; }, setBlocked: value => { blocked = value; },
+    setProvider: value => { providerBehavior = value; },
+    reopen: () => {
+      ledger.close(); ledger = new MessageCommandLedgerStore({ dataDir });
+      const restored = ledger.overlay({ pendingInputs: [], queuedInputs: [] });
+      store.pending.clear(); store.queued.clear();
+      for (const item of restored.pendingInputs) store.pending.set(item.id, item);
+      for (const item of restored.queuedInputs) store.queued.set(item.id, item);
+    },
+  };
+}
+
+test("release notifications steer the active turn through durable intake before provider acceptance", async t => {
+  const f = await releaseDeliveryFixture(t);
+  const ack = await f.deliver();
+  assert.equal(ack.steerPending, true);
+  assert.equal(ack.queued, false);
+  assert.equal(f.providerCalls.length, 0, "intake acknowledgement is not provider acceptance");
+  assert.equal(f.ledger().get(ack.clientUserMessageId).state, "queued");
+  let release;
+  f.setProvider(() => new Promise(resolve => { release = resolve; }));
+  const dispatch = f.controller.process(ack.id);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.providerCalls.length, 1, "active turn need not finish before provider dispatch");
+  assert.equal(f.ledger().get(ack.clientUserMessageId).state, "dispatching");
+  assert.equal(f.providerReceipts.has(ack.clientUserMessageId), false);
+  release(); await dispatch;
+  const receipt = f.ledger().get(ack.clientUserMessageId);
+  assert.equal(receipt.state, "completed");
+  assert.equal(receipt.result.steered, true);
+  assert.equal(receipt.result.turnId, f.active.turnId);
+  assert.equal(f.active.status, "running");
+  assert.equal(f.providerCalls[0].id, "release:release-original:7:operation.progress");
+  assert.equal(f.providerCalls[0].input, f.admissions[0].params.text);
+  assert.equal(f.admissions[0].context.source, "release-operation");
+  assert.deepEqual(f.admissions[0].context.messageOrigin, { kind: "release-operation", sourceThreadId: "thread-1" });
+  assert.deepEqual(JSON.parse(f.admissions[0].params.text.split("\n")[1]), {
+    operationId: f.event.operationId, revision: 7, eventKind: f.event.eventKind, ...f.event.payload,
+  });
+  assert.ok(f.traces.some(value => value.commandId === ack.clientUserMessageId && value.stage === "durable-intake-enqueue"));
+  assert.ok(f.traces.some(value => value.commandId === ack.clientUserMessageId && value.stage === "dispatch" && value.outcome === "succeeded"));
+  assert.ok(f.traces.some(value => value.commandId === ack.clientUserMessageId && value.stage === "release-event-created"
+    && value.observedAtMs === Date.parse(f.event.createdAt)));
+  assert.ok(f.traces.some(value => value.stage === "release-event-intake" && value.outcome === "succeeded"
+    && value.metadata.intakeAccepted && !value.metadata.providerAccepted && value.metadata.steerPending));
+  await f.deliver(); await f.controller.process(ack.id);
+  assert.equal(f.providerCalls.length, 1, "outbox duplicate must retain original provider effect");
+});
+
+test("release notifications keep outcome and content privacy when diagnostics or intake fail", async t => {
+  const f = await releaseDeliveryFixture(t);
+  const failure = Object.assign(new Error("private event body must not be logged"), { code: "EVENT_TEST_FAILURE" });
+  f.service.setStreamMessenger(async () => { throw failure; });
+  await assert.rejects(f.deliver(), error => error === failure);
+  const result = f.traces.find(value => value.stage === "release-event-intake" && value.outcome === "unknown");
+  assert.equal(result.commandId, "release:release-original:7:operation.progress");
+  assert.equal(result.metadata.errorCode, failure.code);
+  assert.equal(JSON.stringify(f.traces).includes(failure.message), false);
+  assert.equal(JSON.stringify(f.traces).includes(f.event.payload.nextAction), false);
+  f.service.recordCommandTrace = () => { throw new Error("diagnostic sink unavailable"); };
+  await assert.rejects(f.deliver(), error => error === failure);
+  const receipt = { accepted: true, steerPending: true, providerAccepted: false };
+  f.service.setStreamMessenger(async () => receipt);
+  assert.equal(await f.deliver(), receipt);
+});
+
+test("release notifications persist creation, intake and provider dispatch under the original event ID", async t => {
+  const f = await releaseDeliveryFixture(t);
+  const ack = await f.deliver();
+  await f.controller.process(ack.id);
+  const failure = Object.assign(new Error("private transport failure"), { code: "EVENT_DELIVERY_FAILED" });
+  f.service.setStreamMessenger(async () => { throw failure; });
+  await assert.rejects(f.deliver(), error => error === failure);
+  const directory = await mkdtemp(path.join(os.tmpdir(), "release-event-trace-"));
+  let traceStore = new CommandTraceSpanStore({ databaseFile: path.join(directory, "traces.sqlite") });
+  try {
+    await traceStore.appendMany(f.traces);
+    await traceStore.close();
+    traceStore = new CommandTraceSpanStore({ databaseFile: path.join(directory, "traces.sqlite") });
+    const rows = await traceStore.readCommandTimeline(ack.clientUserMessageId);
+    assert.ok(rows.some(row => row.stage === "release-event-created" && row.observedAtMs === Date.parse(f.event.createdAt)));
+    assert.ok(rows.some(row => row.stage === "release-event-intake" && row.metadata.steerPending && !row.metadata.providerAccepted));
+    assert.ok(rows.some(row => row.stage === "dispatch" && row.outcome === "succeeded"));
+    assert.ok(rows.some(row => row.stage === "release-event-intake" && row.outcome === "unknown"
+      && row.metadata.errorCode === failure.code));
+    assert.equal(JSON.stringify(rows).includes(failure.message), false);
+    assert.equal(JSON.stringify(rows).includes(f.event.payload.nextAction), false);
+    assert.ok(rows.every(row => row.commandId === ack.clientUserMessageId));
+  } finally { await traceStore.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("release notifications retain exact pending steer through reconnect and refuse a completed or rotated target", async t => {
+  for (const rotated of [false, true]) {
+    const f = await releaseDeliveryFixture(t);
+    const ack = await f.deliver();
+    assert.equal(ack.steerPending, true);
+    f.reopen();
+    f.setRun(rotated ? { ...f.active, id: "later-run", threadId: "later-thread", turnId: "later-turn" } : null);
+    await f.controller.process(ack.id);
+    assert.equal(f.providerCalls.length, 0);
+    assert.equal(f.store.pending.get(ack.id).lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
+    assert.equal(f.store.pending.get(ack.id).clientUserMessageId, ack.clientUserMessageId);
+    assert.equal(f.store.pending.get(ack.id).steerTargetTurnId, "event-turn");
+  }
+});
+
+test("release notifications wait behind restart without losing steer and idle delivery keeps ordinary admission", async t => {
+  const active = await releaseDeliveryFixture(t);
+  active.setBlocked(true);
+  const ack = await active.deliver();
+  assert.equal(ack.steerPending, true);
+  await active.controller.process(ack.id);
+  assert.equal(active.providerCalls.length, 0);
+  active.reopen(); active.setBlocked(false);
+  await active.controller.process(ack.id);
+  assert.equal(active.providerCalls.length, 1);
+  assert.equal(active.ledger().get(ack.clientUserMessageId).result.steered, true);
+
+  const idle = await releaseDeliveryFixture(t);
+  idle.setRun(null);
+  const idleAck = await idle.deliver();
+  assert.equal(idleAck.queued, true);
+  assert.equal(idle.providerCalls.length, 0);
+  await idle.controller.process(idleAck.id);
+  assert.equal(idle.providerCalls[0].method, "startTurn");
+  assert.equal(idle.ledger().get(idleAck.clientUserMessageId).result.turnId, "idle-turn");
+});
+
+test("release notifications reconcile a lost accepted steer reply without replay across reopen", async t => {
+  const f = await releaseDeliveryFixture(t);
+  const ack = await f.deliver();
+  f.setProvider(request => {
+    f.providerReceipts.set(request.clientUserMessageId, { accepted: true, steered: true,
+      clientUserMessageId: request.clientUserMessageId, runId: f.active.id,
+      threadId: f.active.threadId, turnId: f.active.turnId });
+    throw Object.assign(new Error("lost provider reply"), { uncertain: true });
+  });
+  await f.controller.process(ack.id);
+  assert.equal(f.providerCalls.length, 1);
+  assert.equal(f.ledger().get(ack.clientUserMessageId).state, "dispatching");
+  f.reopen();
+  await f.controller.process(ack.id);
+  assert.equal(f.providerCalls.length, 1);
+  assert.equal(f.ledger().get(ack.clientUserMessageId).state, "completed");
+  assert.equal(f.ledger().get(ack.clientUserMessageId).result.steered, true);
+  await f.deliver();
+  assert.equal(f.providerCalls.length, 1);
+});
+
+test("release notifications preserve every event while ordinary explicit queue remains queued", async t => {
+  const f = await releaseDeliveryFixture(t);
+  const user = await f.coordinator.acceptClientInput({ input: "user next turn",
+    target: f.active, clientUserMessageId: "user-explicit-queue", followUpMode: "queue" });
+  assert.equal(user.queued, true);
+  for (const [offset, eventKind] of ["operation.progress", "operation.waiting", "operation.completed"].entries()) {
+    const event = { ...f.event, revision: 10 + offset, eventKind };
+    const ack = await f.deliver(event);
+    assert.equal(ack.steerPending, true);
+    await f.controller.process(ack.id);
+    assert.equal(f.ledger().get(ack.clientUserMessageId).result.steered, true);
+  }
+  assert.equal(f.providerCalls.length, 3);
+  assert.equal(f.store.queued.get(user.id).clientUserMessageId, "user-explicit-queue");
+  assert.deepEqual(f.providerCalls.map(call => call.id), [
+    "release:release-original:10:operation.progress", "release:release-original:11:operation.waiting",
+    "release:release-original:12:operation.completed",
+  ]);
+});
+
 function claimOnlyTaskGit(overrides = {}) {
   const service = {
     withTaskLock: async (_taskId, operation) => operation({
@@ -54,6 +324,7 @@ async function fixture(context, {
   taskOperationReconciliation = null,
   releaseOperations = null,
   measureOperation = measureTaskOperation,
+  recordCommandTrace = () => {},
   beforeRemoveDirectory = async () => {},
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
@@ -435,6 +706,7 @@ async function fixture(context, {
     : defaultTaskGitWorkspaces;
   const service = new HubMcpService({
     measureOperation,
+    recordCommandTrace,
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskGitWorkspaces, taskOperationReconciliation, releaseOperations,
     releasePlanner: {
