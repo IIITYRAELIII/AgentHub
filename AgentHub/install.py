@@ -504,9 +504,9 @@ def _installed_vscode_extensions(package: dict, extensions_root: Path) -> list[d
     for candidate in extensions_root.iterdir():
         if not candidate.is_dir() or not candidate.name.startswith(prefix):
             continue
+        # Inventory is read-only: existing installations may be directory links.
+        # Replacement targets are checked separately before any staging or write.
         resolved = candidate.resolve()
-        if candidate.is_symlink() or resolved.parent != extensions_root:
-            raise RuntimeError(f"Refusing unsafe installed extension path: {candidate}")
         try:
             installed_package = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
             installed_version = str(installed_package["version"])

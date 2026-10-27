@@ -269,6 +269,9 @@
       "title": "Task-backed Workspace release",
       "document": "REL-001-task-backed-release.md",
       "paths": [
+        "install.py",
+        "install_test.py",
+        "docs/decisions/ADR-HUB-320-extension-link-inventory.md",
         "release-progress/**",
         "tests/interfaces/release-progress*.test.mjs",
         "src/infrastructure/process/release-progress-monitor.mjs",

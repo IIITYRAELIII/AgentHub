@@ -328,6 +328,96 @@ class SecureInstallationTests(unittest.TestCase):
             self.assertTrue(newer_agent_hub.exists())
             self.assertTrue(unrelated.exists())
 
+    @staticmethod
+    def _link_extension_directory(link: Path, target: Path) -> None:
+        if sys.platform == "win32":
+            import subprocess
+            subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+                check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            link.symlink_to(target, target_is_directory=True)
+
+    def test_linked_extension_inventory_preserves_external_target_and_installs_fresh_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {"publisher": "test", "name": "agent-hub", "version": "1.0.0"}
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            (source / "extension.js").write_text("new content", encoding="utf-8")
+            home = Path(temp) / "home"
+            extensions = home / ".vscode" / "extensions"
+            extensions.mkdir(parents=True)
+            external = Path(temp) / "external" / "test.agent-hub-1.0.0"
+            external.mkdir(parents=True)
+            (external / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            (external / "extension.js").write_text("old content", encoding="utf-8")
+            before = {p.name: p.read_bytes() for p in external.iterdir()}
+            link = extensions / external.name
+            self._link_extension_directory(link, external)
+            try:
+                with (
+                    mock.patch.object(install, "ROOT", root),
+                    mock.patch("AgentHub.install.Path.home", return_value=home),
+                ):
+                    identity = install.installed_vscode_extension_identity()
+                    self.assertTrue(identity.startswith("legacy:"))
+                    plan = install.vscode_extension_install_plan(source_revision="a" * 40)
+                    self.assertEqual(identity, plan["installedIdentity"])
+                    self.assertEqual("test.agent-hub-1.0.1", plan["targetName"])
+                    self.assertEqual(before, {p.name: p.read_bytes() for p in external.iterdir()})
+                    target = install.install_vscode_extension(
+                        source_revision="a" * 40, prepared_plan=plan,
+                    )
+                    self.assertEqual(extensions.resolve() / "test.agent-hub-1.0.1", target)
+                    self.assertEqual("new content", (target / "extension.js").read_text(encoding="utf-8"))
+                    self.assertEqual(target, install.install_vscode_extension(
+                        source_revision="a" * 40, prepared_plan=plan,
+                    ))
+                self.assertEqual(external.resolve(), link.resolve())
+                self.assertEqual(before, {p.name: p.read_bytes() for p in external.iterdir()})
+            finally:
+                if sys.platform == "win32":
+                    link.rmdir()
+                else:
+                    link.unlink()
+
+    def test_extension_install_still_refuses_redirected_new_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {"publisher": "test", "name": "agent-hub", "version": "1.0.0"}
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            home = Path(temp) / "home"
+            extensions = home / ".vscode" / "extensions"
+            installed = extensions / "test.agent-hub-1.0.0"
+            installed.mkdir(parents=True)
+            (installed / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            external = Path(temp) / "outside"
+            external.mkdir()
+            (external / "package.json").write_text('{"name":"unrelated","version":"1.0.1"}', encoding="utf-8")
+            (external / "sentinel").write_bytes(b"preserve")
+            before = {p.name: p.read_bytes() for p in external.iterdir()}
+            link = extensions / "test.agent-hub-1.0.1"
+            self._link_extension_directory(link, external)
+            try:
+                with (
+                    mock.patch.object(install, "ROOT", root),
+                    mock.patch("AgentHub.install.Path.home", return_value=home),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "Refusing to replace unexpected extension path"):
+                        install.install_vscode_extension(source_revision="a" * 40)
+                self.assertEqual(before, {p.name: p.read_bytes() for p in external.iterdir()})
+                self.assertEqual([], list(extensions.glob(".*.staging-*")))
+            finally:
+                if sys.platform == "win32":
+                    link.rmdir()
+                else:
+                    link.unlink()
+
     def test_changed_extension_content_gets_a_new_install_version_automatically(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "agent-hub"

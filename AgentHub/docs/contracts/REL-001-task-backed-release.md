@@ -2129,6 +2129,15 @@ legacy completion-only runs keep their saved completion path. Remove that branch
 when no supported old pending publication remains. Standalone `publish:all` and
 `runtime:deploy` preserve combined deployment for their existing callers.
 
+
+Installed VS Code extension inventory may read an existing directory link or
+Windows junction after the ordinary package publisher/name/version checks. It
+retains the resolved installed identity and provenance without changing that
+registration or its external target. A changed package installs a fresh version
+inside the canonical extension directory; the existing replacement-path check
+still refuses a redirected new target before staging or writing. Existing linked
+versions remain owned by VS Code. See ADR-HUB-320-extension-link-inventory.
+
 The publication executor consumes the frozen manifest; it does not select Tasks
 or infer approval. Its durable journal retains exact candidate, validation mode,
 run ID, stage results, expected installed release, publication generation and
