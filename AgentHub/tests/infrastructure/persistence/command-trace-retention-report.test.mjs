@@ -35,15 +35,23 @@ test("startup removes old diagnostics after seven days even without an append", 
 
 test("idle worker expires spans without new traffic and releases its cleanup timer on close", async (context) => {
   const databaseFile = await fixture(context);
+  const fixedClockMs = 10_000;
+  const clockBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const clock = new Int32Array(clockBuffer);
+  Atomics.store(clock, 0, fixedClockMs);
   const store = new CommandTraceWorkerStore({ databaseFile, retentionMs: 80,
-    workerData: { cleanupIntervalMs: 10 }, logger: { warn() {} } });
+    workerUrl: new URL("../../fixtures/command-trace-clock-worker.mjs", import.meta.url),
+    workerData: { cleanupIntervalMs: 10, clockBuffer }, logger: { warn() {} } });
   try {
     await store.initialize();
-    await store.append(span("idle", { observedAtMs: Date.now() }));
+    await store.append(span("idle", { observedAtMs: fixedClockMs }));
     const readOnly = new DatabaseSync(databaseFile, { readOnly: true });
     try {
       const count = () => Number(readOnly.prepare("SELECT COUNT(*) AS n FROM command_trace_spans").get().n);
       assert.equal(count(), 1);
+      // Advance age after the initial read, independently of IPC scheduling.
+      // The real idle timer must prune; no append/prune request wakes the worker.
+      Atomics.store(clock, 0, fixedClockMs + 81);
       const deadline = Date.now() + 2_000;
       while (count() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(count(), 0);

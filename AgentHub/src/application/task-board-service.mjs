@@ -19,6 +19,13 @@ function withPinnedLast(order, workspaceId) {
   return [...order.filter((id) => id !== workspaceId), workspaceId];
 }
 
+function publicTaskCard(task) {
+  const sourceDetails = { ...(task.sourceDetails ?? {}) };
+  const attachments = taskAttachmentDescriptors(task);
+  delete sourceDetails.attachments;
+  return { ...task, sourceDetails, attachments, text: taskDisplayText(task) };
+}
+
 export class TaskBoardService {
   #triageTail = Promise.resolve();
   #checklistEventRecovery = Promise.resolve();
@@ -93,18 +100,12 @@ export class TaskBoardService {
     return task;
   }
 
-  snapshot() {
-    return this.store.list().map((task) => {
-      const sourceDetails = { ...(task.sourceDetails ?? {}) };
-      const attachments = taskAttachmentDescriptors(task);
-      delete sourceDetails.attachments;
-      return {
-        ...task,
-        sourceDetails,
-        attachments,
-        text: taskDisplayText(task),
-      };
-    });
+  card(id) {
+    return publicTaskCard(this.task(id));
+  }
+
+  snapshot({ includeDetails = false } = {}) {
+    return this.store.list({ includeDetails }).map(publicTaskCard);
   }
 
   workspaces() {
@@ -321,10 +322,10 @@ export class TaskBoardService {
 
   claim({
     id, workspaceId, streamId, provider, threadId, turnId, operationId,
-    operationKind = "claim", gitBaseline = null,
+    operationKind = "claim", gitBaseline = null, forwardCustodyRequestId = null, validateClaimAdmission = null,
   } = {}) {
     const result = this.store.claim(id, {
-      workspaceId, streamId, provider, threadId, turnId, operationId, operationKind, gitBaseline,
+      workspaceId, streamId, provider, threadId, turnId, operationId, operationKind, gitBaseline, forwardCustodyRequestId, validateClaimAdmission,
     });
     return this.#resolved(result, (task) => {
       const event = this.#event("task.claimed", task, { provider, threadId, turnId, operationId, operationKind });
@@ -365,6 +366,11 @@ export class TaskBoardService {
   lifecycleOutcome(operationId) {
     requiredMethod(this.store, "lifecycleOutcome");
     return this.store.lifecycleOutcome(operationId);
+  }
+
+  recordWorkflowAdmissionRefusal(payload) {
+    requiredMethod(this.store, "recordWorkflowAdmissionRefusal");
+    return this.store.recordWorkflowAdmissionRefusal(payload);
   }
 
   returnedNativeTestPriorResult(taskId) {

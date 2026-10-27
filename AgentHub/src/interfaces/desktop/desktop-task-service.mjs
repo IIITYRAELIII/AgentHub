@@ -35,7 +35,7 @@ function normalizedTaskReference(params = {}) {
 }
 
 function entryMatchesReference(entry, reference) {
-  if (reference.streamId) return String(entry?.streamId ?? "") === reference.streamId;
+  if (reference.streamId && String(entry?.streamId ?? "") !== reference.streamId) return false;
   return entry?.provider === reference.provider && entry?.threadId === reference.threadId;
 }
 
@@ -76,6 +76,11 @@ export class DesktopTaskService {
 
   #find(params, entries = this.catalog()) {
     const reference = normalizedTaskReference(params);
+    // A Stream route follows the catalog owner's head. An explicit Thread
+    // reference is exact; selection and catalog ordering are not head authority.
+    if (reference.streamId && !reference.provider && !reference.threadId) {
+      return this.#findCurrentStream(reference.streamId, entries);
+    }
     return entries.find((entry) => entryMatchesReference(entry, reference)) ?? null;
   }
 
@@ -91,11 +96,15 @@ export class DesktopTaskService {
 
   #findHistoricalThread(params, entries = this.catalog()) {
     const reference = normalizedTaskReference(params);
-    if (reference.streamId) return null;
-    return entries.find((entry) => entry?.streamId && this.threadsForStream(entry.streamId).some((thread) => (
+    const owner = entries.find((entry) => entry?.streamId
+      && (!reference.streamId || entry.streamId === reference.streamId)
+      && this.threadsForStream(entry.streamId).some((thread) => (
       String(thread?.provider ?? "") === reference.provider
       && String(thread?.threadId ?? "") === reference.threadId
     ))) ?? null;
+    // Retained historical links may have no separate catalog entry. They still
+    // resolve their owning Stream, never another Stream or its first old entry.
+    return owner ? this.#findCurrentStream(owner.streamId, entries) : null;
   }
 
   async #resolveOpenEntry(params) {

@@ -8,6 +8,13 @@ import { promisify } from "node:util";
 import { assertNativeTaskHistories } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 
 const exec = promisify(execFile);
+
+test("complete native selected history is checked beyond 512 commits", async () => {
+  const base = "a".repeat(40), result = "b".repeat(40);
+  const rows = Array.from({ length: 600 }, (_, i) => `${i === 0 ? result : i.toString(16).padStart(40, "0")} ${base}`).join("\n");
+  const port = async args => args[0] === "rev-list" ? rows : "";
+  await assertNativeTaskHistories({ git: port, baseCommit: base, tasks: [{ taskId: "selected", baseCommit: base, resultCommit: result }] });
+});
 async function git(cwd, args, options = {}) {
   const { stdout } = await exec("git", args, { cwd, encoding: "buffer", windowsHide: true });
   return options.rawOutput ? stdout : stdout.toString("utf8").trim();
@@ -22,7 +29,7 @@ async function commit(root) {
   return git(root, ["rev-parse", "HEAD"]);
 }
 
-test("literal NUL metadata paths refuse invented quoted notes/version and preserve inherited entries", { timeout: 60000 }, async t => {
+test("literal NUL metadata paths refuse invented quoted notes/version and preserve inherited entries", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-metadata-paths-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await git(root, ["init", "--initial-branch=main"]);

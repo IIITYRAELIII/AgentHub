@@ -101,7 +101,7 @@ test("Test prepares the Task once before snapshot and merge", async (t) => {
   }
 });
 
-test("a separate Task Test history refusal is durably failed before dev mutation", { timeout: 90_000 }, async (t) => {
+test("a separate Task Test history refusal is durably failed before dev mutation", async (t) => {
   const f = await fixture(t);
   const task = await f.create("Separate Task");
   const dev = await f.taskGitWorkspaces.prepareDev(f.primary);
@@ -119,7 +119,7 @@ test("a separate Task Test history refusal is durably failed before dev mutation
   assert.equal(await git(dev.projectRoot, "status", "--porcelain"), "");
 });
 
-test("real conflict saves a terminal failed lifecycle with file and revision evidence", { timeout: 90000 }, async (t) => {
+test("real conflict saves a terminal failed lifecycle with file and revision evidence", async (t) => {
   const f = await fixture(t);
   const a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "app.txt"), "A\n");
@@ -143,7 +143,7 @@ test("real conflict saves a terminal failed lifecycle with file and revision evi
   assert.equal(f.timings.find(event => event.operationId === "test-b" && event.stage === "workflow" && event.phase === "end").outcome, "error");
 });
 
-test("correction preserves its accepted result without touching another pending withdrawal", { timeout: 90000 }, async (t) => {
+test("correction preserves its accepted result without touching another pending withdrawal", async (t) => {
   const f = await fixture(t);
   const a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -174,7 +174,7 @@ test("correction preserves its accepted result without touching another pending 
   }), true);
 });
 
-test("native consolidation without an authenticated handoff refuses Test and preserves source archive", { timeout: 120000 }, async (t) => {
+test("native consolidation without an authenticated handoff refuses Test and preserves source archive", async (t) => {
   const f = await fixture(t);
   const origin = path.join(f.root, "origin.git");
   await git(f.root, "init", "--bare", "--initial-branch=main", origin);
@@ -204,7 +204,7 @@ test("native consolidation without an authenticated handoff refuses Test and pre
   assert.equal(await readFile(path.join(a.root, "a.txt"), "utf8"), "source work\n");
 });
 
-test("combined closure rejects missing source commits, dirty work and a separate source integration", { timeout: 90000 }, async (t) => {
+test("combined closure rejects missing source commits, dirty work and a separate source integration", async (t) => {
   const f = await fixture(t);
   const a = await f.create("Source"), b = await f.create("Target");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -218,9 +218,21 @@ test("combined closure rejects missing source commits, dirty work and a separate
     targetWorkflowStatus: "in_progress", expectedRevision: f.taskBoard.task(a.task.id).revision });
   f.taskBoard.commitWorkflowTransition({ operationId: "legacy-claim", replaceGitReferences: false });
   await assert.rejects(f.lifecycle.complete(options), /does not contain all source/);
-  await git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", await git(a.root, "rev-parse", "HEAD"));
-  await assert.rejects(f.status(b.task.id, "testing", "test-combined"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  const sourceHead = await git(a.root, "rev-parse", "HEAD");
+  const targetBefore = await git(b.root, "rev-parse", "HEAD");
+  const sourceBefore = f.taskBoard.task(a.task.id);
+  await git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", sourceHead);
+  const combinedHead = await git(b.root, "rev-parse", "HEAD");
   await assert.rejects(f.lifecycle.complete(options), /Surviving Task changed after Test/u);
+  // Known managed dev ancestry is valid for Test preview, but does not prove absorption.
+  const tested = await f.status(b.task.id, "testing", "test-combined");
+  assert.equal(tested.task.gitReferences[0].resultCommit, combinedHead);
+  assert.equal(await git(b.root, "show", "-s", "--format=%P", combinedHead), `${targetBefore} ${sourceHead}`);
+  assert.equal(await git(b.root, "show", `${combinedHead}:a.txt`), "A");
+  assert.equal(await git(b.root, "show", `${combinedHead}:b.txt`), "B");
+  await assert.rejects(f.lifecycle.complete(options), /Source Task still has a separate dev integration/u);
+  assert.deepEqual(f.taskBoard.task(a.task.id), sourceBefore);
+  assert.equal(f.taskBoard.lifecycleOutcome(options.operationId), null);
   await writeFile(path.join(a.root, "unfinished.txt"), "unsaved\n");
   await assert.rejects(f.lifecycle.complete(options), /Save the source/);
   assert.notEqual(f.taskBoard.task(a.task.id).status, "done");
@@ -228,7 +240,7 @@ test("combined closure rejects missing source commits, dirty work and a separate
 
 for (const [owner, change] of [["source", "dirty"], ["source", "commit"],
   ["survivor", "dirty"], ["survivor", "commit"]]) {
-  test(`unreviewed absorption preserves ${owner} ${change} work`, { timeout: 90000 }, async t => {
+  test(`unreviewed absorption preserves ${owner} ${change} work`, async t => {
     const f = await fixture(t), source = await f.create("Source"), survivor = await f.create("Survivor");
     for (const [task, file] of [[source, "source.txt"], [survivor, "survivor.txt"]]) {
       await writeFile(path.join(task.root, file), "saved work\n");
@@ -262,7 +274,7 @@ for (const [owner, change] of [["source", "dirty"], ["source", "commit"],
   });
 }
 
-test("a sibling branch cannot hide an unapproved upstream merge", { timeout: 90000 }, async (t) => {
+test("a sibling branch cannot hide an unapproved upstream merge", async (t) => {
   const f = await fixture(t);
   const a = await f.create("Source"), b = await f.create("Target");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -281,7 +293,7 @@ test("a sibling branch cannot hide an unapproved upstream merge", { timeout: 900
   assert.equal(await git(f.primary, "rev-parse", "dev"), before);
 });
 
-test("an accepted prerequisite remains available to its dependent during correction", { timeout: 90000 }, async (t) => {
+test("an accepted prerequisite remains available to its dependent during correction", async (t) => {
   const f = await fixture(t);
   const a = await f.create("Prerequisite"), b = await f.create("Dependent");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -297,7 +309,7 @@ test("an accepted prerequisite remains available to its dependent during correct
   assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "in_progress");
 });
 
-test("a corrected prerequisite remains accepted so its dependent can resume immediately", { timeout: 90000 }, async (t) => {
+test("a corrected prerequisite remains accepted so its dependent can resume immediately", async (t) => {
   const f = await fixture(t);
   const a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -328,7 +340,7 @@ test("a corrected prerequisite remains accepted so its dependent can resume imme
   await f.taskGitWorkspaces.prepare({ taskId: b.task.id, taskNumber: b.task.taskNumber, projectRoot: f.primary });
 });
 
-test("correction does not cascade into a dependent accepted Task", { timeout: 90000 }, async (t) => {
+test("correction does not cascade into a dependent accepted Task", async (t) => {
   const f = await fixture(t);
   const a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -366,7 +378,7 @@ test("a conflict diagnostic longer than 4000 characters still has a confirmed te
   assert.equal(f.taskBoard.lifecycleTransition("large-conflict").phase, "failed");
 });
 
-for (const committed of [false, true]) test(`old conflict keeps immutable accepted code (committed=${committed})`, { timeout: 90000 }, async (t) => {
+for (const committed of [false, true]) test(`old conflict keeps immutable accepted code (committed=${committed})`, async (t) => {
   const f = await fixture(t);
   const a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "app.txt"), "A\n");
@@ -374,6 +386,7 @@ for (const committed of [false, true]) test(`old conflict keeps immutable accept
   await writeFile(path.join(b.root, "app.txt"), "B\n");
   await assert.rejects(f.status(b.task.id, "testing", "conflict-b"), TaskIntegrationConflictError);
   const d1 = await git(f.primary, "rev-parse", "dev");
+  const bBefore = await git(b.root, "rev-parse", "HEAD");
   await assert.rejects(git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-commit", d1));
   await writeFile(path.join(b.root, "app.txt"), "A and B\n");
   if (committed) {
@@ -382,12 +395,19 @@ for (const committed of [false, true]) test(`old conflict keeps immutable accept
   }
   await f.status(a.task.id, "in_progress", "return-a");
   const before = await git(f.primary, "rev-parse", "dev");
-  await assert.rejects(f.status(b.task.id, "testing", "finish-b"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
-  assert.equal(await git(f.primary, "rev-parse", "dev"), before);
+  assert.equal(before, d1);
+  const acceptedA = f.taskBoard.task(a.task.id).gitReferences;
+  const resolved = await f.status(b.task.id, "testing", "finish-b");
+  const result = resolved.task.gitReferences[0].resultCommit;
+  assert.equal(await git(b.root, "show", "-s", "--format=%P", result), `${bBefore} ${d1}`);
+  assert.equal(await git(b.root, "show", `${result}:app.txt`), "A and B");
+  assert.equal(await git(f.primary, "show", `${testedA.task.gitReferences[0].resultCommit}:app.txt`), "A");
+  assert.deepEqual(f.taskBoard.task(a.task.id).gitReferences, acceptedA);
+  await git(f.primary, "merge-base", "--is-ancestor", before, "dev");
   await git(f.primary, "merge-base", "--is-ancestor", testedA.task.gitReferences[0].resultCommit, "dev");
 });
 
-test("correction leaves another Task pending operation untouched", { timeout: 90000 }, async (t) => {
+test("correction leaves another Task pending operation untouched", async (t) => {
   const f = await fixture(t);
   const a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "A\n");

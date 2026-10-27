@@ -346,7 +346,7 @@ export class DeferredInputController {
         this.onStateChange(item, "queued");
         await this.persist();
       }
-      const blocked = await this.isBlocked(item);
+      const blocked = await this.traceAdmissionStep(item, "deferred-eligibility", () => this.isBlocked(item));
       if (intentionallyPaused(item)) return;
       if (blocked) {
         if (item.waitReason === "provider-thread-active") {
@@ -363,7 +363,7 @@ export class DeferredInputController {
       delete item.laneReleased;
       item.dispatchingAt = new Date(this.now()).toISOString();
       this.onStateChange(item, "dispatching");
-      await this.persist();
+      await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persist());
       // A manual pause may arrive while eligibility or its durable save waits.
       // No provider call has happened yet, so leave the same item cancellable.
       if (intentionallyPaused(item)) {
@@ -467,6 +467,31 @@ export class DeferredInputController {
     }
   }
 
+  async traceAdmissionStep(item, stage, operation) {
+    let span;
+    try {
+      span = this.commandTrace?.startBestEffortSpan?.({
+        commandId: String(item.clientUserMessageId ?? ""),
+        transport: String(item.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
+        stage, recordStarted: true,
+      });
+    } catch { /* Diagnostics cannot affect eligibility. */ }
+    const finish = (outcome, error) => {
+      try { span?.finish({ outcome, metadata: error
+        ? { errorCode: /^[A-Z][A-Z0-9_]{0,63}$/u.test(String(error.code))
+          ? error.code : "ERR_DEFERRED_ADMISSION" } : {} }); }
+      catch { /* Preserve the owning operation's outcome. */ }
+    };
+    try {
+      const result = await operation();
+      finish("succeeded");
+      return result;
+    } catch (error) {
+      finish("failed", error);
+      throw error;
+    }
+  }
+
   async processSteer(item) {
     const id = item.id;
     if (item.dispatchingAt) {
@@ -509,7 +534,7 @@ export class DeferredInputController {
       return;
     }
 
-    const blocked = await this.isSteerDispatchBlocked(item);
+    const blocked = await this.traceAdmissionStep(item, "deferred-eligibility", () => this.isSteerDispatchBlocked(item));
     if (intentionallyPaused(item)) return;
     if (blocked) {
       item.blockedChecks = Number(item.blockedChecks ?? 0) + 1;
@@ -519,7 +544,7 @@ export class DeferredInputController {
     delete item.blockedChecks;
     item.dispatchingAt = new Date(this.now()).toISOString();
     this.onStateChange(item, "dispatching");
-    await this.persist();
+    await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persist());
     if (intentionallyPaused(item)) {
       delete item.dispatchingAt;
       await this.persist();

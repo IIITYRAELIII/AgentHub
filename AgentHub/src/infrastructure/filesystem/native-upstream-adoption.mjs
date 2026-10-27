@@ -14,11 +14,17 @@ const prefixes = (id, key) => [`refs/agent-hub/upstream-adoptions/${id}/${key}/`
 export async function readNativeUpstreamAdoptions({ git, tasks, repositoryRoot, localMainCommit }) {
   const key = taskRepositoryKey(repositoryRoot);
   const receipts = [];
+  // Read this mutable namespace afresh at each validation boundary. A single
+  // traversal replaces two Git processes per selected Task; no refs or receipt
+  // facts survive this invocation. Filter exact prefixes before parsing records.
+  const currentRefs = tasks.length ? String(await git([
+    "for-each-ref", "--format=%(refname)%00%(objectname)", "refs/agent-hub/upstream-adoptions/",
+  ])).split(/\r?\n/u).filter(Boolean).map(row => ({ row, ref: row.split("\0")[0] })) : [];
   for (const task of tasks) {
     const rows = [];
     for (const prefix of prefixes(task.taskId, key)) {
-      rows.push(...String(await git(["for-each-ref", "--format=%(refname)%00%(objectname)",
-        `${prefix}${task.resultCommit}/`])).split(/\r?\n/u).filter(Boolean));
+      rows.push(...currentRefs.filter(({ ref }) => ref.startsWith(`${prefix}${task.resultCommit}/`))
+        .map(({ row }) => row));
     }
     if (!rows.length) continue;
     const hashes = new Set(rows.map(row => row.split("\0")[1]));

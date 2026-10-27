@@ -12,6 +12,7 @@ import {
 import { usageTurnFactId } from "../../domain/usage-facts.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
+import { configureTaskTurnProjection } from "./task-turn-projection.mjs";
 
 const SCHEMA_VERSION = 3;
 const LEDGER_VERSION = 9;
@@ -154,6 +155,7 @@ function configure(database) {
         INSERT INTO journal_projection_dirty VALUES (COALESCE(OLD.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
       END;
     `);
+    configureTaskTurnProjection(database);
     database.exec("COMMIT");
   } catch (error) {
     try {
@@ -562,9 +564,11 @@ export class JournalDatabase {
   #observedRevision = null;
   #pollingRevision = false;
   #turnPageSnapshotHook;
+  #readOnly;
 
-  constructor(file, { turnPageSnapshotHook = null } = {}) {
+  constructor(file, { turnPageSnapshotHook = null, readOnly = false } = {}) {
     this.#file = path.resolve(file);
+    this.#readOnly = readOnly === true;
     this.#turnPageSnapshotHook = typeof turnPageSnapshotHook === "function"
       ? turnPageSnapshotHook
       : null;
@@ -574,11 +578,12 @@ export class JournalDatabase {
     if (this.#database) return this.#database;
     if (this.#opening) return this.#opening;
     this.#opening = (async () => {
-      await mkdir(path.dirname(this.#file), { recursive: true });
+      if (!this.#readOnly) await mkdir(path.dirname(this.#file), { recursive: true });
       let database;
       try {
-        database = new DatabaseSync(this.#file);
-        configure(database);
+        database = new DatabaseSync(this.#file, { readOnly: this.#readOnly });
+        if (this.#readOnly) database.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 0");
+        else configure(database);
       } catch (error) {
         database?.close();
         throw error;
@@ -1384,24 +1389,34 @@ export class JournalDatabase {
 
   async snapshot() {
     const database = await this.#open();
-    const payload = await this.payload();
-    if (!payload) return null;
-    return {
-      ...payload,
-      days: Object.fromEntries(database.prepare(
-        `SELECT date, html FROM journal_days ORDER BY ${JOURNAL_DAY_ORDER}`,
-      ).all().map((row) => [row.date, row.html])),
-      turns: Object.fromEntries(database.prepare(
-        "SELECT id, html FROM journal_turns ORDER BY id",
-      ).all().map((row) => [row.id, row.html])),
-      turnEntries: database.prepare(`
-        SELECT turn_ref AS turnRef, date, day_ms AS dayMs, workspace_id AS workspaceId,
-          stream_id AS streamId, provider, thread_id AS threadId, turn_id AS turnId,
-          completed_at_ms AS completedAtMs, html
-        FROM journal_turn_index
-        ORDER BY completed_at_ms DESC, turn_ref
-      `).all(),
-    };
+    // No await inside this read transaction: one generation owns metadata,
+    // day fragments and the turn index, including through a publication worker.
+    database.exec("BEGIN");
+    try {
+      const row = database.prepare(
+        "SELECT source_version, updated_at, html, summary_json FROM journal_meta WHERE id = 1",
+      ).get();
+      const payload = publicIndex(row, revisionOf(database));
+      if (!payload) return null;
+      return {
+        ...payload,
+        days: Object.fromEntries(database.prepare(
+          `SELECT date, html FROM journal_days ORDER BY ${JOURNAL_DAY_ORDER}`,
+        ).all().map((entry) => [entry.date, entry.html])),
+        turns: Object.fromEntries(database.prepare(
+          "SELECT id, html FROM journal_turns ORDER BY id",
+        ).all().map((entry) => [entry.id, entry.html])),
+        turnEntries: database.prepare(`
+          SELECT turn_ref AS turnRef, date, day_ms AS dayMs, workspace_id AS workspaceId,
+            stream_id AS streamId, provider, thread_id AS threadId, turn_id AS turnId,
+            completed_at_ms AS completedAtMs, html
+          FROM journal_turn_index
+          ORDER BY completed_at_ms DESC, turn_ref
+        `).all(),
+      };
+    } finally {
+      database.exec("ROLLBACK");
+    }
   }
 
   async accountCatalog() {

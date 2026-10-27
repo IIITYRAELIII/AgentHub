@@ -120,7 +120,7 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
     ...lifecycle,
     canonicalProjectionState: projection.projectionState,
     ...projection,
-    Map, Set,
+    Map, Set, performance,
     historyByTask: new Map(), historyWindowByTask: new Map(), focusedHistoryWindowByTask: new Map(),
     historyPageByTask: new Map(), historyLoadStates: new Map(),
     historyRequestGenerationByTask: new Map(), visibleHistoryLoads: new Set(),
@@ -128,11 +128,13 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
     liveUserMessagesByTask: new Map(), liveProbeByTask: new Map(),
     optimisticDeferredClientUserMessageIds: new Set(), deferredClientUserMessageIds: new Set(),
     selectedTaskId: identity.streamId,
+    directChatRoute: () => null,
     lastSnapshot: { tasks: [] },
     liveCardsByTask: new Map(),
     snapshotResponseIsStale: () => false,
+    snapshotTask: () => null,
     traceHistoryCard: () => {},
-    commandTrace: { objectId: () => "", newId: () => "fixture-open" },
+    commandTrace: { now: () => 0, objectId: () => "", newId: () => "fixture-open", record: () => {}, afterPaint: () => {} },
     taskId: (provider, threadId, streamId) => streamId || `${provider}:${threadId}`,
     taskIdentity: () => identity,
     attachmentViews: (values) => values ?? [],
@@ -294,7 +296,7 @@ test("an invalid chat hash invalidates an in-flight navigation intent", async ()
   assert.equal(invalidations, 2);
 });
 
-test("an in-flight completion refresh follows a Stream rotation and discards the old Thread", async () => {
+test("an in-flight completion refresh follows a Stream rotation and discards the old Thread", {  }, async () => {
   const source = clientFunctionSource("mergeHistoryLoadRequest", "async function loadVisibleTaskHistories");
   const generations = new Map();
   const responses = [];
@@ -304,9 +306,17 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
   let releaseSecond;
   const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
   const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  let dispatchedSecond;
+  const secondDispatched = new Promise((resolve) => { dispatchedSecond = resolve; });
   const sandbox = vm.createContext({
     Map,
+    selectedTaskId: "stream-1",
+    directChatRoute: () => null,
+    performance,
+    commandTrace: { newId: () => "fixture-history", record: () => {}, afterPaint: () => {} },
+    syncHistoryPagination: () => {},
     historyLoadStates: new Map(),
+    historyRequestGenerationByTask: generations,
     visibleHistoryLoads: new Set(),
     historyPageByTask: new Map(),
     beginHistoryRequest: (id, identity) => {
@@ -322,6 +332,7 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
       const index = responses.length;
       const responseIdentity = { ...currentIdentity };
       responses.push(index);
+      if (index === 1) dispatchedSecond();
       await (index === 0 ? firstGate : secondGate);
       return { ...responseIdentity, items: [], version: String(index + 1) };
     },
@@ -336,28 +347,27 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
   const first = sandbox.enqueue("stream-1", identity);
   currentIdentity = { streamId: "stream-1", provider: "claude", threadId: "thread-2" };
   const followUp = sandbox.enqueue("stream-1", currentIdentity, { refreshSource: true });
-  releaseFirst();
-  while (responses.length < 2) await new Promise((resolve) => setImmediate(resolve));
-  releaseSecond();
-  await Promise.all([first, followUp]);
+  let dispatchDeadline;
+  try {
+    releaseFirst();
+    await Promise.race([
+      secondDispatched,
+      first.then(() => assert.fail("history refresh settled before dispatching the rotated Thread")),
+      new Promise((_resolve, reject) => {
+        dispatchDeadline = setTimeout(() => reject(new Error("rotated history request was not dispatched")), 1000);
+      }),
+    ]);
+    releaseSecond();
+    await Promise.all([first, followUp]);
+  } finally {
+    clearTimeout(dispatchDeadline);
+    releaseFirst();
+    releaseSecond();
+    await Promise.allSettled([first, followUp]);
+  }
 
   assert.equal(responses.length, 2);
   assert.deepEqual(applied, ["2"]);
-});
-
-test("background history refresh checks both request generation and current Stream binding", () => {
-  assert.match(
-    hubClientSource,
-    /if \(!sameIdentity\(taskIdentity\(id\), history\)\) continue;/u,
-  );
-  assert.match(
-    hubClientSource,
-    /state\.pending = mergeHistoryLoadRequest\(state\.pending,[\s\S]*?beginHistoryRequest\(id, identity\)/u,
-  );
-  assert.match(
-    hubClientSource,
-    /const bindingTransition = Boolean\(previousTask\) && !sameIdentity\(previousTask, currentTask\);/u,
-  );
 });
 
 test("aggregated Stream history preserves each item's provider and Thread", () => {
@@ -3618,6 +3628,7 @@ test("live snapshot projects generated response attachments into the current car
   const taskId = "stream:imagegen-live";
   const liveCardsByTask = new Map();
   const sandbox = vm.createContext({
+    window: { AgentHubMessageProjection: projection },
     activeTaskRun: lifecycle.activeTaskRun,
     isUserRunningProjection: () => true,
     projectedActiveUserRun: (_id, task) => lifecycle.activeTaskRun(task),

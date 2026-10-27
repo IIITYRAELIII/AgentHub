@@ -155,9 +155,30 @@ test("upload reservations, immutable metadata, chunk conflicts and expiry are en
     const other = Buffer.from("wxyz");
     await assert.rejects(service.putChunk("alice", metadata.uploadId, 0, other, sha(other)), { statusCode: 409 });
     now = 121;
-    await assert.rejects(service.status("alice", metadata.uploadId), { statusCode: 404 });
+    await assert.rejects(service.status("alice", metadata.uploadId), { statusCode: 410 });
+    await assert.rejects(service.begin("alice", metadata), { statusCode: 410 }, "expired identity cannot re-begin");
     const next = await service.begin("alice", { ...metadata, uploadId: randomUUID() });
     assert.equal(next.received.length, 0);
     assert.equal(attachmentUploadLimits({ AGENT_HUB_ATTACHMENT_MAX_BYTES: 1e12 }).maxBytes, 256 * 1024 * 1024);
+  } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a delayed first begin uses the original attempt deadline and immutable metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-upload-"));
+  let now = 1_000;
+  const service = new AttachmentUploadService({ attachmentDirectory: root, now: () => now,
+    limits: { ...attachmentUploadLimits(), ttlMs: 200 } });
+  try {
+    const metadata = { uploadId: randomUUID(), name: "image.png", type: "image/png", size: 8, attemptedAtMs: 900 };
+    const admitted = await service.begin("alice", metadata);
+    assert.equal(admitted.expiresAt, 1_100, "retry must not obtain a fresh 200 ms lease");
+    now = 1_050;
+    assert.equal((await service.begin("alice", metadata)).expiresAt, 1_100);
+    await assert.rejects(service.begin("alice", { ...metadata, attemptedAtMs: 901 }), { statusCode: 409 });
+    await assert.rejects(service.begin("alice", { ...metadata, name: "other.png" }), { statusCode: 409 });
+    now = 1_101;
+    await assert.rejects(service.status("alice", metadata.uploadId), { statusCode: 410 });
+    await assert.rejects(service.begin("alice", metadata), { statusCode: 410 });
+    await assert.rejects(service.begin("alice", { ...metadata, uploadId: randomUUID() }), { statusCode: 410 });
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
 });

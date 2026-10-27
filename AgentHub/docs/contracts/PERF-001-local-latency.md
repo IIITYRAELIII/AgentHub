@@ -1,5 +1,44 @@
 # PERF-001 — Local command latency
 
+## SQLite capture deadline coverage
+
+The process-owned capture deadline begins before child launch and includes
+startup, IPC, read pinning, copying, hashing and confirmed termination. Reaching
+a later phase within 500 ms is not a separate startup guarantee. Tests of a
+particular blocked phase drive the existing parent timeout after that real IPC
+checkpoint, retaining actual SQLite pins, native termination and close checks.
+A separate unmocked 500 ms control verifies that an unready child is terminated
+before any capture phase. Production deadlines and failure precedence remain
+unchanged; phase-specific coverage cannot replace the real startup bound.
+
+## Isolated Windows test-root cleanup
+
+ADR-HUB-314-owned-windows-cleanup permits the existing isolated test owner to
+use Node's bounded recursive-removal retries (three, 100ms linear delay) on its
+own minted Windows temporary root after command close. Execution and assertions
+are never retried. Actual removal is required before successful checkpoint;
+persistent cleanup failure still fails and retains both original errors.
+This is not a claim that any historical BITS/Edge holder has been identified.
+
+## Bounded background storage work
+
+Policy v1 admits at most three artifact units per pass and checks a cooperative
+20-second budget between units, with bounded metadata/head lists/file size and
+persisted discovery progress. It does not abandon an in-flight destructive child
+or claim that hashing a large admitted transport has a hard 20-second deadline.
+Owner discovery reads a flat artifact directory; no per-turn recursive scan of
+archives, history or user work is introduced. Runtime health exposes cached
+status only. Filesystem free-space observations remain distinct from logical
+byte counts and can include concurrent allocations. See ADR-0126.
+
+Policy v2 runtime-body batches remove at most 64 files/256 MiB and check a
+cooperative ten-second deletion budget after bounded metadata preflight. Asset
+bytes are hashed only for the admitted batch, through retained deletion handles;
+there is no repeated whole-body hash before every batch. The original partial
+operation remains pending between batches, and shutdown drains its actual child.
+The shared installation lease is scoped to the physical runtime root, outside
+ordinary provider/message admission. Install no longer sweeps prepared bodies.
+
 Repeated journal projection may reuse a verified rendering only within the
 existing usage worker lifetime. Its bounded scalar receipt is not source
 authority: the current SQLite journal revision/index, clean dirty set, exact
@@ -89,7 +128,62 @@ shares the already scheduled durable write instead of serializing and fsyncing
 the complete bounded cache again. A changed value or eviction-order change is
 still persisted, and a failed write remains retryable with the same content.
 
+Admission resets an absent or already-empty diff without promoting an empty
+cache entry or evicting another Stream's diff. This reset still awaits the
+existing write fence and persists any dirty remembered updates; a real stale
+diff is cleared durably. Ordinary cache set/eviction ordering is unchanged.
+The existing restart drain flushes remembered diffs. Persistence errors propagate
+through admission instead of becoming successful diagnostics.
+Content-free child spans retain the original command ID through diff encoding,
+queue wait, open/write/fsync/rename, settlement and an unchanged persistence
+fence; eligibility and the pre-dispatch durable save have separate spans.
+These elapsed spans do not classify filesystem or callback wait as CPU work.
+
 ## Unified performance evidence
+
+Explicitly traced snapshot GETs carry their existing client trace ID to the
+HTTP owner; diagnostic health/static probes may supply the same bounded
+`clientTraceId` query field. The response echoes only that identity. Existing
+trace records separate route/read waiting, synchronous JSON encoding, response
+finish and disconnect, with no URL or payload retention. Thread CPU and loop
+active/idle deltas over an asynchronous span describe the shared window, not
+exclusive CPU attribution to that request. Synchronous encode deltas cover that
+specific operation. No pre-callback network queue duration is invented.
+
+The existing runtime health sampling tick may take one internal CPU sample per
+process when its measured event-loop p95 reaches two seconds. It opens no TCP
+debugger endpoint and executes no debugger evaluation. Sampling targets fifteen
+seconds at a ten-millisecond interval; a delayed stop callback is reported as
+timer overrun rather than a hard deadline. Shutdown stops and drains that sample
+before closing the existing trace worker. Only twenty bounded code-location
+stacks and counters are retained through that worker; raw profiles, source text,
+values, absolute paths and unknown external function names are discarded.
+Failure is diagnostic-only and does not retry or change application outcomes.
+This temporary owning-operator diagnostic is removable once the common runtime
+stall is localized and its corrected production path has verified AFTER evidence;
+it is not itself a latency fix or a new event-loop monitor.
+
+Restart readiness checkpoints use the original restart operation ID and bounded
+content-free blocker run IDs/counts, pending-admission state and request time.
+Changed observations distinguish waiting from ready/cutover; unchanged repeated
+checks do not flood traces. Existing command IDs retain durable intake, dispatch
+and provider-acceptance timings. These observations neither close admission nor
+attribute inclusive waiting time to CPU/network work. Sink failure cannot change
+restart or message delivery, and source/fixture timings are not live latency proof.
+
+Runtime snapshot projection and compaction resolve only their referenced command
+IDs through the existing ledger. They do not hydrate unrelated active or hot
+terminal records before filtering. Full startup/reconnect overlay remains a
+canonical recovery read. This eliminates unnecessary enumeration, not mandatory
+run persistence or its error/recovery fence. Original-command measurements must
+still distinguish snapshot encoding, worker/queue waits and durable writes; a
+file size or inclusive wall duration alone does not identify CPU or fsync cost.
+
+Local submission, durable Hub acceptance, preparation/queueing and exact provider
+acceptance are distinct visible boundaries. Rendering a durable ACK does not
+wait for full snapshot/history synchronization. A preparing run may own admission
+and cancellation without being labelled a running provider. First text and usage
+enrichment are not prerequisites for displaying an accepted provider turn.
 
 Client interactions, navigation, control ACKs, request and rendering durations,
 long main-thread tasks, startup, terminal-outbox phases and existing runtime
@@ -99,6 +193,12 @@ telemetry accepts bounded batches with allowlisted content-free fields through
 the existing authenticated transport; it cannot persist message bodies, DOM
 text, request URLs or arbitrary error text. Telemetry requests do not trace
 themselves. Backpressure drops diagnostics, never application commands.
+For the public Worker upload transport, the local SQLite worker is not in the
+request path: attachment-only failure spans use a separate authenticated,
+bounded Journal Durable Object trace owner. A 24-hour browser cache retries
+those spans after endpoint loss without changing upload or command outcomes.
+The Worker trace is queried by exact upload ID and is not merged into local
+runtime health statistics. See MSG-002 and ADR-0083.
 
 Selected-Stream visibility diagnostics retain the original snapshot request
 identity across the server's bounded run-source/gate observation, the client's
@@ -124,6 +224,20 @@ errors without changing the response; complete action-handler spans include
 the subsequent awaited processing. Aborted requests and paint measurements
 cancelled by a hidden surface have explicit diagnostic outcomes. They never
 claim that a Hub command was cancelled or that hidden content became visible.
+For a materialized terminal history page carrying an exact root-user
+`clientUserMessageId`, `history-retrieved` and `history-terminal-paint` join the
+existing server `terminal-history` span under that original command identity.
+Only bounded Stream/provider/Thread/turn identity and terminal revision pass the
+client telemetry allowlist. Retrieval is not paint; paint is recorded only for
+the selected visible chat after the exact terminal message has been rendered,
+using the existing two-frame paint opportunity (not a compositor guarantee).
+At completion it revalidates the existing navigation generation, selected chat,
+route, materialized page and exact connected visible terminal/revision. Stream,
+view, historical navigation or revision supersession cancels the paired
+diagnostic with `failureKind=superseded`, never claiming an old successful paint.
+Unknown original identity emits no invented command correlation. UTC endpoints
+permit cross-process correlation with clock-skew limitations; the client render
+duration remains monotonic. No history polling or delivery authority is added.
 Configuration and infrastructure construction precede the trace worker. Their
 monotonic durations and original UTC endpoints are captured before the work and
 submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.
@@ -189,17 +303,62 @@ requests or repository publication. Queue/lease time, stage duration, retries,
 waiting reason and per-target effect are separate measurements; transport timeout
 is not operation latency and cannot create a second operation.
 
-Release validation may run at most two test-file processes concurrently, and
-only when the host reports at least four logical CPUs and 4 GiB of free memory.
-A file is parallel-eligible only when its reviewed v2 input declaration proves
-disposable filesystem, lock, Git, port and browser-profile ownership; every
-child receives a unique temporary environment root. Undeclared files remain
-exclusive, and matching shared-resource tags serialize only the files that name
-that resource. This bound protects Hub CPU and memory headroom while allowing
-independent Git and browser fixtures to overlap. Cache decisions report a
+Release validation admits independent files against a target of 40% of total
+machine CPU capacity and 40% of physical RAM for the whole test process tree,
+including Git, browsers and helpers. Other applications reduce available
+headroom. Admission retains one-core and estimated resident-memory demand until
+each active file settles; a quiet I/O sample cannot clear that reservation.
+Measured load and reserved demand are combined by maximum, without counting the
+same active work twice. The count follows machine capacity, not a fixed worker
+setting. On Windows the existing accounting Job also applies CPU rate4000 with
+ENABLE|HARD_CAP to the suite tree, including its accounting helper. No second
+Job, process termination, kill-on-close, memory limit or priority change is used.
+Closing the monitor removes and verifies its owned CPU control before closing
+the Job handle. Setup/readback failure refuses admission. POSIX retains measured
+cooperative admission and does not claim an OS CPU cap. Other jobs/apps are not
+controlled; a stricter ancestor Job can reduce available CPU further. Short
+accounting samples are not a per-instant CPU guarantee. Measurements report
+overshoots. Accounting failure stops new admission and drains started tests with
+their original outcomes/checkpoints. See ADR-0346.
+
+Native-Git correctness scenarios do not assert a total wall-clock
+latency SLO over fixture creation plus several independently bounded operations.
+Their aggregate Node-case and nested whole-scenario stopwatches are removed;
+actual command, lease, readiness and explicitly timed behavior bounds remain.
+All original behavioral assertions still execute, and historical cancellations
+remain failures. This policy applies to the whole native-Git correctness
+family, including newly added cases; it is not a list of scenarios that
+already timed out. Explicitly timed behavior keeps its actual polling,
+protocol and operation assertions. See ADR-HUB-314-native-correctness-stopwatches.
+
+Every file receives a separate process and disposable temp/home/state root.
+The runner observes child `close` before removing that root. A cleanup failure
+remains a failure and retains its OS code, phase and owned path; when execution
+also failed, both original errors remain available without replaying the test.
+The existing per-file timing event reports bounded failure codes, execution versus
+cleanup phase, owned temporary paths and the original Node child spawn/exit/close
+observations as soon as that file settles, before remaining files finish. It excludes
+arguments, environment values, output and arbitrary error text; truncated paths
+are explicitly marked and are not exact identities for holder queries.
+Native process-guard fixtures revoke only after the real descendant is ready;
+their controlled late mutation and child-close receipts replace elapsed sleeps
+as fixture readiness and cleanup evidence. Guard, lease and recovery assertions
+remain authoritative.
+Local-control E2E failure diagnostics use the checkout's ignored WIP artifact
+area outside that disposable root. Bounded redacted process output, generation
+timestamps, control-attempt outcomes and existing startup trace scalars survive
+outer cleanup; neither missing diagnostics nor a timeout proves a startup cause.
+Database, Git, endpoint and browser fixtures own their temporary resources;
+only actual shared mutable resources require matching serialization tags.
+Parallel safety is independent from cache eligibility. A missing cache
+declaration means uncached execution, not exclusive execution. The full runner
+has one checkpoint owner across concurrent groups; syntax preflight and locked
+dependency preparation remain prerequisites. Every selected file still runs
+exactly once or reuses a content-proven success. Cache decisions report a
 stable content-free reason (`absent`, `fingerprint changed`, or the exact
 uncacheable policy reason); they never print environment values or fabricate
-reusable evidence.
+reusable evidence. See ADR-0346. Existing frozen/admitted generations retain
+their original runner; this policy applies only to subsequent compositions.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
@@ -414,6 +573,15 @@ on read; non-ledger records remain in the snapshot. A failed writer revision
 rejects only its covered waiters and must not poison a later save.
 
 Periodic Test Contour journal comparison and full Mini App journal publication
+must remain separate from card-list reads. Board snapshots carry only card
+metadata/checklist state and per-Task detail revision counters, not work logs or
+Git details. The existing journal/binding write transactions maintain the derived
+Task-turn SQL projection once per addressed identity; one atomic migration covers
+retained history. Opening a card performs one exact details read, fenced against
+another opening and newer revisions; closing releases the full history. See
+ADR-HUB-350-card-history-projection.
+
+Periodic Test Contour journal comparison and full Mini App journal publication
 must not scan, materialize, stringify or compress the journal on the Hub event
 loop. Test Contour comparison runs in an isolated worker. Production journal
 publication reads one SQLite snapshot and performs JSON encoding plus gzip in an
@@ -550,3 +718,11 @@ message and provider critical paths. It inspects only the source Task's bounded
 managed repository set and the survivor's exact stored result references while
 holding existing Await, Task and repository leases. It introduces no startup
 scan, background reconciliation, provider request or second lifecycle owner.
+
+## Explicit selection before test admission
+
+ADR-HUB-351 selection filters the existing file inventory before creating the
+resource-accounting owner or starting a child. `none` has no dependency/accounting
+work. Selected files retain current isolation, shared-resource admission and the
+40% cooperative CPU/RAM policy. Selection is not cacheability and not a resource
+waiver. Inventory listing/plan resolution is read-only; it runs no test.

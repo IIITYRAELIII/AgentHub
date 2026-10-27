@@ -70,7 +70,7 @@ async function fixture(t) {
     checkpoint, index, privateBytes, original, recovery: { ...request(selected), nativeAwaitRecovery: original } };
 }
 
-test("same original Await archives published notes and whole prior clone before ordinary sole-result composition", { timeout: 90000 }, async t => {
+test("same original Await archives published notes and whole prior clone before ordinary sole-result composition", async t => {
   const f = await fixture(t);
   await assert.rejects(f.service.prepareCandidate(f.request(f.selected)), { code: "AWAIT_PREPARATION_UNKNOWN" });
   const retainedIndex = await readFile(path.join(f.prior.releaseRoot, ".git/index"));
@@ -96,7 +96,7 @@ test("same original Await archives published notes and whole prior clone before 
   assert.deepEqual(await readFile(path.join(archive, "repository/.git/index")), retainedIndex);
 });
 
-test("archived failure hands exact physical evidence to a new Await and resumes its own journal", { timeout: 90000 }, async t => {
+test("archived failure hands exact physical evidence to a new Await and resumes its own journal", async t => {
   const f = await fixture(t);
   const layout = { root: f.ownerRoot, primaryRoot: f.primary, releaseRoot: f.prior.releaseRoot,
     evidenceRoot: path.join(f.ownerRoot, "evidence"), checkpointFile: f.checkpointFile };
@@ -138,7 +138,7 @@ test("archived failure hands exact physical evidence to a new Await and resumes 
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
 });
 
-test("postarchive origin drift refuses promotion and Task callback while retaining archive", { timeout: 90000 }, async t => {
+test("postarchive origin drift refuses promotion and Task callback while retaining archive", async t => {
   const f = await fixture(t);
   let changed = false, committed = 0;
   const proof = await f.service.inspectNativeAwaitRecovery({ projectRoot: f.primary, original: f.original, frozenTasks: [f.selected] });
@@ -171,7 +171,7 @@ test("postarchive origin drift refuses promotion and Task callback while retaini
   assert.deepEqual(await readFile(path.join(proof.archiveRoot, "repository/.git/index")), f.index);
 });
 
-test("unpublished/staged/selection/original/publication drift refuse before archiving", { timeout: 90000 }, async t => {
+test("unpublished/staged/selection/original/publication drift refuse before archiving", async t => {
   const f = await fixture(t);
   const inspect = original => f.service.inspectNativeAwaitRecovery({ projectRoot: f.primary,
     original, frozenTasks: [f.selected] });
@@ -190,7 +190,7 @@ test("unpublished/staged/selection/original/publication drift refuse before arch
   assert.deepEqual(await readFile(f.checkpointFile), f.checkpoint);
 });
 
-test("durable archive intent resumes after checkpoint-move boundary and rejects another original", { timeout: 90000 }, async t => {
+test("durable archive intent resumes after checkpoint-move boundary and rejects another original", async t => {
   const f = await fixture(t);
   // Inject failure at the persisted intent boundary, retaining all real Git/filesystem evidence.
   const layout = { root: f.ownerRoot, primaryRoot: f.primary, releaseRoot: f.prior.releaseRoot,

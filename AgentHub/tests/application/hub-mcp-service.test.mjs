@@ -54,9 +54,13 @@ async function fixture(context, {
   taskOperationReconciliation = null,
   releaseOperations = null,
   measureOperation = measureTaskOperation,
+  beforeRemoveDirectory = async () => {},
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(async () => {
+    await beforeRemoveDirectory();
+    await rm(directory, { recursive: true, force: true });
+  });
   const projectRoot = path.join(directory, "project");
   const streamWorkingDirectory = path.join(directory, "stream-working-directory");
   const workspaceWorkingDirectory = path.join(directory, "workspace-working-directory");
@@ -1293,6 +1297,31 @@ test("Task status and unknown-operation schemas expose the exact squash transfer
   }
 });
 
+test("public Await forwards a complete reviewed bundle only with exact RM CAS", async context => {
+  const { service, token, tasks, operations } = await fixture(context, { releaseWorkflowEnabled: true });
+  const calls = [];
+  service.taskLifecycle.updateWorkflowStatus = async input => {
+    calls.push(input); return { task: { ...tasks.get("task-current"), workflowStatus: input.status } };
+  };
+  const review = { bundlePath: "owned.bundle", bundleSha256: "a".repeat(64),
+    reviews: [{ requestId: "first", text: "exact first receipt" }, { requestId: "second", text: "exact second receipt" }] };
+  const input = { context_token: token, task_id: "task-current", status: "awaiting_implementation",
+    expected_task_revision: 1, expected_workflow_status: "testing", native_resolution_review: review };
+  assert.equal((await service.call("hub_task_status_update", { ...input, request_id: "all-prefixes" })).workflowStatus,
+    "awaiting_implementation");
+  assert.deepEqual(calls[0].operationEvidence, { nativeResolutionReview: review });
+  const foreignToken = service.contextToken({ provider: "codex", threadId: "thread-2", streamId: "stream-2" });
+  for (const [suffix, patch] of [["array", { native_resolution_review: [] }],
+    ["extra", { native_resolution_review: { ...review, force: true } }],
+    ["duplicate", { native_resolution_review: { ...review, reviews: [review.reviews[0], review.reviews[0]] } }],
+    ["cas", { expected_task_revision: null }], ["test", { status: "testing" }],
+    ["foreign", { context_token: foreignToken }]]) {
+    await assert.rejects(service.call("hub_task_status_update", { ...input, ...patch, request_id: `bundle-${suffix}` }));
+    assert.equal(operations.get(`bundle-${suffix}`).status, "failed");
+  }
+  assert.equal(calls.length, 1);
+});
+
 test("Release Manager cannot reopen fresh selected-materialization preview or confirmation after native cutover", async (context) => {
   const { service, token, tasks, operations } = await fixture(context, {
     releaseWorkflowEnabled: true,
@@ -1747,6 +1776,20 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   assert.equal(tools.includes("hub_release_complete"), false);
 });
 
+test("HubMcpService forwards original-addressed reviewed-main recovery through the same authenticated continuation", async context => {
+  const calls = [];
+  const { service, token } = await fixture(context, { releaseOperations: {
+    get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "failed", revision: 699 } }),
+    continue: async (...args) => { calls.push(args); return { accepted: true, operationId: args[0] }; },
+    setEventDelivery() {},
+  } });
+  const reviewedMain = { expectedRevision: 699, approvedRepositories: [{ projectRoot: "D:/repo",
+    approvedLocalMainCommit: "a".repeat(40), approvedOriginMainCommit: "a".repeat(40) }] };
+  const input = { context_token: token, request_id: "original-main-rebind", operation_id: "original", reviewed_main: reviewedMain };
+  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
+  assert.deepEqual(calls, [["original", { requestId: input.request_id, reviewedMain }]]);
+});
+
 test("HubMcpService carries exact release metadata through the domain and byte-checking composition owner", async (context) => {
   let admitted;
   const { service, token, projectRoot } = await fixture(context, { releaseOperations: {
@@ -2062,6 +2105,7 @@ test("HubMcpService claim keeps an unproven process-tree guard before every Task
 }, async (context) => {
   let guarded;
   const state = await fixture(context, {
+    beforeRemoveDirectory: () => guarded?.close(),
     taskGitWorkspacesFactory: async ({ directory, streamWorkingDirectory }) => {
       await initializeTaskGitRepository(streamWorkingDirectory);
       guarded = await unprovenProcessTaskGit({
@@ -2905,4 +2949,28 @@ test("HubMcpService exposes unconfirmed managed ownership as unknown and keeps t
   assert.equal(active.runs[0].activityUnknown, true);
   const streams = await service.call("hub_parallel_streams_list", { context_token: token });
   assert.equal(streams.streams.find(s => s.id === "stream-1").available, false);
+});
+
+test("HubMcpService forwards amended release notes with the same original selection/CAS and durable receipt", async context => {
+  const calls = [];
+  const { service, token } = await fixture(context, { releaseOperations: {
+    get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "waiting", revision: 699 } }),
+    continue: async (...args) => { calls.push(args); return { accepted: true, operationId: args[0] }; },
+    setEventDelivery() {},
+  } });
+  const metadata = { sourcePath: "new-consolidated-notes.md", byteLength: 42, rawSha256: "a".repeat(64), canonicalSha256: "b".repeat(64) };
+  const input = { context_token: token, request_id: "same-original-new-notes", operation_id: "original",
+    expected_revision: 699, expected_generation: 14, test_selection: { mode: "none", ids: [] },
+    task_ids: ["task-current"], release_metadata: metadata };
+  const schema = service.tools().find(item => item.name === "hub_release_continue").inputSchema;
+  assert.deepEqual(schema.properties.release_metadata.required, ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"]);
+  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
+  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
+  assert.equal(calls.length, 1, "same original MCP receipt does not schedule another continuation");
+  assert.equal(calls[0][0], "original");
+  assert.deepEqual(calls[0][1].releaseMetadata, metadata);
+  assert.deepEqual(calls[0][1].testSelection, input.test_selection);
+  assert.deepEqual(calls[0][1].taskIds, input.task_ids);
+  assert.equal(calls[0][1].expectedRevision, 699);
+  assert.equal(calls[0][1].expectedGeneration, 14);
 });

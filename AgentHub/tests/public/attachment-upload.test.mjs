@@ -21,8 +21,8 @@ async function fixture(size = 2 * CHUNK + 3) {
 }
 const response = (value, status = 200) => new Response(JSON.stringify(value), { status });
 
-function storageFixture({ mode = "ready", seed = [] } = {}) {
-  const records = new Map(seed.map((record, index) => [String(index), record]));
+function storageFixture({ mode = "ready", seed = [], keyByBlobId = false } = {}) {
+  const records = new Map(seed.map((record, index) => [keyByBlobId ? record.blobId : String(index), record]));
   const timers = new Map();
   const connections = [];
   const opens = [];
@@ -115,7 +115,8 @@ function storageFixture({ mode = "ready", seed = [] } = {}) {
   context.window = context;
   vm.runInContext(sources[0], context);
   return {
-    api: context.AgentHubComposerFiles, records, connections, opens, timers, traces,
+    api: context.AgentHubComposerFiles, context, records, connections, opens, timers, traces,
+    setMode: (value) => { mode = value; },
     aborts: () => aborts,
     digests: () => digests,
     finishOpen: () => finishOpen(opens.at(-1)),
@@ -317,7 +318,10 @@ test("chunk uploader resumes a lost acknowledgement under the same upload ID wit
   const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
     const url = new URL(path, "http://fixture");
     if (init.method === "GET" && !url.search) return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK, maxTotalBytes: 256 * CHUNK });
-    if (init.method === "POST" && !url.search) { begins.push(JSON.parse(init.body)); return response({}); }
+    if (init.method === "POST" && !url.search) {
+      begins.push(JSON.parse(init.body));
+      return response({ protocol, uploadId: file.uploadId, status: "uploading", received: [...received.values()] });
+    }
     assert.equal(url.searchParams.get("id"), file.uploadId);
     if (init.method === "GET") return response({ protocol, uploadId: file.uploadId, received: [...received.values()] });
     if (init.method === "PUT") {
@@ -342,13 +346,243 @@ test("chunk uploader resumes a lost acknowledgement under the same upload ID wit
   assert.equal(progress.at(-1), file.size);
 });
 
+test("begin not reaching the server resumes under the original upload ID", async () => {
+  const { context, file } = await fixture(3);
+  const originalId = file.uploadId;
+  let begins = 0;
+  let created = false;
+  const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
+    const url = new URL(path, "http://fixture");
+    if (init.method === "GET" && !url.search) return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK,
+      maxTotalBytes: 256 * CHUNK, expiresInMs: 30 * 60_000, supportsBeginRecovery: true });
+    if (init.method === "POST" && !url.search) {
+      assert.equal(JSON.parse(init.body).uploadId, originalId);
+      begins += 1;
+      if (begins === 1) throw new TypeError("begin request never reached server");
+      created = true;
+      return response({ protocol, uploadId: originalId, status: "uploading", received: [] });
+    }
+    assert.equal(url.searchParams.get("id"), originalId);
+    if (init.method === "GET") return created
+      ? response({ protocol, uploadId: originalId, status: "uploading", received: [] })
+      : response({ error: "attachment upload not found", state: "absent" }, 404);
+    if (init.method === "PUT") return response({});
+    return response({ protocol, uploadId: originalId, status: "ready", path: "/attachment/complete", sha256: "a".repeat(64) });
+  } });
+  await assert.rejects(uploader.upload(file), /never reached server/u);
+  assert.equal(await uploader.upload(file), "/attachment/complete");
+  assert.equal(file.uploadId, originalId);
+  assert.equal(begins, 2);
+});
+
+test("a failed update of an earlier durable Blob blocks begin until its attempt is persisted", async () => {
+  const { context, file } = await fixture(3);
+  const record = context.AgentHubComposerFiles.resolve(file);
+  record.durable = true; // An earlier successful Blob write; this fixture has no IndexedDB for the update.
+  let begins = 0;
+  const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
+    if (init.method === "POST") begins += 1;
+    return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK, maxTotalBytes: 256 * CHUNK,
+      expiresInMs: 30 * 60_000, supportsBeginRecovery: true });
+  } });
+  await assert.rejects(uploader.upload(file), /локальное хранилище недоступно/u);
+  await assert.rejects(uploader.upload(file), /локальное хранилище недоступно/u);
+  assert.equal(begins, 0, "an old stored Blob must not reload as a fresh attempt after an unpersisted begin");
+  assert.equal(context.AgentHubComposerFiles.storageFailure(file)?.code, "unavailable");
+});
+
+test("lost begin acknowledgement reads the admitted receipt without a second begin", async () => {
+  const { context, file } = await fixture(3);
+  let begins = 0;
+  const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
+    const url = new URL(path, "http://fixture");
+    if (init.method === "GET" && !url.search) return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK,
+      maxTotalBytes: 256 * CHUNK, expiresInMs: 30 * 60_000, supportsBeginRecovery: true });
+    if (init.method === "POST" && !url.search) {
+      begins += 1;
+      if (begins === 1) throw new TypeError("lost begin acknowledgement");
+      return response({ protocol, uploadId: file.uploadId, status: "uploading", received: [] });
+    }
+    if (init.method === "GET") return response({ protocol, uploadId: file.uploadId, status: "uploading", received: [] });
+    if (init.method === "PUT") return response({});
+    return response({ protocol, uploadId: file.uploadId, status: "ready", path: "/attachment/ready", sha256: "a".repeat(64) });
+  } });
+  await assert.rejects(uploader.upload(file), /lost begin acknowledgement/u);
+  assert.equal(await uploader.upload(file), "/attachment/ready");
+  assert.equal(begins, 1);
+});
+
+test("lost complete acknowledgement reuses the ready receipt without repeating completion", async () => {
+  const { context, file } = await fixture(3);
+  let completes = 0;
+  let ready = false;
+  const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
+    const url = new URL(path, "http://fixture");
+    if (init.method === "GET" && !url.search) return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK,
+      maxTotalBytes: 256 * CHUNK });
+    if (init.method === "POST" && !url.search) return response({ protocol, uploadId: file.uploadId, status: "uploading", received: [] });
+    if (init.method === "GET") return response(ready
+      ? { protocol, uploadId: file.uploadId, status: "ready", path: "/attachment/ready", sha256: "a".repeat(64), received: [] }
+      : { protocol, uploadId: file.uploadId, status: "uploading", received: [] });
+    if (init.method === "PUT") return response({});
+    completes += 1;
+    ready = true;
+    throw new TypeError("lost complete acknowledgement");
+  } });
+  await assert.rejects(uploader.upload(file), /lost complete acknowledgement/u);
+  assert.equal(await uploader.upload(file), "/attachment/ready");
+  assert.equal(completes, 1);
+});
+
+test("generic absence and cancelled receipts never authorize re-begin", async () => {
+  for (const [statusCode, state] of [[404, undefined], [410, "cancelled"]]) {
+    const { context, file } = await fixture(3);
+    let begins = 0;
+    const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
+      const url = new URL(path, "http://fixture");
+      if (init.method === "GET" && !url.search) return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK,
+        maxTotalBytes: 256 * CHUNK, expiresInMs: 30 * 60_000, supportsBeginRecovery: true });
+      if (init.method === "POST" && !url.search) { begins += 1; throw new TypeError("lost begin"); }
+      return response({ error: "unavailable", ...(state ? { state } : {}) }, statusCode);
+    } });
+    await assert.rejects(uploader.upload(file), /lost begin/u);
+    await assert.rejects(uploader.upload(file), (error) => error.attachmentUploadTerminal === true);
+    assert.equal(begins, 1);
+  }
+});
+
+test("expired transport renews once while Blob identity survives lost begin response and reload", async () => {
+  const first = storageFixture();
+  vm.runInContext(sources[1], first.context);
+  const file = await prepareSmall(first.api);
+  await first.api.markUploadStarted(file);
+  const manifest = JSON.stringify(first.api.serialized(file));
+  const begins = [];
+  let loseBegin = true;
+  const request = async (pathname, init) => {
+    const url = new URL(pathname, "http://fixture");
+    const id = url.searchParams.get("id");
+    if (init.method === "GET" && !id) return response({ protocol, chunkBytes: CHUNK, maxBytes: CHUNK,
+      maxTotalBytes: CHUNK, ttlMs: 30 * 60_000, supportsBeginRecovery: true });
+    if (init.method === "GET" && id === file.uploadId) return response({ error: "expired", state: "expired" }, 410);
+    if (init.method === "POST" && !id) {
+      const metadata = JSON.parse(init.body); begins.push(metadata.uploadId);
+      assert.notEqual(metadata.uploadId, file.uploadId);
+      if (loseBegin) { loseBegin = false; throw new TypeError("lost new begin response"); }
+    }
+    const currentId = id ?? begins.at(-1);
+    if (init.method === "GET") return response({ protocol, uploadId: currentId, status: "uploading", received: [] });
+    if (init.method === "PUT" || init.method === "DELETE") return response({});
+    return response({ protocol, uploadId: currentId, status: "ready", path: "/attachment/recovered", sha256: "a".repeat(64) });
+  };
+  const uploader = first.context.AgentHubAttachmentUpload.create({ request });
+  await assert.rejects(uploader.upload(file), /lost new begin response/u);
+  assert.equal(begins.length, 1);
+  assert.equal(JSON.stringify(first.api.serialized(file)), manifest);
+  assert.equal(first.records.get(file.blobId).uploadAttemptId, begins[0]);
+  const reloaded = storageFixture({ seed: [...first.records.values()], keyByBlobId: true });
+  vm.runInContext(sources[1], reloaded.context);
+  await reloaded.api.hydrate([JSON.parse(manifest)]);
+  const recovered = reloaded.api.resolve(JSON.parse(manifest));
+  assert.equal(recovered.uploadAttemptId, begins[0]);
+  const resumed = reloaded.context.AgentHubAttachmentUpload.create({ request });
+  assert.equal(await resumed.upload(JSON.parse(manifest)), "/attachment/recovered");
+  assert.equal(begins.length, 1, "same fresh transport receipt is resumed, never recreated");
+  assert.equal(recovered.uploadId, file.uploadId);
+  assert.equal(recovered.blobId, file.blobId);
+  assert.equal(JSON.stringify(reloaded.api.serialized(recovered)), manifest);
+  await resumed.cancel(recovered);
+});
+
+test("failed fresh-attempt persistence blocks begin and reuses its pending UUID on explicit retry", async () => {
+  const stored = storageFixture(); vm.runInContext(sources[1], stored.context);
+  const file = await prepareSmall(stored.api); await stored.api.markUploadStarted(file);
+  stored.setMode("quota"); const begins = [];
+  const uploader = stored.context.AgentHubAttachmentUpload.create({ request: async (pathname, init) => {
+    const url = new URL(pathname, "http://fixture"); const id = url.searchParams.get("id");
+    if (init.method === "GET" && !id) return response({ protocol, chunkBytes: CHUNK, maxBytes: CHUNK,
+      maxTotalBytes: CHUNK, ttlMs: 1000, supportsBeginRecovery: true });
+    if (init.method === "GET") return response({ error: "expired", state: "expired" }, 410);
+    if (!id) { begins.push(JSON.parse(init.body).uploadId); return response({ protocol, uploadId: begins.at(-1), status: "uploading", received: [] }); }
+    if (init.method === "PUT") return response({});
+    return response({ protocol, uploadId: id, status: "ready", path: "/attachment/fresh", sha256: "a".repeat(64) });
+  } });
+  await assert.rejects(uploader.upload(file), /quota|квот/iu);
+  assert.equal(begins.length, 0);
+  const pendingId = stored.api.resolve(file).pendingUploadAttempt.uploadAttemptId;
+  stored.setMode("ready");
+  assert.equal(await uploader.upload(file), "/attachment/fresh");
+  assert.deepEqual(begins, [pendingId]);
+  assert.equal(file.uploadId, file.blobId);
+});
+
+test("fresh attempt recovery is bounded and cannot upload from a preview without original bytes", async () => {
+  const { context, file } = await fixture(3);
+  await context.AgentHubComposerFiles.markUploadStarted(file);
+  let begins = 0;
+  const uploader = context.AgentHubAttachmentUpload.create({ request: async (pathname, init) => {
+    if (!new URL(pathname, "http://fixture").search && init.method === "GET") return response({ protocol, chunkBytes: CHUNK,
+      maxBytes: CHUNK, maxTotalBytes: CHUNK, ttlMs: 1000, supportsBeginRecovery: true });
+    if (init.method === "POST") begins += 1;
+    return response({ error: "expired", state: "expired" }, 410);
+  } });
+  await assert.rejects(uploader.upload(file), error => error.attachmentUploadTerminal === true);
+  assert.equal(begins, 1, "no repeated renewal loop within one user action");
+  context.AgentHubComposerFiles.settle([file]); context.AgentHubComposerFiles.prune([]);
+  await assert.rejects(uploader.upload(file), /Исходный файл недоступен/u);
+  assert.equal(begins, 1);
+});
+
+test("authoritative absence starts a fresh attempt only beyond the old deadline or for legacy missing time", async () => {
+  for (const state of ["past", "legacy", "backward-clock"]) {
+    const { context, file } = await fixture(3); await context.AgentHubComposerFiles.markUploadStarted(file);
+    const record = context.AgentHubComposerFiles.resolve(file); const originalId = file.uploadId;
+    if (state === "legacy") delete record.uploadAttemptedAt;
+    else record.uploadAttemptedAt = Date.now() + (state === "past" ? -31 * 60_000 : 60_000);
+    const begins = [];
+    const uploader = context.AgentHubAttachmentUpload.create({ request: async (pathname, init) => {
+      const id = new URL(pathname, "http://fixture").searchParams.get("id");
+      if (init.method === "GET" && !id) return response({ protocol, chunkBytes: CHUNK, maxBytes: CHUNK,
+        maxTotalBytes: CHUNK, ttlMs: 30 * 60_000, supportsBeginRecovery: true });
+      if (init.method === "GET") return response({ error: "missing", state: "absent" }, 404);
+      if (!id) { begins.push(JSON.parse(init.body).uploadId); return response({ protocol, uploadId: begins.at(-1), status: "uploading", received: [] }); }
+      if (init.method === "PUT") return response({});
+      return response({ protocol, uploadId: id, status: "ready", path: "/attachment/fresh", sha256: "a".repeat(64) });
+    } });
+    if (state === "backward-clock") {
+      await assert.rejects(uploader.upload(file), error => error.attachmentUploadTerminal === true);
+      assert.deepEqual(begins, []);
+    } else {
+      assert.equal(await uploader.upload(file), "/attachment/fresh"); assert.equal(begins.length, 1);
+      assert.notEqual(begins[0], originalId); assert.equal(file.uploadId, originalId);
+    }
+  }
+});
+
+test("cancellation after fresh attempt persistence prevents begin and retains its saved identity", async () => {
+  const { context, file } = await fixture(3); await context.AgentHubComposerFiles.markUploadStarted(file);
+  const originalId = file.uploadId; const controller = new AbortController(); let begins = 0;
+  const uploader = context.AgentHubAttachmentUpload.create({ request: async (pathname, init) => {
+    const id = new URL(pathname, "http://fixture").searchParams.get("id");
+    if (init.method === "GET" && !id) return response({ protocol, chunkBytes: CHUNK, maxBytes: CHUNK,
+      maxTotalBytes: CHUNK, ttlMs: 1000, supportsBeginRecovery: true });
+    if (init.method === "POST") begins += 1;
+    return response({ error: "expired", state: "expired" }, 410);
+  }, trace: async (action, operation) => {
+    const value = await operation(); if (action === "attempt-renewal") controller.abort(); return value;
+  } });
+  await assert.rejects(uploader.upload(file, { signal: controller.signal }), error => error.name === "AbortError");
+  assert.equal(begins, 0); assert.notEqual(file.uploadAttemptId, originalId); assert.equal(file.uploadId, originalId);
+});
+
 test("chunk uploader rejects mismatched stored hashes and exposes expired IDs as terminal", { timeout: 25_000 }, async () => {
   const { context, file } = await fixture(3);
   let expired = false;
   const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
     const url = new URL(path, "http://fixture");
     if (!url.search && init.method === "GET") return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK, maxTotalBytes: 256 * CHUNK });
-    if (!url.search) return response({});
+    if (!url.search) return response({ protocol, uploadId: file.uploadId,
+      received: [{ index: 0, size: 3, sha256: "b".repeat(64) }] });
     assert.equal(init.method, "GET");
     return expired ? response({ error: "expired" }, 410)
       : response({ protocol, uploadId: file.uploadId, received: [{ index: 0, size: 3, sha256: "b".repeat(64) }] });

@@ -9,7 +9,7 @@ import re
 import stat
 import zipfile
 
-from install_release import REPOSITORY, file_hash, safe_name
+from install_release import REPOSITORY, file_hash, safe_name, semantic_fields
 
 ROOT = Path(__file__).resolve().parent
 
@@ -27,6 +27,7 @@ def verified_runtime_payload(prepared: Path, source_commit: str) -> tuple[bytes,
         raise ValueError("The reviewed exported source commit must be exact")
     original = regular(prepared/"runtime-manifest.json")
     manifest = json.loads(original.decode("utf-8"))
+    semantic_fields(manifest)
     if manifest.get("publicationRevision") != source_commit:
         raise ValueError("Prepared runtime must bind the exact reviewed standalone publication revision; old Utilities OIDs cannot be relabeled")
     release_id = manifest.get("releaseId", "")
@@ -82,6 +83,7 @@ def build_package(prepared: Path, license_file: Path, notices_file: Path, source
     payload["DEPENDENCIES.json"] = (json.dumps({"schema": 1, "scope": "actually packaged runtime files",
                                                "packages": dependencies}, indent=2)+"\n").encode()
     descriptor = {"schema": 1, "repository": REPOSITORY, "platform": "win32-x64", "releaseId": release_id,
+                  **semantic_fields(manifest),
                   "version": manifest.get("releaseVersion", manifest.get("version")), "sourceCommit": source_commit,
                   "preparedManifestSha256": hashlib.sha256(original).hexdigest(),
                   "files": [{"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
@@ -95,6 +97,7 @@ def build_package(prepared: Path, license_file: Path, notices_file: Path, source
             entry.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(entry, data)
     result = {"schema": 1, "repository": REPOSITORY, "platform": "win32-x64",
+              **semantic_fields(manifest),
               "version": descriptor["version"], "asset": output.name, "bytes": output.stat().st_size,
               "sha256": file_hash(output), "releaseId": release_id, "sourceCommit": source_commit,
               "packageManifestSha256": hashlib.sha256(payload["package-manifest.json"]).hexdigest(),

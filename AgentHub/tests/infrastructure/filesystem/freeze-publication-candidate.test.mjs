@@ -6,12 +6,17 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { publishAll, publicationSteps, runStep } from "../../../publish-all.mjs";
+import { parseRuntimeArguments } from "../../../src/runtime/runtime-manager.mjs";
+import { prepareCommittedAgentHubReleaseVersion } from "../../../src/infrastructure/filesystem/release-version.mjs";
 import { freezePreparedPublication } from "../../../publish-changed.mjs";
+import { releaseOperationRuntimePublicationInput } from "../../../release-operation-publication-runner.mjs";
 import { ReleaseGitWorkspaceService, assertReleaseCandidateContourSource } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 
 const execute = promisify(execFile);
 const git = async (cwd, ...args) => String((await execute("git", args, { cwd, windowsHide: true, encoding: "utf8" })).stdout).trimEnd();
 async function fixture(t, {
+  publicVersion = "2026.8.23",
   releaseAutoCrlf = "false",
   attributes = "* text eol=lf\n",
   changelogContent = Buffer.from("consolidated\n"),
@@ -25,10 +30,10 @@ async function fixture(t, {
   await mkdir(path.join(primary, "AgentHub"));
   if (attributes !== null) await writeFile(path.join(primary, ".gitattributes"), attributes);
   await writeFile(path.join(primary, "AgentHub", "package.json"), `${JSON.stringify({
-    name: "agent-hub", version: "2026.8.23",
+    name: "agent-hub", version: publicVersion,
   }, null, 2)}\n`);
   await writeFile(path.join(primary, "AgentHub", "package-lock.json"), `${JSON.stringify({
-    name: "agent-hub", version: "2026.8.23", packages: { "": { name: "agent-hub", version: "2026.8.23" } },
+    name: "agent-hub", version: publicVersion, packages: { "": { name: "agent-hub", version: publicVersion } },
   }, null, 2)}\n`);
   await writeFile(path.join(primary, "app.txt"), "source\n");
   await writeFile(path.join(primary, "CHANGELOG.md"), "previous\n");
@@ -42,7 +47,7 @@ async function fixture(t, {
   const checkpointFile = path.join(candidate.releaseRoot, "..", "checkpoint.json");
   const freeze = (options = {}) => service.freezePublicationCandidate({ projectRoot: primary, workspaceId: "workspace",
     expectedPlanRevision: "plan", expectedPreparedHead: candidate.preReleaseHead,
-    changelogContent, releaseDate: new Date(2026, 7, 24, 23, 59), ...options });
+    changelogContent, runtimeRoot: path.join(root, "runtime"), releaseDate: new Date(2026, 7, 24, 23, 59), ...options });
   return { primary, service, candidate, freeze, checkpointFile, changelogContent };
 }
 
@@ -53,6 +58,122 @@ const freezeThroughPublicWrapper = (fixture, options = {}) => freezePreparedPubl
   assertCleanTree: async () => {},
   assertCurrentRevision: async () => {},
   ...options,
+});
+
+test("freeze pins the artifact version separately and retry never reallocates it", async (t) => {
+  const f = await fixture(t);
+  const runtimeRoot = path.join(f.primary, "..", "runtime");
+  const releases = path.join(runtimeRoot, "releases");
+  const add = async (name, releaseVersion) => {
+    const root = path.join(releases, name);
+    await mkdir(root, { recursive: true });
+    await writeFile(path.join(root, "runtime-manifest.json"), JSON.stringify({
+      releaseId: name, version: "2026.8.24", releaseVersion, files: [],
+    }));
+  };
+  await add("prior", "2026.8.24.100000000");
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze({ runtimeRoot });
+  const manifest = JSON.parse(await readFile(frozen.manifestFile, "utf8"));
+  assert.equal(manifest.publication.releaseVersion, "2.0.0");
+  assert.equal(manifest.publication.runtimeReleaseVersion, "2.0.0+build.100000001");
+  assert.deepEqual(releaseOperationRuntimePublicationInput({
+    operation: { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe" },
+    generation: { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2 },
+    candidate: { commit: frozen.preReleaseHead, manifest },
+  }), { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2,
+    sourceCommit: frozen.preReleaseHead, version: "2.0.0+build.100000001" });
+  await add("later", "2026.8.24.100000002");
+  const repeat = await f.freeze({ runtimeRoot });
+  assert.equal(repeat.manifestHash, frozen.manifestHash);
+  assert.equal(JSON.parse(await readFile(repeat.manifestFile, "utf8")).publication.runtimeReleaseVersion,
+    "2.0.0+build.100000001");
+});
+
+test("new semantic freeze selects minor once and resume retains the original version", async t => {
+  const f = await fixture(t, { publicVersion: "2.0.9" });
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze({ releaseType: "minor" });
+  const manifest = JSON.parse(await readFile(frozen.manifestFile, "utf8"));
+  assert.equal(manifest.publication.releaseVersion, "2.1.0");
+  const repeated = await f.freeze({ releaseType: "major" });
+  assert.equal(repeated.manifestHash, frozen.manifestHash);
+});
+
+test("full consumer reuses the actual frozen original version through canonical freeze owner", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze(); // Ordinary owner selects and commits 2.0.0 once.
+  const packageFile = path.join(f.candidate.releaseRoot, "AgentHub/package.json");
+  const raw = await readFile(packageFile);
+  let stages = 0;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
+      exclusive: action => action(),
+      revision: async () => git(f.candidate.releaseRoot, "rev-parse", "HEAD"),
+      freezeVersion: async () => (await import("../../../publish-changed.mjs")).freezePreparedPublication({
+        repositoryRoot: f.candidate.releaseRoot, workspaceId: "workspace", includeArtifactVersion: true,
+        readPlan: async () => ({ revision: "plan" }), createReleaseWorkspace: () => f.service,
+        assertCleanTree: async () => assert.equal(await git(f.candidate.releaseRoot, "status", "--porcelain"), ""),
+        assertCurrentRevision: async () => assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "HEAD"), frozen.preReleaseHead),
+      }),
+      prepareVersion: options => prepareCommittedAgentHubReleaseVersion({ root: path.dirname(packageFile), ...options }),
+      run: async () => { stages++; throw new Error("synthetic effect boundary"); },
+    }), /synthetic effect boundary/u);
+    assert.deepEqual(await readFile(packageFile), raw);
+    assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "HEAD"), frozen.preReleaseHead);
+  }
+  assert.equal(stages, 2);
+  assert.equal(JSON.parse(raw).version, "2.0.0");
+});
+
+test("full consumer passes the same frozen artifact to real Android input and runtime parser", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze();
+  const options = { repositoryRoot: f.candidate.releaseRoot, workspaceId: "workspace", includeArtifactVersion: true,
+    readPlan: async () => ({ revision: "plan" }), createReleaseWorkspace: () => f.service,
+    assertCleanTree: async () => {}, assertCurrentRevision: async () => {} };
+  const value = await freezePreparedPublication(options);
+  const original = JSON.parse(await readFile(frozen.manifestFile, "utf8")).publication;
+  assert.deepEqual(value, { releaseVersion: original.releaseVersion, runtimeReleaseVersion: original.runtimeReleaseVersion, head: original.head });
+  const actual = path.resolve(import.meta.dirname, "../../..");
+  const runner = path.join(f.primary, "..", "android-input");
+  for (const file of ["AndroidApp/build.ps1", "release-version.mjs", "src/domain/agent-hub-version.mjs", "src/infrastructure/filesystem/release-version.mjs"]) {
+    await mkdir(path.dirname(path.join(runner, file)), { recursive: true });
+    await writeFile(path.join(runner, file), await readFile(path.join(actual, file)));
+  }
+  const pkg = JSON.parse(await readFile(path.join(actual, "package.json"), "utf8"));
+  await writeFile(path.join(runner, "package.json"), JSON.stringify({ name: "agent-hub", version: value.releaseVersion,
+    type: "module", scripts: { "android:build": pkg.scripts["android:build"] } }));
+  const logFile = path.join(runner, "android-input.log");
+  let calls = 0;
+  await assert.rejects(publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
+    exclusive: action => action(), revision: async () => original.head,
+    freezeVersion: () => freezePreparedPublication(options),
+    prepareVersion: version => prepareCommittedAgentHubReleaseVersion({ root: path.join(f.candidate.releaseRoot, "AgentHub"), ...version }),
+    run: async step => {
+      calls++;
+      assert.equal(step.label, "Сборка Agent Hub Mobile");
+      assert.deepEqual(step.args.slice(-3), ["--", "-ArtifactVersion", original.runtimeReleaseVersion]);
+      // Execute actual npm → actual wrapper → actual frozen identity parser.
+      // A deliberately absent SDK stops before Gradle or any APK/build output.
+      await runStep({ ...step, cwd: runner, logFile, timeoutMs: 30_000,
+        env: { ANDROID_SDK_ROOT: path.join(runner, "absent-sdk"), ANDROID_HOME: path.join(runner, "absent-sdk") } });
+    },
+  }), /процесс завершён/u);
+  const log = await readFile(logFile, "utf8");
+  assert.match(log, /Android SDK API 36 was not found/u);
+  assert.doesNotMatch(log, /require -ArtifactVersion|Invalid frozen Android artifact|differs from frozen/u);
+  assert.equal(calls, 1);
+  const runtime = publicationSteps({ frozenVersion: value }).find(step => step.label === "Сборка runtime-релиза");
+  const parsed = parseRuntimeArguments(["deploy", ...runtime.args.slice(runtime.args.indexOf("--") + 1)]);
+  assert.equal(parsed.expectedReleaseVersion, original.runtimeReleaseVersion);
+  assert.equal(parsed.publicationRevision, original.head);
+  for (const args of [["deploy", "--expected-release-version", original.runtimeReleaseVersion],
+    ["status", "--expected-release-version", original.runtimeReleaseVersion, "--publication-revision", original.head]]) {
+    assert.throws(() => parseRuntimeArguments(args), /Frozen deploy/u);
+  }
 });
 
 function assertLineEndings(bytes, expected) {
@@ -78,7 +199,7 @@ test("freeze commits only supplied CHANGELOG, promotes clone main and preserves 
   assert.deepEqual((await git(f.candidate.releaseRoot, "diff", "--name-only", f.candidate.preReleaseHead, frozen.preReleaseHead))
     .split("\n").sort(), ["AgentHub/package-lock.json", "AgentHub/package.json", "CHANGELOG.md"]);
   assert.equal(JSON.parse(await readFile(path.join(f.candidate.releaseRoot, "AgentHub", "package.json"), "utf8")).version,
-    "2026.8.24");
+    "2.0.0");
   assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "PreRelease"), frozen.preReleaseHead);
   const manifestBytes = await readFile(frozen.manifestFile);
   assert.equal(createHash("sha256").update(manifestBytes).digest("hex"), frozen.manifestHash);
@@ -89,17 +210,17 @@ test("freeze commits only supplied CHANGELOG, promotes clone main and preserves 
   assert.equal(repeat.reused, true);
   assert.equal(repeat.preReleaseHead, frozen.preReleaseHead);
   assert.equal(repeat.manifestHash, frozen.manifestHash);
-  assert.equal(JSON.parse(await readFile(repeat.manifestFile, "utf8")).publication.releaseVersion, "2026.8.24");
+  assert.equal(JSON.parse(await readFile(repeat.manifestFile, "utf8")).publication.releaseVersion, "2.0.0");
   const packageRoot = path.join(f.candidate.releaseRoot, "AgentHub");
-  assert.equal(JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")).version, "2026.8.24");
+  assert.equal(JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")).version, "2.0.0");
   const lock = JSON.parse(await readFile(path.join(packageRoot, "package-lock.json"), "utf8"));
-  assert.equal(lock.version, "2026.8.24");
-  assert.equal(lock.packages[""].version, "2026.8.24");
+  assert.equal(lock.version, "2.0.0");
+  assert.equal(lock.packages[""].version, "2.0.0");
   assert.equal(await readFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "utf8"), "consolidated\n");
   assert.deepEqual(await snapshot(), before);
 });
 
-test("freeze with unchanged CHANGELOG still commits the frozen CalVer", async (t) => {
+test("freeze with unchanged CHANGELOG still commits the first semantic version", async (t) => {
   const f = await fixture(t);
   const frozen = await f.freeze({ changelogContent: Buffer.from("previous\n") });
   assert.notEqual(frozen.preReleaseHead, f.candidate.preReleaseHead);
@@ -134,7 +255,7 @@ for (const phase of ["intent", "refs"]) test(`freeze resumes exact persisted com
   await assert.rejects(f.freeze({ changelogContent: Buffer.from("consolidated\r\n") }), /supplied publication CHANGELOG bytes changed/u);
   await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "consolidated\n");
   const frozen = await f.freeze({ releaseDate: new Date(2026, 7, 25, 12) });
-  assert.equal(JSON.parse(await readFile(frozen.manifestFile, "utf8")).publication.releaseVersion, "2026.8.24");
+  assert.equal(JSON.parse(await readFile(frozen.manifestFile, "utf8")).publication.releaseVersion, "2.0.0");
   assert.equal(frozen.preReleaseHead, pending.preReleaseHead);
   assert.equal(frozen.manifestHash, pending.manifestHash);
   assert.equal(frozen.phase, "frozen");
@@ -186,7 +307,7 @@ for (const scenario of [
   for (const name of ["package.json", "package-lock.json"]) {
     const bytes = await readFile(path.join(f.candidate.releaseRoot, "AgentHub", name));
     assertLineEndings(bytes, scenario.checkoutEol);
-    assert.equal(JSON.parse(bytes).version, "2026.8.24");
+    assert.equal(JSON.parse(bytes).version, "2.0.0");
   }
 });
 
@@ -276,4 +397,42 @@ for (const mode of ["missing", "tampered"]) test(`public freeze wrapper rejects 
   await assert.rejects(freezeThroughPublicWrapper(f), mode === "missing"
     ? /payload is missing or invalid/u
     : /payload digest changed/u);
+});
+
+
+test("frozen candidate projection carries original artifact identity into Android preparation", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze();
+  const raw = await readFile(frozen.manifestFile);
+  const publication = JSON.parse(raw).publication;
+  const observed = await f.service.frozenCandidate(f.primary);
+  assert.deepEqual(observed.manifest.publication, publication);
+  const operationId = "fefefefe-fefe-4efe-8efe-fefefefefefe";
+  const input = releaseOperationRuntimePublicationInput({
+    operation: { operationId }, generation: { operationId, generation: 2 },
+    candidate: { commit: observed.preReleaseHead, manifest: observed.manifest },
+  });
+  assert.equal(input.version, publication.runtimeReleaseVersion);
+  assert.equal(input.sourceCommit, publication.head);
+  const { createPublicationArtifactSteps } = await import("../../../src/infrastructure/process/publication-artifacts.mjs");
+  let builds = 0;
+  const artifacts = createPublicationArtifactSteps({
+    sourceRoot: path.join(f.candidate.releaseRoot, "AgentHub"),
+    runtimeRoot: path.join(f.primary, "..", "runtime-artifacts"),
+    runtimePublication: input,
+    journal: { read: async () => null, updateProgress: async () => {} },
+    run: async step => {
+      builds++;
+      assert.equal(step.label, "Сборка Agent Hub Mobile");
+      assert.deepEqual(step.args.slice(-3), ["--", "-ArtifactVersion", publication.runtimeReleaseVersion]);
+      throw new Error("captured Android input before build");
+    },
+  });
+  const steps = await artifacts.steps(publicationSteps({ skipTests: true, skipWorker: true }),
+    { revision: observed.preReleaseHead });
+  await assert.rejects(steps[0].execute(), /captured Android input before build/u);
+  assert.equal(builds, 1);
+  assert.deepEqual(await readFile(frozen.manifestFile), raw);
+  assert.deepEqual((await f.service.frozenCandidate(f.primary)).manifest.publication, publication);
 });

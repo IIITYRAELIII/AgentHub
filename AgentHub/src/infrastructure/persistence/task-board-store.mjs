@@ -2,8 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { readClaimCustodyFence, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
+  claimCustodySqlConnection, captureClaimCustodySqlAuthorities } from "./claim-custody-fence.mjs";
+import { claimCustodyState, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { nativeTestMetadataDrift } from "../../domain/native-test-terminal-recovery.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { configureTaskTurnProjection } from "./task-turn-projection.mjs";
 
 import {
   LEGACY_TELEGRAM_BUNDLE_PREFIX,
@@ -15,6 +19,7 @@ import {
   normalizedTaskWorkflowStatus,
   TASK_WORKFLOW_STATUSES,
   TaskLifecycleBeginRejectedError,
+  workflowAdmissionNoEffectEvidence,
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
 import {
@@ -339,6 +344,7 @@ function configure(database) {
       PRIMARY KEY (source_kind, source_id)
     ) WITHOUT ROWID;
   `);
+  configureClaimCustodyBindingFences(database);
   const tableExists = (name) => Boolean(database.prepare(`
     SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
   `).get(name));
@@ -437,7 +443,7 @@ function configure(database) {
       WHEN status = 'started' AND start_destination_stream_id IS NOT stream_id THEN 'prepared'
       ELSE 'completed'
     END
-    WHERE start_effect_state IS NULL
+    WHERE start_effect_state IS NULL AND start_request_id IS NOT NULL
   `);
   if (!taskColumns.some((column) => column.name === "workflow_status")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'new'");
@@ -585,6 +591,7 @@ function configure(database) {
       END;
   `);
   configureTaskChecklist(database);
+  configureTaskTurnProjection(database);
   // Revision-changing edits are fenced, including updates via the existing
   // revision trigger. Opening a store may perform a no-op housekeeping UPDATE.
   database.exec(`
@@ -830,6 +837,7 @@ export class TaskBoardStore {
   #revision = 0;
   #checklistEventDrain = null;
   #mutations = new AsyncSqliteMutationQueue();
+  #custodyWriteAuthorities = [];
 
   constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID, readOnly = false } = {}) {
     if (!databaseFile) throw new TypeError("databaseFile is required");
@@ -846,6 +854,8 @@ export class TaskBoardStore {
         configure(this.#database);
         this.#migrateLegacyReleaseRegistry();
         this.#removeReleaseRegistry();
+        configureClaimCustodyNamespaceFences(this.#database);
+        this.#database = claimCustodySqlConnection(this.#database, () => this.#custodyWriteAuthorities);
       }
     } catch (error) {
       this.#database.close();
@@ -1312,21 +1322,35 @@ export class TaskBoardStore {
     });
     // The journal owns terminal turns; exact Task bindings own membership.
     // Read scalar fields only: prompts, bodies and diffs do not belong in board snapshots.
-    if (this.#tableExists(database, "journal_records")) {
-      const rows = database.prepare(`
-        SELECT DISTINCT j.provider, j.thread_id AS threadId, j.turn_id AS turnId,
-          j.task_thread_id AS taskThreadId, j.project_root AS projectRoot,
-          j.completed_at_ms AS completedAtMs,
-          substr(json_extract(j.record_json, '$.title'), 1, 2000) AS summary,
-          json_extract(j.record_json, '$.status') AS status
-        FROM hub_task_turn_bindings b
-        JOIN journal_records j ON j.provider = b.provider
-          AND j.thread_id = b.provider_thread_id AND j.turn_id = b.turn_id
-        WHERE b.task_id = ? AND json_valid(j.record_json)
-          AND j.completed_at_ms IS NOT NULL
-          AND coalesce(json_extract(j.record_json, '$.provisional'), 0) = 0
-          AND coalesce(json_extract(j.record_json, '$.aggregateOnly'), 0) = 0
-          AND json_extract(j.record_json, '$.status') IN ('completed', 'failed', 'cancelled', 'interrupted')
+    // Materialize the small scalar tuple once; inlining would make each filter
+    // traverse the large retained record again on the synchronous snapshot path.
+    if (this.#tableExists(database, "hub_task_turn_projection") || this.#tableExists(database, "journal_records")) {
+      // The raw-journal branch is only compatibility for read-only pre-migration
+      // release evidence. Writable runtime stores install the derived SQL index.
+      const rows = database.prepare(this.#tableExists(database, "hub_task_turn_projection") ? `
+        SELECT DISTINCT provider, thread_id AS threadId, turn_id AS turnId,
+          task_thread_id AS taskThreadId, project_root AS projectRoot,
+          completed_at_ms AS completedAtMs, summary, status
+        FROM hub_task_turn_projection WHERE task_id = ?
+      ` : `
+        WITH bound_records AS MATERIALIZED (
+          SELECT DISTINCT j.provider, j.thread_id AS threadId, j.turn_id AS turnId,
+            j.task_thread_id AS taskThreadId, j.project_root AS projectRoot,
+            j.completed_at_ms AS completedAtMs,
+            json_extract(j.record_json, '$.title', '$.status', '$.provisional', '$.aggregateOnly') AS scalars
+          FROM hub_task_turn_bindings b
+          JOIN journal_records j ON j.provider = b.provider
+            AND j.thread_id = b.provider_thread_id AND j.turn_id = b.turn_id
+          WHERE b.task_id = ? AND json_valid(j.record_json)
+            AND j.completed_at_ms IS NOT NULL
+        )
+        SELECT provider, threadId, turnId, taskThreadId, projectRoot, completedAtMs,
+          substr(json_extract(scalars, '$[0]'), 1, 2000) AS summary,
+          json_extract(scalars, '$[1]') AS status
+        FROM bound_records
+        WHERE coalesce(json_extract(scalars, '$[2]'), 0) = 0
+          AND coalesce(json_extract(scalars, '$[3]'), 0) = 0
+          AND json_extract(scalars, '$[1]') IN ('completed', 'failed', 'cancelled', 'interrupted')
       `).all(taskId);
       const key = (row) => JSON.stringify([row.provider, row.threadId, row.turnId]);
       const current = new Map(rows.map((row) => [key(row), {
@@ -1367,7 +1391,15 @@ export class TaskBoardStore {
     if (!task) return null;
     const checklist = (checklistProjections ?? taskChecklistProjectionMap(database, [task.id])).get(task.id)
       ?? { checklist: [], checklistParent: null };
-    return { ...task, ...this.#releaseDetails(database, task.id), ...checklist };
+    return { ...task, ...this.#releaseDetails(database, task.id), ...checklist,
+      detailsRevision: this.#taskDetailsRevision(database, row) };
+  }
+
+  #taskDetailsRevision(database, row, projected = null) {
+    const history = projected ?? (this.#tableExists(database, "hub_task_turn_projection_versions")
+      ? database.prepare("SELECT revision FROM hub_task_turn_projection_versions WHERE task_id=?")
+        .get(row.id) : null);
+    return [row.row_revision || 1, row.updated_at_ms, history?.revision || 0].join(":");
   }
 
   #withChecklistWrite(operation) {
@@ -1632,7 +1664,7 @@ export class TaskBoardStore {
     ));
   }
 
-  list({ includeDone = true } = {}) {
+  list({ includeDone = true, includeDetails = true } = {}) {
     return this.#withDatabase((database) => {
       const rows = database.prepare(`
         SELECT * FROM hub_board_tasks
@@ -1641,11 +1673,20 @@ export class TaskBoardStore {
           bucket, workspace_id, board_order, created_at_ms, id
       `).all();
       const checklistProjections = taskChecklistProjectionMap(database, rows.map((row) => row.id));
-      return rows.map((row) => this.#taskWithRelease(database, row, checklistProjections));
+      if (includeDetails) return rows.map((row) => this.#taskWithRelease(database, row, checklistProjections));
+      const history = this.#tableExists(database, "hub_task_turn_projection_versions")
+        ? new Map(database.prepare("SELECT task_id, revision FROM hub_task_turn_projection_versions")
+          .all().map(row => [row.task_id, row])) : new Map();
+      return rows.map(row => ({
+        ...taskFromRow(row),
+        ...(checklistProjections.get(row.id) ?? { checklist: [], checklistParent: null }),
+        detailsDeferred: true,
+        detailsRevision: this.#taskDetailsRevision(database, row, history.get(row.id) ?? { count: 0, revision: 0 }),
+      }));
     });
   }
 
-  async updateChecklist({
+  updateChecklist({
     id, operation, itemId = null, text = null, completed = null,
     beforeItemId = null, linkedTaskId = null, expectedRevision, requestId, taskPrefix = "",
   } = {}) {
@@ -1665,7 +1706,7 @@ export class TaskBoardStore {
     return this.checklistRequestResult(payload, outcome);
   }
 
-  async applyChecklistLinkedTaskAction({
+  applyChecklistLinkedTaskAction({
     id, itemId, linkedTaskId, action, expectedTaskRevision,
     expectedLinkedTaskRevision, requestId,
   } = {}) {
@@ -2240,7 +2281,15 @@ export class TaskBoardStore {
   }
 
   runMutation(operation, options = {}) {
-    return this.#mutations.run(operation, options);
+    const authorities = captureClaimCustodySqlAuthorities(this.#database, options.method, options.args ?? []);
+    return this.#mutations.run(() => {
+      this.#custodyWriteAuthorities = authorities;
+      try {
+        const result = operation();
+        if (result?.then) throw new TypeError("Task SQL mutation must remain synchronous");
+        return result;
+      } finally { this.#custodyWriteAuthorities = []; }
+    }, options);
   }
 
   mutationDiagnostics() {
@@ -2400,7 +2449,7 @@ export class TaskBoardStore {
 
   claim(id, {
     workspaceId, streamId, provider, threadId, turnId, operationId,
-    operationKind = "claim", gitBaseline = null,
+    operationKind = "claim", gitBaseline = null, forwardCustodyRequestId = null, validateClaimAdmission = null,
   } = {}) {
     const taskId = String(id ?? "").trim();
     const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
@@ -2414,6 +2463,9 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
+      if (validateClaimAdmission != null) {
+        if (typeof validateClaimAdmission !== "function" || validateClaimAdmission()?.then) throw new TypeError("Claim admission validator must be synchronous");
+      }
       const current = this.#taskRow(database, taskId);
       if (current.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
       if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
@@ -2421,6 +2473,33 @@ export class TaskBoardStore {
       }
       if (current.status === "starting" && String(current.start_request_id ?? "").trim()) {
         throw new Error("prepared Task launch must be cancelled before claim");
+      }
+      const claimReceiptTable = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_mcp_operations'").get();
+      if (claimReceiptTable && database.prepare(`
+        SELECT 1 FROM hub_mcp_operations WHERE request_id = ?
+          AND (json_extract(result_json, '$.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1')
+            OR json_extract(result_json, '$.operatorReconciliation.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1'))
+      `).get(String(operationId))) throw new Error("Task claim was durably refused before admission");
+      if (readClaimCustodyFence(database, "original", operationId)) throw new TaskClaimContinuationWithdrawnError();
+      const reservation = readClaimCustodyFence(database, "task", taskId);
+      if (reservation && (reservation.requestId !== forwardCustodyRequestId
+          || reservation.successorClaimRequestId !== operationId)) throw new TaskClaimCustodyRejectedError("Task is reserved by a forward custody fence");
+      if (forwardCustodyRequestId) {
+        const raw = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(forwardCustodyRequestId);
+        const fence = raw && claimCustodyState({ requestId: raw.request_id, workspaceId: raw.workspace_id,
+          streamId: raw.stream_id, threadId: raw.provider_thread_id, provider: raw.provider, toolName: raw.tool_name,
+          argumentsHash: raw.arguments_hash, claimCustody: JSON.parse(raw.claim_custody_json ?? "null") });
+        if (!fence || fence.phase !== "fenced" || fence.taskId !== taskId || fence.workspaceId !== workspaceId
+            || fence.successorClaimRequestId !== operationId || fence.original.provider !== provider
+            || fence.original.threadId !== threadId || fence.original.streamId !== streamId
+            || Number(current.row_revision) !== fence.taskRevision || current.stream_id !== fence.envelope.expected_owner_stream_id) {
+          throw new TaskClaimCustodyRejectedError("Custody assignment identity or Task CAS differs");
+        }
+        const intake = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(operationId);
+        if (!intake || intake.tool_name !== "hub_task_claim" || intake.workspace_id !== workspaceId || intake.stream_id !== streamId
+            || intake.provider !== provider || intake.provider_thread_id !== threadId || intake.arguments_hash !== fence.successorArgumentsHash
+            || intake.status !== "pending" || !["pending", "unknown"].includes(intake.receipt_state)) throw new TaskClaimCustodyRejectedError("Custody successor intake differs");
+        if (baselineJson !== gitBaselineJson(fence.namespace?.workspace?.gitBaseline ?? fence.source.gitBaseline)) throw new TaskClaimCustodyRejectedError("Custody baseline differs");
       }
       const bound = database.prepare(`
         SELECT * FROM hub_task_turn_bindings
@@ -2763,6 +2842,9 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
+        if (database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(operation)) {
+          throw new Error("Task lifecycle operation already has a terminal outcome");
+        }
         const current = this.#taskRow(database, taskId);
         const revision = Number(expectedRevision);
         if (!Number.isInteger(revision) || revision !== Number(current.row_revision)) {
@@ -3031,6 +3113,43 @@ export class TaskBoardStore {
         };
       } catch {
         throw new Error("Task lifecycle outcome is corrupt");
+      }
+    });
+  }
+
+  recordWorkflowAdmissionRefusal({ taskId, receipt, projectRoot, targetWorkflowStatus,
+    expectedRevision = null, expectedWorkflowStatus = null } = {}) {
+    if (receipt?.replayed !== false || receipt.status !== "pending"
+        || receipt.operationStatus !== "pending") throw new Error("Workflow refusal requires a fresh MCP intake");
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        const operation = receipt.requestId;
+        if (current.workspace_id !== receipt.workspaceId
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_transitions WHERE operation_id = ?").get(operation)
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(operation)) {
+          throw new Error("Workflow refusal cannot overwrite admitted or foreign lifecycle state");
+        }
+        const observedRevision = Number(current.row_revision);
+        const code = expectedRevision !== null && expectedRevision !== observedRevision
+          ? "WORKFLOW_REVISION_CHANGED"
+          : expectedWorkflowStatus !== null && expectedWorkflowStatus !== current.workflow_status
+            ? "WORKFLOW_STATUS_CHANGED" : null;
+        const noEffect = { version: 1, code, taskId, projectRoot, targetWorkflowStatus,
+          expectedRevision, expectedWorkflowStatus, observedRevision, observedWorkflowStatus: current.workflow_status,
+          ...Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName",
+            "argumentsHash", "createdAtMs"].map((key) => [key, receipt[key]])) };
+        const outcome = { operationId: operation, taskId, kind: "workflow", result: { noEffect } };
+        if (!workflowAdmissionNoEffectEvidence(outcome, receipt)) throw new Error("Workflow refusal identity or CAS is invalid");
+        database.prepare(`INSERT INTO hub_task_lifecycle_outcomes
+          (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, ?)`)
+          .run(operation, taskId, JSON.stringify(outcome.result), this.now());
+        database.exec("COMMIT");
+        return outcome;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
       }
     });
   }

@@ -11,8 +11,10 @@ import {
   childProcessTerminal,
   cleanupE2eTemporaryRoot,
   E2eChildProcessOwner,
+  e2eFailureArtifactDirectory,
   e2eTimeoutMs,
 } from "../../e2e/telegram-harness.mjs";
+import { runIsolatedTestCommand } from "../../test-suite.mjs";
 
 class FakeChild extends EventEmitter {
   constructor({ pid = 1234, exitCode = null, signalCode = null, onKill = null } = {}) {
@@ -129,6 +131,49 @@ test("E2E process owner keeps bounded startup-failure diagnostics", async () => 
   assert.equal(diagnostics.stage, "startup");
   await owner.stop();
   assert.equal(owner.child, null);
+});
+
+test("E2E process owner drains bounded stdout and retains owned process chronology", async () => {
+  const owner = new E2eChildProcessOwner();
+  const child = owner.start(() => spawn(process.execPath, ["-e",
+    "process.stdout.write('x'.repeat(40000)+' secret=SYNTHETIC STDOUT_END');"], {
+    stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+  }));
+  await once(child, "close");
+  const diagnostics = owner.diagnostics();
+  assert.equal(child.exitCode, 0);
+  assert.ok(diagnostics.stdout.length <= 32_768);
+  assert.match(diagnostics.stdout, /STDOUT_END/u);
+  assert.doesNotMatch(diagnostics.stdout, /SYNTHETIC/u);
+  const generation = diagnostics.generations[0];
+  const times = [generation.spawnRequestedAt, generation.spawnedAt, generation.exitedAt, generation.closedAt]
+    .map((value) => Date.parse(value));
+  assert.ok(times.every(Number.isFinite));
+  assert.ok(times.every((value, index) => index === 0 || value >= times[index - 1]));
+  await owner.stop();
+});
+
+test("E2E failure evidence survives the outer isolated runner cleanup", async (t) => {
+  const checkoutRoot = await mkdtemp(path.join(os.tmpdir(), "ah-evidence-checkout-"));
+  t.after(() => rm(checkoutRoot, { recursive: true, force: true }));
+  const owner = new E2eChildProcessOwner();
+  owner.start(() => new FakeChild({ exitCode: 1 }));
+  let temporaryRoot;
+  let artifactDirectory;
+  let failure;
+  await assert.rejects(runIsolatedTestCommand("fixture", [], { execute: async (_command, _args, { env }) => {
+    temporaryRoot = env.TEMP;
+    artifactDirectory = e2eFailureArtifactDirectory(checkoutRoot, path.join(temporaryRoot, "owned-runtime"));
+    failure = await captureE2eFailure({ owner, error: new Error("original startup failure"),
+      evidenceDirectory: artifactDirectory, stage: "exact recovery restart 3",
+      evidence: { startup: { stage: "desktop-control", outcome: "started" } } });
+    throw failure;
+  } }), (error) => error === failure);
+  await assert.rejects(stat(temporaryRoot), { code: "ENOENT" });
+  const evidence = JSON.parse(await readFile(path.join(artifactDirectory, "diagnostics.json"), "utf8"));
+  assert.equal(evidence.stage, "exact recovery restart 3");
+  assert.match(evidence.sections.startup, /desktop-control/u);
+  await owner.stop();
 });
 
 test("E2E failure diagnostics distinguish a live stall from a terminated child", async (t) => {

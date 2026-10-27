@@ -3,19 +3,85 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { selectedCompositionIdentity } from "../../domain/task-selected-composition.mjs";
+import { normalizedOwnGitPublication } from "../../domain/release-base-provenance.mjs";
 
 import {
   createCandidateGeneration,
+  effectiveReleaseTaskIds,
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
+  releaseApprovedTargets,
   releaseOperationIsTerminal,
   restoreReleaseOperation,
   transitionReleaseOperation,
 } from "../../domain/release-operation.mjs";
 import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.mjs";
+import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
 
 const LEGACY_MIGRATION_PREFIX = "release-operation:legacy:";
+
+// Git publication is a narrower fact than successful runtime delivery. Reuse
+// existing immutable generation/receipt authority; never advance publication
+// state, main, an operation, or an installed runtime from this read.
+export function readOwnGitPublicationOrigin({ dataDir, repositoryRoot, localMainCommit,
+  publishedRevision, originCommit, taskIds = [] } = {}) {
+  if (![localMainCommit, publishedRevision, originCommit].every(value => /^[a-f0-9]{40}$/u.test(value ?? ""))
+      || !taskIds.length || !existsSync(runtimeDatabasePath(dataDir))) return null;
+  const rootKey = value => path.resolve(String(value)).replaceAll("\\", "/").toLowerCase();
+  const db = new DatabaseSync(runtimeDatabasePath(dataDir), { readOnly: true });
+  try {
+    db.exec("BEGIN");
+    if (db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('release_operations','release_operation_tasks','release_candidate_generations','release_step_receipts')").get().count !== 4) return null;
+    const rows = db.prepare(`SELECT o.operation_json, g.generation_json, g.identity_sha256
+      FROM release_operations o JOIN release_candidate_generations g ON g.operation_id=o.operation_id
+      WHERE EXISTS (SELECT 1 FROM release_operation_tasks t WHERE t.operation_id=o.operation_id
+        AND t.task_id IN (${taskIds.map(() => "?").join(",")}))
+      AND EXISTS (SELECT 1 FROM json_each(g.generation_json, '$.candidates') c
+        WHERE json_extract(c.value, '$.commit')=?)`).all(...taskIds, originCommit);
+    const matches = [];
+    for (const row of rows) {
+      const operation = JSON.parse(row.operation_json), generation = JSON.parse(row.generation_json);
+      const { fingerprint, ...authorization } = operation.authorization;
+      if (releaseIdentitySha256(authorization) !== fingerprint) throw new Error("OWN Git publication authorization changed");
+      const { identitySha256, ...contents } = generation;
+      if (identitySha256 !== row.identity_sha256 || releaseIdentitySha256(contents) !== identitySha256) {
+        throw new Error("OWN Git publication generation changed");
+      }
+      if (generation.operationId !== operation.operationId) continue;
+      const selected = items => items.map(item => `${item.taskId}:${item.resultCommit}`).sort();
+      if (JSON.stringify([...(generation.authorizedTaskIds ?? authorization.taskIds)].sort())
+          !== JSON.stringify(generation.selectedResults.map(item => item.taskId).sort())) continue;
+      const candidates = generation.candidates.filter(item => rootKey(item.repositoryRoot) === rootKey(repositoryRoot)
+        && item.commit === originCommit);
+      if (candidates.length !== 1) continue;
+      const candidate = candidates[0], manifest = candidate.manifest, provenance = manifest?.baseProvenance;
+      if (manifest?.workspaceId !== operation.workspaceId || manifest.compositionPolicy !== "main-selected-git-merge-v1"
+          || provenance?.publishedBaseCommit !== publishedRevision || provenance.agreedMainCommit !== localMainCommit
+          || JSON.stringify(selected(manifest.tasks ?? [])) !== JSON.stringify(selected(generation.selectedResults))) continue;
+      const targets = releaseApprovedTargets(restoreReleaseOperation(operation)).filter(target => target.kind === "agent-hub-publication"
+        && rootKey(target.repositoryRoot) === rootKey(repositoryRoot) && target.approvedLocalMainCommit === localMainCommit
+        && target.approvedOriginMainCommit === (provenance.approvedOriginMainCommit ?? publishedRevision));
+      if (targets.length !== 1) continue;
+      const receipts = db.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND generation=? AND step_id IN (?, ?)")
+        .all(operation.operationId, generation.generation, "validate", `publish:${targets[0].targetId}`)
+        .map(record => JSON.parse(record.receipt_json));
+      const exact = receipt => receipt.operationId === operation.operationId && receipt.generation === generation.generation
+        && receipt.input?.candidate === identitySha256 && receipt.inputSha256 === releaseIdentitySha256(receipt.input);
+      if (!receipts.some(receipt => exact(receipt) && receipt.stepId === "validate" && receipt.status === "applied")
+          || !receipts.some(receipt => exact(receipt) && receipt.stepId === `publish:${targets[0].targetId}`
+            && releaseIdentitySha256(receipt.input.target) === releaseIdentitySha256(targets[0]))) continue;
+      matches.push(normalizedOwnGitPublication({ kind: "validated-own-git-publication-v1",
+        operationId: operation.operationId, generation: generation.generation, identitySha256,
+        repositoryRoot: candidate.repositoryRoot, publishedBaseCommit: publishedRevision,
+        agreedMainCommit: localMainCommit, commit: candidate.commit, tree: candidate.tree }));
+    }
+    if (matches.length > 1) throw new Error("OWN Git publication origin is ambiguous");
+    return matches[0] ?? null;
+  } finally {
+    try { db.exec("ROLLBACK"); } finally { db.close(); }
+  }
+}
 
 // Read-only OWN publication fact: immutable original, validated generation and
 // descriptor matching the actual remote, independent of later operation state.
@@ -54,7 +120,7 @@ export function readNativePublishedSelectedComposition({ dataDir, preview, remot
       if (identitySha256 !== row.identity_sha256 || releaseIdentitySha256(contents) !== identitySha256) {
         throw new Error("Published native generation identity changed");
       }
-      if (JSON.stringify([...operation.authorization.taskIds].sort())
+      if (JSON.stringify([...(generation.authorizedTaskIds ?? operation.authorization.taskIds)].sort())
           !== JSON.stringify(generation.selectedResults.map(task => task.taskId).sort())) continue;
       const selected = generation.selectedResults.find(task => task.taskId === preview.taskId);
       if (!selected || selected.resultCommit !== preview.taskCommit
@@ -288,6 +354,26 @@ function legacyState(evidence, { importedAt, evidenceOnly = false } = {}) {
 
 export class ReleaseOperationStore {
   #initialized = false;
+  #mutationQueues = new Map();
+
+  // Queue only short persistence closures, never publication or provider work.
+  // A retry rereads durable CAS/owner evidence inside the closure.
+  async runOperationMutation(operationId, mutation, options = {}) {
+    const id = String(operationId);
+    let queue = this.#mutationQueues.get(id);
+    if (!queue) this.#mutationQueues.set(id, queue = new AsyncSqliteMutationQueue());
+    try {
+      return await queue.run(mutation, { ...options, requestId: id });
+    } finally {
+      if (queue.diagnostics().queued === 0 && this.#mutationQueues.get(id) === queue) {
+        this.#mutationQueues.delete(id);
+      }
+    }
+  }
+
+  isContentionError(error) {
+    return sqliteContention(error);
+  }
 
   constructor({ dataDir, idFactory = randomUUID, now = () => new Date().toISOString() } = {}) {
     if (!String(dataDir ?? "").trim()) throw new TypeError("dataDir is required");
@@ -384,15 +470,18 @@ export class ReleaseOperationStore {
     eventKind = "operation.progress",
     event = null,
     emitEvent = true,
+    reviewedMainRecovery = null,
+    testSelectionAmendment = null,
   } = {}) {
     const id = String(operationId ?? "").trim();
     if (!id) throw new TypeError("operationId is required");
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
-        const current = operationFromRow(database.prepare(
+        const row = database.prepare(
           "SELECT operation_json FROM release_operations WHERE operation_id = ?",
-        ).get(id));
+        ).get(id);
+        const current = operationFromRow(row);
         if (!current) {
           database.exec("ROLLBACK");
           return { operation: null, applied: false, reason: "not-found" };
@@ -401,9 +490,37 @@ export class ReleaseOperationStore {
           database.exec("ROLLBACK");
           return { operation: current, applied: false, reason: "owner-fenced" };
         }
+        if (reviewedMainRecovery && expectedRevision === current.revision) {
+          const raw = JSON.parse(row.operation_json);
+          if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) {
+            throw new Error("Reviewed-main recovery is source-owner-fenced");
+          }
+          const nextGeneration = current.currentGeneration + 1;
+          if (database.prepare("SELECT 1 FROM release_candidate_generations WHERE operation_id=? AND generation=?")
+            .get(id, nextGeneration)) throw new Error("Reviewed-main recovery cannot replace an immutable generation");
+          const compose = readJson(database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND generation=? AND step_id='compose' ORDER BY attempt DESC LIMIT 1")
+            .get(id, nextGeneration)?.receipt_json);
+          if (compose?.status !== "failed" || compose.error !== current.lastError?.message) {
+            throw new Error("Reviewed-main recovery requires the original terminal failed compose receipt");
+          }
+          const publications = database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND step_id LIKE 'publish:%'").all(id);
+          if (!publications.length || publications.some(row => {
+            const receipt = readJson(row.receipt_json);
+            return receipt?.status !== "failed" || receipt.effect?.status !== "not_applied";
+          })) throw new Error("Reviewed-main recovery requires terminal not-applied publication receipts");
+        }
+        if (testSelectionAmendment && expectedRevision === current.revision) {
+          const raw = JSON.parse(row.operation_json);
+          if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("Test selection amendment is source-owner-fenced");
+        }
+        if (testSelectionAmendment && expectedRevision === current.revision
+            && database.prepare("SELECT 1 FROM release_candidate_generations WHERE operation_id=? AND generation=?")
+              .get(id, current.currentGeneration + 1)) throw new Error("Test selection cannot replace an immutable next generation");
         const result = transitionReleaseOperation(current, patch, {
           expectedRevision: expectedRevision ?? current.revision,
           updatedAt: this.now(),
+          reviewedMainRecovery,
+          testSelectionAmendment,
         });
         if (!result.applied) {
           database.exec("ROLLBACK");
@@ -417,6 +534,10 @@ export class ReleaseOperationStore {
           id, current.revision,
         );
         if (update.changes !== 1) throw new Error("release operation revision conflict");
+        if (testSelectionAmendment) {
+          const insertTask = database.prepare("INSERT OR IGNORE INTO release_operation_tasks(operation_id, task_id) VALUES (?, ?)");
+          for (const taskId of effectiveReleaseTaskIds(result.operation)) insertTask.run(id, taskId);
+        }
         if (emitEvent) {
           writeEvent(database, result.operation, eventKind, event ?? {
             operationId: id,
@@ -615,7 +736,7 @@ export class ReleaseOperationStore {
       SELECT operation_json FROM release_operations
       WHERE operation_id IN (SELECT operation_id FROM release_operation_tasks WHERE task_id = ?)
       ORDER BY updated_at DESC
-    `).all(String(taskId)).map(operationFromRow).filter(Boolean));
+    `).all(String(taskId)).map(operationFromRow).filter(operation => operation && effectiveReleaseTaskIds(operation).includes(String(taskId))));
   }
 
   pendingEvents({ limit = 100 } = {}) {

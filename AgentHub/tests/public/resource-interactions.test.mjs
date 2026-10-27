@@ -58,12 +58,12 @@ test("resource menus expose actions by resource kind", () => {
     kind: "link",
     localPath: "D:/work/file.txt:12",
   })], [
-    "open-editor", "reveal", "copy-path", "copy-object", "save",
+    "open-editor", "reveal", "copy-path", "copy-object", "save", "external-share",
   ]);
   assert.deepEqual([...interactions.resourceActions({
     kind: "link",
     localPath: "D:/work/file.txt:12",
-  })], ["open-editor", "reveal", "copy-path", "copy-object", "save"]);
+  })], ["open-editor", "reveal", "copy-path", "copy-object", "save", "external-share"]);
 });
 
 test("remote browsers offer a download instead of desktop-only file actions", () => {
@@ -73,11 +73,11 @@ test("remote browsers offer a download instead of desktop-only file actions", ()
   };
   assert.deepEqual([...interactions.resourceActions(resource, {
     localWorkspaceFilesAvailable: false,
-  })], ["save", "copy-path"]);
+  })], ["save", "copy-path", "external-share"]);
   assert.deepEqual([...interactions.resourceActions(resource, {
     localWorkspaceFilesAvailable: false,
     vscode: true,
-  })], ["open-editor", "reveal", "copy-path", "copy-object", "save"]);
+  })], ["open-editor", "reveal", "copy-path", "copy-object", "save", "external-share"]);
 });
 
 test("file references reject ambiguous Git refs but retain explicit file targets", () => {
@@ -173,8 +173,9 @@ test("local link clicks and context menus share one resource contract", () => {
     name: "file.txt",
   });
   assert.deepEqual([...interactions.resourceActions(resource)], [
-    "open-editor", "reveal", "copy-path", "copy-object", "save",
+    "open-editor", "reveal", "copy-path", "copy-object", "save", "external-share",
   ]);
+  assert.equal(interactions.workspaceFilePath(resource.localPath), "D:/work/file.txt");
 });
 
 test("workspace file actions are available only in VS Code and local web", () => {

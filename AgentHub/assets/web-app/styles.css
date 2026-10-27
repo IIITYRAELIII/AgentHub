@@ -9464,6 +9464,10 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   text-align: center;
 }
 
+button.attachment-preparing-label {
+  padding-inline: 0.1rem;
+}
+
 .attachment-file.attachment-open {
   cursor: pointer;
 }
@@ -9870,6 +9874,103 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .resource-context-menu button:focus-visible {
   background: var(--accent-soft);
   outline: 0;
+}
+
+.resource-context-menu-divider {
+  border-top: 1px solid var(--line);
+  display: block;
+  margin: 0.25rem 0.45rem;
+}
+
+.resource-context-menu-divider[hidden] { display: none; }
+
+.local-resource-overflow {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  display: none;
+  flex: 0 0 44px;
+  font: inherit;
+  font-size: 1.15rem;
+  height: 44px;
+  justify-content: center;
+  margin-inline: 0.1rem;
+  padding: 0;
+  vertical-align: middle;
+  width: 44px;
+}
+
+.local-resource-overflow:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.file-transfer-owner-dialog,
+.file-transfer-revoke-dialog {
+  background: var(--panel, var(--bg));
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 1.4rem 4rem rgb(0 0 0 / 0.48);
+  color: var(--text);
+  max-height: calc(100dvh - 2rem);
+  max-width: 34rem;
+  overflow: hidden;
+  padding: 0;
+  width: calc(100% - 2rem);
+}
+
+.file-transfer-owner-dialog::backdrop,
+.file-transfer-revoke-dialog::backdrop { background: rgb(0 0 0 / 0.62); backdrop-filter: blur(3px); }
+.file-transfer-owner-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100dvh - 2rem);
+  min-height: 0;
+  overflow: hidden;
+}
+.file-transfer-owner-dialog header { align-items: flex-start; display: flex; gap: 1rem; justify-content: space-between; padding: 1.35rem 1.35rem 0; }
+.file-transfer-owner-dialog h2, .file-transfer-revoke-dialog h2 { font-size: 1.25rem; margin: 0; }
+.file-transfer-owner-dialog h2[tabindex="-1"]:focus { outline: none; }
+.file-transfer-owner-kicker { color: var(--text-faint); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; margin: 0 0 0.3rem; text-transform: uppercase; }
+.file-transfer-owner-close { align-items: center; background: transparent; border: 0; border-radius: 50%; color: var(--text-faint); cursor: pointer; display: flex; flex: 0 0 44px; font-size: 1.5rem; height: 44px; justify-content: center; }
+.file-transfer-owner-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 1.15rem 1.35rem; }
+.file-transfer-owner-body h3 { font-size: 1.05rem; }
+.file-transfer-owner-body p { line-height: 1.5; }
+.file-transfer-owner-state { display: grid; gap: 0.45rem; margin-top: 1rem; }
+.file-transfer-owner-state > h3, .file-transfer-owner-state > p { margin: 0; }
+.file-transfer-owner-file { background: color-mix(in srgb, var(--accent) 7%, transparent); border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; gap: 0.3rem; margin-bottom: 1rem; padding: 0.85rem; }
+.file-transfer-owner-file strong { overflow-wrap: anywhere; }
+.file-transfer-owner-file span, .file-transfer-owner-helper { color: var(--text-faint); font-size: 0.82rem; }
+.file-transfer-owner-field { display: grid; gap: 0.4rem; margin: 1rem 0; }
+.file-transfer-owner-field > span { color: var(--text-faint); font-size: 0.78rem; }
+.file-transfer-owner-field select, .file-transfer-owner-field input { background: var(--input-bg, var(--bg)); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); font: inherit; min-height: 44px; padding: 0.65rem 0.75rem; width: 100%; }
+.file-transfer-owner-warning { background: color-mix(in srgb, #d99018 15%, transparent); border-left: 3px solid #d99018; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; padding: 0.75rem; }
+.file-transfer-owner-progress { background: var(--line); border-radius: 999px; height: 0.65rem; margin-top: 0.9rem; overflow: hidden; }
+.file-transfer-owner-progress span { background: var(--accent); display: block; height: 100%; width: var(--progress); }
+.file-transfer-owner-details { display: grid; gap: 0.65rem; }
+.file-transfer-owner-details div { display: grid; gap: 0.2rem; }
+.file-transfer-owner-details dt { color: var(--text-faint); font-size: 0.75rem; }
+.file-transfer-owner-details dd { margin: 0; overflow-wrap: anywhere; }
+.file-transfer-owner-details code { user-select: all; }
+.file-transfer-copy-status { color: var(--text-faint); min-height: 1.2em; }
+.file-transfer-owner-error { border-left: 3px solid #d85d62; padding-left: 0.8rem; }
+.file-transfer-owner-actions { border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 0.65rem; justify-content: flex-end; padding: 1rem 1.35rem max(1rem, env(safe-area-inset-bottom)); }
+.file-transfer-owner-actions button { background: transparent; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); cursor: pointer; font: inherit; min-height: 44px; padding: 0.6rem 0.9rem; }
+.file-transfer-owner-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast, #fff); }
+.file-transfer-owner-actions button.danger { border-color: #d85d62; color: #ff8388; }
+.file-transfer-revoke-dialog form { padding: 1.35rem; }
+.file-transfer-revoke-dialog p { line-height: 1.5; }
+.file-transfer-revoke-dialog .file-transfer-owner-actions { padding-inline: 0; padding-bottom: 0; }
+
+@media (max-width: 700px), (pointer: coarse) {
+  .local-resource-overflow { display: inline-flex; }
+}
+
+@media (max-width: 390px) {
+  .file-transfer-owner-dialog { border-radius: var(--radius-md) var(--radius-md) 0 0; height: calc(100dvh - 16px); margin: auto 0 0; max-height: calc(100dvh - 16px); width: 100%; }
+  .file-transfer-owner-panel { height: 100%; max-height: calc(100dvh - 16px); }
+  .file-transfer-owner-actions { display: grid; }
+  .file-transfer-owner-actions button { width: 100%; }
 }
 
 @media (max-width: 600px) {
@@ -11481,6 +11582,38 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
 }
 
 /* ================================================= диалог ввода текста === */
+
+.composer-shortcuts-modal { max-width: min(38.75rem, calc(100vw - 32px)); }
+.composer-shortcuts-modal > form { display: flex; flex-direction: column; min-height: 0; }
+.composer-shortcuts-modal > header, .composer-shortcuts-modal footer { flex-shrink: 0; }
+.composer-shortcuts-fields { overflow-y: auto; padding: 1rem; min-height: 0; }
+.composer-shortcut-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.composer-shortcut-row > span { min-width: 0; }
+.composer-shortcut-row select { width: min(100%, 17rem); max-width: 100%; min-height: 44px; }
+.composer-shortcuts-modal button { min-height: 44px; min-width: 44px; }
+.composer-shortcuts-modal footer .chip-button:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--surface-2); opacity: 1; }
+.composer-shortcuts-modal footer button:disabled { opacity: 0.45; cursor: not-allowed; }
+.composer-shortcuts-modal #composer-shortcuts-helper { display: grid; gap: 0.85rem; margin-top: 1rem; }
+.composer-shortcuts-modal .composer-shortcuts-mobile-note { margin-top: 1rem; }
+.composer-shortcuts-modal .composer-shortcuts-feedback { margin-top: 1rem; padding: 0.75rem; border: 1px solid var(--line-strong); border-inline-start: 3px solid var(--warning, var(--accent)); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); }
+.composer-shortcuts-modal .composer-shortcuts-error { border-inline-start-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface-2)); }
+.composer-shortcuts-modal kbd { font: inherit; color: var(--text); }
+.composer-shortcuts-modal :is(button, select):focus-visible,
+.composer-shortcuts-discard button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.composer-shortcuts-modal footer, .composer-shortcuts-discard footer { display: flex; gap: 0.5rem; flex-wrap: wrap; padding: 1rem; }
+.composer-shortcuts-modal footer button, .composer-shortcuts-discard button { min-height: 44px; }
+.composer-shortcuts-saved:empty { display: none; }
+.composer-shortcuts-mobile-note, .composer-shortcuts-mobile-helper { display: none; }
+html[data-phone-composer] :is(.composer-shortcuts-mobile-note, .composer-shortcuts-mobile-helper) { display: block; }
+.composer-shortcuts-mobile-helper { margin-top: 0.35rem; }
+.composer-shortcuts-discard { width: min(24rem, calc(100vw - 32px)); color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); }
+.composer-shortcuts-discard h2 { font-size: 1rem; }
+.composer-shortcuts-discard::backdrop { background: rgb(0 0 0 / 65%); }
+@media (max-width: 600px) {
+  .composer-shortcut-row { flex-direction: column; align-items: stretch; gap: 0.5rem; }
+  .composer-shortcut-row select { width: 100%; max-width: 100%; }
+  .composer-shortcuts-modal footer button, .composer-shortcuts-discard footer button { width: 100%; }
+}
 
 .text-dialog {
   background: var(--card-bg-open);

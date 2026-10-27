@@ -18,7 +18,11 @@
         "src/interfaces/desktop/desktop-task-board-controller.mjs",
         "cloudflare-worker/src/worker.mjs",
         "assets/web-app/attachments/**",
-        "assets/web-app/messages/composer-draft-reconciliation.js"
+        "assets/web-app/messages/composer-draft-reconciliation.js",
+        "src/interfaces/web/direct-gateway.mjs",
+        "src/interfaces/web/upload-transport-trace.mjs",
+        "tests/interfaces/web/upload-transport-trace.test.mjs",
+        "tests/public/attachment-upload-gateway-recovery.test.mjs"
       ]
     },
     {
@@ -77,6 +81,7 @@
       "title": "Terminal turn commit and delivery",
       "document": "TURN-001-terminal-delivery.md",
       "paths": [
+        "docs/decisions/ADR-0125-inactive-codex-recovery-interruption.md",
         "src/providers/**",
         "src/application/turn-end-delivery-service.mjs",
         "src/application/managed-run*",
@@ -107,7 +112,8 @@
         "src/providers/codex/codex-rollout-activity*",
         "src/providers/codex/codex-task-snapshot-service.mjs",
         "src/infrastructure/persistence/task-read-state-store.mjs",
-        "src/infrastructure/persistence/task-sync-store.mjs"
+        "src/infrastructure/persistence/task-sync-store.mjs",
+        "tests/public/composer-send-isolation.test.mjs"
       ]
     },
     {
@@ -153,7 +159,9 @@
         "assets/web-app/hub-client.js",
         "assets/web-app/index.html",
         "assets/web-app/stream-tabs-controller.js",
-        "assets/web-app/styles.css"
+        "assets/web-app/styles.css",
+        "assets/web-app/composer-shortcuts.js",
+        "docs/decisions/ADR-0109-personal-composer-shortcuts.md"
       ]
     },
     {
@@ -161,6 +169,7 @@
       "title": "Restart and maintenance recovery",
       "document": "RST-001-restart-recovery.md",
       "paths": [
+        "docs/decisions/ADR-0125-inactive-codex-recovery-interruption.md",
         "claude-session-processes.ps1",
         "src/application/restart-request-service.mjs",
         "src/application/agent-hub-startup-coordinator.mjs",
@@ -177,6 +186,8 @@
         "src/providers/claude/claude-runtime-owner.mjs",
         "src/providers/codex/context-compaction*",
         "src/runtime/**",
+        "src/interfaces/web/mini-app-lifecycle-service.mjs",
+        "tests/interfaces/web/mini-app-lifecycle-service.test.mjs",
         "assets/web-app/startup-screen.js",
         "docs/decisions/ADR-0045-fail-fast-startup-replacement.md",
         "docs/decisions/ADR-0072-exact-steer-intent.md",
@@ -189,9 +200,22 @@
         "src/composition/desktop-snapshot-revision.mjs",
         "src/application/turn-end-delivery-service.mjs",
         "src/interfaces/mcp/hub-mcp-server.mjs",
+        "src/application/storage-retention-service.mjs",
+        "src/composition/storage-retention-composition.mjs",
+        "tests/application/storage-retention-service.test.mjs",
+        "tests/composition/storage-retention-composition.test.mjs",
+        "src/runtime/runtime-manager.mjs",
+        "src/infrastructure/filesystem/runtime-installation-custody.mjs",
+        "src/infrastructure/filesystem/runtime-release-retention*.mjs",
+        "src/infrastructure/filesystem/sealed-runtime-release.*",
+        "tests/infrastructure/filesystem/runtime-release-retention*.test.mjs",
+        "tests/infrastructure/filesystem/sealed-runtime-release.test.mjs",
         "distribution/install-prepared.mjs",
         "src/infrastructure/filesystem/usage-sync-settings-migration.mjs",
-        "tests/public/runtime-manager.test.mjs"
+        "tests/public/runtime-manager.test.mjs",
+        "src/infrastructure/filesystem/file-transfer-service.mjs",
+        "src/interfaces/web/direct-gateway.mjs",
+        "src/infrastructure/process/direct-gateway-handoff.mjs"
       ]
     },
     {
@@ -218,7 +242,36 @@
         "src/providers/codex/codex-accounting-resolver.mjs",
         "src/providers/codex/codex-rollout-activity*",
         "src/providers/codex/codex-terminal*",
-        "cloudflare-worker/src/worker.mjs"
+        "cloudflare-worker/src/worker.mjs",
+        "src/interfaces/web/upload-transport-trace.mjs",
+        "src/interfaces/web/direct-gateway.mjs",
+        "src/application/client-performance-trace.mjs",
+        "assets/web-app/command-trace.js",
+        "src/application/storage-retention-service.mjs",
+        "src/infrastructure/filesystem/native-merge-transport-retention.mjs",
+        "src/infrastructure/filesystem/selected-git-bundle.mjs",
+        "src/runtime/runtime-manager.mjs",
+        "src/infrastructure/filesystem/runtime-installation-custody.mjs",
+        "src/infrastructure/filesystem/runtime-release-retention*.mjs",
+        "src/infrastructure/filesystem/sealed-runtime-release.*",
+        "tests/infrastructure/filesystem/runtime-release-retention*.test.mjs",
+        "tests/infrastructure/filesystem/sealed-runtime-release.test.mjs",
+        "src/application/runtime-performance-sampler.mjs",
+        "src/application/runtime-cpu-sample.mjs",
+        "src/composition/command-trace-composition.mjs",
+        "src/interfaces/web/http-read-timing.mjs",
+        "tests/application/runtime-cpu-sample.test.mjs",
+        "tests/interfaces/web/http-read-timing.test.mjs",
+        "test-suite.mjs",
+        "src/infrastructure/process/test-resource-*",
+        "src/interfaces/web/journal-publication.mjs",
+        "src/interfaces/web/journal-publication-worker.mjs",
+        "src/interfaces/web/mini-app-publisher.mjs",
+        "src/interfaces/web/mini-app-lifecycle-service.mjs",
+        "tests/infrastructure/persistence/task-board-journal-scalars.test.mjs",
+        "tests/interfaces/web/journal-publication.test.mjs",
+        "src/infrastructure/persistence/task-turn-projection.mjs",
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
       ]
     },
     {
@@ -226,6 +279,13 @@
       "title": "Task-backed Workspace release",
       "document": "REL-001-task-backed-release.md",
       "paths": [
+        "install.py",
+        "install_test.py",
+        "docs/decisions/ADR-HUB-320-extension-link-inventory.md",
+        "docs/decisions/ADR-HUB-329-release-background-persistence-and-runtime-assets.md",
+        "release-progress/**",
+        "tests/interfaces/release-progress*.test.mjs",
+        "src/infrastructure/process/release-progress-monitor.mjs",
         "assets/web-app/hub-client.js",
         "assets/web-app/task-board.js",
         "src/application/sqlite-mutation-owner.mjs",
@@ -243,6 +303,12 @@
         "src/composition/persistence-mutation-composition.mjs",
         "src/domain/task-release-snapshot.mjs",
         "src/domain/release-operation.mjs",
+        "src/domain/test-selection.mjs",
+        "src/domain/test-suite-groups.mjs",
+        "src/infrastructure/filesystem/release-test-inventory.mjs",
+        "tests/application/release-test-selection.test.mjs",
+        "docs/decisions/ADR-HUB-351-explicit-test-selection.md",
+        "docs/decisions/ADR-HUB-351-release-metadata-amendment.md",
         "src/domain/workspace-release-workflow.mjs",
         "src/domain/release-primary-workspace-policy.mjs",
         "src/infrastructure/persistence/task-board-store.mjs",
@@ -290,6 +356,7 @@
         "task-operation-reconcile.mjs",
         "docs/decisions/ADR-0105-bound-absorbed-own-admission.md",
         "src/infrastructure/filesystem/native-release-merge.mjs",
+        "tests/infrastructure/filesystem/native-selected-content-preservation.test.mjs",
         "src/infrastructure/filesystem/legacy-selected-composition-materializer-v1.mjs",
         "docs/decisions/ADR-0106-native-git-release-composition.md",
         "src/domain/published-resolution.mjs",
@@ -304,8 +371,33 @@
         "docs/decisions/ADR-0120-inherited-repository-files-in-installed-source.md",
         "docs/decisions/ADR-0121-already-agreed-origin-installed-source.md",
         "tests/helpers/native-history-observer.mjs",
+        "src/infrastructure/filesystem/native-merge-transport-retention.mjs",
+        "src/infrastructure/filesystem/selected-git-bundle.mjs",
+        "src/infrastructure/filesystem/sealed-transport-delete.*",
+        "src/runtime/runtime-manager.mjs",
+        "src/infrastructure/filesystem/runtime-installation-custody.mjs",
+        "src/infrastructure/filesystem/runtime-release-retention*.mjs",
+        "src/infrastructure/filesystem/sealed-runtime-release.*",
+        "tests/infrastructure/filesystem/runtime-release-retention*.test.mjs",
+        "tests/infrastructure/filesystem/sealed-runtime-release.test.mjs",
         "distribution/**",
-        "tools/source-export.py"
+        "tools/source-export.py",
+        "docs/decisions/ADR-0130-original-preparation-stage-recovery.md",
+        "tests/infrastructure/persistence/preparation-stage-checkpoint.test.mjs",
+        "src/composition/release-operation-composition.mjs",
+        "src/domain/native-resolution-input.mjs",
+        "release.mjs",
+        "docs/decisions/ADR-0132-normal-release-continuation.md",
+        "docs/decisions/ADR-HUB-329-partial-git-publication-origin.md",
+        "tests/fixtures/own-git-publication-fixture.mjs",
+        "tests/infrastructure/persistence/own-git-publication.test.mjs",
+        "src/composition/publication-freeze.mjs",
+        "src/infrastructure/filesystem/runtime-release-version.mjs",
+        "tests/infrastructure/filesystem/runtime-release-version.test.mjs",
+        "tests/public/runtime-manager.test.mjs",
+        "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
+        "src/infrastructure/persistence/task-turn-projection.mjs",
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
       ]
     },
     {
@@ -341,7 +433,20 @@
         "src/application/release-preparation-admission.mjs",
         "src/domain/release-preparation.mjs",
         "src/infrastructure/filesystem/release-preparation-guard.mjs",
-        "tests/interfaces/mcp/hub-mcp-recovery-endpoint.test.mjs"
+        "tests/interfaces/mcp/hub-mcp-recovery-endpoint.test.mjs",
+        "src/domain/claim-forward-custody.mjs",
+        "src/infrastructure/persistence/claim-custody-fence.mjs",
+        "src/infrastructure/filesystem/claim-source-custody.mjs",
+        "src/infrastructure/process/claim-custody-runtime.mjs",
+        "tools/claim-custody-native-witness.mjs",
+        "tests/application/hub-mcp-claim-custody.test.mjs",
+        "tests/application/hub-mcp-claim-lock-admission.test.mjs",
+        "tests/fixtures/claim-custody-public-fixture.mjs",
+        "tests/infrastructure/process/claim-custody-runtime.native.test.mjs",
+        "tests/application/hub-mcp-claim-isolated-custody.test.mjs",
+        "tests/application/hub-mcp-claim-unassigned-custody.test.mjs",
+        "tests/application/hub-mcp-claim-successor-admission.test.mjs",
+        "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs"
       ]
     },
     {

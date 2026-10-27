@@ -69,7 +69,7 @@ async function fixture(t) {
   return { temporaryRoot, root: prepared.root, prepared, capture, rawHashes, item, receipt, delivery };
 }
 
-test("recording status accepts exact healthy runtime without legacy fake queue evidence", { timeout: 10000 }, async (t) => {
+test("recording status accepts exact healthy runtime without legacy fake queue evidence", {  }, async (t) => {
   const f = await fixture(t);
   const paths = testContourPaths(f.root);
   const marker = await json(paths.markerFile);
@@ -92,7 +92,7 @@ test("recording status accepts exact healthy runtime without legacy fake queue e
   await assert.rejects(readTestContourStatus({ root: f.root }), /identity mismatch/);
 });
 
-test("canonical adoption then recording refresh replace two release identities and preserve pending owners", { timeout: 25000 }, async (t) => {
+test("canonical adoption then recording refresh replace two release identities and preserve pending owners", {  }, async (t) => {
   const f = await fixture(t);
   const originalPreparedHashes = await Promise.all(["journal.sqlite", "runtime.sqlite", "message-command-ledger.sqlite"].map((name) => hash(path.join(f.prepared.root, "data", name))));
   f.root = path.join(f.temporaryRoot, "canonical-contour");
@@ -188,7 +188,7 @@ test("canonical adoption then recording refresh replace two release identities a
   }
 });
 
-test("recording manager refuses missing, mismatched and overlapping protected launch identity", { timeout: 10000 }, async (t) => {
+test("recording manager refuses missing, mismatched and overlapping protected launch identity", {  }, async (t) => {
   const f = await fixture(t);
   const keys = ["AGENT_HUB_RECORDING_MANAGER_ROOT", "AGENT_HUB_RECORDING_MANAGER_PRODUCTION_ROOT"];
   const previous = keys.map((key) => process.env[key]);

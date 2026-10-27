@@ -51,6 +51,33 @@ There is no clone, alternate object store, network or push in the extractor.
 Only independently reviewed, sanitized history may later be pushed to the new
 repository. A source audit pin is not a release acceptance.
 
+## Version identity
+
+The first installer targets the corrected public **2.0.1** release. The immutable runtime/artifact version
+is `2.0.1+build.N`, with the real allocated N, not a display counter. Runtime
+manifest `version` and `publicVersion` are `2.0.1`; `releaseVersion` is the
+artifact identity, `buildNumber` is N and `versionScheme` is `semver-build-v1`.
+Inner package inventory, outer descriptor and saved PACKAGED inputs agree on
+all these fields. The original nine-field PREPARED receipt remains unchanged:
+its `version` and CLI `--version` are the artifact identity.
+
+Public GitHub tag/installer `--release` is `2.0.1`, **not** `2.0.1+build.N`.
+A published tag cannot be overwritten with another N. The release owner binds
+that public tag to frozen source/build/manifest and asset digests. Stable
+`latest` discovery still refuses beta/rc releases. Prerelease grammar and
+precedence are supported in isolated identity/update checks, not implicitly
+selected by the stable channel.
+
+The existing allocator reads retained runtime manifests and verified Android
+codes, with an epoch-minute floor, under its installation lease. A frozen N
+is reused on retries; a competing allocation refuses before preparation. There
+is no package-side allocation or new counter. Unknown/foreign/partial retained
+metadata refuses rather than being deleted. Legacy calendar receipts keep their
+original identity. Ordinary verified updates permit calendar → 2.0.1, then
+nondecreasing semantic precedence and increasing N. Exact reinstall is reusable;
+explicit rollback uses the verified previous pointer. Config, data and enrollment
+remain untouched by this version migration.
+
 ## Ready packages
 
 The tracked offline packaging checkpoint is the normal interface for the release
@@ -91,12 +118,41 @@ tool does not delete or silently rebuild it. Its file writes are exclusive and
 flushed; this is not a notarization, filesystem snapshot or independent signature.
 
 Runtime preparation and publication remain existing release-owner stages. The
-minimal bridge that freezes the preparation version, reuses its original
-PREPARED result before any reallocation, and publishes the accepted allowlist
-through the original release checkpoint is being completed by that owner. Until
-that exact bridge and final product input are reviewed, this offline checkpoint
-alone is not the complete build-to-public-release command. No second publisher,
-manual asset upload or source-only artifact substitutes for it.
+existing `createPublicationArtifactSteps` owner accepts an optional
+`runtimePublication: { operationId, generation, sourceCommit, version }` copied
+from the exact frozen release input. Its runtime artifact identity includes all
+four fields. `prepareRuntime` checks `expectedReleaseVersion` against the canonical
+next suffix under the existing installation lease before copying, Host compilation
+or locked dependency installation. A mismatch refuses; it never changes a manifest
+or allocates an arbitrary version. Publication version and artifact version are
+distinct inputs and must not be silently relabeled.
+
+For newly frozen generations, the existing release freeze records the public
+semantic version and the canonical next `runtimeReleaseVersion` separately in
+the same immutable manifest and freeze intent. It reads the configured runtime's
+existing release metadata; it does not reserve a suffix or prepare a runtime.
+The canonical publication runner passes that exact version, original operation,
+generation and frozen commit to the artifact owner. A later competing allocation
+therefore causes an explicit mismatch under the installation lease. Repeating a
+freeze or resuming its prepared artifact retains the original version. Historical
+generations without this field keep their original artifact identity and do not
+acquire a newly invented PREPARED receipt.
+
+After normal preparation, `artifacts.preparedRuntimeReceipt(identity)` verifies
+the original artifact, full runtime and frozen source/version, then returns
+`{ receipt, receiptFile, receiptSha256 }`. The exact nine-field JSON is retained in
+that artifact's immutable payload. Pass its file and hash to `build_release.py`
+above. A completed artifact, or a verified prepared body whose build reply was
+lost, is reused before another preparation/allocation. Partial bodies without a
+manifest and changed original inputs refuse and remain available for inspection.
+This is an existing-checkpoint adapter, not another preparation or approval ledger.
+
+The final standalone export input, invocation of the packaging stage and
+publication of its accepted asset allowlist through the original release
+checkpoint remain separate wiring.
+Until that wiring and final product input are reviewed, this offline checkpoint
+and callable adapter alone are not the complete build-to-public-release command.
+No second publisher, manual asset upload or source-only artifact substitutes for it.
 
 The publisher's prepared runtime is an input, not a trigger for another build:
 
@@ -156,6 +212,7 @@ Focused preparation checks, with `AGENT_HUB_TEST_TEMP` on the intended volume:
 ```powershell
 python -m unittest discover -s AgentHub/distribution -p package_test.py -v
 python -m unittest discover -s AgentHub/distribution -p build_release_test.py -v
+python -m unittest discover -s AgentHub/distribution -p semantic_package_test.py -v
 python -m unittest discover -s AgentHub/distribution -p release_source_test.py -v
 python -m unittest discover -s AgentHub/distribution -p installed_package_test.py -v
 ```

@@ -1,38 +1,30 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { providerApplicationFixture } from "../helpers/provider-application.fixture.mjs";
 
 import { resumePostTurnWork } from "../../src/composition/provider-application-composition.mjs";
 
-const ROOT = new URL("../../src/composition/agent-hub-composition.mjs", import.meta.url);
-const OWNER = new URL("../../src/composition/provider-application-composition.mjs", import.meta.url);
-
-test("provider application phase owns provider, accounting and catalog assembly", async () => {
-  const [root, owner] = await Promise.all([
-    readFile(ROOT, "utf8"),
-    readFile(OWNER, "utf8"),
-  ]);
-  for (const factory of [
-    "createProviderProcessComposition",
-    "createRunAccountingComposition",
-    "createRuntimeDataComposition",
-    "createCodexObservabilityComposition",
-    "createRunCompletionComposition",
-    "createCodexContextMaintenanceComposition",
-    "createBackgroundWorkComposition",
-    "createProviderSnapshotComposition",
-    "createProviderOperationComposition",
-    "createProviderCatalogComposition",
-    "createProviderStartupComposition",
-  ]) {
-    assert.equal(root.includes(factory), false, `${factory} leaked into the composition root`);
-    assert.equal(owner.includes(factory), true, `${factory} is not owned by provider application phase`);
+test("provider application shares current registries across MCP, completion, snapshots and catalog", async (t) => {
+  const f = await providerApplicationFixture(t);
+  const completion = f.inputs.createRunCompletionComposition;
+  for (const name of ["createRunCompletionComposition", "createProviderSnapshotComposition", "createProviderOperationComposition", "createProviderStartupComposition"]) {
+    assert.equal(f.inputs[name].taskRuns, f.runRegistry, name);
   }
-  assert.equal(root.includes("createProviderApplicationComposition"), true);
-  assert.equal(owner.includes("providerStartup.bind("), true);
+  assert.deepEqual(f.mcp.activeRuns(), []);
+  const run = { id: "original-run", provider: "codex", threadId: "thread-exact", status: "running" };
+  f.runs.push(run);
+  assert.deepEqual(f.mcp.activeRuns(), [run]);
+  f.deferred.push({ id: "original-message", state: "queued" });
+  assert.deepEqual(f.mcp.deferredInputs(), [{ id: "original-message", state: "queued" }]);
+  assert.equal(completion.currentTarget().threadId, "thread-exact");
+  await completion.saveState();
+  const correction = f.inputs.createCodexObservabilityComposition.correctCommittedTerminal;
+  assert.equal(correction({ turnId: "turn-exact", revision: 2 }), "corrected");
+  assert.deepEqual(f.events, [["save"], ["correct", { turnId: "turn-exact", revision: 2 }]]);
 });
 
-test("pending runtime restart keeps deferred inputs asleep until restart scheduling", async () => {
+test("pending runtime restart wakes deferred inputs before considering safe restart", async () => {
   const events = [];
   let finishMaintenance;
   const maintenance = new Promise((resolve) => { finishMaintenance = resolve; });
@@ -42,13 +34,13 @@ test("pending runtime restart keeps deferred inputs asleep until restart schedul
     restartPending: true,
     wakeDeferredInputs: () => events.push("wake"),
     scheduleDeferredRestartIfReady: () => events.push("restart"),
-  }), "restart");
-  assert.deepEqual(events, []);
+  }), "deferred-inputs");
+  assert.deepEqual(events, ["wake"]);
 
   finishMaintenance();
   await maintenance;
   await Promise.resolve();
-  assert.deepEqual(events, ["restart"]);
+  assert.deepEqual(events, ["wake", "restart"]);
 });
 
 test("completed turn wakes deferred inputs when restart is not pending", () => {

@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ход выпуска</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><header><div><h1 id="title">Ход выпуска</h1><p>Живой ход проверки и публикации</p></div><div id="fresh" role="status">Подключение…</div></header>
+<div id="connection" class="notice" role="alert" hidden></div>
+<div class="workspace"><aside aria-label="Стадии выпуска"><ol id="stages"></ol></aside><main>
+<section class="summary" aria-label="Текущий этап"><div><span>Текущий этап</span><h2 id="current">Читаю состояние…</h2><p id="stage-description"></p></div><div><span>Прошло времени</span><strong id="elapsed">—</strong><small id="last-activity">—</small></div><div><span>Завершено этапов</span><strong id="completed">—</strong><small id="state">—</small></div></section>
+<div id="run-error" class="notice" hidden></div>
+<div class="results"><p id="counts">Результаты ещё не получены</p><p id="last-result"></p></div>
+<nav class="tabs" aria-label="Результаты"><button class="active" data-tab="tests" aria-pressed="true">Тесты</button><button data-tab="errors" aria-pressed="false">Ошибки <span id="error-count"></span></button><button data-tab="log" aria-pressed="false">Лог</button></nav>
+<section id="tests-panel"><div class="filters"><input id="search" type="search" aria-label="Найти тест" placeholder="Найти тест или область проверки"><select id="filter" aria-label="Фильтр результатов"><option value="all">Все</option><option value="failed">С ошибками</option><option value="passed">Пройденные</option><option value="skipped">Пропущенные</option></select></div>
+<div class="table-wrap"><table><thead><tr><th>Проверка</th><th>Результат</th><th>Длительность</th></tr></thead><tbody id="tests"></tbody></table></div><p id="empty" class="muted" hidden>Подходящих тестов пока нет.</p><div class="pagination"><span id="shown"></span><button id="more" hidden>Показать ещё</button></div></section>
+<section id="errors-panel" hidden><p class="muted">Ошибки, уже записанные в лог. Прогон может продолжаться и собирать остальные результаты.</p><div id="errors"></div></section>
+<section id="log-panel" hidden><div class="log-toolbar"><span id="log-info"></span><a href="/log.txt">Скачать полный лог</a></div><pre id="log" tabindex="0"></pre></section>
+<section id="details" class="details" hidden aria-label="Описание проверки"><h3 id="detail-title"></h3><dl><dt>Область</dt><dd id="detail-area"></dd><dt>Описание</dt><dd id="detail-description"></dd><dt>Оригинальное название</dt><dd><code id="detail-name"></code></dd><dt>Сообщение об ошибке</dt><dd><pre id="detail-error"></pre></dd></dl></section>
+</main></div><footer><span>Только наблюдение · Выпуск выполняет штатный pipeline</span><span id="identity"></span></footer></body></html>

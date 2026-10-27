@@ -1,7 +1,9 @@
+import { normalizeTestSelection, verifyTestPlan } from "./test-selection.mjs";
 import { createHash } from "node:crypto";
+import path from "node:path";
 import { selectedCompositionFields } from "./task-selected-composition.mjs";
+import { normalizedNativeResolution } from "./native-resolution-input.mjs";
 
-export const MAX_RELEASE_METADATA_BYTES = 8 * 1024 * 1024;
 
 export const RELEASE_OPERATION_STATES = Object.freeze({
   COMPOSE: "compose",
@@ -85,6 +87,8 @@ function normalizedTargets(value) {
         ? { approvedLocalMainCommit: optionalText(entry.approvedLocalMainCommit) } : {}),
       ...(optionalText(entry.approvedOriginMainCommit)
         ? { approvedOriginMainCommit: optionalText(entry.approvedOriginMainCommit) } : {}),
+      ...(entry.nativeResolutionReview != null
+        ? { nativeResolutionReview: normalizedNativeResolution(entry.nativeResolutionReview) } : {}),
     };
   }).sort((left, right) => left.targetId.localeCompare(right.targetId));
   if (!targets.length) throw new TypeError("approvedTargets requires at least one target");
@@ -94,12 +98,12 @@ function normalizedTargets(value) {
   return targets;
 }
 
-function normalizedReleaseMetadata(value) {
+export function normalizedReleaseMetadata(value) {
   if (value == null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("releaseMetadata must be an object");
   const sourcePath = requiredText(value.sourcePath, "release metadata source path");
   const byteLength = Number(value.byteLength);
-  if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > MAX_RELEASE_METADATA_BYTES) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 1) {
     throw new TypeError("release metadata size is invalid or too large");
   }
   const rawSha256 = requiredText(value.rawSha256, "release metadata raw digest");
@@ -115,6 +119,7 @@ function normalizedAuthorization(value = {}) {
     taskIds: uniqueTextList(value.taskIds, "authorization taskIds"),
     approvedTargets: normalizedTargets(value.approvedTargets),
     validationMode: requiredText(value.validationMode, "validationMode"),
+    ...(value.testSelection != null ? { testSelection: normalizeTestSelection(value.testSelection) } : {}),
     ...(value.releaseMetadata ? { releaseMetadata: normalizedReleaseMetadata(value.releaseMetadata) } : {}),
   };
   return { ...authorization, fingerprint: releaseIdentitySha256(authorization) };
@@ -178,6 +183,78 @@ export function releaseOperationIsTerminal(operation) {
   return TERMINAL_STATES.has(String(operation?.state ?? ""));
 }
 
+const repositoryKey = value => {
+  const resolved = path.resolve(value).replaceAll("\\", "/");
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+};
+
+export function reviewedMainBinding(operation, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1
+      || !Array.isArray(value.approvedRepositories) || !value.approvedRepositories.length) throw new TypeError("Invalid reviewed-main binding");
+  const roots = new Set(operation.authorization.approvedTargets.map(target => {
+    if (target.kind !== "agent-hub-publication" || !target.repositoryRoot) {
+      throw new Error("Reviewed-main binding requires original repository publication targets");
+    }
+    return repositoryKey(target.repositoryRoot);
+  }));
+  const seen = new Set();
+  const approvedRepositories = value.approvedRepositories.map(entry => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+        || typeof entry.projectRoot !== "string" || !entry.projectRoot.trim()) {
+      throw new TypeError("Reviewed-main repository must be a primitive string");
+    }
+    const key = repositoryKey(entry.projectRoot);
+    if (!roots.has(key) || seen.has(key)) throw new Error("Reviewed-main repository binding is foreign or duplicated");
+    seen.add(key);
+    for (const field of ["approvedLocalMainCommit", "approvedOriginMainCommit"]) {
+      if (typeof entry[field] !== "string" || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(entry[field])) {
+        throw new TypeError("Reviewed-main commit must be a primitive exact Git commit string");
+      }
+    }
+    return { projectRoot: entry.projectRoot, approvedLocalMainCommit: entry.approvedLocalMainCommit,
+      approvedOriginMainCommit: entry.approvedOriginMainCommit };
+  }).sort((a, b) => repositoryKey(a.projectRoot).localeCompare(repositoryKey(b.projectRoot)));
+  if (seen.size !== roots.size) throw new Error("Reviewed-main binding must cover every original repository");
+  return { expectedRevision: value.expectedRevision, approvedRepositories };
+}
+
+export function failedComposeRecoveryEligible(operation) {
+  return operation?.state === "failed" && operation.owner == null
+    && operation.currentGeneration > 0 && operation.lastError?.step === "compose";
+}
+
+function normalizedReviewedMain(value, operation) {
+  if (value == null) return null;
+  const { identitySha256, ...contents } = value;
+  const binding = reviewedMainBinding(operation, { expectedRevision: value.priorRevision,
+    approvedRepositories: value.approvedRepositories });
+  if (typeof value.requestId !== "string" || !value.requestId.trim()
+      || value.authorizationFingerprint !== operation.authorization.fingerprint
+      || releaseIdentitySha256(contents) !== identitySha256
+      || releaseIdentitySha256(binding.approvedRepositories) !== releaseIdentitySha256(value.approvedRepositories)
+      || !value.priorFailure?.completedAt || !value.planRevision
+      || !Number.isSafeInteger(value.priorGeneration) || value.priorGeneration < 1 || value.priorGeneration > operation.currentGeneration
+      || !Array.isArray(value.selectedResults) || !Array.isArray(value.preparedCandidates)
+      || JSON.stringify(value.selectedResults.map(item => item.taskId).sort())
+        !== JSON.stringify(releaseTaskIdsAtBoundary(operation, value.priorRevision, value.priorGeneration))
+      || !Array.isArray(value.readbacks) || value.readbacks.length !== operation.authorization.approvedTargets.length
+      || operation.authorization.approvedTargets.some(target => value.readbacks.filter(item =>
+        item.targetId === target.targetId && item.generation === value.priorGeneration && item.evidence?.status === "not_applied").length !== 1)) {
+    throw new Error("Reviewed-main recovery identity changed");
+  }
+  return structuredClone(value);
+}
+
+export function releaseApprovedTargets(operation) {
+  return operation.authorization.approvedTargets.map(target => {
+    const approval = operation.reviewedMain?.approvedRepositories.find(entry =>
+      repositoryKey(entry.projectRoot) === repositoryKey(target.repositoryRoot));
+    return approval ? { ...target, approvedLocalMainCommit: approval.approvedLocalMainCommit,
+      approvedOriginMainCommit: approval.approvedOriginMainCommit } : target;
+  });
+}
+
 export function createReleaseOperation({
   operationId,
   requestId,
@@ -200,6 +277,8 @@ export function createReleaseOperation({
   nextAction = "compose authorized candidate",
   lastError = null,
   migration = null,
+  reviewedMain = null,
+  testSelectionAmendments = [],
 } = {}) {
   const normalizedState = requiredText(state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(normalizedState)) {
@@ -234,6 +313,8 @@ export function createReleaseOperation({
     ...(migration && typeof migration === "object" && !Array.isArray(migration)
       ? { migration: structuredClone(migration) } : {}),
   };
+  if (testSelectionAmendments.length) operation.testSelectionAmendments = testSelectionAmendments.map(item => normalizeTestSelectionAmendment(item, operation));
+  if (reviewedMain != null) operation.reviewedMain = normalizedReviewedMain(reviewedMain, operation);
   if (releaseOperationIsTerminal(operation)) operation.completedAt = operation.updatedAt;
   return operation;
 }
@@ -257,11 +338,26 @@ export function restoreReleaseOperation(value) {
 export function transitionReleaseOperation(current, patch = {}, {
   expectedRevision = current?.revision,
   updatedAt = new Date().toISOString(),
+  reviewedMainRecovery = null,
+  testSelectionAmendment = null,
 } = {}) {
   const operation = restoreReleaseOperation(current);
   if (!operation) throw new TypeError("valid current release operation is required");
   if (expectedRevision !== operation.revision) return { operation, applied: false, reason: "stale-revision" };
-  if (releaseOperationIsTerminal(operation)) return { operation, applied: false, reason: "terminal" };
+  const recovery = reviewedMainRecovery == null ? null : normalizedReviewedMain(reviewedMainRecovery, operation);
+  if (recovery && (!failedComposeRecoveryEligible(operation) || recovery.priorRevision !== operation.revision
+      || recovery.priorGeneration !== operation.currentGeneration
+      || releaseIdentitySha256(recovery.priorFailure) !== releaseIdentitySha256({ completedAt: operation.completedAt, error: operation.lastError })
+      || patch.state !== "compose")) throw new Error("Reviewed-main recovery does not match original failed operation");
+  const amendment = testSelectionAmendment == null ? null : normalizeTestSelectionAmendment(testSelectionAmendment, operation);
+  if (amendment && (operation.owner || operation.state === "done" || !["waiting", "failed"].includes(operation.state)
+      || amendment.priorRevision !== operation.revision || amendment.priorGeneration !== operation.currentGeneration
+      || patch.state !== "compose" || releaseIdentitySha256(amendment.priorPublicationEffects) !== releaseIdentitySha256(operation.publicationEffects)
+      || releaseIdentitySha256(amendment.priorWaitReason) !== releaseIdentitySha256(operation.waitReason)
+      || amendment.priorResumeState !== operation.resumeState || releaseIdentitySha256(amendment.priorFailure) !== releaseIdentitySha256({ state: operation.state, completedAt: operation.completedAt, error: operation.lastError }))) throw new Error("Test selection amendment changed its original boundary");
+  if (patch.testSelectionAmendments !== undefined) throw new Error("testSelectionAmendments requires its amendment boundary");
+  if (releaseOperationIsTerminal(operation) && !recovery && !amendment) return { operation, applied: false, reason: "terminal" };
+  if (patch.reviewedMain !== undefined) throw new Error("reviewedMain requires its recovery boundary");
   for (const name of ["operationId", "requestId", "workspaceId", "streamId", "threadId", "authorization", "runnerVersion"]) {
     if (patch[name] !== undefined && releaseIdentitySha256(patch[name]) !== releaseIdentitySha256(operation[name])) {
       throw new Error(`${name} is immutable`);
@@ -269,7 +365,7 @@ export function transitionReleaseOperation(current, patch = {}, {
   }
   const state = requiredText(patch.state ?? operation.state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(state)) throw new TypeError(`unsupported release operation state: ${state}`);
-  if (state !== operation.state && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
+  if (state !== operation.state && !recovery && !amendment && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
     return { operation, applied: false, reason: "invalid-transition" };
   }
   const next = {
@@ -289,6 +385,8 @@ export function transitionReleaseOperation(current, patch = {}, {
     lastError: patch.lastError === undefined ? operation.lastError : normalizedError(patch.lastError),
     revision: operation.revision + 1,
     updatedAt: timestamp(updatedAt),
+    ...(recovery ? { reviewedMain: recovery, completedAt: null } : {}),
+    ...(amendment ? { testSelectionAmendments: [...(operation.testSelectionAmendments ?? []), amendment], completedAt: null } : {}),
   };
   if (state !== RELEASE_OPERATION_STATES.WAITING) {
     next.resumeState = null;
@@ -336,6 +434,9 @@ export function createCandidateGeneration({
   runnerVersion,
   createdAt,
   sourceFingerprint = null,
+  testPlans = null,
+  testSelectionAmendmentId = null,
+  authorizedTaskIds = null,
 } = {}) {
   const value = {
     entityType: "release-candidate-generation",
@@ -351,11 +452,85 @@ export function createCandidateGeneration({
     runnerVersion: requiredText(runnerVersion, "runnerVersion"),
     createdAt: timestamp(createdAt),
     sourceFingerprint: optionalText(sourceFingerprint),
+    ...(authorizedTaskIds != null ? { authorizedTaskIds: normalizeReleaseTaskIds(authorizedTaskIds) } : {}),
+    ...(testPlans != null ? { testPlans: testPlans.map(item => ({ repositoryRoot: requiredText(item.repositoryRoot, "test plan repository"), plan: verifyTestPlan(item.plan) })),
+      testSelectionAmendmentId: optionalText(testSelectionAmendmentId) } : {}),
   };
   if (!Number.isSafeInteger(value.generation) || value.generation < 1) throw new TypeError("generation must be positive");
   if (!value.repositoryBases.length || !value.selectedResults.length || !value.candidates.length) {
     throw new TypeError("candidate generation requires bases, results and candidates");
   }
+  if (authorizedTaskIds != null && JSON.stringify(value.authorizedTaskIds) !== JSON.stringify([...new Set(value.selectedResults.map(item => item.taskId))].sort())) {
+    throw new Error("Generation results differ from explicitly authorized Task membership");
+  }
+  if (testPlans != null && (testPlans.length !== value.candidates.length
+      || value.candidates.some(candidate => testPlans.filter(item => repositoryKey(item.repositoryRoot) === repositoryKey(candidate.repositoryRoot)).length !== 1))) {
+    throw new Error("Test plans must cover every immutable candidate exactly once");
+  }
   value.identitySha256 = releaseIdentitySha256(value);
   return value;
+}
+
+export function normalizeTestSelectionAmendment(value, operation) {
+  const { identitySha256, ...contents } = value ?? {};
+  if (typeof contents.requestId !== "string" || !contents.requestId.trim()
+      || !Number.isSafeInteger(contents.priorRevision) || contents.priorRevision < 1
+      || !Number.isSafeInteger(contents.priorGeneration) || contents.priorGeneration < 1
+      || contents.authorizationFingerprint !== operation.authorization.fingerprint
+      || releaseIdentitySha256(contents) !== identitySha256
+      || contents.selection != null && releaseIdentitySha256(normalizeTestSelection(contents.selection)) !== releaseIdentitySha256(contents.selection)
+      || releaseIdentitySha256(normalizeReleaseTaskIds(contents.taskIds)) !== releaseIdentitySha256(contents.taskIds)
+      || contents.taskSelection != null && JSON.stringify([...new Set(contents.taskSelection.map(item => item.taskId))].sort()) !== JSON.stringify(contents.taskIds)
+      || contents.releaseMetadata != null && releaseIdentitySha256(normalizedReleaseMetadata(contents.releaseMetadata)) !== releaseIdentitySha256(contents.releaseMetadata)
+      || contents.requestArguments != null && !validAmendmentRequest(contents)
+      || !Array.isArray(contents.readbacks) || contents.readbacks.length !== operation.authorization.approvedTargets.length
+      || operation.authorization.approvedTargets.some(target => contents.readbacks.filter(item => item.targetId === target.targetId
+        && item.generation === contents.priorGeneration && item.evidence?.status === "not_applied").length !== 1)) {
+    throw new Error("Invalid original test selection amendment");
+  }
+  return structuredClone(value);
+}
+
+export function effectiveReleaseMetadata(operation) {
+  const amendments = operation.testSelectionAmendments ?? [];
+  for (let index = amendments.length - 1; index >= 0; index -= 1) {
+    if (amendments[index].releaseMetadata != null) return amendments[index].releaseMetadata;
+  }
+  return operation.authorization.releaseMetadata ?? null;
+}
+
+export function effectiveTestSelection(operation) {
+  return operation.testSelectionAmendments?.at(-1)?.selection ?? operation.authorization.testSelection ?? null;
+}
+
+export function normalizeReleaseTaskIds(value) {
+  if (!Array.isArray(value) || !value.length || value.some(id => typeof id !== "string" || !id.trim() || id !== id.trim())
+      || new Set(value).size !== value.length) throw new TypeError("Explicit Task membership requires unique exact Task IDs");
+  return [...value].sort();
+}
+
+export function effectiveReleaseTaskIds(operation) {
+  return operation.testSelectionAmendments?.at(-1)?.taskIds ?? operation.authorization.taskIds;
+}
+
+function releaseTaskIdsAtBoundary(operation, revision, generation) {
+  let taskIds = operation.authorization.taskIds;
+  for (const amendment of operation.testSelectionAmendments ?? []) {
+    // Its CAS changes revision r to r+1. A historical proof at revision r
+    // therefore still belongs to the membership preceding that amendment.
+    if (amendment.priorRevision >= revision) continue;
+    if (amendment.priorGeneration > generation) throw new Error("Reviewed-main generation membership changed");
+    taskIds = amendment.taskIds;
+  }
+  return taskIds;
+}
+
+function validAmendmentRequest(contents) {
+  const args = contents.requestArguments;
+  return args && typeof args === "object" && !Array.isArray(args)
+    && Object.keys(args).every(key => ["expectedRevision", "expectedGeneration", "testSelection", "taskIds", "releaseMetadata"].includes(key))
+    && args.expectedRevision === contents.priorRevision && args.expectedGeneration === contents.priorGeneration
+    && (args.testSelection === undefined || releaseIdentitySha256(normalizeTestSelection(args.testSelection)) === releaseIdentitySha256(contents.selection))
+    && (args.taskIds === undefined || releaseIdentitySha256(normalizeReleaseTaskIds(args.taskIds)) === releaseIdentitySha256(contents.taskIds))
+    && (args.releaseMetadata === undefined || releaseIdentitySha256(normalizedReleaseMetadata(args.releaseMetadata)) === releaseIdentitySha256(contents.releaseMetadata));
 }

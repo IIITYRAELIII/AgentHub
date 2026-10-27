@@ -48,6 +48,7 @@ function validDeclaration(declaration) {
 }
 
 export function parallelTestExecution(declaration) {
+  // Legacy cache-manifest introspection, not the scheduler's admission policy.
   if (!validDeclaration(declaration) || declaration.execution?.parallel !== true) return null;
   return {
     parallel: true,
@@ -61,6 +62,7 @@ export async function explainTestInputFingerprint(file, {
   cwd,
   root = cwd,
   runnerFile,
+  runnerInputs = [],
   declaration = null,
   environment = process.env,
   toolchain = { node: process.version, platform: process.platform, arch: process.arch, versions: process.versions, execArgv: process.execArgv },
@@ -165,6 +167,7 @@ export async function explainTestInputFingerprint(file, {
     }
   }
   if (runnerFile) await source(runnerFile, "<test-runner>");
+  for (const [index, file] of runnerInputs.entries()) await source(file, `<test-runner-input-${index}>`);
   await source(import.meta.filename, "<fingerprint-policy>");
   for (const location of new Set([root, cwd])) {
     for (const name of ["package.json", "package-lock.json", "node_modules/.package-lock.json"]) await source(path.join(location, name));

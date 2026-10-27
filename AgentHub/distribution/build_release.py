@@ -12,7 +12,7 @@ import stat
 import tempfile
 
 from build_package import build_package, regular, verified_runtime_payload
-from install_release import REPOSITORY, extract_verified, file_hash
+from install_release import REPOSITORY, extract_verified, file_hash, semantic_fields, valid_artifact_version
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ("AgentHub-win32-x64.zip", "AgentHub-win32-x64.zip.json", "install_release.py", "SHA256SUMS")
@@ -74,7 +74,7 @@ def _inputs(receipt_path: Path, receipt_sha256: str, source_commit: str, version
             or receipt["schema"] != 1 or receipt.get("phase") != "PREPARED"):
         raise ValueError("Unsupported owner PREPARED receipt")
     if (not re.fullmatch(r"[0-9a-f]{40}", source_commit) or receipt["sourceCommit"] != source_commit
-            or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}", version) or receipt["version"] != version
+            or not valid_artifact_version(version) or receipt["version"] != version
             or not isinstance(receipt["operationId"], str)
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", receipt["operationId"])
             or type(receipt["generation"]) is not int or receipt["generation"] < 1):
@@ -91,6 +91,7 @@ def _inputs(receipt_path: Path, receipt_sha256: str, source_commit: str, version
     _plain_chain(license_file)
     _plain_chain(notices_file)
     inputs = {"repository": REPOSITORY, "operationId": receipt["operationId"], "generation": receipt["generation"],
+              **semantic_fields(manifest),
               "sourceCommit": source_commit, "version": version, "releaseId": receipt["releaseId"],
               "preparedReceiptSha256": receipt_sha256, "preparedManifestSha256": _sha(original),
               "licenseSha256": _sha(regular(license_file)), "noticesSha256": _sha(regular(notices_file)),
@@ -116,6 +117,8 @@ def _verify_assets(namespace: Path, inputs: dict) -> list[dict]:
             or descriptor.get("releaseId") != inputs["releaseId"] or descriptor.get("bytes") != rows[0]["bytes"]
             or descriptor.get("sha256") != rows[0]["sha256"] or descriptor.get("publicApproval") is not False):
         raise ValueError("Package descriptor identity mismatch")
+    if semantic_fields(descriptor, descriptor=True) != {k: inputs[k] for k in ("versionScheme", "publicVersion", "buildNumber") if k in inputs}:
+        raise ValueError("Package semantic identity mismatch")
     if file_hash(installer) != inputs["tools"]["install_release.py"]:
         raise ValueError("Versioned installer integrity mismatch")
     expected_sums = "".join(f"{row['sha256']}  {row['name']}\n" for row in rows[:3]).encode("ascii")

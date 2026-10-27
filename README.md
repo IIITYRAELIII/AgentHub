@@ -12,8 +12,9 @@ have explicit limits; a passing unit test does not prove production latency,
 provider parity or physical-device behavior. Read the
 [accepted contracts](AgentHub/docs/contracts/README.md) before changing behavior.
 
-The initial source-history import is an audited development snapshot. Ready
-Windows packages and the installed-runtime cutover are still being prepared.
+This source tree combines the published 2.0.1 product with the standalone
+distribution tooling. Windows packages use the versioned GitHub Releases;
+source publication and installed-runtime cutover retain their separate checks.
 The preserved `wip/sidoruksv-2026-10-20` branch contains unfinished work and is
 outside the selected release. Existing installations keep their current source
 and release identities until the release owner's managed cutover.
@@ -23,15 +24,16 @@ and release identities until the release owner's managed cutover.
 Use a versioned ready Windows package from this repository's GitHub Releases
 when a reviewed package is available. Verify its published SHA-256 before
 running the installer. Installation does not require cloning this repository,
-running npm or compiling the native host. A public package has not yet been
-published as part of the repository extraction preparation.
+running npm or compiling the native host. The ZIP, descriptor, installer and
+checksums belong to the same versioned release.
 
 You need Windows, a Node.js runtime with `node:sqlite` (22.5 or later; 24 or later
 recommended), and an installed/authenticated Codex CLI or Claude Code CLI.
 Provider accounts and their usage costs are separate from Hub. Python and model
 downloads are required only for optional local voice processing; the standalone
-package installer itself uses Python 3.10 or later. Utilities retains only a link
-to this project and is not an installation or update dependency. See the
+package installer itself uses Python 3.10 or later. After the managed source
+cutover, Utilities retains only a link to this project; it is not a package
+installation or update dependency. See the
 [ready-package guide](AgentHub/distribution/INSTALL.md). Android builds need their
 own JDK/SDK.
 

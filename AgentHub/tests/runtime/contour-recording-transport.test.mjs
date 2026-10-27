@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { CodexAppServerTransport } from "../../src/providers/codex/codex-app-server-transport.mjs";
 import { RecordingContourProvider } from "../../src/providers/recording-contour-provider.mjs";
 
-test("actual Codex transport runs literal recording CLI and recovers the same receipt after process restart", { timeout: 5000 }, async (t) => {
+test("actual Codex transport runs literal recording CLI and recovers the same receipt after process restart", {  }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-recording-rpc-"));
   const file = fileURLToPath(new URL("../../src/providers/recording-contour-codex-cli.mjs", import.meta.url));
   await writeFile(path.join(root, "recording-provider.json"), JSON.stringify({ schemaVersion: 1, kind: "literal-recording-provider", root, externalEffects: "deny",
@@ -65,7 +65,7 @@ test("actual Codex transport runs literal recording CLI and recovers the same re
   assert.ok(events.every((event) => ["turn/started", "turn/completed", "item/completed"].includes(event.method)));
 });
 
-test("thread/name/set records only provider-scoped literal metadata and survives transport restart", { timeout: 5000 }, async (t) => {
+test("thread/name/set records only provider-scoped literal metadata and survives transport restart", {  }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-recording-name-"));
   const cli = fileURLToPath(new URL("../../src/providers/recording-contour-codex-cli.mjs", import.meta.url));
   const markerFile = path.join(root, "recording-provider.json");

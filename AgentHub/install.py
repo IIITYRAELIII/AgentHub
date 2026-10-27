@@ -504,9 +504,9 @@ def _installed_vscode_extensions(package: dict, extensions_root: Path) -> list[d
     for candidate in extensions_root.iterdir():
         if not candidate.is_dir() or not candidate.name.startswith(prefix):
             continue
+        # Inventory is read-only: existing installations may be directory links.
+        # Replacement targets are checked separately before any staging or write.
         resolved = candidate.resolve()
-        if candidate.is_symlink() or resolved.parent != extensions_root:
-            raise RuntimeError(f"Refusing unsafe installed extension path: {candidate}")
         try:
             installed_package = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
             installed_version = str(installed_package["version"])
@@ -525,6 +525,7 @@ def _installed_vscode_extensions(package: dict, extensions_root: Path) -> list[d
                 installed_fingerprint = None
             installed.append({
                 "target": resolved,
+                "registrationName": candidate.name,
                 "version": installed_version,
                 "fingerprint": installed_fingerprint,
                 "provenance": read_extension_provenance(candidate),
@@ -584,7 +585,7 @@ def vscode_extension_install_plan(
             "provenance": newest["provenance"],
             "sourceFingerprint": newest["fingerprint"],
             "installedIdentity": installed_identity,
-            "targetName": newest["target"].name,
+            "targetName": newest["registrationName"],
         }
     if expected and expected != installed_identity:
         raise RuntimeError(

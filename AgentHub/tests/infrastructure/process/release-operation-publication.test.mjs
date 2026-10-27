@@ -8,13 +8,33 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { releaseOperationPublicationArguments } from "../../../release-operation-publication-runner.mjs";
+import { releaseOperationPublicationArguments, releaseOperationRuntimePublicationInput } from "../../../release-operation-publication-runner.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { agentHubCalendarVersion } from "../../../src/infrastructure/filesystem/release-version.mjs";
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
 
 const execute = promisify(execFile);
+
+test("runtime receipt wiring preserves original generation and refuses a mismatched frozen candidate", () => {
+  const operation = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe" };
+  const generation = { operationId: operation.operationId, generation: 2 };
+  const candidate = { commit: "a".repeat(40), manifest: { publication: {
+    head: "a".repeat(40), releaseVersion: "2026.8.24", runtimeReleaseVersion: "2026.8.24.8",
+  } } };
+  assert.deepEqual(releaseOperationRuntimePublicationInput({ operation, generation, candidate }), {
+    operationId: operation.operationId, generation: 2, sourceCommit: candidate.commit, version: "2026.8.24.8",
+  });
+  for (const changed of [
+    { ...candidate, commit: "b".repeat(40) },
+    { ...candidate, manifest: { publication: { ...candidate.manifest.publication, runtimeReleaseVersion: "2026.8.25.8" } } },
+    { ...candidate, manifest: { publication: { ...candidate.manifest.publication, runtimeReleaseVersion: ["2026.8.24.8"] } } },
+  ]) assert.throws(() => releaseOperationRuntimePublicationInput({ operation, generation, candidate: changed }), /binding differs/u);
+  assert.throws(() => releaseOperationRuntimePublicationInput({ operation,
+    generation: { ...generation, operationId: "other" }, candidate }), /binding differs/u);
+  assert.equal(releaseOperationRuntimePublicationInput({ operation, generation,
+    candidate: { commit: candidate.commit, manifest: { publication: { releaseVersion: "2026.8.24" } } } }), null);
+});
 
 async function git(cwd, ...args) {
   return (await execute("git", args, { cwd, encoding: "utf8", windowsHide: true })).stdout.trim();
@@ -23,6 +43,47 @@ async function git(cwd, ...args) {
 function identity(value) {
   return createHash("sha256").update(String(value)).digest("hex");
 }
+
+test("publication readback uses the registered origin when the frozen checkout has no remote", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-readback-origin-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const remote = path.join(root, "origin.git");
+  const primary = path.join(root, "primary");
+  const frozen = path.join(root, "frozen");
+  await git(root, "init", "--bare", "--initial-branch=main", remote);
+  await git(root, "clone", remote, primary);
+  await git(primary, "config", "user.name", "Agent Hub Test");
+  await git(primary, "config", "user.email", "agent-hub@example.invalid");
+  await writeFile(path.join(primary, "result.txt"), "base\n");
+  await git(primary, "add", "result.txt");
+  await git(primary, "commit", "-m", "base");
+  const baseCommit = await git(primary, "rev-parse", "HEAD");
+  await git(primary, "push", "origin", "main");
+  await writeFile(path.join(primary, "result.txt"), "candidate\n");
+  await git(primary, "commit", "-am", "candidate");
+  const commit = await git(primary, "rev-parse", "HEAD");
+  await git(root, "clone", "--no-local", primary, frozen);
+  await git(frozen, "remote", "remove", "origin");
+  const generation = { generation: 1, identitySha256: "frozen-origin-proof",
+    candidates: [{ repositoryRoot: primary, releaseRoot: frozen, commit, baseCommit }] };
+  const operation = { operationId: "registered-origin-readback" };
+  const target = { targetId: "production", kind: "agent-hub-publication", repositoryRoot: primary };
+  const publication = new ReleaseOperationPublication({
+    dataDir: path.join(root, "data"), runtimeRoot: path.join(root, "runtime"),
+    readPublicationStateImpl: async () => null,
+  });
+  assert.deepEqual(await publication.readback({ operation, generation, target }), {
+    status: "not_applied", revision: baseCommit,
+  });
+  await git(primary, "push", "origin", "main");
+  assert.deepEqual(await publication.readback({ operation, generation, target }), {
+    status: "partial", revision: commit, source: "origin-readback",
+  });
+  assert.equal(await git(primary, "rev-parse", "HEAD"), commit);
+  assert.equal(await git(primary, "status", "--porcelain=v1"), "");
+  assert.equal(await git(frozen, "rev-parse", "HEAD"), commit);
+  assert.equal(await git(frozen, "remote"), "");
+});
 
 test("stable publication runner preserves the initiating Stream and Thread for start and resume", () => {
   const operation = {
@@ -63,7 +124,7 @@ test("stable publication runner preserves the initiating Stream and Thread for s
   ]);
 });
 
-test("stable runner refuses publication when the exact generation lacks the required contour", { timeout: 60000 }, async (t) => {
+test("stable runner refuses publication when the exact generation lacks the required contour", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-runner-process-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const remote = path.join(root, "origin.git");
@@ -373,4 +434,63 @@ test("publication classifies a failed pre-effect pipeline step as validation fai
       && error.message === "contract test failed"
       && error.failedStep === "Контракт интерфейсов Agent Hub",
   );
+});
+
+test("publication forwards its stable dependency root to frozen Worker builds", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-worker-dependency-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { readFile } = await import("node:fs/promises");
+  const resolver = new URL("../../../wrangler-runner.mjs", import.meta.url).href;
+  for (const mode of ["default", "explicit", "mismatch"]) {
+    const directory = path.join(root, mode);
+    const ownerRoot = path.join(directory, "stable-owner");
+    const candidateRoot = path.join(directory, "candidate");
+    const dependencyRoot = mode === "explicit" ? path.join(directory, "configured-dependencies") : ownerRoot;
+    const installedVersion = mode === "mismatch" ? "2.3.5" : "2.3.4";
+    const expectedEntry = path.join(dependencyRoot, "node_modules", "wrangler", "bin", "wrangler.js");
+    await mkdir(path.dirname(expectedEntry), { recursive: true });
+    await mkdir(path.join(candidateRoot, "AgentHub"), { recursive: true });
+    await mkdir(ownerRoot, { recursive: true });
+    await writeFile(path.join(candidateRoot, "AgentHub", "package.json"), JSON.stringify({ devDependencies: { wrangler: "2.3.4" } }));
+    await writeFile(path.join(dependencyRoot, "node_modules", "wrangler", "package.json"), JSON.stringify({ version: installedVersion }));
+    await writeFile(expectedEntry, "process.stdout.write('synthetic pinned Worker CLI\\n');\n");
+    const operation = { operationId: `dependency-${mode}` };
+    const generation = { generation: 1, identitySha256: `dependency-${mode}-identity`, candidates: [{
+      repositoryRoot: candidateRoot, releaseRoot: candidateRoot, commit: "b".repeat(40), baseCommit: "a".repeat(40),
+    }] };
+    const target = { targetId: "production", kind: "agent-hub-publication", repositoryRoot: candidateRoot };
+    const executionRoot = path.join(directory, "data", "release-operation-executions", identity(`${operation.operationId}:1:production`));
+    const observation = path.join(directory, "observed.json");
+    const runnerFile = path.join(ownerRoot, "release-operation-publication-runner.mjs");
+    await writeFile(runnerFile, `
+      import { writeFile } from 'node:fs/promises';
+      import path from 'node:path';
+      import { resolveWrangler, runWrangler } from ${JSON.stringify(resolver)};
+      const entry = resolveWrangler({ root: process.cwd() });
+      await runWrangler(['--version'], { root: process.cwd() });
+      await writeFile(${JSON.stringify(observation)}, JSON.stringify({ entry, dependencyRoot: process.env.AGENT_HUB_DEPENDENCY_ROOT, cwd: process.cwd() }));
+      await writeFile(path.join(process.env.AGENT_HUB_RELEASE_EXECUTION_ROOT, 'result.json'), JSON.stringify({
+        operationId: process.env.AGENT_HUB_RELEASE_OPERATION_ID, generation: Number(process.env.AGENT_HUB_RELEASE_GENERATION),
+        targetId: process.env.AGENT_HUB_RELEASE_TARGET_ID, candidate: process.env.AGENT_HUB_RELEASE_CANDIDATE_IDENTITY,
+        status: 'applied', revision: ${JSON.stringify(generation.candidates[0].commit)},
+      }));
+    `);
+    const publication = new ReleaseOperationPublication({
+      dataDir: path.join(directory, "data"), runtimeRoot: path.join(directory, "runtime"), runnerFile,
+      environment: mode === "explicit" ? { AGENT_HUB_DEPENDENCY_ROOT: dependencyRoot } : {},
+      readPublicationStateImpl: async () => null, gitRemoteHeadImpl: async () => "a".repeat(40),
+      publicationRunStoreFactory: () => ({ read: async () => null }),
+    });
+    if (mode === "mismatch") {
+      await assert.rejects(publication.publish({ operation, generation, target }), /publication runner exited 1/u);
+      await assert.rejects(readFile(observation), { code: "ENOENT" });
+      assert.match(await readFile(path.join(executionRoot, "stderr.log"), "utf8"), /wrangler 2\.3\.4/u);
+    } else {
+      assert.equal((await publication.publish({ operation, generation, target })).status, "applied");
+      assert.deepEqual(JSON.parse(await readFile(observation, "utf8")), {
+        entry: expectedEntry, dependencyRoot, cwd: path.join(candidateRoot, "AgentHub"),
+      });
+      assert.match(await readFile(path.join(executionRoot, "stdout.log"), "utf8"), /synthetic pinned Worker CLI/u);
+    }
+  }
 });

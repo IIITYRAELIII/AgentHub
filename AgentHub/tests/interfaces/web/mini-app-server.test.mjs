@@ -34,8 +34,15 @@ test("resumable upload HTTP authenticates, resumes chunks and streams the comple
     let url = `${address.url}api/attachment-upload`;
     const headers = { Authorization: `webview ${createLocalWebviewSession(secret).token}` };
     assert.equal((await fetch(url)).status, 401);
-    const capabilities = await (await fetch(url, { headers })).json();
+    const capabilitiesResponse = await fetch(url, { headers });
+    const capabilities = await capabilitiesResponse.json();
     assert.equal(capabilities.protocol, "agent-hub-attachment-upload-v1");
+    assert.equal(capabilities.supportsBeginRecovery, true);
+    assert.match(capabilitiesResponse.headers.get("server-timing"), /auth;dur=[0-9.]+, body;dur=[0-9.]+, owner;dur=[0-9.]+/u);
+    const absent = await fetch(`${url}?id=bbbbbbbb-cccc-dddd-eeee-ffffffffffff`, { headers });
+    assert.equal(absent.status, 404);
+    assert.equal((await absent.json()).state, "absent");
+    assert.match(absent.headers.get("server-timing"), /owner;dur=[0-9.]+/u);
     const preflight = await fetch(url, { method: "OPTIONS", headers: {
       Origin: "vscode-webview://agent-hub-test", "Access-Control-Request-Method": "PUT" } });
     assert.match(preflight.headers.get("access-control-allow-methods"), /PUT, DELETE/u);
@@ -1514,7 +1521,9 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(hubClient, /pendingSelectionId/u);
     assert.match(hubClient, /history\.replaceState/u);
     assert.match(hubClient, /modelLabel: window\.AgentHubStreamTabs\.streamModelLabel\(task, catalogStream, snapshot\.settings\)/u);
-    assert.doesNotMatch(hubClient, /location\.hash\s*=/u);
+    // Route preservation is exercised by the production DOM case
+    // "explicit historical turn remains bound while the live head completes".
+    // A source regex also matches the equality guard location.hash === route.
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     assert.match(script, /telegram\?\.expand\(\)/u);
     assert.match(page, /data-telegram-fullscreen hidden/u);

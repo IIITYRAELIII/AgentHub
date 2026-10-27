@@ -94,6 +94,68 @@ test("release operation acknowledges before work and finishes one exact generati
   assert.deepEqual(cleaned, [["done", 1, snapshot.generations[0].identitySha256]]);
 });
 
+test("addressed drain waits for admitted work by request, operation or selected Task without waking work", async t => {
+  for (const selector of ["requestId", "operationId", "taskId"]) {
+    const scheduled = [];
+    let releaseCompose, entered = false, drained = false;
+    const held = new Promise(resolve => { releaseCompose = resolve; });
+    const f = await fixture(t, { schedule: callback => scheduled.push(callback),
+      compose: async () => { entered = true; await held; return generation(); } });
+    const ack = start(f.service);
+    const before = f.store.snapshot(ack.operationId);
+    await f.service.drainAddressed({ requestId: "foreign-request" });
+    await f.service.drainAddressed({ operationId: "foreign-operation" });
+    await f.service.drainAddressed({ taskId: "foreign-task" });
+    assert.deepEqual(f.store.snapshot(ack.operationId), before);
+    assert.equal(scheduled.length, 1);
+    assert.equal(entered, false, "drain cannot start scheduled work itself");
+    const pending = f.service.drainAddressed({ [selector]: selector === "requestId" ? "request-1"
+      : selector === "taskId" ? taskIds[0] : ack.operationId })
+      .then(() => { drained = true; });
+    scheduled.shift()();
+    await waitUntil(() => entered);
+    assert.equal(drained, false, "the original owner must retain its lifetime through held compose");
+    releaseCompose();
+    await pending;
+    assert.equal(f.service.get(ack.operationId).operation.state, "done");
+    const terminal = f.store.snapshot(ack.operationId);
+    await f.service.drainAddressed({ operationId: ack.operationId });
+    assert.deepEqual(f.store.snapshot(ack.operationId), terminal);
+    assert.equal(scheduled.length, 0, "terminal readback does not reschedule work");
+  }
+});
+
+test("retention proof reads only the exact completed, validated and published generation", async t => {
+  const scheduled = [];
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback) });
+  const ack = start(f.service);
+  assert.equal(f.service.retentionGeneration(ack.operationId, 1), null);
+  scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  const before = f.store.snapshot(ack.operationId);
+  const proof = f.service.retentionGeneration(ack.operationId, 1);
+  assert.equal(proof.identitySha256, before.generations[0].identitySha256);
+  assert.equal(proof.candidates[0].commit, "candidate");
+  assert.equal(f.service.retentionGeneration(ack.operationId, 2), null);
+  assert.deepEqual(f.store.snapshot(ack.operationId), before, "retention does not transition or replay publication");
+  const get = f.store.get.bind(f.store);
+  for (const state of ["waiting", "failed", "publish"]) {
+    f.store.get = id => ({ ...get(id), state });
+    assert.equal(f.service.retentionGeneration(ack.operationId, 1), null);
+  }
+  f.store.get = get;
+  const latest = f.store.latestStep.bind(f.store);
+  for (const step of ["validate", "finalize"]) {
+    f.store.latestStep = (id, number, name) => name === step ? { ...latest(id, number, name), status: "unknown" } : latest(id, number, name);
+    assert.equal(f.service.retentionGeneration(ack.operationId, 1), null);
+  }
+  f.store.latestStep = latest;
+  f.store.get = id => ({ ...get(id), publicationEffects: { ...get(id).publicationEffects, targets: {} } });
+  assert.equal(f.service.retentionGeneration(ack.operationId, 1), null);
+  f.store.get = get;
+  assert.deepEqual(f.service.retentionGeneration(ack.operationId, 1), proof);
+});
+
 test("startup recovery leaves a reviewed external native owner and its receipts untouched", async t => {
   const scheduled = [];
   const f = await fixture(t, { schedule: callback => scheduled.push(callback) });
@@ -178,6 +240,62 @@ test("stale prepared candidate waits for normal preparation on the original oper
   assert.equal(resumed.operation.currentGeneration, 1);
   assert.deepEqual(attempts, [1, 1]);
   assert.equal(start(f.service).operationId, ack.operationId);
+});
+
+test("definite preparation refusal continues the same release without replaying completed steps", async t => {
+  let ready = false, composeCalls = 0;
+  const f = await fixture(t, { compose: async () => {
+    composeCalls += 1;
+    if (!ready) throw Object.assign(new Error("owned native conflict"), { code: "RELEASE_PREPARATION_REJECTED" });
+    return generation();
+  } });
+  const ack = start(f.service);
+  const refused = await f.service.drain(ack.operationId);
+  assert.equal(refused.operation.state, "waiting");
+  assert.equal(refused.operation.waitReason.code, "preparation_refused");
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "failed");
+  ready = true;
+  f.service.continue(ack.operationId);
+  const done = await f.service.drain(ack.operationId);
+  assert.equal(done.operation.state, "done");
+  assert.equal(done.operation.authorization.fingerprint, refused.operation.authorization.fingerprint);
+  const calls = [...f.calls];
+  f.service.continue(ack.operationId);
+  await f.service.drain(ack.operationId);
+  assert.equal(composeCalls, 2);
+  assert.deepEqual(f.calls, calls);
+});
+
+test("ambiguous preparation effect remains unknown and cannot be blindly continued", async t => {
+  let calls = 0;
+  const f = await fixture(t, { compose: async () => {
+    calls += 1;
+    throw Object.assign(new Error("candidate CAS response lost"), { code: "AWAIT_PREPARATION_UNKNOWN" });
+  } });
+  const ack = start(f.service);
+  const unknown = await f.service.drain(ack.operationId);
+  assert.equal(unknown.operation.waitReason.code, "preparation_effect_unknown");
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "unknown");
+  assert.equal(f.service.continue(ack.operationId).accepted, false);
+  assert.equal(calls, 1);
+});
+
+test("lost generation persistence reply reads exact SQLite result without another composition", async t => {
+  const f = await fixture(t);
+  const put = f.store.putGeneration.bind(f.store);
+  let calls = 0;
+  f.store.putGeneration = (...args) => {
+    calls += 1;
+    put(...args);
+    throw new Error("generation committed but reply lost");
+  };
+  const ack = start(f.service);
+  const done = await f.service.drain(ack.operationId);
+  assert.equal(done.operation.state, "done");
+  assert.equal(done.generations.length, 1);
+  assert.equal(calls, 1);
+  assert.deepEqual(f.calls.filter(([step]) => step === "compose"), [["compose", 1]]);
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "applied");
 });
 
 test("validation failure waits for a correction and continues as generation two", async (t) => {
@@ -386,6 +504,140 @@ test("external condition retries automatically at its durable retry time", async
   await new Promise((resolve) => setTimeout(resolve, 1_150));
   const snapshot = await f.service.drain(ack.operationId);
   assert.equal(snapshot.operation.state, "done");
+});
+
+test("automatic retry survives a real SQLite writer without advancing or replaying the original", async t => {
+  const scheduled = [];
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback), now: () => new Date().toISOString() });
+  const ack = start(f.service);
+  let before = f.store.get(ack.operationId);
+  f.store.transition(ack.operationId, { state: "waiting", resumeState: "compose",
+    waitReason: { code: "external_condition" } }, { expectedRevision: before.revision });
+  await scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  before = f.store.get(ack.operationId);
+  const waiting = f.store.transition(ack.operationId, { state: "waiting", resumeState: "compose",
+    waitReason: { code: "external_condition", retryAt: new Date(Date.now() + 20).toISOString() } },
+  { expectedRevision: before.revision }).operation;
+  const blocker = new DatabaseSync(path.join(f.root, "runtime.sqlite"));
+  try {
+  blocker.exec("BEGIN IMMEDIATE");
+  let attempts = 0;
+  const transition = f.store.transition.bind(f.store);
+  f.store.transition = (...args) => { attempts++; return transition(...args); };
+  f.service.recover();
+  await waitUntil(() => attempts > 0);
+  assert.equal(f.store.get(ack.operationId).revision, waiting.revision);
+  assert.equal(f.store.get(ack.operationId).state, "waiting");
+  assert.deepEqual(f.calls, []);
+  blocker.exec("ROLLBACK");
+  await waitUntil(() => scheduled.length === 1);
+  await scheduled.shift()();
+  const result = await f.service.drain(ack.operationId);
+  assert.equal(result.operation.state, "done");
+  assert.equal(result.operation.operationId, ack.operationId);
+  assert.equal(result.generations.length, 1);
+  assert.deepEqual(f.calls, [["compose", 1], ["validate", 1], ["publish", "git"], ["publish", "runtime"], ["finalize", 1]]);
+  } finally {
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+  }
+});
+
+test("release settlement retries only its exact lease when SQLite is briefly busy", async t => {
+  const scheduled = [];
+  let publications = 0;
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback), now: () => new Date().toISOString(),
+    publishTarget: async () => {
+      publications++;
+      throw Object.assign(new Error("temporary target condition"), { code: "RELEASE_EXTERNAL_CONDITION" });
+    } });
+  const ack = start(f.service);
+  const blocker = new DatabaseSync(path.join(f.root, "runtime.sqlite"));
+  let unlock = null;
+  try {
+  const release = f.store.release.bind(f.store);
+  let attempts = 0;
+  f.store.release = (...args) => {
+    if (++attempts === 1) {
+      blocker.exec("BEGIN IMMEDIATE");
+      unlock = setTimeout(() => blocker.exec("ROLLBACK"), 60);
+    }
+    return release(...args);
+  };
+  await scheduled.shift()();
+  await waitUntil(() => f.store.get(ack.operationId).owner === null);
+  assert.equal(f.store.get(ack.operationId).state, "waiting");
+  assert.ok(attempts > 1);
+  assert.equal(publications, 1);
+  assert.equal(scheduled.length, 0);
+  } finally {
+    clearTimeout(unlock);
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+  }
+});
+
+test("automatic retry rereads a recovery hold after contention and exhaustion", async t => {
+  const scheduled = [];
+  const warnings = t.mock.method(console, "warn", () => {});
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback), now: () => new Date().toISOString(),
+    retryDelayMs: 1_000 });
+  const ack = start(f.service);
+  let before = f.store.get(ack.operationId);
+  f.store.transition(ack.operationId, { state: "waiting", resumeState: "compose",
+    waitReason: { code: "external_condition" } }, { expectedRevision: before.revision });
+  await scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  before = f.store.get(ack.operationId);
+  f.store.transition(ack.operationId, { waitReason: { code: "external_condition",
+    retryAt: new Date(Date.now() + 20).toISOString() } }, { expectedRevision: before.revision });
+  const mutate = f.store.runOperationMutation.bind(f.store);
+  f.store.runOperationMutation = (id, mutation) => mutate(id, mutation, { timeoutMs: 30 });
+  const blocker = new DatabaseSync(path.join(f.root, "runtime.sqlite"));
+  try {
+    blocker.exec("BEGIN IMMEDIATE");
+    f.service.recover();
+    await waitUntil(() => warnings.mock.callCount() === 1);
+    assert.equal(f.store.get(ack.operationId).state, "waiting");
+    assert.deepEqual(f.calls, []);
+    blocker.exec("ROLLBACK");
+    const waiting = f.store.get(ack.operationId);
+    const held = f.store.transition(ack.operationId, { waitReason: { code: "external_condition",
+      details: { recoveryHold: "repair required" } } }, { expectedRevision: waiting.revision }).operation;
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    await mutate(ack.operationId, () => {});
+    assert.equal(f.store.get(ack.operationId).revision, held.revision);
+    assert.equal(scheduled.length, 0);
+    assert.deepEqual(f.calls, []);
+  } finally {
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+  }
+});
+
+test("automatic retry contains a non-contention error without repeating it", async t => {
+  const scheduled = [];
+  const warnings = t.mock.method(console, "warn", () => {});
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback), now: () => new Date().toISOString() });
+  const ack = start(f.service);
+  let before = f.store.get(ack.operationId);
+  f.store.transition(ack.operationId, { state: "waiting", resumeState: "compose",
+    waitReason: { code: "external_condition" } }, { expectedRevision: before.revision });
+  await scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  before = f.store.get(ack.operationId);
+  const waiting = f.store.transition(ack.operationId, { waitReason: { code: "external_condition",
+    retryAt: new Date(Date.now() + 20).toISOString() } }, { expectedRevision: before.revision }).operation;
+  let attempts = 0;
+  f.store.transition = () => { attempts++; throw new Error("unexpected persistence fault"); };
+  f.service.recover();
+  await waitUntil(() => warnings.mock.callCount() === 1);
+  await f.store.runOperationMutation(ack.operationId, () => {});
+  assert.equal(attempts, 1);
+  assert.equal(f.store.get(ack.operationId).revision, waiting.revision);
+  assert.equal(scheduled.length, 0);
+  assert.deepEqual(f.calls, []);
 });
 
 test("lease heartbeat prevents a replacement worker from entering a long validation", async (t) => {

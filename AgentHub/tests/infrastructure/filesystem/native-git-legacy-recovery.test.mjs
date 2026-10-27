@@ -89,7 +89,7 @@ async function fixture(t) {
 }
 
 
-test("already admitted genuine v1 completes and reopens; new legacy admission is closed", { timeout: 120000 }, async t => {
+test("already admitted genuine v1 completes and reopens; new legacy admission is closed", async t => {
   const f=await fixture(t), repositoryKey=taskRepositoryKey(f.root), operationId="pre-cutover-v1-original";
   const proof=await verifySelectedCompositionObjects({
     git:(args,options)=>runTaskGitCommand(args,{...options,cwd:f.root}), taskId:TASK_ID, repositoryKey,
@@ -128,7 +128,7 @@ test("already admitted genuine v1 completes and reopens; new legacy admission is
   assert.equal(await git(f.root,"rev-parse","dev"),originalHead);
 });
 
-test("sealed v2 recovery rejects paired header downgrade and physical capture tamper", { timeout: 120000 }, async t => {
+test("sealed v2 recovery rejects paired header downgrade and physical capture tamper", async t => {
   const f = await fixture(t), repositoryKey = taskRepositoryKey(f.root), operationId = "pre-cutover-v2-original";
   const proof = await verifySelectedCompositionObjects({
     git: (args, options) => runTaskGitCommand(args, { ...options, cwd: f.root }), taskId: TASK_ID, repositoryKey,

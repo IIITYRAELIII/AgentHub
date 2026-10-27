@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
+import { createClaimCustodyRuntime } from "../infrastructure/process/claim-custody-runtime.mjs";
 import { HubMcpService } from "../application/hub-mcp-service.mjs";
 import { measureTaskOperation } from "../infrastructure/process/task-operation-timing.mjs";
 import { TaskLifecycleService } from "../application/task-lifecycle-service.mjs";
@@ -18,14 +19,12 @@ import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
 import { WorkspaceReleasePreflightService } from "../application/workspace-release-preflight-service.mjs";
-import { ReleaseOperationService } from "../application/release-operation-service.mjs";
-import { ReleaseOperationCommandService } from "../application/release-operation-command-service.mjs";
-import { ReleaseOperationFinalization } from "../application/release-operation-finalization.mjs";
+import { createReleaseOperationServices } from "./release-operation-composition.mjs";
 import { importLegacyReleaseOperations } from "../infrastructure/persistence/release-operation-legacy-import.mjs";
-import { WorkspaceReleaseOperationAdapter } from "../application/workspace-release-operation-adapter.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
+import { FileTransferService } from "../infrastructure/filesystem/file-transfer-service.mjs";
 import { TaskGitWorkspaceService } from "../infrastructure/filesystem/task-git-workspace.mjs";
 import { ReleaseGitWorkspaceService } from "../infrastructure/filesystem/release-git-workspace.mjs";
 import { AttachmentThumbnailService } from "../infrastructure/media/attachment-thumbnail-service.mjs";
@@ -34,6 +33,7 @@ import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
 import { RateLimitHistoryStore } from "../infrastructure/persistence/rate-limit-history.mjs";
 import { ProviderTurnTelemetryStore } from "../infrastructure/persistence/provider-turn-telemetry-store.mjs";
+import { FileTransferStore } from "../infrastructure/persistence/file-transfer-store.mjs";
 import { ReleaseOperationStore } from "../infrastructure/persistence/release-operation-store.mjs";
 import { PreTurnInstructionStore } from "../infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { installRotatingConsole } from "../infrastructure/persistence/rotating-log.mjs";
@@ -53,8 +53,6 @@ import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
 import { createRepositoryProductionValidationAdapter } from "../infrastructure/process/repository-production-validation.mjs";
-import { ReleaseOperationPublication } from "../infrastructure/process/release-operation-publication.mjs";
-import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import {
   copyWindowsFileObject,
   revealWindowsFile,
@@ -426,6 +424,23 @@ export async function createHubInfrastructure({
     pythonExe: config.pythonExe,
   });
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
+  const fileTransferPolicy = config.miniApp.fileTransfer;
+  const fileTransferStore = fileTransferPolicy.enabled
+    ? new FileTransferStore({ dataDir: config.dataDir, policy: fileTransferPolicy, instanceId: serverInstanceId })
+    : null;
+  const fileTransferService = fileTransferStore
+    ? new FileTransferService({
+      dataDir: config.dataDir,
+      roots: [config.projectRoot, ...config.projects.map((project) => project.path)],
+      store: fileTransferStore,
+      policy: fileTransferPolicy,
+      keyring: { currentKid: "transfer-v1", keys: { "transfer-v1": Buffer.from(hubMcpSecret) } },
+    })
+    : null;
+  if (fileTransferService) {
+    await startupStep("file-transfer-initialize", () => fileTransferService.initialize());
+    fileTransferService.startOperationalGc();
+  }
   const contourExternalEffects = config.testContourRecording
     ? createContourExternalEffects({ root: config.testContourRecording.root })
     : null;
@@ -435,8 +450,11 @@ export async function createHubInfrastructure({
   });
   const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
-    contourExternalEffects, recordTiming: recordTaskTiming, verifyNativeResolutionReview });
-  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects, verifyNativeResolutionReview });
+    contourExternalEffects, recordTiming: recordTaskTiming, verifyNativeResolutionReview,
+    readClaimCustodyNamespace: taskId => workspaceCatalogStore.claimCustodyNamespaceForTask(taskId) });
+  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects, verifyNativeResolutionReview,
+    readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
+    readPreparationOriginal: id => workspaceCatalogStore.mcpOperation(id) });
   const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
     .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)
     .map((workspace) => ({
@@ -492,42 +510,20 @@ export async function createHubInfrastructure({
     runnerVersion: AGENT_HUB_VERSION,
     reportDiagnostic: diagnostic => console.warn("Historical release entry unavailable", diagnostic),
   }));
-  const releaseOperationPublication = new ReleaseOperationPublication({
+  const { operations: releaseOperations, commands: releaseOperationCommands } = createReleaseOperationServices({
+    store: releaseOperationStore,
     dataDir: config.dataDir,
     runtimeRoot: runtimeCommandRoot,
-  });
-  const releaseOperationFinalization = new ReleaseOperationFinalization({
-    taskBoard,
-    releaseGitWorkspaces,
-    taskGitWorkspaces,
-  });
-  const releaseOperationAdapter = new WorkspaceReleaseOperationAdapter({
     releasePreflight: workspaceReleasePreflight,
-    publication: releaseOperationPublication,
-    finalization: releaseOperationFinalization,
-  });
-  const releaseOperations = new ReleaseOperationService({
-    store: releaseOperationStore,
-    compose: (input) => releaseOperationAdapter.compose(input),
-    validate: (input) => releaseOperationAdapter.validate(input),
-    publishTarget: (input) => releaseOperationAdapter.publishTarget(input),
-    readTarget: (input) => releaseOperationAdapter.readTarget(input),
-    finalize: (input) => releaseOperationAdapter.finalize(input),
-    reservePublication: (input) => releaseOperationAdapter.reservePublication(input),
+    taskBoard, taskLifecycle,
+    workspaceCatalog: workspaceCatalogStore,
+    taskGitWorkspaces, releaseGitWorkspaces,
     requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle }),
-    cleanupGeneration: (input) => releaseOperationAdapter.cleanupGeneration(input),
-    processAlive: processIsAlive,
     runnerVersion: AGENT_HUB_VERSION,
   });
-  const releaseOperationCommands = new ReleaseOperationCommandService({
-    releaseOperations,
-    workspaceCatalog: workspaceCatalogStore,
-    taskBoard,
-  });
-  taskLifecycle.setReleaseOperationWake((taskId) => releaseOperations.wakeForTask(taskId));
-  taskLifecycle.setReleaseOperationPrepare((taskId) => releaseOperations.prepareForTaskAcceptance(taskId));
   releaseOperations.recover();
   const hubMcpService = new HubMcpService({
+    claimCustodyRuntime: createClaimCustodyRuntime({ dataDir: config.dataDir }),
     measureOperation: measureTaskOperation,
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
@@ -574,6 +570,8 @@ export async function createHubInfrastructure({
     },
     usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
     workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
+    fileTransferPolicy,
+    fileTransferService,
     recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,
     reportUnexpectedError: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   };
@@ -706,6 +704,7 @@ export async function createHubInfrastructure({
     runtimeCommandServer,
     rateLimitHistoryStore,
     providerTurnTelemetryStore,
+    fileTransferService,
     commandTrace,
     commandTraceService: commandTrace.service,
     sqliteRecovery,

@@ -77,9 +77,7 @@ test("core-only components start without Telegram and keep Web App disabled", { 
   assert.doesNotMatch(stderr, /telegramBotToken|Telegram API/u);
 });
 
-test("prepared runtime becomes ready beside an external reviewed release awaiting restart", {
-  timeout: 120_000,
-}, async (t) => {
+test("prepared runtime becomes ready beside an external reviewed release awaiting restart", async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-native-startup-e2e-"));
   const dataDir = path.join(runtimeRoot, "data");
   const projectRoot = path.join(runtimeRoot, "project");

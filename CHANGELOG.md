@@ -1,5 +1,24 @@
 # Agent Hub release notes
 
+## 2.0.1 — Standalone source and Windows distribution
+
+- `Автор`: `IIITYRAELIII` (GitHub UID `95281881`).
+- `Компоненты`: `agent-hub`.
+- `Для кого`: пользователи и разработчики Agent Hub.
+- `Действие`: `optional`; установка и обновление используют версионный архив.
+- `Контракты`: `REL-001`, `RST-001`, `MCP-001`, `PERF-001`, `UI-001`, `USG-001`.
+- `Изменения`: сохранены исправления ответов после ротации, передачи файлов,
+  облегчённого снимка доски и явного выбора проверок. Упаковка сохраняет
+  сопутствующие C#-файлы; проверены адресные исправления SQLite и установщика.
+  Публичные исходники отделены от приватных настроек, истории выполнения и
+  сведений о согласиях. Нормальная установка не требует Git, npm или компилятора.
+- `Проверка`: выполнены необходимые адресные проверки; полный набор пропущен
+  по выбору владельца. Пропущенные проверки не считаются успешными.
+- `Установка/обновление`: используйте архив, `install_release.py` и контрольные
+  суммы одного GitHub Release; см. `AgentHub/distribution/INSTALL.md`.
+- `Перезапуск`: установщик не запускает Hub; после установки применяется
+  штатный запуск, после обновления — согласованное окно остановленных writers.
+
 This draft retains the original Hub contract-governance boundary from the
 private Utilities development history. It does not import unrelated Utilities
 release notes or claim a standalone release. Current installation instructions

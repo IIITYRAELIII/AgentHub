@@ -1,3 +1,4 @@
+import { effectiveReleaseTaskIds, effectiveReleaseMetadata } from "../domain/release-operation.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
@@ -20,12 +21,18 @@ async function releaseMetadataBytes(metadata) {
   return bytes;
 }
 function approvedRepositories(operation) {
+  if (operation.reviewedMain) return operation.reviewedMain.approvedRepositories.map(repository => {
+    const input = operation.authorization.approvedTargets.find(target => target.repositoryRoot === repository.projectRoot
+      && target.nativeResolutionReview)?.nativeResolutionReview;
+    return { ...repository, ...(input ? { nativeResolutionReview: input } : {}) };
+  });
   return operation.authorization.approvedTargets.flatMap((target) => (
     target.repositoryRoot && target.approvedLocalMainCommit && target.approvedOriginMainCommit
       ? [{
           projectRoot: target.repositoryRoot,
           approvedLocalMainCommit: target.approvedLocalMainCommit,
           approvedOriginMainCommit: target.approvedOriginMainCommit,
+          ...(target.nativeResolutionReview ? { nativeResolutionReview: target.nativeResolutionReview } : {}),
         }]
       : []
   ));
@@ -55,12 +62,12 @@ export class WorkspaceReleaseOperationAdapter {
   }
 
   async compose({ operation, generation }) {
-    const changelogContent = await releaseMetadataBytes(operation.authorization.releaseMetadata);
+    const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
     const prepared = await this.releasePreflight.prepareOperationGeneration({
       workspaceId: operation.workspaceId,
       operationId: operation.operationId,
       generation,
-      taskIds: operation.authorization.taskIds,
+      taskIds: effectiveReleaseTaskIds(operation),
       previousSelectedResults: operation.selectedResults,
       approvedRepositories: approvedRepositories(operation),
       ...(changelogContent ? { changelogContent } : {}),
@@ -91,8 +98,29 @@ export class WorkspaceReleaseOperationAdapter {
         frozenTasks: candidate.frozenTasks,
         manifest: candidate.manifest,
       })),
-      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}`,
+      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}${operation.reviewedMain ? `:${operation.reviewedMain.identitySha256}` : ""}`,
     };
+  }
+
+  withTaskSelection({ operation, taskIds, commit }) {
+    return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
+      const capture = async () => {
+        const results = await this.releasePreflight.operationSelection({ workspaceId: operation.workspaceId, taskIds });
+        if (JSON.stringify([...new Set(results.map(item => item.taskId))].sort()) !== JSON.stringify(taskIds)) {
+          throw new Error("Explicit Task membership contains unaccepted, unknown or foreign Tasks");
+        }
+        return results;
+      };
+      const results = await capture();
+      return commit(results, async () => {
+        if (selectionIdentity(await capture()) !== selectionIdentity(results)) throw new Error("Accepted Task selection changed before amendment CAS");
+      });
+    });
+  }
+
+  withReviewedMainRecovery(input) {
+    requiredMethod(this.releasePreflight, "withReviewedMainRecovery");
+    return this.releasePreflight.withReviewedMainRecovery(input);
   }
 
   validate({ operation, generation }) {
@@ -106,7 +134,7 @@ export class WorkspaceReleaseOperationAdapter {
     return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
       const current = await this.releasePreflight.operationSelection({
         workspaceId: operation.workspaceId,
-        taskIds: operation.authorization.taskIds,
+        taskIds: effectiveReleaseTaskIds(operation),
       });
       return selectionIdentity(current) === selectionIdentity(generation.selectedResults)
         ? reserve()

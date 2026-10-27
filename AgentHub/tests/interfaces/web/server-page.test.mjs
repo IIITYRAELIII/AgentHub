@@ -3,6 +3,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+test("version status presents public SemVer and the real allocated build separately", () => {
+  const snapshot = serverPageSnapshot({ version: "2.0.0+build.30000001", releaseId: "independent-runtime-id" });
+  assert.equal(snapshot.process.version, "2.0.0+build.30000001");
+  assert.equal(snapshot.process.versionLabel, "2.0.0 · сборка 30000001");
+  assert.equal(snapshot.process.releaseId, "independent-runtime-id");
+});
 import { AGENT_HUB_VERSION } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
 import {
   agentHubAutostartShortcut,
@@ -121,6 +127,7 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
     instanceId: "instance-1",
     releaseId: "release-1",
     version: AGENT_HUB_VERSION,
+    versionLabel: AGENT_HUB_VERSION,
     activeCount: 2,
   });
   assert.deepEqual(snapshot.components.map(({ id, name, enabled }) => ({ id, name, enabled })), [

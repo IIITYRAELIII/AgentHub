@@ -5,6 +5,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { inspectAgentHubReleaseVersion } from "./release-version.mjs";
+import { nextRuntimeReleaseVersion } from "./runtime-release-version.mjs";
+import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
 const execute = promisify(execFile);
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -15,7 +17,7 @@ const samePath = (a, b) => process.platform === "win32"
 async function git(root, args, environment = {}) {
   return String((await execute("git", args, {
     cwd: root, env: { ...process.env, ...environment }, windowsHide: true,
-    timeout: 120_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8",
+    maxBuffer: Infinity, encoding: "utf8",
   })).stdout).trimEnd();
 }
 
@@ -66,7 +68,8 @@ async function persistChangelogPayload(layout, content, expectedHash) {
 // Called only under the ReleaseGitWorkspaceService's release and repository locks.
 export async function freezePreparedPublicationCandidate({
   layout, marker, expectedPlanRevision, expectedPreparedHead, workspaceId,
-  changelogContent, reusePersistedChangelog = false, releaseDate = new Date(),
+  changelogContent, reusePersistedChangelog = false, releaseDate = new Date(), releaseType = "patch",
+  runtimeRoot = defaultRuntimeRoot(),
   validateBeforeCommit = async () => {}, onPhase = async () => {},
 }) {
   const root = layout.releaseRoot;
@@ -166,7 +169,13 @@ export async function freezePreparedPublicationCandidate({
     if (oldPreRelease !== preparedHead) throw new Error("prepared PreRelease branch changed");
     const changelogPayloadFile = await persistChangelogPayload(layout, suppliedChangelog, suppliedChangelogHash);
     const versionState = await inspectAgentHubReleaseVersion({
-      root: path.join(root, "AgentHub"), now: releaseDate,
+      root: path.join(root, "AgentHub"), now: releaseDate, releaseType,
+    });
+    // This is a frozen expectation, not a reservation or allocation. The
+    // installation owner compares it again under its existing lease before
+    // preparing any bytes. Resume reuses this same immutable expectation.
+    const runtimeReleaseVersion = await nextRuntimeReleaseVersion({
+      releasesDir: runtimeLayout(runtimeRoot).releasesDir, packageVersion: versionState.version,
     });
     const indexFile = path.join(marker.releaseGitCommonDir, `publication-freeze-index-${randomUUID()}`);
     let head = preparedHead;
@@ -202,6 +211,7 @@ export async function freezePreparedPublicationCandidate({
     manifest = { ...manifest, workspaceId, publication: {
       preparedHead, head, changelogBlob, changelogContentHash, changelogPayloadFile,
       releaseVersion: versionState.version,
+      runtimeReleaseVersion,
       sourceManifestHash: checkpoint.manifestHash,
     } };
     const text = `${JSON.stringify(manifest, null, 2)}\n`;
@@ -212,6 +222,7 @@ export async function freezePreparedPublicationCandidate({
       publicationFreeze: {
         preparedHead, oldMain, oldPreRelease, changelogBlob, changelogContentHash, changelogPayloadFile,
         releaseVersion: versionState.version,
+        runtimeReleaseVersion,
       }, updatedAt: new Date().toISOString() };
     await save(layout.checkpointFile, checkpoint);
     await onPhase("intent");
@@ -222,7 +233,8 @@ export async function freezePreparedPublicationCandidate({
     || manifest.publication?.changelogContentHash !== intent.changelogContentHash
     || manifest.publication?.changelogBlob !== intent.changelogBlob
     || manifest.publication?.changelogPayloadFile !== intent.changelogPayloadFile
-    || manifest.publication?.releaseVersion !== intent.releaseVersion) throw new Error("publication freeze intent is incomplete");
+    || manifest.publication?.releaseVersion !== intent.releaseVersion
+    || manifest.publication?.runtimeReleaseVersion !== intent.runtimeReleaseVersion) throw new Error("publication freeze intent is incomplete");
   state = await inspect({ requireSuppliedBytes: false });
   if (![intent.preparedHead, checkpoint.preReleaseHead].includes(state.head)) throw new Error("release branch moved during publication freeze");
   await requireMaterializedChangelog(state.content, intent.changelogBlob);

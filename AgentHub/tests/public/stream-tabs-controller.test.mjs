@@ -699,6 +699,16 @@ test("rotated Stream keeps recent activity while opening its current Thread", as
   assert.equal(representative.orderingActivityAtMs, previousThreadActivity);
 });
 
+test("Stream representative follows monotonic Thread position, not historical selection or running state", async () => {
+  const { representativeSnapshotTasks } = await streamTabsApi();
+  const old = { streamId: "stream-1", provider: "codex", threadId: "old", threadPosition: 1,
+    selected: true, running: true, run: { turnId: "old-run", startedAt: "2026-10-09T23:00:00Z" } };
+  const head = { ...old, threadId: "new", threadPosition: 2, selected: false };
+  for (const running of [true, false]) for (const entries of [[old, { ...head, running }], [{ ...head, running }, old]]) {
+    assert.equal(representativeSnapshotTasks(entries)[0].threadId, "new");
+  }
+});
+
 test("a terminal identity absorbs a stale active Stream projection", async () => {
   const { isExactActiveUserTurn } = await streamTabsApi();
   const task = {
@@ -2293,11 +2303,18 @@ test("prompt template editor keeps rejected drafts and persists a successful ret
   const rejectedUpdateGate = new Promise((resolve) => { releaseRejectedUpdate = resolve; });
   let observeSuccessfulUpdate;
   const successfulUpdateObserved = new Promise((resolve) => { observeSuccessfulUpdate = resolve; });
+  const workspace = { id: "workspace-1", name: "Agent HUB", settings: {} };
+  const task = {
+    provider: "codex", threadId: "thread-1", streamId: "stream-1", selected: true,
+    workspaceId: workspace.id, workspaceName: workspace.name,
+    streamName: "Dialog", streamOrdinal: 1, title: "Dialog",
+    running: false, unread: false, streamSettings: {},
+  };
   const snapshot = () => ({
     apiVersion: 3,
     version: `prompt-editor-${JSON.stringify(serverQuickMessages).length}`,
     server: { status: "online" },
-    tasks: [], workspaces: [], archivedWorkspaces: [], boardTasks: [],
+    tasks: [task], workspaces: [workspace], archivedWorkspaces: [], boardTasks: [],
     boardLayout: { columnOrder: [] }, deferredInputs: [], messageReceipts: [], pendingApprovals: [],
     settings: {
       provider: "codex", models: [], modelOptionsByProvider: {}, reasoningOptions: [],
@@ -2309,7 +2326,14 @@ test("prompt template editor keeps rejected drafts and persists a successful ret
     await openStreamTabsDomFixture(page, {
       includeHubClient: true,
       initialSettings: { quickMessages: serverQuickMessages },
+      snapshot,
       control: async (request) => {
+        if (request.action === "open-task" || request.action === "task-history") {
+          const history = { provider: task.provider, threadId: task.threadId, streamId: task.streamId,
+            items: [], start: 0, end: 0, total: 0, messageTotal: 0, nextBefore: null, version: "empty" };
+          return { body: { ok: true, result: request.action === "task-history" ? history
+            : { history, snapshot: snapshot() } } };
+        }
         if (request.action !== "update-setting" || request.params?.name !== "quickMessages") {
           return { status: 200, body: { ok: true, result: snapshot() } };
         }
@@ -2326,15 +2350,6 @@ test("prompt template editor keeps rejected drafts and persists a successful ret
         observeSuccessfulUpdate();
         return { status: 200, body: { ok: true, result: snapshot() } };
       },
-    });
-    await page.evaluate(() => {
-      window.AgentHub.setWorkspaces([{ id: "workspace-1", name: "Agent HUB", settings: {} }]);
-      window.AgentHub.setTasks([{
-        id: "task-1", selected: true, workspaceId: "workspace-1", workspaceName: "Agent HUB",
-        streamId: "stream-1", streamName: "Dialog", streamOrdinal: 1, provider: "codex",
-        agentLabel: "Codex", status: "ready", statusLabel: "Готов", running: false,
-        unread: false, streamSettings: {},
-      }]);
     });
     await page.locator('[data-panel-open="settings"]').click();
     const editor = await openPromptTemplatesForm(page, "global");
@@ -2637,7 +2652,8 @@ test("prompt template action setting stays compact on Web, narrow WebView and Mo
           streams: {},
         },
       }));
-      await page.locator('[data-panel-open="settings"]').click();
+      await page.locator(surface === "mobile-web"
+        ? '.mobile-dialogs-top [aria-label="Настройки AgentHub"]' : '[data-panel-open="settings"]').click();
       await openPromptTemplatesForm(page, "global");
       const layout = await page.locator(".prompt-template-action-row").evaluate((row) => {
         const panel = row.closest("[data-prompt-templates-modal]");
@@ -2768,21 +2784,32 @@ test("shared prompt template editor stays responsive across every scope and surf
         }
       };
 
-      await page.locator('[data-panel-open="settings"]').click();
+      await page.locator(surface === "mobile-web"
+        ? '.mobile-dialogs-top [aria-label="Настройки AgentHub"]' : '[data-panel-open="settings"]').click();
       await verifyEditor("global", await openPromptTemplatesForm(page, "global"));
       await closePromptTemplatesForm(page);
       await page.locator("[data-panel-close]").click();
 
-      await page.locator('[data-workspace-select="workspace-1"]').dispatchEvent("click", { detail: 1 });
-      await page.locator('[data-workspace-select="workspace-1"]').dispatchEvent("dblclick", { detail: 2 });
+      if (surface === "mobile-web") {
+        await page.locator("[data-mobile-workspaces-open]").click();
+        await page.getByRole("button", { name: "Настройки Workspace", exact: true }).click();
+      } else {
+        await page.locator('[data-workspace-select="workspace-1"]').dispatchEvent("click", { detail: 1 });
+        await page.locator('[data-workspace-select="workspace-1"]').dispatchEvent("dblclick", { detail: 2 });
+      }
       await page.waitForFunction(() => document.querySelector("[data-workspace-card-modal]")?.open === true);
       await verifyEditor("workspace", await openPromptTemplatesForm(page, "workspace"));
       await closePromptTemplatesForm(page);
       await page.locator("[data-workspace-card-close]").click();
 
       const streamTab = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
-      await streamTab.dispatchEvent("click", { detail: 1 });
-      await streamTab.dispatchEvent("dblclick", { detail: 2 });
+      if (surface === "mobile-web") {
+        await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="stream-1"]').first().click();
+        await page.locator("[data-dialog-settings-toggle]").click();
+      } else {
+        await streamTab.dispatchEvent("click", { detail: 1 });
+        await streamTab.dispatchEvent("dblclick", { detail: 2 });
+      }
       await page.waitForFunction(() => document.querySelector("[data-dialog-settings]")?.open === true);
       await verifyEditor("stream", await openPromptTemplatesForm(page, "stream"));
       await page.close();
@@ -2950,7 +2977,7 @@ test("backend permanent-delete rejection retains archive UI and restores exact a
   }
 });
 
-test("mobile Workspace click preserves its dblclick target while desktop click still opens chat", async () => {
+test("mobile drawer selection and explicit Workspace settings preserve identity while desktop keeps dblclick", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
   const installFixture = async (page) => page.evaluate(() => {
@@ -2996,11 +3023,12 @@ test("mobile Workspace click preserves its dblclick target while desktop click s
     await openStreamTabsDomFixture(mobile);
     await installFixture(mobile);
     const mobileWorkspace = mobile.locator('[data-workspace-select="workspace-1"]');
+    await mobile.locator("[data-mobile-workspaces-open]").click();
     await mobileWorkspace.click();
     assert.deepEqual(await mobile.evaluate(() => ({
       surface: document.documentElement.dataset.surface,
       pane: document.documentElement.dataset.pane,
-      selected: document.querySelector('[data-workspace-select="workspace-1"]')?.getAttribute("aria-pressed"),
+      selected: document.querySelector('[data-workspace-select="workspace-1"] [data-mobile-workspace-select]')?.getAttribute("aria-pressed"),
       cardOpen: document.querySelector("[data-workspace-card-modal]")?.open,
     })), {
       surface: "mobile",
@@ -3008,11 +3036,13 @@ test("mobile Workspace click preserves its dblclick target while desktop click s
       selected: "true",
       cardOpen: false,
     });
-    await mobileWorkspace.focus();
-    await mobileWorkspace.dblclick();
+    assert.equal(await mobile.locator("[data-mobile-workspace-drawer]").evaluate((node) => node.open), false);
+    await mobile.locator("[data-mobile-workspaces-open]").click();
+    await mobile.getByRole("button", { name: "Настройки Workspace", exact: true }).click();
     assert.equal(await mobile.locator("[data-workspace-card-modal]").evaluate((node) => node.open), true);
+    assert.equal(await mobile.locator("[data-workspace-card-name]").inputValue(), "One");
     await mobile.keyboard.press("Escape");
-    assert.equal(await mobileWorkspace.evaluate((node) => document.activeElement === node), true);
+    assert.equal(await mobile.locator("[data-workspace-card-modal]").evaluate((node) => node.open), false);
     await mobile.close();
 
     const desktop = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -3040,7 +3070,7 @@ test("mobile Workspace click preserves its dblclick target while desktop click s
   }
 });
 
-test("current and other Workspace or Stream native dblclicks survive exact-identity rerenders in Edge", async () => {
+test("desktop and narrow WebView Workspace or Stream native dblclicks survive exact-identity rerenders in Edge", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
   const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
@@ -3097,10 +3127,11 @@ test("current and other Workspace or Stream native dblclicks survive exact-ident
   try {
     for (const [surface, viewport] of [
       ["desktop", { width: 1440, height: 1000 }],
-      ["mobile", { width: 480, height: 844 }],
+      ["webview", { width: 480, height: 844 }],
     ]) {
       const problems = [];
       const page = await browser.newPage({ viewport });
+      if (surface === "webview") await page.addInitScript(() => { window.__agentHubVscode = { postMessage() {} }; });
       page.on("console", (message) => {
         if (["warning", "error"].includes(message.type())) {
           const location = message.location().url;
@@ -3208,7 +3239,7 @@ test("current and other Workspace or Stream native dblclicks survive exact-ident
       });
 
       for (const scenario of scenarios) {
-        if (surface === "mobile") {
+        if (surface === "webview") {
           await page.locator(`[data-mobile-button="${scenario.kind === "workspace" ? "tasks" : "chat"}"]`).click();
         }
         await page.evaluate(() => window.AgentHub.selectTask("task-one"));

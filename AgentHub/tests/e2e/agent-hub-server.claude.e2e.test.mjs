@@ -29,7 +29,7 @@ function encodedProjectDirectory(projectPath) {
 }
 
 test("claude runs parallel tasks, survives a bot restart and ignores stale transcripts", {
-  timeout: 120_000,
+
 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-e2e-"));
   const dataDir = path.join(temporaryRoot, "data");

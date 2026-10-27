@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import path from "node:path";
 
 test("Complete and Delete show exact cleanup confirmation inside the VS Code sandbox", {
   timeout: 30_000,
@@ -9,10 +10,14 @@ test("Complete and Delete show exact cleanup confirmation inside the VS Code san
   const browser = await chromium.launch(process.platform === "win32"
     ? { channel: "msedge", headless: true } : { headless: true });
   try {
-    const page = await browser.newPage();
+    const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
     const errors = [];
+    const consoleErrors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.setContent('<iframe style="width:900px;height:700px" sandbox="allow-scripts allow-same-origin" srcdoc="<!doctype html><html><body>Task cleanup fixture</body></html>"></iframe>');
+    page.on("console", message => { if (["error", "warning"].includes(message.type())) consoleErrors.push(message.text()); });
+    await page.setContent('<title>Task cleanup fixture</title><iframe style="width:900px;height:700px" sandbox="allow-scripts allow-same-origin" srcdoc="<!doctype html><html><body>Task cleanup fixture</body></html>"></iframe>');
+    assert.equal(page.url(), "about:blank");
+    assert.equal(await page.title(), "Task cleanup fixture");
     const frame = page.frames().find((candidate) => candidate !== page.mainFrame());
     for (const file of ["modal-overlays.js", "task-board.js"]) {
       await frame.addScriptTag({ content: await readFile(new URL(`../../assets/web-app/${file}`, import.meta.url), "utf8") });
@@ -29,7 +34,9 @@ test("Complete and Delete show exact cleanup confirmation inside the VS Code san
           confirmation: {
             task: { taskNumber: "FIXTURE-35" }, cleanupToken: `token-${id}`,
             warning: "Exact server cleanup preview <not markup>",
-            preview: { dirty: true, deleting: [{ kind: "branch", name: "FIXTURE-35", repositoryRoot: "fixture/repo" }] },
+            preview: { dirty: false, workspaces: [{ projectRoot: "fixture/worktree", branch: "FIXTURE-35",
+              headCommit: "a".repeat(40), dirty: false, changedPaths: [], untrackedPaths: [], ignoredPaths: ["WIP/evidence.txt"] }],
+              deleting: [{ kind: "branch", name: "FIXTURE-35", repositoryRoot: "fixture/repo" }] },
           },
           request: async (requestedAction, params) => {
             window.__calls.push({ action: requestedAction, params });
@@ -46,6 +53,15 @@ test("Complete and Delete show exact cleanup confirmation inside the VS Code san
       assert.match(await dialog.textContent(), /FIXTURE-35/u);
       assert.match(await dialog.textContent(), /Exact server cleanup preview <not markup>/u);
       assert.match(await dialog.textContent(), /\[branch\] FIXTURE-35 \(repo: fixture\/repo\)/u);
+      assert.match(await dialog.textContent(), /Игнорируемые данные \(сохранить\):\s+- WIP\/evidence\.txt/u);
+      assert.match(await dialog.textContent(), /Состояние: clean/u);
+      const previewText = frame.locator(".task-cleanup-preview");
+      await previewText.hover();
+      await page.mouse.wheel(0, 200);
+      await frame.waitForFunction(() => document.querySelector(".task-cleanup-preview").scrollTop > 0);
+      if (action === "board-task-complete" && process.env.AGENT_HUB_QA_SCREENSHOT_DIR) {
+        await page.screenshot({ path: path.join(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, "ignored-wip-preview-scrolled.png"), fullPage: false });
+      }
       await frame.locator("[data-task-cleanup-cancel]").click();
       assert.equal(await frame.evaluate(() => window.__outcome.confirmed), false);
       await frame.evaluate((value) => window.__beginCleanup(value), action);
@@ -73,6 +89,10 @@ test("Complete and Delete show exact cleanup confirmation inside the VS Code san
     await frame.evaluate(() => window.__pending);
     assert.match(await frame.evaluate(() => window.__error), /stale/u);
     assert.deepEqual(errors, []);
+    // Existing same-origin VS Code fixture requires both sandbox capabilities;
+    // Chromium warns about that combination before any application script runs.
+    const sandboxWarning = "An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing.";
+    assert.deepEqual(consoleErrors.filter(message => message !== sandboxWarning), []);
   } finally {
     await browser.close();
   }

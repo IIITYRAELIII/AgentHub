@@ -303,7 +303,7 @@ test("launch verification rejects post-canary replacement and permits only verif
   assert.equal(update.diagnostics().status, "rollback-starting");
 });
 
-test("changed last-known-good identity fails closed at launch without another rollback", async (context) => {
+test("changed last-known-good identity fails closed during fresh selection without discovery or rollback", async (context) => {
   const stateFile = await fixture(context);
   const legacy = candidate("0.151.0-alpha.7.2", "vscode");
   const replaced = { ...legacy, publisher: "CN=Different Publisher" };
@@ -315,14 +315,13 @@ test("changed last-known-good identity fails closed at launch without another ro
     discover: async () => { assert.fail("persisted startup must not discover"); },
     verifyRecorded: async () => replaced,
   });
-  assert.equal(await update.selectForStart(), legacy.path);
   await assert.rejects(
-    update.verifySelectedForLaunch(legacy.path),
-    /identity changed before process spawn/u,
+    update.selectForStart(),
+    /Recorded Codex executable identity changed/u,
   );
   assert.equal(await update.markStartupFailure(new Error("last-known-good identity mismatch")), false);
-  assert.equal(update.diagnostics().status, "startup-failed");
-  assert.equal(update.diagnostics().reason, "rollback-unavailable");
+  assert.equal(update.diagnostics().status, "selection-rejected");
+  assert.equal(update.diagnostics().reason, "recorded-identity-unverified");
 });
 
 test("launch verification fails closed when durable selected identity is altered", async (context) => {
@@ -367,12 +366,12 @@ test("launch verifies only the recorded identity and preserves bounded rollback 
   assert.equal(await update.selectForStart(), newest.path);
   assert.equal(await update.verifySelectedForLaunch(newest.path), newest.path);
   assert.deepEqual(discoveries, [{ trustedCandidates: [legacy] }]);
-  assert.deepEqual(verifications, [newest, newest]);
+  assert.deepEqual(verifications, [newest, newest, newest]);
   assert.equal(await update.markStartupFailure(new Error("startup failed")), true);
   assert.equal(await update.selectForStart(), legacy.path);
   assert.equal(await update.verifySelectedForLaunch(legacy.path), legacy.path);
   assert.equal(discoveries.length, 1);
-  assert.deepEqual(verifications, [newest, newest, legacy]);
+  assert.deepEqual(verifications, [newest, newest, newest, legacy, legacy]);
   assert.equal(await update.markStartupFailure(new Error("rollback failed")), false);
 });
 
@@ -520,7 +519,7 @@ test("background discovery and verification failures preserve active startup sta
       candidates: [newest, legacy],
       ...(failure === "discovery" ? { discover: fail } : {}),
       ...(failure === "canary" ? { runCanary: fail } : {}),
-      ...(failure === "verification" ? { verifyRecorded: fail } : {}),
+      ...(failure === "verification" ? { verifyRecorded: recorded => recorded.path === legacy.path ? recorded : fail() } : {}),
     });
     await update.selectForStart();
     await update.markStartupSuccess();
@@ -617,7 +616,7 @@ test("background preparation rejects a same-path identity replacement returned b
   await baseline.markStartupSuccess();
   const update = service(stateFile, {
     candidates: [newest, legacy],
-    verifyRecorded: async (recorded) => ({ ...recorded, sha256: "C".repeat(64) }),
+    verifyRecorded: async (recorded) => recorded.path === legacy.path ? recorded : ({ ...recorded, sha256: "C".repeat(64) }),
   });
   await update.selectForStart();
   await update.refreshInBackground();
@@ -648,7 +647,10 @@ test("stop during pending discovery prevents preparation and every late state wr
         return { candidates: [newest, legacy], rejected: [] };
       },
       runCanary: async () => { assert.fail("stopped refresh must not start a canary"); },
-      verifyRecorded: async () => { assert.fail("stopped refresh must not verify candidates"); },
+      verifyRecorded: async recorded => {
+        if (recorded.path === legacy.path) return recorded;
+        assert.fail("stopped refresh must not verify candidates");
+      },
       writeFileImpl: async (...args) => { writes += 1; return writeFile(...args); },
     });
     await update.selectForStart();
@@ -688,7 +690,7 @@ test("schema-1 identities seed the trusted cache without discovery or canary on 
     const expected = prepared ?? legacy;
     assert.equal(await update.selectForStart(), expected.path);
     assert.equal(await update.verifySelectedForLaunch(expected.path), expected.path);
-    assert.deepEqual(verifications, [expected]);
+    assert.deepEqual(verifications, [expected, expected]);
     const saved = JSON.parse(await readFile(stateFile, "utf8"));
     assert.equal(saved.schemaVersion, 1);
     assert.deepEqual(saved.trustedCandidates, prepared ? [legacy, newest] : [legacy]);

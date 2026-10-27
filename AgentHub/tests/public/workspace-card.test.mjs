@@ -1,70 +1,140 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { launchBrowser, openFixture, snapshot, bridgeCalls, applyFixtureSnapshot } from "./composer-production.fixture.mjs";
 
-const asset = (name) => readFile(new URL(`../../assets/web-app/${name}`, import.meta.url), "utf8");
+async function withWorkspace(action) {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+    page.setDefaultTimeout(8_000);
+    const data = snapshot();
+    data.workspaces[0].comment = "Existing comment";
+    data.workspaces[0].settings = { workingDirectory: "D:\\team\\project" };
+    data.boardLayout.columnOrder = ["workspace:workspace-1", "notes"];
+    data.boardTasks = [{ id: "card-1", taskNumber: "HUB-TEST", title: "Attachment task",
+      description: "Description", status: "open", workflowStatus: "new", revision: 1,
+      bucket: "workspace", workspaceId: "workspace-1", checklist: [],
+      attachments: [{ id: "attachment-1", name: "Evidence.txt", type: "text/plain", size: 7 }] }];
+    const diagnostics = await openFixture(page, { fixtureSnapshot: data });
+    await page.evaluate(() => {
+      const original = window.__fixtureBridge.postMessage.bind(window.__fixtureBridge);
+      window.__fixtureBridge.postMessage = (message) => {
+        if (!["update-workspace-settings", "rename-workspace", "board-column-comment", "board-column-move"].includes(message.action)) {
+          return original(message);
+        }
+        window.__agentHubFixture.log.push(structuredClone(message));
+        localStorage.setItem("fixture:bridge-log", JSON.stringify(window.__agentHubFixture.log));
+        setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: {
+          type: "agenthub:control-result", id: message.id, ok: true, result: window.__agentHubFixture.snapshot,
+        } })), 0);
+      };
+    });
+    await action(page, data);
+    assert.deepEqual(diagnostics, []);
+  } finally { await browser.close(); }
+}
 
-test("workspace card is available from Dialogs and Dashboard context menus", async () => {
-  const [html, app] = await Promise.all([asset("index.html"), asset("app.js")]);
-  assert.match(html, /data-workspace-card-modal/u);
-  assert.match(html, /data-workspace-card-name/u);
-  assert.match(html, /data-workspace-card-comment/u);
-  assert.match(html, /data-workspace-card-working-directory/u);
-  assert.match(html, /data-workspace-card-order/u);
-  assert.match(app, /\[data-workspace-heading\], \[data-board-workspace-id\]/u);
-  assert.match(app, /emit\("workspace:update"/u);
-});
+async function openWorkspace(page, dashboard = false) {
+  if (dashboard) {
+    await page.locator('[data-view-button="dashboard"]').click();
+    await page.locator('[data-task-board-view="workspaces"]').click();
+    await page.locator('[data-board-workspace-id="workspace-1"]').first().click({ button: "right" });
+  } else await page.locator('[data-workspace-heading="workspace-1"]').first().click({ button: "right" });
+  await page.locator('[data-workspace-menu-action="edit"]').click();
+  await page.locator('[data-workspace-card-modal]').waitFor({ state: "visible" });
+}
 
-test("Dialog settings replace the legacy Project picker with a Stream working directory", async () => {
-  const [html, app] = await Promise.all([asset("index.html"), asset("app.js")]);
-  assert.match(html, /data-dialog-working-directory/u);
-  assert.doesNotMatch(html, /data-dialog-options="project"/u);
-  assert.doesNotMatch(app, /command: "\/projects"/u);
-  assert.doesNotMatch(app, /renderTaskProjectGroup/u);
-  assert.match(app, /addEventListener\("directorycommit"/u);
-  assert.match(app, /workingDirectory: directory\.value\.trim\(\)/u);
-});
+async function directoryEdit(page, selector, value, key = "Enter") {
+  const field = page.locator('.directory-field').filter({ has: page.locator(selector) });
+  await field.locator('[data-directory-action="edit"]:visible').first().click();
+  await page.locator(selector).fill(value);
+  await page.locator(selector).press(key);
+}
 
-test("Workspace and Stream use the shared breadcrumb directory field", async () => {
-  const [html, app, component] = await Promise.all([
-    asset("index.html"), asset("app.js"), asset("directory-field.js"),
-  ]);
-  assert.equal((html.match(/data-directory-field/gu) ?? []).length, 2);
-  assert.match(html, /src="\/directory-field\.js"/u);
-  assert.equal((html.match(/class="[^"]*directory-field-setting/gu) ?? []).length, 2);
-  assert.match(app, /AgentHubDirectoryField\?\.create/u);
-  assert.match(app, /emit\("directory:browse"/u);
-  assert.match(component, /directory-field-breadcrumbs/u);
-  assert.match(component, /event\.key === "Enter"/u);
-  assert.match(component, /event\.key === "Escape"/u);
-});
+test("workspace card is available from Dialogs and Dashboard context menus", async () => withWorkspace(async (page) => {
+  for (const dashboard of [false, true]) {
+    await openWorkspace(page, dashboard);
+    assert.equal(await page.locator('[data-workspace-card-name]').inputValue(), "Workspace");
+    assert.equal(await page.locator('[data-workspace-card-comment]').inputValue(), "Existing comment");
+    assert.equal(await page.locator('[data-workspace-card-working-directory]').inputValue(), "D:\\team\\project");
+    await page.locator('[data-workspace-card-cancel]').click();
+  }
+  assert.deepEqual(await bridgeCalls(page, "rename-workspace"), []);
+}));
 
-test("Dashboard renders only non-empty comments without inline editing", async () => {
-  const board = await asset("task-board.js");
-  assert.doesNotMatch(board, /task-board-comment-edit|editingCommentColumnId|Без комментария|Нет комментария/u);
-  assert.match(board, /if \(String\(subtitle \?\? ""\)\.trim\(\)\)/u);
-});
+test("Dialog settings replace the legacy Project picker with a Stream working directory", async () => withWorkspace(async (page) => {
+  await page.locator('[data-dialog-settings-toggle]').click();
+  assert.equal(await page.locator('[data-dialog-options="project"]').count(), 0);
+  await directoryEdit(page, '[data-dialog-working-directory]', "D:\\streams\\current");
+  await page.waitForFunction(() => window.__agentHubFixture.log.some((entry) => entry.action === "update-stream-settings"));
+  const [call] = await bridgeCalls(page, "update-stream-settings");
+  assert.equal(call.params.streamId, "stream-a");
+  assert.equal(call.params.settings.workingDirectory, "D:\\streams\\current");
+  assert.deepEqual(await bridgeCalls(page, "set-project"), []);
+}));
 
-test("Dashboard renders and opens Task attachments", async () => {
-  const [html, board, app] = await Promise.all([
-    asset("index.html"), asset("task-board.js"), asset("app.js"),
-  ]);
-  assert.match(html, /data-task-card-attachments/u);
-  assert.match(board, /board-task-attachment/u);
-  assert.match(board, /agenthub:attachment-open/u);
-  assert.match(app, /emit\("attachment:open"/u);
-});
+test("Workspace and Stream use the shared breadcrumb directory field", async () => withWorkspace(async (page) => {
+  await openWorkspace(page);
+  await directoryEdit(page, '[data-workspace-card-working-directory]', "D:\\discard", "Escape");
+  assert.equal(await page.locator('[data-workspace-card-working-directory]').inputValue(), "D:\\team\\project");
+  await directoryEdit(page, '[data-workspace-card-working-directory]', "D:\\kept\\workspace");
+  assert.deepEqual(await page.locator('[data-workspace-card-form] .directory-field-segment').allTextContents(), ["D:", "kept", "workspace"]);
+  await page.locator('[data-workspace-card-cancel]').click();
+  await page.locator('[data-dialog-settings-toggle]').click();
+  await directoryEdit(page, '[data-dialog-working-directory]', "D:\\discard", "Escape");
+  assert.deepEqual(await bridgeCalls(page, "update-stream-settings"), []);
+  await page.locator('[data-dialog-settings] [data-directory-action="browse"]:visible').first().click();
+  await page.waitForFunction(() => window.__agentHubFixture.log.some((entry) => entry.action === "browse-directory"));
+  assert.equal((await bridgeCalls(page, "browse-directory")).length, 1);
+}));
 
-test("workspace card saves through existing workspace and board commands", async () => {
-  const client = await asset("hub-client.js");
-  assert.match(client, /agentHub\.on\("workspace:update"/u);
-  assert.match(client, /control\("rename-workspace"/u);
-  assert.match(client, /control\("board-column-comment"/u);
-  assert.match(client, /control\("update-workspace-settings"/u);
-  assert.match(client, /control\("board-column-move"/u);
-});
+test("Dashboard renders only non-empty comments without inline editing", async () => withWorkspace(async (page, data) => {
+  await page.locator('[data-view-button="dashboard"]').click();
+  await page.locator('[data-task-board-view="workspaces"]').click();
+  const heading = page.locator('[data-board-workspace-id="workspace-1"] .task-board-column-head').first();
+  assert.ok((await heading.innerText()).includes("Existing comment"));
+  assert.equal(await heading.locator('input,textarea,[contenteditable="true"]').count(), 0);
+  assert.equal(await page.getByText("Без комментария", { exact: true }).count(), 0);
+  assert.equal(await page.getByText("Нет комментария", { exact: true }).count(), 0);
+  data.version = "empty-workspace-comment";
+  data.workspaces[0].comment = "   ";
+  await applyFixtureSnapshot(page, data);
+  await page.waitForFunction(() => !document.querySelector('[data-board-workspace-id="workspace-1"] .task-board-column-head')?.textContent.includes("Existing comment"));
+  assert.equal(await heading.locator("p").count(), 0, "whitespace-only comment must not leave an empty editor or placeholder");
+}));
 
-test("workspace card no longer exposes the legacy release registry", async () => {
-  const html = await asset("index.html");
-  assert.doesNotMatch(html, /data-workspace-release-registry|Изменения к релизу/u);
-});
+test("Dashboard renders and opens Task attachments", async () => withWorkspace(async (page) => {
+  await page.locator('[data-view-button="dashboard"]').click();
+  await page.locator('[data-task-board-view="workspaces"]').click();
+  await page.locator('[data-board-task-id="card-1"]:visible').first().click();
+  await page.locator('[data-task-card-attachments] .board-task-attachment').click();
+  await page.waitForFunction(() => window.__agentHubFixture.log.some((entry) => entry.action === "open-attachment"));
+  assert.equal((await bridgeCalls(page, "open-attachment"))[0].params.id, "attachment-1");
+  assert.deepEqual(await bridgeCalls(page, "board-task-remove"), []);
+}));
+
+test("workspace card saves through existing workspace and board commands", async () => withWorkspace(async (page) => {
+  await openWorkspace(page);
+  await page.locator('[data-workspace-card-name]').fill("Renamed workspace");
+  await page.locator('[data-workspace-card-comment]').fill("Updated comment");
+  await directoryEdit(page, '[data-workspace-card-working-directory]', "D:\\new");
+  await page.locator('[data-workspace-card-order]').fill("2");
+  await page.locator('[data-workspace-card-submit]').click();
+  await page.waitForFunction(() => window.__agentHubFixture.log.some((entry) => entry.action === "board-column-move"));
+  assert.equal((await bridgeCalls(page, "rename-workspace"))[0].params.name, "Renamed workspace");
+  assert.equal((await bridgeCalls(page, "board-column-comment"))[0].params.comment, "Updated comment");
+  assert.equal((await bridgeCalls(page, "update-workspace-settings"))[0].params.settings.workingDirectory, "D:\\new");
+  const move = (await bridgeCalls(page, "board-column-move"))[0].params;
+  assert.equal(move.columnId, "workspace:workspace-1");
+  assert.equal(move.beforeColumnId, null);
+}));
+
+test("workspace card no longer exposes the legacy release registry", async () => withWorkspace(async (page) => {
+  await openWorkspace(page);
+  assert.equal(await page.locator('[data-workspace-card-name]').isVisible(), true);
+  assert.equal(await page.locator('[data-workspace-card-submit]').isEnabled(), true);
+  assert.equal(await page.locator('[data-workspace-release-registry]').count(), 0);
+  assert.equal(await page.getByText("Изменения к релизу", { exact: true }).count(), 0);
+  await page.locator('[data-workspace-card-cancel]').click();
+  assert.equal(await page.locator('[data-workspace-card-modal]').isVisible(), false);
+}));

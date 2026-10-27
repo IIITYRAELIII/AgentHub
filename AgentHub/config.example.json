@@ -1,4 +1,5 @@
 {
+  "usageSyncServerUrl": "",
   "components": {
     "telegram": true,
     "miniApp": true,
@@ -30,6 +31,21 @@
       "menuText": "Журнал",
       "publicPort": 8788,
       "controlPort": 4300
+    },
+    "fileTransfer": {
+      "enabled": false,
+      "publicBaseUrl": "https://files.example.com",
+      "trustedProxyAddresses": [
+        "127.0.0.1"
+      ],
+      "maxBytes": 2147483648,
+      "storageBytes": 21474836480,
+      "ownerBytes": 4294967296,
+      "freeBytes": 1073741824,
+      "maxArtifacts": 64,
+      "maxPreparations": 2,
+      "maxStreams": 4,
+      "requestsPerMinute": 60
     },
     "worker": {
       "enabled": false,

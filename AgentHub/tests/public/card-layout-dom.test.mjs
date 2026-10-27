@@ -78,6 +78,7 @@ async function openFixture(page) {
 // Карточка Stream живёт внутри скрытой панели чата: без выбранного Stream её
 // предки скрыты, поэтому фикстура раскрывает их так же, как это делает выбор.
 function openStreamCard() {
+  window.AgentHub.showSelectedTask();
   // На узком экране раскладка показывает панель задач, а секция чата скрыта.
   document.documentElement.dataset.pane = "chat";
   for (const host of [".chat-pane", ".stream-chat-columns"]) {
@@ -246,7 +247,14 @@ for (const width of [1440, 390]) {
         }]);
       });
       const workspace = page.locator('[data-workspace-select="review-workspace"]');
-      await workspace.dblclick();
+      const openWorkspace = async () => {
+        if (width >= 600) return workspace.dblclick();
+        if (!await page.locator('[data-mobile-workspace-drawer]').evaluate(node => node.open)) {
+          await page.locator('[data-mobile-workspaces-open]').click();
+        }
+        await workspace.locator('[data-mobile-workspace-edit]').click();
+      };
+      await openWorkspace();
       const review = page.locator("[data-workspace-auto-review]");
       const release = page.locator("[data-workspace-release-workflow]");
       assert.equal(await review.isChecked(), false);
@@ -267,11 +275,11 @@ for (const width of [1440, 390]) {
       }
       await page.locator("[data-workspace-card-submit]").click();
       assert.equal(await page.evaluate(() => window.__reviewIntents[0].autoReviewEnabled), true);
-      await workspace.dblclick();
+      await openWorkspace();
       assert.equal(await review.isChecked(), true);
       await page.locator(".workspace-auto-review-switch .switch-text").click();
       await page.locator("[data-workspace-card-submit]").click();
-      await workspace.dblclick();
+      await openWorkspace();
       assert.equal(await review.isChecked(), false);
       assert.equal(await release.isChecked(), false);
       assert.deepEqual(errors, []);
@@ -618,7 +626,10 @@ test("Server account cards show live identity and preserve login controls at des
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await openFixture(page);
-      await page.locator(width < 600 ? '[data-mobile-button="server"]' : '[data-view-button="server"]').click();
+      if (width < 600) {
+        await page.locator('[data-mobile-dialogs-tab="more"]').click();
+        await page.locator('[data-mobile-more-sheet]').getByRole('button', { name: 'Сервер', exact: true }).click();
+      } else await page.locator('[data-view-button="server"]').click();
       const email = "long.account.for.provider.login.check@example.test";
       await page.evaluate((email) => window.AgentHub.setServerStatus({
         process: { status: "running" }, accounts: [

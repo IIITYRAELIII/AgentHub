@@ -266,6 +266,18 @@ test("history paint reports superseded when a newer snapshot replaces the same S
         && window.__heldFrames.length > 0;
     }, openedBefore);
     const opened = (await bridgeCalls(page, "open-task")).at(-1);
+    const hasOriginalDecision = (batch) => batch?.events?.some((event) => (
+      event.commandId === opened.params.clientTraceId
+      && event.metadata?.action === "history-live-decision"
+    ));
+    // The bridge logs a request before delivering its asynchronous response.
+    // Hold the exact history decision's paint, not an unrelated shell frame.
+    if (!batches.some(hasOriginalDecision)) {
+      await page.waitForRequest((request) => (
+        request.url().endsWith("/api/command-trace/client-events")
+        && hasOriginalDecision(request.postDataJSON())
+      ));
+    }
     const newer = structuredClone(active);
     newer.version = "history-race-v2";
     newer.tasks[0].running = false;

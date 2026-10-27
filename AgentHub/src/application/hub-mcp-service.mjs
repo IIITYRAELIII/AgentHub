@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -17,7 +17,7 @@ import {
   interstreamDisplayText,
 } from "../domain/interstream-message.mjs";
 import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
-import { MAX_RELEASE_METADATA_BYTES } from "../domain/release-operation.mjs";
+import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../domain/claim-forward-custody.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import {
@@ -27,6 +27,9 @@ import {
   TASK_TITLE_MAX_LENGTH,
   TaskDependencyPendingError,
   TaskLifecycleBeginRejectedError,
+  TaskLifecycleNoEffectError,
+  TaskOperationReconciliationRefusedError,
+  workflowAdmissionNoEffectEvidence, claimAdmissionNoEffectEvidence, claimAdmissionRefusalError, TaskClaimExecutorBusyError,
   ReleaseCandidateFrozenError,
   TaskAbsorptionCompositionError,
 } from "../domain/task-board-task.mjs";
@@ -38,7 +41,11 @@ import { TaskIntegrationRejectedError } from "./task-lifecycle-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
 
 import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparationRejectedError,
-  validatePreparationEnvelope } from "./release-preparation-admission.mjs";
+  validatePreparationEnvelope, preparationSourceRoot } from "./release-preparation-admission.mjs";
+import { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash,
+  validatePreparationForward, inspectPreparationForwardCustody } from "./release-preparation-forward.mjs";
+
+import { normalizedNativeResolution } from "../domain/native-resolution-input.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -50,11 +57,20 @@ const MUTATING_TOOLS = new Set([
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_task_operation_reconcile",
-  "hub_release_run", "hub_release_continue", "hub_release_prepare",
+  "hub_release_run", "hub_release_continue", "hub_release_prepare", "hub_release_prepare_resume",
 ]);
 
 // Only the synchronous input boundary below can produce this proof of no effects.
 class TaskInputValidationError extends Error {}
+
+function definiteMcpMutationFailure(error) {
+  return error instanceof TaskClaimCustodyRejectedError || error instanceof ReleasePreparationRejectedError || error instanceof TaskInputValidationError
+    || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
+    || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
+    || error instanceof TaskLifecycleBeginRejectedError || error instanceof TaskWithdrawalBusyError
+    || error instanceof ReleaseCandidateFrozenError || error instanceof TaskAbsorptionCompositionError
+    || error instanceof TaskSquashTransferRejectedError || error instanceof TaskIntegrationRejectedError;
+}
 
 function validatedTaskInput(title, description, { combined = false } = {}) {
   try {
@@ -468,7 +484,7 @@ export class HubMcpService {
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
     releaseOperations = null,
     taskGitWorkspaces = null, taskLifecycle = null,
-    taskOperationReconciliation = null,
+    taskOperationReconciliation = null, claimCustodyRuntime = null,
     measureOperation = async (_stage, operation) => operation(),
     reconcilePendingOnStartup = true,
   } = {}) {
@@ -503,6 +519,7 @@ export class HubMcpService {
     this.releasePlanner = releasePlanner;
     this.releaseOperations = releaseOperations;
     this.taskGitWorkspaces = taskGitWorkspaces;
+    this.claimCustodyRuntime = claimCustodyRuntime;
     this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
       taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces, releasePreflight,
     });
@@ -532,11 +549,32 @@ export class HubMcpService {
     ]);
     let reconciled = 0;
     for (const receipt of this.workspaceCatalog.pendingMcpOperations()) {
+      if (this.workspaceCatalog.claimCustodyForOriginal?.(receipt.requestId)) continue;
       await this.workspaceCatalog.beginMcpOperationReconciliation?.(receipt.requestId);
+      const claimRefusal = receipt.toolName === "hub_task_claim" ? this.#claimAdmissionRefusal(receipt) : null;
+      if (claimRefusal) {
+        await this.workspaceCatalog.failMcpOperation(receipt.requestId, claimAdmissionRefusalError(claimRefusal), {
+          outcome: "NO_EFFECT", evidence: claimRefusal,
+        });
+        reconciled += 1;
+        continue;
+      }
       const expectedKind = lifecycleKinds.get(receipt.toolName);
       const transition = expectedKind ? this.taskBoard.lifecycleTransition?.(receipt.requestId) : null;
       const outcome = expectedKind ? this.taskBoard.lifecycleOutcome?.(receipt.requestId) : null;
       const exactOutcome = outcome?.operationId === receipt.requestId && outcome?.kind === expectedKind;
+      if (outcome?.result?.noEffect) {
+        const proof = !transition && workflowAdmissionNoEffectEvidence(outcome, receipt);
+        if (proof) {
+          await this.workspaceCatalog.failMcpOperation(receipt.requestId, new TaskLifecycleNoEffectError(proof), {
+            outcome: "NO_EFFECT", evidence: proof,
+          });
+        } else {
+          await this.workspaceCatalog.markMcpOperationUnknown(receipt.requestId, new Error("Workflow refusal identity is not authoritative"));
+        }
+        reconciled += 1;
+        continue;
+      }
       if (exactOutcome) {
         if (expectedKind === "workflow" && outcome.result?.rollback?.completed === true) {
           await this.workspaceCatalog.failMcpOperation(
@@ -725,6 +763,7 @@ export class HubMcpService {
       tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn, assign its dedicated Git branch/worktree, and make the current Stream its executor. Continue repository work only in the returned gitWorkspace.projectRoot.", {
         task_id: { type: "string" },
         dependency_mode: { type: "string", enum: ["skip", "ensure", "verify"], description: "Default skip: prepare only Git. Before running dependency-dependent tests/builds use ensure; use verify for suspected dependency damage. Existing matching dependencies are reused." },
+        forward_custody_request_id: { type: "string", description: "Exact durable forward fence; uses preserved workspace without prepare/dependency replay. Historical original stays UNKNOWN." },
         dependency_override_reason: { type: "string", maxLength: 2000, description: "Only for an explicit user instruction to bypass a prerequisite release wait, e.g. Task consolidation. Persist that instruction here; ordinary start is not an override." },
       }, ["task_id"]),
       tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails. Await also composes the accepted result into PreRelease before it commits: a composition conflict leaves the Task in Test with the last good candidate.", {
@@ -745,9 +784,7 @@ export class HubMcpService {
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
         selected_absorption_handoff: { type: "object", description: "Authenticated saved/stopped handoff for ordinary native Test, bound to exact Task CAS and the original receipt." },
-        native_resolution_review: { type: "object", additionalProperties: false,
-          properties: { requestId: { type: "string", maxLength: 200 }, text: { type: "string", maxLength: 16000 } },
-          required: ["requestId", "text"], description: "Exact independent inter-Stream verdict for a native compatibility resolution." },
+        native_resolution_review: { type: "object", description: "Exact independent inter-Stream verdict, or {bundlePath,bundleSha256,reviews} for reviewed Await prefixes. The existing sequencer authenticates every exact binding." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -755,7 +792,16 @@ export class HubMcpService {
       tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A real unresolved process guard requires trusted proof; exact pending withdrawal or squash state can reconcile without inventing one. An already terminal lifecycle settles its original receipt without Git replay.", {
         task_id: { type: "string" },
         operation_request_id: { type: "string" },
-        project_root: { type: "string" },
+        claim_custody: { type: "object", description: "Explicit RM forward ownership recovery, not historical NO_EFFECT. The default requires exact positive legacy retirement. Separately authorized isolated-source-v1 instead stages an independent full-object source/ref authority and fences legacy SQL writers. Two distinct exact request IDs.",
+          properties: { action: { type: "string", enum: ["prepare", "fence"] },
+            admission: { type: "string", enum: ["isolated-source-v1"] },
+            authorization_id: { type: "string" }, handoff_id: { type: "string" },
+            expected_original: { type: "object" }, original_arguments: { type: "object" },
+            expected_task_revision: { type: "integer", minimum: 1 }, expected_owner_stream_id: { type: ["string", "null"] },
+            successor_claim_request_id: { type: "string" }, source: { type: "object" }, runtime_witness: { type: "object", description: "Exact independently retained read-only native witness artifact: sourcePath/rawSha256. No caller-supplied retirement boolean." },
+            plan_request_id: { type: "string" }, expected_plan_hash: { type: "string", pattern: "^[a-f0-9]{64}$" } },
+          required: ["action"], additionalProperties: false },
+        project_root: { type: "string", description: "Required for Git reconciliation or an owner refusal with a recorded root. May be omitted only for an exact durable pre-admission refusal whose recorded root is null; a supplied locator grants no Git authority in that case." },
         guard_id: { type: "string", description: "Required for an actually guarded pending operation. Exact persisted Task withdrawal or squash state without a process guard can reconcile without it." },
         proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "Required when recovering a process-tree guard." },
         proof_summary: { type: "string", description: "Required when recovering a process-tree guard." },
@@ -791,7 +837,7 @@ export class HubMcpService {
         selected_preview_request_id: { type: "string" },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
-      }, ["task_id", "operation_request_id", "project_root", "confirm_reconcile"]),
+      }, ["task_id", "operation_request_id", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Release Manager-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
         task_id: { type: "string" },
         expected_task_revision: { type: "integer", minimum: 1 },
@@ -832,17 +878,25 @@ export class HubMcpService {
         preparation_request_id: { type: "string" },
         expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
       }, ["preparation_request_id", "expected_arguments_hash"]),
+      tool("hub_release_prepare_resume", "Continue the SAME preparation from its saved owner stage, or its already established isolated forward custody. The owner checks fresh leases, source, selection and actual Git; an untransferred legacy UNKNOWN cannot resume.", {
+        expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        expected_preparation_revision: { type: "integer", minimum: 0 },
+        native_resolution_review: { type: "object", description: "Optional exact reviewed resolution bundle for an already isolated legacy forward original; does not replace original arguments." },
+      }, ["expected_arguments_hash", "expected_preparation_revision"]),
       tool("hub_release_run", "Persist one authorized release operation and return its operation id immediately. The durable owner continues compose, validation, publication and finalization without holding this MCP request open.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         task_ids: { type: "array", minItems: 1, items: { type: "string" } },
         validation_mode: { type: "string", enum: ["focused", "full"] },
+        test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
+          mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
+        } },
         release_metadata: {
           type: "object",
           description: "Exact prepared CHANGELOG artifact identity; the existing release owner verifies its bytes before composition.",
           additionalProperties: false,
           properties: {
             sourcePath: { type: "string", minLength: 1 },
-            byteLength: { type: "integer", minimum: 1, maximum: MAX_RELEASE_METADATA_BYTES },
+            byteLength: { type: "integer", minimum: 1 },
             rawSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
             canonicalSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
           },
@@ -861,6 +915,7 @@ export class HubMcpService {
               environment: { type: "string" },
               approvedLocalMainCommit: { type: "string" },
               approvedOriginMainCommit: { type: "string" },
+              nativeResolutionReview: { type: "object", description: "Exact authenticated review, or {bundlePath,bundleSha256,reviews} for already reviewed native resolutions. The sequencer verifies each binding before checkout." },
             },
             required: ["targetId", "kind"],
           },
@@ -871,6 +926,31 @@ export class HubMcpService {
       }, ["operation_id"]),
       tool("hub_release_continue", "Wake an existing waiting release operation without changing its original authorization or creating a new operation.", {
         operation_id: { type: "string" },
+        test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
+          mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
+        } },
+        release_metadata: {
+          type: "object",
+          description: "Exact prepared CHANGELOG artifact identity; the existing release owner verifies its bytes before composition.",
+          additionalProperties: false,
+          properties: {
+            sourcePath: { type: "string", minLength: 1 },
+            byteLength: { type: "integer", minimum: 1 },
+            rawSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            canonicalSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          },
+          required: ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"],
+        },
+        task_ids: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string" } },
+        expected_revision: { type: "integer", minimum: 1 },
+        expected_generation: { type: "integer", minimum: 1 },
+        reviewed_main: { type: "object", additionalProperties: false, required: ["expectedRevision", "approvedRepositories"], properties: {
+          expectedRevision: { type: "integer", minimum: 1 },
+          approvedRepositories: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false,
+            required: ["projectRoot", "approvedLocalMainCommit", "approvedOriginMainCommit"], properties: {
+              projectRoot: { type: "string" }, approvedLocalMainCommit: { type: "string" }, approvedOriginMainCommit: { type: "string" },
+            } } },
+        } },
       }, ["operation_id"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
@@ -921,7 +1001,7 @@ export class HubMcpService {
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
     const toolName = String(name ?? "");
-    if (["hub_release_prepare", "hub_release_prepare_get"].includes(toolName)
+    if (["hub_release_prepare", "hub_release_prepare_get", "hub_release_prepare_resume"].includes(toolName)
         && !this.#isReleaseManager(context)) {
       throw new ReleasePreparationRejectedError("Candidate preparation requires a Release Manager Stream");
     }
@@ -942,11 +1022,154 @@ export class HubMcpService {
         ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.preparation_request_id }, operation)
         : operation();
     }
+    if (toolName === "hub_release_prepare_resume") {
+      const operation = () => this.#resumePreparation(context, args);
+      return this.taskGitWorkspaces?.withOperationTrace
+        ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.request_id }, operation)
+        : operation();
+    }
     if (MUTATING_TOOLS.has(toolName)) {
-      const operation = () => this.#dispatch(context, toolName, args);
+      // A declared successor ID already belongs to its exact actor/envelope.
+      // Reject a foreign intake before it can occupy that ID in the MCP ledger.
+      if (toolName === "hub_task_claim" && args.forward_custody_request_id && !this.workspaceCatalog.mcpOperation(args.request_id)) {
+        this.#claimCustodySuccessor(context, args);
+      }
+      const operation = (admissionReceipt) => this.#dispatch({ ...context, admissionReceipt }, toolName, args);
       return this.#mutate(context, toolName, args, operation);
     }
     return this.#dispatch(context, toolName, args);
+  }
+
+  // Local frozen-source consumer, like callTaskStatusCutover. Serialized MCP
+  // arguments cannot manufacture the observer or silently upgrade old resume.
+  // The existing default factory/store/preflight/Git owners remain unchanged.
+  async callPreparationForward(args, { inspectOriginalExecution } = {}) {
+    await this.#startupReconciliation;
+    const context = this.#authorize(args.context_token);
+    if (!this.#isReleaseManager(context)) throw new ReleasePreparationRejectedError("Forward preparation requires Release Manager authority");
+    if (Object.keys(args).some(key => !["context_token", "request_id", "expected_arguments_hash",
+      "expected_preparation_revision", "original_preparation", "preparation"].includes(key))
+        || !Number.isSafeInteger(args.expected_preparation_revision) || args.expected_preparation_revision < 0) {
+      throw new ReleasePreparationRejectedError("Invalid exact forward preparation command");
+    }
+    const originalRead = this.#preparationReadback(context, { preparation_request_id: args.request_id,
+      expected_arguments_hash: args.expected_arguments_hash });
+    const record = this.workspaceCatalog.mcpOperation(originalRead.requestId);
+    if (record.streamId !== context.streamId || record.provider !== context.provider || record.threadId !== context.auditThreadId) {
+      throw new ReleasePreparationRejectedError("Forward preparation original caller differs");
+    }
+    const { original, current: envelope } = validatePreparationForward({ record, requestId: args.request_id,
+      originalPreparation: args.original_preparation, preparation: args.preparation });
+    if (record.preparationState?.phase === "completed") return record.preparationState.result;
+    if ((record.preparationState?.revision ?? 0) !== args.expected_preparation_revision) {
+      throw new ReleasePreparationRejectedError("Forward preparation revision changed");
+    }
+    const identity = { workspaceId: context.workspaceId, streamId: context.streamId, provider: context.provider,
+      threadId: context.auditThreadId, argumentsHash: record.argumentsHash };
+    const legacyHash = preparationLegacyHash(record), legacy = preparationLegacyIdentity(record);
+    const ownerId = randomUUID(), sourceRoot = record.preparationState?.sourceRoot ?? preparationSourceRoot();
+    let state = record.preparationState ?? null, owned = false;
+    const checkRows = () => {
+      const row = this.workspaceCatalog.mcpOperation(args.request_id);
+      if (!this.#isReleaseManager(context) || preparationLegacyHash(row) !== legacyHash
+          || row.receiptState !== "unknown" || owned && (row.preparationState?.ownerId !== ownerId
+            || row.preparationState?.revision !== state.revision)) {
+        throw new ReleasePreparationRejectedError("Forward preparation original/current owner changed");
+      }
+      assertPreparationRows(envelope, this.taskBoard, context.workspaceId);
+    };
+    const validate = async () => {
+      checkRows();
+      const root = await lstat(sourceRoot);
+      if (!root.isDirectory() || root.isSymbolicLink()
+          || state?.sourceRootIdentity && state.sourceRootIdentity !== `${root.dev}:${root.ino}`
+          || (await readPreparationSourceClosure(sourceRoot)).hash !== envelope.sourceClosureHash) {
+        throw new ReleasePreparationRejectedError("Forward preparation source closure/custody changed");
+      }
+    };
+    const checkpoint = async (phase, details = {}, transfer = false) => {
+      const next = { ...state, schemaVersion: 2, kind: FORWARD_PREPARATION, legacy, originalPreparation: original,
+        envelope, sourceRoot, ownerId, revision: (state?.revision ?? 0) + 1,
+        epoch: transfer ? (state?.epoch ?? 0) + 1 : state.epoch, phase,
+        ...details, events: [...(state?.events ?? []), { phase, ownerId, at: new Date().toISOString(),
+          ...(transfer ? { envelope } : {}), ...details }] };
+      const row = await this.workspaceCatalog.checkpointMcpPreparationForward(args.request_id, {
+        identity, expectedRevision: state?.revision ?? 0, legacyHash, state: next, transfer,
+        ...(transfer || phase === "completed" ? { validate: checkRows } : {}) });
+      state = row.preparationState;
+    };
+    const run = async () => {
+      await validate();
+      try { return await this.releasePreflight.prepareCurrentAwaitSet({
+        workspaceId: context.workspaceId, envelope, requestId: args.request_id,
+        argumentsHash: record.argumentsHash, validate,
+        ownPreparation: async ({ devInventory }) => {
+          for (const repository of envelope.repositories) {
+            if (repository.localSourceBaseline?.historicalChangelog) {
+              await this.releasePreflight.releaseGitWorkspaces.validateLocalSourceBaseline({
+                projectRoot: repository.projectRoot, provenance: repository.localSourceBaseline,
+                planRevision: envelope.planRevision, tasks: envelope.tasks,
+                originalAuthority: { requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original },
+              });
+            }
+          }
+          const isolationPlan = await this.releasePreflight.releaseGitWorkspaces.planPreparationIsolation({
+            requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original,
+            preparation: envelope, devInventory, previousIsolation: state?.isolation ?? null });
+          const custody = await inspectPreparationForwardCustody(inspectOriginalExecution, {
+            requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original,
+            isolationPlan,
+            previousForward: state ? { ownerId: state.ownerId, epoch: state.epoch, phase: state.phase } : null });
+          const root = await lstat(sourceRoot);
+          await validate();
+          const isolation = custody.kind === "preparation-effects-isolated-v1" ? isolationPlan : null;
+          if (isolation && !state?.isolation && isolation.legacyOriginalEffect) {
+            throw new ReleasePreparationRejectedError(`Preserve same-original legacy candidate/promotion at ${isolation.targets.legacyCandidate.root}; exact owned import is required before isolation`);
+          }
+          if (isolation && !state?.isolation && isolation.legacyCheckpointHash !== envelope.repositories[0].checkpointHash) {
+            throw new ReleasePreparationRejectedError("Legacy checkpoint changed before isolated custody transfer");
+          }
+          if (state?.isolation && JSON.stringify(state.isolation) !== JSON.stringify(isolation)) {
+            throw new ReleasePreparationRejectedError("Forward isolation authority cannot be replaced");
+          }
+          await checkpoint("checking", { custody, devInventory, ...(isolation ? { isolation } : {}),
+            sourceRootIdentity: `${root.dev}:${root.ino}` }, true);
+          owned = true;
+        },
+        beforeCompose: async () => { await validate(); await checkpoint("composing"); },
+        forwardPreparation: { originalEnvelope: original, readIsolation: () => state?.isolation ?? null,
+          observeEffects: async inventory => { await validate(); await checkpoint("composing", { inventory }); } },
+        commitPrepared: async prepared => {
+          await validate();
+          const result = { schemaVersion: 1, kind: "forward-preparation-completed", requestId: args.request_id,
+            argumentsHash: record.argumentsHash, retainedLegacyOutcome: "unknown", workspaceId: context.workspaceId,
+            planRevision: prepared.planRevision, taskIds: prepared.taskIds,
+            sourceCommit: envelope.sourceCommit, sourceTree: envelope.sourceTree, sourceClosureHash: envelope.sourceClosureHash,
+            publicationHash: envelope.publicationHash, candidates: prepared.releaseCandidates.map(candidate => ({
+              repositoryRoot: candidate.repositoryRoot, releaseRoot: candidate.releaseRoot,
+              preReleaseHead: candidate.preReleaseHead, tree: candidate.tree,
+              baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
+              preflightRequestId: candidate.manifest?.preflightRequestId })) };
+          try { await checkpoint("completed", { result }); }
+          catch (cause) {
+            const after = this.workspaceCatalog.mcpOperation(args.request_id);
+            if (after?.preparationState?.ownerId === ownerId && after.preparationState.phase === "completed"
+                && JSON.stringify(after.preparationState.result) === JSON.stringify(result)) return after.preparationState.result;
+            throw Object.assign(new Error("Forward terminal persistence outcome is unknown", { cause }), { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
+          }
+          return result;
+        },
+      }); } catch (error) {
+        const after = this.workspaceCatalog.mcpOperation(args.request_id);
+        if (after?.preparationState?.ownerId === ownerId && after.preparationState.phase === "completed") return after.preparationState.result;
+        if (owned && after?.preparationState?.ownerId === ownerId && after.preparationState.revision === state.revision) {
+          await checkpoint("blocked", { error: String(error.message).slice(0, 2000) }).catch(() => {});
+        }
+        throw error;
+      }
+    };
+    return this.taskGitWorkspaces.withOperationTrace
+      ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.request_id }, run) : run();
   }
 
   async callTaskStatusCutover(args = {}, { verifySource, inspectInstalledNativeOwner } = {}) {
@@ -1101,9 +1324,16 @@ export class HubMcpService {
       case "hub_task_status_update":
         return this.#updateTaskWorkflowStatus(context, args);
       case "hub_task_operation_reconcile":
-        if (!this.#isReleaseManager(context)) throw new Error("Task operation reconciliation requires a Release Manager Stream");
-        if (args.confirm_reconcile !== true) throw new Error("Task operation reconciliation requires explicit confirmation");
-        if (!this.taskOperationReconciliation) throw new Error("Task operation reconciliation is unavailable");
+        if (!this.#isReleaseManager(context)) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation requires a Release Manager Stream"));
+        if (args.confirm_reconcile !== true) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation requires explicit confirmation"));
+        if (args.claim_custody != null) return this.#claimCustody(context, args);
+        if (this.#pendingMutations.has(args.operation_request_id)) {
+          throw new TaskOperationReconciliationRefusedError(new Error("Original workflow worker is still active"));
+        }
+        if (this.workspaceCatalog.mcpOperation(args.operation_request_id)?.toolName === "hub_task_claim") {
+          return this.#reconcileSealedClaimRefusal(context, args);
+        }
+        if (!this.taskOperationReconciliation) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation is unavailable"));
         return this.taskOperationReconciliation.reconcileUnknownWorkflow({
           workspaceId: context.workspaceId,
           taskId: args.task_id,
@@ -1348,7 +1578,7 @@ export class HubMcpService {
     const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
     return {
       workspaceId: context.workspaceId,
-      tasks: this.taskBoard.snapshot()
+      tasks: this.taskBoard.snapshot({ includeDetails: true })
         .filter((task) => includeCompleted || task.status !== "done")
         .slice(0, boundedLimit)
         .map(compactTask),
@@ -1480,24 +1710,212 @@ export class HubMcpService {
     }));
   }
 
-  async #claimTask(context, { task_id: taskId, request_id: operationId, dependency_mode: dependencyMode = "skip", dependency_override_reason: dependencyOverrideReason = null } = {}) {
+  #assertClaimContinuation(taskId, operationId, fenceId = null) {
+    if (this.workspaceCatalog.claimCustodyForOriginal?.(operationId)) throw new TaskClaimContinuationWithdrawnError();
+    const reserved = this.workspaceCatalog.claimCustodyForTask?.(taskId);
+    if (reserved && (reserved.requestId !== fenceId || reserved.successorClaimRequestId !== operationId)) {
+      throw new TaskClaimCustodyRejectedError("Task has an unconsumed forward custody fence");
+    }
+  }
+
+  #claimLease(lease, taskId, operationId, fenceId = null) {
+    return new Proxy(lease, { get: (target, key) => {
+      if (key === "assertOwned") return async () => {
+        await target.assertOwned();
+        this.#assertClaimContinuation(taskId, operationId, fenceId);
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+  }
+
+  #custodyTask(context, taskId, envelope) {
     const task = this.#task(context, taskId);
+    if (task.revision !== envelope.expected_task_revision || task.streamId !== envelope.expected_owner_stream_id
+        || ["done", "starting"].includes(task.status)) throw new TaskClaimCustodyRejectedError("Pinned Task owner or revision changed");
+    if (task.streamId === null && (task.status !== "open" || task.workflowStatus !== "new" || task.gitReferences?.length)) {
+      throw new TaskClaimCustodyRejectedError("Unassigned custody requires an exact new Task without accepted results");
+    }
+    return task;
+  }
+
+  #custodyBusy(task) {
+    if (task.streamId === null) return false;
+    return this.#activeRuns().some(run => run.streamId === task.streamId)
+      || this.#deferredInputs().some(input => input.streamId === task.streamId
+        || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({ provider: input.provider, threadId: input.threadId })?.streamId === task.streamId));
+  }
+
+  async #claimCustody(context, args) {
+    if (Object.keys(args).some(k => !["context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile", "claim_custody"].includes(k))) {
+      throw new TaskClaimCustodyRejectedError("Unexpected custody command argument");
+    }
+    const input = args.claim_custody;
+    if (!input || !["prepare", "fence"].includes(input.action)) throw new TaskClaimCustodyRejectedError("Invalid custody action");
+    if (!this.taskGitWorkspaces?.reuseClaimWorkspaceOwned || !this.taskGitWorkspaces?.withTaskLock) {
+      throw new TaskClaimCustodyRejectedError("Canonical custody capabilities are unavailable");
+    }
+    if (this.#pendingMutations.has(args.operation_request_id)) throw new TaskClaimCustodyRejectedError("Original claim worker is still live");
+    let plan = null;
+    if (input.action === "fence") {
+      if (Object.keys(input).some(k => !["action", "plan_request_id", "expected_plan_hash"].includes(k))) throw new TaskClaimCustodyRejectedError("Unexpected fence argument");
+      plan = claimCustodyState(this.workspaceCatalog.mcpOperation(input.plan_request_id));
+      if (!plan || plan.phase !== "planned" || plan.planHash !== input.expected_plan_hash
+          || plan.taskId !== args.task_id || plan.original.requestId !== args.operation_request_id
+          || plan.workspaceId !== context.workspaceId || plan.actorStreamId !== context.streamId
+          || plan.actorThreadId !== context.auditThreadId || plan.actorProvider !== context.provider) throw new TaskClaimCustodyRejectedError("Exact durable custody plan differs");
+    }
+    const envelope = plan?.envelope ?? input;
+    const isolated = envelope.admission === "isolated-source-v1";
+    if ((!isolated && (!this.claimCustodyRuntime?.capture || !this.claimCustodyRuntime?.assertRetired))
+        || (isolated && (!this.taskGitWorkspaces.planIndependentClaimNamespace || !this.taskGitWorkspaces.stageIndependentClaimNamespaceOwned))) {
+      throw new TaskClaimCustodyRejectedError("Canonical admission guarantee is unavailable");
+    }
+    const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+    assertClaimCustodyOriginal(original, envelope, args.task_id, args.operation_request_id);
+    if (original.workspaceId !== context.workspaceId) throw new TaskClaimCustodyRejectedError("Original belongs to another Workspace");
+    return this.taskGitWorkspaces.withTaskLock(args.task_id, async lease => {
+      const task = this.#custodyTask(context, args.task_id, envelope);
+      if (this.workspaceCatalog.claimCustodyForOriginal?.(original.requestId)
+          || this.workspaceCatalog.claimCustodyNamespaceForTask?.(task.id)) throw new TaskClaimCustodyRejectedError("Another custody disposition already owns this Task");
+      if (this.#pendingMutations.has(original.requestId)) throw new TaskClaimCustodyRejectedError("Original claim is still live");
+      const reuse = source => this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber,
+        source, lease, unassigned: task.streamId === null,
+        registeredProjectRoot: task.streamId === null ? this.#taskProjectRoot(context, original.streamId, task.workspaceId) : null });
+      const workspace = await reuse(plan?.source ?? envelope.source);
+      const source = { ...envelope.source, ...workspace };
+      if (plan && (claimCustodyHash(source) !== claimCustodyHash(plan.source)
+          || claimCustodyHash(original) !== plan.originalHash)) throw new TaskClaimCustodyRejectedError("Pinned custody source or original changed");
+      const cohort = isolated ? null : plan?.cohort ?? await this.claimCustodyRuntime.capture({ original, witness: envelope.runtime_witness ?? null });
+      const retirement = !isolated && plan ? await this.claimCustodyRuntime.assertRetired(cohort) : null;
+      if (!isolated && plan && retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Legacy cohort retirement is not proved");
+      const namespace = isolated ? plan
+        ? await this.taskGitWorkspaces.stageIndependentClaimNamespaceOwned({ state: plan, lease })
+        : this.taskGitWorkspaces.planIndependentClaimNamespace({ taskId: task.id, source,
+          requestId: args.request_id, originalHash: claimCustodyHash(original) }) : null;
+      if (isolated && plan) await reuse(source);
+      await lease.assertOwned();
+      // Re-read after the native/runtime wait, without refreshing expected pins.
+      this.#custodyTask(context, task.id, envelope);
+      const state = { version: 1, kind: "claim-forward-custody-v1", phase: plan ? "fenced" : "planned",
+        requestId: args.request_id, argumentsHash: context.admissionReceipt.argumentsHash,
+        workspaceId: context.workspaceId, actorStreamId: context.streamId, actorThreadId: context.auditThreadId, actorProvider: context.provider,
+        taskId: task.id, taskRevision: task.revision, original, originalHash: claimCustodyHash(original),
+        envelope, source, cohort, successorClaimRequestId: envelope.successor_claim_request_id,
+        ...(isolated ? { namespace, taskState: plan?.taskState ?? this.workspaceCatalog.claimCustodyTaskSnapshot(task.id) } : {}),
+        ...(plan ? { planRequestId: plan.requestId, planHash: plan.planHash, retirement } : {}) };
+      if (plan) state.successorArgumentsHash = mcpArgumentsHash({ request_id: state.successorClaimRequestId,
+        task_id: state.taskId, forward_custody_request_id: state.requestId,
+        ...(Object.hasOwn(envelope.original_arguments,"dependency_mode") ? { dependency_mode: envelope.original_arguments.dependency_mode } : {}) });
+      if (!plan) state.planHash = claimCustodyHash(state);
+      state.result = { kind: plan ? "claim-custody-fence" : "claim-custody-plan", requestId: state.requestId,
+        originalRequestId: original.requestId, taskId: task.id, taskRevision: task.revision, planHash: state.planHash,
+        successorClaimRequestId: state.successorClaimRequestId, historicalOutcome: "UNKNOWN_UNCHANGED" };
+      return (await this.workspaceCatalog.checkpointClaimCustody(state)).result;
+    });
+  }
+
+  #claimCustodySuccessor(context, args) {
+    const fence = claimCustodyState(this.workspaceCatalog.mcpOperation(args.forward_custody_request_id));
+    if (!fence || fence.phase !== "fenced" || fence.taskId !== args.task_id || fence.workspaceId !== context.workspaceId
+        || fence.successorClaimRequestId !== args.request_id || fence.original.provider !== context.provider
+        || fence.original.streamId !== context.streamId || fence.original.threadId !== context.auditThreadId
+        || fence.original.threadId !== context.threadId || args.dependency_override_reason != null
+        || args.dependency_mode !== fence.envelope.original_arguments.dependency_mode
+        || Object.keys(args).some(k => !["context_token", "request_id", "task_id", "dependency_mode", "forward_custody_request_id"].includes(k))) {
+      throw new TaskClaimCustodyRejectedError("Successor claim differs from the explicit forward disposition");
+    }
+    return fence;
+  }
+
+  async #consumeClaimCustody(context, args) {
+    const fence = this.#claimCustodySuccessor(context, args);
+    return this.taskGitWorkspaces.withTaskLock(args.task_id, async lease => {
+      const guarded = this.#claimLease(lease, args.task_id, args.request_id, fence.requestId);
+      await guarded.assertOwned();
+      if (claimCustodyHash(this.workspaceCatalog.mcpOperation(fence.original.requestId)) !== fence.originalHash) throw new TaskClaimCustodyRejectedError("Historical original changed");
+      // Whole-cohort retirement was positively proved by the native port and
+      // committed with this immutable fence. It is monotonic: closing the own
+      // read-only collector after commit cannot revive the retired invocation.
+      const isolated = fence.envelope.admission === "isolated-source-v1";
+      if (!isolated && fence.retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Durable retirement certificate differs");
+      const task = this.#task(context, args.task_id);
+      const workspace = isolated
+        ? await this.taskGitWorkspaces.readIndependentClaimNamespaceOwned({ state: fence, lease: guarded, exactInitial: true })
+        : await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source: fence.source, lease: guarded });
+      if (!isolated && claimCustodyHash({ ...fence.source, ...workspace }) !== claimCustodyHash(fence.source)) throw new TaskClaimCustodyRejectedError("Custody source or registered baseline differs");
+      const bound = this.taskBoard.claimBindingForOperation(args.request_id);
+      if (bound) {
+        if (bound.taskId !== task.id || bound.workspaceId !== context.workspaceId || bound.provider !== context.provider
+            || bound.threadId !== context.threadId || task.streamId !== context.streamId || task.revision !== fence.taskRevision + 1) {
+          throw new TaskClaimCustodyRejectedError("Committed custody binding or Task changed");
+        }
+        return { ...compactTask(task), claimedTurnId: bound.turnId,
+          claimCustody: { fenceRequestId: fence.requestId, sourceReuse: "readonly", dependencyPreparation: "not-replayed" },
+          gitWorkspace: Object.fromEntries(["branch", "projectRoot", "baseCommit", "headCommit"].map(k => [k, workspace[k]])) };
+      }
+      this.#custodyTask(context, task.id, fence.envelope);
+      if (this.#custodyBusy(task)) throw new Error("Previous executor became active; exact custody claim may be reopened after its normal terminal");
+      await guarded.assertOwned();
+      return this.#writeClaim(context, task, this.#currentRun(context), args.request_id, workspace, fence.requestId);
+    });
+  }
+
+  async #claimTask(context, args = {}) {
+    const { task_id: taskId, request_id: operationId, dependency_mode: dependencyMode = "skip", dependency_override_reason: dependencyOverrideReason = null } = args;
+    const task = this.#task(context, taskId);
+    const namespace = this.workspaceCatalog.claimCustodyNamespaceForTask?.(taskId);
+    if (namespace && context.streamId !== namespace.original.streamId) {
+      throw new TaskClaimCustodyRejectedError("Foreign claim cannot prepare the successor source namespace");
+    }
     const active = this.#currentRun(context);
     if (task.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
+    if (args.forward_custody_request_id) return this.#consumeClaimCustody(context, args);
     if (task.streamId && task.streamId !== context.streamId) {
-      const threads = new Set((this.workspaceCatalog.stream(task.streamId)?.threads ?? []).map((thread) => (
-        `${thread.provider}\0${thread.threadId}`
-      )));
-      if (this.#activeRuns().some((run) => run.streamId === task.streamId)
-          || this.#deferredInputs().some((input) => input.streamId === task.streamId
-            || threads.has(`${input.provider}\0${input.threadId}`))) {
-        throw new Error("The other executor must finish its active and queued work before Task handoff");
+      const busyReason = this.#activeRuns().some(run => run.streamId === task.streamId) ? "active"
+        : this.#deferredInputs().some(input => input.streamId === task.streamId
+          || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({
+            provider: input.provider, threadId: input.threadId,
+          })?.streamId === task.streamId)) ? "queued" : null;
+      if (busyReason) {
+        requiredMethod(this.workspaceCatalog, "recordClaimAdmissionRefusal");
+        await this.workspaceCatalog.recordClaimAdmissionRefusal({ receipt: context.admissionReceipt, task, busyReason,
+          claimArguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) });
+        throw new TaskClaimExecutorBusyError();
       }
     }
     const projectRoot = this.#taskProjectRoot(context);
+    if (this.taskGitWorkspaces?.withTaskLock && projectRoot) {
+      return this.taskGitWorkspaces.withTaskLock(task.id, async lease => {
+        const guarded = this.#claimLease(lease, task.id, operationId);
+        await guarded.assertOwned();
+        let workspace;
+        try {
+          workspace = await this.taskGitWorkspaces.prepareOwned({ taskId: task.id, taskNumber: task.taskNumber,
+            projectRoot, dependencyMode, dependencyOverrideReason, lease: guarded, claimOperationId: operationId });
+        } catch (error) {
+          const lockAdmission = await this.taskGitWorkspaces.claimAdmissionNoEffectEvidence?.({
+            taskId: task.id, projectRoot, operationId, error,
+          });
+          if (lockAdmission?.kind === "task-git-dev-lock-admission-v1") {
+            await guarded.assertOwned();
+            await this.workspaceCatalog.recordClaimAdmissionRefusal({ receipt: context.admissionReceipt, task, lockAdmission,
+              claimArguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) });
+          }
+          throw error;
+        }
+        await guarded.assertOwned();
+        return this.#writeClaim(context, task, active, operationId, workspace);
+      });
+    }
     const gitWorkspace = this.taskGitWorkspaces && projectRoot
       ? await this.taskGitWorkspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot, dependencyMode, dependencyOverrideReason })
       : null;
+    return this.#writeClaim(context, task, active, operationId, gitWorkspace);
+  }
+
+  async #writeClaim(context, task, active, operationId, gitWorkspace, forwardCustodyRequestId = null) {
+    this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     const claimed = await this.taskBoard.claim({
       id: task.id,
@@ -1508,11 +1926,17 @@ export class HubMcpService {
       turnId: active.turnId,
       operationId,
       operationKind: "claim",
-      gitBaseline: active.gitBaseline ?? null,
+      gitBaseline: active.gitBaseline ?? null, forwardCustodyRequestId,
+      validateClaimAdmission: forwardCustodyRequestId ? () => {
+        if (this.#custodyBusy(task)) throw new Error("Previous executor became active before custody assignment commit");
+        this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
+      } : null,
     });
     return {
       ...compactTask(claimed),
       claimedTurnId: active.turnId,
+      ...(forwardCustodyRequestId ? { claimCustody: { fenceRequestId: forwardCustodyRequestId,
+        sourceReuse: "readonly", dependencyPreparation: "not-replayed" } } : {}),
       gitWorkspace: gitWorkspace ? {
         branch: gitWorkspace.branch,
         projectRoot: gitWorkspace.projectRoot,
@@ -1570,14 +1994,15 @@ export class HubMcpService {
     if (nativeResolutionReview != null) {
       if (!this.#isReleaseManager(context)
           || !["testing", "awaiting_implementation"].includes(status)
-          || expectedRevision == null || expectedWorkflowStatus == null
-          || typeof nativeResolutionReview !== "object" || Array.isArray(nativeResolutionReview)
-          || Object.keys(nativeResolutionReview).sort().join(",") !== "requestId,text"
-          || typeof nativeResolutionReview.requestId !== "string" || !nativeResolutionReview.requestId.trim()
-          || nativeResolutionReview.requestId.length > 200
-          || typeof nativeResolutionReview.text !== "string" || nativeResolutionReview.text.length > 16000) {
+          || expectedRevision == null || expectedWorkflowStatus == null) {
         throw new TaskInputValidationError("Native resolution review requires exact RM Test/Await CAS and authenticated verdict");
       }
+      try {
+        const review = normalizedNativeResolution(nativeResolutionReview);
+        if (review.reviews && status !== "awaiting_implementation") {
+          throw new TypeError("Native resolution bundles require Await");
+        }
+      } catch (error) { throw new TaskInputValidationError(error.message); }
     }
     const workflowStatus = requiredText(status, "task workflow status", 40);
     const squashValues = [
@@ -1699,6 +2124,8 @@ export class HubMcpService {
       ),
       expectedRevision,
       expectedWorkflowStatus,
+      admissionReceipt: context.admissionReceipt ?? null,
+
       selectedAbsorptionHandoff,
       operationEvidence: nativeResolutionReview ? { nativeResolutionReview } : null,
     };
@@ -1786,24 +2213,113 @@ export class HubMcpService {
         provider: operation.provider, threadId: operation.threadId },
       status: operation.status, receiptState: operation.receiptState,
       createdAtMs: operation.createdAtMs, completedAtMs: operation.completedAtMs,
-      result: operation.status === "succeeded" ? operation.result : null, error: operation.error };
+      result: operation.status === "succeeded" ? operation.result : null, error: operation.error,
+      recovery: operation.preparationState ? {
+        revision: operation.preparationState.revision, phase: operation.preparationState.phase,
+        originalError: operation.preparationState.originalError ?? null,
+        ...(operation.preparationState.kind === FORWARD_PREPARATION ? {
+          kind: FORWARD_PREPARATION, retainedLegacyOutcome: "unknown", epoch: operation.preparationState.epoch,
+          ...(operation.preparationState.phase === "completed" ? { result: operation.preparationState.result } : {}),
+        } : {}),
+        ...(["composing", "terminal-intent"].includes(operation.preparationState.phase)
+          ? { missingEvidence: "original committed candidate or rollback outcome is not proved by this stage" } : {}),
+      } : { revision: 0, phase: null, missingEvidence: "original owner stage checkpoint was not persisted" } };
   }
 
-  async #prepareRelease(context, args) {
+  async #resumePreparation(context, args) {
+    if (Object.keys(args).some(key => !["context_token", "request_id", "expected_arguments_hash",
+      "expected_preparation_revision", "native_resolution_review"].includes(key))
+        || !Number.isSafeInteger(args.expected_preparation_revision) || args.expected_preparation_revision < 0) {
+      throw new ReleasePreparationRejectedError("Unexpected preparation recovery argument");
+    }
+    const original = this.#preparationReadback(context, { preparation_request_id: args.request_id,
+      expected_arguments_hash: args.expected_arguments_hash });
+    const record = this.workspaceCatalog.mcpOperation(original.requestId);
+    if (record.streamId !== context.streamId || record.provider !== context.provider
+        || record.threadId !== context.auditThreadId) {
+      throw new ReleasePreparationRejectedError("Preparation recovery original caller differs");
+    }
+    if (record.status === "succeeded") return record.result;
+    const forward = record.preparationState;
+    if (forward?.kind === FORWARD_PREPARATION) {
+      if (forward.phase === "completed") return forward.result;
+      if (forward.revision !== args.expected_preparation_revision
+          || !["checking", "blocked", "composing"].includes(forward.phase)
+          || !forward.isolation || forward.custody?.kind !== "preparation-effects-isolated-v1") {
+        throw new ReleasePreparationRejectedError("Original preparation has no established resumable isolated custody");
+      }
+      const preparation = structuredClone(forward.envelope);
+      if (args.native_resolution_review != null) {
+        if (preparation.repositories.length !== 1) throw new ReleasePreparationRejectedError("Native review requires one exact forward repository");
+        preparation.repositories[0].nativeResolutionReview = args.native_resolution_review;
+      }
+      // The one-time observer already transferred future-effect custody. Reuse
+      // that proof only after the normal leased owner regenerates the SAME
+      // isolation plan. No new serialized proof, force flag or historical
+      // descendant certificate is accepted by this ordinary continuation.
+      return this.callPreparationForward({ context_token: args.context_token, request_id: args.request_id,
+        expected_arguments_hash: args.expected_arguments_hash,
+        expected_preparation_revision: args.expected_preparation_revision,
+        original_preparation: forward.originalPreparation, preparation }, {
+        inspectOriginalExecution: async request => {
+          if (JSON.stringify(request.isolationPlan) !== JSON.stringify(forward.isolation)
+              || request.previousForward?.ownerId !== forward.ownerId
+              || request.previousForward?.epoch !== forward.epoch
+              || request.previousForward?.phase !== forward.phase) {
+            throw new ReleasePreparationRejectedError("Established isolated preparation custody changed");
+          }
+          return structuredClone(forward.custody);
+        },
+      });
+    }
+    if (args.native_resolution_review != null) throw new ReleasePreparationRejectedError("Native forward review cannot change an ordinary original envelope");
+    if (!["pending", "unknown"].includes(record.status) || !record.preparationState
+        || !Number.isSafeInteger(args.expected_preparation_revision)
+        || args.expected_preparation_revision !== record.preparationState.revision
+        || !["checking", "paused"].includes(record.preparationState.phase)) {
+      throw new ReleasePreparationRejectedError("Preparation recovery lacks original resumable owner stage evidence; UNKNOWN is preserved");
+    }
+    const recovered = { context_token: args.context_token, request_id: original.requestId,
+      preparation: record.preparationState.envelope };
+    if (argumentsHash(recovered) !== original.argumentsHash) {
+      throw new ReleasePreparationRejectedError("Preparation recovery original envelope differs");
+    }
+    return this.#prepareRelease(context, recovered, { record });
+  }
+
+  async #prepareRelease(context, args, recovery = null) {
     const envelope = validatePreparationEnvelope(args.preparation);
     const hash = argumentsHash(args);
+    const identity = { workspaceId: context.workspaceId, streamId: context.streamId, provider: context.provider,
+      threadId: context.auditThreadId, argumentsHash: hash };
+    const ownerId = randomUUID();
+    let state = recovery?.record.preparationState ?? null;
+    let owned = false;
+    const sourceRoot = state?.sourceRoot ?? preparationSourceRoot();
+    const checkpoint = async (phase, extra = {}, { resume = false } = {}) => {
+      requiredMethod(this.workspaceCatalog, "checkpointMcpPreparation");
+      const next = { ...state, schemaVersion: 1, revision: (state?.revision ?? 0) + 1,
+        envelope, sourceRoot, ownerId, phase, ...extra };
+      const written = await this.workspaceCatalog.checkpointMcpPreparation(args.request_id,
+        { identity, expectedRevision: state?.revision ?? 0, state: next, resume });
+      state = written.preparationState;
+    };
     const checkRows = () => {
       if (!this.#isReleaseManager(context)) throw new ReleasePreparationRejectedError("Release Manager authority changed");
       assertPreparationRows(envelope, this.taskBoard, context.workspaceId);
       const original = this.workspaceCatalog.mcpOperation(args.request_id);
       if (original?.argumentsHash !== hash || original?.toolName !== "hub_release_prepare"
-          || original?.workspaceId !== context.workspaceId || original?.status !== "pending") {
+          || original?.workspaceId !== context.workspaceId
+          || !(recovery ? ["unknown", "pending", "reconciling"] : ["pending"]).includes(original?.status)) {
         throw new ReleasePreparationRejectedError("Preparation intake identity changed");
       }
     };
     const validate = async () => {
       checkRows();
-      if ((await readPreparationSourceClosure()).hash !== envelope.sourceClosureHash) {
+      const root = await lstat(sourceRoot);
+      if (!root.isDirectory() || root.isSymbolicLink()
+          || state?.sourceRootIdentity && (state.sourceRootIdentity !== `${root.dev}:${root.ino}`)
+          || (await readPreparationSourceClosure(sourceRoot)).hash !== envelope.sourceClosureHash) {
         throw new ReleasePreparationRejectedError("Preparation source closure changed");
       }
     };
@@ -1811,9 +2327,19 @@ export class HubMcpService {
     if (typeof this.releasePreflight?.prepareCurrentAwaitSet !== "function") {
       throw new ReleasePreparationRejectedError("Preparation owner is unavailable");
     }
-    return this.releasePreflight.prepareCurrentAwaitSet({
+    try { return await this.releasePreflight.prepareCurrentAwaitSet({
       workspaceId: context.workspaceId, envelope, requestId: args.request_id, argumentsHash: hash, validate,
+      ownPreparation: async () => {
+        const root = await lstat(sourceRoot);
+        await checkpoint("checking", {
+          sourceRootIdentity: `${root.dev}:${root.ino}`,
+          originalError: state?.originalError ?? recovery?.record.error ?? null,
+        }, { resume: !!recovery });
+        owned = true;
+      },
+      beforeCompose: async () => { if (state.phase !== "composing") await checkpoint("composing"); },
       commitPrepared: async (prepared) => {
+        if (!owned || state.phase !== "composing") throw new Error("Preparation commit has no owned compose boundary");
         await validate();
         const result = { schemaVersion: 1, kind: "preparation-only", requestId: args.request_id,
           argumentsHash: hash, workspaceId: context.workspaceId, planRevision: prepared.planRevision,
@@ -1824,10 +2350,9 @@ export class HubMcpService {
             tree: candidate.tree, baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
             preflightRequestId: candidate.manifest?.preflightRequestId,
           })) };
-        if (Buffer.byteLength(JSON.stringify(result)) > 48 * 1024) {
-          throw new ReleasePreparationRejectedError("Preparation terminal receipt exceeds its exact retention budget");
-        }
         try {
+          // This is provisional while candidate rollback is still live, not terminal authority.
+          await checkpoint("terminal-intent", { result });
           await this.measureOperation("preparation:terminal-receipt", () => this.workspaceCatalog
             .completeMcpOperation(args.request_id, result, { validate: checkRows }));
         } catch (cause) {
@@ -1841,7 +2366,25 @@ export class HubMcpService {
         }
         return result;
       },
-    });
+    }); } catch (error) {
+      let pauseFailed = false;
+      if (owned && state.phase === "checking") {
+        try {
+          await checkpoint("paused", { originalError: state.originalError ?? String(error.message).slice(0, 2000) });
+        } catch { pauseFailed = true; }
+      }
+      // A checkpoint can commit before its reply is lost. Read back this
+      // invocation's nonce, then settle only through the store's revision CAS.
+      // A caller refused before owner transfer has no receipt to mutate.
+      const current = this.workspaceCatalog.mcpOperation(args.request_id);
+      if (current?.preparationState?.ownerId === ownerId) {
+        await Promise.resolve(this.workspaceCatalog.settleMcpPreparationFailure(args.request_id, {
+          identity, ownerId, expectedRevision: current.preparationState.revision, error,
+          definite: !recovery && !pauseFailed && definiteMcpMutationFailure(error),
+        })).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   async #adoptLegacyTaskGit(context, {
@@ -1953,6 +2496,14 @@ export class HubMcpService {
 
   #runReleaseOperation(context, args) {
     const workspaceId = this.#workspace(context, args.workspace_id).id;
+    // This validation is before ReleaseOperation.start and cannot have a
+    // release effect. Do not turn a malformed review input into UNKNOWN.
+    for (const target of Array.isArray(args.approved_targets) ? args.approved_targets : []) {
+      if (target?.nativeResolutionReview != null) {
+        try { normalizedNativeResolution(target.nativeResolutionReview); }
+        catch (cause) { throw new ReleasePreparationRejectedError(cause.message); }
+      }
+    }
     return this.#releaseOperation().start({
       requestId: requiredText(args.request_id, "request id", 200),
       workspaceId,
@@ -1962,6 +2513,7 @@ export class HubMcpService {
         taskIds: Array.isArray(args.task_ids) ? args.task_ids : [],
         validationMode: requiredText(args.validation_mode, "validation mode", 32),
         approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
+        ...(args.test_selection !== undefined ? { testSelection: args.test_selection } : {}),
         ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
       },
     });
@@ -1977,7 +2529,10 @@ export class HubMcpService {
     const operationId = requiredText(args.operation_id, "operation id", 200);
     const snapshot = this.#releaseOperation().get(operationId);
     this.#workspace(context, snapshot.operation.workspaceId);
-    return this.#releaseOperation().continue(operationId);
+    return this.#releaseOperation().continue(operationId, {
+      requestId: args.request_id, reviewedMain: args.reviewed_main,
+      testSelection: args.test_selection, taskIds: args.task_ids, releaseMetadata: args.release_metadata, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
+    });
   }
 
 
@@ -2438,6 +2993,7 @@ export class HubMcpService {
 
   async #mutate(context, toolName, args, operation) {
     const requestId = requiredText(args.request_id, "request id", 200);
+    if (toolName === "hub_task_claim") this.#assertClaimContinuation(args.task_id, requestId, args.forward_custody_request_id);
     const checklistMutation = toolName === "hub_task_checklist_update";
     if (checklistMutation) {
       this.#taskChecklistPayload(context, {
@@ -2461,12 +3017,21 @@ export class HubMcpService {
       toolName,
       argumentsHash: argumentsHash(args),
     }));
-    if (started.status === "succeeded") return started.result;
-    if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
-    if (started.status === "unknown" && toolName === "hub_task_claim") {
+    if (started.status === "succeeded") return claimCustodyState(started)?.result ?? started.result;
+    if (started.status === "failed") {
+      const proof = toolName === "hub_task_claim" ? this.#claimAdmissionRefusal(started, args.task_id) : null;
+      if (proof) {
+        throw claimAdmissionRefusalError(proof);
+      }
+      throw new Error(started.error || "previous MCP operation failed");
+    }
+    const custodyConsume = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id);
+    const custodyStage = toolName === "hub_task_operation_reconcile" && Boolean(args.claim_custody);
+    if (started.status === "unknown" && toolName === "hub_task_claim" && !custodyConsume) {
       const reconciled = await this.#reconcileClaimAdmissionNoEffect(context, args, started).catch(() => null);
       if (reconciled) {
-        const terminal = new Error(reconciled.error);
+        const terminal = reconciled.evidence?.evidence
+          ? claimAdmissionRefusalError(reconciled.evidence.evidence) : new Error(reconciled.error);
         await this.workspaceCatalog.failUnknownMcpOperation(requestId, {
           workspaceId: context.workspaceId,
           toolName,
@@ -2476,7 +3041,7 @@ export class HubMcpService {
         throw terminal;
       }
     }
-    if (started.status === "unknown") {
+    if (started.status === "unknown" && !custodyConsume && !custodyStage) {
       throw new Error(`MCP operation outcome is unknown; reconcile authoritatively before retrying request_id ${requestId}`);
     }
     const inFlight = this.#pendingMutations.get(requestId);
@@ -2485,9 +3050,11 @@ export class HubMcpService {
       "hub_task_start", "hub_task_reassign", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
       "hub_task_checklist_update",
     ]);
-    if (started.replayed && !resumable.has(toolName)) {
+    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage) {
       const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
-      await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
+      if (toolName !== "hub_release_prepare" || !started.preparationState) {
+        await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
+      }
       throw reason;
     }
     const pending = (async () => {
@@ -2501,7 +3068,9 @@ export class HubMcpService {
             return reconciled;
           }
         }
-        const result = await operation();
+        const existingRefusal = toolName === "hub_task_status_update" ? this.#workflowAdmissionRefusal(started) : null;
+        if (existingRefusal) throw new TaskLifecycleNoEffectError(existingRefusal);
+        const result = await operation(started);
         effectCompleted = true;
         if (toolName === "hub_release_prepare") {
           const terminal = this.workspaceCatalog.mcpOperation(requestId);
@@ -2510,12 +3079,34 @@ export class HubMcpService {
           }
           return terminal.result;
         }
-        await this.workspaceCatalog.completeMcpOperation(requestId, result);
+        if (args.claim_custody && toolName === "hub_task_operation_reconcile") {
+          const durable = claimCustodyState(this.workspaceCatalog.mcpOperation(requestId));
+          if (!durable) throw new Error("Custody stage is not durable");
+          return durable.result;
+        }
+        if (custodyConsume && started.status === "unknown") {
+          await this.workspaceCatalog.completeUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
+            result, reconciliation: { kind: "forward-claim-binding-reuse-v1", fenceRequestId: args.forward_custody_request_id } });
+        } else await this.workspaceCatalog.completeMcpOperation(requestId, result);
         return result;
       } catch (error) {
+        // An own stage may have committed before a reply/storage exception. Its
+        // dedicated ledger column survives compaction and is the exact readback.
+        if (args.claim_custody && toolName === "hub_task_operation_reconcile") {
+          const durable = claimCustodyState(this.workspaceCatalog.mcpOperation(requestId));
+          if (durable) return durable.result;
+        }
+        if (this.workspaceCatalog.claimCustodyForOriginal?.(requestId)) throw new TaskClaimContinuationWithdrawnError();
+        if (!effectCompleted && custodyConsume && this.taskBoard.claimBindingForOperation(requestId)) {
+          await this.workspaceCatalog.markMcpOperationUnknown(requestId,new Error(`Custody assignment committed before outer completion: ${error.message}`));
+          throw error;
+        }
         if (toolName === "hub_release_prepare") {
           const terminal = this.workspaceCatalog.mcpOperation(requestId);
           if (terminal?.status === "succeeded" && terminal.argumentsHash === argumentsHash(args)) return terminal.result;
+          // Stage-backed failures belong exclusively to the invocation owner.
+          // This outer intake may resume after a newer owner has acquired it.
+          if (terminal?.preparationState) throw error;
         }
         if (!effectCompleted && checklistMutation) {
           const reconciled = await this.#reconcileTaskChecklist(context, args).catch(() => null);
@@ -2536,11 +3127,34 @@ export class HubMcpService {
           )).catch(() => {});
           throw new Error(`MCP effect completed but receipt reconciliation is required for request_id ${requestId}`);
         }
-        if (error instanceof ReleasePreparationRejectedError || error instanceof TaskInputValidationError || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
-            || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
-            || error instanceof TaskLifecycleBeginRejectedError || error instanceof TaskWithdrawalBusyError
-            || error instanceof ReleaseCandidateFrozenError || error instanceof TaskAbsorptionCompositionError
-             || error instanceof TaskSquashTransferRejectedError || error instanceof TaskIntegrationRejectedError) {
+        const claimRefusal = toolName === "hub_task_claim"
+          ? this.#claimAdmissionRefusal(this.workspaceCatalog.mcpOperation(requestId), args.task_id) : null;
+        if (claimRefusal) {
+          const refusal = claimAdmissionRefusalError(claimRefusal);
+          try {
+            await this.workspaceCatalog.failMcpOperation(requestId, refusal, { outcome: "NO_EFFECT", evidence: claimRefusal });
+          } catch (settlementError) {
+            await Promise.resolve(this.workspaceCatalog.markMcpOperationUnknown?.(requestId, settlementError)).catch(() => {});
+            throw settlementError;
+          }
+          throw refusal;
+        }
+        const workflowRefusal = toolName === "hub_task_status_update" ? this.#workflowAdmissionRefusal(started) : null;
+        const reconciliationRefusal = toolName === "hub_task_operation_reconcile"
+          && error instanceof TaskOperationReconciliationRefusedError;
+        if (workflowRefusal || reconciliationRefusal) {
+          try {
+            await this.workspaceCatalog.failMcpOperation(requestId, error, {
+              outcome: "NO_EFFECT",
+              ...(workflowRefusal ? { evidence: workflowRefusal } : { code: error.code }),
+            });
+          } catch (settlementError) {
+            await Promise.resolve(this.workspaceCatalog.markMcpOperationUnknown?.(requestId, settlementError)).catch(() => {});
+            throw settlementError;
+          }
+          throw error;
+        }
+        if (definiteMcpMutationFailure(error)) {
           await this.workspaceCatalog.failMcpOperation(requestId, error);
           throw error;
         }
@@ -2570,7 +3184,15 @@ export class HubMcpService {
     return pending;
   }
 
+  #workflowAdmissionRefusal(receipt) {
+    if (this.taskBoard.lifecycleTransition?.(receipt.requestId)) return null;
+    return workflowAdmissionNoEffectEvidence(this.taskBoard.lifecycleOutcome?.(receipt.requestId), receipt);
+  }
+
   async #reconcileClaimAdmissionNoEffect(context, args, receipt) {
+    const proof = this.#claimAdmissionRefusal(receipt, args.task_id);
+    if (proof) return { error: claimAdmissionRefusalError(proof).message,
+      evidence: { outcome: "NO_EFFECT", evidence: proof } };
     if (typeof this.taskBoard.claimBindingForOperation !== "function"
       || typeof this.taskGitWorkspaces?.claimAdmissionNoEffectEvidence !== "function"
       || typeof this.workspaceCatalog.failUnknownMcpOperation !== "function") return null;
@@ -2591,6 +3213,44 @@ export class HubMcpService {
         ...evidence,
       },
     };
+  }
+
+  #claimAdmissionRefusal(receipt, taskId = null) {
+    const proof = claimAdmissionNoEffectEvidence(receipt, taskId);
+    if (!proof || typeof this.taskBoard.claimBindingForOperation !== "function"
+        || this.taskBoard.claimBindingForOperation(receipt.requestId)
+        || this.taskBoard.lifecycleTransition?.(receipt.requestId)
+        || this.taskBoard.lifecycleOutcome?.(receipt.requestId)) return null;
+    return proof;
+  }
+
+  async #reconcileSealedClaimRefusal(context, args) {
+    const refuse = message => { throw new TaskOperationReconciliationRefusedError(new Error(message)); };
+    if (Object.keys(args).some(key => !["context_token", "request_id", "task_id", "operation_request_id",
+      "project_root", "confirm_reconcile"].includes(key))) refuse("Claim refusal readback accepts no workflow or operator proof fields");
+    const receipt = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+    const proof = this.#claimAdmissionRefusal(receipt, args.task_id);
+    if (!receipt || receipt.workspaceId !== context.workspaceId || !proof
+        || this.workspaceCatalog.claimCustodyForOriginal?.(receipt.requestId)) {
+      refuse("Claim requires exact durable pre-admission owner evidence; unsealed or admitted originals remain unknown");
+    }
+    const root = proof.lockAdmission?.repositoryRoot;
+    const locator = value => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+    if (root && (typeof args.project_root !== "string" || locator(args.project_root) !== locator(root))) {
+      refuse("Claim refusal repository locator does not match the sealed owner");
+    }
+    if (receipt.status === "unknown") {
+      await this.workspaceCatalog.failUnknownMcpOperation(receipt.requestId, {
+        workspaceId: context.workspaceId, toolName: "hub_task_claim", error: claimAdmissionRefusalError(proof),
+        reconciliation: { outcome: "NO_EFFECT", evidence: proof },
+      });
+    } else if (receipt.status === "pending" || receipt.status === "reconciling") {
+      await this.workspaceCatalog.beginMcpOperationReconciliation(receipt.requestId);
+      await this.workspaceCatalog.failMcpOperation(receipt.requestId, claimAdmissionRefusalError(proof), {
+        outcome: "NO_EFFECT", evidence: proof,
+      });
+    } else if (receipt.status !== "failed") refuse("Claim receipt is not a refused original");
+    return { taskId: proof.taskId, operationId: receipt.requestId, outcome: "NO_EFFECT", evidence: proof };
   }
 
   #hasPreparedTaskStart(context, args, requestId) {

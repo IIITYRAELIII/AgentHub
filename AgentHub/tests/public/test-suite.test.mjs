@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
-  boundedTestFileConcurrency,
+  testExecutionPolicy,
   testFingerprint,
   runWindowsTestFile,
+  runIsolatedTestCommand,
   runTestSuite,
   prepareTestDependencies,
 } from "../../test-suite.mjs";
@@ -16,6 +19,77 @@ import {
   parallelTestExecution,
 } from "../../src/infrastructure/persistence/test-input-fingerprint.mjs";
 import { withPublicationLock } from "../../src/infrastructure/process/publication-lock.mjs";
+
+test("isolated file failure retains the actual owned Node close receipt after cleanup", async () => {
+  let observed;
+  await assert.rejects(runIsolatedTestCommand(process.execPath, ["-e", "process.exit(3)"]), error => {
+    observed = error;
+    return true;
+  });
+  assert.equal(observed.testPhase, "execution");
+  assert.equal(observed.testExecutionSucceeded, false);
+  assert.ok(Number.isSafeInteger(observed.testChild.pid));
+  assert.equal(observed.testChild.code, 3);
+  assert.ok(Date.parse(observed.testChild.requestedAt) <= Date.parse(observed.testChild.spawnedAt));
+  assert.ok(Date.parse(observed.testChild.spawnedAt) <= Date.parse(observed.testChild.exitedAt));
+  assert.ok(Date.parse(observed.testChild.exitedAt) <= Date.parse(observed.testChild.closedAt));
+  await assert.rejects(access(observed.testRoot), { code: "ENOENT" });
+});
+
+test("diagnostic annotation preserves original failures and caller-owned fields", async () => {
+  const failures = [];
+  for (const key of ["testRoot", "testPhase", "testExecutionSucceeded", "testChild"]) {
+    const readonly = new Error("original readonly failure");
+    Object.defineProperty(readonly, key, { value: { caller: true }, writable: false });
+    failures.push(readonly);
+    const accessor = new Error("original accessor failure");
+    Object.defineProperty(accessor, key, {
+      get() { assert.fail("diagnostics must not read caller accessors"); },
+      set() { assert.fail("diagnostics must not write caller accessors"); },
+    });
+    failures.push(accessor);
+  }
+  failures.push(Object.preventExtensions(new Error("original nonextensible failure")));
+  for (const trap of ["has", "getOwnPropertyDescriptor", "defineProperty", "isExtensible"]) {
+    failures.push(new Proxy(new Error("original inspection failure"), {
+      [trap]() { throw new Error("diagnostic inspection refused"); },
+    }));
+  }
+  for (const original of failures) {
+    let calls = 0;
+    let root;
+    let observed;
+    try {
+      await runIsolatedTestCommand("fixture", [], { execute: async (_command, _args, { env }) => {
+        calls += 1;
+        root = env.TEMP;
+        throw original;
+      } });
+    } catch (error) { observed = error; }
+    assert.equal(observed, original);
+    assert.equal(calls, 1);
+    await assert.rejects(access(root), { code: "ENOENT" });
+  }
+});
+
+test("child diagnostic inspection never changes the execution outcome", async () => {
+  for (const original of [null, new Error("original execution failure")]) {
+    let calls = 0;
+    let root;
+    let observed;
+    try {
+      await runIsolatedTestCommand("fixture", [], { execute: async (_command, _args, { env, onChild }) => {
+        calls += 1;
+        root = env.TEMP;
+        onChild(Object.defineProperty({}, "pid", { get() { throw new Error("diagnostic getter refused"); } }));
+        if (original) throw original;
+      } });
+    } catch (error) { observed = error; }
+    assert.equal(observed, original ?? undefined);
+    assert.equal(calls, 1);
+    await assert.rejects(access(root), { code: "ENOENT" });
+  }
+});
 
 test("cold full-test checkout installs locked development dependencies once before every suite", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-test-deps-"));
@@ -124,14 +198,122 @@ test("test execution never retries an assertion or an unclassified OS error", as
   }
 });
 
-test("test process concurrency requires both CPU and memory headroom", () => {
-  const gib = 1024 ** 3;
-  assert.equal(boundedTestFileConcurrency({ availableParallelism: 8, freeMemory: 8 * gib }), 2);
-  assert.equal(boundedTestFileConcurrency({ availableParallelism: 3, freeMemory: 8 * gib }), 1);
-  assert.equal(boundedTestFileConcurrency({ availableParallelism: 8, freeMemory: 3 * gib }), 1);
+test("native busy temp cleanup preserves execution and cleanup outcomes without replay", {
+  skip: process.platform !== "win32",
+}, async () => {
+  for (const executionError of [null, new assert.AssertionError({ message: "original assertion" }),
+    Object.assign(new Error("original OS failure"), { code: "EPERM" })]) {
+    let holder;
+    let root;
+    let calls = 0;
+    let observed;
+    try {
+      await runIsolatedTestCommand("fixture", [], { execute: async (_command, _args, { env }) => {
+        calls += 1;
+        root = env.TEMP;
+        const script = "$f=[IO.File]::Open($env:AH_TEST_LOCK_FILE,'OpenOrCreate','ReadWrite','None');"
+          + "try{[Console]::WriteLine('locked');[Console]::Out.Flush();[Console]::ReadLine()|Out-Null}finally{$f.Dispose()}";
+        holder = spawn(path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+          ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true,
+            stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, AH_TEST_LOCK_FILE: path.join(root, "owned.lock") } });
+        const ready = await Promise.race([
+          once(holder.stdout, "data").then(([chunk]) => String(chunk)),
+          once(holder, "exit").then(([code]) => { throw new Error(`lock holder exited ${code}`); }),
+          once(holder, "error").then(([error]) => { throw error; }),
+        ]);
+        assert.match(ready, /locked/u);
+        if (executionError) throw executionError;
+      } });
+    } catch (error) {
+      observed = error;
+    } finally {
+      if (holder && holder.exitCode === null) {
+        const closed = once(holder, "close");
+        holder.stdin.end("release\n");
+        await closed;
+      }
+      if (root) await rm(root, { recursive: true, force: true });
+    }
+    assert.equal(calls, 1);
+    const cleanupError = executionError ? observed.errors[1] : observed;
+    if (executionError) {
+      assert.ok(observed instanceof AggregateError);
+      assert.equal(observed.cause, executionError);
+      assert.equal(observed.errors[0], executionError);
+    }
+    assert.equal(cleanupError.code, "EBUSY");
+    assert.equal(cleanupError.testPhase, "cleanup");
+    assert.equal(cleanupError.testRoot, root);
+    assert.equal(cleanupError.testExecutionSucceeded, !executionError);
+  }
 });
 
-test("parallel admission requires a complete valid isolation declaration", () => {
+test("owned Windows cleanup waits for a transient native handle without replaying the test", {
+  skip: process.platform !== "win32",
+}, async () => {
+  let holder;
+  let released;
+  let root;
+  let calls = 0;
+  try {
+    await runIsolatedTestCommand("fixture", [], { execute: async (_command, _args, { env }) => {
+      calls += 1;
+      root = env.TEMP;
+      const script = "$f=[IO.File]::Open($env:AH_TEST_LOCK_FILE,'OpenOrCreate','ReadWrite','None');"
+        + "try{[Console]::WriteLine('locked');[Console]::Out.Flush();[Console]::ReadLine()|Out-Null}finally{$f.Dispose()}";
+      holder = spawn(path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true,
+          stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, AH_TEST_LOCK_FILE: path.join(root, "owned.lock") } });
+      const ready = await Promise.race([
+        once(holder.stdout, "data").then(([chunk]) => String(chunk)),
+        once(holder, "exit").then(([code]) => { throw new Error(`lock holder exited ${code}`); }),
+        once(holder, "error").then(([error]) => { throw error; }),
+      ]);
+      assert.match(ready, /locked/u);
+      await assert.rejects(rm(path.join(root, "owned.lock")), { code: "EBUSY" });
+      // Retire the controlled current handle after the cleanup handoff.
+      released = new Promise(resolve => setTimeout(resolve, 300)).then(async () => {
+        if (holder.exitCode !== null || holder.signalCode !== null) return;
+        const closed = once(holder, "close");
+        holder.stdin.end("release\n");
+        await closed;
+      });
+    } });
+    await released;
+    assert.equal(calls, 1);
+    await assert.rejects(access(root), { code: "ENOENT" });
+  } finally {
+    if (holder && holder.exitCode === null) {
+      const closed = once(holder, "close");
+      holder.stdin.end("release\n");
+      await closed;
+    }
+    await released;
+    if (root) await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a changed runner accounting input invalidates otherwise identical successful test evidence", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ah-runner-input-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "test.mjs"), "export const valid = true;\n");
+  const accounting = path.join(root, "accounting.cs");
+  await writeFile(accounting, "first accounting implementation");
+  const options = { cwd: root, runnerInputs: [accounting] };
+  const first = await testFingerprint("test.mjs", options);
+  assert.match(first, /^[a-f0-9]{64}$/u);
+  await writeFile(accounting, "corrected accounting implementation");
+  assert.notEqual(await testFingerprint("test.mjs", options), first);
+});
+
+test("parallel execution is independent from cache eligibility", () => {
+  assert.deepEqual(testExecutionPolicy(undefined), { parallel: true, shared: [] });
+  assert.deepEqual(testExecutionPolicy({ builtins: ["child_process"] }), { parallel: true, shared: [] });
+  assert.deepEqual(testExecutionPolicy({ builtins: ["child_process"], execution: { shared: ["fixture"] } }), { parallel: true, shared: ["fixture"] });
+  assert.throws(() => testExecutionPolicy({ execution: { shared: ["invalid resource"] } }), /shared-resource/u);
+});
+
+test("legacy cache declarations retain validated shared-resource ownership", () => {
   assert.equal(parallelTestExecution({ execution: { parallel: true } }), null);
   assert.equal(parallelTestExecution({
     execution: {
@@ -172,6 +354,8 @@ test("each test process receives a disposable environment root", async () => {
         assert.notEqual(env.LOCALAPPDATA, "must-not-be-inherited");
         assert.equal(env.LOCALAPPDATA, env.TEMP);
         assert.equal(env.TEMP, env.TMP);
+        for (const name of ["APPDATA", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"]) assert.equal(env[name], env.TEMP);
+        assert.equal(Object.hasOwn(env, "USERPROFILE"), false, "Windows OS identity stays intact for native browser KnownFolders");
         assert.ok(path.basename(env.LOCALAPPDATA).length <= 10);
         await access(env.LOCALAPPDATA);
         roots.push(env.LOCALAPPDATA);
@@ -206,9 +390,7 @@ test("test child processes never inherit publication mutation ownership", async 
   }
 });
 
-test("every default-lock validation suite uses a fixture root while the publisher lock is held", {
-  timeout: 60_000,
-}, async () => {
+test("every default-lock validation suite uses a fixture root while the publisher lock is held", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-held-publication-lock-"));
   const previousLocalAppData = process.env.LOCALAPPDATA;
   process.env.LOCALAPPDATA = root;

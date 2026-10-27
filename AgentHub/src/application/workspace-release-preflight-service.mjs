@@ -80,6 +80,7 @@ function approvedRepositoryEntries(entries = []) {
       projectRoot,
       approvedLocalMainCommit: String(entry?.approvedLocalMainCommit ?? entry?.localMainCommit ?? "").trim(),
       approvedOriginMainCommit: String(entry?.approvedOriginMainCommit ?? entry?.originMainCommit ?? "").trim(),
+      ...(entry.nativeResolutionReview ? { nativeResolutionReview: entry.nativeResolutionReview } : {}),
     };
     if (!approval.approvedLocalMainCommit || !approval.approvedOriginMainCommit) {
       throw new Error(`approved release main commits for ${projectRoot} require both local and origin commits`);
@@ -328,7 +329,8 @@ export class WorkspaceReleasePreflightService {
       candidateHash: taskGitIdentityHash(candidate) };
   }
 
-  async prepareCurrentAwaitSet({ workspaceId, envelope, requestId, argumentsHash, validate, commitPrepared }) {
+  async prepareCurrentAwaitSet({ workspaceId, envelope, requestId, argumentsHash, validate, commitPrepared,
+    ownPreparation = null, beforeCompose = null, forwardPreparation = null }) {
     requiredFunction(validate, "preparation validator");
     requiredFunction(commitPrepared, "preparation terminal receipt");
     requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
@@ -363,9 +365,16 @@ export class WorkspaceReleasePreflightService {
               (repositoryLease) => ownRepository(index + 1, repositoryLease),
             );
             await verify();
+            const devInventory = forwardPreparation
+              ? await this.taskGitWorkspaces.inspectForwardPreparationDevOwned(repositories[0].projectRoot, { lease: ownedLease }) : null;
+            if (forwardPreparation) forwardPreparation.repositoryLease = {
+              ...ownedLease, beginProcessTreeGuard: context => ownedLease.beginProcessTreeGuard({ ...context,
+                scope: "repository", repositoryRoot: repositories[0].projectRoot }),
+            };
+            await ownPreparation?.({ devInventory });
             return this.#prepareAwaitSet({ workspaceId, expectedPlanRevision: envelope.planRevision,
               preserveFrozen: true, lease: ownedLease,
-              preparation: { envelope, requestId, argumentsHash, validate: verify },
+              preparation: { envelope, requestId, argumentsHash, validate: verify, beforeCompose, forwardPreparation },
               commitPrepared: async (prepared) => {
                 await verify();
                 return commitPrepared(prepared);
@@ -504,6 +513,78 @@ export class WorkspaceReleasePreflightService {
         acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision,
       }))
     )).sort((left, right) => left.taskId.localeCompare(right.taskId));
+  }
+
+  async withReviewedMainRecovery({ workspaceId, taskIds, approvedRepositories, commit } = {}) {
+    requiredFunction(commit, "reviewed-main recovery commit");
+    return this.withAwaitTransition(workspaceId, async () => {
+      const verifyMain = async ({ repository, approval, publishedRevision }) => {
+        const audit = await this.releaseGitWorkspaces.inspectMainChanges({ projectRoot: repository.projectRoot, publishedRevision,
+          approvedLocalMainCommit: approval.approvedLocalMainCommit, approvedOriginMainCommit: approval.approvedOriginMainCommit });
+        if (!audit.approved || audit.approvalRequired || canonicalRoot(audit.projectRoot) !== canonicalRoot(repository.projectRoot)
+            || audit.publishedRevision !== publishedRevision || audit.localMain !== approval.approvedLocalMainCommit
+            || audit.originMain !== approval.approvedOriginMainCommit) {
+          throw new Error("Reviewed-main recovery approval is stale");
+        }
+      };
+      const capture = async () => {
+        const plan = await this.releasePlanner.plan(workspaceId, { selectedTaskIds: taskIds });
+        if (plan.blocked?.length) throw new Error("Reviewed-main recovery selected plan is blocked");
+        const repositories = readyRepositories(plan.ready);
+        const selectedIds = [...new Set(repositories.flatMap(repository => repository.frozenTasks.map(task => task.taskId)))].sort();
+        if (JSON.stringify(selectedIds) !== JSON.stringify([...taskIds].sort())) throw new Error("Reviewed-main recovery selected membership changed");
+        const approvals = approvedRepositoryEntries(approvedRepositories);
+        if (approvals.size !== repositories.length) throw new Error("Reviewed-main recovery repository membership changed");
+        const publication = await this.readPublicationState();
+        const preparedCandidates = [], selectedResults = [], mainChecks = [];
+        for (const repository of repositories) {
+          const approval = approvals.get(canonicalRoot(repository.projectRoot));
+          if (!approval) throw new Error("Reviewed-main recovery repository approval is missing");
+          await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, { phase: "reviewed-main recovery" });
+          const publishedRevision = publicationBaselineFor(repository, publication).publishedRevision;
+          const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({ projectRoot: repository.projectRoot, tasks: repository.frozenTasks });
+          const base = await this.taskGitWorkspaces.releaseBaseEvidence({ projectRoot: repository.projectRoot, publishedBaseCommit: publishedRevision, tasks: repository.frozenTasks });
+          const mainCheck = { repository, approval, publishedRevision };
+          await verifyMain(mainCheck);
+          if (base.baseCommit !== approval.approvedLocalMainCommit) {
+            throw new Error("Reviewed-main recovery approval is stale");
+          }
+          mainChecks.push(mainCheck);
+          const prepared = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+          if (!prepared.manifestHash || !prepared.preReleaseHead || prepared.planRevision !== plan.revision
+              || !sameFrozenTasks(prepared.manifest?.tasks, evidence.tasks)) {
+            throw new Error("Reviewed-main recovery prepared candidate or selected evidence changed");
+          }
+          const provenance = prepared.manifest.baseProvenance;
+          if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+            await this.releaseGitWorkspaces.validateLocalSourceBaseline({ projectRoot: repository.projectRoot,
+              provenance, planRevision: plan.revision, tasks: evidence.tasks });
+          } else if (prepared.baseCommit !== base.baseCommit) {
+            throw new Error("Reviewed-main recovery prepared base differs from agreed main");
+          }
+          if (provenance?.publishedBaseCommit !== publishedRevision
+              || (provenance?.approvedLocalMainCommit ?? provenance?.agreedMainCommit) !== approval.approvedLocalMainCommit
+              || (provenance?.approvedOriginMainCommit ?? provenance?.agreedMainCommit) !== approval.approvedOriginMainCommit) {
+            throw new Error("Reviewed-main recovery sealed provenance differs from approval");
+          }
+          selectedResults.push(...evidence.tasks.map(task => ({ taskId: task.taskId, resultCommit: task.resultCommit,
+            ...selectedCompositionFields(task), acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision })));
+          preparedCandidates.push({ repositoryRoot: repository.projectRoot, commit: prepared.preReleaseHead,
+            manifestHash: prepared.manifestHash, baseEvidenceHash: taskGitIdentityHash(base) });
+        }
+        // Every awaited prepared/source check, including later repositories,
+        // precedes the final current-main/origin fence for ALL provenance kinds.
+        for (const check of mainChecks) await verifyMain(check);
+        return { approvedRepositories, planRevision: plan.revision, publicationHash: taskGitIdentityHash(publication),
+          selectedResults: selectedResults.sort((a, b) => a.taskId.localeCompare(b.taskId)), preparedCandidates };
+      };
+      const authority = await capture();
+      return commit(authority, async () => {
+        if (taskGitIdentityHash(await capture()) !== taskGitIdentityHash(authority)) {
+          throw new Error("Reviewed-main recovery authority changed before commit");
+        }
+      });
+    });
   }
 
   async validateOperationGeneration({ workspaceId, generation } = {}) {
@@ -669,10 +750,46 @@ export class WorkspaceReleasePreflightService {
           phase: "Await PreRelease rebuild",
         });
       }
+      const base = await this.taskGitWorkspaces.releaseBaseEvidence({
+        projectRoot: repository.projectRoot,
+        publishedBaseCommit: publicationBaselineFor(repository, publication).publishedRevision,
+        tasks: repository.frozenTasks, lease,
+      });
+      let reviewed = null;
+      if (explicitApprovals) {
+        const baseline = publicationBaselineFor(repository, publication);
+        const approval = explicitApprovals.get(canonicalRoot(repository.projectRoot));
+        const provenance = reviewedBaseProvenance({
+          repository, publishedRevision: baseline.publishedRevision, approval,
+        });
+        const audit = await this.releaseGitWorkspaces[preparation?.forwardPreparation?.readIsolation?.()
+          ? "inspectIsolationMainPins" : "inspectMainChanges"]({
+          projectRoot: repository.projectRoot,
+          publishedRevision: baseline.publishedRevision,
+          approvedLocalMainCommit: provenance.approvedLocalMainCommit,
+          approvedOriginMainCommit: provenance.approvedOriginMainCommit,
+        });
+        if (audit.approvalRequired || !audit.approved
+            || canonicalRoot(audit.projectRoot) !== canonicalRoot(repository.projectRoot)
+            || audit.publishedRevision !== provenance.publishedBaseCommit
+            || audit.localMain !== provenance.approvedLocalMainCommit
+            || audit.originMain !== provenance.approvedOriginMainCommit) {
+          throw new ReleasePreparationRejectedError(`explicit reviewed-main approval is stale for ${repository.projectRoot}`);
+        }
+        // Native composition starts at the explicitly agreed local main.
+        // Reviewing origin does not silently adopt it as a different base.
+        reviewed = { provenance, adoption: null, nativeResolutionReview: approval.nativeResolutionReview };
+      }
+      baseChecks.push({ repository, base, reviewed });
+      if (reviewed && reviewed.provenance.approvedLocalMainCommit !== base.baseCommit) {
+        throw new ReleasePreparationRejectedError("Native release agreed main changed after its explicit approval");
+      }
       const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
         projectRoot: repository.projectRoot,
         tasks: repository.frozenTasks,
         ...(lease ? { lease } : {}),
+        ...(preparation?.forwardPreparation ? { forwardPreparation: true } : {}),
+        ...(generationIdentity ? { synchronizeAcceptedMain: true } : {}),
       });
       if (preparation) {
         const bound = preparation.envelope.tasks.filter((item) => (
@@ -687,39 +804,6 @@ export class WorkspaceReleasePreflightService {
           throw new ReleasePreparationRejectedError("Preparation registered Task base/result evidence changed");
         }
       }
-      const base = await this.taskGitWorkspaces.releaseBaseEvidence({
-        projectRoot: repository.projectRoot,
-        publishedBaseCommit: publicationBaselineFor(repository, publication).publishedRevision,
-        tasks: repository.frozenTasks, lease,
-      });
-      let reviewed = null;
-      if (explicitApprovals) {
-        const baseline = publicationBaselineFor(repository, publication);
-        const approval = explicitApprovals.get(canonicalRoot(repository.projectRoot));
-        const provenance = reviewedBaseProvenance({
-          repository, publishedRevision: baseline.publishedRevision, approval,
-        });
-        const audit = await this.releaseGitWorkspaces.inspectMainChanges({
-          projectRoot: repository.projectRoot,
-          publishedRevision: baseline.publishedRevision,
-          approvedLocalMainCommit: provenance.approvedLocalMainCommit,
-          approvedOriginMainCommit: provenance.approvedOriginMainCommit,
-        });
-        if (audit.approvalRequired || !audit.approved
-            || canonicalRoot(audit.projectRoot) !== canonicalRoot(repository.projectRoot)
-            || audit.publishedRevision !== provenance.publishedBaseCommit
-            || audit.localMain !== provenance.approvedLocalMainCommit
-            || audit.originMain !== provenance.approvedOriginMainCommit) {
-          throw new Error(`explicit reviewed-main approval is stale for ${repository.projectRoot}`);
-        }
-        // Native composition starts at the explicitly agreed local main.
-        // Reviewing origin does not silently adopt it as a different base.
-        reviewed = { provenance, adoption: null };
-      }
-      baseChecks.push({ repository, base, reviewed });
-      if (reviewed && reviewed.provenance.approvedLocalMainCommit !== base.baseCommit) {
-        throw new Error("Native release agreed main changed after its explicit approval");
-      }
       const preparationRepository = preparation?.envelope.repositories.find((item) => (
         canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot)
       ));
@@ -733,8 +817,8 @@ export class WorkspaceReleasePreflightService {
         });
       }
       if (!preparation && generationIdentity) {
-        const prepared = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
-        if (prepared.manifest?.baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+        const prepared = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot, { allowAbsent: true });
+        if (prepared?.manifest?.baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
           if (prepared.planRevision !== plan.revision || !sameFrozenTasks(prepared.manifest.tasks, evidence.tasks)) {
             throw new ReleasePreparationRejectedError("Installed local source selection changed");
           }
@@ -771,6 +855,7 @@ export class WorkspaceReleasePreflightService {
       const prepareCandidate = generationIdentity
         ? this.releaseGitWorkspaces.prepareGeneration.bind(this.releaseGitWorkspaces)
         : this.releaseGitWorkspaces.prepareCandidate.bind(this.releaseGitWorkspaces);
+      await preparation?.beforeCompose?.();
       const candidate = await this.measureOperation(preparation ? "preparation:compose" : "release:compose", () => prepareCandidate({
         planRevision: plan.revision,
         workspaceId,
@@ -780,13 +865,13 @@ export class WorkspaceReleasePreflightService {
         ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
         ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
-        nativeResolutionReview: preparationRepository?.nativeResolutionReview ?? nativeResolutionReview,
+        nativeResolutionReview: preparationRepository?.nativeResolutionReview ?? reviewed?.nativeResolutionReview ?? nativeResolutionReview,
         ...(preparation ? { preflightRequestId: preparation.requestId, preparationGuard: {
           ...preparationRepository, argumentsHash: preparation.argumentsHash,
           sourceCommit: preparation.envelope.sourceCommit, sourceTree: preparation.envelope.sourceTree,
           sourceClosureHash: preparation.envelope.sourceClosureHash,
           publicationHash: preparation.envelope.publicationHash,
-        } } : {}),
+        }, ...(preparation.forwardPreparation ? { forwardPreparation: preparation.forwardPreparation } : {}) } : {}),
         ...(generationIdentity ?? {}),
         ...(generationIdentity ? { freezePublication: freezeGeneration } : {}),
         ...(generationIdentity ? { ephemeral: ephemeralGeneration } : {}),

@@ -26,7 +26,7 @@ function fixture(overrides = {}) {
     stopProcessTree: async () => {},
     onMessage: () => {},
     rpcTimeoutMs: 1_000,
-    isStopping: () => false,
+    isStopping: overrides.isStopping ?? (() => false),
     providerSelected: overrides.providerSelected ?? (() => true),
     activeRuns: overrides.activeRuns ?? (() => []),
     setStage: (...args) => events.push(["stage", ...args]),
@@ -35,6 +35,8 @@ function fixture(overrides = {}) {
     attachSelectedThread: async () => events.push(["attach"]),
     onStartupSuccess: overrides.onStartupSuccess,
     onStartupFailure: overrides.onStartupFailure,
+    onInitializationPending: overrides.onInitializationPending,
+    onInitializationFailure: overrides.onInitializationFailure,
     scheduleRetry: (...args) => events.push(["retry", ...args]),
     logger: { log: (...args) => events.push(["log", ...args]), error: (...args) => events.push(["error", ...args]) },
   });
@@ -77,6 +79,41 @@ function spawnableChild() {
   return child;
 }
 
+test("automatic prepared activation fences one original RPC and restores selected subscription without self-deadlock", async () => {
+  const { lifecycle, events } = fixture();
+  const initialized = deferred();
+  lifecycle.transport.initialize = async () => { await initialized.promise; return { newlyInitialized: true }; };
+  lifecycle.transport.pending = new Map(); lifecycle.transport.requestQueues = { interactive: [], background: [] };
+  const apply = lifecycle.applyPreparedUpdate();
+  const original = { clientId: "original-command" };
+  const request = lifecycle.request("turn/start", original);
+  assert.equal(events.filter(([name]) => name === "request").length, 0);
+  initialized.resolve();
+  assert.equal(await apply, true); await request;
+  assert.equal(events.filter(([name]) => name === "recover").length, 0);
+  const calls = events.filter(([name]) => name === "request");
+  assert.equal(calls.length, 1); assert.equal(calls[0][2], original);
+  assert.deepEqual(events.filter(([name]) => ["start", "stop", "attach"].includes(name)).map(([name]) => name), ["stop", "start", "attach"]);
+});
+
+test("automatic activation refuses live work, pending RPC and stopping; lost transport alone keeps exact recovery ownership", async () => {
+  const stopped = fixture({ isStopping: () => true });
+  assert.equal(await stopped.lifecycle.applyPreparedUpdate(), false); assert.deepEqual(stopped.events, []);
+  const run = { provider: "codex", threadId: "original-thread", turnId: "original-turn", clientId: "original-input", status: "running" };
+  const { lifecycle, events } = fixture({ activeRuns: () => [run] });
+  assert.equal(await lifecycle.applyPreparedUpdate(), false);
+  assert.deepEqual(events, []);
+  lifecycle.transport.running = false;
+  lifecycle.transport.pending = new Map([["in-flight", {}]]);
+  assert.equal(await lifecycle.applyPreparedUpdate(), false);
+  lifecycle.transport.pending.clear();
+  const before = structuredClone(run);
+  assert.equal(await lifecycle.applyPreparedUpdate(), true);
+  assert.equal(events.filter(([name]) => name === "recover").length, 1);
+  assert.deepEqual(run, before);
+  assert.equal(events.filter(([name, method]) => name === "request" && method === "turn/start").length, 0);
+});
+
 test("Codex App Server lifecycle initializes the transport and selected thread", async () => {
   const { lifecycle, events } = fixture();
   await lifecycle.initialize();
@@ -84,6 +121,17 @@ test("Codex App Server lifecycle initializes the transport and selected thread",
   assert.equal(lifecycle.pid, 17);
   assert.deepEqual(events.map(([name]) => name), ["initialize", "notify", "attach"]);
   assert.equal(events[0][1].clientInfo.version, AGENT_HUB_VERSION);
+});
+
+test("a custody bind failure after spawn closes only the newly created child before refusing startup", async () => {
+  let kills = 0;
+  const child = spawnableChild(); child.kill = () => { kills += 1; };
+  const runtime = new CodexAppServerLifecycle({ resolveExecutable: async () => "fixture",
+    unavailableMcpOverrides: async () => ({ disabled: [], args: [] }), executableArgs: [], projectRoot: () => process.cwd(),
+    spawnProcess: () => child, bindSpawnedProcess: () => { throw new Error("custody disappeared"); },
+    logger: { error() {} }, rpcTimeoutMs: 1000 });
+  await assert.rejects(runtime.start(), /custody disappeared/u);
+  assert.equal(kills, 1); assert.equal(runtime.running, false);
 });
 
 test("Codex App Server lifecycle owns crash recovery", async () => {

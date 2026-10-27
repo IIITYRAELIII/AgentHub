@@ -797,6 +797,42 @@ test("verify journal evidence belongs to the exact accepted smoke send", () => {
   }
 });
 
+test("verify journal accepts only the exact reconciled send across contour restart", () => {
+  const options = {
+    model: TEST_CONTOUR_FAKE_MODEL,
+    probe: "probe",
+    probeResponse: "accepted",
+    startedAt: "2026-10-25T14:12:17.732Z",
+    smoke: {
+      setup: "reconcile-send",
+      threadId: "thread-original",
+      turnId: "turn-original",
+      clientUserMessageId: "client-original",
+    },
+  };
+  const record = {
+    provider: "codex",
+    model: TEST_CONTOUR_FAKE_MODEL,
+    prompt: "probe",
+    body: "accepted",
+    threadId: "thread-original",
+    turnId: "turn-original",
+    clientUserMessageId: "client-original",
+    completedAt: "2026-10-25T13:28:02.761Z",
+  };
+  assert.equal(testContourSmokeJournalMatches(record, options), true);
+  assert.equal(testContourSmokeJournalMatches(record, {
+    ...options, smoke: { ...options.smoke, setup: "reuse" },
+  }), false, "a fresh UI send still requires a completion from this contour start");
+  for (const patch of [
+    { provider: "claude" }, { model: "other" }, { prompt: "other" }, { body: "other" },
+    { threadId: "other" }, { turnId: "other" }, { clientUserMessageId: "other" },
+    { completedAt: null }, { completedAt: "invalid" },
+  ]) {
+    assert.equal(testContourSmokeJournalMatches({ ...record, ...patch }, options), false);
+  }
+});
+
 test("verify reports the recording agent probe as skipped and leaves its journal untouched", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recording-verify-root-"));
   const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recording-verify-source-"));

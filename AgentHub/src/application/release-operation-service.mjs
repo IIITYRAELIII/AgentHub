@@ -1,3 +1,4 @@
+import { normalizeTestSelection } from "../domain/test-selection.mjs";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -5,6 +6,13 @@ import {
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
   releaseOperationIsTerminal,
+  reviewedMainBinding,
+  failedComposeRecoveryEligible,
+  releaseApprovedTargets,
+  effectiveTestSelection,
+  effectiveReleaseTaskIds,
+  normalizeReleaseTaskIds,
+  normalizedReleaseMetadata,
 } from "../domain/release-operation.mjs";
 
 const DEFAULT_LEASE_MS = 30_000;
@@ -63,6 +71,23 @@ function normalizeReadback(value) {
 function classifiedFailure(error, state, now, retryDelayMs) {
   const details = releaseError(error);
   switch (details.code) {
+    case "RELEASE_PREPARATION_REJECTED":
+    case "RELEASE_NATIVE_MERGE_CONFLICT":
+    case "RELEASE_NATIVE_REVIEW_REQUIRED":
+      return {
+        state: "waiting", currentStep: "compose", resumeState: "compose",
+        waitReason: { code: "preparation_refused", message: details.message, details },
+        nextAction: "correct the owned preparation boundary, then continue this same release",
+        lastError: { ...details, step: "compose" },
+      };
+    case "AWAIT_PREPARATION_UNKNOWN":
+    case "AWAIT_ACCEPTANCE_UNKNOWN":
+      return {
+        state: "waiting", currentStep: state,
+        waitReason: { code: "preparation_effect_unknown", message: details.message, details },
+        nextAction: "read back this original candidate effect before continuation",
+        lastError: { ...details, step: state },
+      };
     case "RELEASE_PREPARED_CANDIDATE_STALE":
       return {
         state: "waiting", currentStep: state, resumeState: "compose",
@@ -142,11 +167,16 @@ export class ReleaseOperationService {
     deliveryRetryMs = 1_000,
     requestCorrection = null,
     cleanupGeneration = null,
+    withReviewedMainRecovery = null,
+    observeOperation = null,
+    resolveTestPlans = null,
+    withTaskSelection = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
       "putGeneration", "generation", "beginStep", "finishStep", "latestStep",
       "runnable", "active", "forTask", "pendingEvents", "settleEvent",
+      "runOperationMutation", "isContentionError",
     ]) requiredMethod(store, name);
     for (const [value, name] of [
       [compose, "compose"], [validate, "validate"], [publishTarget, "publishTarget"],
@@ -183,6 +213,10 @@ export class ReleaseOperationService {
     this.deliveryRetryMs = Math.max(100, Number(deliveryRetryMs) || 1_000);
     this.requestCorrection = requestCorrection;
     this.cleanupGeneration = cleanupGeneration;
+    this.withReviewedMainRecovery = withReviewedMainRecovery;
+    this.observeOperation = observeOperation;
+    this.resolveTestPlans = resolveTestPlans;
+    this.withTaskSelection = withTaskSelection;
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization } = {}) {
@@ -190,6 +224,7 @@ export class ReleaseOperationService {
       requestId, workspaceId, streamId, threadId, authorization,
       runnerVersion: this.runnerVersion,
     });
+    this.#observe(created.operation.operationId);
     this.#schedule(created.operation.operationId);
     return {
       accepted: true,
@@ -212,9 +247,43 @@ export class ReleaseOperationService {
     return snapshot;
   }
 
-  continue(operationId) {
+  // Read-only eligibility from this original release owner. Directory age or a
+  // local Git head is never evidence that a release finished publication.
+  retentionGeneration(operationId, number) {
+    const operation = this.store.get(operationId);
+    if (operation?.state !== "done" || !operation.completedAt || operation.currentGeneration !== number) return null;
+    const generation = this.store.generation(operationId, number);
+    if (!generation || generation.operationId !== operationId || generation.generation !== number
+        || generation.candidates?.length > 32) return null;
+    const { identitySha256, ...contents } = generation;
+    if (releaseIdentitySha256(contents) !== identitySha256) return null;
+    const effects = operation.publicationEffects;
+    if (effects?.generation !== number || effects.publishStarted?.candidate !== identitySha256
+        || !operation.authorization.approvedTargets.every(target => publishedTarget(effects.targets?.[target.targetId]))) return null;
+    const validation = this.store.latestStep(operationId, number, "validate");
+    const finalization = this.store.latestStep(operationId, number, "finalize");
+    for (const receipt of [validation, finalization]) {
+      if (receipt?.status !== "applied" || receipt.operationId !== operationId || receipt.generation !== number
+          || receipt.input?.candidate !== identitySha256 || releaseIdentitySha256(receipt.input) !== receipt.inputSha256) return null;
+    }
+    if (releaseIdentitySha256(finalization.input.effects) !== releaseIdentitySha256(effects)
+        || releaseIdentitySha256(finalization.input.selectedResults) !== releaseIdentitySha256(generation.selectedResults)) return null;
+    return { operationId, generation: number, operationRevision: operation.revision, completedAt: operation.completedAt,
+      identitySha256, candidates: generation.candidates.map(({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash }) =>
+        ({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash })) };
+  }
+
+  continue(operationId, options = {}) {
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
+    // A captured amendment remains an amendment even when a replay omits all
+    // optional fields. Check its identity before ordinary resume or recovery.
+    if (current.testSelectionAmendments?.some(item => item.requestId === options.requestId)
+        || options.testSelection != null || options.taskIds != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
+    if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
+    // Addressed observation also works while the original is waiting on an
+    // external condition. It neither resumes nor publishes that condition.
+    this.#observe(current.operationId);
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
     let operation = current;
     if (current.state === RELEASE_OPERATION_STATES.WAITING) {
@@ -238,6 +307,119 @@ export class ReleaseOperationService {
     }
     this.#schedule(operation.operationId);
     return { accepted: true, operationId: operation.operationId, state: operation.state, revision: operation.revision };
+  }
+
+  #observe(operationId) {
+    try {
+      Promise.resolve(this.observeOperation?.(operationId)).catch(() => {
+        console.warn('Release progress monitor unavailable: MONITOR_OBSERVATION_FAILED');
+      });
+    } catch {
+      console.warn('Release progress monitor unavailable: MONITOR_OBSERVATION_FAILED');
+    }
+  }
+
+  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, releaseMetadata, expectedRevision, expectedGeneration, reviewedMain }) {
+    if (reviewedMain != null) throw new Error("Use separate original amendments for reviewed main and test selection");
+    const current = this.store.get(requiredText(operationId, "operationId"));
+    if (!current) throw new Error("release operation was not found");
+    const requestArguments = { expectedRevision, expectedGeneration,
+      ...(testSelection == null ? {} : { testSelection: normalizeTestSelection(testSelection) }),
+      ...(taskIds == null ? {} : { taskIds: normalizeReleaseTaskIds(taskIds) }),
+      ...(releaseMetadata == null ? {} : { releaseMetadata: normalizedReleaseMetadata(releaseMetadata) }),
+    };
+    requiredText(requestId, "amendment requestId");
+    const previous = current.testSelectionAmendments?.find(item => item.requestId === requestId);
+    if (previous) {
+      // Omitted arguments belong to this original request, never to a later
+      // effective selection. Old records without explicit argument capture
+      // retain their saved outcome as that original boundary.
+      const selection = testSelection == null ? previous.selection : requestArguments.testSelection;
+      const selectedTaskIds = taskIds == null ? previous.taskIds : requestArguments.taskIds;
+      if (previous.priorRevision !== expectedRevision || previous.priorGeneration !== expectedGeneration
+          || previous.requestArguments != null && releaseIdentitySha256(previous.requestArguments) !== releaseIdentitySha256(requestArguments)
+          || releaseIdentitySha256(previous.selection) !== releaseIdentitySha256(selection)
+          || JSON.stringify(previous.taskIds) !== JSON.stringify(selectedTaskIds)
+          || releaseMetadata != null && (previous.releaseMetadata == null || releaseIdentitySha256(previous.releaseMetadata) !== releaseIdentitySha256(requestArguments.releaseMetadata))) throw new Error("Amendment request identity changed");
+      return { accepted: true, duplicate: true, operationId, amendment: previous, revision: previous.priorRevision + 1 };
+    }
+    const selection = testSelection == null ? effectiveTestSelection(current) : requestArguments.testSelection;
+    const selectedTaskIds = taskIds == null ? effectiveReleaseTaskIds(current) : requestArguments.taskIds;
+    if (expectedRevision !== current.revision || expectedGeneration !== current.currentGeneration) {
+      return { accepted: false, reason: "stale-revision", operation: current };
+    }
+    if (current.owner || !["waiting", "failed"].includes(current.state) || current.currentGeneration < 1) {
+      return { accepted: false, reason: "ineligible", operation: current };
+    }
+    const generation = this.store.generation(operationId, current.currentGeneration);
+    if (!generation) throw new Error("Original generation is missing");
+    const commit = async (taskSelection = null, validateBeforeCommit = async () => {}) => {
+    const readbacks = [];
+    for (const target of releaseApprovedTargets(current)) {
+      const evidence = normalizeReadback(await this.readTarget({ operation: current, generation, target }));
+      if (evidence.status !== "not_applied") throw new Error(`Original publication effect is ${evidence.status}`);
+      readbacks.push({ targetId: target.targetId, generation: current.currentGeneration, evidence });
+    }
+    await validateBeforeCommit();
+    const contents = { requestId, requestArguments, selection, taskIds: selectedTaskIds, taskSelection,
+      ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }), priorRevision: current.revision, priorGeneration: current.currentGeneration,
+      authorizationFingerprint: current.authorization.fingerprint,
+      priorFailure: { state: current.state, completedAt: current.completedAt, error: current.lastError },
+      priorPublicationEffects: current.publicationEffects, priorWaitReason: current.waitReason, priorResumeState: current.resumeState, readbacks };
+    const amendment = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+    const result = this.store.transition(operationId, { state: "compose", currentStep: "compose", lastError: null,
+      publicationEffects: {}, nextAction: "compose the original release with explicit test selection" }, {
+      expectedRevision, testSelectionAmendment: amendment, eventKind: "operation.test-selection-amended",
+      event: { operationId, amendment },
+    });
+    if (result.applied) { this.#observe(operationId); this.#schedule(operationId); }
+    return { accepted: result.applied, reason: result.reason, operationId, revision: result.operation.revision, amendment };
+    };
+    if (taskIds != null) {
+      if (typeof this.withTaskSelection !== "function") throw new Error("Accepted Task selection owner is unavailable");
+      return this.withTaskSelection({ operation: current, taskIds: selectedTaskIds, commit });
+    }
+    return commit();
+  }
+
+  async #recoverReviewedMain(operationId, { requestId, reviewedMain }) {
+    const current = this.store.get(requiredText(operationId, "operationId"));
+    if (!current) throw new Error("release operation was not found");
+    this.#observe(current.operationId);
+    const binding = reviewedMainBinding(current, reviewedMain);
+    if (binding.expectedRevision !== current.revision) return { accepted: false, reason: "stale-revision", operation: current };
+    if (!failedComposeRecoveryEligible(current)) return { accepted: false, reason: "ineligible", operation: current };
+    if (typeof requestId !== "string" || !requestId.trim()) throw new TypeError("Recovery requestId must be a primitive string");
+    if (typeof this.withReviewedMainRecovery !== "function") throw new Error("Reviewed-main recovery verification is unavailable");
+    return this.withReviewedMainRecovery({ workspaceId: current.workspaceId,
+      taskIds: effectiveReleaseTaskIds(current), approvedRepositories: binding.approvedRepositories,
+      commit: async (authority, validateBeforeCommit) => {
+        if (releaseIdentitySha256(authority.approvedRepositories) !== releaseIdentitySha256(binding.approvedRepositories)) {
+          throw new Error("Reviewed-main verified repository binding changed");
+        }
+        const generation = this.store.generation(current.operationId, current.currentGeneration);
+        if (!generation) throw new Error("Original publication generation is missing");
+        const readbacks = [];
+        for (const target of current.authorization.approvedTargets) {
+          const readback = normalizeReadback(await this.readTarget({ operation: current, generation, target, reviewedMain: authority }));
+          if (readback.status !== "not_applied") throw new Error(`Original publication effect readback is ${readback.status}`);
+          readbacks.push({ targetId: target.targetId, generation: generation.generation, evidence: readback });
+        }
+        await validateBeforeCommit();
+        const contents = { ...authority, requestId, priorRevision: current.revision, priorGeneration: current.currentGeneration,
+          previousBinding: current.reviewedMain?.identitySha256 ?? null,
+          priorFailure: { completedAt: current.completedAt, error: current.lastError },
+          authorizationFingerprint: current.authorization.fingerprint, readbacks };
+        const recovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+        const result = this.store.transition(current.operationId, { state: "compose", currentStep: "compose",
+          lastError: null, nextAction: "compose current reviewed main with the original selected set" }, {
+          expectedRevision: binding.expectedRevision, reviewedMainRecovery: recovery, eventKind: "operation.reviewed-main-rebound",
+          event: { operationId: current.operationId, state: "compose", reviewedMain: recovery },
+        });
+        if (result.applied) this.#schedule(current.operationId);
+        return { accepted: result.applied, reason: result.reason, operationId: current.operationId,
+          state: result.operation.state, revision: result.operation.revision };
+      } });
   }
 
   wakeForTask(taskId) {
@@ -367,6 +549,20 @@ export class ReleaseOperationService {
     return this.get(id);
   }
 
+  async drainAddressed({ requestId, operationId, taskId } = {}) {
+    // Local lifetime bookkeeping is not recovery/admission. Read the durable
+    // identity of work already scheduled by this consumer and never wake it.
+    const pending = new Set([...this.#scheduled, ...this.#running]);
+    for (const id of pending) {
+      const original = this.store.get(id);
+      if (original && (operationId ? original.operationId === operationId
+        : taskId ? original.authorization.taskIds.includes(taskId)
+        : typeof requestId === "string" && original.requestId === requestId)) {
+        await this.drain(id);
+      }
+    }
+  }
+
   #schedule(operationId) {
     const timer = this.#retryTimers.get(operationId);
     if (timer) clearTimeout(timer);
@@ -375,7 +571,7 @@ export class ReleaseOperationService {
     this.#scheduled.add(operationId);
     this.scheduleTask(() => {
       this.#scheduled.delete(operationId);
-      void this.#run(operationId);
+      return this.#run(operationId).catch(error => this.#backgroundFailure(operationId, error));
     });
   }
 
@@ -386,11 +582,15 @@ export class ReleaseOperationService {
     let acquisitionDenied = null;
     let owner = null;
     let heartbeat = null;
+    let persistenceUnavailable = false;
+    let runFailed = false;
     try {
-      const prior = this.store.get(operationId);
-      const takeoverAllowed = Boolean(prior?.owner?.processId && !this.processAlive(prior.owner.processId));
-      const acquired = this.store.acquire(operationId, this.ownerId, {
-        leaseMs: this.leaseMs, processId: this.processId, takeoverAllowed,
+      const acquired = await this.store.runOperationMutation(operationId, () => {
+        const prior = this.store.get(operationId);
+        const takeoverAllowed = Boolean(prior?.owner?.processId && !this.processAlive(prior.owner.processId));
+        return this.store.acquire(operationId, this.ownerId, {
+          leaseMs: this.leaseMs, processId: this.processId, takeoverAllowed,
+        });
       });
       if (!acquired.acquired) {
         acquisitionDenied = acquired.reason;
@@ -413,6 +613,7 @@ export class ReleaseOperationService {
           else if (operation.state === "finalize") operation = await this.#finalize(operation, owner);
           else throw new Error(`unsupported release operation state: ${operation.state}`);
         } catch (error) {
+          if (this.store.isContentionError(error)) throw error;
           const latest = this.store.get(operationId) ?? operation;
           if (!ownsRelease(latest, owner)) break;
           if (error?.code === "RELEASE_RESULT_LINEAGE_MISMATCH" && this.requestCorrection) {
@@ -437,17 +638,29 @@ export class ReleaseOperationService {
           operation = failed.operation;
         }
       }
+    } catch (error) {
+      runFailed = true;
+      persistenceUnavailable = this.store.isContentionError(error);
+      throw error;
     } finally {
       if (heartbeat) clearInterval(heartbeat);
-      if (owned) this.store.release(operationId, owner);
-      this.#running.delete(operationId);
+      try {
+        if (owned) await this.store.runOperationMutation(operationId, () => this.store.release(operationId, owner));
+      } catch (error) {
+        this.#backgroundFailure(operationId, error, owner);
+        persistenceUnavailable = this.store.isContentionError(error);
+        runFailed = true;
+      } finally {
+        this.#running.delete(operationId);
+      }
       const current = this.store.get(operationId);
       if (current && releaseOperationIsTerminal(current) && current.currentGeneration > 0) {
         const generation = this.store.generation(current.operationId, current.currentGeneration);
         if (generation) await this.cleanupGeneration?.({ operation: current, generation }).catch(() => {});
       }
-      if (acquisitionDenied === "owned") this.#scheduleOwnedRetry(operationId);
-      else if (owned) {
+      if (persistenceUnavailable) this.#scheduleOwnedRetry(operationId);
+      else if (acquisitionDenied === "owned") this.#scheduleOwnedRetry(operationId);
+      else if (owned && !runFailed) {
         if (current?.state === "waiting") this.#scheduleRetry(current);
         else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
       }
@@ -455,12 +668,25 @@ export class ReleaseOperationService {
     }
   }
 
-  #scheduleOwnedRetry(operationId) {
+  #backgroundFailure(operationId, error, ownerToRelease = null) {
+    console.warn("Release background operation unavailable", {
+      operationId,
+      code: String(error?.code ?? "RELEASE_BACKGROUND_ERROR").slice(0, 64),
+      sqliteCode: Number(error?.errcode) || null,
+    });
+    if (this.store.isContentionError(error)) this.#scheduleOwnedRetry(operationId, ownerToRelease);
+  }
+
+  #scheduleOwnedRetry(operationId, ownerToRelease = null) {
     if (this.#retryTimers.has(operationId)) return;
     const timer = setTimeout(() => {
       this.#retryTimers.delete(operationId);
-      const current = this.store.get(operationId);
-      if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
+      void this.store.runOperationMutation(operationId, () => {
+        if (ownerToRelease) this.store.release(operationId, ownerToRelease);
+        const current = this.store.get(operationId);
+        if (current?.state === "waiting") this.#scheduleRetry(current);
+        else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
+      }).catch(error => this.#backgroundFailure(operationId, error, ownerToRelease));
     }, this.retryDelayMs);
     timer.unref?.();
     this.#retryTimers.set(operationId, timer);
@@ -474,9 +700,11 @@ export class ReleaseOperationService {
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
       this.#retryTimers.delete(operation.operationId);
-      const current = this.store.get(operation.operationId);
-      if (current?.state !== "waiting" || current.revision !== operation.revision) return;
-      this.continue(operation.operationId);
+      void this.store.runOperationMutation(operation.operationId, () => {
+        const current = this.store.get(operation.operationId);
+        if (current?.state !== "waiting" || current.revision !== operation.revision) return;
+        this.continue(operation.operationId);
+      }).catch(error => this.#backgroundFailure(operation.operationId, error));
     }, Math.min(delay, 2_147_000_000));
     timer.unref?.();
     this.#retryTimers.set(operation.operationId, timer);
@@ -501,7 +729,10 @@ export class ReleaseOperationService {
     const generationNumber = operation.currentGeneration + 1;
     const input = {
       authorization: operation.authorization,
+      ...(operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
       priorGeneration: operation.currentGeneration,
+      ...(effectiveTestSelection(operation) ? { testSelection: effectiveTestSelection(operation), amendment: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
+      ...(operation.reviewedMain ? { reviewedMain: operation.reviewedMain.identitySha256 } : {}),
     };
     const started = this.store.beginStep({
       operationId: operation.operationId,
@@ -544,16 +775,22 @@ export class ReleaseOperationService {
       await this.#discardSupersededFailedValidation(operation);
       return advanced;
     }
+    let composedGeneration = null;
     try {
       const composed = await this.compose({ operation, generation: generationNumber });
+      if (effectiveTestSelection(operation) && typeof this.resolveTestPlans !== "function") throw new Error("Release test inventory owner is unavailable");
       const generation = createCandidateGeneration({
         ...composed,
+        ...(operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
+        ...(effectiveTestSelection(operation) ? { testPlans: await this.resolveTestPlans(composed.candidates, effectiveTestSelection(operation)),
+          testSelectionAmendmentId: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
         operationId: operation.operationId,
         generation: generationNumber,
         supersedesGeneration: operation.currentGeneration || null,
         runnerVersion: operation.runnerVersion,
         createdAt: started.receipt.createdAt,
       });
+      composedGeneration = generation;
       this.store.putGeneration(generation, { expectedOwner: owner });
       this.store.finishStep(started.receipt, {
         status: "applied",
@@ -567,7 +804,17 @@ export class ReleaseOperationService {
       await this.#discardSupersededFailedValidation(operation);
       return advanced;
     } catch (error) {
-      this.store.finishStep(started.receipt, { status: "failed", error, expectedOwner: owner });
+      const saved = composedGeneration && this.store.generation(operation.operationId, generationNumber);
+      if (saved?.identitySha256 === composedGeneration?.identitySha256 && saved) {
+        this.#assertOwner(operation.operationId, owner);
+        this.store.finishStep(started.receipt, { status: "applied",
+          effect: { identitySha256: saved.identitySha256 }, expectedOwner: owner });
+        return this.#advance(operation.operationId, "validate", { currentGeneration: generationNumber,
+          selectedResults: saved.selectedResults, nextAction: "validate immutable candidate generation" }, owner);
+      }
+      this.store.finishStep(started.receipt, {
+        status: ["AWAIT_PREPARATION_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN"].includes(error?.code) ? "unknown" : "failed",
+        error, expectedOwner: owner });
       throw error;
     }
   }
@@ -578,7 +825,8 @@ export class ReleaseOperationService {
       operationId: operation.operationId,
       generation: generation.generation,
       stepId: "validate",
-      input: { candidate: generation.identitySha256, mode: operation.authorization.validationMode },
+      input: { candidate: generation.identitySha256, mode: operation.authorization.validationMode,
+        ...(generation.testPlans ? { testPlans: generation.testPlans } : {}) },
       expectedOwner: owner,
     });
     if (!started.created && started.receipt.status === "applied") {
@@ -648,7 +896,7 @@ export class ReleaseOperationService {
       if (latest.state === "compose") return latest;
     }
     let effects = targetEffects(latest);
-    for (const target of latest.authorization.approvedTargets) {
+    for (const target of releaseApprovedTargets(latest)) {
       if (publishedTarget(effects[target.targetId])) continue;
       const stepId = `publish:${target.targetId}`;
       const input = { candidate: generation.identitySha256, target };

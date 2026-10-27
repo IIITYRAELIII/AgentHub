@@ -173,9 +173,13 @@ test("TaskBoardLaunchService creates the durable guard before spawn and blocks e
   const dataDir = path.join(root, "data");
   const repositoryRoot = path.join(root, "repository");
   const taskId = "launch-guard-task";
-  context.after(() => rm(root, { recursive: true, force: true }));
+  let guarded;
+  context.after(async () => {
+    await guarded?.close();
+    await rm(root, { recursive: true, force: true });
+  });
   await initializeTaskGitRepository(repositoryRoot);
-  const guarded = await unprovenProcessTaskGit({ context, root: repositoryRoot, dataDir, taskId });
+  guarded = await unprovenProcessTaskGit({ context, root: repositoryRoot, dataDir, taskId });
   const task = {
     id: taskId, taskNumber: "HUB-159", title: "Guarded launch", rawText: "Guarded launch",
     status: "open", workflowStatus: "new", workspaceId: "workspace-1", streamId: null, revision: 1,

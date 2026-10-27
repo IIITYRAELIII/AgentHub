@@ -45,7 +45,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
     if (!name.startsWith("--")) throw new Error(`Unexpected argument: ${name}`);
-    if (name === "--confirm-cutover" || name === "--squash-bootstrap" || name === "--initial-native-test" || name === "--returned-native-test") {
+    if (name === "--confirm-cutover" || name === "--squash-bootstrap" || name === "--initial-native-test" || name === "--returned-native-test" || name === "--resume-preparation") {
       input[name.slice(2)] = true;
       continue;
     }
@@ -53,6 +53,19 @@ export function parseTaskAwaitCutoverArguments(argv) {
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${name}`);
     input[name.slice(2)] = value;
     index += 1;
+  }
+  if (input["resume-preparation"]) {
+    const allowed = new Set(["resume-preparation", "provider", "thread", "stream", "request",
+      "expected-arguments-hash", "expected-preparation-revision", "native-resolution-review-file"]);
+    if (Object.keys(input).some(key => !allowed.has(key))) throw new Error("Preparation continuation cannot change selection or original arguments");
+    const expectedPreparationRevision = Number(required(input, "expected-preparation-revision"));
+    const expectedArgumentsHash = required(input, "expected-arguments-hash");
+    if (!Number.isSafeInteger(expectedPreparationRevision) || expectedPreparationRevision < 0
+        || !/^[a-f0-9]{64}$/u.test(expectedArgumentsHash)) throw new Error("Invalid original preparation continuation identity");
+    return { resumePreparation: true, provider: required(input, "provider"), threadId: required(input, "thread"),
+      streamId: required(input, "stream"), requestId: required(input, "request"), expectedArgumentsHash,
+      expectedPreparationRevision, ...(input["native-resolution-review-file"]
+        ? { nativeResolutionReviewFile: path.resolve(input["native-resolution-review-file"]) } : {}) };
   }
   const parsed = {
     workspaceId: required(input, "workspace"),
@@ -160,7 +173,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
 
 async function git(args, root = workspaceRoot) {
   const result = await execFileAsync("git", ["-C", root, ...args], {
-    encoding: "utf8", timeout: 10_000, windowsHide: true,
+    encoding: "utf8", windowsHide: true,
   });
   return String(result.stdout ?? "").trim();
 }
@@ -244,9 +257,12 @@ export async function openTaskAwaitCutoverRuntime({
   });
   const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
   const taskGitWorkspaces = suppliedTaskGitWorkspaces
-    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview });
+    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview,
+      readClaimCustodyNamespace: id => workspaceCatalogStore.claimCustodyNamespaceForTask(id) });
   const releaseGitWorkspaces = suppliedReleaseGitWorkspaces
-    ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview });
+    ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview,
+      readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
+      readPreparationOriginal: id => workspaceCatalogStore.mcpOperation(id) });
   const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const releasePreflight = suppliedReleasePreflight ?? new WorkspaceReleasePreflightService({
     measureOperation: measureTaskOperation,
@@ -279,6 +295,7 @@ export async function openTaskAwaitCutoverRuntime({
     reconcilePendingOnStartup: false,
   });
   return {
+    config,
     service,
     taskBoard,
     workspaceCatalog: workspaceCatalogStore,
@@ -406,8 +423,37 @@ export async function executeTaskAwaitCutover(input, {
   }
 }
 
+// Source-only preparation recovery consumes the same default factory and
+// genuine caller capabilities as the existing local native cutover consumer.
+// An ordinary serialized MCP call cannot supply this terminal observer.
+export async function executePreparationForward(input, {
+  openRuntime = openTaskAwaitCutoverRuntime, inspectOriginalExecution,
+} = {}) {
+  if (typeof inspectOriginalExecution !== "function") throw new TypeError("Original invocation terminal observer is required");
+  const runtime = await openRuntime();
+  try {
+    const token = runtime.service.contextToken({ provider: input.provider, threadId: input.threadId, streamId: input.streamId });
+    return await runtime.service.callPreparationForward({ context_token: token, request_id: input.requestId,
+      expected_arguments_hash: input.expectedArgumentsHash, expected_preparation_revision: input.expectedPreparationRevision,
+      original_preparation: input.originalPreparation, preparation: input.preparation }, { inspectOriginalExecution });
+  } finally { runtime.close(); }
+}
+
+export async function executePreparationResume(input, { openRuntime = openTaskAwaitCutoverRuntime } = {}) {
+  const review = input.nativeResolutionReviewFile
+    ? JSON.parse(await readFile(input.nativeResolutionReviewFile, "utf8")) : input.nativeResolutionReview;
+  const runtime = await openRuntime();
+  try {
+    const token = runtime.service.contextToken({ provider: input.provider, threadId: input.threadId, streamId: input.streamId });
+    return await runtime.service.call("hub_release_prepare_resume", { context_token: token, request_id: input.requestId,
+      expected_arguments_hash: input.expectedArgumentsHash, expected_preparation_revision: input.expectedPreparationRevision,
+      ...(review == null ? {} : { native_resolution_review: review }) });
+  } finally { runtime.close(); }
+}
+
 if (path.resolve(process.argv[1] ?? "") === path.resolve(moduleFile)) {
-  executeTaskAwaitCutover(parseTaskAwaitCutoverArguments(process.argv.slice(2)))
+  const input = parseTaskAwaitCutoverArguments(process.argv.slice(2));
+  (input.resumePreparation ? executePreparationResume(input) : executeTaskAwaitCutover(input))
     .then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`))
     .catch((error) => {
       process.stderr.write(`${error.stack || error.message}\n`);

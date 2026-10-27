@@ -446,7 +446,7 @@ async function assertExactSendableProbe(hub, outcome) {
     `probe targeted a Stream that existed before the smoke (historical or Hub system Stream): ${evidence}`);
 }
 
-test("scenario 6: historical named and live unnamed Threads — the smoke proves one exact sendable target", { timeout: 300_000 }, async (t) => {
+test("scenario 6: historical named and live unnamed Threads — the smoke proves one exact sendable target", {  }, async (t) => {
   const hub = await startScenarioHub(t, {
     liveThreads: LIVE_UNNAMED_THREADS,
     seed: seedHistoricalNamedStream,
@@ -455,13 +455,13 @@ test("scenario 6: historical named and live unnamed Threads — the smoke proves
   await assertExactSendableProbe(hub, outcome);
 });
 
-test("scenario 6: empty catalog — standard setup creates and proves its own sendable target", { timeout: 300_000 }, async (t) => {
+test("scenario 6: empty catalog — standard setup creates and proves its own sendable target", {  }, async (t) => {
   const hub = await startScenarioHub(t, {});
   const outcome = await runProductionSmoke(hub);
   await assertExactSendableProbe(hub, outcome);
 });
 
-test("scenario 6: a definite send refusal fails the smoke early with the refusal, without a provider effect", { timeout: 300_000 }, async (t) => {
+test("scenario 6: a definite send refusal fails the smoke early with the refusal, without a provider effect", {  }, async (t) => {
   const hub = await startScenarioHub(t, { liveThreads: LIVE_UNNAMED_THREADS });
   const proxy = await startProbeProxy(t, hub, { mode: "refuse" });
   const outcome = await runProductionSmoke(hub, { url: proxy.url });
@@ -477,7 +477,7 @@ test("scenario 6: a definite send refusal fails the smoke early with the refusal
   assert.deepEqual(await hub.providerProbeTurns(), [], `refused send reached the provider: ${evidence}`);
 });
 
-test("scenario 6: an unknown send outcome is never sent again", { timeout: 300_000 }, async (t) => {
+test("scenario 6: an unknown send outcome is never sent again", {  }, async (t) => {
   const hub = await startScenarioHub(t, { liveThreads: LIVE_UNNAMED_THREADS });
   const proxy = await startProbeProxy(t, hub, { mode: "drop-response" });
   const outcome = await runProductionSmoke(hub, { url: proxy.url });
@@ -516,7 +516,7 @@ test("scenario 6: an unknown send outcome is never sent again", { timeout: 300_0
 // command (MSG-001 ledger, keyed by clientUserMessageId); duplicate:false proves
 // nothing. Desktop control receipts are recorded as evidence under both keys and
 // must agree when present; their retention is not asserted.
-test("scenario 6 replay: an unknown send is reconciled only through the owner's durable receipt", { timeout: 300_000 }, async (t) => {
+test("scenario 6 replay: an unknown send is reconciled only through the owner's durable receipt", {  }, async (t) => {
   const hub = await startScenarioHub(t, { liveThreads: LIVE_UNNAMED_THREADS });
   const proxy = await startProbeProxy(t, hub, { mode: "drop-response" });
   const outcome = await runProductionSmoke(hub, { url: proxy.url });

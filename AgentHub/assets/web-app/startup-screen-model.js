@@ -27,6 +27,17 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
   const operations = Array.isArray(snapshot?.startup?.operations)
     ? snapshot.startup.operations.map(normalizedOperation)
     : [];
+  const capabilityFailures = (Array.isArray(snapshot?.capabilities) ? snapshot.capabilities : [])
+    .filter(capability => capability?.critical === true && capability.state === "failed")
+    .map(capability => ({ id: `capability:${capability.name}`,
+      label: capability.name === "provider" ? "Провайдер — текущее состояние" : String(capability.name),
+      state: "failed", background: false, error: String(capability.error ?? "") }));
+  for (const operation of operations) {
+    const failure = capabilityFailures.find(capability => capability.id === `capability:${operation.id}`);
+    if (operation.state === "failed" && !operation.error && failure) operation.error = failure.error;
+  }
+  const currentFailures = capabilityFailures.filter(capability => !operations.some(operation =>
+    capability.id === `capability:${operation.id}` && operation.state === "failed" && operation.error === capability.error));
   if (!operations.length) {
     if (snapshot?.ready !== false) return { available: false, ready: Boolean(snapshot?.ready) };
     return {
@@ -50,7 +61,7 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
     operation.state === "pending" && !operation.background
   ));
   const currentIndex = runningIndex >= 0 ? runningIndex : pendingIndex;
-  const failed = operations.some((operation) => operation.state === "failed" && !operation.background);
+  const failed = currentFailures.length > 0 || operations.some((operation) => operation.state === "failed" && !operation.background);
   const ready = Boolean(snapshot?.ready);
   const finished = currentIndex < 0;
   const activeOperation = currentIndex >= 0 ? operations[currentIndex] : null;
@@ -75,9 +86,9 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
     stageTotal: operations.length,
     operations,
     completedOperations,
-    failedOperations: operations.filter((operation) => (
+    failedOperations: [...operations.filter((operation) => (
       operation.state === "failed" && !operation.background
-    )),
+    )), ...currentFailures],
     backgroundFailedOperations: operations.filter((operation) => (
       operation.state === "failed" && operation.background
     )),

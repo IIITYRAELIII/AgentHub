@@ -21,6 +21,7 @@ import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspac
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationCommandService } from "../../src/application/release-operation-command-service.mjs";
 import { createNativeMergeReviewVerifier } from "../../src/application/native-merge-review.mjs";
+import { e2eFailureArtifactDirectory } from "../../e2e/telegram-harness.mjs";
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -55,6 +56,39 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
   const databaseFile = path.join(root, "hub.sqlite"), dataDir = path.join(root, "data");
   let catalog, store, board, taskGit, releaseGit, preflight, lifecycle, service, token;
   let releaseStore, releaseOperations;
+  const ownedReleases = [];
+  const retainRelease = (owner, store, operationId) => {
+    if (!ownedReleases.some(item => item.owner === owner && item.operationId === operationId)) {
+      ownedReleases.push({ owner, store, operationId });
+    }
+  };
+  const joinReleases = async () => {
+    if (!ownedReleases.length) return;
+    // Preserve bounded original identities before a cancelled case can close
+    // the stores beneath its already admitted release work.
+    try {
+      const observations = ownedReleases.map(item => {
+        try {
+          const current = item.store.get(item.operationId);
+          return { operationId: item.operationId, state: current?.state,
+            step: current?.step, generation: current?.currentGeneration,
+            owner: current?.owner ? { processId: current.owner.processId, epoch: current.owner.epoch } : null };
+        } catch (error) { return { operationId: item.operationId, readError: error?.code ?? error?.name }; }
+      });
+      const directory = e2eFailureArtifactDirectory(path.resolve(import.meta.dirname, "../.."), root);
+      await mkdir(directory, { recursive: true });
+      const file = path.join(directory, "native-public-release-drain.json");
+      await writeFile(file, JSON.stringify({ stage: "join-owned-releases-before-store-close",
+        observedAt: new Date().toISOString(), observations }), "utf8");
+      t.diagnostic(`Preserved native public release identities: ${file}`);
+    } catch { /* optional diagnostics never change the original outcome */ }
+    const joining = [...ownedReleases];
+    for (const item of joining) await item.owner.drain(item.operationId);
+    for (const item of joining) {
+      const index = ownedReleases.indexOf(item);
+      if (index >= 0) ownedReleases.splice(index, 1);
+    }
+  };
   let workspace, stream;
   const publication = { generation: "fixture", repositories: [{ root: primary, revision: base }] };
   const open = async () => {
@@ -99,12 +133,13 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
     token = service.contextToken({ provider: "codex", threadId: "fixture-thread" });
   };
   await open();
-  t.after(async () => { store.close(); catalog.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
+  t.after(async () => { await joinReleases(); store.close(); catalog.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   return {
     root, primary, base, workspace,
     get board() { return board; }, get taskGit() { return taskGit; }, get lifecycle() { return lifecycle; }, get catalog() { return catalog; },
     get preflight() { return preflight; },
     async continueRelease(operationId) {
+      retainRelease(releaseOperations, releaseStore, operationId);
       await service.call("hub_release_continue", { context_token: token, operation_id: operationId, request_id: "prepared-release-continue" });
       return releaseOperations.drain(operationId);
     },
@@ -205,6 +240,7 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
         streamId: stream.id, threadId: "fixture-thread", taskIds: args.task_ids, validationMode: args.validation_mode,
         approvedTargets: args.approved_targets, releaseMetadata }) : service.call("hub_release_run", args);
       const ack = await admit();
+      retainRelease(releaseOperations, releaseStore, ack.operationId);
       const snapshot = await releaseOperations.drain(ack.operationId);
       const replay = await admit();
       assert.equal(replay.operationId, ack.operationId);
@@ -212,7 +248,7 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
       assert.equal(read.operation.operationId, ack.operationId);
       return snapshot;
     },
-    async reopen() { store.close(); catalog.close(); await open(); },
+    async reopen() { await joinReleases(); store.close(); catalog.close(); await open(); },
     async create(name) {
       const task = store.create({ text: name, bucket: "workspace", workspaceId: workspace.id });
       const prepared = await taskGit.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: primary });
@@ -233,12 +269,50 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
   };
 }
 
+test("fixture joins its admitted original release before closing stores on reopen", async t => {
+  const f = await fixture(t);
+  const operationId = "fixture-controlled-original-release";
+  let releaseGate, firstEntered, secondEntered, storeClosed;
+  const gate = new Promise(resolve => { releaseGate = resolve; });
+  const first = new Promise(resolve => { firstEntered = resolve; });
+  const second = new Promise(resolve => { secondEntered = resolve; });
+  const closed = new Promise(resolve => { storeClosed = resolve; });
+  let drains = 0, closes = 0;
+  t.mock.method(ReleaseOperationService.prototype, "drain", async id => {
+    assert.equal(id, operationId);
+    drains += 1;
+    if (drains === 1) firstEntered(); else secondEntered();
+    await gate;
+    return { operation: { operationId, state: "waiting" } };
+  });
+  const originalCall = HubMcpService.prototype.call;
+  t.mock.method(HubMcpService.prototype, "call", async function (name, args) {
+    if (name === "hub_release_run") return { operationId };
+    if (name === "hub_release_get") return { operation: { operationId } };
+    return originalCall.call(this, name, args);
+  });
+  const originalClose = f.store.close.bind(f.store);
+  t.mock.method(f.store, "close", () => { closes += 1; storeClosed(); return originalClose(); });
+  const admitted = f.release({ id: "controlled-task" });
+  await first;
+  const reopening = f.reopen();
+  try {
+    assert.equal(await Promise.race([second.then(() => "joined"), closed.then(() => "closed")]), "joined");
+    assert.equal(closes, 0, "the original stores remain open while admitted work is held");
+  } finally {
+    releaseGate();
+    await Promise.all([admitted, reopening]);
+  }
+  assert.equal(closes, 1);
+  assert.equal(drains, 2, "reopen joins the existing original, without starting another release");
+});
+
 for (const scenario of [
   { name: "survivor Test", priorSurvivor: "test" },
   { name: "source Await", priorSource: "await" },
   { name: "both Await and UNKNOWN reopen", priorSource: "await", priorSurvivor: "await", unknown: true },
 ]) {
-  test(`public returned native absorption preserves ${scenario.name} prior results`, { timeout: 360_000 }, async t => {
+  test(`public returned native absorption preserves ${scenario.name} prior results`, async t => {
     const f = await fixture(t), a = await f.absorption(scenario);
     const input = await a.handoff("returned-saved-stopped"), before = f.board.task(a.survivor.id);
     const sql = (query, method, ...args) => {
@@ -318,7 +392,7 @@ for (const scenario of [
   });
 }
 
-test("public fresh native absorption binds authenticated handoff through Test Await and combined closure", { timeout: 360_000 }, async t => {
+test("public fresh native absorption binds authenticated handoff through Test Await and combined closure", async t => {
   const f = await fixture(t, { releaseMetadata: true }), { source, survivor, handoff, declaration, itemId } = await f.absorption();
   const input = await handoff("saved-stopped");
   await assert.rejects(f.status(survivor, "testing", "missing-handoff"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
@@ -394,7 +468,7 @@ test("public fresh native absorption binds authenticated handoff through Test Aw
     proof.selectedComposition.descriptorHash);
 });
 
-test("public native absorption lost terminal reopens same original and refuses live source drift", { timeout: 240_000 }, async t => {
+test("public native absorption lost terminal reopens same original and refuses live source drift", async t => {
   const f = await fixture(t), { source, survivor, handoff, declaration } = await f.absorption();
   const input = await handoff("saved-stopped"), before = f.board.task(survivor.id);
   const original = "native-absorption-lost-terminal", terminal = f.board.commitWorkflowTransition.bind(f.board);
@@ -458,7 +532,7 @@ test("public native absorption lost terminal reopens same original and refuses l
   assert.equal((await f.status(survivor, "awaiting_implementation", "restored-await")).workflowStatus, "awaiting_implementation");
 });
 
-test("public native absorption refuses a reopened source executor at terminal Task CAS", { timeout: 180_000 }, async t => {
+test("public native absorption refuses a reopened source executor at terminal Task CAS", async t => {
   const f = await fixture(t), { source, survivor, handoff, sourceStream, sourceThread } = await f.absorption();
   const input = await handoff("saved-stopped"), terminal = f.board.commitWorkflowTransition.bind(f.board);
   f.board.commitWorkflowTransition = async args => {
@@ -475,7 +549,7 @@ test("public native absorption refuses a reopened source executor at terminal Ta
   assert.equal(await readFile(path.join(source.root, "source.txt"), "utf8"), "saved source\n");
 });
 
-test("public real SQLite Test and Await merge exact full branches and exclude Test-only", { timeout: 180_000 }, async t => {
+test("public real SQLite Test and Await merge exact full branches and exclude Test-only", async t => {
   const f = await fixture(t), a = await f.create("A"), b = await f.create("Test only");
   await assert.rejects(f.status(a, "testing", "closed-legacy-preview", { selected_proof_bundle_path: "unused.bundle" }),
     { code: "TASK_NATIVE_GIT_REQUIRED" });
@@ -509,7 +583,7 @@ test("public real SQLite Test and Await merge exact full branches and exclude Te
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
-test("public native conflict keeps dev and resumes the ordinary resolution commit", { timeout: 180_000 }, async t => {
+test("public native conflict keeps dev and resumes the ordinary resolution commit", async t => {
   const f = await fixture(t), a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "shared.txt"), "A\n"); await f.status(a, "testing", "test-a");
   const dev = await git(f.primary, "rev-parse", "dev");
@@ -530,7 +604,7 @@ test("public native conflict keeps dev and resumes the ordinary resolution commi
   assert.equal(await git(f.primary, "show", "dev:shared.txt"), "A+B");
 });
 
-test("public Test and Await accept only the exact reviewed automatic compatibility cleanup", { timeout: 240000 }, async t => {
+test("public Test and Await accept only the exact reviewed automatic compatibility cleanup", async t => {
   const f = await fixture(t, { compatibilityFiles: true, releaseMetadata: true }), a = await f.create("A"), b = await f.create("B");
   for (const file of ["test-one.js", "test-two.js"]) {
     await writeFile(path.join(a.root, file), "// header\nfunction check() {}\n// middle\n\n// footer\n");
@@ -605,7 +679,7 @@ test("public Test and Await accept only the exact reviewed automatic compatibili
   assert.equal((await git(captured.releaseRoot, "show", "HEAD:test-one.js")).match(/function check/gu).length, 1);
 });
 
-test("public native lost terminal and source drift retain UNKNOWN through SQLite reopen", { timeout: 180_000 }, async t => {
+test("public native lost terminal and source drift retain UNKNOWN through SQLite reopen", async t => {
   const f = await fixture(t), a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "result\n");
   const before = f.board.task(a.id), original = "test-a-lost-terminal";
@@ -628,7 +702,7 @@ test("public native lost terminal and source drift retain UNKNOWN through SQLite
   assert.equal(await git(f.primary, "rev-parse", "dev"), dev);
 });
 
-test("public durable release composes native immutable generation with separately approved main history", { timeout: 180000 }, async t => {
+test("public durable release composes native immutable generation with separately approved main history", async t => {
   const f = await fixture(t, { releaseMetadata: true }), a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "selected\n");
   await f.status(a, "testing", "test-a");
@@ -644,7 +718,9 @@ test("public durable release composes native immutable generation with separatel
   const stale = await f.release(a, published);
   assert.equal(stale.operation.waitReason.code, "prepared_candidate_stale");
   assert.equal(stale.generations.length, 0);
-  await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id });
+  await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id, reviewedMainApprovals: {
+    approvedRepositories: [{ projectRoot: f.primary, approvedLocalMainCommit: f.base, approvedOriginMainCommit: published }],
+  } });
   const snapshot = await f.continueRelease(stale.operation.operationId);
   assert.equal(snapshot.operation.operationId, stale.operation.operationId);
   assert.equal(snapshot.operation.state, "waiting", JSON.stringify(snapshot.operation.lastError));
@@ -666,7 +742,7 @@ test("public durable release composes native immutable generation with separatel
   assert.equal(await git(candidate.releaseRoot, "rev-parse", "HEAD"), candidate.commit);
 });
 
-test("public release generation retains prepared PreRelease conflict resolution", { timeout: 240_000 }, async t => {
+test("public release generation retains prepared PreRelease conflict resolution", async t => {
   const f = await fixture(t, { releaseMetadata: true }), a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "shared.txt"), "A\n");
   await f.status(a, "testing", "prepared-test-a");
@@ -697,11 +773,12 @@ test("public release generation retains prepared PreRelease conflict resolution"
   assert.equal(subset.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
   assert.equal(subset.generations.length, 0);
   const notes = Buffer.from("authorized prepared release notes\n");
-  const notesPath = path.join(prepared.releaseRoot, "CHANGELOG.md");
+  const notesPath = path.join(f.root, "authorized-CHANGELOG.md");
   await writeFile(notesPath, notes);
   const notesHash = createHash("sha256").update(notes).digest("hex");
   const releaseMetadata = { sourcePath: notesPath, byteLength: notes.length,
     rawSha256: notesHash, canonicalSha256: notesHash };
+  assert.equal(await git(prepared.releaseRoot, "status", "--porcelain"), "");
   const prepareGeneration = f.preflight.prepareOperationGeneration.bind(f.preflight);
   let lost = null;
   f.preflight.prepareOperationGeneration = async input => {
@@ -713,6 +790,7 @@ test("public release generation retains prepared PreRelease conflict resolution"
     return value;
   };
   const interrupted = await f.release([a, b], f.base, "native-release-original", releaseMetadata);
+  assert.equal(interrupted.operation.state, "waiting", JSON.stringify(interrupted.operation));
   assert.equal(interrupted.operation.waitReason.code, "external_condition");
   assert.equal(interrupted.generations.length, 0);
   const reflog = await git(lost.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
@@ -733,5 +811,6 @@ test("public release generation retains prepared PreRelease conflict resolution"
   assert.ok((await git(candidate.releaseRoot, "diff", "--name-only", resolution, candidate.commit))
     .split(/\r?\n/u).filter(Boolean).every(file => metadata.has(file)));
   assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), resolution);
+  assert.equal(await git(prepared.releaseRoot, "status", "--porcelain"), "");
   assert.deepEqual(await readFile(notesPath), notes);
 });
