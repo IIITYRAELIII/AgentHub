@@ -525,6 +525,7 @@ export async function createHubInfrastructure({
   const hubMcpService = new HubMcpService({
     claimCustodyRuntime: createClaimCustodyRuntime({ dataDir: config.dataDir }),
     measureOperation: measureTaskOperation,
+    recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
     taskLifecycle,
