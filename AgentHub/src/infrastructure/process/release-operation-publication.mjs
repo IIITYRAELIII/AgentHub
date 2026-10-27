@@ -273,14 +273,16 @@ export class ReleaseOperationPublication {
         && result?.generation === generation.generation
         && result?.targetId === target.targetId
         && result?.candidate === generation.identitySha256
-        && result?.status === "applied") return result;
+        && result?.status === "applied"
+        && (target.environment !== "github-release"
+          || result.deploymentProfile === "github-release" && result.distribution?.sourceCommit === candidate.commit)) return result;
     const publication = await this.readPublicationState().catch(() => null);
     const published = publication?.revision === candidate.commit
       || publication?.repositories?.some((repository) => (
         path.resolve(repository.root) === path.resolve(candidate.repositoryRoot)
           && repository.revision === candidate.commit
       ));
-    if (published) return {
+    if (published && target.environment !== "github-release") return {
       status: "applied",
       revision: candidate.commit,
       source: "publication-state-readback",

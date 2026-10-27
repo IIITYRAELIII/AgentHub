@@ -12,6 +12,8 @@ import { publicationCheckpointStore } from "./src/infrastructure/persistence/pub
 import { publicationRunStore } from "./src/infrastructure/persistence/publication-run-store.mjs";
 import { ReleaseOperationStore } from "./src/infrastructure/persistence/release-operation-store.mjs";
 import { artifactVersionIdentity } from "./src/domain/agent-hub-version.mjs";
+import { releaseApprovedTargets } from "./src/domain/release-operation.mjs";
+import { createGitHubDistributionSteps } from "./src/infrastructure/process/github-release-publication.mjs";
 
 function requiredEnvironment(name) {
   const value = String(process.env[name] ?? "").trim();
@@ -53,6 +55,26 @@ export function releaseOperationRuntimePublicationInput({ operation, generation,
   };
 }
 
+export function releaseOperationDeploymentProfile(operation, targetId) {
+  const target = releaseApprovedTargets(operation).find(item => item.targetId === targetId);
+  if (!target || target.kind !== "agent-hub-publication") throw new Error("Publication target is not authorized");
+  return target.environment === "github-release" ? "github-release" : "installed-runtime";
+}
+
+export function distributionArtifactAdapter(artifacts, distribution) {
+  const deployment = new Set(["Сборка Agent Hub Mobile", "Сборка runtime-релиза", "Установка runtime-релиза",
+    "Развёртывание Mini App Worker", "Проверка Mini App Worker", "Активация runtime-релиза", "Установка расширения VS Code"]);
+  return {
+    async steps(steps, identity) {
+      const preparation = await artifacts.steps([
+        ...steps.filter(step => !deployment.has(step.label)), { label: "Сборка runtime-релиза" },
+      ], identity);
+      return [...preparation.filter(step => step.label !== "Установка runtime-релиза"), ...distribution.steps(identity)];
+    },
+    verify: identity => distribution.verify(identity),
+  };
+}
+
 async function run() {
   const dataDir = requiredEnvironment("AGENT_HUB_DATA_DIR");
   const operationId = requiredEnvironment("AGENT_HUB_RELEASE_OPERATION_ID");
@@ -80,6 +102,7 @@ async function run() {
   if (generation.identitySha256 !== candidateIdentity) throw new Error("release operation generation identity changed");
   const candidate = generation.candidates.find((item) => path.resolve(item.releaseRoot) === repositoryRoot);
   if (!candidate) throw new Error("publication runner checkout does not match the immutable generation");
+  const deploymentProfile = releaseOperationDeploymentProfile(operation, targetId);
   const readPlan = async () => ({
     revision: candidate.planRevision,
     candidates: generation.selectedResults.map((result) => ({
@@ -95,13 +118,19 @@ async function run() {
   });
   const journal = publicationRunStore({ runtimeRoot: executionRoot });
   const checkpoint = publicationCheckpointStore(path.join(executionRoot, "publication-checkpoint.json"));
+  const runtimePublication = releaseOperationRuntimePublicationInput({ operation, generation, candidate });
   const artifacts = createPublicationArtifactSteps({
     sourceRoot: process.cwd(), runtimeRoot, journal, run: runStep,
     prepareRuntimeImpl: prepareRuntime,
     installRuntimeImpl: installPreparedRuntime,
     verifyRuntimeImpl: verifyInstalledRuntime,
-    runtimePublication: releaseOperationRuntimePublicationInput({ operation, generation, candidate }),
+    runtimePublication,
   });
+  const artifactAdapter = deploymentProfile === "github-release"
+    ? distributionArtifactAdapter(artifacts, createGitHubDistributionSteps({
+      sourceRoot: process.cwd(), repositoryRoot: candidate.repositoryRoot, executionRoot,
+      runtimePublication, artifacts, journal,
+    })) : artifacts;
   const saved = await journal.read();
   const args = releaseOperationPublicationArguments({ operation, generation, candidate, saved });
   const result = await publishChanged(args, {
@@ -111,9 +140,10 @@ async function run() {
     preparePublication: adapter.prepare,
     publishGit: adapter.publishGit,
     finalizePublication: async () => ({ status: "completed", delegated: true }),
-    prepareArtifactSteps: artifacts.steps,
-    verifyArtifacts: artifacts.verify,
+    prepareArtifactSteps: artifactAdapter.steps,
+    verifyArtifacts: artifactAdapter.verify,
     repositoryRoot,
+    deploymentProfile,
   });
   const publication = await journal.read();
   const effect = {
@@ -127,6 +157,8 @@ async function run() {
     revision: candidate.commit,
     publicationStatus: result.status,
     publicationRunId: publication?.runId ?? null,
+    ...(deploymentProfile === "github-release" ? { deploymentProfile,
+      distribution: publication?.progress?.githubDistribution?.result ?? null } : {}),
     completedAt: new Date().toISOString(),
   };
   await writeFile(path.join(executionRoot, "result.json"), `${JSON.stringify(effect, null, 2)}\n`, "utf8");

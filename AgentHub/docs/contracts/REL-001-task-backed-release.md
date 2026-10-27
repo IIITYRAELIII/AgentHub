@@ -3168,3 +3168,30 @@ metadata authority. Candidate freeze still owns and binds the actual bytes, vers
 tree and manifest. This supplies the consolidated entry for changed Task membership
 without rewriting the initial authorization or silently generating release notes.
 See ADR-HUB-351-release-metadata-amendment.
+
+## Explicit GitHub distribution target
+
+An original `agent-hub-publication` target with environment `github-release`
+selects the existing runner's distribution profile. Normal installed targets are
+unchanged. The profile remains bound to its exact authorized target, frozen
+generation/source/build and existing publication journal. Cross-profile resume
+refuses. Accepted tests retain their existing selection; skipped is not PASS.
+
+Preparation and the verified four-file packaging checkpoint precede ordinary
+frozen Git publication. Git precedes draft asset upload and publication. The
+unchanged PREPARED receipt comes only from that generation's artifact owner.
+This profile does not install/activate/restart the publisher runtime or deploy
+Worker/Android/VS Code. Repository registration and source cutover remain under
+their existing owner, not this adapter.
+
+Only canonical public IIITYRAELIII/AgentHub is supported. Stable tag/source,
+repository/owner IDs, own digest-bound release body, complete asset names/sizes/
+SHA-256 and local PACKAGED inputs must agree. Foreign/ambiguous/drifted output
+refuses without overwrite or deletion. Own successful lost replies are read back;
+started uploads with no matching complete remote asset remain unknown. The same
+journal persists original create/upload intents before effects. Git state alone
+cannot settle an asset target. Publisher authentication never enters recipient
+assets; authenticated redirects refuse. Actual anonymous download/install/update/
+rollback remains required before distribution/cutover completion.
+
+See ADR-HUB-329-github-distribution-target and its focused behavioral check.

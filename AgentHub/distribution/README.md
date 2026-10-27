@@ -147,12 +147,20 @@ lost, is reused before another preparation/allocation. Partial bodies without a
 manifest and changed original inputs refuse and remain available for inspection.
 This is an existing-checkpoint adapter, not another preparation or approval ledger.
 
-The final standalone export input, invocation of the packaging stage and
-publication of its accepted asset allowlist through the original release
-checkpoint remain separate wiring.
-Until that wiring and final product input are reviewed, this offline checkpoint
-and callable adapter alone are not the complete build-to-public-release command.
-No second publisher, manual asset upload or source-only artifact substitutes for it.
+The original release owner can explicitly authorize an `agent-hub-publication`
+target with environment `github-release`. Its ordinary frozen runner prepares
+the runtime, invokes this packaging checkpoint, publishes Git, then uploads the
+exact four assets to its own digest-bound draft and publishes that GitHub Release.
+The target must use the registered standalone public repository. It does not
+install or restart the publisher, deploy Worker/Android or install VS Code.
+Normal targets retain their installed-runtime behavior. Original generation,
+version, source, journal and tests selection remain authoritative; there is no
+manual receipt, asset upload or alternate publication CLI.
+
+This implementation still requires exact source/current-context review and the
+ordinary standalone candidate lifecycle. Its existence does not prove that a
+product archive was built or publicly downloaded. Actual product download, fresh
+install, update, rollback and managed cutover remain separate completion evidence.
 
 The publisher's prepared runtime is an input, not a trigger for another build:
 

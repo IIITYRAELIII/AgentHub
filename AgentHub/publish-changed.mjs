@@ -366,7 +366,9 @@ export async function publishChanged(args = process.argv.slice(2), {
   prepareArtifactSteps = async (steps) => steps,
   verifyArtifacts = async () => {},
   repositoryRoot = process.cwd(),
+  deploymentProfile = "installed-runtime",
 } = {}) {
+  if (!["installed-runtime", "github-release"].includes(deploymentProfile)) throw new Error("Unsupported publication deployment profile");
   const publicationRoot = path.resolve(repositoryRoot);
   return exclusive(async () => {
     const options = parseChangedArguments(args);
@@ -377,6 +379,9 @@ export async function publishChanged(args = process.argv.slice(2), {
     // publisher. Explicit resume owns the saved run and must not prepare or
     // deploy another candidate.
     const pending = options.resume ? await journal?.read?.() : null;
+    if (pending && (pending.identity?.deploymentProfile ?? "installed-runtime") !== deploymentProfile) {
+      throw new Error("Resume deployment profile differs from the original publication");
+    }
     if (pending?.progress?.publicationState) {
       const identity = pending.identity;
       if (!testPlan && identity.testPlan) testPlan = verifyTestPlan(identity.testPlan, await discoverReleaseTestInventory(path.join(publicationRoot, "AgentHub")));
@@ -432,6 +437,9 @@ export async function publishChanged(args = process.argv.slice(2), {
     const savedIdentity = saved?.identity;
     const sameCandidate = savedIdentity?.revision === head && savedIdentity?.worktreeRoot === publicationRoot
       && savedIdentity?.runtimeRoot === runtimeRoot;
+    if (sameCandidate && (savedIdentity.deploymentProfile ?? "installed-runtime") !== deploymentProfile) {
+      throw new Error("Candidate deployment profile differs from the original publication");
+    }
     if (options.resume && !sameCandidate) throw new Error("No matching publication candidate to resume");
     if (options.resume && options.from && options.from !== savedIdentity.from) {
       throw new Error("Resume source revision differs from the saved publication");
@@ -466,6 +474,11 @@ export async function publishChanged(args = process.argv.slice(2), {
     if (!from) throw new Error("Нет исходной точки публикации. Сначала выполните npm run publish:all или укажите --from <commit>.");
     const files = await diff(from, { cwd: publicationRoot });
     const plan = classifyPublicationChanges(files);
+    if (deploymentProfile === "github-release") {
+      // The explicit approved distribution target prepares a runtime for its
+      // archive. It never installs/restarts the publisher or deploys providers.
+      Object.assign(plan, { runtime: true, runtimeRestart: false, worker: false, android: false, vscode: false });
+    }
     if (!testPlan && options.fullTests) plan.fullTests = true;
     if (!testPlan && plan.unknown.length && !options.quick) plan.fullTests = true;
     if (!testPlan && plan.unknown.length) console.warn(`Неизвестные пути требуют публикации всех компонентов${options.quick ? " с выбранной quick-проверкой" : " с полными тестами"}: ${plan.unknown.join(", ")}`);
@@ -492,11 +505,12 @@ export async function publishChanged(args = process.argv.slice(2), {
       testContour: options.testContour,
       workspaceId: options.workspaceId,
       labels: steps.map((step) => step.label),
+      ...(deploymentProfile === "github-release" ? { deploymentProfile } : {}),
     };
     steps = await prepareArtifactSteps(steps, identity);
     identity.labels = steps.map((step) => step.label);
     if (publishGit) {
-      const firstDeployment = steps.findIndex((step) => ["Сборка runtime-релиза", "Установка runtime-релиза", "Развёртывание Mini App Worker", "Активация runtime-релиза", "Установка расширения VS Code"].includes(step.label));
+      const firstDeployment = steps.findIndex((step) => ["Сборка runtime-релиза", "Установка runtime-релиза", "Развёртывание Mini App Worker", "Активация runtime-релиза", "Установка расширения VS Code", "Публикация GitHub Release"].includes(step.label));
       steps.splice(firstDeployment < 0 ? steps.length : firstDeployment, 0, {
         label: "Публикация Git", reusable: false, execute: () => publishGit(identity),
       });
