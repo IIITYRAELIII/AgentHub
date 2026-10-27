@@ -21,7 +21,7 @@ import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1
 import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
-  assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin } from "./local-source-baseline.mjs";
+  assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, publishedMetadataContext } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
@@ -3965,6 +3965,11 @@ export class TaskGitWorkspaceService {
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
     else if (binding?.baseline?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: binding.baseline,
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
+    if (binding?.publishedMetadata) {
+      const current = await publishedMetadataContext({ publication: await this.readPublication(), repositoryRoot: snapshot.repositoryRoot,
+        git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
+      if (JSON.stringify(current) !== JSON.stringify(binding.publishedMetadata)) throw new Error("Native Test published metadata authority changed");
+    }
   }
 
   async #assertSourcePublication(repoRoot, binding, lease) {
@@ -4013,14 +4018,24 @@ export class TaskGitWorkspaceService {
         primaryMainCommit: dev.mainCommit, publishedRevision: published, planRevision, tasks, runtimeRoot,
         readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.dataDir, ...input }) });
     }
-    const binding = { baseline, adoptions, ...(sourcePublication ? { sourcePublication } : {}) };
+    let publishedMetadata = null;
+    // Older originals retain precisely their captured authority. New admissions
+    // may inherit exact already-published metadata only after both source and dev
+    // contain that immutable publication; dev alone never grants metadata credit.
+    if (!baseline && (expected === undefined || Object.hasOwn(expected, "publishedMetadata"))) {
+      const context = await publishedMetadataContext({ publication, repositoryRoot: snapshot.repositoryRoot, git });
+      if (context && await git(["merge-base", context.commit, snapshot.headCommit]) === context.commit
+          && await git(["merge-base", context.commit, dev.headCommit]) === context.commit) publishedMetadata = context;
+    }
+    const binding = { baseline, adoptions, ...(sourcePublication ? { sourcePublication } : {}),
+      ...(publishedMetadata ? { publishedMetadata } : {}) };
     if (expected !== undefined && JSON.stringify(binding) !== JSON.stringify(expected)) {
       throw new Error("Native Test installed source or adoption authority changed");
     }
     return { binding, bases: [dev.headCommit, ...(baseline ? [baseline.sourceBaseCommit,
       ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])] : [])],
-      metadataBases: baseline ? [baseline.sourceBaseCommit, ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])]
-        : sourcePublication ? [sourcePublication.revision] : [], adoptions };
+      metadataBases: [...(baseline ? [baseline.sourceBaseCommit, ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])] : []),
+        ...(publishedMetadata ? [publishedMetadata.commit] : [])], adoptions };
   }
 
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,

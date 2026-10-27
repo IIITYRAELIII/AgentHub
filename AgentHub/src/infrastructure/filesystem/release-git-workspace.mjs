@@ -12,7 +12,7 @@ import { ReleaseGenerationTransportRetention } from "./release-generation-transp
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { runOwnedGit } from "./task-git-workspace.mjs";
 import { readOwnGitPublicationOrigin } from "../persistence/release-operation-store.mjs";
-import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline,
+import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline, publishedMetadataContext,
   assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, assertHistoricalChangelog, sourceBlobs } from "./local-source-baseline.mjs";
 import { isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure } from "./runtime-manifest-verifier.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
@@ -1650,7 +1650,7 @@ export class ReleaseGitWorkspaceService {
     });
   }
 
-  async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks }) {
+  async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks, expectedPublishedMetadata = undefined }) {
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
       const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
       return { bases: [verified.provenance.sourceBaseCommit,
@@ -1665,7 +1665,17 @@ export class ReleaseGitWorkspaceService {
     // New incoming plus an installed carry must be sealed together in the
     // existing exact local-source envelope, not inferred from a moving origin.
     if (adoptions.length) throw new Error("Native adopted history requires its exact installed-source preparation binding");
-    return null;
+    if (provenance?.kind !== NATIVE_MAIN_PROVENANCE) return null;
+    const publishedMetadata = await publishedMetadataContext({ repositoryRoot: initial.root,
+      publication: await readPublicationState(publicationStateFile(this.#environment)),
+      git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }) });
+    if (!publishedMetadata && expectedPublishedMetadata === undefined) return null;
+    if (!publishedMetadata || publishedMetadata.commit !== provenance.publishedBaseCommit
+        || (expectedPublishedMetadata !== undefined
+          && JSON.stringify(publishedMetadata) !== JSON.stringify(expectedPublishedMetadata))) {
+      throw new Error("Native candidate published metadata authority changed");
+    }
+    return { bases: [publishedMetadata.commit], metadataBases: [publishedMetadata.commit], adoptions: [], publishedMetadata };
   }
 
   async inspectNativeAwaitRecovery({ projectRoot, original, frozenTasks } = {}) {
@@ -2108,6 +2118,7 @@ export class ReleaseGitWorkspaceService {
       await validateLocalSource();
       const historyRequest = { projectRoot: initial.root, provenance, planRevision: revision, tasks };
       let historyAuthority = await this.#nativeHistoryAuthority(historyRequest);
+      if (historyAuthority?.publishedMetadata) historyRequest.expectedPublishedMetadata = historyAuthority.publishedMetadata;
       await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));

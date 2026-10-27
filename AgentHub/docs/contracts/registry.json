@@ -329,6 +329,8 @@
         "src/infrastructure/persistence/github-publication-baseline.mjs",
         "src/interfaces/cli/release-policy.mjs",
         "tests/infrastructure/persistence/github-source-bootstrap.test.mjs",
+        "tests/infrastructure/filesystem/published-installed-source.test.mjs",
+        "tests/infrastructure/filesystem/published-native-metadata.test.mjs",
         "docs/decisions/ADR-HUB-329-first-standalone-source-baseline.md",
         "src/infrastructure/browser/test-contour-ui-smoke.mjs",
         "task-await-cutover.mjs",

@@ -3217,3 +3217,22 @@ extra code/history base or foreign installed-runtime carry. Actual github-releas
 completion retains that explicit profile in repository evidence; ordinary installed
 publication retains its existing installed-source proof. See
 ADR-HUB-329-first-standalone-source-baseline.
+
+An installed manifest that explicitly names the caller's durable published
+revision needs no retired generation checkout. The existing reader verifies the
+matching release and immutable commit in the registered repository, rereads the
+pointer and manifest byte-exact, and returns no local-source carry. Legacy or
+different-publication repairs retain their full existing proof.
+
+Without installed carry, exact published notes/version context comes from the
+registered repository's durable generation, whole entry hash and immutable
+commit/tree. Native Test requires publication ancestry in both Task source and
+managed dev; its original intent seals that context and terminal checks reread
+it. Old intents are not enriched. Native-main candidate preparation matches its
+published-base provenance and rechecks the initial context before commit. Main,
+base, notes/version, selection and content guards remain unchanged.
+
+The existing task-await-cutover CLI's explicit ordinary-test mode only calls
+normal public Test with the original CAS and optional authenticated native
+review, after pinned clean source and canonical repository checks. It grants no
+initial-native, returned, squash or cross-Task cutover authority.

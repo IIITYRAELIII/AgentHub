@@ -40,6 +40,23 @@ Entry/origin drift refuses. Ordinary installed-runtime publication keeps its
 previous proof and binding. Completed archive publication records its explicit
 profile in the same repository evidence, so future work retains this distinction.
 
+The accepted published-source reader and metadata context are retained when
+joining this source-only branch. A matching installed publication verifies its
+immutable commit and unchanged pointer/manifest, then returns no carry without
+reading a disposable generation checkout. Other installed repairs keep their
+complete legacy proof. Published metadata credit requires its registered
+generation/whole-entry hash/commit/tree and ancestry in both source and dev,
+including for source-only entries. An original captures and rechecks that exact
+context; old originals gain no field. Native-main candidates match the same
+published-base provenance and recheck before their existing commit. No version
+or notes waiver, additional source-only code base or ref move is introduced.
+
+The existing task-await-cutover --ordinary-test entry runs that accepted source
+through normal public Test/CAS and the actual native reviewer verifier. Closed
+arguments, clean pinned source, current Task and canonical repository are
+checked before dispatch. Initial-native and cross-Task cutover modes cannot be
+mixed with it. Ordinary Await remains its separate unchanged owner.
+
 The normal release still needs accepted exact Task results, source closure,
 original notes, validation selection, immutable preparation and its authorized
 target. This registration cannot settle any unknown effect or mark delivery Done.
@@ -47,6 +64,10 @@ target. This registration cannot settle any unknown effect or mark delivery Done
 Focused checks:
 
     node --test tests/infrastructure/persistence/github-source-bootstrap.test.mjs
+
+    node --test tests/infrastructure/filesystem/published-installed-source.test.mjs tests/infrastructure/filesystem/published-native-metadata.test.mjs
+
+    node --test --test-name-pattern="ordinary Test CLI" tests/interfaces/cli/task-await-cutover.test.mjs
 
 Real disposable Git repositories and the existing publication-state/Task Git
 owners cover first registration/repeat, preservation of another repository and
