@@ -21,6 +21,25 @@ import { captureRuntimeReleaseBinding } from "../../src/infrastructure/filesyste
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+test("prepared runtime retains the Codex custody companion and refuses its absence", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const module = "src/infrastructure/process/codex-executable-custody.mjs";
+  const asset = "src/infrastructure/process/codex-executable-custody.cs";
+  await mkdir(path.dirname(path.join(sourceRoot, module)), { recursive: true });
+  await writeFile(path.join(sourceRoot, module),
+    'import {readFile} from "node:fs/promises"; export const readCompanion = () => readFile(new URL("./codex-executable-custody.cs", import.meta.url));\n');
+  await writeFile(path.join(sourceRoot, asset), "// exact disposable custody companion\n");
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "codex-custody-companion" });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  assert.ok(manifest.files.some(entry => entry.path === asset));
+  const installed = await import(pathToFileURL(path.join(prepared.releaseRoot, module)).href);
+  assert.deepEqual(await installed.readCompanion(), await readFile(path.join(sourceRoot, asset)));
+  await rm(path.join(sourceRoot, asset));
+  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "missing-codex-custody" }), /Runtime module asset is missing/u);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), { code: "ENOENT" });
+});
+
 test('release progress canonical artifact contains the independent viewer and launches only its prepared files', async t => {
   const { sourceRoot, runtimeRoot } = await fixture();
   t.after(() => rm(path.dirname(sourceRoot), { recursive: true, force: true }));

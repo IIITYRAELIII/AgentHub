@@ -272,6 +272,7 @@
         "install.py",
         "install_test.py",
         "docs/decisions/ADR-HUB-320-extension-link-inventory.md",
+        "docs/decisions/ADR-HUB-329-release-background-persistence-and-runtime-assets.md",
         "release-progress/**",
         "tests/interfaces/release-progress*.test.mjs",
         "src/infrastructure/process/release-progress-monitor.mjs",

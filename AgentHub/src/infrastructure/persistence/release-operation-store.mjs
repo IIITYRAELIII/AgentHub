@@ -15,6 +15,7 @@ import {
   transitionReleaseOperation,
 } from "../../domain/release-operation.mjs";
 import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.mjs";
+import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
 
 const LEGACY_MIGRATION_PREFIX = "release-operation:legacy:";
 
@@ -289,6 +290,26 @@ function legacyState(evidence, { importedAt, evidenceOnly = false } = {}) {
 
 export class ReleaseOperationStore {
   #initialized = false;
+  #mutationQueues = new Map();
+
+  // Queue only short persistence closures, never publication or provider work.
+  // A retry rereads durable CAS/owner evidence inside the closure.
+  async runOperationMutation(operationId, mutation, options = {}) {
+    const id = String(operationId);
+    let queue = this.#mutationQueues.get(id);
+    if (!queue) this.#mutationQueues.set(id, queue = new AsyncSqliteMutationQueue());
+    try {
+      return await queue.run(mutation, { ...options, requestId: id });
+    } finally {
+      if (queue.diagnostics().queued === 0 && this.#mutationQueues.get(id) === queue) {
+        this.#mutationQueues.delete(id);
+      }
+    }
+  }
+
+  isContentionError(error) {
+    return sqliteContention(error);
+  }
 
   constructor({ dataDir, idFactory = randomUUID, now = () => new Date().toISOString() } = {}) {
     if (!String(dataDir ?? "").trim()) throw new TypeError("dataDir is required");

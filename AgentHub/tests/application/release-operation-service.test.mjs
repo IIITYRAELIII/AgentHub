@@ -506,6 +506,140 @@ test("external condition retries automatically at its durable retry time", async
   assert.equal(snapshot.operation.state, "done");
 });
 
+test("automatic retry survives a real SQLite writer without advancing or replaying the original", async t => {
+  const scheduled = [];
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback), now: () => new Date().toISOString() });
+  const ack = start(f.service);
+  let before = f.store.get(ack.operationId);
+  f.store.transition(ack.operationId, { state: "waiting", resumeState: "compose",
+    waitReason: { code: "external_condition" } }, { expectedRevision: before.revision });
+  await scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  before = f.store.get(ack.operationId);
+  const waiting = f.store.transition(ack.operationId, { state: "waiting", resumeState: "compose",
+    waitReason: { code: "external_condition", retryAt: new Date(Date.now() + 20).toISOString() } },
+  { expectedRevision: before.revision }).operation;
+  const blocker = new DatabaseSync(path.join(f.root, "runtime.sqlite"));
+  try {
+  blocker.exec("BEGIN IMMEDIATE");
+  let attempts = 0;
+  const transition = f.store.transition.bind(f.store);
+  f.store.transition = (...args) => { attempts++; return transition(...args); };
+  f.service.recover();
+  await waitUntil(() => attempts > 0);
+  assert.equal(f.store.get(ack.operationId).revision, waiting.revision);
+  assert.equal(f.store.get(ack.operationId).state, "waiting");
+  assert.deepEqual(f.calls, []);
+  blocker.exec("ROLLBACK");
+  await waitUntil(() => scheduled.length === 1);
+  await scheduled.shift()();
+  const result = await f.service.drain(ack.operationId);
+  assert.equal(result.operation.state, "done");
+  assert.equal(result.operation.operationId, ack.operationId);
+  assert.equal(result.generations.length, 1);
+  assert.deepEqual(f.calls, [["compose", 1], ["validate", 1], ["publish", "git"], ["publish", "runtime"], ["finalize", 1]]);
+  } finally {
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+  }
+});
+
+test("release settlement retries only its exact lease when SQLite is briefly busy", async t => {
+  const scheduled = [];
+  let publications = 0;
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback), now: () => new Date().toISOString(),
+    publishTarget: async () => {
+      publications++;
+      throw Object.assign(new Error("temporary target condition"), { code: "RELEASE_EXTERNAL_CONDITION" });
+    } });
+  const ack = start(f.service);
+  const blocker = new DatabaseSync(path.join(f.root, "runtime.sqlite"));
+  let unlock = null;
+  try {
+  const release = f.store.release.bind(f.store);
+  let attempts = 0;
+  f.store.release = (...args) => {
+    if (++attempts === 1) {
+      blocker.exec("BEGIN IMMEDIATE");
+      unlock = setTimeout(() => blocker.exec("ROLLBACK"), 60);
+    }
+    return release(...args);
+  };
+  await scheduled.shift()();
+  await waitUntil(() => f.store.get(ack.operationId).owner === null);
+  assert.equal(f.store.get(ack.operationId).state, "waiting");
+  assert.ok(attempts > 1);
+  assert.equal(publications, 1);
+  assert.equal(scheduled.length, 0);
+  } finally {
+    clearTimeout(unlock);
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+  }
+});
+
+test("automatic retry rereads a recovery hold after contention and exhaustion", async t => {
+  const scheduled = [];
+  const warnings = t.mock.method(console, "warn", () => {});
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback), now: () => new Date().toISOString(),
+    retryDelayMs: 1_000 });
+  const ack = start(f.service);
+  let before = f.store.get(ack.operationId);
+  f.store.transition(ack.operationId, { state: "waiting", resumeState: "compose",
+    waitReason: { code: "external_condition" } }, { expectedRevision: before.revision });
+  await scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  before = f.store.get(ack.operationId);
+  f.store.transition(ack.operationId, { waitReason: { code: "external_condition",
+    retryAt: new Date(Date.now() + 20).toISOString() } }, { expectedRevision: before.revision });
+  const mutate = f.store.runOperationMutation.bind(f.store);
+  f.store.runOperationMutation = (id, mutation) => mutate(id, mutation, { timeoutMs: 30 });
+  const blocker = new DatabaseSync(path.join(f.root, "runtime.sqlite"));
+  try {
+    blocker.exec("BEGIN IMMEDIATE");
+    f.service.recover();
+    await waitUntil(() => warnings.mock.callCount() === 1);
+    assert.equal(f.store.get(ack.operationId).state, "waiting");
+    assert.deepEqual(f.calls, []);
+    blocker.exec("ROLLBACK");
+    const waiting = f.store.get(ack.operationId);
+    const held = f.store.transition(ack.operationId, { waitReason: { code: "external_condition",
+      details: { recoveryHold: "repair required" } } }, { expectedRevision: waiting.revision }).operation;
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    await mutate(ack.operationId, () => {});
+    assert.equal(f.store.get(ack.operationId).revision, held.revision);
+    assert.equal(scheduled.length, 0);
+    assert.deepEqual(f.calls, []);
+  } finally {
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+  }
+});
+
+test("automatic retry contains a non-contention error without repeating it", async t => {
+  const scheduled = [];
+  const warnings = t.mock.method(console, "warn", () => {});
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback), now: () => new Date().toISOString() });
+  const ack = start(f.service);
+  let before = f.store.get(ack.operationId);
+  f.store.transition(ack.operationId, { state: "waiting", resumeState: "compose",
+    waitReason: { code: "external_condition" } }, { expectedRevision: before.revision });
+  await scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  before = f.store.get(ack.operationId);
+  const waiting = f.store.transition(ack.operationId, { waitReason: { code: "external_condition",
+    retryAt: new Date(Date.now() + 20).toISOString() } }, { expectedRevision: before.revision }).operation;
+  let attempts = 0;
+  f.store.transition = () => { attempts++; throw new Error("unexpected persistence fault"); };
+  f.service.recover();
+  await waitUntil(() => warnings.mock.callCount() === 1);
+  await f.store.runOperationMutation(ack.operationId, () => {});
+  assert.equal(attempts, 1);
+  assert.equal(f.store.get(ack.operationId).revision, waiting.revision);
+  assert.equal(scheduled.length, 0);
+  assert.deepEqual(f.calls, []);
+});
+
 test("lease heartbeat prevents a replacement worker from entering a long validation", async (t) => {
   let releaseValidation;
   const validation = new Promise((resolve) => { releaseValidation = resolve; });
