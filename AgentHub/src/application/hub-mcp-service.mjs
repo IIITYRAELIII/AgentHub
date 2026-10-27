@@ -487,6 +487,7 @@ export class HubMcpService {
     taskOperationReconciliation = null, claimCustodyRuntime = null,
     measureOperation = async (_stage, operation) => operation(),
     reconcilePendingOnStartup = true,
+    recordCommandTrace = () => {},
   } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
@@ -518,6 +519,7 @@ export class HubMcpService {
     this.releaseCompleter = releaseCompleter;
     this.releasePlanner = releasePlanner;
     this.releaseOperations = releaseOperations;
+    this.recordCommandTrace = recordCommandTrace;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.claimCustodyRuntime = claimCustodyRuntime;
     this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
@@ -635,21 +637,51 @@ export class HubMcpService {
   setStreamMessenger(value) {
     if (typeof value !== "function") throw new TypeError("Stream messenger is required");
     this.#streamMessenger = value;
-    this.releaseOperations?.setEventDelivery?.((event) => value({
-      streamId: event.streamId,
-      text: `<agent-hub-release-event>\n${JSON.stringify({
-        operationId: event.operationId,
-        revision: event.revision,
-        eventKind: event.eventKind,
-        ...event.payload,
-      })}\n</agent-hub-release-event>`,
-      clientUserMessageId: `release:${event.operationId}:${event.revision}:${event.eventKind}`,
-      followUpMode: "queue",
-    }, {
-      source: "release-operation",
-      clientId: `release:${event.operationId}`,
-      messageOrigin: { kind: "release-operation", sourceThreadId: event.threadId },
-    }));
+    this.releaseOperations?.setEventDelivery?.(async (event) => {
+      const commandId = `release:${event.operationId}:${event.revision}:${event.eventKind}`;
+      const operationSpanId = randomUUID();
+      const metadata = { operationSpanId, operationId: event.operationId,
+        revision: event.revision, eventKind: event.eventKind };
+      const record = (span) => {
+        try { this.recordCommandTrace({ commandId, transport: "release-operation", ...span }); }
+        catch { /* Diagnostics cannot change event delivery or its original outcome. */ }
+      };
+      const createdAtMs = Date.parse(String(event.createdAt ?? ""));
+      if (Number.isSafeInteger(createdAtMs) && createdAtMs > 0) record({
+        stage: "release-event-created", outcome: "succeeded", observedAtMs: createdAtMs, metadata,
+      });
+      const started = performance.now();
+      record({ stage: "release-event-intake", outcome: "started", metadata });
+      try {
+        const result = await value({
+          streamId: event.streamId,
+          text: `<agent-hub-release-event>\n${JSON.stringify({
+            operationId: event.operationId,
+            revision: event.revision,
+            eventKind: event.eventKind,
+            ...event.payload,
+          })}\n</agent-hub-release-event>`,
+          clientUserMessageId: commandId,
+          followUpMode: "steer",
+        }, {
+          source: "release-operation",
+          clientId: `release:${event.operationId}`,
+          messageOrigin: { kind: "release-operation", sourceThreadId: event.threadId },
+        });
+        record({ stage: "release-event-intake", outcome: "succeeded",
+          monotonicDurationMs: performance.now() - started,
+          metadata: { ...metadata, intakeAccepted: result?.accepted === true,
+            providerAccepted: result?.providerAccepted === true || result?.steered === true,
+            steerPending: result?.steerPending === true, queued: result?.queued === true } });
+        return result;
+      } catch (error) {
+        const code = String(error?.code ?? "");
+        record({ stage: "release-event-intake", outcome: "unknown",
+          monotonicDurationMs: performance.now() - started,
+          metadata: { ...metadata, errorCode: /^[A-Z0-9_]{1,100}$/u.test(code) ? code : null } });
+        throw error;
+      }
+    });
   }
 
   tools() {
