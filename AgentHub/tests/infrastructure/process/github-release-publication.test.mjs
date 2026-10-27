@@ -206,3 +206,36 @@ test("Git publication state alone cannot settle a GitHub asset target", async t 
     target: { targetId: "public", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: root } });
   assert.equal(result.status, "partial");
 });
+
+test("distribution readback preserves GitHub intent/unknown evidence when origin is back at base", async t => {
+  for (const kind of ["pristine", "pre-effect", "tag", "create", "upload", "result", "malformed", "read-error", "missing-after-runner", "foreign-journal"]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hub-gh-negative-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const commit = "a".repeat(40), baseCommit = "b".repeat(40);
+    const candidate = { repositoryRoot: root, releaseRoot: path.join(root, "frozen"), commit, baseCommit };
+    const journal = publicationRunStore({ runtimeRoot: path.join(root, "journal") });
+    await journal.start({ revision: kind === "foreign-journal" ? "f".repeat(40) : commit }, []);
+    const progress = { inputIdentity: "c".repeat(64), createStarted: false, uploads: {} };
+    if (kind === "tag") progress.tagStarted = true;
+    if (kind === "create") progress.createStarted = true;
+    if (kind === "upload") Object.assign(progress, { releaseId: 70, uploads: { [names[0]]: "started" } });
+    if (kind === "result") progress.result = { sourceCommit: commit };
+    if (kind !== "pristine") await journal.updateProgress({ githubDistribution: kind === "malformed" ? "invalid" : progress });
+    await journal.finish("failed", new Error("lost remote reply"));
+    if (kind === "missing-after-runner") {
+      const runner = path.join(root, "release-operation-executions", hash("original:1:public"), "runner.json");
+      await mkdir(path.dirname(runner), { recursive: true });
+      await writeFile(runner, JSON.stringify({ candidate: "g", status: "exited", pid: null }));
+    }
+    const owner = new ReleaseOperationPublication({ dataDir: root, runtimeRoot: root,
+      readPublicationStateImpl: async () => ({ revision: baseCommit }), gitRemoteHeadImpl: async () => baseCommit,
+      publicationRunStoreFactory: () => kind === "read-error" ? { read: async () => { throw new Error("unreadable journal"); } }
+        : kind === "missing-after-runner" ? { read: async () => null } : journal });
+    const result = await owner.readback({ operation: { operationId: "original" },
+      generation: { generation: 1, identitySha256: "g", candidates: [candidate] },
+      target: { targetId: "public", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: root } });
+    if (["pristine", "pre-effect"].includes(kind)) assert.equal(result.status, "not_applied", kind);
+    else assert.ok(["partial", "unknown"].includes(result.status), `${kind}: Git cannot disprove distribution effects`);
+    assert.equal((await journal.read()).status, "failed");
+  }
+});

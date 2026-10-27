@@ -36,6 +36,13 @@ another version, clobber, deletion or tag rewrite. A started upload without a
 matching uploaded asset remains unknown and refuses blind replay. Git publication
 state alone cannot prove application of the asset target.
 
+The same separation applies to negative readback: origin/main returning to the
+Git base cannot disprove an already journaled GitHub tag/create/upload intent or
+result. Original matching distribution progress is inspected before Git-only
+negative fallbacks. Unreadable, missing-after-runner or incomplete original
+evidence remains unknown. A pristine journal or an exact recognized pre-effect
+intent with no remote actions retains ordinary not-applied classification.
+
 Publisher credentials remain in its process, using existing gh authentication
 for the fixed host. Authenticated redirects and foreign routes refuse. The
 recipient installer retains anonymous exact-version discovery. Remote metadata
