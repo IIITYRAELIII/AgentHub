@@ -75,6 +75,77 @@ function argumentsFixture() {
   ];
 }
 
+function ordinaryTestArguments() {
+  const args = argumentsFixture();
+  args.splice(args.indexOf("--expected-projector-sha256"), 2);
+  return [...args, "--ordinary-test", "--expected-source-tree", "c".repeat(40), "--expected-source-branch", "HUB-1"];
+}
+
+test("ordinary Test CLI keeps ordinary arguments separate from native bootstrap and cross-Task authority", () => {
+  const input = parseTaskAwaitCutoverArguments(ordinaryTestArguments());
+  assert.equal(input.ordinaryTest, true);
+  assert.equal(input.initialNativeTest, false);
+  assert.equal(input.expectedProjectorSha256, null);
+  for (const extra of [["--initial-native-test"], ["--squash-bootstrap"],
+    ["--source-task", "foreign"], ["--expected-projector-sha256", projectorSha]]) {
+    assert.throws(() => parseTaskAwaitCutoverArguments([...ordinaryTestArguments(), ...extra]), /Ordinary Test/u);
+  }
+});
+
+test("ordinary Test CLI dispatches once through the public status owner with no cutover waiver", async () => {
+  const input = parseTaskAwaitCutoverArguments(ordinaryTestArguments());
+  const inspected = { sourceRoot: process.cwd(), headCommit: sha, headTree: input.expectedSourceTree, branch: "HUB-1" };
+  let closed = 0, inspections = 0;
+  const calls = [];
+  const result = await executeTaskAwaitCutover(input, {
+    inspectSource: async () => { inspections += 1; return inspected; },
+    openRuntime: async () => ({
+      service: { contextToken: () => "caller-token", async call(name, args) {
+        if (name === "hub_context_get") return { workspaceId: input.workspaceId, streamId: input.streamId };
+        calls.push({ name, args }); return { accepted: true, status: "testing" };
+      }, callTaskStatusCutover() { assert.fail("ordinary Test must not use cutover"); } },
+      taskBoard: { task: () => ({ id: input.taskId, workspaceId: input.workspaceId,
+        streamId: input.streamId, revision: input.expectedTaskRevision, workflowStatus: "in_progress", gitReferences: [] }) },
+      workspaceCatalog: {
+        workspace: () => ({ settings: { workingDirectory: input.repositoryRoot } }),
+        stream: () => ({ settings: {} }),
+      }, close() { closed += 1; },
+    }),
+  });
+  assert.equal(result.result.status, "testing");
+  assert.equal(inspections, 2);
+  assert.equal(closed, 1);
+  assert.deepEqual(calls, [{ name: "hub_task_status_update", args: {
+    context_token: "caller-token", request_id: input.requestId, task_id: input.taskId, status: "testing",
+    expected_task_revision: input.expectedTaskRevision, expected_workflow_status: "in_progress",
+  } }]);
+});
+
+test("ordinary Test CLI refuses stale Task, foreign repository and changed source before mutation", async () => {
+  const input = parseTaskAwaitCutoverArguments(ordinaryTestArguments());
+  for (const fault of ["revision", "workflow", "repository", "source"]) {
+    let inspections = 0, closed = 0, mutations = 0;
+    await assert.rejects(executeTaskAwaitCutover(input, {
+      inspectSource: async () => ({ headCommit: fault === "source" && ++inspections === 2 ? "d".repeat(40) : sha }),
+      openRuntime: async () => ({
+        service: { contextToken: () => "token", async call(name) {
+          if (name === "hub_context_get") return { workspaceId: input.workspaceId, streamId: input.streamId };
+          mutations += 1; return {};
+        } },
+        taskBoard: { task: () => ({ id: input.taskId, workspaceId: input.workspaceId, streamId: input.streamId,
+          revision: input.expectedTaskRevision + (fault === "revision" ? 1 : 0),
+          workflowStatus: fault === "workflow" ? "testing" : "in_progress" }) },
+        workspaceCatalog: {
+          workspace: () => ({ settings: { workingDirectory: fault === "repository" ? path.dirname(input.repositoryRoot) : input.repositoryRoot } }),
+          stream: () => ({ settings: {} }),
+        }, close() { closed += 1; },
+      }),
+    }), /Ordinary Test/u);
+    assert.equal(mutations, 0);
+    assert.equal(closed, 1);
+  }
+});
+
 function crossTaskArgumentsFixture() {
   return [
     ...argumentsFixture().slice(0, -1),

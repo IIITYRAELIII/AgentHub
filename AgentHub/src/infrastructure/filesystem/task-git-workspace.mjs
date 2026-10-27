@@ -21,7 +21,7 @@ import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1
 import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
-  assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin } from "./local-source-baseline.mjs";
+  assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, publishedMetadataContext } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
@@ -40,6 +40,7 @@ import {
   readTrustedSystemBootIdentity,
 } from "../process/system-boot-identity.mjs";
 import { publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
+import { parseGitHubRemote, sourceOnlyGitPublication } from "../persistence/github-publication-baseline.mjs";
 import { readNativePublishedSelectedComposition, readOwnGitPublicationOrigin } from "../persistence/release-operation-store.mjs";
 import {
   normalizedTaskId,
@@ -3954,6 +3955,7 @@ export class TaskGitWorkspaceService {
   }
 
   async #nativeHistoryOrigin(snapshot, binding, lease) {
+    if (binding?.sourcePublication) await this.#assertSourcePublication(snapshot.repositoryRoot, binding.sourcePublication, lease);
     if (binding?.adoptions?.length) await assertNativeUpstreamOrigin({
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }),
       adoptions: binding.adoptions, originCommit: binding.adoptions[0].adoptedCommit });
@@ -3963,6 +3965,30 @@ export class TaskGitWorkspaceService {
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
     else if (binding?.baseline?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: binding.baseline,
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
+    if (binding?.publishedMetadata) {
+      const current = await publishedMetadataContext({ publication: await this.readPublication(), repositoryRoot: snapshot.repositoryRoot,
+        git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
+      if (JSON.stringify(current) !== JSON.stringify(binding.publishedMetadata)) throw new Error("Native Test published metadata authority changed");
+    }
+  }
+
+  async #assertSourcePublication(repoRoot, binding, lease) {
+    const publication = await this.readPublication();
+    const entry = publicationStateRepositories(publication ?? {}).find(item => samePath(item.root, repoRoot));
+    const source = sourceOnlyGitPublication(entry);
+    if (!source || source.revision !== binding.revision || createHash("sha256").update(JSON.stringify(entry)).digest("hex") !== binding.entrySha256) {
+      throw new Error("Source-only Git publication changed during native Test");
+    }
+    const git = args => this.#runOwned(args, { cwd: repoRoot, lease });
+    const remote = parseGitHubRemote(await git(["config", "--get", "remote.origin.url"]));
+    if (remote?.owner.toLowerCase() !== "iiityraeliii" || remote?.repo.toLowerCase() !== "agenthub"
+      || String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] !== binding.originCommit) {
+      throw new Error("Source-only Git publication origin changed");
+    }
+    await git(["merge-base", "--is-ancestor", source.revision, binding.originCommit]);
+    if (source.tree && await git(["rev-parse", `${source.revision}^{tree}`]) !== source.tree) {
+      throw new Error("Source-only Git publication tree changed");
+    }
   }
 
   async #nativeHistoryAuthority(snapshot, dev, lease, expected = undefined) {
@@ -3972,12 +3998,17 @@ export class TaskGitWorkspaceService {
       localMainCommit: dev.mainCommit });
     if (adoptions.length) await assertNativeUpstreamOrigin({ git, adoptions, originCommit: adoptions[0].adoptedCommit });
     const publication = await this.readPublication();
-    const published = publicationStateRepositories(publication ?? {})
-      .find(entry => samePath(entry.root, snapshot.repositoryRoot))?.revision;
+    const publishedEntry = publicationStateRepositories(publication ?? {})
+      .find(entry => samePath(entry.root, snapshot.repositoryRoot));
+    const published = publishedEntry?.revision;
+    const source = sourceOnlyGitPublication(publishedEntry);
+    const sourcePublication = source ? { revision: source.revision, entrySha256: createHash("sha256").update(JSON.stringify(publishedEntry)).digest("hex"),
+      originCommit: adoptions[0]?.adoptedCommit ?? source.revision } : null;
+    if (sourcePublication) await this.#assertSourcePublication(snapshot.repositoryRoot, sourcePublication, lease);
     const runtimeRoot = path.dirname(this.dataDir);
     const planRevision = `native-test:${snapshot.taskId}:${snapshot.headCommit}`;
     let baseline = expected?.baseline ?? null;
-    if (expected === undefined && publication?.generation && published) {
+    if (expected === undefined && publication?.generation && published && !sourcePublication) {
       baseline = await installedNativeHistoryBaseline({ git, repositoryRoot: snapshot.repositoryRoot,
         primaryMainCommit: dev.mainCommit, publishedRevision: published, tasks, runtimeRoot, planRevision, adoptions,
         readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.dataDir, ...input }),
@@ -3987,13 +4018,24 @@ export class TaskGitWorkspaceService {
         primaryMainCommit: dev.mainCommit, publishedRevision: published, planRevision, tasks, runtimeRoot,
         readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.dataDir, ...input }) });
     }
-    const binding = { baseline, adoptions };
+    let publishedMetadata = null;
+    // Older originals retain precisely their captured authority. New admissions
+    // may inherit exact already-published metadata only after both source and dev
+    // contain that immutable publication; dev alone never grants metadata credit.
+    if (!baseline && (expected === undefined || Object.hasOwn(expected, "publishedMetadata"))) {
+      const context = await publishedMetadataContext({ publication, repositoryRoot: snapshot.repositoryRoot, git });
+      if (context && await git(["merge-base", context.commit, snapshot.headCommit]) === context.commit
+          && await git(["merge-base", context.commit, dev.headCommit]) === context.commit) publishedMetadata = context;
+    }
+    const binding = { baseline, adoptions, ...(sourcePublication ? { sourcePublication } : {}),
+      ...(publishedMetadata ? { publishedMetadata } : {}) };
     if (expected !== undefined && JSON.stringify(binding) !== JSON.stringify(expected)) {
       throw new Error("Native Test installed source or adoption authority changed");
     }
     return { binding, bases: [dev.headCommit, ...(baseline ? [baseline.sourceBaseCommit,
       ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])] : [])],
-      metadataBases: baseline ? [baseline.sourceBaseCommit, ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])] : [], adoptions };
+      metadataBases: [...(baseline ? [baseline.sourceBaseCommit, ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])] : []),
+        ...(publishedMetadata ? [publishedMetadata.commit] : [])], adoptions };
   }
 
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,

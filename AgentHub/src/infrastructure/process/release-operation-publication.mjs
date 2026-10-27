@@ -51,6 +51,32 @@ function publicationFailure(saved, exitCode, targetId) {
   return error;
 }
 
+function distributionIntentReadback(saved, candidate) {
+  if (!saved || saved.identity?.revision !== candidate.commit
+    || !saved.progress || typeof saved.progress !== "object" || Array.isArray(saved.progress)) {
+    return { status: "unknown", cursor: { reason: "distribution journal is missing or does not bind the candidate" } };
+  }
+  if (!Object.hasOwn(saved.progress, "githubDistribution")) return null;
+  const intent = saved.progress.githubDistribution;
+  if (!intent || typeof intent !== "object" || Array.isArray(intent)
+    || !/^[a-f0-9]{64}$/u.test(intent.inputIdentity ?? "")
+    || typeof intent.createStarted !== "boolean"
+    || !intent.uploads || typeof intent.uploads !== "object" || Array.isArray(intent.uploads)) {
+    return { status: "unknown", cursor: { reason: "distribution intent is incomplete" } };
+  }
+  if (intent.tagStarted || intent.createStarted || intent.releaseId != null
+    || Object.keys(intent.uploads).length || Object.hasOwn(intent, "status") || Object.hasOwn(intent, "result")) {
+    return { status: "partial", revision: candidate.commit, publicationStatus: saved.status,
+      source: "original-github-distribution-intent" };
+  }
+  const fields = new Set(["inputIdentity", "createStarted", "uploads", "tagStarted", "releaseId"]);
+  if (Object.keys(intent).some(key => !fields.has(key))
+    || intent.tagStarted !== undefined && intent.tagStarted !== false) {
+    return { status: "unknown", cursor: { reason: "distribution pre-effect intent is not recognized" } };
+  }
+  return null;
+}
+
 async function gitRemoteHead(candidate) {
   // The immutable clone deliberately has no remotes. The registered repository
   // owns origin; ls-remote only observes it and does not change primary Git state.
@@ -273,20 +299,32 @@ export class ReleaseOperationPublication {
         && result?.generation === generation.generation
         && result?.targetId === target.targetId
         && result?.candidate === generation.identitySha256
-        && result?.status === "applied") return result;
+        && result?.status === "applied"
+        && (target.environment !== "github-release"
+          || result.deploymentProfile === "github-release" && result.distribution?.sourceCommit === candidate.commit)) return result;
     const publication = await this.readPublicationState().catch(() => null);
     const published = publication?.revision === candidate.commit
       || publication?.repositories?.some((repository) => (
         path.resolve(repository.root) === path.resolve(candidate.repositoryRoot)
           && repository.revision === candidate.commit
       ));
-    if (published) return {
+    if (published && target.environment !== "github-release") return {
       status: "applied",
       revision: candidate.commit,
       source: "publication-state-readback",
     };
     const journal = this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment });
-    const saved = await journal.read().catch(() => null);
+    let saved;
+    try { saved = await journal.read(); } catch {
+      if (target.environment === "github-release") return {
+        status: "unknown", cursor: { reason: "original distribution journal cannot be read" },
+      };
+      saved = null;
+    }
+    if (target.environment === "github-release" && (saved || runner)) {
+      const distribution = distributionIntentReadback(saved, candidate);
+      if (distribution) return distribution;
+    }
     if (saved?.identity?.revision === candidate.commit && saved?.progress?.publicationState) {
       return { status: "partial", revision: candidate.commit, publicationStatus: saved.status };
     }

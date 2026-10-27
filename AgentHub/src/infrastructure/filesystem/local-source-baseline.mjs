@@ -7,6 +7,9 @@ import { runtimeRetirementCandidates } from "./runtime-release-retention-policy.
 import { runtimeHostSourceHash } from "../process/runtime-host-builder.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
+import { publicationStateRepositories } from "../persistence/publication-state.mjs";
+import { canonicalPath } from "./config.mjs";
+import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const reject = message => { throw new ReleasePreparationRejectedError(`Installed local source baseline: ${message}`); };
@@ -15,6 +18,20 @@ const metadata = name => /^(?:docs|tests)\//u.test(name)
   || /(?:^|\/)[^/]+\.test\.(?:mjs|cjs|js)$/u.test(name) || /^(?:README|AGENTS)\.md$/u.test(name);
 const hostInputs = new Set(["RuntimeHost/AgentHub.RuntimeHost.cs", "RuntimeHost/AgentHub.IconBuilder.cs",
   "RuntimeHost/app.manifest", "VSCodeExtension/media/agent-hub-mark.png"]);
+
+// Existing OWN publication is authority for its exact immutable historical
+// notes/version, independently of local installed-source carry. Callers seal
+// and recheck this invocation-local identity; it never advances a base or ref.
+export async function publishedMetadataContext({ publication, repositoryRoot, git }) {
+  const entry = publicationStateRepositories(publication ?? {})
+    .find(item => canonicalPath(item.root) === canonicalPath(repositoryRoot));
+  if (!publication?.generation || !entry) return null;
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(entry.revision)
+      || await git(["rev-parse", `${entry.revision}^{commit}`]) !== entry.revision) reject("published metadata identity changed");
+  return { generation: publication.generation, repositoryRoot: canonicalPath(repositoryRoot),
+    recordHash: taskGitIdentityHash(entry), commit: entry.revision,
+    tree: await git(["rev-parse", `${entry.revision}^{tree}`]) };
+}
 
 async function regular(file) {
   const info = await lstat(file).catch(error => {
@@ -286,10 +303,24 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
   primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [], readOwnGitPublication = null }) {
   const currentFile = path.join(runtimeRoot, "current.json");
   if (!await lstat(currentFile).catch(error => { if (error.code === "ENOENT") return null; throw error; })) return null;
-  const current = JSON.parse(await regular(currentFile));
+  const currentBytes = await regular(currentFile);
+  const current = JSON.parse(currentBytes);
   if (!/^[A-Za-z0-9._-]{1,200}$/u.test(current.current) || current.current.includes("..")) reject("installed identity changed");
   const bytes = await regular(path.join(runtimeRoot, "releases", current.current, "runtime-manifest.json"));
   const manifest = JSON.parse(bytes);
+  if (manifest.releaseId !== current.current) reject("installed identity changed");
+  // A normal published runtime already names the caller's durable publication.
+  // Its generation checkout is disposable: it supplies no additional installed
+  // local-source authority. Return the same no-carry result as an exact retained
+  // published HEAD, using the immutable object in the registered repository.
+  // Legacy/local repairs still require the complete retained-checkout proof below.
+  if (manifest.publicationRevision === publishedRevision) {
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(publishedRevision)
+        || await git(["rev-parse", `${publishedRevision}^{commit}`]) !== publishedRevision) reject("published source identity changed");
+    if (!currentBytes.equals(await regular(currentFile))) reject("installed release changed");
+    if (!bytes.equals(await regular(path.join(runtimeRoot, "releases", current.current, "runtime-manifest.json")))) reject("installed manifest changed");
+    return null;
+  }
   if (typeof manifest.sourceRoot !== "string" || !path.isAbsolute(manifest.sourceRoot)) reject("retained source root is absent");
   const sourceBaseCommit = await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{commit}"]);
   const sourceBaseTree = await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{tree}"]);

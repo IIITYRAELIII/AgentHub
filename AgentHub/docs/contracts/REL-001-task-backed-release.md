@@ -3168,3 +3168,71 @@ metadata authority. Candidate freeze still owns and binds the actual bytes, vers
 tree and manifest. This supplies the consolidated entry for changed Task membership
 without rewriting the initial authorization or silently generating release notes.
 See ADR-HUB-351-release-metadata-amendment.
+
+## Explicit GitHub distribution target
+
+An original `agent-hub-publication` target with environment `github-release`
+selects the existing runner's distribution profile. Normal installed targets are
+unchanged. The profile remains bound to its exact authorized target, frozen
+generation/source/build and existing publication journal. Cross-profile resume
+refuses. Accepted tests retain their existing selection; skipped is not PASS.
+
+Preparation and the verified four-file packaging checkpoint precede ordinary
+frozen Git publication. Git precedes draft asset upload and publication. The
+unchanged PREPARED receipt comes only from that generation's artifact owner.
+This profile does not install/activate/restart the publisher runtime or deploy
+Worker/Android/VS Code. Repository registration and source cutover remain under
+their existing owner, not this adapter.
+
+Only canonical public IIITYRAELIII/AgentHub is supported. Stable tag/source,
+repository/owner IDs, own digest-bound release body, complete asset names/sizes/
+SHA-256 and local PACKAGED inputs must agree. Foreign/ambiguous/drifted output
+refuses without overwrite or deletion. Own successful lost replies are read back;
+started uploads with no matching complete remote asset remain unknown. The same
+journal persists original create/upload intents before effects. Git state alone
+cannot settle an asset target. Publisher authentication never enters recipient
+assets; authenticated redirects refuse. Actual anonymous download/install/update/
+rollback remains required before distribution/cutover completion.
+
+See ADR-HUB-329-github-distribution-target and its focused behavioral check.
+
+## First standalone source registration
+
+Before the first standalone artifact, the existing github-baseline owner may
+explicitly register exact already reviewed/public source main for canonical
+IIITYRAELIII/AgentHub. Source-only mode verifies clean local main/HEAD/tree,
+origin, public repository/owner IDs and remote main commit/tree, then repeats
+verification under the existing publication lock. It may only add a previously
+absent repository entry. Exact repetition writes nothing; conflicting existing
+evidence refuses. Other repository entries, global publication authority and old
+original receipts are preserved. Source-only mode grants no installed-runtime,
+GitHub Release, target-effect, Task result or OID-reinterpretation credit.
+
+This bounded additional source registration allows ordinary new-repository Task
+acceptance and first freeze; it does not perform managed Utilities retirement or
+installed update-origin cutover. Those still follow real distribution consumer
+acceptance. Native Test binds and rechecks the exact source-only repository
+publication/origin. It may retain only its exact published metadata, with no
+extra code/history base or foreign installed-runtime carry. Actual github-release
+completion retains that explicit profile in repository evidence; ordinary installed
+publication retains its existing installed-source proof. See
+ADR-HUB-329-first-standalone-source-baseline.
+
+An installed manifest that explicitly names the caller's durable published
+revision needs no retired generation checkout. The existing reader verifies the
+matching release and immutable commit in the registered repository, rereads the
+pointer and manifest byte-exact, and returns no local-source carry. Legacy or
+different-publication repairs retain their full existing proof.
+
+Without installed carry, exact published notes/version context comes from the
+registered repository's durable generation, whole entry hash and immutable
+commit/tree. Native Test requires publication ancestry in both Task source and
+managed dev; its original intent seals that context and terminal checks reread
+it. Old intents are not enriched. Native-main candidate preparation matches its
+published-base provenance and rechecks the initial context before commit. Main,
+base, notes/version, selection and content guards remain unchanged.
+
+The existing task-await-cutover CLI's explicit ordinary-test mode only calls
+normal public Test with the original CAS and optional authenticated native
+review, after pinned clean source and canonical repository checks. It grants no
+initial-native, returned, squash or cross-Task cutover authority.
