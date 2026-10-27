@@ -2203,6 +2203,13 @@ recording and canonical completion under the publication lock, without build,
 deploy, push or restart; startup readiness does not wait for that work.
 Only completed Workspace finalization yields `succeeded`. A low-level publisher
 without a Workspace adapter yields `published` and does not claim Task closure.
+Post-publication dev synchronization may merge the exact revision from the
+existing durable publication while primary main stays at its accepted base.
+The repository/revision/generation binding is reread under the dev lease before
+Git mutation; local main must remain unchanged and be an ancestor of that exact
+published revision, which must remain contained in the observed origin/main.
+Only the pinned published revision is merged, never a newer remote tip. Missing
+or changed publication provenance refuses; primary HEAD/index/files are preserved.
 When the safe restart owner defers rotation, the publication result carries the
 machine-readable `yield_current_turn` handoff. The current release agent ends
 its turn without starting more work; this neither interrupts another user's

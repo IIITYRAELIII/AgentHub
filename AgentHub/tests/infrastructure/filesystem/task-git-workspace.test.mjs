@@ -2049,6 +2049,84 @@ test("native Test retains its original across interrupted dev CAS", { timeout: 1
   }
 });
 
+test("verified published revision synchronizes dev while preserving an older primary main", async (context) => {
+  const { root, origin } = await repositoryWithOrigin(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-published-sync`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const dev = await service.prepareDev(root);
+  await writeFile(path.join(dev.projectRoot, "later-dev.txt"), "keep later dev\n");
+  await git(dev.projectRoot, "add", ".");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "later dev");
+  const devBefore = await git(root, "rev-parse", "dev");
+  const mainBefore = await git(root, "rev-parse", "main");
+  const published = await advanceOriginMain(context, origin, { "published.txt": "verified publication\n" });
+  await git(root, "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main");
+  const advanced = await advanceOriginMain(context, origin, { "unapproved.txt": "new upstream is not selected\n" });
+  await git(root, "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main");
+  assert.notEqual(advanced, published);
+  await writeFile(path.join(root, "private-local.txt"), "primary bytes\n");
+  const primaryStatus = await git(root, "status", "--porcelain=v1");
+  const primaryIndex = await readFile(path.join(root, ".git", "index"));
+  const valid = { generation: "verified-publication", repositories: [{ root, revision: published }] };
+  for (const invalid of [null, { repositories: valid.repositories },
+    { generation: "foreign", repositories: [{ root: path.join(root, "other"), revision: published }] },
+    { generation: "wrong", repositories: [{ root, revision: advanced }] }]) {
+    publication = invalid;
+    await assert.rejects(service.synchronizeMainIntoDev({ projectRoot: root, publishedRevision: published }));
+    assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  }
+  publication = valid;
+  await git(root, "update-ref", "refs/remotes/origin/main", mainBefore);
+  await assert.rejects(service.synchronizeMainIntoDev({ projectRoot: root, publishedRevision: published }));
+  assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  await git(root, "update-ref", "refs/remotes/origin/main", advanced);
+  const result = await service.synchronizeMainIntoDev({ projectRoot: root, publishedRevision: published });
+  assert.equal(result.integrated, true);
+  assert.equal(await readFile(path.join(dev.projectRoot, "published.txt"), "utf8"), "verified publication\n");
+  assert.equal(await readFile(path.join(dev.projectRoot, "later-dev.txt"), "utf8"), "keep later dev\n");
+  await assert.rejects(access(path.join(dev.projectRoot, "unapproved.txt")), { code: "ENOENT" });
+  assert.equal(await git(root, "rev-parse", "HEAD"), mainBefore);
+  assert.equal(await git(root, "rev-parse", "main"), mainBefore);
+  assert.deepEqual(await readFile(path.join(root, ".git", "index")), primaryIndex);
+  assert.equal(await git(root, "status", "--porcelain=v1"), primaryStatus);
+  assert.equal(await readFile(path.join(root, "private-local.txt"), "utf8"), "primary bytes\n");
+  assert.equal(await git(dev.projectRoot, "status", "--porcelain"), "");
+  const reflog = await git(root, "reflog", "show", "dev");
+  const repeated = await service.synchronizeMainIntoDev({ projectRoot: root, publishedRevision: published });
+  assert.equal(repeated.integrated, true);
+  assert.equal(repeated.headCommit, result.headCommit);
+  assert.equal(await git(root, "reflog", "show", "dev"), reflog);
+});
+
+test("published dev synchronization refuses a changed durable publication before Git effects", async (context) => {
+  const { root, origin } = await repositoryWithOrigin(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-published-drift`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  let reads = 0;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => {
+    reads += 1;
+    return reads === 1 ? publication : { ...publication, generation: "changed-after-intake" };
+  } });
+  const dev = await service.prepareDev(root);
+  const devBefore = await git(root, "rev-parse", "dev");
+  const primaryBefore = await git(root, "rev-parse", "HEAD");
+  const published = await advanceOriginMain(context, origin, { "published.txt": "published\n" });
+  await git(root, "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main");
+  publication = { generation: "original-publication", repositories: [{ root, revision: published }] };
+  reads = 0;
+  const reflog = await git(root, "reflog", "show", "dev");
+  await assert.rejects(service.synchronizeMainIntoDev({ projectRoot: root, publishedRevision: published }),
+    /publication provenance changed/u);
+  assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  assert.equal(await git(root, "reflog", "show", "dev"), reflog);
+  assert.equal(await git(root, "rev-parse", "HEAD"), primaryBefore);
+  assert.equal(await git(dev.projectRoot, "status", "--porcelain"), "");
+  await assert.rejects(access(path.join(dev.projectRoot, "published.txt")), { code: "ENOENT" });
+});
+
 test("explicit published main to dev conflict aborts exactly while new Task creation stays independent", async (context) => {
   const { root, origin } = await repositoryWithOrigin(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);

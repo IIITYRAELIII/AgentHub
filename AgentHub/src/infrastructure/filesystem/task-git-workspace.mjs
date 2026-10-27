@@ -2391,9 +2391,10 @@ export class TaskGitWorkspaceService {
 
   async #synchronizeMainIntoDevOwned({
     repoRoot, expectedMainCommit = null, observedMainCommit = null, snapshotResolution = null,
-    adoptionReceipt = null, lease,
+    adoptionReceipt = null, verifySynchronization = null, lease,
   }) {
     await requiredGuardLease(lease).assertOwned();
+    await verifySynchronization?.();
     const repoKey = taskRepositoryKey(repoRoot);
     const requestedMain = String(observedMainCommit ?? expectedMainCommit ?? "").trim();
     if (!requestedMain) throw new Error("explicit main to dev synchronization requires an exact accepted revision");
@@ -2441,6 +2442,7 @@ export class TaskGitWorkspaceService {
       cwd: devRoot,
     }) !== null;
     if (mainAlreadyIntegrated) {
+      await verifySynchronization?.();
       return {
         status: "already_current",
         integrated: true,
@@ -2467,6 +2469,7 @@ export class TaskGitWorkspaceService {
         lease,
       });
     }
+    await verifySynchronization?.();
     try {
       await lease.assertOwned();
       await this.#revalidateExplicitUpstreamAdoption(adoptionReceipt, lease);
@@ -2602,15 +2605,33 @@ export class TaskGitWorkspaceService {
     const repoRoot = await repositoryRoot(projectRoot);
     return this.#withClearDevLock(repoRoot, null, async (lease) => {
       const currentLocalMain = await localMainCommit(repoRoot);
+      let verifySynchronization = null;
       if (currentLocalMain !== expectedMainCommit) {
-        throw new Error(
-          `published revision ${expectedMainCommit} is not the accepted local main ${currentLocalMain}`,
-        );
+        const publication = await this.readPublication();
+        const published = publicationStateRepositories(publication ?? {})
+          .find((entry) => samePath(entry.root, repoRoot))?.revision;
+        if (!publication?.generation || published !== expectedMainCommit) {
+          throw new Error(
+            `published revision ${expectedMainCommit} is not the accepted local main ${currentLocalMain}`,
+          );
+        }
+        verifySynchronization = async () => {
+          await lease.assertOwned();
+          await this.#acceptedMainBootstrapPublication(repoRoot, expectedMainCommit, publication.generation);
+          if (await localMainCommit(repoRoot) !== currentLocalMain) {
+            throw new Error("Published synchronization local main changed");
+          }
+          const remote = await this.#runOwned(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
+            { cwd: repoRoot, lease });
+          await this.#runOwned(["merge-base", "--is-ancestor", expectedMainCommit, remote], { cwd: repoRoot, lease });
+          await this.#runOwned(["merge-base", "--is-ancestor", currentLocalMain, expectedMainCommit], { cwd: repoRoot, lease });
+        };
       }
       return this.#synchronizeMainIntoDevOwned({
         repoRoot,
         expectedMainCommit,
         observedMainCommit: expectedMainCommit,
+        verifySynchronization,
         lease,
       });
     });
