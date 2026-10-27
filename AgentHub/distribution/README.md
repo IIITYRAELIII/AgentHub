@@ -173,6 +173,11 @@ Normal targets retain their installed-runtime behavior. Original generation,
 version, source, journal and tests selection remain authoritative; there is no
 manual receipt, asset upload or alternate publication CLI.
 
+The manual GitHub workflow runs source and VS Code tests. It does not package
+release artifacts or establish publication readiness. When an approved Hub
+publication includes Android, the existing release stage supplies the frozen
+`-ArtifactVersion`; the source-check workflow does not allocate or invent one.
+
 This implementation still requires exact source/current-context review and the
 ordinary standalone candidate lifecycle. Its existence does not prove that a
 product archive was built or publicly downloaded. Actual product download, fresh

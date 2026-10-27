@@ -12,7 +12,7 @@ import stat
 import tempfile
 
 from build_package import build_package, regular, verified_runtime_payload
-from install_release import REPOSITORY, extract_verified, file_hash, semantic_fields, valid_artifact_version
+from install_release import REPOSITORY, extract_verified, file_hash, semantic_fields, valid_artifact_version, windows_filesystem_path
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ("AgentHub-win32-x64.zip", "AgentHub-win32-x64.zip.json", "install_release.py", "SHA256SUMS")
@@ -125,7 +125,7 @@ def _verify_assets(namespace: Path, inputs: dict) -> list[dict]:
     if regular(checksums) != expected_sums:
         raise ValueError("Package checksums mismatch")
     # Reuse the recipient's actual archive/inventory verifier. No child executes.
-    scratch = Path(tempfile.mkdtemp(prefix=".verify-", dir=namespace))
+    scratch = Path(tempfile.mkdtemp(prefix=".verify-", dir=windows_filesystem_path(namespace)))
     owned = scratch.resolve(strict=True)
     created = scratch.stat()
     owned_identity = (created.st_dev, created.st_ino, getattr(created, "st_birthtime_ns", None))

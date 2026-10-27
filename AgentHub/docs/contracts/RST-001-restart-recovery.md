@@ -98,6 +98,11 @@ rejection; a startup/read exception or idle status alone still cannot release.
   older sources without the owning module do not require it. This does not grant
   authority to rewrite an already installed immutable runtime manifest.
 
+- Native candidate membership and immutable module reads include the same six
+  declared release-progress viewer assets as runtime preparation. Their shared
+  declaration includes the identity, reader and server modules; unrelated files
+  in that directory cannot satisfy a shipped import or enter the package.
+
 - File transfer shutdown fences new preparation/GC admission and drains the
   admitted intake, background copy and complete GC filesystem/SQLite settlement
   before closing its store. A completed close cannot reopen SQLite through a

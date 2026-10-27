@@ -76,6 +76,16 @@ def file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def windows_filesystem_path(path: Path) -> Path:
+    """Use Windows' extended namespace for owned extraction IO and cleanup."""
+    if os.name != "nt":
+        return path
+    value = str(path.absolute())
+    if value.startswith("\\\\?\\"):
+        return Path(value)
+    return Path("\\\\?\\UNC\\" + value[2:] if value.startswith("\\\\") else "\\\\?\\" + value)
+
+
 def safe_name(value: str) -> str:
     if not value or "\\" in value or ":" in value or value.startswith("/"):
         raise ValueError("Unsafe package path")
@@ -211,6 +221,7 @@ def extract_verified(archive: Path, expected_sha256: str, destination: Path) -> 
         raise ValueError("Ready archive is missing or exceeds its budget")
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or file_hash(archive) != expected_sha256:
         raise ValueError("Ready package SHA-256 mismatch")
+    destination = windows_filesystem_path(destination)
     if destination.exists():
         raise ValueError("Extraction destination must not exist")
     with zipfile.ZipFile(archive) as source:
@@ -306,7 +317,7 @@ def main():
     if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
         raise ValueError("Runtime must be outside the disposable package scratch root")
     args.scratch_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="agenthub-package-", dir=args.scratch_root) as temporary:
+    with tempfile.TemporaryDirectory(prefix="agenthub-package-", dir=windows_filesystem_path(args.scratch_root)) as temporary:
         scratch = Path(temporary)
         archive = args.archive
         selected = None
@@ -327,9 +338,14 @@ def main():
         if not node:
             raise RuntimeError("Node.js runtime with node:sqlite is required; no npm or compiler is needed")
         subprocess.run([node, "-e", "require('node:sqlite')"], check=True, capture_output=True)
+        # Python extraction/cleanup uses the extended filesystem namespace;
+        # Node's entry-point resolver accepts the ordinary absolute spelling.
+        entry = str(scratch/"verified/install-prepared.mjs")
+        if os.name == "nt" and entry.startswith("\\\\?\\"):
+            entry = "\\\\" + entry[8:] if entry.startswith("\\\\?\\UNC\\") else entry[4:]
         # Explicit offline update only; the existing owner checks live/unknown
         # process evidence. No automatic start, stop, autostart or retry.
-        result = subprocess.run([node, str(scratch/"verified/install-prepared.mjs"),
+        result = subprocess.run([node, entry,
                                  "rollback" if args.rollback else "install", str(args.runtime_root.resolve())],
                                 check=False, env={k: v for k, v in os.environ.items()
                                                   if not k.startswith("AGENT_HUB_PUBLICATION_")})

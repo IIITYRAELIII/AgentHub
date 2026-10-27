@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,30 @@ class PackageCheckpointTests(unittest.TestCase):
     def snapshot(self):
         return {str(p.relative_to(self.namespace)): (p.read_bytes(), p.stat().st_mtime_ns)
                 for p in self.namespace.rglob("*") if p.is_file()}
+
+    @unittest.skipUnless(os.name == "nt", "Windows release-operation path length")
+    def test_deep_operation_checkpoint_verifies_long_dependency_path_and_reuses_result(self):
+        name = "node_modules/@anthropic-ai/sdk/resources/beta/memory-stores/memory-stores.d.mts.map"
+        data = b"synthetic declared dependency source map"
+        target = self.prepared / name
+        target.parent.mkdir(parents=True)
+        target.write_bytes(data)
+        self.manifest["files"].append({"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+        self.manifest_file.write_text(json.dumps(self.manifest), encoding="utf-8")
+        self.receipt["manifestSha256"] = stage.file_hash(self.manifest_file)
+        self.save_receipt()
+        self.output = self.root / "release-operation-executions" / ("e" * 64) / "distribution"
+        self.namespace = self.output / self.receipt["version"]
+        self.assertGreater(len(str(self.namespace / ".verify-owned" / "package/runtime" / name)), 260)
+        # Cleanup also uses the native Windows namespace, independently of the
+        # implementation being checked, so a failing regression keeps no files.
+        self.addCleanup(shutil.rmtree, Path("\\\\?\\" + str(self.root.absolute())), True)
+        first = self.run_stage()
+        before = self.snapshot()
+        self.assertEqual(first["phase"], "PACKAGED")
+        self.assertEqual(self.run_stage(), first)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(any(p.name.startswith(".verify-") for p in self.namespace.iterdir()))
 
     def test_exact_retry_reuses_saved_artifacts_without_build_or_external_effect(self):
         original = self.manifest_file.read_bytes()
