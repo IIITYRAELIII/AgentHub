@@ -41,7 +41,7 @@ import {
 } from "../process/system-boot-identity.mjs";
 import { publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
 import { parseGitHubRemote, sourceOnlyGitPublication } from "../persistence/github-publication-baseline.mjs";
-import { readNativePublishedSelectedComposition, readOwnGitPublicationOrigin } from "../persistence/release-operation-store.mjs";
+import { readNativePublishedSelectedComposition, readOwnGitPublicationOrigin, readPublishedReleaseServiceGeneration } from "../persistence/release-operation-store.mjs";
 import {
   normalizedTaskId,
   TASK_BRANCH_PREFIX,
@@ -5864,9 +5864,16 @@ export class TaskGitWorkspaceService {
       throw new Error("Release service Task requires one clean managed worktree to preserve");
     }
     const repositoryRoot = workspaces[0].repositoryRoot;
-    const publication = await this.readPublication();
-    const published = publicationStateRepositories(publication ?? {}).find((item) => samePath(item.root, repositoryRoot));
-    const generation = String(publication?.generation ?? "").trim();
+    const completed = readPublishedReleaseServiceGeneration({ dataDir: this.dataDir,
+      workspaceId: source.workspaceId, repositoryRoot,
+      selectedTasks: (selectedTasks ?? []).map(task => ({ id: task.id,
+        resultCommit: (task.gitReferences ?? []).find(ref => samePath(ref.projectRoot, repositoryRoot))?.resultCommit })) });
+    const publication = completed ? null : await this.readPublication();
+    const published = completed ? { root: completed.candidate.repositoryRoot,
+      revision: completed.candidate.commit, manifestHash: completed.candidate.manifestHash,
+      planRevision: completed.candidate.planRevision } :
+      publicationStateRepositories(publication ?? {}).find((item) => samePath(item.root, repositoryRoot));
+    const generation = completed ? `${completed.operationId}:${completed.generation}` : String(publication?.generation ?? "").trim();
     const publishedRevision = exactCommitId(published?.revision, "published repository revision");
     const manifestHash = String(published?.manifestHash ?? "").trim();
     if (!generation || !/^[a-f0-9]{64}$/u.test(manifestHash) || !published?.planRevision) {
@@ -5878,9 +5885,36 @@ export class TaskGitWorkspaceService {
       taskRepositoryKey(workspaces[0].projectRoot),
     ])];
     const manifestCopies = [];
+    const manifestFiles = [];
     for (const repositoryKey of repositoryKeys) {
-      const manifestFile = path.join(this.dataDir, "release-repositories", repositoryKey,
-        "evidence", `${manifestHash}.json`);
+      manifestFiles.push(path.join(this.dataDir, "release-repositories", repositoryKey,
+        "evidence", `${manifestHash}.json`));
+    }
+    if (completed) {
+      const identityHash = createHash("sha256").update(
+        `${completed.operationId}:${completed.generation}:${completed.candidate.repositoryRoot}`).digest("hex");
+      const key = identityHash.slice(0, 24);
+      const generationRoot = path.join(this.dataDir, "release-gens", key);
+      if (!completed.candidate.generationRoot || !samePath(completed.candidate.generationRoot, generationRoot)) {
+        throw new Error("Published release generation root changed");
+      }
+      for (const [root, evidence] of [
+        [generationRoot, path.join("release-repositories", taskRepositoryKey(completed.candidate.repositoryRoot), "evidence")],
+        [path.join(this.dataDir, "release-generation-evidence", key), "evidence"],
+      ]) {
+        const identityBytes = await readFile(path.join(root, "identity.json")).catch(error => {
+          if (error?.code === "ENOENT") return null;
+          throw error;
+        });
+        if (!identityBytes) continue;
+        const identity = JSON.parse(identityBytes.toString("utf8"));
+        if (identity.operationId !== completed.operationId || identity.generation !== completed.generation
+            || !samePath(identity.repositoryRoot, completed.candidate.repositoryRoot)
+            || identity.identitySha256 !== identityHash) throw new Error("Published release archive identity changed");
+        manifestFiles.push(path.join(root, evidence, `${manifestHash}.json`));
+      }
+    }
+    for (const manifestFile of [...new Set(manifestFiles)]) {
       const bytes = await readFile(manifestFile).catch((error) => {
         if (error?.code === "ENOENT") return null;
         throw error;
@@ -5921,6 +5955,8 @@ export class TaskGitWorkspaceService {
       version: 1, mode: "published_release_service",
       source: { taskId: source.id, taskRevision: source.revision },
       publicationGeneration: generation, publishedRevision,
+      ...(completed ? { releaseOperation: { operationId: completed.operationId,
+        generation: completed.generation, identitySha256: completed.identitySha256 } } : {}),
       planRevision: published.planRevision, manifestHash,
       selectedResults: selected.map((task, index) => ({ taskId: task.id, revision: task.revision,
         resultCommit: manifestTasks[index].resultCommit })),

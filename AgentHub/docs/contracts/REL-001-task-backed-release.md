@@ -1201,6 +1201,18 @@ cleanup plan; confirmation rechecks them. No result is fabricated and its clean
 managed worktree is retained. Publication, Task closure and cleanup remain
 separate facts.
 
+For a completed durable ReleaseOperation, the original indexed selected set,
+immutable generation identity, authorization and applied validation/publication/
+finalization receipts bind this proof independently of later publication-state
+updates. The existing completed-generation eligibility also owns retention.
+The reader hashes the original raw manifest in the exact live generation or its
+normal retention archive; it does not reconstruct raw bytes from the reduced
+SQLite manifest projection or import an operator's audit copy. Multiple matching
+original releases are ambiguous and refuse. Missing original raw evidence stays
+an explicit historical migration gap. The legacy current-publication path is
+retained only when no matching durable completed generation exists; it grants
+no historical substitution. See ADR-HUB-360-published-service-evidence.
+
 Preview binds both Task revisions, every source base/branch/HEAD, every survivor
 result, repository-scoped published revisions, publication generation, explicit
 mode and a preserve-only cleanup plan. Confirmation repeats the Git proof under
