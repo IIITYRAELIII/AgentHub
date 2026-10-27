@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import tempfile
 import unittest
@@ -64,6 +65,32 @@ class ReadyPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SHA-256"):
             extract_verified(self.archive, "0"*64, destination)
         self.assertFalse(destination.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows recipient scratch path length")
+    def test_long_recipient_path_checks_payload_and_removes_only_corrupt_extraction(self):
+        name = "node_modules/example/resources/beta/memory-stores/memory-stores.d.mts.map"
+        data = b"synthetic dependency body"
+        target = self.prepared / name
+        target.parent.mkdir(parents=True)
+        target.write_bytes(data)
+        self.manifest["files"].append({"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+        (self.prepared / "runtime-manifest.json").write_text(json.dumps(self.manifest), encoding="utf-8")
+        self.addCleanup(shutil.rmtree, Path("\\\\?\\" + str(self.root.absolute())), True)
+        result = self.build()
+        base = self.root / "release-operation-executions" / ("d" * 64) / "distribution" / "2.0.2+build.12345678" / "verified"
+        self.assertGreater(len(str(base / "runtime" / name)), 260)
+        sentinel = self.root / "keep.txt"
+        sentinel.write_bytes(b"owned input stays")
+        extract_verified(self.archive, result["sha256"], base)
+        native_base = Path("\\\\?\\" + str(base.absolute()))
+        self.assertEqual((native_base / "runtime" / name).read_bytes(), data)
+        shutil.rmtree(native_base)
+        self.tamper("runtime/" + name, b"corrupt")
+        with self.assertRaisesRegex(ValueError, "integrity"):
+            extract_verified(self.archive, file_hash(self.archive), base)
+        self.assertFalse(base.exists())
+        self.assertEqual(sentinel.read_bytes(), b"owned input stays")
+        self.assertTrue(self.archive.exists())
 
     def tamper(self, name, data, *, append=False, mode=None):
         with zipfile.ZipFile(self.archive) as archive:

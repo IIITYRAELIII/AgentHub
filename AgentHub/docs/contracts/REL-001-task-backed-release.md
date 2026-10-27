@@ -3171,6 +3171,11 @@ See ADR-HUB-351-release-metadata-amendment.
 
 ## Explicit GitHub distribution target
 
+Windows package verification and recipient extraction support declared dependency
+paths beyond legacy MAX_PATH inside their owned scratch directories. Extended
+filesystem names apply to extraction and its cleanup only; archive path safety,
+complete hashes, original checkpoint identity and ownership checks still apply.
+
 An original `agent-hub-publication` target with environment `github-release`
 selects the existing runner's distribution profile. Normal installed targets are
 unchanged. The profile remains bound to its exact authorized target, frozen
