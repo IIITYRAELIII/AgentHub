@@ -384,6 +384,52 @@ class SecureInstallationTests(unittest.TestCase):
                 else:
                     link.unlink()
 
+    def test_current_linked_extension_preserves_registration_with_distinct_external_basename(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {"publisher": "test", "name": "agent-hub", "version": "1.0.0"}
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            (source / "extension.js").write_text("current content", encoding="utf-8")
+            home = Path(temp) / "home"
+            extensions = home / ".vscode" / "extensions"
+            extensions.mkdir(parents=True)
+            external = Path(temp) / "external-storage" / "current-payload"
+            external.mkdir(parents=True)
+            for file in source.iterdir():
+                (external / file.name).write_bytes(file.read_bytes())
+            fingerprint = install.extension_source_fingerprint(source)
+            provenance = install.extension_source_provenance(source, fingerprint, "a" * 40, "1.0.0")
+            (external / ".agent-hub-source.sha256").write_text(fingerprint + "\n", encoding="ascii")
+            (external / install.EXTENSION_PROVENANCE_FILE).write_text(json.dumps(provenance), encoding="utf-8")
+            before = {p.name: p.read_bytes() for p in external.iterdir()}
+            link = extensions / "test.agent-hub-1.0.0"
+            self._link_extension_directory(link, external)
+            try:
+                with (
+                    mock.patch.object(install, "ROOT", root),
+                    mock.patch("AgentHub.install.Path.home", return_value=home),
+                ):
+                    self.assertEqual("revision:" + "a" * 40, install.installed_vscode_extension_identity())
+                    plan = install.vscode_extension_install_plan(source_revision="a" * 40, release_version="1.0.0")
+                    self.assertEqual("current", plan["action"])
+                    self.assertEqual(link.name, plan["targetName"])
+                    for _ in range(2):
+                        observed = install.install_vscode_extension(
+                            source_revision="a" * 40, release_version="1.0.0", prepared_plan=plan,
+                        )
+                        self.assertTrue(observed.is_dir())
+                        self.assertEqual(external.resolve(), observed)
+                    self.assertEqual([link], list(extensions.iterdir()))
+                self.assertEqual(before, {p.name: p.read_bytes() for p in external.iterdir()})
+                self.assertEqual(external.resolve(), link.resolve())
+            finally:
+                if sys.platform == "win32":
+                    link.rmdir()
+                else:
+                    link.unlink()
+
     def test_extension_install_still_refuses_redirected_new_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"
