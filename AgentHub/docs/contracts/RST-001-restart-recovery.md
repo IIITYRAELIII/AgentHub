@@ -84,6 +84,13 @@ rejection; a startup/read exception or idle status alone still cannot release.
 
 ## Invariants
 
+- Runtime packaging includes each declared non-JavaScript companion whenever its
+  owning module is included. The Codex executable custody module requires its C#
+  companion in the same installed directory and exact runtime manifest. A missing
+  required companion refuses preparation before current-pointer publication;
+  older sources without the owning module do not require it. This does not grant
+  authority to rewrite an already installed immutable runtime manifest.
+
 - Timeout is ambiguous until reconciliation; it does not authorize duplicate
   non-idempotent starts.
 - Publication readiness binds the expected current release to both the ready

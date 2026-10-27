@@ -158,6 +158,7 @@ export class ReleaseOperationService {
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
       "putGeneration", "generation", "beginStep", "finishStep", "latestStep",
       "runnable", "active", "forTask", "pendingEvents", "settleEvent",
+      "runOperationMutation", "isContentionError",
     ]) requiredMethod(store, name);
     for (const [value, name] of [
       [compose, "compose"], [validate, "validate"], [publishTarget, "publishTarget"],
@@ -522,7 +523,7 @@ export class ReleaseOperationService {
     this.#scheduled.add(operationId);
     this.scheduleTask(() => {
       this.#scheduled.delete(operationId);
-      void this.#run(operationId);
+      return this.#run(operationId).catch(error => this.#backgroundFailure(operationId, error));
     });
   }
 
@@ -533,11 +534,15 @@ export class ReleaseOperationService {
     let acquisitionDenied = null;
     let owner = null;
     let heartbeat = null;
+    let persistenceUnavailable = false;
+    let runFailed = false;
     try {
-      const prior = this.store.get(operationId);
-      const takeoverAllowed = Boolean(prior?.owner?.processId && !this.processAlive(prior.owner.processId));
-      const acquired = this.store.acquire(operationId, this.ownerId, {
-        leaseMs: this.leaseMs, processId: this.processId, takeoverAllowed,
+      const acquired = await this.store.runOperationMutation(operationId, () => {
+        const prior = this.store.get(operationId);
+        const takeoverAllowed = Boolean(prior?.owner?.processId && !this.processAlive(prior.owner.processId));
+        return this.store.acquire(operationId, this.ownerId, {
+          leaseMs: this.leaseMs, processId: this.processId, takeoverAllowed,
+        });
       });
       if (!acquired.acquired) {
         acquisitionDenied = acquired.reason;
@@ -560,6 +565,7 @@ export class ReleaseOperationService {
           else if (operation.state === "finalize") operation = await this.#finalize(operation, owner);
           else throw new Error(`unsupported release operation state: ${operation.state}`);
         } catch (error) {
+          if (this.store.isContentionError(error)) throw error;
           const latest = this.store.get(operationId) ?? operation;
           if (!ownsRelease(latest, owner)) break;
           if (error?.code === "RELEASE_RESULT_LINEAGE_MISMATCH" && this.requestCorrection) {
@@ -584,17 +590,29 @@ export class ReleaseOperationService {
           operation = failed.operation;
         }
       }
+    } catch (error) {
+      runFailed = true;
+      persistenceUnavailable = this.store.isContentionError(error);
+      throw error;
     } finally {
       if (heartbeat) clearInterval(heartbeat);
-      if (owned) this.store.release(operationId, owner);
-      this.#running.delete(operationId);
+      try {
+        if (owned) await this.store.runOperationMutation(operationId, () => this.store.release(operationId, owner));
+      } catch (error) {
+        this.#backgroundFailure(operationId, error, owner);
+        persistenceUnavailable = this.store.isContentionError(error);
+        runFailed = true;
+      } finally {
+        this.#running.delete(operationId);
+      }
       const current = this.store.get(operationId);
       if (current && releaseOperationIsTerminal(current) && current.currentGeneration > 0) {
         const generation = this.store.generation(current.operationId, current.currentGeneration);
         if (generation) await this.cleanupGeneration?.({ operation: current, generation }).catch(() => {});
       }
-      if (acquisitionDenied === "owned") this.#scheduleOwnedRetry(operationId);
-      else if (owned) {
+      if (persistenceUnavailable) this.#scheduleOwnedRetry(operationId);
+      else if (acquisitionDenied === "owned") this.#scheduleOwnedRetry(operationId);
+      else if (owned && !runFailed) {
         if (current?.state === "waiting") this.#scheduleRetry(current);
         else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
       }
@@ -602,12 +620,25 @@ export class ReleaseOperationService {
     }
   }
 
-  #scheduleOwnedRetry(operationId) {
+  #backgroundFailure(operationId, error, ownerToRelease = null) {
+    console.warn("Release background operation unavailable", {
+      operationId,
+      code: String(error?.code ?? "RELEASE_BACKGROUND_ERROR").slice(0, 64),
+      sqliteCode: Number(error?.errcode) || null,
+    });
+    if (this.store.isContentionError(error)) this.#scheduleOwnedRetry(operationId, ownerToRelease);
+  }
+
+  #scheduleOwnedRetry(operationId, ownerToRelease = null) {
     if (this.#retryTimers.has(operationId)) return;
     const timer = setTimeout(() => {
       this.#retryTimers.delete(operationId);
-      const current = this.store.get(operationId);
-      if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
+      void this.store.runOperationMutation(operationId, () => {
+        if (ownerToRelease) this.store.release(operationId, ownerToRelease);
+        const current = this.store.get(operationId);
+        if (current?.state === "waiting") this.#scheduleRetry(current);
+        else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
+      }).catch(error => this.#backgroundFailure(operationId, error, ownerToRelease));
     }, this.retryDelayMs);
     timer.unref?.();
     this.#retryTimers.set(operationId, timer);
@@ -621,9 +652,11 @@ export class ReleaseOperationService {
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
       this.#retryTimers.delete(operation.operationId);
-      const current = this.store.get(operation.operationId);
-      if (current?.state !== "waiting" || current.revision !== operation.revision) return;
-      this.continue(operation.operationId);
+      void this.store.runOperationMutation(operation.operationId, () => {
+        const current = this.store.get(operation.operationId);
+        if (current?.state !== "waiting" || current.revision !== operation.revision) return;
+        this.continue(operation.operationId);
+      }).catch(error => this.#backgroundFailure(operation.operationId, error));
     }, Math.min(delay, 2_147_000_000));
     timer.unref?.();
     this.#retryTimers.set(operation.operationId, timer);

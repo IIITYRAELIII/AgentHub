@@ -208,6 +208,7 @@
         "install.py",
         "install_test.py",
         "docs/decisions/ADR-HUB-320-extension-link-inventory.md",
+        "docs/decisions/ADR-HUB-329-release-background-persistence-and-runtime-assets.md",
         "assets/web-app/hub-client.js",
         "assets/web-app/task-board.js",
         "src/application/sqlite-mutation-owner.mjs",

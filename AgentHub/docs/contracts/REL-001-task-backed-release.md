@@ -655,6 +655,15 @@ authorization and returns the operation ID before tests, Git, deployment or
 finalization. `hub_release_get` is read-only. `hub_release_continue` wakes the
 same operation and never creates a replacement identity.
 
+Release background resume/acquisition and exact owner/epoch settlement use the
+existing bounded asynchronous SQLite mutation policy scoped to the original
+operation (ADR-HUB-329-release-background-persistence-and-runtime-assets).
+Detached workers and timers contain failures; contention retries only persistence,
+never the publication effect. Exhaustion remains visible and uses the existing
+deferred retry. Every retry rereads durable CAS/owner and waiting conditions; a
+changed revision or removed retry time, including a recovery hold, is preserved.
+Unexpected persistence failures are reported without an automatic new attempt.
+
 Await is the current live PreRelease integration, not membership in every active
 release. A ready generation remains immutable while Task work continues. A
 failed validation permits a reviewed correction of the same selected Task; the
