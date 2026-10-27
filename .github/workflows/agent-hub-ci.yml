@@ -1,4 +1,4 @@
-name: Agent Hub CI
+name: Agent Hub source checks
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   windows:
-    name: Agent Hub and clients
+    name: Agent Hub and VS Code tests
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -39,13 +39,5 @@ jobs:
       - name: VS Code extension tests
         run: npm test --prefix VSCodeExtension
 
-      - name: Install Android SDK API 36
-        run: |
-          $sdkManager = Join-Path $env:ANDROID_HOME "cmdline-tools\latest\bin\sdkmanager.bat"
-          if (-not (Test-Path -LiteralPath $sdkManager)) {
-            throw "Android sdkmanager was not found at $sdkManager"
-          }
-          & $sdkManager "platforms;android-36" "build-tools;35.0.0"
-
-      - name: Agent Hub Mobile build
-        run: ./AndroidApp/build.ps1
+      # Release artifacts are built by the Hub publication owner. Its Android
+      # stage supplies the frozen -ArtifactVersion; these are source checks.
