@@ -24,7 +24,14 @@ instance lock; a timeout does not prove the child stopped. Policy v1 owns
 redundant completed/published native merge transports. Policy v2 adds only
 explicitly retired runtime bodies with exact current-pointer custody, fresh
 current/rollback/running/prepared/source pins and original child identity. The
-reviewed owner-list append preserves v1 pending intents. Partial batches remain
+public source-free manifest is a valid installed pin only when its complete raw
+manifest hash and physical release-root binding match the installer's existing
+current/rollback custody. Explicit invalid sourceRoot values, changed bindings
+and unselected/prepared source-free bodies remain unknown and block retirement.
+No whole-body rehash is added before each batch; installed custody, bounded
+manifest reads and the existing native per-batch content guards remain owners.
+See ADR-HUB-363-source-free-runtime-pins. The reviewed owner-list append
+preserves v1 pending intents. Partial batches remain
 attached to the same admitted child; unknown outcomes are not replayed as new
 deletion. An older or unknown registry/version defers without clearing state.
 Policy v3 appends only redundant release-generation bundle transports after the

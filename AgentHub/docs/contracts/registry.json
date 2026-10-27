@@ -206,6 +206,7 @@
         "tests/composition/storage-retention-composition.test.mjs",
         "src/runtime/runtime-manager.mjs",
         "src/infrastructure/filesystem/runtime-installation-custody.mjs",
+        "docs/decisions/ADR-HUB-363-source-free-runtime-pins.md",
         "src/infrastructure/filesystem/runtime-release-retention*.mjs",
         "src/infrastructure/filesystem/sealed-runtime-release.*",
         "tests/infrastructure/filesystem/runtime-release-retention*.test.mjs",

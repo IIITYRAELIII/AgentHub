@@ -46,7 +46,21 @@ export class RuntimeReleaseRetention {
       let manifest;
       try { ({ manifest } = await readRuntimeManifest(path.join(runtimeLayout(this.runtimeRoot).releasesDir, entry.name))); }
       catch { return "runtime-pin-manifest-unavailable"; }
-      if (manifest.releaseId !== entry.name || !path.isAbsolute(manifest.sourceRoot ?? "")) return "runtime-pin-manifest-unknown";
+      if (manifest.releaseId !== entry.name) return "runtime-pin-manifest-unknown";
+      if (!Object.hasOwn(manifest, "sourceRoot")) {
+        // The public installer verifies the source-free payload before recording
+        // this exact manifest/root binding. Only its current/rollback custody
+        // proves that omission is intentional; a prepared or legacy body does
+        // not acquire that proof merely by omitting the private source path.
+        const installed = [pointer.runtimeRetention?.current, pointer.runtimeRetention?.previous]
+          .find(binding => binding?.releaseId === entry.name);
+        let actual;
+        try { actual = await captureRuntimeReleaseBinding(path.join(runtimeLayout(this.runtimeRoot).releasesDir, entry.name), entry.name); }
+        catch { return "runtime-pin-manifest-unknown"; }
+        if (!sameRuntimeBinding(actual, installed)) return "runtime-pin-manifest-unknown";
+        continue;
+      }
+      if (!path.isAbsolute(manifest.sourceRoot ?? "")) return "runtime-pin-manifest-unknown";
       let source;
       try { source = await realpath(manifest.sourceRoot); }
       catch (error) { if (absent(error)) continue; return "runtime-source-pin-unavailable"; }
