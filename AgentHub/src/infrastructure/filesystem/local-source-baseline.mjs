@@ -105,6 +105,19 @@ export async function assertInstalledAgreedMainOrigin({ provenance, git }) {
         !== p.approvedOriginMainCommit) reject("agreed main origin changed");
 }
 
+export async function assertOwnGitPublicationOrigin({ provenance, git, readOwnGitPublication, repositoryRoot, tasks }) {
+  const p = normalizedReleaseBaseProvenance(provenance), proof = p?.ownGitPublication;
+  if (!proof || typeof readOwnGitPublication !== "function") reject("OWN Git publication owner is unavailable");
+  const originCommit = String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0];
+  const current = readOwnGitPublication({ repositoryRoot, localMainCommit: p.agreedMainCommit,
+    publishedRevision: p.publishedBaseCommit, originCommit, taskIds: tasks.map(task => task.taskId) });
+  if (JSON.stringify(current) !== JSON.stringify(proof) || originCommit !== proof.commit
+      || await git(["rev-parse", "refs/heads/main^{commit}"]) !== p.agreedMainCommit
+      || await git(["rev-parse", `${proof.commit}^{tree}`]) !== proof.tree) reject("OWN Git publication origin changed");
+  await git(["merge-base", "--is-ancestor", p.agreedMainCommit, proof.commit]);
+  await git(["merge-base", "--is-ancestor", p.sourceBaseCommit, proof.commit]);
+}
+
 export async function assertHistoricalChangelog({ provenance, originalAuthority, tasks, repositoryRoot, git, runtimeRoot }) {
   const p = normalizedReleaseBaseProvenance(provenance), binding = p?.historicalChangelog;
   if (!binding) return [];
@@ -142,6 +155,7 @@ export async function assertInstalledLocalSourceBaseline({
   provenance, git, primaryMainCommit, publishedRevision, planRevision, tasks, runtimeRoot,
   adoptionGit = git, repositoryRoot = null,
   originalAuthority = null,
+  readOwnGitPublication = null,
 }) {
   const p = normalizedReleaseBaseProvenance(provenance);
   if (p?.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE) reject("missing provenance");
@@ -157,6 +171,8 @@ export async function assertInstalledLocalSourceBaseline({
     if (JSON.stringify(pins) !== JSON.stringify(p.adoptions)) reject("selected adoption receipts changed");
   } else if (String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] !== publishedRevision) reject("origin differs from the pinned OWN publication");
   const validateOrigin = async () => {
+    if (p.ownGitPublication) return assertOwnGitPublicationOrigin({ provenance: p, git: adoptionGit,
+      readOwnGitPublication, repositoryRoot, tasks });
     if (!p.adoptions) return;
     await adoptionGit(["merge-base", "--is-ancestor", publishedRevision, p.approvedOriginMainCommit]);
     if (adoptions.length) {
@@ -244,7 +260,7 @@ export async function assertInstalledLocalSourceBaseline({
       if (!sourceMatches(source, await regular(path.join(manifest.sourceRoot, relative)), relative)) reject("Host Git source differs from compiled inputs");
     }
   }
-  const metadataBases = [p.sourceBaseCommit];
+  const metadataBases = [p.sourceBaseCommit, ...(p.ownGitPublication ? [p.ownGitPublication.commit] : [])];
   // Keep the exact installed source's inherited metadata when an explicitly
   // verified source base has incorporated a later agreed main. This identity
   // comes from the hash-pinned installed manifest, never from Task arguments.
@@ -267,7 +283,7 @@ export async function assertInstalledLocalSourceBaseline({
 // retained source checkout supplies a candidate commit; it is not trusted until
 // the complete ordinary baseline verifier above accepts it.
 export async function installedNativeHistoryBaseline({ git, sourceGit, repositoryRoot,
-  primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [] }) {
+  primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [], readOwnGitPublication = null }) {
   const currentFile = path.join(runtimeRoot, "current.json");
   if (!await lstat(currentFile).catch(error => { if (error.code === "ENOENT") return null; throw error; })) return null;
   const current = JSON.parse(await regular(currentFile));
@@ -281,6 +297,10 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
   if (sourceBaseCommit === publishedRevision) return null;
   const agreedOrigin = !adoptions.length && primaryMainCommit !== publishedRevision
     && String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] === primaryMainCommit;
+  const ownGitPublication = !adoptions.length && !agreedOrigin && readOwnGitPublication
+    ? readOwnGitPublication({ repositoryRoot, localMainCommit: primaryMainCommit, publishedRevision,
+      originCommit: String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0],
+      taskIds: tasks.map(task => task.taskId) }) : null;
   const p = { schemaVersion: 1, kind: LOCAL_SOURCE_BASELINE_PROVENANCE, publishedBaseCommit: publishedRevision,
     agreedMainCommit: primaryMainCommit, sourceBaseCommit, sourceBaseTree,
     sourcePatchSha256: sha(await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, sourceBaseCommit], { rawOutput: true })),
@@ -289,7 +309,8 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
       approvedOriginMainCommit: adoptions[0].adoptedCommit,
       adoptions: adoptions.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
         ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit })),
-    } : agreedOrigin ? { approvedOriginMainCommit: primaryMainCommit, adoptions: [] } : {}) };
+    } : ownGitPublication ? { approvedOriginMainCommit: ownGitPublication.commit, adoptions: [], ownGitPublication }
+      : agreedOrigin ? { approvedOriginMainCommit: primaryMainCommit, adoptions: [] } : {}) };
   return (await assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
-    publishedRevision, planRevision, tasks, runtimeRoot })).provenance;
+    publishedRevision, planRevision, tasks, runtimeRoot, readOwnGitPublication })).provenance;
 }

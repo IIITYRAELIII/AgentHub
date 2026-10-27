@@ -377,7 +377,10 @@
         "src/composition/release-operation-composition.mjs",
         "src/domain/native-resolution-input.mjs",
         "release.mjs",
-        "docs/decisions/ADR-0132-normal-release-continuation.md"
+        "docs/decisions/ADR-0132-normal-release-continuation.md",
+        "docs/decisions/ADR-HUB-329-partial-git-publication-origin.md",
+        "tests/fixtures/own-git-publication-fixture.mjs",
+        "tests/infrastructure/persistence/own-git-publication.test.mjs"
       ]
     },
     {

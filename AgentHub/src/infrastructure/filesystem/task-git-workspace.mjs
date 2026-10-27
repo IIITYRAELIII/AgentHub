@@ -21,7 +21,7 @@ import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1
 import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
-  assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
+  assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
@@ -40,7 +40,7 @@ import {
   readTrustedSystemBootIdentity,
 } from "../process/system-boot-identity.mjs";
 import { publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
-import { readNativePublishedSelectedComposition } from "../persistence/release-operation-store.mjs";
+import { readNativePublishedSelectedComposition, readOwnGitPublicationOrigin } from "../persistence/release-operation-store.mjs";
 import {
   normalizedTaskId,
   TASK_BRANCH_PREFIX,
@@ -3936,6 +3936,10 @@ export class TaskGitWorkspaceService {
     if (binding?.adoptions?.length) await assertNativeUpstreamOrigin({
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }),
       adoptions: binding.adoptions, originCommit: binding.adoptions[0].adoptedCommit });
+    else if (binding?.baseline?.ownGitPublication) await assertOwnGitPublicationOrigin({ provenance: binding.baseline,
+      repositoryRoot: snapshot.repositoryRoot, tasks: [{ taskId: snapshot.taskId }],
+      readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.dataDir, ...input }),
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
     else if (binding?.baseline?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: binding.baseline,
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
   }
@@ -3955,17 +3959,20 @@ export class TaskGitWorkspaceService {
     if (expected === undefined && publication?.generation && published) {
       baseline = await installedNativeHistoryBaseline({ git, repositoryRoot: snapshot.repositoryRoot,
         primaryMainCommit: dev.mainCommit, publishedRevision: published, tasks, runtimeRoot, planRevision, adoptions,
+        readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.dataDir, ...input }),
         sourceGit: (cwd, args) => this.#runOwned(args, { cwd, lease, guardRepositoryRoot: snapshot.repositoryRoot }) });
     } else if (baseline) {
       await assertInstalledLocalSourceBaseline({ provenance: baseline, git, repositoryRoot: snapshot.repositoryRoot,
-        primaryMainCommit: dev.mainCommit, publishedRevision: published, planRevision, tasks, runtimeRoot });
+        primaryMainCommit: dev.mainCommit, publishedRevision: published, planRevision, tasks, runtimeRoot,
+        readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.dataDir, ...input }) });
     }
     const binding = { baseline, adoptions };
     if (expected !== undefined && JSON.stringify(binding) !== JSON.stringify(expected)) {
       throw new Error("Native Test installed source or adoption authority changed");
     }
-    return { binding, bases: [dev.headCommit, ...(baseline ? [baseline.sourceBaseCommit] : [])],
-      metadataBases: baseline ? [baseline.sourceBaseCommit] : [], adoptions };
+    return { binding, bases: [dev.headCommit, ...(baseline ? [baseline.sourceBaseCommit,
+      ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])] : [])],
+      metadataBases: baseline ? [baseline.sourceBaseCommit, ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])] : [], adoptions };
   }
 
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,
