@@ -1,0 +1,51 @@
+name: Agent Hub CI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-hub-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Agent Hub and clients
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: AgentHub
+    env:
+      CI: "true"
+      PYTHONUTF8: "1"
+      TELEGRAM_E2E_TIMEOUT_MULTIPLIER: "2"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Agent Hub unit and process E2E
+        run: npm run test:all
+
+      - name: VS Code extension tests
+        run: npm test --prefix VSCodeExtension
+
+      - name: Install Android SDK API 36
+        run: |
+          $sdkManager = Join-Path $env:ANDROID_HOME "cmdline-tools\latest\bin\sdkmanager.bat"
+          if (-not (Test-Path -LiteralPath $sdkManager)) {
+            throw "Android sdkmanager was not found at $sdkManager"
+          }
+          & $sdkManager "platforms;android-36" "build-tools;35.0.0"
+
+      - name: Agent Hub Mobile build
+        run: ./AndroidApp/build.ps1
