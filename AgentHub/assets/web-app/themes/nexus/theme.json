@@ -1,0 +1,12 @@
+{
+  "id": "nexus",
+  "name": "Nexus",
+  "color": "#070b18",
+  "order": 0,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "nexus", "name": "Переплетение", "asset": "interweave.png", "preload": true },
+    { "id": "nexus-refraction", "name": "Преломление", "asset": "refraction.png", "preload": true },
+    { "id": "nexus-field", "name": "Поле", "asset": "field.png", "preload": true }
+  ]
+}

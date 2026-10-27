@@ -1,0 +1,264 @@
+/* Nexus: cyan, cobalt and violet light over a quiet navy interface. */
+html[data-theme="nexus"] {
+  color-scheme: dark;
+  --bg: #070b18;
+  --surface-1: rgba(8, 22, 45, 0.78);
+  --surface-2: rgba(19, 39, 72, 0.86);
+  --surface-3: rgba(29, 45, 72, 0.94);
+  --sunken: rgba(3, 8, 20, 0.62);
+  --line: rgba(103, 165, 230, 0.34);
+  --line-strong: rgba(94, 199, 255, 0.68);
+  --text: #edf2ff;
+  --text-soft: #c6d5f1;
+  --text-muted: #9baecb;
+  --text-faint: #8598b8;
+  --accent: #67d9f5;
+  --accent-soft: rgba(58, 145, 242, 0.18);
+  --accent-line: rgba(52, 192, 255, 0.82);
+  --accent-glow: 0 0 16px rgba(0, 169, 255, 0.25);
+  --selection: rgba(98, 127, 246, 0.35);
+  --card-bg: linear-gradient(125deg, rgba(12, 30, 51, 0.96), rgba(14, 24, 52, 0.94));
+  --card-bg-open: linear-gradient(125deg, rgba(18, 42, 67, 0.97), rgba(23, 30, 64, 0.96));
+  --card-texture: none;
+  --card-border: var(--line);
+  --card-border-open: var(--accent-line);
+  --card-shadow: inset 0 1px 0 rgba(157, 203, 255, 0.1), 0 12px 28px rgba(0, 3, 14, 0.34);
+  --plate-bg: rgba(18, 30, 53, 0.88);
+  --plate-texture: none;
+  --plate-shadow: inset 0 1px 0 rgba(157, 203, 255, 0.06);
+  --turn-shadow: 0 8px 24px rgba(0, 3, 14, 0.2);
+  --dialog-canvas: rgba(6, 12, 27, 0.68);
+  --dialog-bubble-user: linear-gradient(110deg, rgba(18, 40, 68, 0.96), rgba(39, 38, 91, 0.94));
+  --dialog-tab-background: rgba(7, 23, 46, 0.58);
+  --dialog-tab-radius: 9px;
+  --dialog-tab-active-background: linear-gradient(135deg, rgba(0, 86, 166, 0.68), rgba(33, 32, 103, 0.88));
+  --dialog-tab-active-shadow: inset 0 0 0 1px #35bfff, inset 0 -2px 9px rgba(0, 170, 255, 0.32), 0 0 14px rgba(0, 145, 255, 0.3);
+  --dialog-stream-tabs-inset-top: 6px;
+  --dialog-stream-tabs-inset-inline: 6px;
+  --nexus-panel-shadow: inset 3px 0 12px rgba(94, 218, 242, 0.18), inset 0 -3px 10px rgba(43, 190, 224, 0.12), inset -1px 0 5px rgba(0, 9, 26, 0.34), 0 1px 1px rgba(0, 5, 18, 0.46);
+  --space-base: #070b18;
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 1;
+  --nexus-panel-image: var(--nexus-image, url("./interweave.png"));
+  --radius-lg: 16px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --shell-header-background: rgba(5, 11, 26, 0.16);
+  --shell-header-backdrop-filter: none;
+  --shell-header-height: 4.25rem;
+  --shell-header-border: 1px solid rgba(96, 165, 230, 0.48);
+  --shell-header-shadow: 0 4px 24px rgba(0, 3, 15, 0.24);
+  --shell-header-rule: linear-gradient(90deg, transparent, #28c6e5, #357def, #9767ee, transparent);
+  --shell-header-rule-opacity: 0.4;
+  --shell-control-background: rgba(14, 25, 47, 0.88);
+  --shell-control-border: 1px solid var(--line);
+  --shell-control-radius: 8px;
+  --shell-view-switch-background: rgba(5, 12, 28, 0.8);
+  --shell-view-switch-border: 1px solid var(--line);
+  --shell-view-switch-radius: 10px;
+  --shell-tab-radius: 8px;
+  --shell-tab-active-background: var(--dialog-tab-active-background);
+  --shell-tab-active-border: 1px solid var(--accent-line);
+  --shell-tab-active-shadow: inset 0 1px 0 rgba(114, 215, 255, 0.15), var(--accent-glow);
+  --shell-tab-active-color: #e0f7ff;
+  --shell-panel-border: 1px solid rgba(104, 225, 255, 0.95);
+  --shell-panel-radius: 16px;
+  --shell-chat-border: var(--shell-panel-border);
+  --shell-chat-radius: var(--shell-panel-radius);
+  --shell-stream-tabs-background: rgba(6, 13, 30, 0.87);
+  --shell-stream-tabs-border-bottom: 1px solid var(--line);
+  --shell-stream-tab-radius: 9px;
+  --shell-stream-tab-active-background: rgba(30, 89, 152, 0.35);
+  --shell-stream-card-background: rgba(10, 21, 43, 0.84);
+  --shell-stream-card-border: 1px solid var(--line);
+  --shell-stream-card-radius: 12px;
+  --shell-stream-card-shadow: var(--card-shadow);
+  --shell-header-padding-left: 1rem;
+  --shell-header-padding-right: 1rem;
+  --shell-workspace-gap: 0.75rem;
+  --shell-workspace-padding-top: 0.6rem;
+  --shell-workspace-padding-bottom: 1rem;
+}
+
+html[data-theme="nexus"] body::before { content: none; }
+
+html[data-theme="nexus"] body::after {
+  background: #070b18 var(--nexus-image, url("./interweave.png")) center / cover no-repeat;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-background="nexus-refraction"] {
+  --nexus-panel-image: var(--nexus-refraction-image, url("./refraction.png"));
+  --hub-background-color: #070b18;
+  --hub-background-image: var(--nexus-refraction-image, url("./refraction.png"));
+}
+
+html[data-background="nexus-field"] {
+  --nexus-panel-image: var(--nexus-field-image, url("./field.png"));
+  --hub-background-color: #070b18;
+  --hub-background-image: var(--nexus-field-image, url("./field.png"));
+}
+
+/* Component finishes live in the theme; the shared dialog keeps its layout. */
+html:root[data-theme="nexus"][data-view="chat"][data-surface] {
+  .task-rail,
+  .activity-rail {
+    /* Clear glass below the controls lets the scene's light cross the panel. */
+    background: linear-gradient(180deg, rgba(8, 22, 44, 0.66), rgba(7, 20, 42, 0.28) 24%, rgba(5, 16, 36, 0.06) 48%, rgba(10, 15, 40, 0.08));
+    backdrop-filter: saturate(125%) contrast(105%);
+    -webkit-backdrop-filter: saturate(125%) contrast(105%);
+  }
+
+  .task-workspace-name,
+  .activity-rail header,
+  .activity-stream-empty,
+  .workspace-task-empty {
+    text-shadow: 0 1px 4px #020817, 0 0 8px #020817;
+  }
+
+  .task-rail,
+  .activity-rail,
+  .chat {
+    box-shadow: var(--nexus-panel-shadow);
+  }
+
+  .task-workspace-item[data-selected] {
+    background: linear-gradient(110deg, rgba(15, 54, 101, 0.9), rgba(22, 55, 105, 0.74));
+    border-color: #39bdff;
+    box-shadow: inset 0 0 10px rgba(52, 177, 255, 0.2), 0 0 14px rgba(0, 161, 255, 0.22);
+  }
+
+  .msg-body,
+  .msg-reasoning {
+    color: var(--text-soft);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  .msg-agent:not(.msg-live),
+  .chat-scroll > .msg-live {
+    padding: 18px 22px;
+    box-shadow: var(--card-shadow), -4px 0 22px rgba(0, 181, 232, 0.08);
+  }
+
+  .msg-user-bubble {
+    border: 1px solid rgba(124, 134, 226, 0.48);
+    box-shadow: inset 0 1px 0 rgba(151, 169, 255, 0.09);
+  }
+
+  .composer {
+    background: linear-gradient(120deg, rgba(8, 60, 88, 0.94), rgba(16, 38, 81, 0.94) 55%, rgba(29, 34, 86, 0.93));
+    border: 1px solid rgba(75, 197, 255, 0.86);
+    border-radius: 18px;
+    box-shadow: inset 0 1px 0 rgba(181, 227, 255, 0.2), 0 0 24px rgba(0, 174, 240, 0.2), 0 12px 30px rgba(0, 7, 30, 0.36);
+    padding: 16px 18px 12px;
+  }
+
+  .composer:focus-within {
+    border-color: #75e3ff;
+    box-shadow: inset 0 1px 0 rgba(181, 227, 255, 0.25), 0 0 26px rgba(0, 174, 240, 0.34);
+  }
+
+  .composer-input > textarea,
+  .composer-input::after {
+    font-size: 16px;
+  }
+
+  .composer-input > textarea::placeholder,
+  .composer-main > .icon-button {
+    color: #c4dcf5;
+  }
+
+  .composer-send {
+    background: linear-gradient(140deg, #087acc, #134f9f 65%, #48358c);
+    border: 1px solid #5bdfff;
+    color: #e4fbff;
+    box-shadow: inset 0 0 8px rgba(67, 210, 255, 0.48), 0 0 14px rgba(0, 171, 255, 0.44);
+  }
+
+  .composer-send:hover:not(:disabled),
+  .composer-send:focus-visible:not(:disabled) {
+    background: #126cae;
+    border-color: #b8f3ff;
+    color: #fff;
+    box-shadow: 0 0 18px rgba(0, 181, 255, 0.58);
+  }
+
+  .composer-send:disabled {
+    opacity: 0.45;
+  }
+}
+
+@media (min-width: 860px) {
+  html:root[data-theme="nexus"][data-view="chat"][data-surface="desktop"] {
+    --task-rail-width: clamp(240px, 17.6vw, 320px);
+    --activity-rail-width: clamp(280px, 17.5vw, 320px);
+    --dialog-column-width: clamp(36rem, 54vw, 48rem);
+    --dialog-stream-tabs-height: 48px;
+
+    .task-rail,
+    .activity-rail,
+    .chat {
+      position: relative;
+      isolation: isolate;
+    }
+
+    .task-rail { --nexus-panel-position: left center; }
+    .chat { --nexus-panel-position: center center; }
+    .activity-rail { --nexus-panel-position: right center; }
+
+    /* Each glass panel projects its own crop; the page scene stays behind it.
+       This decorative layer is separate from the chat's optional reading fill. */
+    .task-rail::before,
+    .activity-rail::before,
+    .chat::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background-color: #070b18;
+      background-image: linear-gradient(180deg, rgba(5, 16, 36, 0.38), transparent 48%), var(--nexus-panel-image);
+      background-size: 100% 100%, max(108vw, 192vh) max(108vh, 60.75vw);
+      background-position: center, var(--nexus-panel-position);
+      background-repeat: no-repeat;
+      pointer-events: none;
+      z-index: -1;
+    }
+
+    /* Reflected light spreads inside the glass, leaving a single fine contour. */
+    .task-rail::after,
+    .activity-rail::after,
+    .chat::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: radial-gradient(ellipse 34px 48px at 0 100%, rgba(171, 242, 255, 0.3), transparent 85%), radial-gradient(ellipse 28px 42px at 100% 100%, rgba(144, 225, 255, 0.2), transparent 85%);
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .view-tab,
+    .task-workspace-name,
+    .stream-tabs-track .stream-tab { font-size: 15px; }
+    .task-search input { font-size: 14px; }
+    .chat-log .msg-stack.msg-stack-user { max-width: 100% !important; width: 100% !important; }
+    .msg-user-bubble { max-width: none; }
+    .composer { width: min(58rem, calc(100% - 48px)); }
+    .composer-main { grid-template-rows: auto 40px; }
+    .composer-send { height: 40px; width: 40px; border-radius: 12px; }
+    .composer-send svg { height: 20px; width: 20px; }
+  }
+}
+
+@media (max-width: 859px) {
+  html:root[data-theme="nexus"][data-view="chat"][data-surface] {
+    .msg-agent:not(.msg-live),
+    .chat-scroll > .msg-live { padding: 14px 16px; }
+    .composer { padding: 12px; }
+  }
+}
