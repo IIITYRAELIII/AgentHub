@@ -3195,3 +3195,25 @@ assets; authenticated redirects refuse. Actual anonymous download/install/update
 rollback remains required before distribution/cutover completion.
 
 See ADR-HUB-329-github-distribution-target and its focused behavioral check.
+
+## First standalone source registration
+
+Before the first standalone artifact, the existing github-baseline owner may
+explicitly register exact already reviewed/public source main for canonical
+IIITYRAELIII/AgentHub. Source-only mode verifies clean local main/HEAD/tree,
+origin, public repository/owner IDs and remote main commit/tree, then repeats
+verification under the existing publication lock. It may only add a previously
+absent repository entry. Exact repetition writes nothing; conflicting existing
+evidence refuses. Other repository entries, global publication authority and old
+original receipts are preserved. Source-only mode grants no installed-runtime,
+GitHub Release, target-effect, Task result or OID-reinterpretation credit.
+
+This bounded additional source registration allows ordinary new-repository Task
+acceptance and first freeze; it does not perform managed Utilities retirement or
+installed update-origin cutover. Those still follow real distribution consumer
+acceptance. Native Test binds and rechecks the exact source-only repository
+publication/origin. It may retain only its exact published metadata, with no
+extra code/history base or foreign installed-runtime carry. Actual github-release
+completion retains that explicit profile in repository evidence; ordinary installed
+publication retains its existing installed-source proof. See
+ADR-HUB-329-first-standalone-source-baseline.

@@ -80,6 +80,22 @@ remain untouched by this version migration.
 
 ## Ready packages
 
+For the first standalone source only, after its exact source/history review and
+public push, use the existing baseline owner on the clean standalone main:
+
+```powershell
+npm run release:policy -- github-baseline preview --project-root <standalone-repo> --owner IIITYRAELIII --repo AgentHub --source-only true --target-commit <reviewed-public-main> --source-tree <reviewed-public-tree> --request-id <stable-registration-id>
+```
+
+The corresponding `enable` action with the same exact values adds only an absent
+repository-scoped source baseline; repeat is read-only and conflicting existing
+evidence refuses. It does not invent a GitHub Release or installed runtime.
+Then use ordinary Task claim/Test/Await and the original frozen release owner
+in that repository. Old Utilities claims, refs, Tasks and receipts remain under
+their original repository identity. Additional source registration is preparation
+for the first package; actual source retirement/update-origin cutover still waits
+for public download, fresh install, update and rollback acceptance.
+
 The tracked offline packaging checkpoint is the normal interface for the release
 owner after canonical preparation:
 
@@ -282,9 +298,11 @@ download acceptance follows from this fixture. No graphical Setup.exe is added.
 - The first standalone product must be the release owner's reviewed accepted
   composition. Neither rolling dev/main nor a source-only mechanism carrier is
   a substitute. Preserve incoming and local results through ordinary composition.
-- Source-repository registration and future publication origin change only in
-  the release owner's managed cutover, after mapping/assets review. Keep the old
-  repository available for original-operation reconciliation and active Tasks.
+- Additional first-source baseline registration above may precede the first
+  archive solely for ordinary candidate preparation. Managed source retirement
+  and installed update-origin cutover follow mapping/assets/consumer acceptance.
+  Keep the old repository available for original-operation reconciliation and
+  active Tasks; their existing identities are not rewritten by registration.
 - The C-to-D runtime migration has priority and does not depend on this extraction.
   Migration scratch and export candidates must remain separate from runtime.
 - Automatic report discovery/publication requires the existing Utilities

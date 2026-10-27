@@ -39,6 +39,7 @@ export const FULL_TEST_BUDGET = Object.freeze({
 const RESTART_REQUEST_TIMEOUT_MS = 30_000;
 
 export function publicationRepositories(identity, revision) {
+  const profile = identity?.deploymentProfile === "github-release" ? { deploymentProfile: "github-release" } : {};
   if (identity?.release) {
     return [{
       root: identity.release.primaryRoot,
@@ -47,9 +48,10 @@ export function publicationRepositories(identity, revision) {
       manifestHash: identity.release.manifestHash,
       baseCommit: identity.release.baseCommit,
       preReleaseHead: identity.release.preReleaseHead,
+      ...profile,
     }];
   }
-  return [{ root: identity?.worktreeRoot ?? REPOSITORY_ROOT, revision }];
+  return [{ root: identity?.worktreeRoot ?? REPOSITORY_ROOT, revision, ...profile }];
 }
 
 export function npmStep(label, args) {

@@ -22,6 +22,13 @@ function parseOptions(args) {
 }
 
 function githubBaselineInput(options) {
+  if (options.source_only !== undefined) {
+    if (options.source_only !== "true") throw new Error("Source bootstrap requires explicit --source-only true");
+    const allowed = new Set(["source_only", "project_root", "owner", "repo", "target_commit", "source_tree", "request_id"]);
+    if (Object.keys(options).some(key => !allowed.has(key))) throw new Error("Source bootstrap cannot include release/adoption arguments");
+    return { kind: "source-bootstrap", projectRoot: options.project_root, owner: options.owner, repo: options.repo,
+      expectedTargetCommit: options.target_commit, expectedTree: options.source_tree, requestId: options.request_id };
+  }
   return {
     projectRoot: options.project_root,
     owner: options.owner,
