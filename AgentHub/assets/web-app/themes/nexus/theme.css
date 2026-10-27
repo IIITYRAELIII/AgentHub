@@ -42,10 +42,11 @@ html[data-theme="nexus"] {
   --star-opacity: 0;
   --decor-opacity: 1;
   --nexus-panel-image: var(--nexus-image, url("./interweave.png"));
+  --nexus-ambient: radial-gradient(ellipse at 8% 75%, rgba(0, 117, 155, 0.24), transparent 60%), radial-gradient(ellipse at 88% 20%, rgba(76, 44, 142, 0.24), transparent 65%), linear-gradient(160deg, #071321, #070b18 55%, #0b1025);
   --radius-lg: 16px;
   --radius-md: 12px;
   --radius-sm: 8px;
-  --shell-header-background: rgba(5, 11, 26, 0.16);
+  --shell-header-background: linear-gradient(rgba(5, 11, 26, 0.16), rgba(5, 11, 26, 0.16)), var(--nexus-panel-image) center / cover fixed no-repeat;
   --shell-header-backdrop-filter: none;
   --shell-header-height: 4.25rem;
   --shell-header-border: 1px solid rgba(96, 165, 230, 0.48);
@@ -84,8 +85,12 @@ html[data-theme="nexus"] {
 
 html[data-theme="nexus"] body::before { content: none; }
 
-html[data-theme="nexus"] body::after {
-  background: #070b18 var(--nexus-image, url("./interweave.png")) center / cover no-repeat;
+html:root[data-theme="nexus"] body::after {
+  background-color: #070b18 !important;
+  background-image: var(--nexus-panel-image) !important;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
   inset: 0;
   mask-image: none;
   opacity: 1;
@@ -94,13 +99,13 @@ html[data-theme="nexus"] body::after {
 html[data-background="nexus-refraction"] {
   --nexus-panel-image: var(--nexus-refraction-image, url("./refraction.png"));
   --hub-background-color: #070b18;
-  --hub-background-image: var(--nexus-refraction-image, url("./refraction.png"));
+  --hub-background-image: var(--nexus-ambient);
 }
 
 html[data-background="nexus-field"] {
   --nexus-panel-image: var(--nexus-field-image, url("./field.png"));
   --hub-background-color: #070b18;
-  --hub-background-image: var(--nexus-field-image, url("./field.png"));
+  --hub-background-image: var(--nexus-ambient);
 }
 
 /* Component finishes live in the theme; the shared dialog keeps its layout. */
@@ -109,8 +114,8 @@ html:root[data-theme="nexus"][data-view="chat"][data-surface] {
   .activity-rail {
     /* Clear glass below the controls lets the scene's light cross the panel. */
     background: linear-gradient(180deg, rgba(8, 22, 44, 0.66), rgba(7, 20, 42, 0.28) 24%, rgba(5, 16, 36, 0.06) 48%, rgba(10, 15, 40, 0.08));
-    backdrop-filter: saturate(125%) contrast(105%);
-    -webkit-backdrop-filter: saturate(125%) contrast(105%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   .task-workspace-name,
@@ -194,6 +199,10 @@ html:root[data-theme="nexus"][data-view="chat"][data-surface] {
 }
 
 @media (min-width: 860px) {
+  html:root[data-theme="nexus"][data-view="chat"][data-surface="desktop"] body::after {
+    background-image: var(--nexus-ambient) !important;
+  }
+
   html:root[data-theme="nexus"][data-view="chat"][data-surface="desktop"] {
     --task-rail-width: clamp(240px, 17.6vw, 320px);
     --activity-rail-width: clamp(280px, 17.5vw, 320px);
@@ -207,12 +216,9 @@ html:root[data-theme="nexus"][data-view="chat"][data-surface] {
       isolation: isolate;
     }
 
-    .task-rail { --nexus-panel-position: left center; }
-    .chat { --nexus-panel-position: center center; }
-    .activity-rail { --nexus-panel-position: right center; }
-
-    /* Each glass panel projects its own crop; the page scene stays behind it.
-       This decorative layer is separate from the chat's optional reading fill. */
+    /* One viewport projection, clipped independently by each glass panel.
+       Fixed attachment keeps seams aligned during rail and window resizing;
+       the page behind the panels contains only ambient light. */
     .task-rail::before,
     .activity-rail::before,
     .chat::before {
@@ -222,8 +228,9 @@ html:root[data-theme="nexus"][data-view="chat"][data-surface] {
       border-radius: inherit;
       background-color: #070b18;
       background-image: linear-gradient(180deg, rgba(5, 16, 36, 0.38), transparent 48%), var(--nexus-panel-image);
-      background-size: 100% 100%, max(108vw, 192vh) max(108vh, 60.75vw);
-      background-position: center, var(--nexus-panel-position);
+      background-size: 100% 100%, cover;
+      background-position: center, center;
+      background-attachment: scroll, fixed;
       background-repeat: no-repeat;
       pointer-events: none;
       z-index: -1;
