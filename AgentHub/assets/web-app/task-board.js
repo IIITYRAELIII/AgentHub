@@ -1831,13 +1831,16 @@
     for (const operation of detail?.taskOperations ?? []) {
       const stopped = operation.cancellation?.phase === "stopped";
       const label = operation.toolName === "hub_task_claim" ? "Подготовка задачи"
-        : `Переход в ${taskWorkflowPresentation({ workflowStatus: operation.targetStatus }, state.statusLanguage).full}`;
+        : operation.toolName === "hub_task_status_update"
+          ? `Переход в ${taskWorkflowPresentation({ workflowStatus: operation.targetStatus }, state.statusLanguage).full}`
+          : ({ hub_task_create: "Создание задачи", hub_task_update: "Изменение задачи",
+            hub_task_complete: "Закрытие задачи", hub_task_delete: "Удаление задачи" })[operation.toolName] ?? "Операция задачи";
       const phase = operation.cancellation ? "остановка запрошена"
         : operation.status === "unknown" ? "результат неизвестен" : "выполняется или ожидает";
       actions.push(node("span", { role: "status", text: stopped
         ? "Операция прервана. Уже выполненные действия сохранены."
         : `${label}: ${phase}` }));
-      if (!stopped) actions.push(node("button", { type: "button", class: "board-task-quiet",
+      if (!stopped && operation.canCancel !== false) actions.push(node("button", { type: "button", class: "board-task-quiet",
         text: operation.cancellation ? "Проверить остановку" : "Прервать операцию",
         onclick: () => emit("operation-cancel", { id: task.id,
           operationRequestId: operation.requestId, argumentsHash: operation.argumentsHash,

@@ -20,8 +20,8 @@ export class TaskOperationInterruption {
     Object.assign(this, { catalog, tasks, taskGit, runtime, record });
   }
   binding(args) {
-    return { version: 1, protocol: "task-operation-interruption-v1", taskId: args.task_id,
-      taskWorkspaceId: this.tasks.task(args.task_id)?.workspaceId ?? null,
+    return { version: 1, protocol: "task-operation-interruption-v1", taskId: args.task_id ?? null,
+      taskWorkspaceId: args.task_id ? this.tasks.task(args.task_id)?.workspaceId ?? null : args.workspace_id ?? null,
       ownerId: this.#instance,
       arguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) };
   }
@@ -62,6 +62,7 @@ export class TaskOperationInterruption {
       streamId: row.streamId, provider: row.provider, threadId: row.threadId,
       ...(row.actorKind ? { actorKind: row.actorKind } : {}),
       createdAtMs: row.createdAtMs, status: row.status, error: row.error,
+      canCancel: INTERRUPTIBLE_TASK_TOOLS.has(row.toolName),
       targetStatus: row.taskExecution.arguments?.status ?? null,
       cancellation: row.taskExecution.cancellation ? publicCancellation(row.taskExecution.cancellation) : null,
     }));

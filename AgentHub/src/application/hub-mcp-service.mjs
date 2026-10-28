@@ -449,7 +449,9 @@ function tool(name, description, properties = {}, required = []) {
   const mutating = MUTATING_TOOLS.has(name);
   return {
     name,
-    description,
+    description: mutating && name.startsWith("hub_task_")
+      ? `${description}\nMCP returns a durable taskOperation receipt after admission. Read hub_task_operation_get with its original requestId/argumentsHash until terminal; only then use result or claim completion. Never submit a new ID because work is still pending.`
+      : description,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -826,6 +828,12 @@ export class HubMcpService {
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
       }, ["task_id", "status"]),
+      tool("hub_task_operation_get", "Read the exact original Task operation and its durable terminal result without replay. Pending with active=true is accepted live work, not UNKNOWN. Keep the original request ID; verify expected_arguments_hash or original_arguments after a lost reply.", {
+        operation_request_id: { type: "string" },
+        expected_arguments_hash: { type: "string" },
+        original_arguments: { type: "object", additionalProperties: true },
+        task_id: { type: "string" },
+      }, ["operation_request_id"]),
       tool("hub_task_operation_cancel", "Explicitly stop one exact claim/Test/Await worker, preserving its original receipt and prior unknown effects. Own Stream or RM only. Historical workers require verified retirement; a requested cancellation is not yet stopped.", {
         task_id: { type: "string" }, operation_request_id: { type: "string" },
         request_id: { type: "string" }, expected_arguments_hash: { type: "string" },
@@ -1041,17 +1049,107 @@ export class HubMcpService {
     ].join("\n");
   }
 
-  async runDesktopTaskOperation(task, operationId, status, operation) {
+  async runDesktopTaskOperation(task, operationId, status, operation, { receiptOnly = false, toolName = "hub_task_status_update", parameters = {} } = {}) {
     // The trusted desktop is a user actor, never an impersonated provider turn.
     if (!this.taskOperationInterruption) return operation();
     const context = { workspaceId: task.workspaceId, streamId: null,
       provider: null, auditThreadId: null, actorKind: "authenticated-user" };
-    return this.#mutate(context, "hub_task_status_update", {
-      request_id: operationId, task_id: task.id, status,
-    }, operation);
+    const args = { request_id: operationId, ...(task.id ? { task_id: task.id } : {}),
+      ...(status ? { status } : {}), ...parameters };
+    return receiptOnly
+      ? this.#submitTaskOperation(context, toolName, args,
+        onAdmission => this.#mutate(context, toolName, args, operation, { onAdmission }))
+      : this.#mutate(context, toolName, args, operation);
   }
 
-  async call(name, args = {}) {
+  taskOperationCanSubmit(name) {
+    return String(name).startsWith("hub_task_") && MUTATING_TOOLS.has(name);
+  }
+
+  #taskOperationReadback(actor, { operation_request_id: operationId, expected_arguments_hash: expectedHash,
+    original_arguments: originalArguments, task_id: taskId } = {}) {
+    const id = requiredText(operationId, "original operation id", 200);
+    const row = this.workspaceCatalog.mcpOperation(id);
+    if (!row || !this.taskOperationCanSubmit(row.toolName)
+      || (actor.actorKind !== "authenticated-user" && (actor.workspaceId !== row.workspaceId
+        || (!this.#isReleaseManager(actor) && (actor.streamId !== row.streamId || actor.provider !== row.provider))))) {
+      throw new Error("Task operation readback identity or authority differs");
+    }
+    if ((expectedHash != null && expectedHash !== row.argumentsHash)
+      || (originalArguments != null && (originalArguments.request_id !== id || argumentsHash(originalArguments) !== row.argumentsHash))) {
+      throw new Error("Task operation original arguments differ");
+    }
+    const boundTask = row.taskExecution?.taskId ?? row.result?.task?.id ?? row.result?.id;
+    if (taskId != null && boundTask !== taskId) throw new Error("Task operation Task identity differs");
+    const cancellation = row.taskExecution?.cancellation;
+    const lifecycle = this.taskBoard.lifecycleTransition?.(id);
+    const active = this.#pendingMutations.has(id);
+    const terminal = ["succeeded", "failed"].includes(row.status);
+    return { taskOperation: {
+      version: 1, requestId: id, toolName: row.toolName, argumentsHash: row.argumentsHash,
+      workspaceId: row.workspaceId, streamId: row.streamId, provider: row.provider, threadId: row.threadId,
+      ...(row.actorKind ? { actorKind: row.actorKind } : {}),
+      taskId: boundTask ?? null, status: row.status, terminal, active,
+      canCancel: INTERRUPTIBLE_TASK_TOOLS.has(row.toolName) && !terminal && cancellation?.phase !== "stopped",
+      phase: cancellation?.phase ?? lifecycle?.phase ?? (terminal ? row.status : active ? "executing" : "not-observed-here"),
+      createdAtMs: row.createdAtMs, completedAtMs: row.completedAtMs,
+      elapsedMs: Math.max(0, (row.completedAtMs ?? Date.now()) - row.createdAtMs), error: row.error,
+      ...(cancellation ? { cancellation: { phase: cancellation.phase, effects: cancellation.effects } } : {}),
+    }, result: row.status === "succeeded" ? row.result : null };
+  }
+
+  readDesktopTaskOperation(task, operationId, expectedHash) {
+    return this.#taskOperationReadback({ actorKind: "authenticated-user" }, {
+      operation_request_id: operationId, expected_arguments_hash: expectedHash, task_id: task.id,
+    });
+  }
+
+  async #submitTaskOperation(context, toolName, args, invoke) {
+    const requestId = requiredText(args.request_id, "request id", 200);
+    const existing = this.workspaceCatalog.mcpOperation(requestId);
+    if (existing) {
+      if (existing.workspaceId !== context.workspaceId || existing.streamId !== context.streamId
+        || existing.provider !== context.provider || existing.threadId !== context.auditThreadId
+        || (existing.actorKind ?? "provider") !== (context.actorKind ?? "provider")
+        || existing.toolName !== toolName || existing.argumentsHash !== argumentsHash(args)) {
+        throw new Error("MCP request_id was already used for another operation");
+      }
+      return this.#taskOperationReadback(context, { operation_request_id: requestId, expected_arguments_hash: argumentsHash(args) });
+    }
+    let admitted;
+    const admission = new Promise(resolve => { admitted = resolve; });
+    const startedAt = performance.now();
+    const record = (stage, receipt) => {
+      try { this.recordCommandTrace({ commandId: requestId, transport: "task-operation", stage,
+        outcome: receipt.taskOperation.terminal ? receipt.taskOperation.status : "queued",
+        monotonicDurationMs: performance.now() - startedAt,
+        metadata: { toolName, phase: receipt.taskOperation.phase, active: receipt.taskOperation.active } }); }
+      catch { /* Diagnostics never change the original operation or its reply. */ }
+      return receipt;
+    };
+    const read = () => this.#taskOperationReadback(context, {
+      operation_request_id: requestId, expected_arguments_hash: argumentsHash(args),
+    });
+    const onAdmission = () => admitted(record("task-operation-admitted", read()));
+    // The same #mutate Promise owns all work and persistence. Detaching the
+    // transport waiter neither starts another worker nor replays an existing ID.
+    const completion = invoke(onAdmission).then(() => record("task-operation-result", read()), error => {
+      // The durable receipt, including a real UNKNOWN or cancellation, is the
+      // result. A pre-admission failure has no receipt and still rejects.
+      if (!this.workspaceCatalog.mcpOperation(requestId)) throw error;
+      return record("task-operation-result", read());
+    });
+    return Promise.race([admission, completion]);
+  }
+
+  async submitTaskOperation(name, args = {}) {
+    if (!this.taskOperationCanSubmit(name)) return this.call(name, args);
+    const context = this.#authorize(args.context_token);
+    return this.#submitTaskOperation(context, name, args, onAdmission => this.call(name, args, { onAdmission }));
+  }
+
+  async call(name, args = {}, { onAdmission = null } = {}) {
+    if (name === "hub_task_operation_get") return this.#taskOperationReadback(this.#authorize(args.context_token), args);
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
     const toolName = String(name ?? "");
@@ -1089,7 +1187,7 @@ export class HubMcpService {
         this.#claimCustodySuccessor(context, args);
       }
       const operation = (admissionReceipt) => this.#dispatch({ ...context, admissionReceipt }, toolName, args);
-      return this.#mutate(context, toolName, args, operation);
+      return this.#mutate(context, toolName, args, operation, { onAdmission });
     }
     return this.#dispatch(context, toolName, args);
   }
@@ -1485,6 +1583,7 @@ export class HubMcpService {
               threadId: operation.threadId,
               toolName: operation.toolName,
               status: operation.status,
+              argumentsHash: operation.argumentsHash,
               error: operation.error,
               createdAtMs: operation.createdAtMs,
               completedAtMs: operation.completedAtMs,
@@ -3056,7 +3155,7 @@ export class HubMcpService {
     };
   }
 
-  async #mutate(context, toolName, args, operation) {
+  async #mutate(context, toolName, args, operation, { onAdmission = null } = {}) {
     const requestId = requiredText(args.request_id, "request id", 200);
     if (this.workspaceCatalog.mcpOperation(requestId)?.taskExecution?.cancellation) throw taskOperationInterrupted();
     if (toolName === "hub_task_claim") this.#assertClaimContinuation(args.task_id, requestId, args.forward_custody_request_id);
@@ -3083,7 +3182,8 @@ export class HubMcpService {
       ...(context.actorKind ? { actorKind: context.actorKind } : {}),
       toolName,
       argumentsHash: argumentsHash(args),
-      ...(this.taskOperationInterruption && INTERRUPTIBLE_TASK_TOOLS.has(toolName)
+      ...(this.taskOperationInterruption && (context.actorKind === "authenticated-user"
+          || (this.taskOperationCanSubmit(toolName) && !["hub_task_operation_cancel", "hub_task_operation_reconcile"].includes(toolName)))
         ? { taskExecution: this.taskOperationInterruption.binding(args) } : {}),
     }));
     if (started.taskExecution?.cancellation) throw taskOperationInterrupted();
@@ -3259,6 +3359,7 @@ export class HubMcpService {
       }
     })();
     this.#pendingMutations.set(requestId, pending);
+    onAdmission?.(started);
     return pending;
   }
 

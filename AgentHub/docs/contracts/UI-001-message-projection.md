@@ -750,3 +750,15 @@ A slow or failed health read after readiness does not reopen the startup overlay
 the connection owner retains its own diagnostic. An authoritative `ready=false`
 response still opens startup, including a replacement runtime with no stage
 metadata yet. A queued restart request alone does not prove replacement began.
+
+## Task operation result projection
+
+A durable Task admission is pending, not a successful status/update/cleanup.
+The shipped client reads the exact original ID/hash through the existing Task
+read control until canonical success, failure, explicit UNKNOWN or stopped
+disposition. Read reconnection never repeats the mutation. Existing Task pending
+controls and the independent cancellation action remain available; success toast
+and final snapshot follow canonical success only. Preview/confirmation keep
+their existing token and separate explicit command identities. A transport ACK
+is recorded once even if later work fails. A lost worker observation does not
+become fabricated failure, NO_EFFECT or permission to replay.

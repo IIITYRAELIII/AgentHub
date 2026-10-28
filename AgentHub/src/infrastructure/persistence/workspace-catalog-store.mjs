@@ -219,19 +219,34 @@ function configure(database) {
   if (!executionColumns.some(column => column.name === "task_execution_json")) {
     database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN task_execution_json TEXT");
   }
+  database.exec("BEGIN IMMEDIATE");
+  try {
   for (const event of ["INSERT", "UPDATE"]) database.exec(`
-    CREATE TRIGGER IF NOT EXISTS hub_mcp_actor_${event.toLowerCase()}
+    DROP TRIGGER IF EXISTS hub_mcp_actor_${event.toLowerCase()};
+    CREATE TRIGGER hub_mcp_actor_${event.toLowerCase()}
     BEFORE ${event} ON hub_mcp_operations
     WHEN NOT (
       (NEW.actor_kind='provider' AND NEW.workspace_id IS NOT NULL
         AND NEW.stream_id IS NOT NULL AND NEW.provider IS NOT NULL AND NEW.provider_thread_id IS NOT NULL)
       OR (NEW.actor_kind='authenticated-user' AND NEW.stream_id IS NULL
         AND NEW.provider IS NULL AND NEW.provider_thread_id IS NULL
-        AND NEW.tool_name='hub_task_status_update'
+        AND NEW.tool_name IN ('hub_task_status_update','hub_task_create','hub_task_update','hub_task_complete','hub_task_delete')
         AND json_extract(NEW.task_execution_json, '$.protocol') IS 'task-operation-interruption-v1'
-        AND json_extract(NEW.task_execution_json, '$.taskId') IS NOT NULL
+        AND (NEW.tool_name='hub_task_create' OR json_extract(NEW.task_execution_json, '$.taskId') IS NOT NULL)
         AND json_extract(NEW.task_execution_json, '$.taskWorkspaceId') IS NEW.workspace_id))
     BEGIN SELECT RAISE(ABORT, 'MCP operation actor identity is invalid'); END;`);
+  database.exec(`CREATE TRIGGER IF NOT EXISTS hub_user_operation_identity
+    BEFORE UPDATE ON hub_mcp_operations
+    WHEN OLD.actor_kind='authenticated-user' AND (
+      NEW.request_id IS NOT OLD.request_id OR NEW.workspace_id IS NOT OLD.workspace_id
+      OR NEW.actor_kind IS NOT OLD.actor_kind OR NEW.stream_id IS NOT OLD.stream_id
+      OR NEW.provider IS NOT OLD.provider OR NEW.provider_thread_id IS NOT OLD.provider_thread_id
+      OR NEW.tool_name IS NOT OLD.tool_name OR NEW.arguments_hash IS NOT OLD.arguments_hash
+      OR json_extract(NEW.task_execution_json,'$.taskId') IS NOT json_extract(OLD.task_execution_json,'$.taskId')
+      OR json_extract(NEW.task_execution_json,'$.arguments') IS NOT json_extract(OLD.task_execution_json,'$.arguments'))
+    BEGIN SELECT RAISE(ABORT, 'Authenticated-user operation identity is immutable'); END;`);
+  database.exec("COMMIT");
+  } catch (error) { database.exec("ROLLBACK"); throw error; }
   database.exec(`CREATE INDEX IF NOT EXISTS hub_task_execution_task_idx
     ON hub_mcp_operations(json_extract(task_execution_json, '$.taskId'))`);
   database.exec(`CREATE TRIGGER IF NOT EXISTS hub_interrupted_operation_history
@@ -957,7 +972,7 @@ export class WorkspaceCatalogStore {
     const workspace = user && workspaceId == null ? null : safeIdentifier(workspaceId, "workspace id");
     if (!["provider", "authenticated-user"].includes(actorKind)
         || (user && (streamId != null || provider != null || threadId != null
-          || toolName !== "hub_task_status_update" || taskExecution?.protocol !== "task-operation-interruption-v1"
+          || !["hub_task_status_update", "hub_task_create", "hub_task_update", "hub_task_complete", "hub_task_delete"].includes(toolName) || taskExecution?.protocol !== "task-operation-interruption-v1"
           || taskExecution.taskWorkspaceId !== workspace))) throw new Error("Invalid authenticated-user operation identity");
     const stream = user ? null : safeIdentifier(streamId, "stream id");
     const normalizedProvider = user ? null : safeIdentifier(provider, "provider");
@@ -966,7 +981,9 @@ export class WorkspaceCatalogStore {
     const hash = safeIdentifier(argumentsHash, "MCP arguments hash");
     this.#database.exec("BEGIN IMMEDIATE");
     try {
-    if (taskExecution) assertNoPendingTaskInterruption(this.#database, taskExecution.taskId);
+    if (taskExecution && ["hub_task_claim", "hub_task_status_update"].includes(tool)) {
+      assertNoPendingTaskInterruption(this.#database, taskExecution.taskId);
+    }
     const successor = readClaimCustodySuccessor(this.#database, id);
     if (successor && (successor.phase !== "fenced" || tool !== "hub_task_claim"
         || successor.workspaceId !== workspace || successor.original.streamId !== stream

@@ -726,3 +726,15 @@ resource-accounting owner or starting a child. `none` has no dependency/accounti
 work. Selected files retain current isolation, shared-resource admission and the
 40% cooperative CPU/RAM policy. Selection is not cacheability and not a resource
 waiver. Inventory listing/plan resolution is read-only; it runs no test.
+
+## Long Task work versus transport waiting
+
+Task admission and result spans use the original operation ID in the existing
+CommandTrace sink. They contain only tool/phase/live-worker scalars, never
+arguments, content, tokens or paths. Client admission and final-result projection
+join that original. Existing TaskGit traces retain queue/lease, composition,
+Git/I/O and persistence timings; do not count nested spans as additional wall
+time. Fast receipt delivery does not claim that composition became faster.
+Transport deadlines remain distinct from real operation outcomes. Only read
+reconnection uses the existing transport cadence; valid work receives no new
+total deadline, arbitrary size cap or global execution lane.

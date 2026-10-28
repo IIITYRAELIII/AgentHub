@@ -892,3 +892,31 @@ indexes, triggers, custody and receipt evidence survive the atomic nullable-user
 identity migration unchanged; no historical operation is reclassified or replayed.
 The existing Desktop controller and cancellation owner read and stop this exact
 operation before the next ordinary action, without changing Task assignment.
+
+## Task admission and original result readback
+
+Public MCP Task mutations return a `taskOperation` admission/readback envelope
+from the existing MCP ledger once the same worker is registered. Admission is
+not successful business completion. `hub_task_operation_get` reads that exact
+original ID, canonical argument hash, actual live-worker observation, lifecycle
+phase, cancellation, error and terminal result. Same original caller or genuine
+RM authority is required; supplied original arguments/hash must match. Reading
+never resumes or settles an operation. Same-ID mutation submissions read the
+existing receipt without starting another worker; changed arguments refuse.
+
+Long valid work has no transport-derived terminal deadline. A disconnected
+caller reads the original ID instead of submitting another mutation. A real
+UNKNOWN stays UNKNOWN; absence of a worker in the reader process is not proof of
+failure or retirement. Existing internal/ordinary CLI consumers may still await
+the same worker's terminal Promise. The existing reconciliation CLI exposes
+`--read-arguments` with ordinary local provider/thread/Stream authentication.
+No alternate writer, work queue, cancellation policy or recovery authority is
+introduced. See ADR-HUB-368.
+
+Authenticated Desktop create/update/workflow/Complete/Delete use the same
+ledger and real user identity, including null provider/Stream/Thread. Preview
+and confirmation retain their distinct original commands and exact token. The
+original identity and tool cannot be rewritten. A durable outer control receipt
+may acknowledge this admission envelope; only the inner canonical Task receipt
+establishes business completion. Existing domain, source, actor, CAS, Task/repo
+lease, cleanup and publication guards remain mandatory.

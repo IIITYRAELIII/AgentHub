@@ -103,3 +103,38 @@ indexes, triggers, custody and receipt evidence survive the atomic nullable-user
 identity migration unchanged; no historical operation is reclassified or replayed.
 The existing Desktop controller and cancellation owner read and stop this exact
 operation before the next ordinary action, without changing Task assignment.
+
+## General Task admission/result continuation
+
+The user's follow-up expands this Task to reliable claim/update/Test/Await and
+cleanup operation reporting. The observed original Await lasted 197726 ms;
+existing trace attributes about 156890 ms to composition and about 14.5 ms to
+Task/repository lock admission. Two 60-second MCP timeouts therefore described
+transport waiting while the original worker subsequently succeeded. This change
+does not claim to optimize the measured Git composition itself.
+
+Reuse `#pendingMutations` and the existing durable MCP ledger. A submission
+adapter releases the transport waiter only after durable admission and worker
+registration; it never creates a second queue. Public MCP reads use
+`hub_task_operation_get`; Desktop uses existing `board-task-read`. Local terminal
+consumers keep their old Promise semantics. After lost ACK or reconnect, an exact
+original read obtains pending, success, failure or truthful UNKNOWN without
+replaying work. The existing CLI adds a read-only argument mode, not a new
+operation-specific driver. Reads cannot reconcile history or infer retirement.
+
+Desktop create/update/Complete/Delete additionally carry genuine user admission
+through the same ledger. Atomic trigger replacement expands only its existing
+permitted tool family and retains immutable original user identity. Existing
+TaskGit leases, workflow CAS and cleanup owners remain responsible for effects.
+The shipped client separates transport ACK from final business success, waits
+through original-addressed reads using existing transport cadence, and permits
+independent cancellation. No new total work timeout, cap, global lane or domain
+cleanup implementation is added.
+
+Content-free admission/result spans use the existing trace recorder. Real
+transport/SQLite/Git, actual Desktop factory, shipped-browser reconnect/cancel
+and existing CLI tests cover this continuation. Controlled fixtures are not
+installed application: production delivery and live-agent/UI AFTER remain the
+sole release owner's required separate step. Legacy callers that previously
+expected a synchronous public MCP result must consume the advertised envelope
+and exact read tool; internal service callers remain synchronous.

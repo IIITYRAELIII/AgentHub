@@ -1825,6 +1825,37 @@ commandTrace.bindReporter(async (batch) => {
   if (!response.ok) throw new Error("Client trace batch rejected");
 });
 
+async function waitTaskOperationResult(admission, params) {
+  let receipt = admission;
+  const original = admission.taskOperation;
+  while (!receipt.taskOperation.terminal && receipt.taskOperation.status !== "unknown"
+      && receipt.taskOperation.cancellation?.phase !== "stopped") {
+    try {
+      const value = await control("board-task-read", { id: original.taskId ?? params.id,
+        operationRequestId: original.requestId, argumentsHash: original.argumentsHash,
+        clientTraceId: original.requestId });
+      receipt = value.operation;
+      if (!receipt || receipt.taskOperation.requestId !== original.requestId
+          || receipt.taskOperation.argumentsHash !== original.argumentsHash) throw new Error("Ответ относится к другой операции задачи");
+      if (receipt.taskOperation.terminal || receipt.taskOperation.status === "unknown"
+          || receipt.taskOperation.cancellation?.phase === "stopped") break;
+      if (!receipt.taskOperation.active) throw new Error(`Операция ${original.requestId} сохранена; требуется проверка её исходного исполнения`);
+    } catch (error) {
+      if (!isConnectionFailure(error) && !looksLikeConnectionFailure(error)) throw error;
+      // Read retries keep the exact admitted operation. They never repeat its
+      // mutation or impose a total deadline on valid long-running Git work.
+    }
+    await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
+  }
+  const operation = receipt.taskOperation;
+  commandTrace.record("ui-control", "task-operation-result", operation.elapsedMs, original.requestId,
+    { action: original.toolName, render: operation.status });
+  if (operation.status !== "succeeded") throw Object.assign(new Error(
+    operation.cancellation?.phase === "stopped" ? "Операция прервана. Незавершённая работа сохранена."
+      : operation.error || `Операция ${original.requestId} требует восстановления исходного результата`), { taskOperation: operation });
+  return { ...await control("snapshot"), lifecycleResult: receipt.result };
+}
+
 async function control(action, params = {}) {
   const snapshotBaseline = currentSnapshotBaseline();
   const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
@@ -1835,12 +1866,19 @@ async function control(action, params = {}) {
     surface: clientTraceSurface(),
   } };
   return commandTrace.measure("ui-control", action, async () => {
+    let transportAcknowledged = false;
     try {
-      const result = await controlTransport(action, tracedParams);
+      let result = await controlTransport(action, tracedParams);
       reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
+      transportAcknowledged = true;
+      if (result?.taskOperation) {
+        commandTrace.record("ui-control", "task-operation-admitted", performance.now() - started,
+          result.taskOperation.requestId, { action, render: result.taskOperation.status });
+        result = await waitTaskOperationResult(result, params);
+      }
       return bindSnapshotBaseline(commandTrace.associate(result, commandId), snapshotBaseline);
     } catch (error) {
-      reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
+      if (!transportAcknowledged) reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
       throw error;
     }
   }, commandId);

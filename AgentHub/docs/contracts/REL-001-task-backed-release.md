@@ -3292,3 +3292,14 @@ indexes, triggers, custody and receipt evidence survive the atomic nullable-user
 identity migration unchanged; no historical operation is reclassified or replayed.
 The existing Desktop controller and cancellation owner read and stop this exact
 operation before the next ordinary action, without changing Task assignment.
+
+## Observable ordinary Task operation execution
+
+Claim, updates, Test/Await and cleanup keep their existing lifecycle and exact
+original receipts while public transports can acknowledge durable admission
+before work completes. Test/Await status, Git references and release membership
+change only through the existing successful integration/CAS owner. Reading an
+admission or timing out a transport grants no acceptance, publication, replay or
+NO_EFFECT authority. Complete/Delete domain rules and preview/token checks are
+unchanged. The authenticated user's nullable identity uses the same canonical
+ledger; provider identity and inherited execution/custody fences stay intact.
