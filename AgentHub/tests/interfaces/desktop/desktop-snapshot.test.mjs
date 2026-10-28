@@ -2026,6 +2026,7 @@ test("TaskBoard cache observes same-owner and external SQLite mutations", async 
     threadId: "journal-thread", turnId: "journal-turn", operationId: "journal-claim",
   });
   const claimed = await setup.desktopSnapshot(requestFor(external));
+  const beforeDetails = claimed.collectionDeltas.boardTasks.upserts.find((item) => item.id === localTask.id).detailsRevision;
   await journal.upsertRecords([{
     provider: "codex", threadId: "journal-thread", taskThreadId: "journal-thread",
     turnId: "journal-turn", projectRoot: directory, title: "Journal completed",
@@ -2033,8 +2034,15 @@ test("TaskBoard cache observes same-owner and external SQLite mutations", async 
   }]);
   const completed = await setup.desktopSnapshot(requestFor(claimed));
   const projected = completed.collectionDeltas.boardTasks.upserts.find((item) => item.id === localTask.id);
-  assert.equal(projected.workLog[0].summary, "Journal completed");
-  assert.equal(projected.workLog[0].turnId, "journal-turn");
+  assert.ok(projected, "the journal-only change must upsert its addressed summary");
+  assert.notEqual(projected.detailsRevision, beforeDetails);
+  assert.equal(projected.detailsDeferred, true);
+  assert.equal(Object.hasOwn(projected, "workLog"), false);
+  const details = await ownerBoard.card(localTask.id);
+  assert.equal(details.detailsRevision, projected.detailsRevision);
+  assert.equal(details.workLog[0].summary, "Journal completed");
+  assert.equal(details.workLog[0].turnId, "journal-turn");
+  assert.equal(JSON.stringify(details).includes("private body"), false);
   assert.equal(JSON.stringify(projected).includes("private body"), false);
   assert.equal((await setup.desktopSnapshot(requestFor(completed))).notModified, true);
   await journal.close();

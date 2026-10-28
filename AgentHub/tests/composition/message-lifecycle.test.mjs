@@ -3954,20 +3954,67 @@ test("outgoing receipt lookup survives a task thread rebind", () => {
   );
 });
 
-test("initial routed chat history wins over prefetch and starts snapshot polling", () => {
-  assert.match(hubClientSource, /let initialRouteOpening = true;/u);
-  assert.match(
-    hubClientSource,
-    /visibleStreamTaskIds = new Set\(ids\);\s*if \(initialRouteOpening\) return;/u,
-  );
-  assert.match(
-    hubClientSource,
-    /if \(directChatRoute\(\)\) \{\s*routed = await openRoute\(\);\s*[\s\S]*?await refresh\(\{ reportError: true \}\);/u,
-  );
-  assert.match(
-    hubClientSource,
-    /finally \{\s*initialRouteOpening = false;\s*void loadVisibleTaskHistories/u,
-  );
+test("initial routed chat history wins over prefetch and starts snapshot polling", async () => {
+  const source=hubClientSource.replaceAll('\r\n','\n');
+  const begin=source.indexOf('async function loadVisibleTaskHistories(');
+  const end=source.indexOf('\nagentHub.on("workspace:visible-streams"',begin);
+  const visible=source.slice(begin,end);
+  const initialStart=source.indexOf('let initialRouteOpening');
+  if(initialStart<0)throw Error('actual initial-route state initialization unavailable');
+  const initialSource=source.slice(initialStart,source.indexOf(';',initialStart)+1);
+  const bootStart=source.indexOf('void runAction(async () => {\n  agentHub.setConnection("connecting")');
+  const bootEnd=source.indexOf('\nvoid refreshRateLimitHistory();',bootStart);
+  if(begin<0||end<0||bootStart<0||bootEnd<0)throw Error('actual owning source extraction unavailable');
+  const boot=source.slice(bootStart,bootEnd);
+  const refreshStart=source.indexOf('async function refresh(');
+  const refreshEnd=source.indexOf('\nagentHub.on("connection:retry"',refreshStart);
+  if(refreshStart<0||refreshEnd<0)throw Error('actual refresh extraction unavailable');
+  const refreshSource=source.slice(refreshStart,refreshEnd);
+  function harness(kind){
+   const events=[];const timers=[];let release;let opened;
+   const openEntered=new Promise(r=>opened=r);
+   const held=new Promise(r=>release=r);
+   const sandbox=vm.createContext({Set,Map,Array,Promise,visibleStreamTaskIds:new Set(),retainedHistoryTaskIds:null,
+   selectedTaskId:'selected',historyPageByTask:new Map([['cached',{}]]),composerRecoveryBarrier:Promise.resolve(),
+   releaseClosedTaskHistories:()=>events.push('release-closed'),taskIdentity:id=>({streamId:id,provider:'codex',threadId:'thread-'+id}),
+   enqueueTaskHistoryLoad:async(id,identity,options)=>{events.push(['history',id,identity.threadId,options.preserveScroll]);},
+   agentHub:{setConnection:s=>events.push(['connection',s])},streamChatRoute:()=>kind==='stream',directChatRoute:()=>kind==='direct',
+   refreshing:false,refreshRequested:false,refreshTimer:null,lastSnapshot:{tasks:[]},
+   prepareSnapshotTransport:async()=>{},AgentHubSnapshotTransport:{requestParams:()=>({})},
+   snapshotResponseIsStale:()=>false,refreshConnectionLatency:()=>{},resetConnectionFailures:()=>{},applySnapshotConnection:()=>{},considerDisplayedFinal:()=>{},
+   refreshVisibleTaskHistories:async()=>{},recordTransientConnectionFailure:()=>{throw Error('unexpected refresh failure');},historyNeedsCatchUp:()=>false,
+   clearTimeout:()=>{},setTimeout:(fn,delay)=>{timers.push({fn,delay});return timers.length;},
+   openRoute:async()=>{events.push('open-route');opened();return held;},
+   runNavigation:()=>{throw Error('unexpected selected fallback navigation');},control:async action=>{assert.equal(action,'snapshot');events.push(['snapshot',true]);return {notModified:true};},applyOpened:()=>{},
+   runAction:fn=>{sandbox.completion=fn();return sandbox.completion;}});
+   sandbox.window=sandbox;
+   vm.runInContext(initialSource+'\n'+visible+'\n'+refreshSource,sandbox);
+   return {sandbox,events,timers,release,openEntered,boot:()=>vm.runInContext(boot,sandbox)};
+  }
+  {
+   const h=harness('direct');
+   await h.sandbox.loadVisibleTaskHistories(['selected','cached','background',' background ',''],['selected','background']);
+   assert.deepEqual(Array.from(h.sandbox.visibleStreamTaskIds),['selected','cached','background']);
+   assert.deepEqual(Array.from(h.sandbox.retainedHistoryTaskIds),['selected','background']);
+   assert.equal(h.events.filter(x=>Array.isArray(x)&&x[0]==='history').length,0);
+   h.boot();await h.openEntered;
+   assert.equal(h.events.filter(x=>Array.isArray(x)&&x[0]==='snapshot').length,0,'direct routed history must lead first refresh');
+   assert.equal(h.events.filter(x=>Array.isArray(x)&&x[0]==='history').length,0,'background must stay gated while route is held');
+   h.release(true);await h.sandbox.completion;
+   assert.equal(vm.runInContext('initialRouteOpening',h.sandbox),false);
+   assert.deepEqual(h.events.filter(x=>Array.isArray(x)&&x[0]==='snapshot'),[['snapshot',true]]);
+   assert.deepEqual(h.events.filter(x=>Array.isArray(x)&&x[0]==='history'),[['history','background','thread-background',false]]);
+   const open=h.events.indexOf('open-route');const snap=h.events.findIndex(x=>Array.isArray(x)&&x[0]==='snapshot');const background=h.events.findIndex(x=>Array.isArray(x)&&x[0]==='history');
+   assert.ok(open<snap&&snap<background);
+   assert.equal(h.timers.length,1);assert.equal(h.timers[0].fn,h.sandbox.refresh);assert.ok(Number.isFinite(h.timers[0].delay)&&h.timers[0].delay>0);
+   await h.timers[0].fn();assert.equal(h.events.filter(x=>Array.isArray(x)&&x[0]==='snapshot').length,2);assert.equal(h.timers.length,2);
+  }
+  {
+   const h=harness('stream');h.boot();await h.openEntered;
+   assert.deepEqual(h.events.filter(x=>Array.isArray(x)&&x[0]==='snapshot'),[['snapshot',true]]);
+   assert.ok(h.events.findIndex(x=>Array.isArray(x)&&x[0]==='snapshot')<h.events.indexOf('open-route'));
+   h.release(true);await h.sandbox.completion;assert.equal(vm.runInContext('initialRouteOpening',h.sandbox),false);
+  }
 });
 
 test("a cold stable Stream route resolves after the first snapshot instead of server selection", () => {
