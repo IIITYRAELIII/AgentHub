@@ -2340,7 +2340,7 @@ test("claim forwards an explicit user dependency exception and complete forwards
   assert.equal(result.cleanupToken, "preview");
   const schema = service.tools().find((tool) => tool.name === "hub_task_complete").inputSchema;
   assert.deepEqual(schema.properties.absorption_mode.enum, ["published_duplicate"]);
-  assert.deepEqual(schema.properties.completion_mode.enum, ["published_release_service"]);
+  assert.deepEqual(schema.properties.completion_mode.enum, ["published_release_service", "published_delivery", "operational"]);
   await service.call("hub_task_complete", { context_token: token,
     request_id: "release-service-preview", task_id: "task-current",
     completion_mode: "published_release_service" });

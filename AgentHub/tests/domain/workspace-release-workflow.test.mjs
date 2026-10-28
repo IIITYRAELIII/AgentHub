@@ -177,3 +177,19 @@ test("issued rules require selected composition and retained absorption sources"
   assert.ok(workspace.endsWith("Authored suffix"));
   assert.ok(manager.endsWith("Authored suffix"));
 });
+
+test("issued release policy applies the approved overlap rule and retains its transfer procedure", () => {
+  const approved = "При любом пересечении задач обнаруживший его исполнитель поглощает другую задачу в свою, сохраняя всю работу и требования, проверяя результат и завершая штатное поглощение. Так связанные изменения получают одного ответственного и доводятся до выпуска целиком. Согласование не требуется: исполнитель уведомляет TL, а TL — пользователя; ответа не ждут. При включённом авто-ревью, если поглощаемая часть не имеет положительного ревью, обязательно провести её ревью в составе объединённого результата.";
+  const issued = effectiveWorkspaceDeveloperRules("Authored suffix", { releaseWorkflowEnabled: true });
+  assert.equal(issued.split(approved).length - 1, 1);
+  assert.doesNotMatch(issued, /Touching the same files alone does not require absorption|Separate dependent Tasks may be prepared|Agree which Task survives/u);
+  for (const procedure of [
+    "saved unfinished work and stopped editing",
+    "one native linked checklist item per absorbed Task",
+    "Return previously integrated results through the normal lifecycle",
+    "successful canonical composition of the surviving result with the selected release Tasks",
+    "closing as absorbed does not mean published Done",
+  ]) assert.ok(issued.includes(procedure));
+  assert.equal(effectiveWorkspaceDeveloperRules("Authored suffix", { releaseWorkflowEnabled: false }), "Authored suffix");
+  assert.ok(issued.endsWith("Authored suffix"));
+});
