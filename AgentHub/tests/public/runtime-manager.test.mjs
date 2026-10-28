@@ -735,7 +735,7 @@ test("deployRuntime restores a missing RuntimeHost without changing user data", 
   const configFile = path.join(runtimeRoot, "config.json");
   const journalFile = path.join(runtimeRoot, "data", "journal.sqlite");
   await mkdir(path.dirname(journalFile), { recursive: true });
-  await writeFile(configFile, '{"provider":"codex","customSetting":true}\n');
+  await writeFile(configFile, '{"provider":"codex","customSetting":true,"usageSyncServerUrl":""}\n');
   await writeFile(journalFile, "retained journal bytes");
   const configBefore = await readFile(configFile);
   const journalBefore = await readFile(journalFile);
