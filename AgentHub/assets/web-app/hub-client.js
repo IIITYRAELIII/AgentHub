@@ -4175,6 +4175,24 @@ document.addEventListener("agenthub:board-action", (event) => {
     );
     return;
   }
+  if (detail.type === "operation-read") {
+    void control("board-task-read", { id: detail.id }).then(result =>
+      window.AgentHubTaskBoard.showOperations({ id: detail.id, result }),
+      error => agentHub.toast(String(error?.message ?? error)));
+    return;
+  }
+  if (detail.type === "operation-cancel") {
+    // Stop must reach the backend while the original board command is waiting.
+    const { type, ...params } = detail;
+    void control("board-task-operation-cancel", params).then(result => {
+      window.AgentHubTaskBoard.showOperations({ id: detail.id, result });
+      agentHub.toast(result.cancellation?.phase === "stopped"
+        ? "Операция прервана. Незавершённая работа сохранена."
+        : result.cancellation?.phase === "already_terminal" ? "Операция уже завершена."
+          : "Остановка запрошена; прежние эффекты пока неизвестны.");
+    }, error => agentHub.toast(String(error?.message ?? error)));
+    return;
+  }
   if (detail.type === "diff") {
     void control("board-task-diff", { id: detail.id }).then(
       (result) => window.AgentHubTaskBoard.showDiff({ ...detail, result }),

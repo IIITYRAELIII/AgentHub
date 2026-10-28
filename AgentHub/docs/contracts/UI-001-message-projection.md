@@ -1,5 +1,14 @@
 # UI-001 — Canonical message projection
 
+The Task card's operation action exposes explicit interruption of a bound
+claim/workflow attempt, including pending and UNKNOWN. It reaches the same
+authenticated owner while the original UI/control mutation waits. Requested
+stopping and confirmed stopped are distinct; UNKNOWN past effects are never
+presented as undone. Already completed operations retain their completion.
+Refreshing the operation panel reads canonical disposition and does not replay
+the original action. Legacy rows without a Task binding require exact operator
+arguments through the supported owner, never guessed association by timestamp.
+
 The Server page exposes the private sync endpoint through its existing
 configuration save/cancel flow. Only HTTP(S) URLs without embedded credentials,
 query or fragment are admitted. A pending edit does not change the effective

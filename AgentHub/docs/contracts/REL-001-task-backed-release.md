@@ -1,5 +1,23 @@
 # REL-001 — Task-backed Workspace release
 
+## Explicit interruption of an execution attempt
+
+An explicit claim/Test/Await cancellation can stop future execution while its
+prior Git effects remain unknown. It does not accept, undo, publish, delete or
+relabel those effects as NO_EFFECT. The existing operation receipt retains its
+entire historical receipt snapshot/identity/error/result. UNKNOWN is unchanged;
+a known pending attempt becomes failed execution after confirmed stop without
+inferring absent Git effects. Only confirmed worker join or positive
+whole-runtime retirement, plus the existing Task recovery lease/process-guard
+checks, permits the stopped disposition and ordinary next action. Pending
+retirement retains blocking guards. A late worker cannot revive its original or
+write through its inherited SQL/TaskGit execution context. Previously committed
+outcomes, dirty files and native journals remain available to their usual owners.
+
+This does not change selection, source/content preservation, native review,
+publication or primary protections. No production restart is implicit. See
+[Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
+
 ## Normal release continuation (ADR-0132)
 
 The existing `hub_release_run` / `hub_release_continue` owner prepares a missing

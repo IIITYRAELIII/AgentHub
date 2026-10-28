@@ -1826,7 +1826,24 @@
         : [node("p", { class: "task-card-detail-empty",
           text: task.detailsDeferred ? (detail?.error || "Загружаю историю задачи…") : "Пока нет записей о выполненной работе." })]));
     }
-    const actions = [];
+    const actions = [node("button", { type: "button", class: "board-task-quiet",
+      text: "Операции задачи", onclick: () => emit("operation-read", { id: task.id }) })];
+    for (const operation of detail?.taskOperations ?? []) {
+      const stopped = operation.cancellation?.phase === "stopped";
+      const label = operation.toolName === "hub_task_claim" ? "Подготовка задачи"
+        : `Переход в ${taskWorkflowPresentation({ workflowStatus: operation.targetStatus }, state.statusLanguage).full}`;
+      const phase = operation.cancellation ? "остановка запрошена"
+        : operation.status === "unknown" ? "результат неизвестен" : "выполняется или ожидает";
+      actions.push(node("span", { role: "status", text: stopped
+        ? "Операция прервана. Уже выполненные действия сохранены."
+        : `${label}: ${phase}` }));
+      if (!stopped) actions.push(node("button", { type: "button", class: "board-task-quiet",
+        text: operation.cancellation ? "Проверить остановку" : "Прервать операцию",
+        onclick: () => emit("operation-cancel", { id: task.id,
+          operationRequestId: operation.requestId, argumentsHash: operation.argumentsHash,
+          expectedRevision: task.revision, requestId: crypto.randomUUID(), confirmCancel: true }),
+      }));
+    }
     if (task.status !== "done" && taskWorkflowStatus(task) !== "done" && task.bucket === "workspace") {
       actions.push(node("button", {
         type: "button",
@@ -2748,6 +2765,16 @@
   });
 
   window.AgentHubTaskBoard = Object.freeze({
+    showOperations({ id, result }) {
+      if (state.openTaskId !== id || result?.task?.id !== id) return;
+      const task = state.tasks.find(item => item.id === id);
+      const prior = openTaskDetails.get(id);
+      if (task && result.task.revision === task.revision) {
+        openTaskDetails.set(id, { ...(prior ?? {}), revision: task.detailsRevision,
+          task: result.task, taskOperations: result.taskOperations ?? [] });
+        renderOpenTaskCard();
+      }
+    },
     showDetails({ id, revision, opening, result, error }) {
       const pending = pendingTaskDetails.get(id);
       if (!pending || pending.revision !== revision || pending.opening !== opening) return;
@@ -2757,7 +2784,7 @@
       if (error) {
         openTaskDetails.set(id, { revision, error });
       } else if (result?.task?.id === id && result.task.detailsRevision === revision) {
-        openTaskDetails.set(id, { revision, task: result.task });
+        openTaskDetails.set(id, { revision, task: result.task, taskOperations: result.taskOperations ?? [] });
       } else {
         // A newer server result waits for the normal canonical board snapshot.
         // Do not overwrite newer metadata, edits or another opening with it.

@@ -238,6 +238,7 @@ export function createDesktopRunRouterWiring({
     workspaceCatalog: services.workspaceCatalog,
     taskLauncher: taskBoardLauncher,
     taskLifecycle: services.taskLifecycle,
+    hubMcpService: services.hubMcpService,
     attachmentDirectory: services.attachmentDirectory,
     snapshot: desktop.snapshot,
   });
@@ -287,6 +288,7 @@ export function createDesktopRunRouterWiring({
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),
       boardTaskRead: (params) => taskBoardController.read(params),
+      boardTaskOperationCancel: (params) => taskBoardController.cancelOperation(params),
       boardTaskDiff: (params) => taskBoardController.diff(params),
       boardTaskChecklist: (params) => taskBoardController.checklist(params),
       boardTaskChecklistLinkedAction: (params) => taskBoardController.checklistLinkedTaskAction(params),

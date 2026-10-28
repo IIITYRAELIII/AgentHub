@@ -6,8 +6,9 @@ import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mj
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 export class DesktopTaskBoardController {
-  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, taskLifecycle = null, taskGitWorkspaces = null, voiceTranscriber = null, attachmentDirectory = null, snapshot, logger = console } = {}) {
+  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, taskLifecycle = null, taskGitWorkspaces = null, voiceTranscriber = null, attachmentDirectory = null, snapshot, hubMcpService = null, logger = console } = {}) {
     this.taskBoard = taskBoard;
+    this.hubMcpService = hubMcpService;
     this.workspaceCatalog = workspaceCatalog;
     this.dispatchCommand = dispatchCommand;
     this.sendMessage = sendMessage;
@@ -41,7 +42,8 @@ export class DesktopTaskBoardController {
   }
 
   read({ id } = {}) {
-    return { task: this.taskBoard.card(id) };
+    return { task: this.taskBoard.card(id),
+      taskOperations: this.hubMcpService?.taskOperationInterruption?.list(id) ?? [] };
   }
 
   async diff({ id } = {}) {
@@ -174,12 +176,22 @@ export class DesktopTaskBoardController {
 
   async status(params, context = {}) {
     if (!this.taskLifecycle) throw new Error("Task lifecycle service is unavailable");
-    const result = await this.taskLifecycle.updateWorkflowStatus({
-      taskId: params.id,
-      status: params.status,
-      operationId: String(params.operationId ?? context.commandId ?? "").trim(),
-    });
+    const operationId = String(params.operationId ?? context.commandId ?? "").trim();
+    const run = () => this.taskLifecycle.updateWorkflowStatus({ taskId: params.id, status: params.status, operationId });
+    const result = this.hubMcpService
+      ? await this.hubMcpService.runDesktopTaskOperation(this.taskBoard.task(params.id), operationId, params.status, run) : await run();
     return { ...await this.#boardMutationSnapshot(params), lifecycleResult: result };
+  }
+
+  async cancelOperation(params) {
+    const owner = this.hubMcpService?.taskOperationInterruption;
+    if (!owner || params.confirmCancel !== true) throw new Error("Подтверди прерывание операции");
+    const task = this.taskBoard.task(params.id);
+    const cancellation = await owner.cancel({ actor: { user: true, workspaceId: task.workspaceId },
+      taskId: task.id, operationRequestId: params.operationRequestId,
+      cancellationRequestId: params.requestId, expectedArgumentsHash: params.argumentsHash,
+      expectedTaskRevision: params.expectedRevision });
+    return { ...this.read({ id: task.id }), cancellation };
   }
 
   moveColumn(params) {

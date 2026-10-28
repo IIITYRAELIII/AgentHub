@@ -33,6 +33,19 @@ function options(argv) {
 }
 
 const input = options(process.argv.slice(2));
+if (input["cancel-arguments"]) {
+  const { openTaskAwaitCutoverRuntime } = await import("./task-await-cutover.mjs");
+  const { createClaimCustodyRuntime } = await import("./src/infrastructure/process/claim-custody-runtime.mjs");
+  const command = JSON.parse(await readFile(path.resolve(input["cancel-arguments"]), "utf8"));
+  if (command.context_token != null) throw new Error("Cancellation arguments must not contain a context capability");
+  const runtime = await openTaskAwaitCutoverRuntime();
+  try {
+    runtime.service.taskOperationInterruption.runtime = createClaimCustodyRuntime({ dataDir: runtime.config.dataDir });
+    const token = runtime.service.contextToken({ provider: input.provider, threadId: input.thread, streamId: input.stream });
+    const result = await runtime.service.call("hub_task_operation_cancel", { ...command, context_token: token });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } finally { runtime.close(); }
+} else {
 const config = await loadConfig();
 const databaseFile = path.join(config.dataDir, "journal.sqlite");
 const {
@@ -106,4 +119,6 @@ try {
 } finally {
   rawTaskBoardStore.close();
   rawWorkspaceCatalogStore.close();
+}
+
 }

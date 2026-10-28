@@ -188,6 +188,38 @@ function configure(database) {
       ON hub_workspaces(purge_after_ms)
       WHERE archived_at_ms IS NOT NULL;
   `);
+  const executionColumns = database.prepare("PRAGMA table_info(hub_mcp_operations)").all();
+  if (!executionColumns.some(column => column.name === "task_execution_json")) {
+    database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN task_execution_json TEXT");
+  }
+  database.exec(`CREATE INDEX IF NOT EXISTS hub_task_execution_task_idx
+    ON hub_mcp_operations(json_extract(task_execution_json, '$.taskId'))`);
+  database.exec(`CREATE TRIGGER IF NOT EXISTS hub_interrupted_operation_history
+    BEFORE UPDATE ON hub_mcp_operations
+    WHEN json_extract(OLD.task_execution_json, '$.cancellation') IS NOT NULL AND (
+      NEW.request_id IS NOT OLD.request_id OR NEW.workspace_id IS NOT OLD.workspace_id
+      OR NEW.stream_id IS NOT OLD.stream_id OR NEW.provider IS NOT OLD.provider
+      OR NEW.provider_thread_id IS NOT OLD.provider_thread_id OR NEW.tool_name IS NOT OLD.tool_name
+      OR NEW.arguments_hash IS NOT OLD.arguments_hash
+      OR ((NEW.status IS NOT OLD.status OR NEW.receipt_state IS NOT OLD.receipt_state)
+        AND NOT (OLD.receipt_state IN ('pending', 'reconciling')
+          AND json_extract(OLD.task_execution_json, '$.cancellation.phase')='requested'
+          AND json_extract(NEW.task_execution_json, '$.cancellation.phase')='stopped'
+          AND NEW.status='failed' AND NEW.receipt_state='failed'))
+      OR NEW.result_json IS NOT OLD.result_json
+      OR NEW.error_text IS NOT OLD.error_text OR NEW.created_at_ms IS NOT OLD.created_at_ms
+      OR NEW.completed_at_ms IS NOT OLD.completed_at_ms
+      OR json_extract(NEW.task_execution_json, '$.cancellation') IS NULL)
+    BEGIN SELECT RAISE(ABORT, 'Interrupted operation history is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_interrupted_operation_delete
+    BEFORE DELETE ON hub_mcp_operations
+    WHEN json_extract(OLD.task_execution_json, '$.cancellation') IS NOT NULL
+    BEGIN SELECT RAISE(ABORT, 'Interrupted operation history is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_interrupted_operation_replace
+    BEFORE INSERT ON hub_mcp_operations
+    WHEN EXISTS (SELECT 1 FROM hub_mcp_operations WHERE request_id=NEW.request_id
+      AND json_extract(task_execution_json, '$.cancellation') IS NOT NULL)
+    BEGIN SELECT RAISE(ABORT, 'Interrupted operation cannot be replaced'); END;`);
   const streamColumns = database.prepare("PRAGMA table_info(hub_streams)").all();
   const operationColumns = database.prepare("PRAGMA table_info(hub_mcp_operations)").all();
   if (!operationColumns.some((column) => column.name === "claim_custody_json")) {
@@ -398,6 +430,7 @@ function mcpOperationFromRow(row) {
     error: String(row.error_text ?? ""),
     createdAtMs: Number(row.created_at_ms) || 0,
     completedAtMs: row.completed_at_ms == null ? null : Number(row.completed_at_ms),
+    ...(row.task_execution_json == null ? {} : { taskExecution: JSON.parse(row.task_execution_json) }),
     ...(row.claim_custody_json == null ? {} : { claimCustody: JSON.parse(row.claim_custody_json) }),
     ...(row.preparation_state_json == null ? {} : { preparationState: JSON.parse(row.preparation_state_json) }),
   };
@@ -876,6 +909,7 @@ export class WorkspaceCatalogStore {
 
   beginMcpOperation({
     requestId, workspaceId, streamId, provider, threadId, toolName, argumentsHash,
+    taskExecution = null,
   } = {}) {
     const id = safeIdentifier(requestId, "MCP request id");
     const workspace = safeIdentifier(workspaceId, "workspace id");
@@ -896,10 +930,11 @@ export class WorkspaceCatalogStore {
     const inserted = this.#database.prepare(`
       INSERT OR IGNORE INTO hub_mcp_operations (
         request_id, workspace_id, stream_id, provider, provider_thread_id,
-        tool_name, arguments_hash, status, receipt_state, created_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?)
+        tool_name, arguments_hash, status, receipt_state, created_at_ms, task_execution_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?)
     `).run(
       id, workspace, stream, normalizedProvider, normalizedThreadId, tool, hash, this.#nowMs(),
+      taskExecution == null ? null : JSON.stringify(taskExecution),
     );
     const existing = mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
@@ -1407,6 +1442,60 @@ export class WorkspaceCatalogStore {
       if (Number(updated.changes) !== 1) throw new Error("Original preparation failure owner CAS changed");
       return this.mcpOperation(id);
     });
+  }
+
+  bindTaskOperationExecution(requestId, binding) {
+    const row = this.mcpOperation(requestId);
+    if (!row || row.taskExecution?.cancellation) throw new Error("Task operation execution is interrupted");
+    if (row.taskExecution && JSON.stringify(row.taskExecution) !== JSON.stringify(binding)) {
+      throw new Error("Task operation already belongs to another execution owner");
+    }
+    this.#database.prepare("UPDATE hub_mcp_operations SET task_execution_json=? WHERE request_id=? AND task_execution_json IS NULL")
+      .run(JSON.stringify(binding), requestId);
+    return this.mcpOperation(requestId).taskExecution;
+  }
+
+  requestTaskOperationInterruption(requestId, input) {
+    return this.#transaction(() => {
+      const row = this.mcpOperation(requestId);
+      const task = this.#database.prepare("SELECT row_revision, workspace_id FROM hub_board_tasks WHERE id=?").get(input.taskId);
+      if (!row || row.argumentsHash !== input.expectedArgumentsHash || !task
+        || task.workspace_id !== input.targetWorkspaceId || Number(task.row_revision) !== input.expectedTaskRevision) {
+        throw new Error("Task operation interruption CAS changed");
+      }
+      if (row.taskExecution?.cancellation) return row.taskExecution.cancellation;
+      if (["succeeded", "failed"].includes(row.status)) throw new Error("Task operation completed before cancellation");
+      const cancellation = { phase: "requested", requestId, taskId: input.taskId, targetWorkspaceId: input.targetWorkspaceId,
+        requestedAtMs: input.requestedAtMs, cancellationRequestId: input.cancellationRequestId, actor: input.actor, cohort: input.cohort,
+        effects: "retained_unknown", original: row };
+      const state = { ...(row.taskExecution ?? { version: 1, taskId: input.taskId, arguments: input.arguments }), cancellation };
+      this.#database.prepare("UPDATE hub_mcp_operations SET task_execution_json=? WHERE request_id=?")
+        .run(JSON.stringify(state), requestId);
+      return cancellation;
+    });
+  }
+
+  finishTaskOperationInterruption(requestId, retirement) {
+    return this.#transaction(() => {
+      const row = this.mcpOperation(requestId);
+      const state = row?.taskExecution;
+      if (!state?.cancellation) throw new Error("Task cancellation is not requested");
+      if (state.cancellation.phase === "stopped") return state.cancellation;
+      const cancellation = { ...state.cancellation, phase: "stopped", stoppedAtMs: this.#nowMs(), retirement };
+      this.#database.prepare(`UPDATE hub_mcp_operations SET task_execution_json=?,
+        status=CASE WHEN receipt_state IN ('pending', 'reconciling') THEN 'failed' ELSE status END,
+        receipt_state=CASE WHEN receipt_state IN ('pending', 'reconciling') THEN 'failed' ELSE receipt_state END
+        WHERE request_id=?`).run(JSON.stringify({ ...state, cancellation }), requestId);
+      return cancellation;
+    });
+  }
+
+  taskOperationExecutions(taskId) {
+    return this.#database.prepare(`SELECT * FROM hub_mcp_operations
+      WHERE json_extract(task_execution_json, '$.taskId')=?
+      AND (receipt_state NOT IN ('succeeded', 'failed')
+        OR json_extract(task_execution_json, '$.cancellation') IS NOT NULL) ORDER BY created_at_ms`)
+      .all(taskId).map(mcpOperationFromRow);
   }
 
   mcpOperation(requestId) {

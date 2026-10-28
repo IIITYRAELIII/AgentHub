@@ -113,7 +113,8 @@
         "src/providers/codex/codex-task-snapshot-service.mjs",
         "src/infrastructure/persistence/task-read-state-store.mjs",
         "src/infrastructure/persistence/task-sync-store.mjs",
-        "tests/public/composer-send-isolation.test.mjs"
+        "tests/public/composer-send-isolation.test.mjs",
+        "tests/public/task-operation-interruption-dom.test.mjs"
       ]
     },
     {
@@ -406,7 +407,12 @@
         "tests/public/runtime-manager.test.mjs",
         "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
         "src/infrastructure/persistence/task-turn-projection.mjs",
-        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs",
+        "src/application/task-operation-interruption.mjs",
+        "src/infrastructure/process/task-operation-interruption-context.mjs",
+        "tests/application/task-operation-interruption.test.mjs",
+        "tests/interfaces/cli/task-operation-cancel.test.mjs",
+        "tests/public/task-operation-interruption-dom.test.mjs"
       ]
     },
     {
@@ -455,7 +461,12 @@
         "tests/application/hub-mcp-claim-isolated-custody.test.mjs",
         "tests/application/hub-mcp-claim-unassigned-custody.test.mjs",
         "tests/application/hub-mcp-claim-successor-admission.test.mjs",
-        "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs"
+        "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs",
+        "src/application/task-operation-interruption.mjs",
+        "src/infrastructure/process/task-operation-interruption-context.mjs",
+        "tests/application/task-operation-interruption.test.mjs",
+        "tests/interfaces/cli/task-operation-cancel.test.mjs",
+        "tests/public/task-operation-interruption-dom.test.mjs"
       ]
     },
     {

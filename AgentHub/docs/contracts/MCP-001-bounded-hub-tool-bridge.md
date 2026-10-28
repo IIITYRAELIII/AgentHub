@@ -1,5 +1,29 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Explicit Task operation interruption
+
+`hub_task_operation_cancel` is an explicit audited mutation of future execution,
+not reconciliation of past effects. Exact original ID/hash/Task arguments and
+current Task CAS are required. The original Stream, a genuine RM, or the
+authenticated desktop user uses the same existing receipt owner. Caller scope
+and target Task scope remain distinct. Cancellation commands retain their own
+receipt; current original execution disposition is read independently.
+
+The existing MCP ledger retains the exact original receipt snapshot, result,
+error and timestamps with separate requested/stopped execution metadata.
+UNKNOWN stays UNKNOWN; a known pending execution becomes failed execution only
+after stopped, with prior effects still unknown. Requested is not stopped. A new
+worker must join and release its exact child/lease before stopped is sealed;
+late queued callbacks cannot write. A legacy UNKNOWN requires positive retirement
+of its whole prior runtime cohort through the existing native witness owner.
+PID absence, error text and elapsed time do not suffice. No original claim/Git
+replay, dirty-source removal or NO_EFFECT inference is authorized.
+
+The existing operation-reconcile CLI exposes the same cancel command via
+`--cancel-arguments <json>` with local provider/thread/Stream identity. A first
+request waiting for legacy retirement is not silently restarted or published.
+See [Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
+
 ## Normal release continuation (ADR-0132)
 
 `hub_release_run` keeps preparation inside the existing durable release owner.

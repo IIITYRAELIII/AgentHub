@@ -1,3 +1,4 @@
+import { assertTaskOperationExecuting, interruptibleTaskLease, taskOperationExecution } from "../process/task-operation-interruption-context.mjs";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
@@ -213,10 +214,11 @@ export function runTaskGitCommand(args, options = {}) {
 }
 
 function runTaskGitCommandUntraced(args, {
-  cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null, input = null,
+  cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = taskOperationExecution()?.signal ?? null, input = null,
   commandLabel = "git", env = null, rawOutput = false, acceptableExitCodes = [],
   stdoutFd = null,
 } = {}) {
+  assertTaskOperationExecuting();
   if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -325,7 +327,7 @@ function combinedLease(primary, secondary, { repositoryKey = null } = {}) {
 }
 
 export async function runOwnedGit(args, { lease = null, ...options } = {}) {
-  const owner = requiredGuardLease(lease);
+  const owner = interruptibleTaskLease(requiredGuardLease(lease));
   await owner.assertOwned();
   const guard = await owner.beginProcessTreeGuard({ args, cwd: options.cwd });
   try {
@@ -708,7 +710,7 @@ export class TaskGitWorkspaceService {
   }
 
   async #runOwnedTraced(args, { lease, guardCommand, guardScope, guardRepositoryRoot, ...options }) {
-    const owner = requiredGuardLease(lease);
+    const owner = interruptibleTaskLease(requiredGuardLease(lease));
     await owner.assertOwned();
     const guard = await owner.beginProcessTreeGuard({ args: guardCommand ?? args, cwd: options.cwd,
       scope: guardScope, repositoryRoot: guardRepositoryRoot });
@@ -1378,8 +1380,9 @@ export class TaskGitWorkspaceService {
     this.#assertAvailable("withTaskLock");
     return withInterprocessLocks([this.#taskLock(taskId)], async (lease) => {
       await this.#assertNoProcessTreeGuard(taskId);
-      return operation(this.#guardedLease(taskId, lease));
-    }, options);
+      assertTaskOperationExecuting();
+      return operation(interruptibleTaskLease(this.#guardedLease(taskId, lease)));
+    }, { ...options, signal: taskOperationExecution()?.signal });
   }
 
   storageRetentionOwner({ taskBoard, isStopping } = {}) {
@@ -1398,8 +1401,9 @@ export class TaskGitWorkspaceService {
     if (!ids.includes(guardedTaskId)) throw new Error("Task Git guard owner must be in the lock set");
     return withInterprocessLocks(ids.map((taskId) => this.#taskLock(taskId)), async (lease) => {
       for (const taskId of ids) await this.#assertNoProcessTreeGuard(taskId);
-      return operation(this.#guardedLease(guardedTaskId, lease));
-    }, options);
+      assertTaskOperationExecuting();
+      return operation(interruptibleTaskLease(this.#guardedLease(guardedTaskId, lease)));
+    }, { ...options, signal: taskOperationExecution()?.signal });
   }
 
   async withTaskRecoveryLock(taskId, operation, options = {}) {
@@ -1444,7 +1448,7 @@ export class TaskGitWorkspaceService {
         : this.#guardedLease(`repository-${repoKey}`, devLease);
       if (!outerLease) lease.repositoryLockKeys = new Set([repoKey]);
       return operation(lease);
-    });
+    }, { signal: taskOperationExecution()?.signal });
   }
 
   async assertNoProcessTreeGuardOwned(taskId, { lease } = {}) {
