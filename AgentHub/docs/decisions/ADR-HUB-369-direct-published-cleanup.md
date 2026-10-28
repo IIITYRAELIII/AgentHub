@@ -141,3 +141,20 @@ old/new spans contain actual edits rather than unchanged surrounding lines.
 This adds only reads through the existing Git/object owner, with no cleanup,
 publication, receipt or temporary-object writer. The maintained real-MCP negative
 retains old before text and uniquely appends after text; refusal precedes preview.
+
+## User-approved overlap absorption policy, 2026-10-28
+
+The user replaced the earlier duplicate/inseparable-outcome criterion with this
+exact rule, including the subsequently requested review requirement:
+
+При любом пересечении задач обнаруживший его исполнитель поглощает другую задачу в свою, сохраняя всю работу и требования, проверяя результат и завершая штатное поглощение. Так связанные изменения получают одного ответственного и доводятся до выпуска целиком. Согласование не требуется: исполнитель уведомляет TL, а TL — пользователя; ответа не ждут. При включённом авто-ревью, если поглощаемая часть не имеет положительного ревью, обязательно провести её ревью в составе объединённого результата.
+
+The built-in Release workflow is the owning policy source. Its contradictory
+independent-dependency exception is removed. The existing saved/stopped handoff,
+full requirements and native checklist transfer, ordinary return/Test/Await,
+canonical selected composition, combined-closure preview/confirmation and
+absorbed-versus-published distinction remain. Previously accepted unchanged
+parts retain their exact independent review; combined changes and open findings
+remain subject to the existing review owner. Executor-to-TL and TL-to-user
+notification is the explicitly authorized operational exception to final-only
+reporting, not an approval wait. No second raw Workspace policy owner is added.

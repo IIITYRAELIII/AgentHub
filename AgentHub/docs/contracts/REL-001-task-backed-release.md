@@ -1199,15 +1199,18 @@ See ADR-0068.
 ## Conflict continuation and Blocked (HUB-235)
 
 The accepted conflict workflow is agent-led Task consolidation (ADR-0049).
-The policy calls this absorption: use it for duplicate outcomes or changes that
-cannot reasonably be implemented, checked and released independently. Shared
-file paths alone do not require absorption. Preserve source cards and history,
-and keep transferred unfinished requirements open. See ADR-0065.
-The Stream encountering the conflict takes over the other, surviving Task after
-notifying its executor and confirming saved work and handoff. It transfers its
-own requirements, checklist and useful results, merges its own branch into the
-surviving branch, resolves conflicts and validates the combined work. Only then
-does it close its own Task as combined, with a link to the surviving Task.
+При любом пересечении задач обнаруживший его исполнитель поглощает другую задачу в свою, сохраняя всю работу и требования, проверяя результат и завершая штатное поглощение. Так связанные изменения получают одного ответственного и доводятся до выпуска целиком. Согласование не требуется: исполнитель уведомляет TL, а TL — пользователя; ответа не ждут. При включённом авто-ревью, если поглощаемая часть не имеет положительного ревью, обязательно провести её ревью в составе объединённого результата.
+
+The detecting executor retains its own Task as the survivor. It confirms that the
+source executor has saved and stopped, transfers all source requirements,
+checklist, useful results and attachment references, then merges in the survivor's
+managed worktree, resolves conflicts and validates the combined result. Source
+cards and history remain retained; transferred unfinished requirements stay open.
+After verified transfer and canonical selected composition, the source is closed
+through the supported combined-closure preview/confirmation with a survivor link.
+An unchanged previously accepted part retains its exact review; new combined
+changes and open findings follow the existing Auto-review policy. See the
+HUB-369 addendum in ADR-HUB-369-direct-published-cleanup.
 Task-local save and merge commits for this operation are authorized. Consolidation
 does not imply publication or Done and requires no automatic consolidation engine.
 Previously integrated results are superseded through the ordinary lifecycle;
