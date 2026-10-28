@@ -6070,7 +6070,10 @@ export class TaskGitWorkspaceService {
       publication: { ...publication } };
   }
 
-  async publishedDeliveryPreviewOwned({ task, input, lease, admitted = null, operational = false, operationalAuthority = null }) {
+  async publishedDeliveryPreviewOwned(params = {}) {
+    this.#assertAvailable("publishedDeliveryPreviewOwned");
+    const { task, input: originalInput, lease, admitted = null, operational = false, operationalAuthority = null } = params;
+    let input = originalInput;
     await requiredGuardLease(lease).assertOwned();
     const workspaces = await this.describe(task.id);
     if (workspaces.length > 1 || (!admitted && workspaces.length !== 1)) throw Error("Direct delivery requires one exact managed source");
@@ -6259,7 +6262,9 @@ export class TaskGitWorkspaceService {
     };
   }
 
-  async confirmedDeleteResumePreviewOwned({ task, prior, preservedFiles, lease }) {
+  async confirmedDeleteResumePreviewOwned(params = {}) {
+    this.#assertAvailable("confirmedDeleteResumePreviewOwned");
+    const { task, prior, preservedFiles, lease } = params;
     await requiredGuardLease(lease).assertOwned();
     const cleanupReferences = [...task.gitReferences];
     for (const w of prior.workspaces) if (!cleanupReferences.some(r => samePath(r.projectRoot, w.repositoryRoot) && r.branch === w.branch)) {
