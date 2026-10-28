@@ -404,6 +404,8 @@
         "src/composition/publication-freeze.mjs",
         "src/infrastructure/filesystem/runtime-release-version.mjs",
         "tests/infrastructure/filesystem/runtime-release-version.test.mjs",
+        "tests/infrastructure/filesystem/retired-runtime-allocation.test.mjs",
+        "docs/decisions/ADR-HUB-363-partial-retirement-allocation.md",
         "tests/public/runtime-manager.test.mjs",
         "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
         "src/infrastructure/persistence/task-turn-projection.mjs",

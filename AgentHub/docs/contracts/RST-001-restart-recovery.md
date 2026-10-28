@@ -46,6 +46,12 @@ Other persistent artifacts
 remain under their existing cleanup contracts and are preserved until those
 owners supply their own verified eligibility/effect adapters.
 
+An allocation evidence read may open the existing maintenance store read-only,
+without schema initialization, migration or a writer reservation. It verifies
+the original admitted partial retirement, but cannot settle, replay or continue
+it. Its existing resource owner and scheduler retain all effect authority; see
+ADR-HUB-363-partial-retirement-allocation and REL-001.
+
 Catalog reads during startup must not indirectly launch optional historical
 pricing backfill. Its existing post-readiness coordinator remains the owner;
 mandatory terminal projection recovery and its durable ACK fences still finish
