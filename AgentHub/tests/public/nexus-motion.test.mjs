@@ -24,8 +24,22 @@ test("Nexus light follows panel geometry and retires with motion, visibility or 
     await page.addScriptTag({ content: await readFile(new URL("themes/nexus/motion.js", assets), "utf8") });
     const count = n => page.waitForFunction(n => document.querySelectorAll(".nexus-contour-light").length === n, n);
     await count(4);
-    const firstTransform = await page.locator(".nexus-contour-light > span").first().evaluate(n => getComputedStyle(n).transform);
-    await page.waitForFunction(previous => getComputedStyle(document.querySelector(".nexus-contour-light > span")).transform !== previous, firstTransform);
+    const firstTransform = await page.locator(".nexus-edge-glint").first().evaluate(n => getComputedStyle(n).transform);
+    await page.waitForFunction(previous => getComputedStyle(document.querySelector(".nexus-edge-glint")).transform !== previous, firstTransform);
+    const paths = [];
+    for (const scene of ["nexus", "nexus-refraction", "nexus-field"]) {
+      await page.evaluate(scene => document.documentElement.dataset.background = scene, scene);
+      await page.waitForFunction(scene => [...document.querySelectorAll(".nexus-contour-light")].every(n => n.dataset.scene === scene), scene);
+      paths.push(await page.locator(".nexus-contour-scene").first().evaluate(n => getComputedStyle(n).maskImage));
+      const projected = await page.locator(".nexus-contour-scene").evaluateAll(nodes => nodes.map(n => {
+        const b = n.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height };
+      }));
+      for (const box of projected) {
+        assert.ok(Math.abs(box.x - projected[0].x) < 1 && Math.abs(box.y - projected[0].y) < 1);
+        assert.ok(box.w >= 1200 && box.h >= 800);
+      }
+    }
+    assert.equal(new Set(paths).size, 3, "Each image has its own edge routes");
     await page.evaluate(() => document.querySelector(".task-rail").style.width = "380px");
     await page.setViewportSize({ width: 1500, height: 900 });
     await page.waitForFunction(() => [...document.querySelectorAll(".nexus-contour-light")].every(n => {
@@ -34,8 +48,12 @@ test("Nexus light follows panel geometry and retires with motion, visibility or 
         && Math.abs(box.top - parseFloat(style.getPropertyValue("--nexus-top"))) < 1;
     }));
     assert.ok(await page.locator(".nexus-contour-light").evaluateAll(nodes => nodes.every(n => getComputedStyle(n).pointerEvents === "none" && n.getAttribute("aria-hidden") === "true")));
-    await page.evaluate(() => document.documentElement.dataset.backgroundMotion = "off");
+    await page.evaluate(() => {
+      window.retiredNexusAnimations = [...document.querySelectorAll(".nexus-edge-glint")].flatMap(n => n.getAnimations());
+      document.documentElement.dataset.backgroundMotion = "off";
+    });
     await count(0);
+    assert.ok(await page.evaluate(() => retiredNexusAnimations.every(animation => animation.playState === "idle")), "Removed glints stop their animations");
     await page.evaluate(() => document.documentElement.dataset.backgroundMotion = "on");
     await count(4);
     await page.emulateMedia({ reducedMotion: "reduce" });

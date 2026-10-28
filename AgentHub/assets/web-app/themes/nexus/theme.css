@@ -85,40 +85,40 @@ html[data-theme="nexus"] {
 
 html[data-theme="nexus"] body::before { content: none; }
 
-/* A stationary luminance mask follows the bright contours of each scene.
-   Only the light band moves; all panes share its viewport coordinates. */
+/* Small glints travel on traced edges, clipped to those same narrow paths.
+   The scene shares the original image's viewport cover projection. */
 html[data-theme="nexus"] .nexus-contour-light {
-  --nexus-scene-width: max(100vw, calc(100vh * 1672 / 941));
-  --nexus-scene-height: max(100vh, calc(100vw * 941 / 1672));
   position: absolute;
   inset: 0;
   overflow: hidden;
   border-radius: inherit;
   pointer-events: none;
   z-index: -1;
-  mask-image: var(--nexus-panel-image);
-  mask-mode: luminance;
-  mask-size: var(--nexus-scene-width) var(--nexus-scene-height);
-  mask-position: calc((100vw - var(--nexus-scene-width)) / 2 - var(--nexus-left)) calc((100vh - var(--nexus-scene-height)) / 2 - var(--nexus-top));
-  mask-repeat: no-repeat;
 }
 html[data-theme="nexus"] body > .nexus-contour-light {
   position: fixed;
   z-index: 1;
 }
 html[data-theme="nexus"] .app-header > .nexus-contour-light { z-index: 0; }
-html[data-theme="nexus"] .nexus-contour-light > span {
+html[data-theme="nexus"] .nexus-contour-scene {
   position: absolute;
-  left: calc(-1 * var(--nexus-left));
-  top: calc(-1 * var(--nexus-top) - 20vh);
-  width: 35vw;
-  height: 140vh;
-  background: linear-gradient(105deg, transparent 8%, rgba(86, 220, 255, 0.12) 32%, rgba(208, 245, 255, 0.75) 49%, rgba(165, 137, 255, 0.24) 62%, transparent 87%);
-  animation: nexus-contour-sweep 12s linear var(--nexus-phase) infinite;
+  left: var(--nexus-scene-x);
+  top: var(--nexus-scene-y);
+  width: 1672px;
+  height: 941px;
+  transform-origin: 0 0;
+  transform: scale(var(--nexus-scene-scale));
+  mask-size: 100% 100%;
+  mask-repeat: no-repeat;
 }
-@keyframes nexus-contour-sweep {
-  0% { transform: translate3d(-40vw, 0, 0); }
-  80%, 100% { transform: translate3d(110vw, 0, 0); }
+html[data-theme="nexus"] .nexus-edge-glint {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 160px;
+  height: 160px;
+  background: radial-gradient(circle, rgba(235, 253, 255, 0.95), rgba(137, 230, 255, 0.75) 12%, rgba(169, 155, 255, 0.3) 36%, transparent 70%);
+  will-change: transform, opacity;
 }
 
 html:root[data-theme="nexus"] body::after {
