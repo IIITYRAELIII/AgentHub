@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
 
 const execute = promisify(execFile);
 async function git(root, ...args) {
@@ -112,13 +113,30 @@ test("one native sequencer call consumes reviewed resolutions and reopens a lost
   const writeJson = (pathname, value) => writeFile(pathname, JSON.stringify(value));
   const request = { root: proofRoot, sourceRoot: f.primary, baseCommit, tasks, identity,
     gitAt: (cwd, args, options = {}) => runTaskGitCommand(args, { ...options, cwd }), readJson, writeJson,
-    verifyReview: async (review, binding) => bindings.set(review.requestId, binding) };
+    verifyReview: async (review, binding) => {
+      const declaration = JSON.parse(/<native-merge-review>([^]*?)<\/native-merge-review>/u.exec(review.text)[1]);
+      assert.deepEqual(declaration.binding, binding);
+      bindings.set(review.requestId, binding);
+    } };
   await assert.rejects(mergeSelectedResults(request), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
   for (const [index, task] of tasks.entries()) {
     await writeFile(path.join(proofRoot, "repository", "shared.txt"), `reviewed ${task.taskId}\n`);
-    await commit(path.join(proofRoot, "repository"), `resolve ${task.taskId}`);
+    const repository = path.join(proofRoot, "repository");
+    const resolved = await commit(repository, `resolve ${task.taskId}`);
+    const parents = (await git(repository, "show", "-s", "--format=%P", resolved)).split(" ");
+    const automatic = await execute("git", ["merge-tree", "--write-tree", "--name-only", "-z", ...parents],
+      { cwd: repository, windowsHide: true, encoding: "buffer" }).catch(error => {
+        assert.equal(error.code, 1); return { stdout: error.stdout };
+      });
+    const automaticTree = automatic.stdout.toString("utf8").split("\0")[0];
+    const tree = await git(repository, "rev-parse", `${resolved}^{tree}`);
+    const diff = (await execute("git", ["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree],
+      { cwd: repository, windowsHide: true, encoding: "buffer" })).stdout;
+    const binding = { identityHash: taskGitIdentityHash(identity), parents, commit: resolved, tree,
+      automaticTree, diffSha256: createHash("sha256").update(diff).digest("hex") };
     const result = mergeSelectedResults({ ...request,
-      resolutionReview: { requestId: `review-${task.taskId}`, text: "reviewed exact result" } });
+      resolutionReview: { requestId: `review-${task.taskId}`,
+        text: `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>` } });
     if (index === 0) await assert.rejects(result, { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
     else await result;
   }

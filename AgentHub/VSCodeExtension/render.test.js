@@ -755,7 +755,8 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   assert.match(styles, /@keyframes magma-glow\s*\{[\s\S]*opacity:\s*0\.34;[\s\S]*transform:\s*scale\(1\.035\);/u);
   /* Gothic остаётся тёплым: фон темы — склеп с горящим факелом. Пыль ушла из
      плитки в отдельные элементы, на фоновом слое остался только блик. */
-  assert.match(styles, /@keyframes gothic-fire\s*\{[\s\S]*filter:\s*brightness\(1\.22\);/u);
+  // Gothic pulse/filter-free rendering and reduced motion have an executable owner:
+  // tests/public/gothic-fire-performance-dom.test.mjs (computed production DOM styles).
   assert.match(styles, /@keyframes mote-rise\s*\{[\s\S]*translate3d\(0, -106vh, 0\)/u);
   assert.match(styles, /\.motes\s*\{[^}]*z-index:\s*1;/u);
   assert.match(styles, /\.motes > span\s*\{[^}]*animation:\s*mote-rise var\(--dur\) linear infinite;/u);

@@ -39,7 +39,7 @@ async function commit(root, message) {
   await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message]);
   return git(root, ["rev-parse", "HEAD"]);
 }
-async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111", owningTaskRevision = 2, agreedOrigin = false, ownPublishedOrigin = false) {
+async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111", owningTaskRevision = 2, agreedOrigin = false, ownPublishedOrigin = false, versionedRuntime = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-adoption-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
@@ -91,11 +91,11 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
     projectRoot: primary, taskBaseCommit: main, acceptedLocalMainCommit: main, adoptedCommit: adopted,
     snapshotCommit: result, requestId: "fixture-explicit-adoption" });
   const release = path.join(runtimeRoot, "releases", "installed-repair"), physical = Buffer.from("export const repair = 1;\n");
-  const ownVersion = ownPublishedOrigin ? readAgentHubVersion({ packageFile: path.join(carry, "AgentHub", "package.json") }) : null;
-  const ownReleaseVersion = ownPublishedOrigin ? await nextRuntimeReleaseVersion({ releasesDir: path.dirname(release), packageVersion: ownVersion }) : null;
+  const ownVersion = ownPublishedOrigin || versionedRuntime ? readAgentHubVersion({ packageFile: path.join(carry, "AgentHub", "package.json") }) : null;
+  const ownReleaseVersion = ownPublishedOrigin || versionedRuntime ? await nextRuntimeReleaseVersion({ releasesDir: path.dirname(release), packageVersion: ownVersion }) : null;
   await save(release, "server.mjs", physical);
   const manifest = Buffer.from(JSON.stringify({ releaseId: "installed-repair", sourceRoot: path.join(carry, "AgentHub"),
-    ...(ownPublishedOrigin ? { version: ownVersion, releaseVersion: ownReleaseVersion } : {}),
+    ...((ownPublishedOrigin || versionedRuntime) ? { version: ownVersion, releaseVersion: ownReleaseVersion } : {}),
     files: [{ path: "server.mjs", bytes: physical.length, sha256: sha(physical) }] }));
   await save(release, "runtime-manifest.json", manifest);
   await save(runtimeRoot, "current.json", JSON.stringify({ current: "installed-repair" }));
@@ -340,47 +340,86 @@ test("installed source object batch reaches actual TaskGit Test through the exis
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
-test("native installed source and exact ordinary adoption survive Test, candidate reuse and generation", { timeout: 240000 }, async t => {
-  const f = await fixture(t);
-  await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.main, tasks: f.tasks }), /release-owned/);
-  const snapshot = await f.service.snapshot({ taskId: f.task.taskId, taskNumber: "HUB-1", projectRoot: f.task.projectRoot });
-  const integrated = await f.service.mergeIntoDev(snapshot);
-  assert.equal(integrated.integrated, true);
-  assert.equal(await git(integrated.dev.projectRoot, ["show", "HEAD:AgentHub/server.mjs"]), "export const repair = 1;");
-  const first = await f.candidate.prepareCandidate(f.request);
-  const again = await f.candidate.prepareCandidate(f.request);
-  assert.equal(again.preReleaseHead, first.preReleaseHead);
-  assert.equal(again.manifestHash, first.manifestHash);
-  for (const name of ["server", "incoming", "selected"]) assert.ok(await git(first.releaseRoot, ["show", `HEAD:AgentHub/${name}.mjs`]));
-  const notes = Buffer.from("# Consolidated release\n");
-  await save(first.releaseRoot, "CHANGELOG.md", notes);
-  await save(first.releaseRoot, "foreign.txt", "foreign bytes stay intact\n");
-  const generationInput = { ...f.request, operationId: "release-original", generation: 1, changelogContent: notes };
-  await assert.rejects(f.candidate.prepareGeneration(generationInput), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  assert.equal(await readFile(path.join(first.releaseRoot, "foreign.txt"), "utf8"), "foreign bytes stay intact\n");
-  await unlink(path.join(first.releaseRoot, "foreign.txt"));
-  await assert.rejects(f.candidate.prepareGeneration({ ...generationInput, changelogContent: Buffer.from("substituted notes\n") }),
-    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  const generation = await f.candidate.prepareGeneration(generationInput);
-  assert.equal(generation.manifest.baseProvenance.adoptions[0].recordHash, f.receipt.recordHash);
-  const frozen = await f.candidate.freezePublicationCandidate({ projectRoot: f.primary, workspaceId: "fixture",
-    expectedPlanRevision: "exact", expectedPreparedHead: first.preReleaseHead, changelogContent: notes,
-    releaseDate: new Date("2026-10-17T00:00:00Z") });
-  assert.equal(frozen.phase, "frozen");
-  assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
-  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
-  let terminalWrites = 0;
-  await assert.rejects(f.service.withTaskLock(f.task.taskId, lease => f.service.withAppliedNativeTerminalOwned({
-    taskId: f.task.taskId, projectRoot: f.primary, operationId: `native:${f.task.taskId}:${f.result}`, lease,
-  }, async (_record, recheck) => {
-    await recheck();
-    await save(f.external, "AgentHub/later.mjs", "unapproved after awaited terminal callback\n");
-    await commit(f.external, "origin changed before terminal CAS");
-    await git(f.external, ["push", "origin", "HEAD:main"]);
-    await recheck();
-    terminalWrites++;
-  })), /identity changed/);
-  assert.equal(terminalWrites, 0);
+test("native installed source and exact ordinary adoption survive Test, candidate reuse and generation", async t => {
+  // These sequential phases share ONE owned fixture. The existing 240s budget
+  // applies to each measured phase, rather than hiding later oracles behind one
+  // aggregate timeout. No production timeout or authority boundary changes.
+  let f, first, notes, generationInput, preparedHead, preparedIndex;
+  const stage = async (name, run) => {
+    let completed = false;
+    await t.test(name, { timeout: 240000 }, async context => {
+      const started = performance.now();
+      try { await run(); completed = true; }
+      finally { context.diagnostic(JSON.stringify({ stage: name,
+        elapsedMs: performance.now() - started, completed })); }
+    });
+    assert.ok(completed, `fixture stage did not complete: ${name}`);
+  };
+  await stage("installed source, ordinary Test and exact candidate reuse", async () => {
+    f = await fixture(t, undefined, undefined, false, false, true);
+    await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.main, tasks: f.tasks }), /release-owned/);
+    const snapshot = await f.service.snapshot({ taskId: f.task.taskId, taskNumber: "HUB-1", projectRoot: f.task.projectRoot });
+    const integrated = await f.service.mergeIntoDev(snapshot);
+    assert.equal(integrated.integrated, true);
+    assert.equal(await git(integrated.dev.projectRoot, ["show", "HEAD:AgentHub/server.mjs"]), "export const repair = 1;");
+    first = await f.candidate.prepareCandidate(f.request);
+    const again = await f.candidate.prepareCandidate(f.request);
+    assert.equal(again.preReleaseHead, first.preReleaseHead);
+    assert.equal(again.manifestHash, first.manifestHash);
+    for (const name of ["server", "incoming", "selected"]) assert.ok(await git(first.releaseRoot, ["show", `HEAD:AgentHub/${name}.mjs`]));
+  });
+  await stage("foreign checkout refusal preserves original holder", async () => {
+    notes = Buffer.from("# Consolidated release\n");
+    await save(first.releaseRoot, "CHANGELOG.md", notes);
+    await save(first.releaseRoot, "foreign.txt", "foreign bytes stay intact\n");
+    generationInput = { ...f.request, operationId: "release-original", generation: 1, changelogContent: notes };
+    preparedHead = await git(first.releaseRoot, ["rev-parse", "HEAD"]);
+    preparedIndex = await git(first.releaseRoot, ["ls-files", "--stage", "-z"]);
+    await assert.rejects(f.candidate.prepareGeneration(generationInput), error => {
+      assert.equal(error.code, "AWAIT_PREPARATION_UNKNOWN");
+      assert.match(error.message, /checkout changed.*foreign bytes retained/u);
+      return true;
+    });
+    assert.equal(await git(first.releaseRoot, ["rev-parse", "HEAD"]), preparedHead);
+    assert.equal(await git(first.releaseRoot, ["ls-files", "--stage", "-z"]), preparedIndex);
+    assert.deepEqual(await readFile(path.join(first.releaseRoot, "CHANGELOG.md")), notes);
+    assert.equal(await readFile(path.join(first.releaseRoot, "foreign.txt"), "utf8"), "foreign bytes stay intact\n");
+  });
+  await stage("substituted notes refusal preserves authorized bytes", async () => {
+    await unlink(path.join(first.releaseRoot, "foreign.txt"));
+    await assert.rejects(f.candidate.prepareGeneration({ ...generationInput, changelogContent: Buffer.from("substituted notes\n") }), error => {
+      assert.equal(error.code, "AWAIT_PREPARATION_UNKNOWN");
+      assert.match(error.message, /checkout changed.*foreign bytes retained/u);
+      return true;
+    });
+    assert.equal(await git(first.releaseRoot, ["rev-parse", "HEAD"]), preparedHead);
+    assert.equal(await git(first.releaseRoot, ["ls-files", "--stage", "-z"]), preparedIndex);
+    assert.deepEqual(await readFile(path.join(first.releaseRoot, "CHANGELOG.md")), notes);
+  });
+  await stage("healthy generation and publication freeze retain adoption", async () => {
+    const generation = await f.candidate.prepareGeneration(generationInput);
+    assert.equal(generation.manifest.baseProvenance.adoptions[0].recordHash, f.receipt.recordHash);
+    const frozen = await f.candidate.freezePublicationCandidate({ projectRoot: f.primary, workspaceId: "fixture",
+      expectedPlanRevision: "exact", expectedPreparedHead: first.preReleaseHead, changelogContent: notes,
+      releaseDate: new Date("2026-10-17T00:00:00Z") });
+    assert.equal(frozen.phase, "frozen");
+    assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
+    assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+  });
+  await stage("late origin drift refuses before terminal writes", async () => {
+    let terminalWrites = 0;
+    await assert.rejects(f.service.withTaskLock(f.task.taskId, lease => f.service.withAppliedNativeTerminalOwned({
+      taskId: f.task.taskId, projectRoot: f.primary, operationId: `native:${f.task.taskId}:${f.result}`, lease,
+    }, async (_record, recheck) => {
+      await recheck();
+      await save(f.external, "AgentHub/later.mjs", "unapproved after awaited terminal callback\n");
+      await commit(f.external, "origin changed before terminal CAS");
+      await git(f.external, ["push", "origin", "HEAD:main"]);
+      await recheck();
+      terminalWrites++;
+    })), /identity changed/);
+    assert.equal(terminalWrites, 0);
+  });
 });
 
 test("native composition rejects substituted receipts, changed snapshot and post-validation origin drift", async t => {

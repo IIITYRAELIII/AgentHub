@@ -715,14 +715,8 @@ test("public durable release composes native immutable generation with separatel
   const published = await git(publishedRoot, "rev-parse", "HEAD");
   await git(publishedRoot, "push", "origin", `${published}:refs/heads/main`);
   f.publication.repositories[0].revision = published;
-  const stale = await f.release(a, published);
-  assert.equal(stale.operation.waitReason.code, "prepared_candidate_stale");
-  assert.equal(stale.generations.length, 0);
-  await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id, reviewedMainApprovals: {
-    approvedRepositories: [{ projectRoot: f.primary, approvedLocalMainCommit: f.base, approvedOriginMainCommit: published }],
-  } });
-  const snapshot = await f.continueRelease(stale.operation.operationId);
-  assert.equal(snapshot.operation.operationId, stale.operation.operationId);
+  // Normal release owns preparation with the already explicit approved main pins.
+  const snapshot = await f.release(a, published);
   assert.equal(snapshot.operation.state, "waiting", JSON.stringify(snapshot.operation.lastError));
   assert.equal(snapshot.operation.waitReason.code, "validation_failed");
   assert.equal(snapshot.generations.length, 1);
@@ -767,11 +761,6 @@ test("public release generation retains prepared PreRelease conflict resolution"
   await f.status(b, "awaiting_implementation", "prepared-await-b-resolved");
   const prepared = await f.releaseGit.frozenCandidate(f.primary);
   assert.equal(prepared.preReleaseHead, resolution);
-  const subset = await f.release(a, f.base, "prepared-stale-selection");
-  assert.equal(subset.operation.state, "waiting");
-  assert.equal(subset.operation.waitReason.code, "prepared_candidate_stale");
-  assert.equal(subset.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
-  assert.equal(subset.generations.length, 0);
   const notes = Buffer.from("authorized prepared release notes\n");
   const notesPath = path.join(f.root, "authorized-CHANGELOG.md");
   await writeFile(notesPath, notes);
@@ -813,4 +802,20 @@ test("public release generation retains prepared PreRelease conflict resolution"
   assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), resolution);
   assert.equal(await git(prepared.releaseRoot, "status", "--porcelain"), "");
   assert.deepEqual(await readFile(notesPath), notes);
+  // A new selection may refresh the mutable prepared holder. The accepted
+  // resolution must first be captured, and that immutable generation survives.
+  const frozenHead = await git(candidate.releaseRoot, "rev-parse", "HEAD");
+  const frozenManifestFile = path.join(path.dirname(candidate.releaseRoot), "evidence", `${candidate.manifestHash}.json`);
+  const frozenManifest = await readFile(frozenManifestFile);
+  const subset = await f.release(a, f.base, "prepared-stale-selection");
+  assert.equal(subset.operation.state, "waiting");
+  assert.equal(subset.operation.waitReason.code, "validation_failed");
+  assert.equal(subset.generations.length, 1);
+  assert.deepEqual(subset.generations[0].selectedResults.map(item => item.taskId), [a.id]);
+  assert.equal(await git(subset.generations[0].candidates[0].releaseRoot, "show", "HEAD:shared.txt"), "A");
+  assert.equal(await git(candidate.releaseRoot, "rev-parse", "HEAD"), frozenHead);
+  assert.deepEqual(await readFile(frozenManifestFile), frozenManifest);
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.commit}:shared.txt`), "accepted PreRelease resolution");
+  assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
