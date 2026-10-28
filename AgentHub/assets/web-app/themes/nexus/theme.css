@@ -115,9 +115,9 @@ html[data-theme="nexus"] .nexus-edge-glint {
   position: absolute;
   left: 0;
   top: 0;
-  width: 160px;
-  height: 160px;
-  background: radial-gradient(circle, rgba(235, 253, 255, 0.95), rgba(137, 230, 255, 0.75) 12%, rgba(169, 155, 255, 0.3) 36%, transparent 70%);
+  width: 240px;
+  height: 240px;
+  background: radial-gradient(circle, rgba(245, 254, 255, 1), rgba(173, 243, 255, 0.95) 18%, rgba(169, 155, 255, 0.55) 40%, transparent 70%);
   will-change: transform, opacity;
 }
 
