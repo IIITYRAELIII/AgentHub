@@ -2026,7 +2026,7 @@ export class HubMcpService {
     });
   }
 
-  async #claimTask(context, args = {}) {
+  async #claimTask(context, args = {}, { committedReadbackOnly = false } = {}) {
     const { task_id: taskId, request_id: operationId, dependency_mode: dependencyMode = "skip", dependency_override_reason: dependencyOverrideReason = null } = args;
     const task = this.#task(context, taskId);
     const namespace = this.workspaceCatalog.claimCustodyNamespaceForTask?.(taskId);
@@ -2035,7 +2035,7 @@ export class HubMcpService {
     }
     const active = this.#currentRun(context);
     if (task.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
-    if (args.forward_custody_request_id) return this.#consumeClaimCustody(context, args);
+    if (args.forward_custody_request_id) return this.#consumeClaimCustody(context, args, { committedReadbackOnly });
     if (task.streamId && task.streamId !== context.streamId) {
       const busyReason = this.#activeRuns().some(run => run.streamId === task.streamId) ? "active"
         : this.#deferredInputs().some(input => input.streamId === task.streamId
@@ -3247,7 +3247,7 @@ export class HubMcpService {
           && Boolean(this.taskBoard.claimBindingForOperation(requestId));
         const result = this.taskOperationInterruption && INTERRUPTIBLE_TASK_TOOLS.has(toolName)
           ? await this.taskOperationInterruption.run(started, args,
-            () => committedClaimReadback ? this.#consumeClaimCustody(context, args, { committedReadbackOnly: true }) : operation(started),
+            () => committedClaimReadback ? this.#claimTask(context, args, { committedReadbackOnly: true }) : operation(started),
             { committedClaimReadback })
           : await operation(started);
         effectCompleted = true;

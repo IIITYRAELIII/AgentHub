@@ -108,6 +108,16 @@ for (const legacy of [false, true]) test(`independent fence/assignment survive r
     prepareDependencies: () => assert.fail("Recovery cannot prepare dependencies") });
   const hub = f.service(reopened, true, git);
   const token = hub.contextToken({ provider: "codex", threadId: f.original.threadId });
+  hub.setActiveRuns(() => []);
+  await assert.rejects(hub.call("hub_task_claim", { ...f.consume, context_token: token }), /no exact active run/);
+  assert.deepEqual(reopened.tasks.task(f.prior.id), assigned);
+  assert.deepEqual(reopened.catalog.mcpOperation(f.consume.request_id).taskExecution, originalExecution);
+  const currentRun = { id: "reopen-run", streamId: f.successor.id, provider: "codex",
+    threadId: f.original.threadId, turnId: "reopen-turn", status: "running" };
+  hub.setActiveRuns(() => [currentRun, { ...currentRun, id: "ambiguous-reopen-run", turnId: "other-turn" }]);
+  await assert.rejects(hub.call("hub_task_claim", { ...f.consume, context_token: token }), /ambiguous active runs/);
+  assert.deepEqual(reopened.tasks.task(f.prior.id), assigned);
+  hub.setActiveRuns(() => [currentRun]);
   const result = await hub.call("hub_task_claim", { ...f.consume, context_token: token });
   assert.equal(result.revision, assigned.revision);
   assert.equal(result.gitWorkspace.projectRoot, f.catalog.claimCustodyNamespaceForTask(f.prior.id).namespace.workspace.projectRoot);
