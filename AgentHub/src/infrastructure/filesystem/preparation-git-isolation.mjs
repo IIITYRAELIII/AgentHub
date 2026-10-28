@@ -50,5 +50,6 @@ export function preparationGitInvocation(args, cwd) {
   Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(active.dataDir, "empty-gitconfig"),
     GIT_TERMINAL_PROMPT: "0" });
   return { args: ["--no-replace-objects", "--no-lazy-fetch", ...noHooks,
+    ...(process.platform === "win32" ? ["-c", "core.longpaths=true"] : []),
     "-c", `init.templateDir=${path.join(active.dataDir, "empty-hooks")}`, ...args], env };
 }

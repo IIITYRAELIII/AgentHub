@@ -2659,7 +2659,37 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(index, /data-stream-chat-columns/u);
   assert.match(app, /function visibleWorkspaceStreamTasks\(\)/u);
   assert.match(app, /const shown = surface === "mobile" \? visible\.slice\(0, 1\) : visible\.slice\(0, 4\)/u);
-  assert.match(app, /emit\("workspace:visible-streams", \{ taskIds: ids \}\)/u);
+  const appSource = app.replaceAll("\r\n", "\n");
+  const publisherSource = (name) => {
+    const start = appSource.indexOf(`function ${name}(`);
+    if (start < 0) throw new Error(`Missing executable publisher port: ${name}`);
+    const end = appSource.indexOf("\n}\n", start);
+    if (end < 0) throw new Error(`Incomplete executable publisher port: ${name}`);
+    return appSource.slice(start, end + 3);
+  };
+  const tasks = Array.from({ length: 5 }, (_, index) => ({
+    id: `task-${index}`, streamId: `stream-${index}`, workspaceId: index < 4 ? "workspace-1" : "workspace-2",
+  }));
+  const published = [];
+  const publisher = vm.createContext({
+    state: { tasks, visibleStreamTaskIds: [], openStreamsByWorkspace: new Map([
+      ["workspace-1", tasks.slice(0, 4).map((task) => task.streamId)],
+      ["workspace-2", [tasks[4].streamId]],
+    ]) },
+    publishedRetainedHistoryTaskIds: [],
+    emit: (type, detail) => published.push({ type, detail: JSON.parse(JSON.stringify(detail)) }),
+  });
+  vm.runInContext(["sameData", "workspaceKey", "streamKey", "publishVisibleStreamTasks"].map(publisherSource).join("\n"), publisher);
+  publisher.publishVisibleStreamTasks(tasks.slice(0, 4));
+  assert.deepEqual(published, [{ type: "workspace:visible-streams", detail: {
+    taskIds: tasks.slice(0, 4).map((task) => task.id), retainedTaskIds: tasks.map((task) => task.id),
+  } }]);
+  publisher.publishVisibleStreamTasks(tasks.slice(0, 4));
+  assert.equal(published.length, 1, "unchanged visible and retained identities do not repeat the intent");
+  publisher.state.openStreamsByWorkspace.set("workspace-2", []);
+  publisher.publishVisibleStreamTasks(tasks.slice(0, 4));
+  assert.equal(published.length, 2, "a changed retained layout publishes even when visible identities stay equal");
+  assert.deepEqual(published[1].detail.retainedTaskIds, tasks.slice(0, 4).map((task) => task.id));
   assert.match(app, /function renderStreamChatPreview\(task\)/u);
   assert.match(client, /agentHub\.on\("workspace:visible-streams"/u);
   assert.match(client, /visibleStreamTaskIds = new Set\(ids\)/u);
