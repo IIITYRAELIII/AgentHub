@@ -6,6 +6,10 @@
       "title": "Resumable attachment upload",
       "document": "MSG-002-resumable-attachments.md",
       "paths": [
+        "docs/decisions/ADR-0274-upload-attempt-storage.md",
+        "tests/public/attachment-upload.test.mjs",
+        "tests/public/attachment-upload-production.test.mjs",
+        "tests/composition/message-lifecycle.test.mjs",
         "assets/web-app/hub-client.js",
         "VSCodeExtension/vscode-bootstrap.js",
         "VSCodeExtension/agent-hub-bridge.js",
@@ -97,6 +101,9 @@
       "title": "Canonical message projection",
       "document": "UI-001-message-projection.md",
       "paths": [
+        "docs/decisions/ADR-0274-upload-attempt-storage.md",
+        "tests/composition/message-lifecycle.test.mjs",
+        "tests/public/attachment-upload-production.test.mjs",
         "docs/decisions/ADR-0044-readiness-gated-rotation.md",
         "assets/web-app/**",
         "src/interfaces/desktop/desktop-read-model-service.mjs",
