@@ -461,7 +461,7 @@ function encodedBackgroundUrl(url) {
   return /\.json(?:[?#]|$)/iu.test(String(url ?? ""));
 }
 for (const [background, url] of Object.entries(backgroundAssets)) {
-  root.style.setProperty(`--${background}-image`, encodedBackgroundUrl(url) ? "none" : cssBackgroundUrl(url));
+  if (!encodedBackgroundUrl(url)) root.style.setProperty(`--${background}-image`, cssBackgroundUrl(url));
 }
 const themeAssets = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
   Object.entries(theme.assets ?? {}).map(([asset, url]) => [`${theme.id}-${asset}`, url])

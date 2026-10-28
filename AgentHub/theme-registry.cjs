@@ -258,12 +258,22 @@ function renderThemeHtml(html, registry, {
   const markup = registry.themes.flatMap((theme) => theme.markup.map((file) => (
     fs.readFileSync(path.join(theme.directory, ...file.split("/")), "utf8").trim()
   ))).filter(Boolean).join("\n");
-  const catalog = JSON.stringify(publicThemeCatalog(registry, link)).replaceAll("<", "\\u003c");
+  const themeCatalog = publicThemeCatalog(registry, link);
+  const catalog = JSON.stringify(themeCatalog).replaceAll("<", "\\u003c");
+  const backgroundProperties = themeCatalog.flatMap((theme) => theme.backgrounds)
+    .filter((background) => background.assetUrl)
+    .map(({ id, assetUrl }) => {
+      const image = /\.json(?:[?#]|$)/iu.test(String(assetUrl))
+        ? "none" : `url(${JSON.stringify(String(assetUrl)).replaceAll("<", "\\3c ")})`;
+      return `--${id}-image:${image};`;
+    }).join("");
+  const initialImages = backgroundProperties
+    ? `  <style data-agent-hub-backgrounds${nonceAttribute}>:root{${backgroundProperties}}</style>\n` : "";
   const options = registry.themes.map((theme) => (
     `<option value="${escapeHtml(theme.id)}">${escapeHtml(theme.name)}</option>`
   )).join("\n              ");
   return html
-    .replace(/^[ \t]*<!-- agent-hub-theme-styles -->/mu, styles)
+    .replace(/^[ \t]*<!-- agent-hub-theme-styles -->/mu, `${initialImages}${styles}`)
     .replace(/^[ \t]*<!-- agent-hub-theme-markup -->/mu, markup)
     .replace(/^[ \t]*<!-- agent-hub-theme-catalog -->/mu, `  <script type="application/json" data-theme-catalog${nonceAttribute}>${catalog}</script>`)
     .replace(/^[ \t]*<!-- agent-hub-theme-scripts -->/mu, scripts)
