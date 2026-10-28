@@ -406,7 +406,11 @@
         "tests/public/runtime-manager.test.mjs",
         "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
         "src/infrastructure/persistence/task-turn-projection.mjs",
-        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs",
+        "src/infrastructure/filesystem/direct-task-publication.mjs",
+        "tests/application/task-direct-published-cleanup.test.mjs",
+        "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
+        "src/infrastructure/filesystem/cleanup-preservation.mjs"
       ]
     },
     {
@@ -455,7 +459,11 @@
         "tests/application/hub-mcp-claim-isolated-custody.test.mjs",
         "tests/application/hub-mcp-claim-unassigned-custody.test.mjs",
         "tests/application/hub-mcp-claim-successor-admission.test.mjs",
-        "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs"
+        "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs",
+        "src/infrastructure/filesystem/direct-task-publication.mjs",
+        "tests/application/task-direct-published-cleanup.test.mjs",
+        "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
+        "src/infrastructure/filesystem/cleanup-preservation.mjs"
       ]
     },
     {

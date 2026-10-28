@@ -1,5 +1,76 @@
 # REL-001 — Task-backed Workspace release
 
+## Cleanup of an exact historical direct delivery
+
+`completion_mode=published_delivery` is an explicit RM compatibility input for
+original terminal direct-publication records, including an exact source port
+whose commit is not an ancestor of publication and has no Test ref. It uses
+the existing Complete preview/confirm and canonical Git cleanup, not a new
+publication, fake result, preserved branch archive or lifecycle writer.
+The owner binds original journal/artifact bytes, Task membership, repository,
+source HEAD/immutable base, published tree and immediate projection parent.
+Publication must remain in tracked origin/main. An entire source result already
+contained in that exact publication uses native ancestry. Otherwise source and published changes
+must match in paths, modes and added/removed bytes (including binary payload);
+only patch hunk coordinates/blob-ID headers and root release notes are excluded.
+Text ports retain the original context and require unique before/after hunk
+matches in both source and publication. Ambiguous repeated blocks refuse;
+binary/non-UTF8 ports require exact before/after blobs. Existing batched Git
+object reads retain raw whitespace and EOF bytes.
+
+For a combined original delivery, `publicationBaseCommit` may instead equal
+that journal's exact `from`. Its first-parent chain must terminate at the
+original published revision. Each complete Task delta must survive there:
+unique ordered raw text contexts in source/from and result/terminal, exact
+paths/modes, and whole identity for additions/deletions, binary, non-UTF8 or
+unterminated files. Unrelated edits outside those contexts are retained.
+No arbitrary intermediate range or per-Task commit is assumed. Optional
+`publicationJournalPath` selects one hash-pinned retained original; all runtime,
+artifact, membership, tracked ancestry and double-read checks stay unchanged.
+Combined cleanup also maps every complete Task removal/addition to one actual
+zero-context Git edit of the from-to-terminal delta. Retained context lines must
+map unchanged to their exact after positions. This proves replacement at the
+original context, beyond separate unique text occurrences, using only Git reads.
+A source baseline merge may only combine its immutable Task base with the
+original publication base, with no new non-notes entry outside either parent.
+
+Dirty/untracked/ignored data, a later source commit, changed evidence or stale
+Task preview refuses before cleanup. Existing Task/dev leases, process guards,
+CAS and native non-forced removal remain. After admission, partial cleanup
+resumes only the same stored original and remaining pinned artifacts. Closure
+preserves card/history and workflow; it does not assert a fresh workflow Done.
+Other historical absorption/UNKNOWN families require their own original proof
+and gain no authority from this mode. Removal condition: retire this legacy
+input after the remaining exact direct-delivery records have been cleaned.
+
+An explicitly completed non-product Task with zero own source delta uses
+RM-only `completion_mode=operational` on the same Complete operation. The
+owner requires no result/adoption/squash, exact HEAD==immutable Task base and
+that base in durable published history retained by tracked main. This is
+operational closure, not a new delivery claim or acceptance of untested code.
+Its ignored artifacts must already be retired by their owner; preview/confirm
+cannot discard them. Existing native cleanup removes the now-unused clean
+managed artifacts, preserving Task history and its original workflow status.
+For an already closed service card, this mode performs only its verified
+zero-own-delta cleanup and records the outcome; its card and original completion
+timestamp remain unchanged. This is not a reopening.
+Its `completed_operation_request_id` may supply the existing canonical
+published-release-service closure for an older repository. The same Task,
+preserved HEAD, outcome hash and published/tracked ancestry are bound; this
+consumes the existing reader's accepted result, not another manifest reader.
+
+An original confirmed Delete can continue after owned ignored-artifact
+retirement through the existing RM reconciliation owner. Its successful
+original preview/actor/token must reproduce the exact original argument hash,
+and its admitted Delete transition/current Task CAS/source/result pins must
+still match. Remaining dirty bytes require exact retained-copy proof, checked
+before admission and again before native removal. Distinct unpublished index
+and working byte versions each require a retained copy; equal bytes share one
+hash proof. Staged-only changes cannot bypass this check. The original failure stays
+in lifecycle evidence; the same original completes forward without claiming
+no effect or issuing a replacement Delete. Missing admission/preview, drift or
+unretired ignored data still refuses. No other UNKNOWN family is settled.
+
 ## Normal release continuation (ADR-0132)
 
 The existing `hub_release_run` / `hub_release_continue` owner prepares a missing
@@ -1200,6 +1271,18 @@ publication generation, manifest, selected result revisions and preserve-only
 cleanup plan; confirmation rechecks them. No result is fabricated and its clean
 managed worktree is retained. Publication, Task closure and cleanup remain
 separate facts.
+
+For a completed durable ReleaseOperation, the original indexed selected set,
+immutable generation identity, authorization and applied validation/publication/
+finalization receipts bind this proof independently of later publication-state
+updates. The existing completed-generation eligibility also owns retention.
+The reader hashes the original raw manifest in the exact live generation or its
+normal retention archive; it does not reconstruct raw bytes from the reduced
+SQLite manifest projection or import an operator's audit copy. Multiple matching
+original releases are ambiguous and refuse. Missing original raw evidence stays
+an explicit historical migration gap. The legacy current-publication path is
+retained only when no matching durable completed generation exists; it grants
+no historical substitution. See ADR-HUB-360-published-service-evidence.
 
 Preview binds both Task revisions, every source base/branch/HEAD, every survivor
 result, repository-scoped published revisions, publication generation, explicit
