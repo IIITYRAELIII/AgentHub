@@ -8,7 +8,7 @@ import { claimCustodyFixture } from "../fixtures/claim-custody-public-fixture.mj
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
 import { DesktopTaskBoardController } from "../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 
-for (const width of [1366, 390]) test(`shipped client waits for original Test result across read reconnect and can cancel at ${width}px`, { timeout: 45000 }, async t => {
+for (const [width, lookupRefusal] of [[1366, false], [390, false], [1366, true]]) test(`shipped client waits for original Test result across read reconnect and can cancel at ${width}px${lookupRefusal ? " with authoritative lookup refusal" : ""}`, { timeout: 45000 }, async t => {
   const f = await claimCustodyFixture(t), workspace = f.catalog.workspace(f.prior.workspaceId);
   await f.catalog.updateWorkspaceSettings(workspace.id, { ...workspace.settings, releaseWorkflowEnabled: true });
   await writeFile(path.join(f.source.projectRoot, "source.txt"), "user result\n");
@@ -25,11 +25,11 @@ for (const width of [1366, 390]) test(`shipped client waits for original Test re
   const controller = new DesktopTaskBoardController({ taskBoard: f.tasks, workspaceCatalog: f.catalog,
     taskGitWorkspaces: f.workspaces, taskLifecycle: lifecycle, hubMcpService: f.hub,
     taskLauncher: {}, snapshot: async () => fresh() });
-  const browser = await launchBrowser();
+  const browser = await launchBrowser(); let id;
   try {
     const page = await browser.newPage({ viewport: { width, height: 900 } }); page.setDefaultTimeout(9000);
     const diagnostics = await openFixture(page, { fixtureSnapshot: fresh() });
-    const calls = []; let id, failRead = width === 390, lostAdmission = width === 1366;
+    const calls = []; let failRead = !lookupRefusal, lostAdmission = true;
     await page.exposeFunction("__taskOperationControl", async message => {
       calls.push({ action: message.action, params: message.params });
       if (message.action === "board-task-status") id = message.params.operationId;
@@ -37,7 +37,8 @@ for (const width of [1366, 390]) test(`shipped client waits for original Test re
         if (message.action === "board-task-read" && message.params.operationRequestId && failRead) {
           failRead = false; throw new Error("Desktop control connection closed without a response");
         }
-        const result = message.action === "board-task-read" ? controller.read(message.params)
+        const result = message.action === "board-task-read" ? controller.read(lookupRefusal && message.params.operationRequestId
+          ? { ...message.params, id: "foreign-task" } : message.params)
           : message.action === "board-task-operation-cancel" ? await controller.cancelOperation(message.params)
           : message.action === "snapshot" ? fresh()
           : await controller.status(message.params, { commandId: "outer-control-id", taskOperationReceipt: true });
@@ -69,8 +70,18 @@ for (const width of [1366, 390]) test(`shipped client waits for original Test re
     assert.equal(f.catalog.mcpOperation(id).status, "pending");
     // The first read loses its transport. The next read must still address the
     // original operation; the mutation is never submitted again.
-    await assertEventually(() => calls.filter(c => c.params.operationRequestId === id).length >= 2);
-    if (width === 390) {
+    if (lookupRefusal) {
+      await page.getByText("Task operation Task identity differs", { exact: true }).waitFor();
+      assert.equal(calls.filter(c => c.params.operationRequestId === id).length, 1);
+      assert.equal(f.catalog.mcpOperation(id).status, "pending");
+    } else {
+      await assertEventually(() => calls.filter(c => c.params.operationRequestId === id).length >= 2);
+      assert.equal(await panel.locator('[data-task-card-status]').isDisabled(), true,
+        "lost admission and lookup replies must preserve pending controls while original work is held");
+    }
+    if (lookupRefusal) {
+      assert.equal(await panel.locator('[data-task-card-status]').isDisabled(), false);
+    } else if (width === 390) {
       // A pending result does not monopolize the user's cancellation controls.
       await panel.getByRole('button', { name: "Операции задачи", exact: true }).click();
       await panel.getByRole('button', { name: "Прервать операцию", exact: true }).click();
@@ -90,11 +101,15 @@ for (const width of [1366, 390]) test(`shipped client waits for original Test re
     assert.equal(count, 1); assert.equal(calls.filter(c => c.action === "board-task-status").length, 1);
     const reads = calls.filter(c => c.params.operationRequestId === id);
     assert.ok(reads.every(c => c.params.argumentsHash == null || c.params.argumentsHash === f.catalog.mcpOperation(id).argumentsHash));
-    assert.ok(reads.some(c => c.params.argumentsHash === f.catalog.mcpOperation(id).argumentsHash));
+    if (!lookupRefusal) assert.ok(reads.some(c => c.params.argumentsHash === f.catalog.mcpOperation(id).argumentsHash));
     assert.deepEqual(diagnostics, []);
-    const dir = new URL("../../WIP/hub368/common/", import.meta.url); await mkdir(dir, { recursive: true });
-    await page.screenshot({ path: fileURLToPath(new URL(`result-${width}.png`, dir)), fullPage: true });
-  } finally { release(); await browser.close(); }
+    const dir = new URL("../../WIP/hub368/common-r1/", import.meta.url); await mkdir(dir, { recursive: true });
+    await page.screenshot({ path: fileURLToPath(new URL(`result-${width}${lookupRefusal ? "-refusal" : ""}.png`, dir)), fullPage: true });
+  } finally {
+    release();
+    try { if (id) await assertEventually(() => !f.hub.readDesktopTaskOperation({}, id).taskOperation.active); }
+    finally { await browser.close(); }
+  }
 });
 
 async function assertEventually(predicate) {

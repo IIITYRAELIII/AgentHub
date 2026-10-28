@@ -1876,8 +1876,17 @@ async function control(action, params = {}) {
         if (!taskOperationId || (!isConnectionFailure(error) && !looksLikeConnectionFailure(error))) throw error;
         // The first admission reply may be lost. The client already chose the
         // original identity; read it without guessing its hash or replaying work.
-        const read = await control("board-task-read", { id: params.id, operationRequestId: taskOperationId,
-          clientTraceId: taskOperationId });
+        let read;
+        for (;;) {
+          try {
+            read = await control("board-task-read", { id: params.id, operationRequestId: taskOperationId,
+              clientTraceId: taskOperationId });
+            break;
+          } catch (readError) {
+            if (!isConnectionFailure(readError) && !looksLikeConnectionFailure(readError)) throw readError;
+            await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
+          }
+        }
         if (read.operation?.taskOperation.requestId !== taskOperationId) throw error;
         result = read.operation;
       }
