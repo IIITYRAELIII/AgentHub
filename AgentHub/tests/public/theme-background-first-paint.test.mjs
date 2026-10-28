@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { launchBrowser } from "./composer-production.fixture.mjs";
+import { MiniAppServer } from "../../src/interfaces/web/mini-app-server.mjs";
 
 const require = createRequire(import.meta.url);
 const { renderThemeHtml } = require("../../theme-registry.cjs");
@@ -60,3 +64,69 @@ for (const encoded of [false, true]) {
     }
   });
 }
+
+test("HTTP first paint authorizes only its generated background style before deferred app executes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-first-paint-http-"));
+  const theme = path.join(root, "themes", "orbit");
+  await mkdir(theme, { recursive: true });
+  await Promise.all([
+    writeFile(path.join(root, "index.html"), `<!doctype html><html data-theme="orbit"><head>
+      <link rel="stylesheet" href="/shell.css">
+      <!-- agent-hub-theme-styles -->
+      <!-- agent-hub-theme-catalog -->
+      <script src="/app.js" defer></script></head>
+      <body><header class="header">Visible shell</header></body></html>`),
+    writeFile(path.join(root, "shell.css"), ".header { background-image: var(--panel-image); min-height: 30px; }"),
+    writeFile(path.join(root, "app.js"), "window.appExecuted = true;"),
+    writeFile(path.join(theme, "theme.json"), JSON.stringify({
+      id: "orbit", name: "Orbit", color: "#000000", order: 1,
+      styles: "theme.css", backgrounds: [{ id: "orbit", name: "Orbit", asset: "scene.png" }],
+    })),
+    writeFile(path.join(theme, "theme.css"), 'html[data-theme="orbit"] { --panel-image: var(--orbit-image, url("./scene.png")); }'),
+    writeFile(path.join(theme, "scene.png"), png),
+  ]);
+  const server = new MiniAppServer({ port: 0, assetsDirectory: root,
+    journalDatabase: { subscribe: () => () => {} }, telegramRuntime: false });
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  const errors = [], requests = [];
+  let releaseApp;
+  const held = new Promise((resolve) => { releaseApp = resolve; });
+  try {
+    const { url } = await server.start();
+    page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+    page.on("request", (request) => requests.push(new URL(request.url()).pathname));
+    await page.route("**/app.js", async (route) => { await held; return route.continue(); });
+    await page.goto(url, { waitUntil: "commit" });
+    await page.locator(".header").waitFor({ state: "visible" });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const observed = await page.evaluate(() => ({
+      appExecuted: window.appExecuted === true,
+      background: getComputedStyle(document.querySelector(".header")).backgroundImage,
+      nonce: document.querySelector("[data-agent-hub-backgrounds]").nonce,
+    }));
+    assert.equal(observed.appExecuted, false);
+    assert.deepEqual(errors, []);
+    assert.equal(requests.includes("/scene.png"), false);
+    assert.equal(observed.background, `url("${url}themes/orbit/scene.png")`);
+    const second = await fetch(url);
+    assert.equal((await second.text()).includes(`nonce="${observed.nonce}"`), false);
+    const violation = await page.evaluate(() => new Promise((resolve) => {
+      document.addEventListener("securitypolicyviolation", (event) => resolve(event.violatedDirective), { once: true });
+      const style = document.createElement("style");
+      style.textContent = ".header { --unapproved-style: applied; }";
+      document.head.append(style);
+    }));
+    assert.match(violation, /^style-src/u);
+    assert.equal(await page.locator(".header").evaluate((element) => getComputedStyle(element).getPropertyValue("--unapproved-style")), "");
+  } finally {
+    releaseApp();
+    await page.waitForLoadState("domcontentloaded");
+    await page.close();
+    await browser.close();
+    await server.close();
+    const relative = path.relative(os.tmpdir(), root);
+    assert(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+    await rm(root, { recursive: true, force: true });
+  }
+});
