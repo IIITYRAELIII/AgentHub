@@ -42,7 +42,7 @@ html[data-theme="nexus"] {
   --star-opacity: 0;
   --decor-opacity: 1;
   --nexus-panel-image: var(--nexus-image, url("./interweave.png"));
-  --nexus-ambient: radial-gradient(ellipse at 8% 75%, rgba(0, 117, 155, 0.24), transparent 60%), radial-gradient(ellipse at 88% 20%, rgba(76, 44, 142, 0.24), transparent 65%), linear-gradient(160deg, #071321, #070b18 55%, #0b1025);
+  --nexus-ambient: radial-gradient(ellipse 38% 9% at 23% 100%, rgba(12, 210, 236, 0.52), transparent 80%), radial-gradient(ellipse 30% 12% at 78% 98%, rgba(137, 68, 245, 0.5), transparent 80%), radial-gradient(ellipse 65% 70% at 0% 65%, rgba(0, 117, 162, 0.48), transparent 75%), radial-gradient(ellipse 60% 70% at 100% 20%, rgba(94, 42, 183, 0.43), transparent 75%), linear-gradient(140deg, #07162e, #080d25 48%, #171239);
   --radius-lg: 16px;
   --radius-md: 12px;
   --radius-sm: 8px;
@@ -84,6 +84,42 @@ html[data-theme="nexus"] {
 }
 
 html[data-theme="nexus"] body::before { content: none; }
+
+/* A stationary luminance mask follows the bright contours of each scene.
+   Only the light band moves; all panes share its viewport coordinates. */
+html[data-theme="nexus"] .nexus-contour-light {
+  --nexus-scene-width: max(100vw, calc(100vh * 1672 / 941));
+  --nexus-scene-height: max(100vh, calc(100vw * 941 / 1672));
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+  mask-image: var(--nexus-panel-image);
+  mask-mode: luminance;
+  mask-size: var(--nexus-scene-width) var(--nexus-scene-height);
+  mask-position: calc((100vw - var(--nexus-scene-width)) / 2 - var(--nexus-left)) calc((100vh - var(--nexus-scene-height)) / 2 - var(--nexus-top));
+  mask-repeat: no-repeat;
+}
+html[data-theme="nexus"] body > .nexus-contour-light {
+  position: fixed;
+  z-index: 1;
+}
+html[data-theme="nexus"] .app-header > .nexus-contour-light { z-index: 0; }
+html[data-theme="nexus"] .nexus-contour-light > span {
+  position: absolute;
+  left: calc(-1 * var(--nexus-left));
+  top: calc(-1 * var(--nexus-top) - 20vh);
+  width: 35vw;
+  height: 140vh;
+  background: linear-gradient(105deg, transparent 8%, rgba(86, 220, 255, 0.12) 32%, rgba(208, 245, 255, 0.75) 49%, rgba(165, 137, 255, 0.24) 62%, transparent 87%);
+  animation: nexus-contour-sweep 12s linear var(--nexus-phase) infinite;
+}
+@keyframes nexus-contour-sweep {
+  0% { transform: translate3d(-40vw, 0, 0); }
+  80%, 100% { transform: translate3d(110vw, 0, 0); }
+}
 
 html:root[data-theme="nexus"] body::after {
   background-color: #070b18 !important;
@@ -227,26 +263,13 @@ html:root[data-theme="nexus"][data-view="chat"][data-surface] {
       inset: 0;
       border-radius: inherit;
       background-color: #070b18;
-      background-image: linear-gradient(180deg, rgba(5, 16, 36, 0.38), transparent 48%), var(--nexus-panel-image);
-      background-size: 100% 100%, cover;
-      background-position: center, center;
-      background-attachment: scroll, fixed;
+      background-image: radial-gradient(ellipse 34px 48px at 0 100%, rgba(171, 242, 255, 0.3), transparent 85%), radial-gradient(ellipse 28px 42px at 100% 100%, rgba(144, 225, 255, 0.2), transparent 85%), linear-gradient(180deg, rgba(5, 16, 36, 0.38), transparent 48%), var(--nexus-panel-image);
+      background-size: 100% 100%, 100% 100%, 100% 100%, cover;
+      background-position: center;
+      background-attachment: scroll, scroll, scroll, fixed;
       background-repeat: no-repeat;
       pointer-events: none;
       z-index: -1;
-    }
-
-    /* Reflected light spreads inside the glass, leaving a single fine contour. */
-    .task-rail::after,
-    .activity-rail::after,
-    .chat::after {
-      content: "";
-      position: absolute;
-      inset: 0;
-      border-radius: inherit;
-      background: radial-gradient(ellipse 34px 48px at 0 100%, rgba(171, 242, 255, 0.3), transparent 85%), radial-gradient(ellipse 28px 42px at 100% 100%, rgba(144, 225, 255, 0.2), transparent 85%);
-      pointer-events: none;
-      z-index: 2;
     }
 
     .view-tab,
@@ -259,6 +282,17 @@ html:root[data-theme="nexus"][data-view="chat"][data-surface] {
     .composer-main { grid-template-rows: auto 40px; }
     .composer-send { height: 40px; width: 40px; border-radius: 12px; }
     .composer-send svg { height: 20px; width: 20px; }
+  }
+}
+
+@media (min-width: 860px) {
+  html:root[data-theme="nexus"][data-view="chat"][data-surface="desktop"] body::before {
+    content: "";
+    background-image: radial-gradient(circle at 14% 30%, #8beaff 0 0.7px, transparent 1.5px), radial-gradient(circle at 68% 73%, #8a9cff 0 0.6px, transparent 1.4px), radial-gradient(circle at 41% 58%, #ba96ff 0 0.7px, transparent 1.6px);
+    background-size: 193px 251px, 307px 197px, 379px 313px;
+    background-position: 0 0, 37px 21px, 11px 67px;
+    mask-image: none;
+    opacity: 0.48;
   }
 }
 

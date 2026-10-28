@@ -4,6 +4,7 @@
   "color": "#070b18",
   "order": 0,
   "styles": "theme.css",
+  "scripts": "motion.js",
   "backgrounds": [
     { "id": "nexus", "name": "Переплетение", "asset": "interweave.png", "preload": true },
     { "id": "nexus-refraction", "name": "Преломление", "asset": "refraction.png", "preload": true },
