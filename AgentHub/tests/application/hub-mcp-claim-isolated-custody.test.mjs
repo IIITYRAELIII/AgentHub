@@ -85,7 +85,7 @@ for (const command of ["init", "fetch", "snapshot"]) {
   });
 }
 
-test("independent fence/assignment survive reply and event loss with a fresh Git owner", { timeout: 60000 }, async t => {
+for (const legacy of [false, true]) test(`independent fence/assignment survive reply and event loss with a fresh Git owner (legacy execution=${legacy})`, { timeout: 60000 }, async t => {
   const f = await fixture(t);
   const save = f.rawCatalog.checkpointClaimCustody.bind(f.rawCatalog);
   f.rawCatalog.checkpointClaimCustody = state => { save(state); throw Error("lost durable stage reply"); };
@@ -94,6 +94,14 @@ test("independent fence/assignment survive reply and event loss with a fresh Git
   f.tasks.recordEvent = async () => { throw Error("crash after assignment before receipt"); };
   await assert.rejects(f.hub.call("hub_task_claim", f.consume), /crash after assignment/);
   const assigned = f.tasks.task(f.prior.id);
+  if (legacy) {
+    // A pre-interruption successor can have a committed Task binding and no
+    // execution metadata. Readback must not fabricate a modern worker owner.
+    const database = new DatabaseSync(path.join(f.root, "hub.sqlite"));
+    try { database.prepare("UPDATE hub_mcp_operations SET task_execution_json=NULL WHERE request_id=?").run(f.consume.request_id); }
+    finally { database.close(); }
+  }
+  const originalExecution = f.catalog.mcpOperation(f.consume.request_id).taskExecution;
   const reopened = await f.open();
   const git = new TaskGitWorkspaceService({ dataDir: f.workspaces.dataDir, recordTiming: () => {},
     readClaimCustodyNamespace: id => reopened.catalog.claimCustodyNamespaceForTask(id),
@@ -104,6 +112,10 @@ test("independent fence/assignment survive reply and event loss with a fresh Git
   assert.equal(result.revision, assigned.revision);
   assert.equal(result.gitWorkspace.projectRoot, f.catalog.claimCustodyNamespaceForTask(f.prior.id).namespace.workspace.projectRoot);
   assert.deepEqual(reopened.tasks.task(f.prior.id), assigned);
+  assert.deepEqual(reopened.catalog.mcpOperation(f.consume.request_id).taskExecution, originalExecution);
+  if (!legacy) await assert.rejects(reopened.catalog.bindTaskOperationExecution(f.consume.request_id,
+    { ...originalExecution, ownerId: "foreign-reopen-worker" }), /another execution owner/);
+  assert.deepEqual(reopened.catalog.mcpOperation(f.consume.request_id).taskExecution, originalExecution);
   assert.deepEqual(reopened.catalog.mcpOperation(f.original.requestId), f.original);
 });
 

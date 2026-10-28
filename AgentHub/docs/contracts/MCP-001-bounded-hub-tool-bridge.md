@@ -929,3 +929,10 @@ command or close its runtime before its retained persistence continuation. The
 CLI still returns at a legitimate external waiting boundary and never waits for
 a foreign owner's lease. Public arguments, authorization, original request IDs
 and generation/recovery policy are unchanged.
+
+The committed custody readback path retains its original request/hash and execution
+metadata across service reopen. It uses the same canonical binding and custody
+proof, never new prepare/assignment or an execution owner transfer. Missing or
+changed committed proof refuses. Shared execution context is a port capability
+observed by both application and process/SQL adapters, with one async-local
+instance; application code does not import a process implementation.

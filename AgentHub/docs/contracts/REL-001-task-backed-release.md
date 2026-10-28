@@ -3321,3 +3321,14 @@ open. Task-addressed draining uses effective amended membership, while original
 authorization, generation identities, historical receipts and target fences stay
 immutable. No global lock, busy-timeout increase, new release attempt or G0
 recovery authority is introduced. See ADR-HUB-368-release-persistence-retry.
+
+## Committed custody claim readback after reopen
+
+An exact successor whose Task assignment is already durably committed may read
+that result through the existing custody owner after a process/service reopen.
+This is not another execution admission: its original execution binding remains
+unchanged, including absent legacy metadata. The custody owner rechecks caller,
+original hash, fence, namespace, exact Task revision and committed binding under
+the existing Task lease. A readback-only path cannot fall through to assignment.
+Cancellation/pending-stop checks remain inherited, and ordinary new execution
+still cannot replace another worker binding.

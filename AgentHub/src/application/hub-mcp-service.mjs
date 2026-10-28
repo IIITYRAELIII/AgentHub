@@ -1992,7 +1992,7 @@ export class HubMcpService {
     return fence;
   }
 
-  async #consumeClaimCustody(context, args) {
+  async #consumeClaimCustody(context, args, { committedReadbackOnly = false } = {}) {
     const fence = this.#claimCustodySuccessor(context, args);
     return this.taskGitWorkspaces.withTaskLock(args.task_id, async lease => {
       const guarded = this.#claimLease(lease, args.task_id, args.request_id, fence.requestId);
@@ -2018,6 +2018,7 @@ export class HubMcpService {
           claimCustody: { fenceRequestId: fence.requestId, sourceReuse: "readonly", dependencyPreparation: "not-replayed" },
           gitWorkspace: Object.fromEntries(["branch", "projectRoot", "baseCommit", "headCommit"].map(k => [k, workspace[k]])) };
       }
+      if (committedReadbackOnly) throw new TaskClaimCustodyRejectedError("Committed custody binding is missing");
       this.#custodyTask(context, task.id, fence.envelope);
       if (this.#custodyBusy(task)) throw new Error("Previous executor became active; exact custody claim may be reopened after its normal terminal");
       await guarded.assertOwned();
@@ -3242,8 +3243,12 @@ export class HubMcpService {
         }
         const existingRefusal = toolName === "hub_task_status_update" ? this.#workflowAdmissionRefusal(started) : null;
         if (existingRefusal) throw new TaskLifecycleNoEffectError(existingRefusal);
+        const committedClaimReadback = custodyConsume && started.replayed
+          && Boolean(this.taskBoard.claimBindingForOperation(requestId));
         const result = this.taskOperationInterruption && INTERRUPTIBLE_TASK_TOOLS.has(toolName)
-          ? await this.taskOperationInterruption.run(started, args, () => operation(started))
+          ? await this.taskOperationInterruption.run(started, args,
+            () => committedClaimReadback ? this.#consumeClaimCustody(context, args, { committedReadbackOnly: true }) : operation(started),
+            { committedClaimReadback })
           : await operation(started);
         effectCompleted = true;
         if (toolName === "hub_release_prepare") {

@@ -1,5 +1,5 @@
-import { taskOperationExecutionStorage as execution, taskOperationInterrupted } from "../infrastructure/process/task-operation-interruption-context.mjs";
-export { taskOperationInterrupted } from "../infrastructure/process/task-operation-interruption-context.mjs";
+import { taskOperationExecutionStorage as execution, taskOperationInterrupted } from "../ports/task-operation-execution-context.mjs";
+export { taskOperationInterrupted } from "../ports/task-operation-execution-context.mjs";
 import { randomUUID } from "node:crypto";
 import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 
@@ -25,13 +25,20 @@ export class TaskOperationInterruption {
       ownerId: this.#instance,
       arguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) };
   }
-  async run(receipt, args, operation) {
+  async run(receipt, args, operation, { committedClaimReadback = false } = {}) {
     this.assertTaskAvailable(args.task_id);
     const existing = this.catalog.mcpOperation(receipt.requestId)?.taskExecution;
     if (existing?.cancellation) throw taskOperationInterrupted();
     const controller = new AbortController();
-    const binding = this.binding(args);
-    await this.catalog.bindTaskOperationExecution(receipt.requestId, binding);
+    // Only the caller's positive committed claim path may read its old result.
+    // This retains the original execution identity; it does not transfer it.
+    if (committedClaimReadback && existing && (existing.taskId !== args.task_id
+        || existing.protocol !== "task-operation-interruption-v1" || !existing.ownerId
+        || mcpArgumentsHash(existing.arguments) !== receipt.argumentsHash
+        || mcpArgumentsHash(Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token"))) !== receipt.argumentsHash)) {
+      throw new Error("Committed claim readback execution identity differs");
+    }
+    if (!committedClaimReadback) await this.catalog.bindTaskOperationExecution(receipt.requestId, this.binding(args));
     const current = { signal: controller.signal, assertExecuting: () => {
       if (controller.signal.aborted || this.catalog.mcpOperation(receipt.requestId)?.taskExecution?.cancellation) {
         throw taskOperationInterrupted();

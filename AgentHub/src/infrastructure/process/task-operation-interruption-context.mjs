@@ -1,15 +1,8 @@
-import { AsyncLocalStorage } from "node:async_hooks";
-export const taskOperationExecutionStorage = new AsyncLocalStorage();
-const execution = taskOperationExecutionStorage;
-export function taskOperationInterrupted() {
-  return Object.assign(new Error("Task operation execution was explicitly interrupted; prior effects are retained"), {
-    code: "TASK_OPERATION_INTERRUPTED",
-  });
-}
-export function assertTaskOperationExecuting() { execution.getStore()?.assertExecuting(); }
-export function taskOperationExecution() { return execution.getStore() ?? null; }
+import { taskOperationExecution } from "../../ports/task-operation-execution-context.mjs";
+export { taskOperationExecutionStorage, taskOperationInterrupted, assertTaskOperationExecuting,
+  taskOperationExecution } from "../../ports/task-operation-execution-context.mjs";
 export function interruptibleTaskLease(lease) {
-  const current = execution.getStore();
+  const current = taskOperationExecution();
   if (!current) return lease;
   return { ...lease,
     signal: lease.signal ? AbortSignal.any([lease.signal, current.signal]) : current.signal,

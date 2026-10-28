@@ -138,3 +138,19 @@ installed application: production delivery and live-agent/UI AFTER remain the
 sole release owner's required separate step. Legacy callers that previously
 expected a synchronous public MCP result must consume the advertised envelope
 and exact read tool; internal service callers remain synchronous.
+
+## Full-pipeline correction: context dependency and committed readback
+
+The full pipeline exposed application imports of an infrastructure process
+module, and a false owner rebind during an already committed custody claim
+readback. The shared async-local execution capability lives in ports; the process
+adapter retains lease decoration and reexports that same capability. No second
+storage or cancellation owner exists, and the dependency matrix is unchanged.
+
+Only a positive committed successor binding selects readback-only consumption.
+Existing caller/hash/fence/Git/Task-CAS/lease validation runs again; the readback
+may not enter assignment if its binding disappears. It retains prior execution
+metadata byte-for-byte (or legacy absence). Ordinary bind rejects another owner
+as before. Inherited cancellation and late-SQL checks still run around readback.
+Two old launcher test doubles now expose their actual local ledger point reader;
+no production missing-port fallback or suppressed cancellation error is added.

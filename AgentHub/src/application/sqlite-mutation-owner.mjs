@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { assertTaskOperationExecuting } from "../infrastructure/process/task-operation-interruption-context.mjs";
+import { assertTaskOperationExecuting } from "../ports/task-operation-execution-context.mjs";
 
 const WORKSPACE_MUTATIONS = new Set([
   "ensureExperiments", "createWorkspace", "createWorkspaceWithStream", "renameWorkspace", "updateWorkspaceComment",
