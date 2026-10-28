@@ -42,6 +42,10 @@ test("manual public version binds all three numbers and omitted legacy authoriza
     const changed = structuredClone(next);
     changed.authorization.releaseVersion = "4.8.10";
     assert.equal(restoreReleaseOperation(changed), null);
+    const omitted = structuredClone(next);
+    delete omitted.authorization.releaseVersion;
+    assert.equal(omitted.authorization.fingerprint, next.authorization.fingerprint);
+    assert.equal(restoreReleaseOperation(omitted), null);
     fingerprints.add(next.authorization.fingerprint);
     assert.throws(() => transitionReleaseOperation(next, { authorization: { ...legacy, releaseVersion: "4.8.10" } }), /immutable/u);
   }

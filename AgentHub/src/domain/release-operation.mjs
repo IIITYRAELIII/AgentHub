@@ -331,8 +331,7 @@ export function restoreReleaseOperation(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   try {
     const operation = createReleaseOperation(value);
-    if (value.authorization?.releaseVersion !== undefined
-        && value.authorization.fingerprint !== operation.authorization.fingerprint) return null;
+    if (value.authorization?.fingerprint !== operation.authorization.fingerprint) return null;
     const revision = Number(value.revision);
     if (!Number.isSafeInteger(revision) || revision < 1) return null;
     operation.revision = revision;
