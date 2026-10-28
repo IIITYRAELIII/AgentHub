@@ -412,7 +412,10 @@
         "src/infrastructure/process/task-operation-interruption-context.mjs",
         "tests/application/task-operation-interruption.test.mjs",
         "tests/interfaces/cli/task-operation-cancel.test.mjs",
-        "tests/public/task-operation-interruption-dom.test.mjs"
+        "tests/public/task-operation-interruption-dom.test.mjs",
+        "src/infrastructure/persistence/task-operation-interruption-fence.mjs",
+        "tests/application/task-operation-interruption-admission.test.mjs",
+        "tests/infrastructure/persistence/task-operation-user-migration.test.mjs"
       ]
     },
     {
@@ -466,7 +469,10 @@
         "src/infrastructure/process/task-operation-interruption-context.mjs",
         "tests/application/task-operation-interruption.test.mjs",
         "tests/interfaces/cli/task-operation-cancel.test.mjs",
-        "tests/public/task-operation-interruption-dom.test.mjs"
+        "tests/public/task-operation-interruption-dom.test.mjs",
+        "src/infrastructure/persistence/task-operation-interruption-fence.mjs",
+        "tests/application/task-operation-interruption-admission.test.mjs",
+        "tests/infrastructure/persistence/task-operation-user-migration.test.mjs"
       ]
     },
     {

@@ -3275,3 +3275,20 @@ The existing task-await-cutover CLI's explicit ordinary-test mode only calls
 normal public Test with the original CAS and optional authenticated native
 review, after pinned clean source and canonical repository checks. It grants no
 initial-native, returned, squash or cross-Task cutover authority.
+
+## Pending stop and authenticated Desktop admission (HUB-368 R1/R2)
+
+A requested stop excludes new ordinary claim/workflow admission for that Task
+until confirmed stopped. The same indexed durable disposition is checked in
+receipt admission, before execution/next effects, and inside final Task SQL
+transactions. Cancellation continuation and other Tasks remain independently
+operable. A late assignment/finalization cannot overtake the requested stop.
+
+An authenticated Desktop workflow has actorKind=authenticated-user in the same
+MCP operation ledger, including an unassigned Workspace or Backlog Task. Its
+Stream/provider/Thread are null, not an invented provider turn or new Stream.
+Provider admissions retain their exact required caller identity. Existing rows,
+indexes, triggers, custody and receipt evidence survive the atomic nullable-user
+identity migration unchanged; no historical operation is reclassified or replayed.
+The existing Desktop controller and cancellation owner read and stop this exact
+operation before the next ordinary action, without changing Task assignment.

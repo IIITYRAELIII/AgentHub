@@ -26,6 +26,7 @@ export class TaskOperationInterruption {
       arguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) };
   }
   async run(receipt, args, operation) {
+    this.assertTaskAvailable(args.task_id);
     const existing = this.catalog.mcpOperation(receipt.requestId)?.taskExecution;
     if (existing?.cancellation) throw taskOperationInterrupted();
     const controller = new AbortController();
@@ -35,6 +36,7 @@ export class TaskOperationInterruption {
       if (controller.signal.aborted || this.catalog.mcpOperation(receipt.requestId)?.taskExecution?.cancellation) {
         throw taskOperationInterrupted();
       }
+      this.assertTaskAvailable(args.task_id);
     } };
     let resolveStopped;
     const stopped = new Promise(resolve => { resolveStopped = resolve; });
@@ -49,10 +51,16 @@ export class TaskOperationInterruption {
       resolveStopped();
     }
   }
+  assertTaskAvailable(taskId) {
+    if (this.catalog.taskOperationExecutions(taskId).some(row => row.taskExecution.cancellation?.phase === "requested")) {
+      throw Object.assign(new Error("Task operation stop is not confirmed; continue its cancellation first"), { code: "TASK_OPERATION_STOP_PENDING" });
+    }
+  }
   list(taskId) {
     return this.catalog.taskOperationExecutions(taskId).map(row => ({
       requestId: row.requestId, toolName: row.toolName, argumentsHash: row.argumentsHash,
       streamId: row.streamId, provider: row.provider, threadId: row.threadId,
+      ...(row.actorKind ? { actorKind: row.actorKind } : {}),
       createdAtMs: row.createdAtMs, status: row.status, error: row.error,
       targetStatus: row.taskExecution.arguments?.status ?? null,
       cancellation: row.taskExecution.cancellation ? publicCancellation(row.taskExecution.cancellation) : null,

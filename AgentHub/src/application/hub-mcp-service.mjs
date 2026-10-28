@@ -1043,9 +1043,9 @@ export class HubMcpService {
 
   async runDesktopTaskOperation(task, operationId, status, operation) {
     // The trusted desktop is a user actor, never an impersonated provider turn.
-    if (!this.taskOperationInterruption || !task.streamId) return operation();
-    const context = { workspaceId: task.workspaceId, streamId: task.streamId,
-      provider: "desktop", auditThreadId: "authenticated-user" };
+    if (!this.taskOperationInterruption) return operation();
+    const context = { workspaceId: task.workspaceId, streamId: null,
+      provider: null, auditThreadId: null, actorKind: "authenticated-user" };
     return this.#mutate(context, "hub_task_status_update", {
       request_id: operationId, task_id: task.id, status,
     }, operation);
@@ -3080,6 +3080,7 @@ export class HubMcpService {
       streamId: context.streamId,
       provider: context.provider,
       threadId: context.auditThreadId,
+      ...(context.actorKind ? { actorKind: context.actorKind } : {}),
       toolName,
       argumentsHash: argumentsHash(args),
       ...(this.taskOperationInterruption && INTERRUPTIBLE_TASK_TOOLS.has(toolName)
