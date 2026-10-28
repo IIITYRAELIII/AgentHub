@@ -1023,6 +1023,7 @@ export class ReleaseGitWorkspaceService {
         if (stableManifest(current.binding) !== stableManifest(prepared.binding)) {
           throw new Error("Prepared composition changed during validation");
         }
+        if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         return { status: "validated", repositoryRoot: current.candidate.repositoryRoot,
           planRevision, baseCommit: current.candidate.baseCommit, tree: current.candidate.tree,
           taskIds: current.candidate.frozenTasks.map(task => task.taskId).sort(),

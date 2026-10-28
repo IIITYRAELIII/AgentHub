@@ -132,6 +132,23 @@ test("changed authority and acceptance callbacks cannot yield a successful compo
   assert.deepEqual(await snapshot(f.dataDir), before);
 });
 
+test("prepared composition validation rechecks authority after its final verification", async t => {
+  const f = await fixture(t);
+  await f.service.prepareCandidate(f.request);
+  const before = await snapshot(f.dataDir), refs = await git(f.primary, "show-ref");
+  let authorityValid = true, reads = 0;
+  await assert.rejects(f.service.validateCandidate({ ...f.request, validateBeforeCommit: async () => {
+    reads++;
+    if (!authorityValid) throw new Error("publication authority changed during final verification");
+    if (reads === 2) queueMicrotask(() => { authorityValid = false; });
+  } }), /publication authority changed during final verification/u);
+  assert.equal(reads, 3);
+  assert.equal(authorityValid, false);
+  assert.deepEqual(await snapshot(f.dataDir), before);
+  assert.equal(await git(f.primary, "show-ref"), refs);
+  assert.equal(await git(f.primary, "status", "--porcelain"), "");
+});
+
 test("composition validation supports a primary with installed repository hooks", async (t) => {
   const f = await fixture(t);
   const hooks = path.join(f.root, "shared-hooks");

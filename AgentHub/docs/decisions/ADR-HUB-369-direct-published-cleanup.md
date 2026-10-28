@@ -171,3 +171,8 @@ the same binding around the existing fresh authority callback and refuse drift;
 do not replay composition or rewrite the holder. Nonmatching/absent prepared
 state still uses ordinary disposable composition. This is not release membership
 approval, publication or an alternative closure/receipt writer.
+
+Review correction: retain the existing final authority callback after the last
+prepared-source verification as well as the between-pass holder check. Equal
+holder bindings do not prove that external authority stayed current during Git
+verification; a late authority change refuses before returning a proof.
