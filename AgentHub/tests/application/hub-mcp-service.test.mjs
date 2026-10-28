@@ -2072,16 +2072,17 @@ test("HubMcpService forwards original-addressed reviewed-main recovery through t
   const calls = [];
   const { service, token } = await fixture(context, { releaseOperations: {
     get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "failed", revision: 699 } }),
-    continue: async (...args) => { calls.push(args); return { accepted: true, operationId: args[0] }; },
+    continue: async (...args) => {
+      calls.push([args[0], Object.fromEntries(Object.entries(args[1]).filter(([, value]) => value !== undefined))]);
+      return { accepted: true, operationId: args[0] };
+    },
     setEventDelivery() {},
   } });
   const reviewedMain = { expectedRevision: 699, approvedRepositories: [{ projectRoot: "D:/repo",
     approvedLocalMainCommit: "a".repeat(40), approvedOriginMainCommit: "a".repeat(40) }] };
   const input = { context_token: token, request_id: "original-main-rebind", operation_id: "original", reviewed_main: reviewedMain };
   assert.equal((await service.call("hub_release_continue", input)).accepted, true);
-  assert.deepEqual(calls.map(([id, options]) => [id,
-    Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)),
-  ]), [["original", { requestId: input.request_id, reviewedMain }]]);
+  assert.deepEqual(calls, [["original", { requestId: input.request_id, reviewedMain }]]);
 });
 
 test("HubMcpService carries exact release metadata through the domain and byte-checking composition owner", async (context) => {
