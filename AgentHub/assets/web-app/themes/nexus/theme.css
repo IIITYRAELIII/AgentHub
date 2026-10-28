@@ -276,7 +276,19 @@ html:root[data-theme="nexus"][data-view="chat"][data-surface] {
     .task-workspace-name,
     .stream-tabs-track .stream-tab { font-size: 15px; }
     .task-search input { font-size: 14px; }
-    .chat-log .msg-stack.msg-stack-user { max-width: 100% !important; width: 100% !important; }
+    .chat-log .msg-stack.msg-stack-user {
+      align-self: flex-end;
+      max-width: calc(100% - 40px) !important;
+      width: calc(100% - 40px) !important;
+    }
+    .chat-log .msg-stack-agent {
+      align-self: flex-start;
+      width: calc(100% - 40px);
+    }
+    .chat-scroll > .msg-live {
+      margin-left: max(16px, calc((100% - var(--dialog-column-width)) / 2));
+      width: calc(min(var(--dialog-column-width), 100% - 32px) - 40px);
+    }
     .msg-user-bubble { max-width: none; }
     .composer { width: min(58rem, calc(100% - 48px)); }
     .composer-main { grid-template-rows: auto 40px; }
