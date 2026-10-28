@@ -98,7 +98,7 @@ export function claimAdmissionNoEffectEvidence(receipt, taskId = null) {
         || admission.kind !== "task-git-source-admission-v1" || admission.phase !== "before-prepare"
         || admission.operationId !== receipt.requestId || admission.taskId !== proof.taskId
         || typeof admission.projectRoot !== "string" || !admission.projectRoot
-        || admission.projectRoot.length > 4000 || admission.projectRoot.includes("\0")) return null;
+        || admission.projectRoot.includes("\0")) return null;
   } else return null;
   for (const key of ["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash", "createdAtMs"]) {
     if (proof[key] !== receipt[key]) return null;

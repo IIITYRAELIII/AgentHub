@@ -23,3 +23,10 @@ forward custody still requires its exact authorization and source/retirement
 conditions; in particular its clean-source requirement is not bypassed to adopt
 another executor's dirty checkout. This change neither repairs provider routing
 or compaction nor authorizes installed runtime replacement.
+
+The source-refusal locator is retained whole, without an added path-length
+ceiling or truncation. A positively owned discovery failure is not invalidated
+by locator length. Nonempty string/NUL format checks and exact invocation,
+caller, lease and Task CAS evidence remain required. The bounded regression
+controls only process-never-started at the exact read-only discovery spawn;
+it does not claim native Windows execution with a long cwd.

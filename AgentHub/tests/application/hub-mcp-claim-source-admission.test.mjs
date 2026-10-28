@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import childProcess, { execFile } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -117,6 +118,45 @@ test("missing and bare claim roots are refused before modifying an existing mana
     assert.equal(receipt.status, "failed"); assert.equal(receipt.result.outcome, "NO_EFFECT");
     await f.unchanged();
   }
+});
+
+test("long source locator retains exact live refusal evidence without a length ceiling", async t => {
+  const f = await fixture(t);
+  const locator = path.join(f.invalid, ...Array.from({ length: 220 }, (_, index) => `missing-segment-${index}`));
+  assert(locator.length > 4000);
+  await f.route(locator);
+  const input = { ...f.args, request_id: "long-source-original" };
+  const spawn = childProcess.spawn;
+  let discoveryCalls = 0;
+  // Control only the exact discovery process-never-started boundary. This is
+  // not a native Windows long-cwd test; the real managed Git and SQL owner run.
+  childProcess.spawn = (file, args, options) => {
+    if (options?.cwd === path.resolve(locator)) {
+      discoveryCalls += 1;
+      assert.equal(file, "git");
+      assert.deepEqual(args, ["rev-parse", "--path-format=absolute", "--show-toplevel"]);
+      throw Object.assign(Error("controlled discovery process never started"), { code: "ENOENT" });
+    }
+    return spawn(file, args, options);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.hub.call("hub_task_claim", input), { code: "TASK_CLAIM_SOURCE_ADMISSION_FAILED" });
+  } finally {
+    childProcess.spawn = spawn;
+    syncBuiltinESMExports();
+  }
+  const receipt = f.catalog.mcpOperation(input.request_id);
+  assert.equal(discoveryCalls, 1);
+  assert.equal(receipt.status, "failed"); assert.equal(receipt.result.outcome, "NO_EFFECT");
+  const proof = receipt.result.evidence;
+  assert.equal(proof.sourceAdmission.projectRoot, path.resolve(locator));
+  assert.equal(proof.argumentsHash, receipt.argumentsHash);
+  for (const key of ["requestId", "workspaceId", "streamId", "provider", "threadId"]) assert.equal(proof[key], receipt[key]);
+  await f.unchanged();
+  await assert.rejects(f.hub.call("hub_task_claim", input), { code: "TASK_CLAIM_SOURCE_ADMISSION_FAILED" });
+  assert.deepEqual(f.catalog.mcpOperation(input.request_id), receipt);
+  await f.unchanged();
 });
 
 test("generic or forged discovery failures and failures after preparation never acquire source refusal evidence", async t => {
