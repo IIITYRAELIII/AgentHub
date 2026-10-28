@@ -55,6 +55,26 @@ function fixture() {
   };
 }
 
+test("manual public version is operator input and changes only the new release identity", async () => {
+  const f = fixture();
+  const args = ["--stream", "stream-1", "--thread", "thread-1"];
+  await runReleaseOperationCli(args, f.options);
+  const automatic = f.calls[0].params;
+  assert.equal(Object.hasOwn(automatic, "releaseVersion"), false);
+  const ids = new Set([automatic.requestId]);
+  for (const version of ["2.0.9", "2.7.9", "3.7.9"]) {
+    f.calls.length = 0;
+    await runReleaseOperationCli([...args, "--version", version], f.options);
+    assert.equal(f.calls[0].params.releaseVersion, version);
+    ids.add(f.calls[0].params.requestId);
+  }
+  assert.equal(ids.size, 4);
+  f.calls.length = 0;
+  await assert.rejects(runReleaseOperationCli(["--resume", "--operation", "operation-1", "--version", "3.7.9"], f.options), /original version/u);
+  await assert.rejects(runReleaseOperationCli([...args, "--version", "3.7"], f.options), /version/iu);
+  assert.equal(f.calls.length, 0);
+});
+
 test("publish:changed delegates one deterministic full release to ReleaseOperation", async () => {
   const f = fixture();
   const first = await runReleaseOperationCli([

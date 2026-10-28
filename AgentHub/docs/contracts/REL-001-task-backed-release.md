@@ -130,6 +130,18 @@ this does not copy dependencies, change the frozen tree or relax version checks.
 
 ## Semantic public version and original build (ADR-HUB-334)
 
+For a new operation an explicit complete `release_version` (`X.Y.Z`) overrides
+automatic semantic selection (ADR-HUB-371). Every core number is operator input;
+no major/minor/patch preset is required. The existing semantic grammar and
+non-downgrade checks apply. Immutable authorization and generation input both
+bind the optional value through the same adapter/preflight/freeze chain. Omitted
+values preserve the historical hash and default. Freeze passes the explicit
+value to its existing version inspector, and persisted freeze/version/build
+expectations are reused after interruption. A changed or omitted explicit value
+cannot retarget the same generation. Source/default CLI invocation is documented
+above; `publish:changed -- --version X.Y.Z` is the existing operator input, not a
+separate administrator UI. No browser release-launch form is introduced.
+
 New installer publications migrate recognized calendar versions to public
 `2.0.0`. Later compatible corrections use patch, compatible features minor,
 and changes to supported interfaces/update compatibility major. The existing

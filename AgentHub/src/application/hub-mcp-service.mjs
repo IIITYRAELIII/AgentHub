@@ -917,6 +917,7 @@ export class HubMcpService {
       }, ["expected_arguments_hash", "expected_preparation_revision"]),
       tool("hub_release_run", "Persist one authorized release operation and return its operation id immediately. The durable owner continues compose, validation, publication and finalization without holding this MCP request open.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
+        release_version: { type: "string", pattern: "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$", description: "Optional complete public X.Y.Z version for this new release intent. Omit for automatic patch selection. A frozen retry retains its original version." },
         task_ids: { type: "array", minItems: 1, items: { type: "string" } },
         validation_mode: { type: "string", enum: ["focused", "full"] },
         test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
@@ -2547,6 +2548,7 @@ export class HubMcpService {
         approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
         ...(args.test_selection !== undefined ? { testSelection: args.test_selection } : {}),
         ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
+        ...(args.release_version !== undefined ? { releaseVersion: args.release_version } : {}),
       },
     });
   }

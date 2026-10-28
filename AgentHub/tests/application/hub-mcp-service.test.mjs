@@ -7,6 +7,8 @@ import test from "node:test";
 import { createHash } from "node:crypto";
 import { createReleaseOperation } from "../../src/domain/release-operation.mjs";
 import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
+import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
+import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { measureTaskOperation, withTaskOperationTiming } from "../../src/infrastructure/process/task-operation-timing.mjs";
@@ -2060,6 +2062,32 @@ test("HubMcpService forwards original-addressed reviewed-main recovery through t
   const input = { context_token: token, request_id: "original-main-rebind", operation_id: "original", reviewed_main: reviewedMain };
   assert.equal((await service.call("hub_release_continue", input)).accepted, true);
   assert.deepEqual(calls, [["original", { requestId: input.request_id, reviewedMain }]]);
+});
+
+test("manual public version reaches the same durable release admission and survives original readback", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-manual-version-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const store = new ReleaseOperationStore({ dataDir: root });
+  const forbidden = async () => assert.fail("admission must not run publication inline");
+  const operations = new ReleaseOperationService({ store, schedule: () => {}, processAlive: () => true,
+    compose: forbidden, validate: forbidden, publishTarget: forbidden, readTarget: forbidden, finalize: forbidden });
+  const { service, token } = await fixture(context, { releaseOperations: operations });
+  const schema = service.tools().find(tool => tool.name === "hub_release_run").inputSchema;
+  assert.equal(schema.required.includes("release_version"), false);
+  assert.equal(new RegExp(schema.properties.release_version.pattern, "u").test("3.7.9"), true);
+  const args = { context_token: token, request_id: "manual-version-original", task_ids: ["task-current"],
+    validation_mode: "full", release_version: "3.7.9",
+    approved_targets: [{ targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" }] };
+  const ack = await service.call("hub_release_run", args);
+  const original = store.get(ack.operationId);
+  assert.equal(original.authorization.releaseVersion, "3.7.9");
+  assert.equal((await service.call("hub_release_run", args)).operationId, ack.operationId);
+  await assert.rejects(service.call("hub_release_run", { ...args, release_version: "4.8.10" }), /request_id was already used for another operation/u);
+  const reopened = new ReleaseOperationStore({ dataDir: root });
+  assert.deepEqual(reopened.get(ack.operationId).authorization, original.authorization);
+  const readback = await service.call("hub_release_get", { context_token: token, operation_id: ack.operationId });
+  assert.equal(readback.operation.authorization.releaseVersion, "3.7.9");
+  assert.equal(readback.operation.currentGeneration, 0);
 });
 
 test("HubMcpService carries exact release metadata through the domain and byte-checking composition owner", async (context) => {

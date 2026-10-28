@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { selectedCompositionFields } from "./task-selected-composition.mjs";
 import { normalizedNativeResolution } from "./native-resolution-input.mjs";
+import { semanticVersion } from "./agent-hub-version.mjs";
 
 
 export const RELEASE_OPERATION_STATES = Object.freeze({
@@ -98,6 +99,12 @@ function normalizedTargets(value) {
   return targets;
 }
 
+export function normalizeReleaseVersion(value) {
+  const version = semanticVersion(value);
+  if (version.prerelease.length || version.metadata) throw new TypeError("Release version must be a complete X.Y.Z public version");
+  return value;
+}
+
 export function normalizedReleaseMetadata(value) {
   if (value == null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("releaseMetadata must be an object");
@@ -121,6 +128,7 @@ function normalizedAuthorization(value = {}) {
     validationMode: requiredText(value.validationMode, "validationMode"),
     ...(value.testSelection != null ? { testSelection: normalizeTestSelection(value.testSelection) } : {}),
     ...(value.releaseMetadata ? { releaseMetadata: normalizedReleaseMetadata(value.releaseMetadata) } : {}),
+    ...(value.releaseVersion !== undefined ? { releaseVersion: normalizeReleaseVersion(value.releaseVersion) } : {}),
   };
   return { ...authorization, fingerprint: releaseIdentitySha256(authorization) };
 }
@@ -323,6 +331,8 @@ export function restoreReleaseOperation(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   try {
     const operation = createReleaseOperation(value);
+    if (value.authorization?.releaseVersion !== undefined
+        && value.authorization.fingerprint !== operation.authorization.fingerprint) return null;
     const revision = Number(value.revision);
     if (!Number.isSafeInteger(revision) || revision < 1) return null;
     operation.revision = revision;
