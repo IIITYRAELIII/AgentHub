@@ -64,7 +64,13 @@
   });
   reducedMotion.addEventListener("change", schedule);
   desktop.addEventListener("change", schedule);
-  document.addEventListener("visibilitychange", schedule);
+  document.addEventListener("visibilitychange", () => {
+    // Hidden documents may suspend requestAnimationFrame before its callback.
+    if (document.hidden) {
+      cancelAnimationFrame(frame);
+      update();
+    } else schedule();
+  });
   window.addEventListener("resize", schedule);
   update();
 })();
