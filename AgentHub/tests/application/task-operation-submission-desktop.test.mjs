@@ -72,16 +72,16 @@ test("actual Desktop factory admits held Test/Await and returns canonical termin
 
 test("actual Desktop create/update keep user identity and one durable operation per real action", async t => {
   const f = await claimCustodyFixture(t), handlers = await wiring(f, {});
-  const created = await handlers.boardTaskCreate({ workspaceId: f.prior.workspaceId, text: "Created by the user" }, { commandId: "desktop-create" });
+  const created = await handlers.boardTaskCreate({ workspaceId: f.prior.workspaceId, text: "Created by the user", operationId: "desktop-create" }, { commandId: "outer-create" });
   const creation = await terminal(f, "desktop-create", created.taskOperation.argumentsHash);
   assert.equal(creation.taskOperation.status, "succeeded");
   const id = creation.result.id, before = f.tasks.task(id);
-  const updated = await handlers.boardTaskUpdate({ id, title: "Updated by the user" }, { commandId: "desktop-update" });
+  const updated = await handlers.boardTaskUpdate({ id, title: "Updated by the user", operationId: "desktop-update" }, { commandId: "outer-update" });
   const update = await terminal(f, "desktop-update", updated.taskOperation.argumentsHash);
   assert.equal(update.taskOperation.status, "succeeded", JSON.stringify(update));
   assert.equal(f.tasks.task(id).title, "Updated by the user");
   assert.equal(f.tasks.task(id).revision, before.revision + 1);
-  const repeat = await handlers.boardTaskUpdate({ id, title: "Updated by the user" }, { commandId: "desktop-update" });
+  const repeat = await handlers.boardTaskUpdate({ id, title: "Updated by the user", operationId: "desktop-update" }, { commandId: "different-outer-reply" });
   assert.equal(repeat.taskOperation.status, "succeeded");
   assert.equal(f.tasks.task(id).revision, before.revision + 1);
   assert.equal(f.catalog.mcpOperation("desktop-update").actorKind, "authenticated-user");

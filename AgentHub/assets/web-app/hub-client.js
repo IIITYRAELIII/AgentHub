@@ -1859,8 +1859,10 @@ async function waitTaskOperationResult(admission, params) {
 async function control(action, params = {}) {
   const snapshotBaseline = currentSnapshotBaseline();
   const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
+  const taskOperationId = ["board-task-create", "board-task-update", "board-task-status", "board-task-complete", "board-task-remove"].includes(action)
+    ? params.operationId || commandTrace.newId() : null;
   const started = performance.now();
-  const tracedParams = { ...params, clientTraceId: commandId, clientTiming: params.clientTiming ?? {
+  const tracedParams = { ...params, ...(taskOperationId ? { operationId: taskOperationId } : {}), clientTraceId: commandId, clientTiming: params.clientTiming ?? {
     submittedAtMs: Date.now(), submittedMonotonicMs: started,
     controlStartedAtMs: Date.now(), controlStartedMonotonicMs: started,
     surface: clientTraceSurface(),
@@ -1868,7 +1870,17 @@ async function control(action, params = {}) {
   return commandTrace.measure("ui-control", action, async () => {
     let transportAcknowledged = false;
     try {
-      let result = await controlTransport(action, tracedParams);
+      let result;
+      try { result = await controlTransport(action, tracedParams); }
+      catch (error) {
+        if (!taskOperationId || (!isConnectionFailure(error) && !looksLikeConnectionFailure(error))) throw error;
+        // The first admission reply may be lost. The client already chose the
+        // original identity; read it without guessing its hash or replaying work.
+        const read = await control("board-task-read", { id: params.id, operationRequestId: taskOperationId,
+          clientTraceId: taskOperationId });
+        if (read.operation?.taskOperation.requestId !== taskOperationId) throw error;
+        result = read.operation;
+      }
       reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
       transportAcknowledged = true;
       if (result?.taskOperation) {

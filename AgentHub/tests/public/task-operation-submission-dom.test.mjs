@@ -29,9 +29,10 @@ for (const width of [1366, 390]) test(`shipped client waits for original Test re
   try {
     const page = await browser.newPage({ viewport: { width, height: 900 } }); page.setDefaultTimeout(9000);
     const diagnostics = await openFixture(page, { fixtureSnapshot: fresh() });
-    const calls = [], id = `desktop-result-${width}`; let failRead = true;
+    const calls = []; let id, failRead = width === 390, lostAdmission = width === 1366;
     await page.exposeFunction("__taskOperationControl", async message => {
       calls.push({ action: message.action, params: message.params });
+      if (message.action === "board-task-status") id = message.params.operationId;
       try {
         if (message.action === "board-task-read" && message.params.operationRequestId && failRead) {
           failRead = false; throw new Error("Desktop control connection closed without a response");
@@ -39,7 +40,12 @@ for (const width of [1366, 390]) test(`shipped client waits for original Test re
         const result = message.action === "board-task-read" ? controller.read(message.params)
           : message.action === "board-task-operation-cancel" ? await controller.cancelOperation(message.params)
           : message.action === "snapshot" ? fresh()
-          : await controller.status(message.params, { commandId: id, taskOperationReceipt: true });
+          : await controller.status(message.params, { commandId: "outer-control-id", taskOperationReceipt: true });
+        if (message.action === "board-task-status") {
+          id = message.params.operationId;
+          assert.equal(result.taskOperation.requestId, id);
+          if (lostAdmission) { lostAdmission = false; throw new Error("Desktop control connection closed without a response"); }
+        }
         return { id: message.id, ok: true, result };
       } catch (error) { return { id: message.id, ok: false, error: error.message }; }
     });
@@ -83,7 +89,8 @@ for (const width of [1366, 390]) test(`shipped client waits for original Test re
     }
     assert.equal(count, 1); assert.equal(calls.filter(c => c.action === "board-task-status").length, 1);
     const reads = calls.filter(c => c.params.operationRequestId === id);
-    assert.ok(reads.every(c => c.params.argumentsHash === f.catalog.mcpOperation(id).argumentsHash));
+    assert.ok(reads.every(c => c.params.argumentsHash == null || c.params.argumentsHash === f.catalog.mcpOperation(id).argumentsHash));
+    assert.ok(reads.some(c => c.params.argumentsHash === f.catalog.mcpOperation(id).argumentsHash));
     assert.deepEqual(diagnostics, []);
     const dir = new URL("../../WIP/hub368/common/", import.meta.url); await mkdir(dir, { recursive: true });
     await page.screenshot({ path: fileURLToPath(new URL(`result-${width}.png`, dir)), fullPage: true });

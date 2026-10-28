@@ -63,7 +63,7 @@ export class DesktopTaskBoardController {
   create(params, context = {}) {
     if (context.taskOperationReceipt && this.hubMcpService) {
       if (!this.workspaceCatalog.workspace(params.workspaceId)) throw new Error("Workspace не найден");
-      return this.hubMcpService.runDesktopTaskOperation({ workspaceId: params.workspaceId }, context.commandId, null,
+      return this.hubMcpService.runDesktopTaskOperation({ workspaceId: params.workspaceId }, params.operationId ?? context.commandId, null,
         () => this.taskBoard.create({ text: params.text, source: "hub", bucket: "workspace", workspaceId: params.workspaceId }),
         { receiptOnly: true, toolName: "hub_task_create", parameters: { workspace_id: params.workspaceId, text: params.text } });
     }
@@ -157,7 +157,7 @@ export class DesktopTaskBoardController {
 
   update(params, context = {}) {
     if (context.taskOperationReceipt && this.hubMcpService) return this.hubMcpService.runDesktopTaskOperation(
-      this.taskBoard.task(params.id), context.commandId, null, () => this.taskBoard.update(params),
+      this.taskBoard.task(params.id), params.operationId ?? context.commandId, null, () => this.taskBoard.update(params),
       { receiptOnly: true, toolName: "hub_task_update", parameters: { ...params } });
     return this.#mutate(() => this.taskBoard.update(params));
   }
