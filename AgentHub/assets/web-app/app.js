@@ -4521,11 +4521,18 @@ function renderStreamTabs() {
   scheduleStreamTabsOverflow();
 }
 
+let publishedRetainedHistoryTaskIds = [];
+
 function publishVisibleStreamTasks(tasks) {
   const ids = tasks.map((task) => task.id);
-  if (sameData(ids, state.visibleStreamTaskIds)) return;
+  const retainedTaskIds = state.tasks.filter((task) => (
+    state.openStreamsByWorkspace.get(workspaceKey(task))?.includes(streamKey(task))
+  )).map((task) => task.id);
+  if (sameData(ids, state.visibleStreamTaskIds)
+    && sameData(retainedTaskIds, publishedRetainedHistoryTaskIds)) return;
   state.visibleStreamTaskIds = ids;
-  emit("workspace:visible-streams", { taskIds: ids });
+  publishedRetainedHistoryTaskIds = retainedTaskIds;
+  emit("workspace:visible-streams", { taskIds: ids, retainedTaskIds });
 }
 
 const { ChatScrollController, shouldLoadOlderPage } = window.AgentHubChatScroll;
@@ -11719,6 +11726,13 @@ const AgentHub = {
       renderLive();
       renderStreamChatHeader(currentTask());
     } else refreshSupplementaryStreamChat(taskId);
+  },
+  releaseTaskHistory(taskId) {
+    if (taskId === state.selectedId || state.visibleStreamTaskIds.includes(taskId)) return false;
+    state.messages.delete(taskId);
+    state.historyPagination.delete(taskId);
+    state.messageRenderLimits.delete(taskId);
+    return true;
   },
   setMessagesForExactNavigation(taskId, messages, exactNavigation) {
     const next = Array.isArray(messages) ? messages.slice() : [];

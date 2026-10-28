@@ -64,6 +64,14 @@ result alone never establishes unchanged projection inputs.
 
 ## Bounded Codex trace and fact projections
 
+The browser's canonical history cache follows the existing open-column layout,
+not every Stream visited during the document lifetime. Closing/replacing a
+column releases its loaded history, focused page, pagination and app message
+projection; the selected/visible column remains protected during transitions.
+Still-open columns keep their pages. Reopening uses the ordinary history owner.
+This bounds retention by opened content without a timer, arbitrary LRU size,
+background source read, truncation or a new durable state owner (ADR-HUB-343).
+
 Codex rollout preview retains at most 256 groups, 128 activities per group,
 1,024 activities per turn and one million reasoning characters in aggregate;
 an individual retained reasoning block is never cut. Earlier omitted groups or
