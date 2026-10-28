@@ -298,6 +298,15 @@ does not change composition selection, provenance, candidate fetch/freeze or
 publication guards. Disposable composition validation uses the same selected
 main/base/result transport and still returns only a read-only composition proof;
 its existing invocation-local temporary cleanup and acceptance refusal remain.
+For an exact current prepared native candidate, read-only composition validation
+reuses the existing prepared-source verifier rather than discarding its accepted
+merge resolutions. Plan, whole selected evidence, base and whole provenance must
+match. Fresh native history/content, manifest/hash, checkout and primary guards
+run before and after the existing authority callback; a changed holder refuses.
+Git verification writes its mathematical objects only into invocation-owned
+selected-object bundle clones; the prepared holder is not its object scratch.
+No candidate is promoted, repaired or accepted by validation. Without a matching
+prepared holder, the existing disposable composition route remains authoritative.
 
 After an update's normal runtime start, policy v1 may retire only the redundant
 task-native-merge transport from a completed, durably published Task. The existing

@@ -158,3 +158,16 @@ parts retain their exact independent review; combined changes and open findings
 remain subject to the existing review owner. Executor-to-TL and TL-to-user
 notification is the explicitly authorized operational exception to final-only
 reporting, not an approval wait. No second raw Workspace policy owner is added.
+
+## Combined closure preserves accepted native resolutions
+
+Actual combined-closure validation rebuilt the complete Await set in a disposable
+repository and lost the already accepted native resolutions, refusing a future
+Task's conflict before source closure. Revalidate the exact current prepared
+candidate with the existing prepared-generation source owner instead. Exact plan,
+whole selected evidence, base and provenance, native histories and selected
+content, manifest digest, checkout and primary guards remain mandatory. Recheck
+the same binding around the existing fresh authority callback and refuse drift;
+do not replay composition or rewrite the holder. Nonmatching/absent prepared
+state still uses ordinary disposable composition. This is not release membership
+approval, publication or an alternative closure/receipt writer.

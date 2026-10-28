@@ -64,7 +64,6 @@ test("composition validation excludes unrelated branch payloads without changing
   const f = await fixture(t);
   const unrelated = await f.result("unrelated-payload", randomBytes(256_000));
   const blob = await git(f.primary, "rev-parse", `${unrelated}:app.txt`);
-  await f.service.prepareCandidate(f.request);
   const before = await snapshot(f.dataDir), refs = await git(f.primary, "show-ref");
   const prior = new Set(await readdir(os.tmpdir()));
   let inspections = 0;
@@ -141,4 +140,53 @@ test("composition validation supports a primary with installed repository hooks"
   const proof = await f.service.validateCandidate(f.request);
   assert.equal(proof.tree, await git(f.primary, "rev-parse", `${f.left}^{tree}`));
   assert.equal(await git(f.primary, "config", "core.hooksPath"), hooks);
+});
+
+test("composition validation retains the exact prepared native resolution and rejects late holder drift", async t => {
+  const f = await fixture(t);
+  const right = await f.result("right", "right\n");
+  const request = { ...f.request, planRevision: "resolved-plan", frozenTasks: [
+    ...f.request.frozenTasks,
+    { taskId: "right", taskRevision: 1, baseCommit: f.request.approvedBaseCommit, resultCommit: right },
+  ] };
+  let nativeRoot;
+  await assert.rejects(f.service.prepareCandidate(request), error => {
+    assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT");
+    nativeRoot = /Resolve the native Git merge for Task .+ in (.+)$/u.exec(error.message)?.[1];
+    assert.ok(nativeRoot, error.message);
+    return true;
+  });
+  await writeFile(path.join(nativeRoot, "app.txt"), "accepted native resolution\n");
+  const resolved = await commit(nativeRoot, "accepted native resolution");
+  const prepared = await f.service.prepareCandidate(request);
+  assert.equal(prepared.preReleaseHead, resolved);
+  const before = await snapshot(f.dataDir), refs = await git(f.primary, "show-ref");
+  let checks = 0;
+  const proof = await f.service.validateCandidate({ ...request, validateBeforeCommit: async () => { checks++; } });
+  assert.equal(proof.status, "validated");
+  assert.equal(proof.tree, await git(nativeRoot, "rev-parse", `${resolved}^{tree}`));
+  assert.deepEqual(proof.taskIds, ["left", "right"]);
+  assert.equal(proof.releaseRoot, undefined);
+  assert.ok(checks > 0);
+  const after = await snapshot(f.dataDir);
+  assert.deepEqual([...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter(file => before[file] !== after[file]), []);
+  assert.equal(await git(f.primary, "show-ref"), refs);
+  assert.equal(await git(f.primary, "status", "--porcelain"), "");
+  await assert.rejects(f.service.validateCandidate({ ...request,
+    baseProvenance: { schemaVersion: 1, kind: "agreed-main-native-git-v1",
+      publishedBaseCommit: request.approvedBaseCommit, agreedMainCommit: request.approvedBaseCommit },
+  }), /provenance|stale/u);
+  const checkpointFile = path.join(path.dirname(prepared.releaseRoot), "checkpoint.json");
+  const checkpoint = await readFile(checkpointFile);
+  let authorityReads = 0;
+  try {
+    await assert.rejects(f.service.validateCandidate({ ...request, validateBeforeCommit: async () => {
+      if (++authorityReads === 2) {
+        const current = JSON.parse(checkpoint.toString("utf8"));
+        await writeFile(checkpointFile, JSON.stringify({ ...current, preReleaseHead: request.approvedBaseCommit }));
+      }
+    } }), /checkpoint|prepared|changed/u);
+  } finally { await writeFile(checkpointFile, checkpoint); }
+  assert.deepEqual(await snapshot(f.dataDir), before);
 });
