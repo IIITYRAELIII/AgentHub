@@ -1929,9 +1929,10 @@ export class HubMcpService {
           const lockAdmission = await this.taskGitWorkspaces.claimAdmissionNoEffectEvidence?.({
             taskId: task.id, projectRoot, operationId, error,
           });
-          if (lockAdmission?.kind === "task-git-dev-lock-admission-v1") {
+          if (["task-git-dev-lock-admission-v1", "task-git-source-admission-v1"].includes(lockAdmission?.kind)) {
             await guarded.assertOwned();
-            await this.workspaceCatalog.recordClaimAdmissionRefusal({ receipt: context.admissionReceipt, task, lockAdmission,
+            await this.workspaceCatalog.recordClaimAdmissionRefusal({ receipt: context.admissionReceipt, task,
+              ...(lockAdmission.kind === "task-git-source-admission-v1" ? { sourceAdmission: lockAdmission } : { lockAdmission }),
               claimArguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) });
           }
           throw error;
@@ -3266,7 +3267,7 @@ export class HubMcpService {
         || this.workspaceCatalog.claimCustodyForOriginal?.(receipt.requestId)) {
       refuse("Claim requires exact durable pre-admission owner evidence; unsealed or admitted originals remain unknown");
     }
-    const root = proof.lockAdmission?.repositoryRoot;
+    const root = proof.lockAdmission?.repositoryRoot ?? proof.sourceAdmission?.projectRoot;
     const locator = value => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
     if (root && (typeof args.project_root !== "string" || locator(args.project_root) !== locator(root))) {
       refuse("Claim refusal repository locator does not match the sealed owner");

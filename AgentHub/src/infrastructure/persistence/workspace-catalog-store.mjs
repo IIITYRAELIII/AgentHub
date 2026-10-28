@@ -1090,7 +1090,7 @@ export class WorkspaceCatalogStore {
     });
   }
 
-  recordClaimAdmissionRefusal({ receipt, task, claimArguments, busyReason, lockAdmission = null } = {}) {
+  recordClaimAdmissionRefusal({ receipt, task, claimArguments, busyReason, lockAdmission = null, sourceAdmission = null } = {}) {
     if (this.claimCustodyForOriginal(receipt?.requestId)) throw new TaskClaimContinuationWithdrawnError();
     if (receipt?.replayed !== false || receipt.status !== "pending" || receipt.operationStatus !== "pending") {
       throw new Error("Claim refusal requires a fresh MCP intake");
@@ -1110,7 +1110,8 @@ export class WorkspaceCatalogStore {
       }
       const evidence = {
         version: 1,
-        ...(lockAdmission ? { kind: "task-claim-lock-admission-v1", code: "TASK_CLAIM_LOCK_ADMISSION_TIMEOUT", lockAdmission }
+        ...(sourceAdmission ? { kind: "task-claim-source-admission-v1", code: "TASK_CLAIM_SOURCE_ADMISSION_FAILED", sourceAdmission }
+          : lockAdmission ? { kind: "task-claim-lock-admission-v1", code: "TASK_CLAIM_LOCK_ADMISSION_TIMEOUT", lockAdmission }
           : { kind: "task-claim-executor-busy-v1", code: "TASK_CLAIM_EXECUTOR_BUSY", busyReason }),
         taskId: task.id, taskRevision: task.revision, ownerStreamId: task.streamId, claimArguments,
         ...Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName",
