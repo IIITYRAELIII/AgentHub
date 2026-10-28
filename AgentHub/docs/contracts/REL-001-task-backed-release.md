@@ -3303,3 +3303,21 @@ admission or timing out a transport grants no acceptance, publication, replay or
 NO_EFFECT authority. Complete/Delete domain rules and preview/token checks are
 unchanged. The authenticated user's nullable identity uses the same canonical
 ledger; provider identity and inherited execution/custody fences stay intact.
+
+## Release stage persistence under SQLite contention (HUB-368)
+
+The existing asynchronous persistence queue retries only short owner/CAS/receipt
+closures for heartbeat, step admission/settlement, generation storage, publication
+reservation and state advancement. External composition, validation, Git and
+publication effects stay outside those closures. A returned effect result remains
+with its exact worker across a queue contention budget and the existing retry
+cadence; retrying its persistence must not invoke the effect again. Each write
+rechecks the original owner epoch and current durable revision. An identical
+already committed transition is read back without another outbox event.
+
+Addressed draining retains this worker and its owned contention continuation. A
+live foreign owner or durable external waiting condition does not hold the CLI
+open. Task-addressed draining uses effective amended membership, while original
+authorization, generation identities, historical receipts and target fences stay
+immutable. No global lock, busy-timeout increase, new release attempt or G0
+recovery authority is introduced. See ADR-HUB-368-release-persistence-retry.

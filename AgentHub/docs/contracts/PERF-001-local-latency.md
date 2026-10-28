@@ -738,3 +738,15 @@ time. Fast receipt delivery does not claim that composition became faster.
 Transport deadlines remain distinct from real operation outcomes. Only read
 reconnection uses the existing transport cadence; valid work receives no new
 total deadline, arbitrary size cap or global execution lane.
+
+## Error-only release persistence diagnostics (HUB-368)
+
+The existing CommandTrace sink records a release-persistence span only after a
+persistence attempt encounters an error, including a later successful retry. It
+uses the original operation ID and bounded method/transaction-phase/native-code,
+owner-epoch, generation, step, attempt, queue-wait and elapsed metadata. SQL values,
+arguments, error messages, raw paths and content are excluded. Original effect
+and receipt-settlement error codes remain distinguishable. The normal source
+release CLI flushes its existing trace worker before closing the local runtime.
+These observations identify the failing persistence boundary; a controlled writer
+fixture does not establish which process held a historical production lock.

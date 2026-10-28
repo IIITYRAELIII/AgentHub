@@ -920,3 +920,12 @@ original identity and tool cannot be rewritten. A durable outer control receipt
 may acknowledge this admission envelope; only the inner canonical Task receipt
 establishes business completion. Existing domain, source, actor, CAS, Task/repo
 lease, cleanup and publication guards remain mandatory.
+
+## Existing release CLI persistence lifetime (HUB-368)
+
+The source release CLI and Hub share the same durable release service/store.
+Owned SQLite contention does not turn an admitted original into a completed
+command or close its runtime before its retained persistence continuation. The
+CLI still returns at a legitimate external waiting boundary and never waits for
+a foreign owner's lease. Public arguments, authorization, original request IDs
+and generation/recovery policy are unchanged.

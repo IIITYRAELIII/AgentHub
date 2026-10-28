@@ -272,7 +272,9 @@
         "tests/infrastructure/persistence/task-board-journal-scalars.test.mjs",
         "tests/interfaces/web/journal-publication.test.mjs",
         "src/infrastructure/persistence/task-turn-projection.mjs",
-        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs",
+        "tests/application/release-operation-persistence.test.mjs",
+        "docs/decisions/ADR-HUB-368-release-persistence-retry.md"
       ]
     },
     {
@@ -415,7 +417,9 @@
         "tests/public/task-operation-interruption-dom.test.mjs",
         "src/infrastructure/persistence/task-operation-interruption-fence.mjs",
         "tests/application/task-operation-interruption-admission.test.mjs",
-        "tests/infrastructure/persistence/task-operation-user-migration.test.mjs"
+        "tests/infrastructure/persistence/task-operation-user-migration.test.mjs",
+        "tests/application/release-operation-persistence.test.mjs",
+        "docs/decisions/ADR-HUB-368-release-persistence-retry.md"
       ]
     },
     {
@@ -472,7 +476,9 @@
         "tests/public/task-operation-interruption-dom.test.mjs",
         "src/infrastructure/persistence/task-operation-interruption-fence.mjs",
         "tests/application/task-operation-interruption-admission.test.mjs",
-        "tests/infrastructure/persistence/task-operation-user-migration.test.mjs"
+        "tests/infrastructure/persistence/task-operation-user-migration.test.mjs",
+        "tests/application/release-operation-persistence.test.mjs",
+        "docs/decisions/ADR-HUB-368-release-persistence-retry.md"
       ]
     },
     {

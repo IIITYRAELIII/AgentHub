@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { performance } from "node:perf_hooks";
 import { selectedCompositionIdentity } from "../../domain/task-selected-composition.mjs";
 import { normalizedOwnGitPublication } from "../../domain/release-base-provenance.mjs";
 
@@ -255,11 +256,20 @@ function assertDatabaseOwner(database, operationId, expectedOwner) {
   }
 }
 
+function transactionPhase(database, statement, phase) {
+  try { return database.exec(statement); }
+  catch (error) { if (error && typeof error === "object") error.releasePersistencePhase = phase; throw error; }
+}
+
+function diagnosticCode(value) {
+  return /^[A-Z][A-Z0-9_]*$/u.test(String(value ?? "")) ? String(value) : null;
+}
+
 function immediateTransaction(database, operation) {
-  database.exec("BEGIN IMMEDIATE");
+  transactionPhase(database, "BEGIN IMMEDIATE", "begin");
   try {
     const result = operation();
-    database.exec("COMMIT");
+    transactionPhase(database, "COMMIT", "commit");
     return result;
   } catch (error) {
     try { database.exec("ROLLBACK"); } catch {}
@@ -360,11 +370,39 @@ export class ReleaseOperationStore {
   // A retry rereads durable CAS/owner evidence inside the closure.
   async runOperationMutation(operationId, mutation, options = {}) {
     const id = String(operationId);
+    const { persistence = {}, ...queueOptions } = options;
+    const started = performance.now();
+    let firstAttempt = null, attempts = 0, lastError = null, failed = false;
     let queue = this.#mutationQueues.get(id);
     if (!queue) this.#mutationQueues.set(id, queue = new AsyncSqliteMutationQueue());
     try {
-      return await queue.run(mutation, { ...options, requestId: id });
+      return await queue.run(async () => {
+        firstAttempt ??= performance.now();
+        attempts++;
+        try { return await mutation(); }
+        catch (error) { lastError = error; throw error; }
+      }, { ...queueOptions, requestId: id });
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
+      // Error/retry summaries only. No SQL, error text, paths, or payload bytes.
+      if (lastError) {
+        try {
+          this.recordPersistence({ operationId: id, outcome: failed ? "failed" : "succeeded",
+            elapsedMs: performance.now() - started, queueWaitMs: (firstAttempt ?? started) - started,
+            attempts, processId: process.pid, method: persistence.method ?? "mutation",
+            phase: lastError.releasePersistencePhase ?? "body",
+            ownerEpoch: persistence.ownerEpoch ?? null, generation: persistence.generation ?? null,
+            step: persistence.step == null ? null : String(persistence.step).split(":")[0],
+            attempt: persistence.attempt ?? null,
+            errorCode: diagnosticCode(lastError.code) ?? "RELEASE_PERSISTENCE_ERROR",
+            sqliteCode: Number(lastError.errcode) || null,
+            sqlitePrimaryCode: Number(lastError.errcode) ? Number(lastError.errcode) & 0xff : null,
+            causeCode: diagnosticCode(persistence.causeCode ?? lastError.cause?.code),
+            settlementCode: diagnosticCode(lastError.settlementError?.code) });
+        } catch { /* Observability cannot veto the original persistence result. */ }
+      }
       if (queue.diagnostics().queued === 0 && this.#mutationQueues.get(id) === queue) {
         this.#mutationQueues.delete(id);
       }
@@ -375,27 +413,40 @@ export class ReleaseOperationStore {
     return sqliteContention(error);
   }
 
-  constructor({ dataDir, idFactory = randomUUID, now = () => new Date().toISOString() } = {}) {
+  constructor({ dataDir, idFactory = randomUUID, now = () => new Date().toISOString(), recordPersistence = () => {} } = {}) {
     if (!String(dataDir ?? "").trim()) throw new TypeError("dataDir is required");
     this.dataDir = String(dataDir);
     this.idFactory = idFactory;
     this.now = now;
+    this.recordPersistence = recordPersistence;
   }
 
   #withDatabase(callback) {
-    const database = this.#initialized
-      ? new DatabaseSync(runtimeDatabasePath(this.dataDir))
-      : openRuntimeDatabase(this.dataDir);
+    let database, failure, phase = "open";
     try {
+      database = this.#initialized
+        ? new DatabaseSync(runtimeDatabasePath(this.dataDir))
+        : openRuntimeDatabase(this.dataDir);
+      phase = "configure";
       if (!this.#initialized) {
         configure(database);
         this.#initialized = true;
       } else {
         database.exec("PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 0;");
       }
+      phase = "body";
       return callback(database);
+    } catch (error) {
+      failure = error;
+      if (error && typeof error === "object") error.releasePersistencePhase ??= phase;
+      throw error;
     } finally {
-      database.close();
+      try { database?.close(); }
+      catch (error) {
+        error.releasePersistencePhase = "close";
+        if (failure) failure.settlementError = error;
+        else throw error;
+      }
     }
   }
 
@@ -407,7 +458,7 @@ export class ReleaseOperationStore {
       updatedAt: input.updatedAt ?? input.createdAt ?? this.now(),
     });
     return this.#withDatabase((database) => {
-      database.exec("BEGIN IMMEDIATE");
+      transactionPhase(database, "BEGIN IMMEDIATE", "begin");
       try {
         const existing = operationFromRow(database.prepare(`
           SELECT operation_json FROM release_operations WHERE workspace_id = ? AND request_id = ?
@@ -419,7 +470,7 @@ export class ReleaseOperationStore {
         }
         writeOperation(database, operation);
         writeEvent(database, operation, "operation.created", { operationId: operation.operationId, state: operation.state });
-        database.exec("COMMIT");
+        transactionPhase(database, "COMMIT", "commit");
         return { operation, created: true };
       } catch (error) {
         try { database.exec("ROLLBACK"); } catch {}
@@ -476,7 +527,7 @@ export class ReleaseOperationStore {
     const id = String(operationId ?? "").trim();
     if (!id) throw new TypeError("operationId is required");
     return this.#withDatabase((database) => {
-      database.exec("BEGIN IMMEDIATE");
+      transactionPhase(database, "BEGIN IMMEDIATE", "begin");
       try {
         const row = database.prepare(
           "SELECT operation_json FROM release_operations WHERE operation_id = ?",
@@ -547,7 +598,7 @@ export class ReleaseOperationStore {
             nextAction: result.operation.nextAction,
           });
         }
-        database.exec("COMMIT");
+        transactionPhase(database, "COMMIT", "commit");
         return result;
       } catch (error) {
         try { database.exec("ROLLBACK"); } catch {}

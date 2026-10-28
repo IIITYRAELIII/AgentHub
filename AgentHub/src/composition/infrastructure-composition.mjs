@@ -511,6 +511,7 @@ export async function createHubInfrastructure({
     reportDiagnostic: diagnostic => console.warn("Historical release entry unavailable", diagnostic),
   }));
   const { operations: releaseOperations, commands: releaseOperationCommands } = createReleaseOperationServices({
+    recordCommandTrace: span => commandTrace?.service?.recordBestEffort?.(span) ?? false,
     store: releaseOperationStore,
     dataDir: config.dataDir,
     runtimeRoot: runtimeCommandRoot,
