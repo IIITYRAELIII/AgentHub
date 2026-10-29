@@ -6,6 +6,8 @@ import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import { normalizedNativeResolution } from "../../domain/native-resolution-input.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
   from "../../domain/task-selected-composition.mjs";
+import { nativeReuseContext, nativeReuseCandidates, verifiedNativePrefix, retainedNativeConflict } from "./native-merge-reuse.mjs";
+import { measureTaskOperation } from "../process/task-operation-timing.mjs";
 
 // Internal Git sequencing of ReleaseGitWorkspaceService. This has no Task,
 // publication or ref-promotion authority. The application retains those leases.
@@ -420,10 +422,24 @@ export async function mergeSelectedResults({
   root, sourceRoot, baseCommit, tasks, identity, gitAt, readJson, writeJson,
   resolutionReview = null, verifyReview = null,
   deliveredHead = null,
+  reuseContext = null,
+  readLegacyReuseBinding = null,
 }) {
   const repository = path.join(root, "repository");
   const stateFile = path.join(root, "merge.json");
   await mkdir(root, { recursive: true });
+  const reuse = await nativeReuseContext(reuseContext);
+  const identityHash = taskGitIdentityHash(identity);
+  const tasksHash = taskGitIdentityHash(tasks), contextHash = reuseContext == null ? null : taskGitIdentityHash(reuseContext);
+  const assertCurrentInputs = () => {
+    if (taskGitIdentityHash(identity) !== identityHash || taskGitIdentityHash(tasks) !== tasksHash
+        || (reuseContext == null ? null : taskGitIdentityHash(reuseContext)) !== contextHash
+        || reuse && (identity.baseCommit !== baseCommit || taskGitIdentityHash(identity.tasks) !== tasksHash)) {
+      throw failure("Native current selection or provenance changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    }
+  };
+  assertCurrentInputs();
+  const candidates = await nativeReuseCandidates({ root, identity, context: reuse, readLegacyBinding: readLegacyReuseBinding });
   let state = await readJson(stateFile);
   if (state && JSON.stringify(state.identity) !== JSON.stringify(identity)) {
     throw failure("Native merge staging identity changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
@@ -436,17 +452,62 @@ export async function mergeSelectedResults({
     const inputs = [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])];
     // The existing owner may have fetched an exact result with no local ref.
     // Private exact refs include that ancestry without a growing revision argv.
-    await createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt });
-    await gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", bundle, repository]);
+    await measureTaskOperation("native:bundle", () => createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt }));
+    await measureTaskOperation("native:clone", () => gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", bundle, repository]));
     const git = (args) => gitAt(repository, args);
     for (const commit of inputs) {
       await git(["cat-file", "-e", `${commit}^{commit}`]);
     }
     await git(["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);
-    state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null };
+    state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null,
+      ...(reuse ? { reuseContext: reuse } : {}) };
     await writeJson(stateFile, state);
   }
   const git = (args, options) => gitAt(repository, args, options);
+  const beforeTransport = async binding => {
+    assertCurrentInputs();
+    state.reuseTransportIntent = { identityHash, ...binding };
+    await writeJson(stateFile, state);
+    assertCurrentInputs();
+  };
+  let verifiedPrefix = null, verifiedPrefixCount = 0;
+  if (reuse && state.reuseContext && taskGitIdentityHash(state.reuseContext) === taskGitIdentityHash(reuse)
+      && state.next === 0 && !state.merging && !state.conflict && !state.reuseIntent) {
+    const prefix = await verifiedNativePrefix({ root, repository, candidates, tasks, baseCommit, gitAt, beforeTransport,
+      verify: (before, result, target) => verifyMergeStep(git, before, result, target, { identity }) });
+    if (prefix) {
+      verifiedPrefix = prefix;
+      state.reuseIntent = prefix;
+      await writeJson(stateFile, state);
+    }
+  }
+  if (state.reuseIntent) {
+    assertCurrentInputs();
+    if (!reuse || taskGitIdentityHash(state.reuseContext) !== taskGitIdentityHash(reuse)
+        || taskGitIdentityHash(identity) !== identityHash || state.next !== 0 || state.head !== baseCommit
+        || !state.reuseIntent.merges?.length || state.reuseIntent.merges.length > tasks.length) {
+      throw failure("Native prefix reuse intent changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    }
+    let before = baseCommit;
+    for (const [i, step] of state.reuseIntent.merges.entries()) {
+      if (step.taskId !== tasks[i].taskId || step.resultCommit !== tasks[i].resultCommit
+          || verifiedPrefix !== state.reuseIntent && await verifyMergeStep(git, before, step.resultCommit, step.commit, { identity })) {
+        throw failure("Native prefix reuse no longer has ordinary authority", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+      }
+      before = step.commit;
+    }
+    if (before !== state.reuseIntent.head || String(await git(["rev-parse", `${before}^{tree}`])) !== state.reuseIntent.tree) {
+      throw failure("Native reused prefix tree changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    }
+    await requireClean(git);
+    const observed = String(await git(["rev-parse", "HEAD^{commit}"]));
+    if (![baseCommit, before].includes(observed)) throw failure("Native reused prefix checkout changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    if (observed !== before) await git(["checkout", "--detach", "--no-overwrite-ignore", before]);
+    state.merges = state.reuseIntent.merges; state.next = state.merges.length; state.head = before;
+    verifiedPrefixCount = state.next;
+    delete state.reuseIntent;
+    await writeJson(stateFile, state);
+  }
   const input = resolutionReview == null ? null : normalizedNativeResolution(resolutionReview);
   const choices = [];
   if (input?.reviews) {
@@ -542,7 +603,7 @@ export async function mergeSelectedResults({
     if (changedCompatibility && deliveredHead) throw failure("Delivered native compatibility authority cannot change",
       "RELEASE_NATIVE_CHECKOUT_CHANGED");
     const compatibilityReview = incomingCompatibility ?? storedCompatibility;
-    const resolution = await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
+    const resolution = index < verifiedPrefixCount && !compatibilityReview ? null : await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
       { identity, review: step.reviewedResolution?.review ?? compatibilityReview, verifyReview, evidenceRoot: root,
         storedBinding: step.reviewedResolution?.binding, compatibilityReview });
     if (resolution) resolutions.push(resolution);
@@ -584,12 +645,33 @@ export async function mergeSelectedResults({
     }
     if (state.conflict) {
       let head = String(await git(["rev-parse", "HEAD^{commit}"]));
-      const choice = choices.find(item => item.binding.parents[0] === state.head
+      let choice = choices.find(item => item.binding.parents[0] === state.head
         && item.binding.parents[1] === task.resultCommit);
+      if (!choice && reuse && head === state.head) {
+        let retained = state.conflict.retainedResolution;
+        if (!retained && await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]) === task.resultCommit) {
+          await requireUntouchedConflict(git, state.head, task.resultCommit, state.conflict);
+          retained = await retainedNativeConflict({ root, repository, candidates, state, task, identity, gitAt, beforeTransport,
+            verify: (before, result, target) => verifyMergeStep(git, before, result, target, { identity }) });
+        }
+        if (retained) {
+          assertCurrentInputs();
+          if (retained.identityHash !== identityHash || JSON.stringify(retained.parents) !== JSON.stringify([state.head, task.resultCommit])
+              || retained.contextHash !== taskGitIdentityHash(state.conflict.stages.filter(([, entry]) => !entry.endsWith(" 0")))
+              || String(await git(["rev-parse", `${retained.commit}^{tree}`])) !== retained.tree
+              || await verifyMergeStep(git, state.head, task.resultCommit, retained.commit, { identity })) {
+            throw failure("Retained native conflict intent changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+          }
+          state.conflict.retainedResolution = retained;
+          await writeJson(stateFile, state);
+          choice = { binding: retained, review: null, retained: true };
+        }
+      }
       if (head === state.head && choice) {
+        assertCurrentInputs();
         const mergeHead = await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]);
         if (mergeHead === task.resultCommit) await requireUntouchedConflict(git, state.head, task.resultCommit, state.conflict);
-        else if (mergeHead || !state.conflict.reviewedResolution) {
+        else if (mergeHead || !state.conflict.reviewedResolution && !choice.retained) {
           throw failure("Native conflict operation changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
         } else await requireClean(git);
         const accepted = await verifyMergeStep(git, state.head, task.resultCommit, choice.binding.commit,
@@ -666,6 +748,7 @@ export async function mergeSelectedResults({
       if (!paths.length) throw error;
       state.conflict = { paths, stages, automatic: stages.filter(([, entry]) => entry.endsWith(" 0")) };
       await writeJson(stateFile, state);
+      if (reuse && candidates.length) continue;
       throw failure(`Resolve the native Git merge for Task ${task.taskId} in ${repository}`,
         "RELEASE_NATIVE_MERGE_CONFLICT", { conflictRoot: repository, conflicts: paths });
     }
@@ -683,13 +766,15 @@ export async function mergeSelectedResults({
   }
   await requireClean(git);
   if (String(await git(["rev-parse", "HEAD^{commit}"])) !== state.head) throw failure("Native final merge head changed");
-  await assertSelectedContent({ git, baseCommit, tasks, head: state.head, resolutions, identity, merges:state.merges });
+  assertCurrentInputs();
+  await measureTaskOperation("native:selected-content", () => assertSelectedContent({ git, baseCommit, tasks, head: state.head, resolutions, identity, merges:state.merges }));
   // Preserve the original v1 review and add the separately authenticated exact
   // compatibility decision only after full replay validation, before delivery.
   if (compatibilityUpdates.length) {
     for (const {index,resolution} of compatibilityUpdates) state.merges[index].reviewedResolution = resolution;
     await writeJson(stateFile,state);
   }
+  if (state.reuseTransportIntent) { delete state.reuseTransportIntent; await writeJson(stateFile, state); }
   return { root: repository, head: state.head,
     tree: String(await git(["rev-parse", "HEAD^{tree}"])), merges: state.merges };
 }

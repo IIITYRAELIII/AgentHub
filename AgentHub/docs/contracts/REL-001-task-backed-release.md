@@ -754,7 +754,43 @@ Reopen rechecks exact source HEAD/base/branch/cleanliness/process ownership and
 dev checkout under the existing leases before terminal persistence. Restoring
 the exact source permits the same original to finish with no additional Git CAS.
 
-Await recomposes the current selected exact branches from agreed main. Native
+Await prepares the current selected exact branches from agreed main. The same
+native sequencer may reuse a verified unchanged ordered prefix from another
+completed capture, rather than repeat its Git merges. Repository/common directory,
+Workspace, policy, base, whole provenance/history authority and implementation
+stamp must agree. Complete normalized Task entries are compared in order. The
+first changed, removed or reordered entry ends the reusable prefix; no old suffix
+or final HEAD is adopted. Every reused step is verified by the current owner with
+no historical review capability. Extra compatibility bytes still require a new
+exact review. Old journals, identities, receipts and source checkouts stay intact.
+
+There is one narrow pre-upgrade seed: the existing owner may bind its exact current
+prepared checkpoint, immutable manifest, root/ref/common directory, provenance and
+whole native journal/merges/head/tree. It revalidates that complete old candidate
+and its old authority in the new invocation's private Git objects, then rechecks
+each reused prefix step under the new identity without old review. Arbitrary
+unstamped captures and frozen publication bodies do not qualify. Raw checkpoint,
+manifest and journal hashes are rechecked at use. No old journal is stamped or
+enriched. This migration bridge is unnecessary once matching captures carry the
+current implementation context; it does not weaken a current authority refusal.
+
+An identical conflict may reuse only exact whole path/stage/mode/blob context.
+Git objects retain the entire new automatic tree and substitute only the retained
+regular-file conflict entries; the current verifier proves unchanged clean context
+outside actual marker ranges. A new two-parent resolution belongs to the current
+parents and identity. Old review/selected-content exemptions are never transferred.
+Changed contexts or unsupported afterimage forms retain ordinary conflict/review
+handling. This is not a general per-file projector or a promise of no new conflicts.
+Object transport and prefix/retained-resolution checkout intents are persisted in
+the existing new journal before their effects. Reopen validates the actual Git
+readback; dirty/ignored collisions are preserved. No new writer, registry or cache
+authority is introduced. The entire current selected history/content, runtime
+import closure and fresh owning authority/lease/CAS checks still precede promotion.
+Existing original-ID spans distinguish lookup, transport, prefix verification,
+remaining merges and final checks; protected work is not queue-wait evidence.
+See ADR-HUB-372-verified-native-reuse.
+
+Native
 checkout in the exclusive Hub-owned clone precedes ref CAS and is guarded by
 native index/worktree readback. No reset --hard, force checkout, clean or custom
 physical-byte serialization may overwrite a busy checkout. Ignored/private
