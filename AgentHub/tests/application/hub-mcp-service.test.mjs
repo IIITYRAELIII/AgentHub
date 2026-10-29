@@ -2098,7 +2098,9 @@ test("manual public version reaches the same durable release admission and survi
   const forbidden = async () => assert.fail("admission must not run publication inline");
   const operations = new ReleaseOperationService({ store, schedule: () => {}, processAlive: () => true,
     compose: forbidden, validate: forbidden, publishTarget: forbidden, readTarget: forbidden, finalize: forbidden });
-  const { service, token } = await fixture(context, { releaseOperations: operations });
+  const { service, token, taskBoard, tasks } = await fixture(context, { releaseOperations: operations });
+  tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  taskBoard.releaseTasks = () => [tasks.get("task-current")];
   const schema = service.tools().find(tool => tool.name === "hub_release_run").inputSchema;
   assert.equal(schema.required.includes("release_version"), false);
   assert.equal(new RegExp(schema.properties.release_version.pattern, "u").test("3.7.9"), true);
