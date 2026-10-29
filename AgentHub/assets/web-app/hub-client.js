@@ -128,6 +128,7 @@ let selectionTail = Promise.resolve();
 let initialRouteOpening = true;
 const historyRefreshAtByTask = new Map();
 let visibleStreamTaskIds = new Set();
+let retainedHistoryTaskIds = null;
 let boardTaskViewsSource = null;
 let boardTaskViewsCache = [];
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
@@ -448,6 +449,7 @@ function readSelectedTaskId() {
 
 function rememberSelectedTaskId(id) {
   selectedTaskId = String(id ?? "").trim();
+  releaseClosedTaskHistories();
   try {
     if (selectedTaskId) localStorage.setItem(selectedTaskKey, selectedTaskId);
     else localStorage.removeItem(selectedTaskKey);
@@ -3517,11 +3519,31 @@ function enqueueTaskHistoryLoad(id, identity, {
   return state.running;
 }
 
-async function loadVisibleTaskHistories(taskIds) {
+function releaseClosedTaskHistories() {
+  if (!retainedHistoryTaskIds) return;
+  for (const id of historyWindowByTask.keys()) {
+    if (id === selectedTaskId || retainedHistoryTaskIds.has(id)) continue;
+    if (!agentHub.releaseTaskHistory(id)) continue;
+    // Canonical pages are disposable. Durable history, receipt/read cursors,
+    // outgoing sends and active-turn ownership remain with their existing owners.
+    historyRequestGenerationByTask.set(id, (historyRequestGenerationByTask.get(id) ?? 0) + 1);
+    const load = historyLoadStates.get(id);
+    if (load) load.pending = null;
+    historyByTask.delete(id);
+    historyWindowByTask.delete(id);
+    historyPageByTask.delete(id);
+    focusedHistoryWindowByTask.delete(id);
+    historyRefreshAtByTask.delete(id);
+  }
+}
+
+async function loadVisibleTaskHistories(taskIds, retainedTaskIds) {
   const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
     .map((id) => String(id ?? "").trim())
     .filter(Boolean))];
   visibleStreamTaskIds = new Set(ids);
+  retainedHistoryTaskIds = new Set(retainedTaskIds);
+  releaseClosedTaskHistories();
   if (initialRouteOpening) return;
   await Promise.all(ids.map(async (id) => {
     // История выбранного Thread уже загружается open-task. Остальные колонки
@@ -3533,7 +3555,8 @@ async function loadVisibleTaskHistories(taskIds) {
   }));
 }
 
-agentHub.on("workspace:visible-streams", ({ taskIds }) => void loadVisibleTaskHistories(taskIds));
+agentHub.on("workspace:visible-streams", ({ taskIds, retainedTaskIds }) =>
+  void loadVisibleTaskHistories(taskIds, retainedTaskIds));
 
 agentHub.on("devices:refresh", () => void runAction(async () => {
   agentHub.setTrustedDevices({ loading: true });

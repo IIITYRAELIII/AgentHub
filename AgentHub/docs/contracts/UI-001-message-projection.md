@@ -267,6 +267,15 @@ text-prefix guessing nor command replay is a migration path.
 
 ## Canonical reducer
 
+Closing/replacing a Stream in the client's existing open-column layout releases
+its disposable canonical history pages and message projection. Other still-open
+columns, including another Workspace's saved open columns, retain their loaded
+pages. Reopening reads current canonical history with the original provider,
+Thread and Stream identity; it never replays a command or infers read state.
+In-flight pages for a closed column are superseded through the existing request
+generation fence. Pending sends, drafts, queue/live authority and exact read
+receipts are independent and are not evicted with history (ADR-HUB-343).
+
 Hidden or zero-sized chat panes do not automatically expand cached history or
 request older pages. Queued frame and scroll callbacks recheck current visibility;
 returning to a visible short chat resumes viewport filling, and explicit older-page

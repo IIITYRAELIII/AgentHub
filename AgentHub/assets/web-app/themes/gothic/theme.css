@@ -335,12 +335,14 @@ html[data-theme="gothic"] .journal span[data-high-usage] {
 
 /* Неровный источник света остаётся привязан к сцене, а не к интерфейсу. */
 @keyframes gothic-fire {
-  0%, 100% { filter: brightness(0.94); opacity: 0.32; }
-  13% { filter: brightness(1.14); opacity: 0.56; }
-  27% { filter: brightness(0.98); opacity: 0.38; }
-  44% { filter: brightness(1.22); opacity: 0.64; }
-  61% { filter: brightness(1); opacity: 0.42; }
-  82% { filter: brightness(1.08); opacity: 0.5; }
+  /* Screen light intensity: the retained 0.38 opacity times the old brightness.
+     Animate only opacity so this full-viewport layer can stay composited. */
+  0%, 100% { opacity: 0.3572; }
+  13% { opacity: 0.4332; }
+  27% { opacity: 0.3724; }
+  44% { opacity: 0.4636; }
+  61% { opacity: 0.38; }
+  82% { opacity: 0.4104; }
 }
 
 html[data-theme="gothic"] body::before {
@@ -704,7 +706,7 @@ html[data-theme="gothic"] body::before {
     radial-gradient(34% 28% at 50% 18%, rgb(150 174 206 / 18%), transparent 78%),
     radial-gradient(22% 30% at 67% 48%, rgb(108 130 154 / 10%), transparent 80%) !important;
   mix-blend-mode: screen !important;
-  opacity: 0.38 !important;
+  opacity: 0.38;
 }
 
 @media (min-width: 860px) {
