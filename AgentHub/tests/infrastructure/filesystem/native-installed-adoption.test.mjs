@@ -344,7 +344,7 @@ test("native installed source and exact ordinary adoption survive Test, candidat
   // These sequential phases share ONE owned fixture. The existing 240s budget
   // applies to each measured phase, rather than hiding later oracles behind one
   // aggregate timeout. No production timeout or authority boundary changes.
-  let f, first, notes, generationInput, preparedHead, preparedIndex;
+  let f, first, notes, generationInput, preparedHead, preparedIndex, holderEvidence;
   const stage = async (name, run) => {
     let completed = false;
     await t.test(name, { timeout: 240000 }, async context => {
@@ -369,6 +369,9 @@ test("native installed source and exact ordinary adoption survive Test, candidat
     for (const name of ["server", "incoming", "selected"]) assert.ok(await git(first.releaseRoot, ["show", `HEAD:AgentHub/${name}.mjs`]));
   });
   await stage("foreign checkout refusal preserves original holder", async () => {
+    const holder = await f.candidate.frozenCandidate(f.primary);
+    holderEvidence = { checkpointFile: holder.checkpointFile, manifestFile: holder.manifestFile,
+      checkpoint: await readFile(holder.checkpointFile), manifest: await readFile(holder.manifestFile) };
     notes = Buffer.from("# Consolidated release\n");
     await save(first.releaseRoot, "CHANGELOG.md", notes);
     await save(first.releaseRoot, "foreign.txt", "foreign bytes stay intact\n");
@@ -376,25 +379,33 @@ test("native installed source and exact ordinary adoption survive Test, candidat
     preparedHead = await git(first.releaseRoot, ["rev-parse", "HEAD"]);
     preparedIndex = await git(first.releaseRoot, ["ls-files", "--stage", "-z"]);
     await assert.rejects(f.candidate.prepareGeneration(generationInput), error => {
-      assert.equal(error.code, "AWAIT_PREPARATION_UNKNOWN");
-      assert.match(error.message, /checkout changed.*foreign bytes retained/u);
+      // Release capture reads the existing holder; it never retries Await composition.
+      assert.equal(error.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+      assert.match(error.message, /release checkpoint clone is not an exact clean PreRelease checkout/u);
+      assert.match(error.message, /prepare the current Await candidate through the normal owner/u);
       return true;
     });
     assert.equal(await git(first.releaseRoot, ["rev-parse", "HEAD"]), preparedHead);
     assert.equal(await git(first.releaseRoot, ["ls-files", "--stage", "-z"]), preparedIndex);
     assert.deepEqual(await readFile(path.join(first.releaseRoot, "CHANGELOG.md")), notes);
     assert.equal(await readFile(path.join(first.releaseRoot, "foreign.txt"), "utf8"), "foreign bytes stay intact\n");
+    assert.deepEqual(await readFile(holderEvidence.checkpointFile), holderEvidence.checkpoint);
+    assert.deepEqual(await readFile(holderEvidence.manifestFile), holderEvidence.manifest);
   });
   await stage("substituted notes refusal preserves authorized bytes", async () => {
     await unlink(path.join(first.releaseRoot, "foreign.txt"));
     await assert.rejects(f.candidate.prepareGeneration({ ...generationInput, changelogContent: Buffer.from("substituted notes\n") }), error => {
-      assert.equal(error.code, "AWAIT_PREPARATION_UNKNOWN");
-      assert.match(error.message, /checkout changed.*foreign bytes retained/u);
+      // Release capture reads the existing holder; it never retries Await composition.
+      assert.equal(error.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+      assert.match(error.message, /release checkpoint clone is not an exact clean PreRelease checkout/u);
+      assert.match(error.message, /prepare the current Await candidate through the normal owner/u);
       return true;
     });
     assert.equal(await git(first.releaseRoot, ["rev-parse", "HEAD"]), preparedHead);
     assert.equal(await git(first.releaseRoot, ["ls-files", "--stage", "-z"]), preparedIndex);
     assert.deepEqual(await readFile(path.join(first.releaseRoot, "CHANGELOG.md")), notes);
+    assert.deepEqual(await readFile(holderEvidence.checkpointFile), holderEvidence.checkpoint);
+    assert.deepEqual(await readFile(holderEvidence.manifestFile), holderEvidence.manifest);
   });
   await stage("healthy generation and publication freeze retain adoption", async () => {
     const generation = await f.candidate.prepareGeneration(generationInput);
