@@ -21,7 +21,7 @@ import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../i
 import { RELEASE_PROGRESS_RUNTIME_ASSETS, isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { nextRuntimeReleaseVersion } from "../infrastructure/filesystem/runtime-release-version.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
-import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
+import { buildWindowsRuntimeHost, runtimeHostSourceHash, RUNTIME_HOST_SOURCE_INPUTS } from "../infrastructure/process/runtime-host-builder.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 import { migrateUsageSyncServerSetting } from "../infrastructure/filesystem/usage-sync-settings-migration.mjs";
@@ -30,6 +30,7 @@ import { runtimePointerTransition, runtimeRollbackPointer } from "../infrastruct
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const RUNTIME_MODULE_ASSETS = [
+  ...RUNTIME_HOST_SOURCE_INPUTS.map(asset => ["src/infrastructure/process/windows-lock-directory-publication.mjs", asset]),
   ["src/infrastructure/filesystem/preparation-git-isolation.mjs",
     "src/infrastructure/filesystem/git-invocation-policy.json"],
   ["src/infrastructure/process/test-resource-monitor.mjs",

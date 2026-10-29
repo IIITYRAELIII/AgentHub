@@ -3411,3 +3411,23 @@ The existing task-await-cutover CLI's explicit ordinary-test mode only calls
 normal public Test with the original CAS and optional authenticated native
 review, after pinned clean source and canonical repository checks. It grants no
 initial-native, returned, squash or cross-Task cutover authority.
+
+## Complete Windows lock-owner publication
+
+The existing interprocess lock owner writes and syncs its unchanged token owner
+in a unique same-parent ready directory, closes the source handle, then uses the
+fixed RuntimeHost directory-publication mode with MoveFileExW flags zero. Occupied
+directories, files and junctions refuse without replacement or deletion authority.
+Before protected work the owner verifies exact bigint directory/file identities,
+non-following regular entries, full payload and current owner through a retained
+reopened handle. A lost native reply is resolved only by that same exact object
+effect; it never authorizes a second publication attempt. Legacy, live, dead,
+mismatched, released and unknown-owner rules retain their existing authority.
+
+A crash before publication can leave a private ready sibling, not an incomplete
+canonical owner. A crash after publication leaves a complete ordinary owner for
+existing dead-process recovery. Unknown old bytes are not removed or relabelled.
+The native child is joined before readback or shutdown. This is a local Windows
+process-crash protocol; POSIX behavior, remote filesystems and power-failure
+durability receive no new guarantee. Bootstrap and native publication are traced
+separately from admission wait by the existing operation timing owner.

@@ -1421,6 +1421,7 @@ export class ReleaseGitWorkspaceService {
   // checkpoint bytes and source commits remain historical authorities, never
   // migration aliases or new inputs to an ordinary merge.
   async #nativeCutover(clone, checkpoint) {
+    return measureTaskOperation("native:cutover", async () => {
     if (!checkpoint) return null;
     const bytes = await readFile(clone.checkpointFile);
     const manifestBytes = await readFile(checkpoint.manifestFile);
@@ -1473,6 +1474,7 @@ export class ReleaseGitWorkspaceService {
       // This envelope preserves history; it grants no merge-side exception.
       originalTasks: manifest.tasks,
     };
+    });
   }
 
   async promoteGenerationCandidate({ projectRoot, candidate, validateBeforeCommit = null, commitPrepared = null } = {}) {
@@ -1702,6 +1704,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks, expectedPublishedMetadata = undefined }) {
+    return measureTaskOperation("native:history-authority", async () => {
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
       const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
       return { bases: [verified.provenance.sourceBaseCommit,
@@ -1727,6 +1730,7 @@ export class ReleaseGitWorkspaceService {
       throw new Error("Native candidate published metadata authority changed");
     }
     return { bases: [publishedMetadata.commit], metadataBases: [publishedMetadata.commit], adoptions: [], publishedMetadata };
+    });
   }
 
   async inspectNativeAwaitRecovery({ projectRoot, original, frozenTasks } = {}) {
@@ -1969,9 +1973,9 @@ export class ReleaseGitWorkspaceService {
     const tasks = normalizedFrozenTasks(frozenTasks);
     const layout = this.#layout(initial.root);
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
-    const preparationLockStarted = preparationGuard ? performance.now() : null;
+    const preparationLockStarted = performance.now();
     return withInterprocessLocks([lock], async () => {
-      if (preparationGuard) recordTaskOperationTiming("preparation:candidate-lock-wait", {
+      recordTaskOperationTiming("preparation:candidate-lock-wait", {
         durationMs: performance.now() - preparationLockStarted,
       });
       const validateArchive = async () => {
@@ -2170,7 +2174,7 @@ export class ReleaseGitWorkspaceService {
       const historyRequest = { projectRoot: initial.root, provenance, planRevision: revision, tasks };
       let historyAuthority = await this.#nativeHistoryAuthority(historyRequest);
       if (historyAuthority?.publishedMetadata) historyRequest.expectedPublishedMetadata = historyAuthority.publishedMetadata;
-      await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
+      await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
       const composition = await mergeSelectedResults({
@@ -2231,7 +2235,7 @@ export class ReleaseGitWorkspaceService {
           && journal.manifestHash !== manifestHash) {
         throw Object.assign(new Error("A different native preparation remains unresolved"), { code: "AWAIT_PREPARATION_UNKNOWN" });
       }
-      const validate = async () => {
+      const validate = async () => measureTaskOperation("native:promotion-authority", async () => {
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         await validatePreparationMain();
         const current = await primarySnapshot(initial.root);
@@ -2254,7 +2258,7 @@ export class ReleaseGitWorkspaceService {
         }
         await validateLocalSource();
         historyAuthority = await this.#nativeHistoryAuthority(historyRequest);
-        await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
+        await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority }));
         if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
           git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
           adoptions: historyAuthority.adoptions, originCommit: localSource.approvedOriginMainCommit });
@@ -2270,7 +2274,7 @@ export class ReleaseGitWorkspaceService {
             throw Object.assign(new Error("Original Await origin changed after archive"), { code: "AWAIT_PREPARATION_UNKNOWN" });
           }
         }
-      };
+      });
       const requireCheckout = async (head) => {
         if (await git(["rev-parse", "HEAD^{commit}"]) !== head
             || await git(["write-tree"]) !== await git(["rev-parse", `${head}^{tree}`])

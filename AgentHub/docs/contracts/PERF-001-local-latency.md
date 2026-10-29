@@ -737,3 +737,22 @@ resource-accounting owner or starting a child. `none` has no dependency/accounti
 work. Selected files retain current isolation, shared-resource admission and the
 40% cooperative CPU/RAM policy. Selection is not cacheability and not a resource
 waiver. Inventory listing/plan resolution is read-only; it runs no test.
+
+
+## Task preparation timing after detailed retention (HUB-372)
+
+The existing original-operation timing summary retains fixed-class call/error
+counts, suppressed counts, inclusive elapsed sum and maximum even after its
+unchanged 512-detail-span budget. Fixed Git verb classes and named preparation
+owner phases contain no arguments, paths, owner tokens or message/file content.
+Nested inclusive aggregates are not additive wall time, CPU or disk attribution.
+Base/integration evidence, history authority/history checks, cutover and final
+promotion authority retain their existing callbacks and fresh guard order.
+Ordinary candidate-lock admission reports elapsed to protected callback entry;
+the protected body is not reported as queue wait. The same batch/log owner flushes
+the summary on normal success or thrown failure. Process death before summary is
+still incomplete evidence, not a reconstructed aggregate or completed operation.
+Diagnostic sink failure cannot change outcomes. These measurements do not remove
+proofs, cache authority, optimize Await or establish production speedup. The next
+otherwise-required lifecycle check must execute the reviewed instrumented owner;
+merely storing this code in a Task result does not instrument an older runtime.

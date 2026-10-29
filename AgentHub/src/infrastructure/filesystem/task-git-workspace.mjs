@@ -4636,6 +4636,7 @@ export class TaskGitWorkspaceService {
 
   async releaseBaseEvidence({ projectRoot, publishedBaseCommit, tasks = [], lease = null } = {}) {
     this.#assertAvailable("releaseBaseEvidence");
+    return measureTaskOperation("release:base-evidence", async () => {
     const repoRoot = await repositoryRoot(projectRoot);
     const published = exactCommitId(publishedBaseCommit, "published release base");
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
@@ -4658,6 +4659,7 @@ export class TaskGitWorkspaceService {
       }
       return { publishedBaseCommit: published, baseCommit: localMain,
         compositionPolicy: "main-selected-git-merge-v1", adoptions };
+    });
     });
   }
 
@@ -5315,6 +5317,7 @@ export class TaskGitWorkspaceService {
 
   async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null, forwardPreparation = false, synchronizeAcceptedMain = false } = {}) {
     this.#assertAvailable("releaseIntegrationEvidence");
+    return measureTaskOperation("release:integration-evidence", async () => {
     const dev = forwardPreparation ? await this.inspectForwardPreparationDevOwned(projectRoot, { lease })
       : await this.prepareDev(projectRoot, { lease, synchronizeAcceptedMain });
     const firstParentHistory = String(await runGit([
@@ -5476,6 +5479,7 @@ export class TaskGitWorkspaceService {
         || left.taskId.localeCompare(right.taskId)
       )),
     };
+    });
   }
 
   async adoptLegacyResult(params = {}) {
