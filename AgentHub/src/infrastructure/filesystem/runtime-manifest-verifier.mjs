@@ -51,6 +51,8 @@ export function isRuntimeSourceModule(relative) {
 export function isRuntimeSourceFile(relative) {
   const file = normalizedRelative(relative);
   return RUNTIME_TOP_LEVEL_FILES.has(file) || file.startsWith("assets/")
+    // This declared module companion is also required by native source closure.
+    || file === "src/infrastructure/filesystem/git-invocation-policy.json"
     || RELEASE_PROGRESS_RUNTIME_FILES.has(file) || isRuntimeSourceModule(file);
 }
 
