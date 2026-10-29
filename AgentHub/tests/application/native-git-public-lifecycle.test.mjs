@@ -57,6 +57,7 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
   let catalog, store, board, taskGit, releaseGit, preflight, lifecycle, service, token;
   let releaseStore, releaseOperations;
   const ownedReleases = [];
+  let releaseValidationAllowed = false;
   const retainRelease = (owner, store, operationId) => {
     if (!ownedReleases.some(item => item.owner === owner && item.operationId === operationId)) {
       ownedReleases.push({ owner, store, operationId });
@@ -110,7 +111,14 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
       releasePlanner: new TaskReleasePlanService({ taskBoard: board, taskGitWorkspaces: taskGit }),
       taskGitWorkspaces: taskGit, releaseGitWorkspaces: releaseGit,
       readPublicationState: async () => publication,
-      resolveReleaseValidationSource: () => assert.fail("Await must not refresh a shared Contour"),
+      resolveReleaseValidationSource: repositories => {
+        assert.equal(releaseValidationAllowed, true, "Await must not select release validation");
+        assert.equal(repositories.length, 1);
+        assert.equal(repositories[0].projectRoot, primary);
+        assert.equal(repositories[0].worktreeRoot, repositories[0].frozenCandidate.releaseRoot);
+        return { kind: "workspace-release-pipeline", projectRoot: primary,
+          sourceRoot: path.join(repositories[0].worktreeRoot, "AgentHub") };
+      },
       validateProductionCandidate: () => assert.fail("Await must not publish or run broad validation"),
     });
     lifecycle = new TaskLifecycleService({ taskBoard: board, workspaceCatalog: catalog, taskGitWorkspaces: taskGit, releasePreflight: preflight });
@@ -235,18 +243,21 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
       const args = { context_token: token, request_id: requestId, task_ids: (Array.isArray(task) ? task : [task]).map(item => item.id),
         validation_mode: "focused", approved_targets: [{ targetId: "fixture", kind: "git", repositoryRoot: primary,
           approvedLocalMainCommit: base, approvedOriginMainCommit: originMain }] };
-      const commands = new ReleaseOperationCommandService({ releaseOperations, workspaceCatalog: catalog, taskBoard: board });
-      const admit = () => releaseMetadata ? commands.start({ requestId, workspaceId: workspace.id,
-        streamId: stream.id, threadId: "fixture-thread", taskIds: args.task_ids, validationMode: args.validation_mode,
-        approvedTargets: args.approved_targets, releaseMetadata }) : service.call("hub_release_run", args);
-      const ack = await admit();
-      retainRelease(releaseOperations, releaseStore, ack.operationId);
-      const snapshot = await releaseOperations.drain(ack.operationId);
-      const replay = await admit();
-      assert.equal(replay.operationId, ack.operationId);
-      const read = await service.call("hub_release_get", { context_token: token, operation_id: ack.operationId });
-      assert.equal(read.operation.operationId, ack.operationId);
-      return snapshot;
+      releaseValidationAllowed = true;
+      try {
+        const commands = new ReleaseOperationCommandService({ releaseOperations, workspaceCatalog: catalog, taskBoard: board });
+        const admit = () => releaseMetadata ? commands.start({ requestId, workspaceId: workspace.id,
+          streamId: stream.id, threadId: "fixture-thread", taskIds: args.task_ids, validationMode: args.validation_mode,
+          approvedTargets: args.approved_targets, releaseMetadata }) : service.call("hub_release_run", args);
+        const ack = await admit();
+        retainRelease(releaseOperations, releaseStore, ack.operationId);
+        const snapshot = await releaseOperations.drain(ack.operationId);
+        const replay = await admit();
+        assert.equal(replay.operationId, ack.operationId);
+        const read = await service.call("hub_release_get", { context_token: token, operation_id: ack.operationId });
+        assert.equal(read.operation.operationId, ack.operationId);
+        return snapshot;
+      } finally { releaseValidationAllowed = false; }
     },
     async reopen() { await joinReleases(); store.close(); catalog.close(); await open(); },
     async create(name) {
@@ -672,7 +683,7 @@ test("public Test and Await accept only the exact reviewed automatic compatibili
   await f.reopen();
   assert.equal((await f.releaseGit.frozenCandidate(f.primary)).preReleaseHead, awaitCommit);
   const generation = await f.release([a, b], f.base, "compat-prepared-generation");
-  assert.equal(generation.generations.length, 1);
+  assert.equal(generation.generations.length, 1, JSON.stringify(generation.operation.lastError));
   assert.equal(generation.operation.waitReason.code, "validation_failed");
   const captured = generation.generations[0].candidates[0];
   await git(captured.releaseRoot, "merge-base", "--is-ancestor", awaitCommit, captured.commit);
