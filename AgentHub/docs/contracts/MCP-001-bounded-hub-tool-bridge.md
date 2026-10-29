@@ -1,20 +1,5 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
-## Manual public release version (ADR-HUB-371)
-
-`hub_release_run` optionally accepts `release_version`, a complete stable public
-`X.Y.Z` string. The same durable authorization stores it as `releaseVersion` and
-includes it in its existing fingerprint; changing it under the same request ID
-refuses. Omission adds no field and preserves legacy authorization fingerprints
-and automatic patch selection. The existing RM authorization remains required.
-Continuation/readback use the original operation and its frozen version; this
-field is not an amendment or a way to re-version admitted generations.
-
-The existing source `release.mjs run` accepts this business argument in its
-`--request-file` JSON. The operator `publish:changed -- --version X.Y.Z` forwards
-the same intent through its existing Desktop release command. Neither entry
-writes package metadata directly or creates another publisher.
-
 ## Historical direct publication cleanup
 
 Release Manager-only `hub_task_complete completion_mode=published_delivery`
@@ -81,6 +66,21 @@ The same original transition records its prior failure and forward evidence
 before native cleanup. Partial deletion and lost replies retain that identity;
 terminal readback settles only that original. No no-effect claim, new Delete
 ID, raw receipt replacement or transfer of a separate claim's UNKNOWN occurs.
+## Manual public release version (ADR-HUB-371)
+
+`hub_release_run` optionally accepts `release_version`, a complete stable public
+`X.Y.Z` string. The same durable authorization stores it as `releaseVersion` and
+includes it in its existing fingerprint; changing it under the same request ID
+refuses. Omission adds no field and preserves legacy authorization fingerprints
+and automatic patch selection. The existing RM authorization remains required.
+Continuation/readback use the original operation and its frozen version; this
+field is not an amendment or a way to re-version admitted generations.
+
+The existing source `release.mjs run` accepts this business argument in its
+`--request-file` JSON. The operator `publish:changed -- --version X.Y.Z` forwards
+the same intent through its existing Desktop release command. Neither entry
+writes package metadata directly or creates another publisher.
+
 ## Normal release continuation (ADR-0132)
 
 `hub_release_run` authorizes and captures the whole existing prepared PreRelease
