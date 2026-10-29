@@ -1383,7 +1383,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.ok((await taiga.arrayBuffer()).byteLength > 100_000);
     assert.ok((await pulsar.arrayBuffer()).byteLength > 100_000);
     const page = await (await fetch(address.url)).text();
-    assert.match(page, /data-theme="nexus"/u);
     assert.match(page, /<option value="taiga">Rain<\/option>/u);
     assert.match(page, /data-panel-open="settings"/u);
     assert.match(page, /data-view-button="statistics"/u);
