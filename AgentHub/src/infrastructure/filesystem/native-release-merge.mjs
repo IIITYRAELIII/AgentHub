@@ -248,6 +248,25 @@ function contentCompatibilityReview(review) {
   return Object.hasOwn(envelope, "selectedContentCompatibility") ? review : null;
 }
 
+async function laterSelectedAutomaticContext(git, baseCommit, tasks, merges, index, file) {
+  const entry = async ref => new Map(await entries(git,
+    ["--literal-pathspecs", "ls-tree", "--full-tree", "-z", ref, "--", file])).get(file) ?? null;
+  for (let later = tasks.length - 1; later > index; later--) {
+    const task = tasks[later], taskBase = task.baseCommit || baseCommit;
+    const prefixCommit = merges[later - 1].commit;
+    const prefixEntry = await entry(prefixCommit);
+    if (prefixEntry === await entry(task.resultCommit)) continue;
+    const automaticTree = String(await git(["merge-tree", "--write-tree", "--name-only", "-z",
+      prefixCommit, task.resultCommit], { acceptableExitCodes: [1] })).split("\0")[0];
+    if (!/^[a-f0-9]{40}$/u.test(automaticTree)) throw failure("Later selected automatic context is unavailable");
+    const automaticEntry = await entry(automaticTree);
+    if (automaticEntry === prefixEntry) continue;
+    return { taskId: task.taskId, baseCommit: taskBase, resultCommit: task.resultCommit,
+      prefixCommit, automaticTree, automaticEntry };
+  }
+  return null;
+}
+
 async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
   const targetTree = String(await git(["rev-parse", `${head}^{tree}`]));
   const target = new Map(await entries(git, ["ls-tree", "-r", "-z", targetTree]));
@@ -280,9 +299,18 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
       prefixCommit, task.resultCommit], { acceptableExitCodes: [1] })).split("\0")[0];
     if (!/^[a-f0-9]{40}$/u.test(automaticTree)) throw failure("Native automatic context is unavailable");
     const automatic = new Map(await entries(git, ["ls-tree", "-r", "-z", automaticTree]));
-    for (const file of missing.sort()) obligations.push({taskId:task.taskId,baseCommit:task.baseCommit || baseCommit,
-      resultCommit:task.resultCommit,replayTree,path:file,expectedEntry:expected.get(file) ?? null,
-      retainedEntry:target.get(file) ?? null,prefixCommit,automaticTree,automaticEntry:automatic.get(file) ?? null});
+    for (const file of missing.sort()) {
+      const retainedEntry = target.get(file) ?? null, automaticEntry = automatic.get(file) ?? null;
+      // Earlier accepted content can be deliberately changed by a later selected
+      // result. Derive its actual automatic context, but still require exact
+      // independent acceptance of this complete replay obligation below.
+      const laterAutomaticContext = retainedEntry === automaticEntry ? null
+        : await laterSelectedAutomaticContext(git, baseCommit, tasks, merges, index, file);
+      obligations.push({taskId:task.taskId,baseCommit:task.baseCommit || baseCommit,
+        resultCommit:task.resultCommit,replayTree,path:file,expectedEntry:expected.get(file) ?? null,
+        retainedEntry,prefixCommit,automaticTree,automaticEntry,
+        ...(laterAutomaticContext ? {laterAutomaticContext} : {})});
+    }
   }
   const binding = {kind:"selected-content-compatibility-v1",identityHash:taskGitIdentityHash(identity),
     selectedTasks:tasks.map(task=>({taskId:task.taskId,baseCommit:task.baseCommit || baseCommit,resultCommit:task.resultCommit})),
@@ -303,7 +331,9 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     for (const index of capability.acceptedObligations) {
       const obligation = obligations[index];
       if (!Number.isSafeInteger(index) || index < 0 || !obligation || accepted.has(index)
-          || obligation.retainedEntry !== obligation.automaticEntry) {
+          || (obligation.retainedEntry !== obligation.automaticEntry
+            && (!obligation.laterAutomaticContext
+              || obligation.retainedEntry !== obligation.laterAutomaticContext.automaticEntry))) {
         throw failure("Selected-content compatibility does not retain the exact automatic entry", "RELEASE_NATIVE_REVIEW_REQUIRED");
       }
       accepted.add(index);

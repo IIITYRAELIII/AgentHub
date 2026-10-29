@@ -413,7 +413,8 @@
         "src/infrastructure/filesystem/cleanup-preservation.mjs",
         "src/application/task-release-plan-service.mjs",
         "tests/application/prepared-release-boundary.test.mjs",
-        "docs/decisions/ADR-HUB-364-whole-prepared-release.md"
+        "docs/decisions/ADR-HUB-364-whole-prepared-release.md",
+        "docs/decisions/ADR-HUB-364-later-selected-content.md"
       ]
     },
     {

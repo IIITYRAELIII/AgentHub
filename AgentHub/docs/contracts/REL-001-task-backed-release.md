@@ -850,6 +850,15 @@ gain no authority; source/base/body/selection drift and stale proofs refuse.
 An undelivered capture retains its original v1 review and adds the separately
 authenticated compatibility review only after full validation, before delivery.
 Prepared and historical readback repeat both authentication and the full replay.
+When that original automatic entry differs from the retained entry, the owner may
+also derive the last later selected result whose native automatic merge changes
+that path from its actual prefix. Its exact Task/base/result, prefix, automatic tree and
+entry are included in the same obligation. Explicit independent acceptance may
+retain that later automatic entry; no missing effect is accepted automatically.
+An unrelated later edit, changed body/source/prefix/selection or stale proof gains
+no authority. Existing successful bindings without this additional context remain
+byte-exact; no fake edit is needed to manufacture a reviewed diff. See
+ADR-HUB-364-later-selected-content.
 Text conflict resolution also preserves Git's clean context outside its marker
 ranges; replacing a whole conflicted file does not grant permission to discard
 those bytes. Such extra changes use the existing exact compatibility-review

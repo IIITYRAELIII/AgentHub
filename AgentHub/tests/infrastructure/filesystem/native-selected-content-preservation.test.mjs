@@ -331,3 +331,86 @@ test("exact signed replay obligations preserve automatic context without widenin
   await assert.rejects(assertNativePreparedComposition({...readback,merges:forged}),/whole review must be authenticated/u);
   assert.equal(await gitAt(f.sourceRoot,["show-ref","--heads"]),`${taskBase} refs/heads/main`);
 });
+
+test("a later selected deletion needs exact reviewed automatic context rather than restoring the earlier case", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.sourceRoot, "selection.txt"), "old selected\napproved policy case\n");
+  await writeFile(path.join(f.sourceRoot, "cleanup.txt"), "retained cleanup behavior\n");
+  const earlier = await commit(f.sourceRoot, "earlier cleanup and policy case");
+  const later = await f.create("explicit later policy case deletion", "old selected\n", earlier);
+  const sourceRefsBefore = await gitAt(f.sourceRoot, ["show-ref", "--heads"]);
+  const tasks = [{ taskId: "cleanup", baseCommit: f.base, resultCommit: earlier },
+    { taskId: "correction", baseCommit: f.base, resultCommit: later }];
+  const identity = { policy: NATIVE_RELEASE_POLICY, baseCommit: f.base, tasks };
+  let derived;
+  await assert.rejects(f.compose(f.base, tasks), error => {
+    assert.equal(error.code, "RELEASE_SELECTED_CONTENT_MISSING");
+    derived = error.selectedContentCompatibilityBinding;
+    return true;
+  });
+  assert.equal(derived.obligations.length, 1);
+  const obligation = derived.obligations[0];
+  assert.equal(obligation.taskId, "cleanup");
+  assert.equal(obligation.path, "selection.txt");
+  assert.notEqual(obligation.retainedEntry, obligation.automaticEntry);
+  const stateFile = path.join(f.root, "capture", "merge.json");
+  const before = await readJson(stateFile);
+  const repository = path.join(f.root, "capture", "repository");
+  const head = before.head;
+  const parents = (await gitAt(repository, ["show", "-s", "--format=%P", head])).split(" ");
+  const tree = await gitAt(repository, ["rev-parse", "HEAD^{tree}"]);
+  const automaticTree = (await gitAt(repository, ["merge-tree", "--write-tree", "--name-only", "-z", ...parents],
+    { acceptableExitCodes: [1] })).split("\0")[0];
+  const binding = { identityHash: taskGitIdentityHash(identity), parents, commit: head, tree, automaticTree,
+    diffSha256: createHash("sha256").update(await gitAt(repository,
+      ["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree], { rawOutput: true })).digest("hex") };
+  const text = capability => "<native-merge-review>" + JSON.stringify({ kind: "native-merge-review-v1",
+    verdict: "ACCEPT", binding, ...(capability ? { selectedContentCompatibility: capability } : {}) }) + "</native-merge-review>";
+  const v1 = { requestId: "same-native-without-content-authority", text: text(null) };
+  const authenticated = new Set([v1.text]);
+  const verifyReview = async (input, actual) => {
+    assert.ok(authenticated.has(input.text));
+    assert.deepEqual(actual, binding);
+  };
+  await assert.rejects(f.compose(f.base, tasks, { resolutionReview: v1, verifyReview }),
+    { code: "RELEASE_SELECTED_CONTENT_MISSING" });
+  assert.deepEqual(await readJson(stateFile), before);
+  const capability = { binding: derived, acceptedObligations: [0] };
+  const approval = { requestId: "exact-later-selected-deletion", text: text(capability) };
+  authenticated.add(approval.text);
+  const value = await f.compose(f.base, tasks, { resolutionReview: approval, verifyReview });
+  assert.equal(value.head, head);
+  assert.equal(value.tree, tree);
+  assert.deepEqual(obligation.laterAutomaticContext, { taskId: "correction", baseCommit: f.base,
+    resultCommit: later, prefixCommit: parents[0], automaticTree,
+    automaticEntry: obligation.retainedEntry });
+  assert.equal(await gitAt(repository, ["show", "HEAD:selection.txt"]), "old selected");
+  assert.equal(await gitAt(repository, ["show", "HEAD:cleanup.txt"]), "retained cleanup behavior");
+  const readback = { git: (args, options) => gitAt(repository, args, options), baseCommit: f.base,
+    tasks, merges: value.merges, head, tree, identity, verifyReview };
+  await assertNativePreparedComposition(readback);
+  assert.equal((await f.compose(f.base, tasks, { verifyReview })).head, head);
+  const beforeDrift = await readJson(stateFile);
+  const mutations = [
+    proof => { delete proof.binding.obligations[0].laterAutomaticContext; },
+    proof => { proof.binding.obligations[0].laterAutomaticContext.taskId = "foreign"; },
+    proof => { proof.binding.obligations[0].laterAutomaticContext.resultCommit = earlier; },
+    proof => { proof.binding.obligations[0].laterAutomaticContext.baseCommit = earlier; },
+    proof => { proof.binding.obligations[0].laterAutomaticContext.prefixCommit = f.base; },
+    proof => { proof.binding.obligations[0].laterAutomaticContext.automaticTree = f.base; },
+    proof => { proof.binding.obligations[0].laterAutomaticContext.automaticEntry = obligation.expectedEntry; },
+  ];
+  for (const mutate of mutations) {
+    const changed = structuredClone(capability); mutate(changed);
+    const review = { requestId: "authenticated-but-drifted", text: text(changed) }; authenticated.add(review.text);
+    const merges = structuredClone(value.merges);
+    merges.at(-1).reviewedResolution.compatibilityReview = review;
+    await assert.rejects(assertNativePreparedComposition({ ...readback, merges }), { code: "RELEASE_NATIVE_REVIEW_REQUIRED" });
+  }
+  const noCapability = structuredClone(value.merges);
+  noCapability.at(-1).reviewedResolution = { review: v1, binding };
+  await assert.rejects(assertNativePreparedComposition({ ...readback, merges: noCapability }),
+    { code: "RELEASE_SELECTED_CONTENT_MISSING" });
+  assert.deepEqual(await readJson(stateFile), beforeDrift);
+  assert.equal(await gitAt(f.sourceRoot, ["show-ref", "--heads"]), sourceRefsBefore);
+});
