@@ -207,7 +207,9 @@ test("manual public version survives the actual preflight generation boundary", 
 
 test("installed local source generation reuses the sealed exact selection without changing agreed main", async () => {
   const f = localSourceFixture();
+  let generationCalls = 0;
   f.service.releaseGitWorkspaces.prepareGeneration = async request => {
+    generationCalls++;
     assert.equal(request.approvedBaseCommit, f.p.sourceBaseCommit);
     assert.equal(request.baseProvenance.agreedMainCommit, f.p.agreedMainCommit);
     await request.validateBeforeCommit();
@@ -218,7 +220,8 @@ test("installed local source generation reuses the sealed exact selection withou
   assert.equal(result.releaseCandidates[0].baseCommit, f.p.sourceBaseCommit);
   f.candidate.manifest.tasks = [{ ...f.plan.ready[0], resultCommit: "0".repeat(40) }];
   await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
-    operationId: "release-other", generation: 1, taskIds: ["task-current"] }), /selection changed/);
+    operationId: "release-other", generation: 1, taskIds: ["task-current"] }), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  assert.equal(generationCalls, 1, "stale selection must refuse before another generation is captured");
 });
 
 test("installed local source preflight verifies the sealed source base rather than silently using main", async () => {
