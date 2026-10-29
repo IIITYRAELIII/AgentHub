@@ -2027,7 +2027,8 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   const calls = [];
   const snapshots = new Map();
   const releaseOperations = {
-    start: (input) => {
+    start: ({ resolveAuthorization, ...input }) => {
+      input.authorization = resolveAuthorization(null);
       calls.push(["start", input]);
       const operationId = "release-operation-1";
       snapshots.set(operationId, { operation: { operationId, workspaceId: input.workspaceId, state: "compose", revision: 1 } });
@@ -2040,7 +2041,9 @@ test("HubMcpService exposes cursor events and one durable release operation owne
     },
     setEventDelivery() {},
   };
-  const { service, token } = await fixture(context, { releaseOperations });
+  const { service, token, taskBoard, tasks } = await fixture(context, { releaseOperations });
+  tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  taskBoard.releaseTasks = () => [tasks.get("task-current")];
   const events = await service.call("hub_events_list", { context_token: token, after_sequence: 4 });
   assert.equal(events.events[0].sequence, 5);
   assert.equal(events.nextSequence, 5);
@@ -2053,6 +2056,7 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   });
   assert.equal(ack.operationId, "release-operation-1");
   assert.equal(calls[0][1].authorization.validationMode, "full");
+  assert.deepEqual(calls[0][1].authorization.taskIds, ["task-current"]);
   assert.equal(Object.hasOwn(calls[0][1].authorization, "releaseMetadata"), false);
   const snapshot = await service.call("hub_release_get", {
     context_token: token, operation_id: ack.operationId,
@@ -2087,14 +2091,16 @@ test("HubMcpService forwards original-addressed reviewed-main recovery through t
 
 test("HubMcpService carries exact release metadata through the domain and byte-checking composition owner", async (context) => {
   let admitted;
-  const { service, token, projectRoot } = await fixture(context, { releaseOperations: {
-    start: (input) => {
-      admitted = createReleaseOperation({ ...input, operationId: input.requestId,
+  const { service, token, projectRoot, taskBoard, tasks } = await fixture(context, { releaseOperations: {
+    start: ({ resolveAuthorization, ...input }) => {
+      admitted = createReleaseOperation({ ...input, authorization: resolveAuthorization(null), operationId: input.requestId,
         runnerVersion: "test", createdAt: "2026-10-18T00:00:00.000Z" });
       return { accepted: true, operationId: admitted.operationId };
     },
     get() {}, continue() {}, setEventDelivery() {},
   } });
+  tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  taskBoard.releaseTasks = () => [tasks.get("task-current")];
   const bytes = Buffer.from("release notes\r\n", "utf8");
   const sourcePath = path.join(projectRoot, "CHANGELOG.md");
   await writeFile(sourcePath, bytes);

@@ -102,8 +102,12 @@ or optimization of ordinary full Await composition is introduced.
 
 New public release authorization binds `taskScope=all_await` and retains the
 initial exact Task IDs as its immutable admission snapshot. Optional `task_ids`
-is only an expected-whole-set assertion, never a subset selector. A generation
-binds its actually captured full membership in existing `authorizedTaskIds`.
+is only an expected-whole-set assertion, never a subset selector.
+Original request lookup and identity matching precede mutable Await derivation
+in the same durable admission transaction. Replays use the original admission
+snapshot, even after Await additions/removals; changed caller/options still refuse.
+A generation binds its actually captured full membership in existing
+`authorizedTaskIds`.
 Before publication admission the existing Await boundary compares the complete
 current set; changes recapture a later generation on the same operation.
 Already admitted publication stays pinned to its original generation/effects.

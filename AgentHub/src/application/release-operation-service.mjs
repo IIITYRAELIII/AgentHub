@@ -222,11 +222,11 @@ export class ReleaseOperationService {
     this.withTaskSelection = withTaskSelection;
   }
 
-  start({ requestId, workspaceId, streamId, threadId, authorization } = {}) {
+  start({ requestId, workspaceId, streamId, threadId, authorization, resolveAuthorization = null } = {}) {
     const created = this.store.create({
       requestId, workspaceId, streamId, threadId, authorization,
       runnerVersion: this.runnerVersion,
-    });
+    }, { resolveAuthorization });
     this.#observe(created.operation.operationId);
     this.#schedule(created.operation.operationId);
     return {

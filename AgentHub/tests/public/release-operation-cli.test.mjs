@@ -133,9 +133,10 @@ test("public CLI admits repository-scale release metadata through the command ow
   let admitted = null;
   const commands = new ReleaseOperationCommandService({
     releaseOperations: {
-      start: (input) => {
+      start: ({ resolveAuthorization, ...input }) => {
         admitted = createReleaseOperation({
           ...input,
+          authorization: resolveAuthorization(null),
           operationId: "operation-large-metadata",
           runnerVersion: "test-runner",
           createdAt: "2026-09-23T00:00:00.000Z",
@@ -154,6 +155,8 @@ test("public CLI admits repository-scale release metadata through the command ow
     },
     taskBoard: {
       task: (taskId) => ({ id: taskId, workspaceId: f.manifest.workspaceId }),
+      releaseTasks: () => f.manifest.tasks.map(({ taskId }) => ({ id: taskId,
+        status: "open", workflowStatus: "awaiting_implementation" })),
     },
   });
   const control = async (action, params) => {
@@ -171,6 +174,7 @@ test("public CLI admits repository-scale release metadata through the command ow
       : JSON.stringify(file.endsWith("checkpoint.json") ? f.checkpoint : f.manifest),
   });
   assert.equal(admitted.authorization.releaseMetadata.byteLength, releaseNotes.length);
+  assert.deepEqual(admitted.authorization.taskIds, ["task-a", "task-b"]);
   assert.equal(Buffer.byteLength(JSON.stringify(admitted.authorization), "utf8") < 1024 * 1024, true);
   assert.equal(admitted.streamId, "stream-1");
   assert.equal(admitted.threadId, "thread-1");

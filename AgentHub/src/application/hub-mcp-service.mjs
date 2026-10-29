@@ -2,7 +2,7 @@ import { createHash, createHmac, timingSafeEqual, randomUUID } from "node:crypto
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { preparedAwaitTaskIds } from "./release-operation-command-service.mjs";
+import { preparedAwaitAuthorization } from "./release-operation-command-service.mjs";
 
 import {
   MAX_ATTACHMENT_BYTES,
@@ -2560,20 +2560,20 @@ export class HubMcpService {
         catch (cause) { throw new ReleasePreparationRejectedError(cause.message); }
       }
     }
+    const authorization = {
+      validationMode: requiredText(args.validation_mode, "validation mode", 32),
+      approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
+      ...(args.test_selection !== undefined ? { testSelection: args.test_selection } : {}),
+      ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
+      ...(args.release_version !== undefined ? { releaseVersion: args.release_version } : {}),
+    };
     return this.#releaseOperation().start({
       requestId: requiredText(args.request_id, "request id", 200),
       workspaceId,
       streamId: context.streamId,
       threadId: context.auditThreadId,
-      authorization: {
-        taskIds: preparedAwaitTaskIds(this.taskBoard, workspaceId, args.task_ids),
-        taskScope: "all_await",
-        validationMode: requiredText(args.validation_mode, "validation mode", 32),
-        approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
-        ...(args.test_selection !== undefined ? { testSelection: args.test_selection } : {}),
-        ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
-        ...(args.release_version !== undefined ? { releaseVersion: args.release_version } : {}),
-      },
+      authorization,
+      resolveAuthorization: preparedAwaitAuthorization(this.taskBoard, workspaceId, args.task_ids, authorization),
     });
   }
 

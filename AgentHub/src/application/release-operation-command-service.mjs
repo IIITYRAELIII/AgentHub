@@ -23,6 +23,28 @@ export function preparedAwaitTaskIds(taskBoard, workspaceId, expectedTaskIds = n
   return taskIds;
 }
 
+// The existing durable admission owner invokes this after looking up the
+// original, under its creation transaction. Mutable Await is only a NEW intake.
+export function preparedAwaitAuthorization(taskBoard, workspaceId, expectedTaskIds, authorization) {
+  return original => {
+    const taskIds = original
+      ? expectedTaskIds?.length
+        ? [...new Set(expectedTaskIds.map(value => requiredText(value, "taskId")))].sort()
+        : original.authorization.taskIds
+      : preparedAwaitTaskIds(taskBoard, workspaceId, expectedTaskIds);
+    if (!original) for (const taskId of taskIds) {
+      const task = taskBoard.task(taskId);
+      if (!task || task.workspaceId !== workspaceId) {
+        throw new Error(`Task ${taskId} is not available in the release Workspace`);
+      }
+    }
+    return { ...authorization, taskIds,
+      ...(original
+        ? original.authorization.taskScope == null ? {} : { taskScope: original.authorization.taskScope }
+        : { taskScope: "all_await" }) };
+  };
+}
+
 export class ReleaseOperationCommandService {
   constructor({ releaseOperations, workspaceCatalog, taskBoard } = {}) {
     for (const name of ["start", "get", "continue"]) requiredMethod(releaseOperations, name);
@@ -37,33 +59,26 @@ export class ReleaseOperationCommandService {
   start({ requestId, workspaceId, streamId, threadId, taskIds, validationMode, approvedTargets, releaseMetadata = null, testSelection = null, releaseVersion = undefined } = {}) {
     const targetWorkspaceId = requiredText(workspaceId, "workspaceId");
     if (!this.workspaceCatalog.workspace(targetWorkspaceId)) throw new Error("Workspace not found");
-    const selectedTaskIds = preparedAwaitTaskIds(this.taskBoard, targetWorkspaceId, taskIds);
-    selectedTaskIds.map((taskId) => {
-      const task = this.taskBoard.task(taskId);
-      if (!task || task.workspaceId !== targetWorkspaceId) {
-        throw new Error(`Task ${taskId} is not available in the release Workspace`);
-      }
-    });
     const workspace = this.workspaceCatalog.hierarchy().find((item) => item.id === targetWorkspaceId);
     const initiatorStreamId = requiredText(streamId, "streamId");
     const initiatorThreadId = requiredText(threadId, "threadId");
     const stream = workspace?.streams?.find((item) => item.id === initiatorStreamId);
     const thread = stream?.threads?.find((item) => item.threadId === initiatorThreadId);
     if (!stream || !thread) throw new Error("release operation requires the exact initiating Stream and Thread");
+    const authorization = {
+      validationMode: requiredText(validationMode, "validationMode"),
+      approvedTargets: Array.isArray(approvedTargets) ? approvedTargets : [],
+      ...(testSelection != null ? { testSelection } : {}),
+      ...(releaseMetadata ? { releaseMetadata } : {}),
+      ...(releaseVersion === undefined ? {} : { releaseVersion }),
+    };
     return this.releaseOperations.start({
       requestId: requiredText(requestId, "requestId"),
       workspaceId: targetWorkspaceId,
       streamId: initiatorStreamId,
       threadId: initiatorThreadId,
-      authorization: {
-        taskIds: selectedTaskIds,
-        taskScope: "all_await",
-        validationMode: requiredText(validationMode, "validationMode"),
-        approvedTargets: Array.isArray(approvedTargets) ? approvedTargets : [],
-        ...(testSelection != null ? { testSelection } : {}),
-        ...(releaseMetadata ? { releaseMetadata } : {}),
-        ...(releaseVersion === undefined ? {} : { releaseVersion }),
-      },
+      authorization,
+      resolveAuthorization: preparedAwaitAuthorization(this.taskBoard, targetWorkspaceId, taskIds, authorization),
     });
   }
 

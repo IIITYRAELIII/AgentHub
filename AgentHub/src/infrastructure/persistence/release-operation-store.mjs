@@ -465,19 +465,28 @@ export class ReleaseOperationStore {
     }
   }
 
-  create(input = {}) {
-    const operation = createReleaseOperation({
+  create(input = {}, { resolveAuthorization = null } = {}) {
+    if (resolveAuthorization != null && typeof resolveAuthorization !== "function") {
+      throw new TypeError("resolveAuthorization must be a function");
+    }
+    const materialize = authorization => createReleaseOperation({
       ...input,
+      authorization,
       operationId: input.operationId ?? this.idFactory(),
       createdAt: input.createdAt ?? this.now(),
       updatedAt: input.updatedAt ?? input.createdAt ?? this.now(),
     });
+    const immediate = resolveAuthorization ? null : materialize(input.authorization);
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
         const existing = operationFromRow(database.prepare(`
           SELECT operation_json FROM release_operations WHERE workspace_id = ? AND request_id = ?
-        `).get(operation.workspaceId, operation.requestId));
+        `).get(immediate?.workspaceId ?? String(input.workspaceId ?? "").trim(),
+          immediate?.requestId ?? String(input.requestId ?? "").trim()));
+        // Resolve a new snapshot only after the original lookup, in the SAME
+        // transaction. A racing intake cannot replace the saved admission.
+        const operation = immediate ?? materialize(resolveAuthorization(existing ? structuredClone(existing) : null));
         if (existing) {
           if (!sameCreationIdentity(existing, operation)) throw new Error("release operation request identity conflict");
           database.exec("ROLLBACK");
