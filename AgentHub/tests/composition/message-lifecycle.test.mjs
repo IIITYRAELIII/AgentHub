@@ -3211,6 +3211,20 @@ test("only tagged transport failures change the Hub connection state", () => {
   assert.equal(transportError.message, "fetch failed");
 });
 
+test("browser attachment storage timeout is not reported as a Hub disconnection", () => {
+  for (const name of ["TimeoutError", "AbortError"]) {
+    const error = new Error("локальное хранилище не ответило за 5 секунд");
+    error.name = name;
+    error.attachmentStorageCode = "timeout";
+    assert.equal(lifecycle.looksLikeConnectionFailure(error), false);
+    assert.equal(lifecycle.hubErrorMessage(error), error.message);
+    assert.equal(lifecycle.isConnectionFailure(error), false);
+  }
+  const network = new Error("fetch timed out"); network.name = "TimeoutError";
+  assert.equal(lifecycle.looksLikeConnectionFailure(network), true);
+  assert.equal(lifecycle.hubErrorMessage(network), "Нет связи с Agent Hub.");
+});
+
 test("remote attachment failures are shown in Russian", () => {
   assert.equal(
     lifecycle.hubErrorMessage(new Error("remote attachment not found")),
