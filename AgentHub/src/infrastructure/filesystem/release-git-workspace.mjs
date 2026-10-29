@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
+import { normalizeReleaseVersion } from "../../domain/release-operation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
@@ -1071,7 +1072,7 @@ export class ReleaseGitWorkspaceService {
     }
   }
 
-  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent,
+  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent, releaseVersion,
     exactBaseProvenance = false, verificationRoot = null }) {
     const layout = this.#layout(projectRoot);
     const stale = message => Object.assign(new Error(`${message}; prepare the current Await candidate through the normal owner`),
@@ -1128,7 +1129,8 @@ export class ReleaseGitWorkspaceService {
         commit: source.preReleaseHead, tree: source.tree, manifestHash: source.manifestHash,
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
         inputHash: sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit, tasks, baseProvenance,
-          changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)) })) };
+          changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)),
+          ...(releaseVersion !== undefined ? { releaseVersion } : {}) })) };
       return { binding, candidate: { ...source, baseProvenance, frozenTasks: tasks,
         mergedTaskIds: tasks.map(task => task.taskId),
         manifest: { ...manifest, ...(baseProvenance ? { baseProvenance } : {}), preparedCandidate: binding } } };
@@ -1139,9 +1141,10 @@ export class ReleaseGitWorkspaceService {
     operationId, generation, planRevision, projectRoot, workspaceId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
-    ephemeral = false, nativeResolutionReview = null,
+    ephemeral = false, nativeResolutionReview = null, releaseVersion = undefined,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
+    if (releaseVersion !== undefined) normalizeReleaseVersion(releaseVersion);
     const operation = String(operationId ?? "").trim();
     const generationNumber = Number(generation);
     if (!operation || !Number.isSafeInteger(generationNumber) || generationNumber < 1) {
@@ -1171,7 +1174,8 @@ export class ReleaseGitWorkspaceService {
         if (existingPrepared) identity = existingIdentity;
         if (!existingIdentity) await writeJsonAtomic(identityFile, identity);
         const preparedInput = { projectRoot: sourceRoot, workspaceId, planRevision,
-          frozenTasks, approvedBaseCommit, baseProvenance, changelogContent };
+          frozenTasks, approvedBaseCommit, baseProvenance, changelogContent,
+          ...(releaseVersion !== undefined ? { releaseVersion } : {}) };
         const generationLayout = this.#layout(sourceRoot);
         const localCheckpointFile = path.join(generationDataDir, "release-repositories", generationLayout.repositoryKey, "checkpoint.json");
         const localCheckpoint = freezePublication ? await readJson(localCheckpointFile) : null;
@@ -1179,7 +1183,8 @@ export class ReleaseGitWorkspaceService {
         if (freezePublication) {
           const inputHash = sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit,
             tasks: normalizedFrozenTasks(frozenTasks), baseProvenance,
-            changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)) }));
+            changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)),
+            ...(releaseVersion !== undefined ? { releaseVersion } : {}) }));
           if (existingPrepared && existingPrepared.inputHash !== inputHash) {
             throw Object.assign(new Error("Original generation prepared input changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
           }
@@ -1282,6 +1287,7 @@ export class ReleaseGitWorkspaceService {
           expectedPreparedHead: candidate.preReleaseHead,
           changelogContent: frozenChangelog,
           reusePersistedChangelog: Boolean(localCheckpoint?.publicationFreeze),
+          ...(releaseVersion !== undefined ? { expectedVersion: releaseVersion } : {}),
           validateBeforeCommit: validatePrepared,
         });
         const frozen = await isolated.frozenCandidate(sourceRoot);

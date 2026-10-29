@@ -929,6 +929,7 @@ export class HubMcpService {
       }, ["expected_arguments_hash", "expected_preparation_revision"]),
       tool("hub_release_run", "Authorize the whole current prepared Await/PreRelease set and return one durable release operation id. Optional task_ids asserts that entire membership; release captures the existing prepared candidate without recomposing Task branches.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
+        release_version: { type: "string", pattern: "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$", description: "Optional complete public X.Y.Z version for this new release intent. Omit for automatic patch selection. A frozen retry retains its original version." },
         task_ids: { type: "array", minItems: 1, items: { type: "string" } },
         validation_mode: { type: "string", enum: ["focused", "full"] },
         test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {

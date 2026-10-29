@@ -26,6 +26,19 @@ function fixture(selection) {
   return { adapter, calls };
 }
 
+test("manual public version forwards the original authorization to generation preparation", async () => {
+  const { adapter } = fixture([]);
+  const calls = [];
+  adapter.releasePreflight.prepareOperationGeneration = async input => { calls.push(input); return { releaseCandidates: [], planRevision: "plan" }; };
+  const operation = { operationId: "original", workspaceId: "workspace", selectedResults: [],
+    authorization: { taskIds: ["task-a"], approvedTargets: [], fingerprint: "original", releaseVersion: "3.7.9" } };
+  await adapter.compose({ operation, generation: 1 });
+  assert.equal(calls[0].releaseVersion, "3.7.9");
+  delete operation.authorization.releaseVersion;
+  await adapter.compose({ operation, generation: 2 });
+  assert.equal(Object.hasOwn(calls[1], "releaseVersion"), false);
+});
+
 test("publication reservation uses the Workspace Await boundary for the exact generation", async () => {
   const selectedResults = [
     { taskId: "task-b", resultCommit: "result-b", acceptanceRevision: 3 },

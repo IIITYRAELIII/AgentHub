@@ -59,6 +59,10 @@ test("release command service binds the public request to a real initiating Thre
   }]);
   assert.deepEqual(service.get({ operationId: "operation-1" }), { operationId: "operation-1" });
   assert.deepEqual(service.continue({ operationId: "operation-1" }), { operationId: "operation-1" });
+  service.start({ requestId: "manual-version", workspaceId: workspace.id, streamId: "stream-1", threadId: "thread-old",
+    taskIds: ["task-a"], validationMode: "full", approvedTargets: [{ targetId: "production", kind: "agent-hub-publication" }],
+    releaseVersion: "3.7.9" });
+  assert.equal(calls.at(-1)[1].authorization.releaseVersion, "3.7.9");
 });
 
 test("release command service fails before admission without a real Thread", () => {

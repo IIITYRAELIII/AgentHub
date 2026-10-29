@@ -700,7 +700,7 @@ export class WorkspaceReleasePreflightService {
     reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
     prospectiveOnly = false, freezeGeneration = true, ephemeralGeneration = false,
     previousSelectedResults = [], preparation = null, nativeAwaitRecovery = null,
-    nativeResolutionReview = null,
+    nativeResolutionReview = null, releaseVersion = undefined,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -928,6 +928,7 @@ export class WorkspaceReleasePreflightService {
         ...(generationIdentity ? { freezePublication: freezeGeneration } : {}),
         ...(generationIdentity ? { ephemeral: ephemeralGeneration } : {}),
         ...(generationIdentity ? { changelogContent } : {}),
+        ...(generationIdentity && releaseVersion !== undefined ? { releaseVersion } : {}),
         validateBeforeCommit: async () => {
           await validatePlan(); await validateBases();
           if (preparation) await this.measureOperation("preparation:precommit-pins", preparation.validate);

@@ -72,6 +72,7 @@ export class WorkspaceReleaseOperationAdapter {
       approvedRepositories: approvedRepositories(operation),
       ...(operation.authorization.releaseVersion !== undefined ? { releaseVersion: operation.authorization.releaseVersion } : {}),
       ...(changelogContent ? { changelogContent } : {}),
+      ...(operation.authorization.releaseVersion !== undefined ? { releaseVersion: operation.authorization.releaseVersion } : {}),
     });
     const selectedResults = prepared.releaseCandidates.flatMap((candidate) => (
       candidate.frozenTasks.map((task) => ({

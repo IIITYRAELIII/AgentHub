@@ -20,7 +20,7 @@ async function commit(root, message) {
   await git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", message);
   return git(root, "rev-parse", "HEAD");
 }
-async function fixture(t, { versioned = false } = {}) {
+async function fixture(t, { versioned = false, publicVersion = "2026.10.12" } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "ng-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const origin = path.join(root, "origin.git");
@@ -32,8 +32,8 @@ async function fixture(t, { versioned = false } = {}) {
   await writeFile(path.join(primary, "shared.txt"), "first\nsecond\nthird\n");
   if (versioned) {
     await mkdir(path.join(primary, "AgentHub"));
-    await writeFile(path.join(primary, "AgentHub/package.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12" }));
-    await writeFile(path.join(primary, "AgentHub/package-lock.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12", packages: { "": { name: "agent-hub", version: "2026.10.12" } } }));
+    await writeFile(path.join(primary, "AgentHub/package.json"), JSON.stringify({ name: "agent-hub", version: publicVersion }));
+    await writeFile(path.join(primary, "AgentHub/package-lock.json"), JSON.stringify({ name: "agent-hub", version: publicVersion, packages: { "": { name: "agent-hub", version: publicVersion } } }));
   }
   const base = await commit(primary, "main");
   await git(primary, "push", "origin", "main");
@@ -195,6 +195,34 @@ test("one native sequencer call consumes reviewed resolutions and reopens a lost
   await assert.rejects(mergeSelectedResults(tampered), /digest changed/u);
   assert.equal(await git(completed.root, "reflog", "--format=%H"), reflog);
   assert.equal(await git(f.primary, "rev-parse", "HEAD"), baseCommit);
+});
+
+test("manual public version freezes all three numbers and reopens its original interrupted intent", { timeout: 120000 }, async t => {
+  const f = await fixture(t, { versioned: true, publicVersion: "2.0.3" });
+  const a = await f.result("A", "a.txt", "accepted\n");
+  const request = { ...f.request([a]), operationId: "manual-version-original", generation: 1, releaseVersion: "3.7.9" };
+  const prepared = await f.service.prepareCandidate(f.request([a]));
+  const key = createHash("sha256").update(`${request.operationId}:1:${f.primary}`).digest("hex").slice(0, 24);
+  const checkpointFile = path.join(f.root, "data", "release-gens", key, "release-repositories",
+    path.basename(path.dirname(prepared.releaseRoot)), "checkpoint.json");
+  await assert.rejects(f.service.prepareGeneration({ ...request, validateBeforeCommit: async () => {
+    const checkpoint = await readFile(checkpointFile, "utf8").then(JSON.parse, error => { if (error.code === "ENOENT") return null; throw error; });
+    if (checkpoint?.publicationFreeze) throw new Error("controlled interruption after version intent");
+  } }), /controlled interruption after version intent/u);
+  const before = JSON.parse(await readFile(checkpointFile, "utf8"));
+  assert.equal(before.publicationFreeze.releaseVersion, "3.7.9");
+  const reopened = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
+  await assert.rejects(reopened.prepareGeneration({ ...request, releaseVersion: "4.8.10" }), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  const { releaseVersion: _manual, ...omitted } = request;
+  await assert.rejects(reopened.prepareGeneration(omitted), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  const frozen = await reopened.prepareGeneration(request);
+  assert.equal(frozen.manifest.publication.releaseVersion, "3.7.9");
+  assert.equal(frozen.manifest.publication.runtimeReleaseVersion, before.publicationFreeze.runtimeReleaseVersion);
+  const reflog = await git(frozen.releaseRoot, "reflog", "show", "PreRelease");
+  assert.equal((await reopened.prepareGeneration(request)).preReleaseHead, frozen.preReleaseHead);
+  assert.equal(await git(frozen.releaseRoot, "reflog", "show", "PreRelease"), reflog);
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
+  assert.equal(JSON.parse(await readFile(path.join(f.primary, "AgentHub/package.json"), "utf8")).version, "2.0.3");
 });
 
 test("normal publication generation prepares its candidate without a separate prepare command", { timeout: 120000 }, async t => {
