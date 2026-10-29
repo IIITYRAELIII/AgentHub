@@ -27,7 +27,7 @@ import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
   selectedCompositionFilePlan,
 } from "./selected-composition-materializer.mjs";
-import { TaskDependencyPendingError, TaskClaimLockAdmissionError } from "../../domain/task-board-task.mjs";
+import { TaskDependencyPendingError, TaskClaimLockAdmissionError, TaskClaimSourceAdmissionError } from "../../domain/task-board-task.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
 import { readClaimCustodyWip, copyClaimCustodyWip } from "./claim-source-custody.mjs";
 import { claimCustodyHash } from "../../domain/claim-forward-custody.mjs";
@@ -614,6 +614,7 @@ async function assertNoTaskChangelogChanges(root) {
 export class TaskGitWorkspaceService {
   #contourExternalEffects;
   #claimLockAdmissionErrors = new WeakMap();
+  #claimSourceAdmissionErrors = new WeakMap();
 
   constructor({
     dataDir,
@@ -1478,6 +1479,11 @@ export class TaskGitWorkspaceService {
     this.#assertAvailable("claimAdmissionNoEffectEvidence");
     const { taskId, projectRoot, operationId = null, error } = params;
     const id = normalizedTaskId(taskId);
+    // Only this invocation's live read-only discovery boundary issues the proof.
+    // Do not rerun discovery on the invalid root or infer it from error text.
+    const sourceAdmission = this.#claimSourceAdmissionErrors.get(error);
+    if (sourceAdmission && sourceAdmission.taskId === id && sourceAdmission.operationId === operationId
+        && samePath(sourceAdmission.projectRoot, projectRoot)) return sourceAdmission;
     const repositoryRootValue = await repositoryIdentityFromPath(projectRoot);
     const lockAdmission = this.#claimLockAdmissionErrors.get(error);
     if (lockAdmission && lockAdmission.taskId === id && lockAdmission.operationId === operationId
@@ -2858,9 +2864,23 @@ export class TaskGitWorkspaceService {
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(id);
     const selectedRoot = canonicalPath(projectRoot);
-    const selectedWorktreeRoot = await worktreeRoot(selectedRoot);
-    const selection = taskSparseCheckoutSelection(selectedWorktreeRoot, selectedRoot);
-    const repoRoot = await repositoryRoot(projectRoot);
+    let selection, repoRoot;
+    try {
+      // These commands only discover source identity; no refs, worktrees,
+      // dependency preparation or Task assignment have been admitted yet.
+      const selectedWorktreeRoot = await worktreeRoot(selectedRoot);
+      selection = taskSparseCheckoutSelection(selectedWorktreeRoot, selectedRoot);
+      repoRoot = await repositoryRoot(projectRoot);
+    } catch (error) {
+      if (typeof claimOperationId !== "string" || !claimOperationId) throw error;
+      await requiredGuardLease(lease).assertOwned();
+      const refusal = new TaskClaimSourceAdmissionError(error);
+      this.#claimSourceAdmissionErrors.set(refusal, Object.freeze({
+        version: 1, kind: "task-git-source-admission-v1", phase: "before-prepare",
+        taskId: id, operationId: claimOperationId, projectRoot: selectedRoot,
+      }));
+      throw refusal;
+    }
     let prepareEntered = false;
     const workspace = await this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
       prepareEntered = true;

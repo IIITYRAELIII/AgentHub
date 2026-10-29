@@ -400,6 +400,18 @@ and argument identity and observed Task CAS, then becomes terminal `failed` with
 work, failures after callback entry, forged typed errors and legacy error text
 do not acquire this proof. No shorter timeout, retry or lock removal is added.
 
+A fresh claim refused during read-only source identity discovery may likewise
+seal `task-claim-source-admission-v1`, with `TASK_CLAIM_SOURCE_ADMISSION_FAILED`.
+The live Task Git owner binds the selected project locator and exact invocation
+before any repository preparation callback, dependency work or Task assignment;
+the Task lease and existing catalog CAS must still hold. The original locator,
+even when it is not a Git repository, owns subsequent sealed-refusal readback.
+Correcting routing does not retry that refused ID: a separately requested new
+ordinary claim may proceed, preserving existing managed dirty bytes. Generic
+fatal text, forged typed errors, lost ownership, post-prepare failures and old
+unsealed originals remain insufficient. Existing UNKNOWN/forward-custody rules
+are unchanged. See ADR-HUB-367-source-discovery-refusal.
+
 The existing RM `hub_task_operation_reconcile` can read or settle this sealed
 claim refusal using the original operation ID and exact recorded repository
 locator, without workflow/Git recovery or new assignment. Active original workers,
