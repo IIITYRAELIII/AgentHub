@@ -1132,7 +1132,8 @@ export class WorkspaceReleasePreflightService {
       });
       const reviewedBase = localSource?.sourceBaseCommit ?? (native ? audit.localMain : audit.originMain);
       if (candidate.baseCommit !== reviewedBase || candidate.manifest?.baseCommit !== candidate.baseCommit) {
-        throw new Error(`prepared PreRelease base does not match reviewed main for ${repository.projectRoot}; integrate the reviewed changes through a Task`);
+        throw Object.assign(new Error(`prepared PreRelease base does not match reviewed main for ${repository.projectRoot}; integrate the reviewed changes through a Task`),
+          verifyOnly ? { code: "RELEASE_PREPARED_CANDIDATE_STALE" } : {});
       }
       const actualProvenance = normalizedReleaseBaseProvenance(
         candidate.manifest?.baseProvenance ?? null, candidate.baseCommit,

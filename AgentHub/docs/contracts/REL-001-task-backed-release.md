@@ -96,6 +96,13 @@ The release freezes version and consolidated CHANGELOG into its own immutable
 generation only after current membership/content/history/import closure/base
 and authority checks. Missing or stale preparation leaves the same operation
 waiting for normal lifecycle preparation; it never silently repairs the set.
+An expired exact local/origin main approval is likewise a prepared-candidate
+waiting condition, not terminal publication failure. Once origin is corrected,
+an older prepared base still refuses capture until its normal preparation owner
+has integrated accepted main and rebuilt the complete Await composition. Neither
+refusal advances a generation or authorizes release-side composition; the same
+original operation and authorization remain available for continuation.
+
 See ADR-HUB-364-whole-prepared-release, which supersedes ADR-0132's release-side
 automatic preparation decision. Primary bytes remain intact; no prefix cache
 or optimization of ordinary full Await composition is introduced.

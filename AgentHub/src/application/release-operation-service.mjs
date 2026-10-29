@@ -91,6 +91,7 @@ function classifiedFailure(error, state, now, retryDelayMs) {
         nextAction: "read back this original candidate effect before continuation",
         lastError: { ...details, step: state },
       };
+    case "RELEASE_MAIN_APPROVAL_STALE":
     case "RELEASE_PREPARED_CANDIDATE_STALE":
       return {
         state: "waiting", currentStep: state, resumeState: "compose",

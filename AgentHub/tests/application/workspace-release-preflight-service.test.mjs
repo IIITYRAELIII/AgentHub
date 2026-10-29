@@ -243,6 +243,24 @@ test("stale prepared publication provenance remains a typed capture refusal with
   assert.deepEqual(f.candidate, before, "refusal must preserve the prepared holder and evidence");
 });
 
+test("stale prepared base refuses capture with a typed code and preserves ordinary preflight refusal", async () => {
+  const f = localSourceFixture();
+  f.candidate.baseCommit = "0".repeat(40);
+  f.candidate.manifest.baseCommit = f.candidate.baseCommit;
+  const before = structuredClone(f.candidate);
+  f.service.releaseGitWorkspaces.prepareGeneration = () => assert.fail("stale base cannot capture a generation");
+  const check = (error, capture) => {
+    assert.match(error.message, /prepared PreRelease base does not match reviewed main/u);
+    assert.equal(error.code, capture ? "RELEASE_PREPARED_CANDIDATE_STALE" : undefined);
+    return true;
+  };
+  await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
+    operationId: "release-original", generation: 1, taskIds: ["task-current"] }), error => check(error, true));
+  await assert.rejects(f.service.preflight({ workspaceId: "workspace-1",
+    expectedPlanRevision: f.plan.revision }), error => check(error, false));
+  assert.deepEqual(f.candidate, before);
+});
+
 test("installed local source preflight verifies the sealed source base rather than silently using main", async () => {
   const f = localSourceFixture();
   const result = await f.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: f.plan.revision });
