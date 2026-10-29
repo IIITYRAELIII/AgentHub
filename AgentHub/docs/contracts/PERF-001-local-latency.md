@@ -243,6 +243,17 @@ monotonic durations and original UTC endpoints are captured before the work and
 submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.
 A process failure before trace initialization cannot leave these records; the
 startup error log remains the evidence for that boundary.
+The same startup span may record content-free SQLite recovery phases before the
+trace worker exists: database-lock admission, recovery-lock acquisition, marker
+and intent reads, rollback/resume, database inspection/quarantine and lock release.
+Admission ends at protected callback entry; protected recovery duration is not
+labelled lock wait. Only fixed phase/outcome and elapsed/UTC scalars are retained,
+without database paths, owner tokens or SQL content. Successful phase observations
+flush through the same trace worker; failure before that worker remains in the
+ordinary startup log. Diagnostic failure cannot change recovery or admission.
+Missing terminal phases and a passing private restart do not establish a
+historical holder or resolve the original stalled startup.
+
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
 startup, on writes and at most once per minute while idle. Limit maintenance
