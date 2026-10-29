@@ -3114,6 +3114,31 @@ function traceHistoryCard(id, history, { liveBefore, cleared, commandId }) {
   }));
 }
 
+function firstCurrentLatestHistory(result, id) {
+  const history = result?.history;
+  if (!history || result.focusedTurn || history.notModified === true
+    || history.transportTruncated === true || historyPageByTask.has(id)
+    || historyWindowByTask.get(id)?.length || focusedHistoryWindowByTask.has(id)) return false;
+  // Only the global snapshot generation may have advanced. A response from a
+  // different runtime, Thread or explicit history window remains superseded.
+  const baseline = responseSnapshotBaselines.get(result);
+  const separator = typeof baseline === "string" ? baseline.indexOf("\0") : -1;
+  const serverKey = snapshotServerKey(observedServerIdentity);
+  if (!serverKey || separator < 0 || baseline.slice(separator + 1) !== serverKey) return false;
+  const current = representativeSnapshotTasks(lastSnapshot?.tasks).find((task) => (
+    taskId(task.provider, task.threadId, task.streamId) === id
+  ));
+  if (!history.streamId || !sameIdentity(current, history)) return false;
+  const { start, end, total } = history;
+  if (![start, end, total].every(Number.isSafeInteger) || start < 0 || start >= end
+    || end !== total || !Array.isArray(history.items) || history.items.length !== end - start) return false;
+  return displayedFinalAcknowledgement({
+    messages: historyMessages(history).filter((message) => message.kind !== "subagent"),
+    final: current?.latestFinal,
+    selectTask: true, taskId: id,
+  });
+}
+
 function applyOpened(result, {
   preserveScroll = false,
   skipSnapshot = false,
@@ -3128,7 +3153,17 @@ function applyOpened(result, {
     return;
   }
   const id = taskId(history.provider, history.threadId, history.streamId);
-  if (!result?.focusedTurn && snapshotResponseIsStale(result)) {
+  const staleSnapshot = !result?.focusedTurn && snapshotResponseIsStale(result);
+  const firstCurrentPage = staleSnapshot && selectTask && !exactNavigation
+    && firstCurrentLatestHistory(result, id);
+  if (staleSnapshot) {
+    const commandId = commandTrace.objectId(result);
+    if (commandId) commandTrace.record("ui-control", "history-page-decision", 0, commandId, {
+      trigger: "first-open", render: firstCurrentPage ? "current" : "stale",
+      count: Array.isArray(history.items) ? history.items.length : 0,
+    });
+  }
+  if (staleSnapshot && !firstCurrentPage) {
     // The embedded history belongs to the same old open-task response as its
     // snapshot. Keep any newer final already rendered while finishing the
     // user's navigation, then load this Thread from its current authority.
@@ -3144,6 +3179,11 @@ function applyOpened(result, {
     if (!skipSnapshot) void refresh();
     return;
   }
+  // History and its optional global snapshot have separate authority. Retain
+  // the newer snapshot, but display the exact still-current first local page
+  // without awaiting another provider/history refresh. Read ACK remains owned
+  // by the existing rendered-final/after-paint path below.
+  if (firstCurrentPage) skipSnapshot = true;
   if (history.notModified === true) {
     const page = historyPageByTask.get(id);
     if (page) page.version = history.version;
@@ -3980,7 +4020,6 @@ function sendUserMessage(request, frozenParams = null) {
         if (route.hash) replaceRoute(route.hash);
         agentHub.showSelectedTask();
       }
-      renderTaskMessages(request.taskId);
       renderTaskQueue(request.taskId, result?.snapshot ?? lastSnapshot);
       renderTaskMessages(request.taskId);
     },

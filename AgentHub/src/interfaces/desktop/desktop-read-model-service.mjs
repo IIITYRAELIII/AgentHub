@@ -1,6 +1,7 @@
 export class DesktopReadModelService {
   constructor({
     snapshot,
+    resolveReadTask,
     readStateStore,
     trustedDeviceUserId,
     hasAllowedUsers = () => false,
@@ -10,6 +11,7 @@ export class DesktopReadModelService {
     commandTrace = null,
   } = {}) {
     if (typeof snapshot !== "function") throw new TypeError("snapshot is required");
+    if (typeof resolveReadTask !== "function") throw new TypeError("resolveReadTask is required");
     if (!readStateStore || typeof readStateStore.markRead !== "function") {
       throw new TypeError("readStateStore is required");
     }
@@ -22,6 +24,7 @@ export class DesktopReadModelService {
     if (typeof hasUnread !== "function") throw new TypeError("hasUnread is required");
     Object.assign(this, {
       snapshotImpl: snapshot,
+      resolveReadTask,
       readStateStore,
       trustedDeviceUserId,
       hasAllowedUsers,
@@ -143,16 +146,18 @@ export class DesktopReadModelService {
     const accountId = this.accountId(context);
     const commandId = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u.test(params?.clientTraceId ?? "")
       ? params.clientTraceId : "";
-    const resolve = () => this.snapshotImpl({ accountId });
-    const snapshot = this.commandTrace?.measureBestEffort
+    // Resolve the exact catalog/selection identity and its saved final through
+    // the same read owner. Board, telemetry, live payloads and server snapshots
+    // are unrelated to this cursor write and must not gate its receipt.
+    const resolve = () => this.resolveReadTask({
+      provider: requested?.provider,
+      threadId: requested?.threadId,
+      streamId: params?.streamId,
+    });
+    const task = this.commandTrace?.measureBestEffort
       ? await this.commandTrace.measureBestEffort({ commandId, stage: "read-final-resolve", transport: "server" }, resolve)
       : await resolve();
-    const task = (Array.isArray(snapshot?.tasks) ? snapshot.tasks : []).find((entry) => (
-      String(entry?.provider ?? "").trim().toLowerCase()
-        === String(requested?.provider ?? "").trim().toLowerCase()
-      && String(entry?.threadId ?? "").trim() === String(requested?.threadId ?? "").trim()
-    ));
-    const current = this.latestFinal(task);
+    const current = task ? this.latestFinal(task) : null;
     const recordDecision = (decision) => this.commandTrace?.recordBestEffort?.({
       commandId, stage: "read-final-decision", transport: "server", outcome: "succeeded",
       metadata: { decision, ...(current ? { provider: current.provider, threadId: current.threadId,

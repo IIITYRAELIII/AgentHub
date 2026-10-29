@@ -64,6 +64,12 @@ navigation. Legacy citations already bound to shortened content are not rewritte
 
 ## Invariants
 
+A message, live-answer or queue update in one supplementary visible Stream
+refreshes that column without replacing the other current columns. Their scroll,
+expanded disclosures and the selected composer remain intact. A changed layout,
+selection or missing/foreign rendered binding still uses the canonical full-deck
+rebuild; partial rendering never supplies message, read or lifecycle authority.
+
 - Local sending is visible before a transport response. The exact durable Hub
   ACK updates that same command immediately, before snapshot/history refresh;
   its final selected state and displayed delivery label must agree. Explicit
@@ -719,6 +725,21 @@ No new cursor table, timestamp rewrite or background reconciliation is introduce
 (ADR-0112). Existing legacy-revision migration guards remain narrowly scoped.
 Cached history may be returned with the open response, but provider/history
 hydration starts strictly as background work and is never awaited by mark-read.
+The read owner resolves that exact catalog (or still-selected transient) Thread
+and its saved final without building the full conversation/board/telemetry/server
+snapshot. A supplied Stream must match the same identity. Account resolution,
+final revision comparison, cursor serialization and durable receipt remain on
+their existing owners; no cached final or receipt grants read authority.
+
+An unrelated global snapshot advance does not invalidate a first canonical
+latest history page. The client may display that page while refusing its stale
+embedded snapshot only when the runtime, current Stream/provider/Thread and
+latest terminal revision still match exactly, the complete page ends at its
+reported total, and no canonical or focused window exists yet. Navigation and
+history-generation fences still apply. An existing page, explicit older-page
+intent, changed binding or newer final cannot be replaced through this path.
+Read acknowledgement still requires actual rendered final and after-paint
+eligibility; receipt of the page alone never clears unread state.
 
 ## Migration guards
 

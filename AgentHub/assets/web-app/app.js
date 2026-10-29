@@ -4584,6 +4584,8 @@ function renderStreamChatPreview(task) {
   const preview = el("article", {
     class: "stream-chat-preview",
     "data-stream-chat-task-id": task.id,
+    "data-stream-chat-provider": String(task.provider ?? ""),
+    "data-stream-chat-thread-id": String(task.threadId ?? ""),
   });
   preview.addEventListener("click", (event) => {
     if (event.target.closest("a, button, input, textarea, select, summary")) return;
@@ -4672,7 +4674,7 @@ function renderStreamChatPreview(task) {
 let renderedStreamChatDeckKey = "";
 
 function renderStreamChatDeck() {
-  const { force = false } = arguments[0] ?? {};
+  const { force = false, refreshTaskId = "" } = arguments[0] ?? {};
   if (!streamChatColumns) return;
   const selected = currentTask();
   const visible = visibleWorkspaceStreamTasks();
@@ -4683,6 +4685,28 @@ function renderStreamChatDeck() {
     && streamChatColumns.querySelectorAll(".stream-chat-preview").length
       === shown.filter((task) => task.id !== selected?.id).length;
   if (!force && deckStructureIntact && deckKey === renderedStreamChatDeckKey) return;
+  // A payload update belongs to one preview. Rebuild the full deck only when
+  // its structure or exact current bindings no longer match the rendered DOM.
+  // Unrelated columns retain their scroll, disclosures and event ownership.
+  if (force && refreshTaskId && deckStructureIntact && deckKey === renderedStreamChatDeckKey) {
+    const columns = Array.from(streamChatColumns.querySelectorAll(".stream-chat-preview"));
+    const exactColumns = shown.filter((task) => task.id !== selected?.id).every((task) => {
+      const matches = columns.filter((node) => node.dataset.streamChatTaskId === task.id);
+      return matches.length === 1
+        && matches[0].dataset.streamChatProvider === String(task.provider ?? "")
+        && matches[0].dataset.streamChatThreadId === String(task.threadId ?? "")
+        && matches[0].style.order === String(shown.indexOf(task));
+    });
+    const index = shown.findIndex((task) => task.id === refreshTaskId && task.id !== selected?.id);
+    const existing = columns.find((node) => node.dataset.streamChatTaskId === refreshTaskId);
+    if (index >= 0 && existing && exactColumns
+      && chatPane.dataset.streamChatTaskId === String(selected?.id ?? "")) {
+      const preview = renderStreamChatPreview(shown[index]);
+      preview.style.order = String(index);
+      existing.replaceWith(preview);
+      return;
+    }
+  }
   const selectedIndex = shown.findIndex((task) => task.id === selected?.id);
   for (const preview of streamChatColumns.querySelectorAll(".stream-chat-preview")) preview.remove();
   chatPane.hidden = selectedIndex < 0;
@@ -4706,7 +4730,7 @@ function renderStreamChatDeck() {
 
 function refreshSupplementaryStreamChat(taskId) {
   if (taskId === state.selectedId || !state.visibleStreamTaskIds.includes(taskId)) return;
-  renderStreamChatDeck({ force: true });
+  renderStreamChatDeck({ force: true, refreshTaskId: taskId });
 }
 
 function renderTaskItem(task, { workspaceGrouped = false } = {}) {
