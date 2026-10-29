@@ -42,3 +42,15 @@ test("inactive, authenticated remote and scrubbed local preparation share policy
     && Object.keys(before).every(key => process.env[key] === before[key]), true,
   "argument construction must not change process environment");
 });
+
+test("owned clone configuration survives server environment clearing without changing other Git verbs", () => {
+  const args = ["--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "clone", "clone", "--no-local", "fixture.bundle", "owned"];
+  const expected = ["-c", "core.longpaths=true", ...args.slice(0, 6), "--config=core.longpaths=true", ...args.slice(6)];
+  const configured = ownedGitArguments(args, { platform: "win32" });
+  assert.deepEqual(configured, expected);
+  assert.deepEqual(ownedGitArguments(configured, { platform: "win32" }), configured);
+  const fetch = ["-C", "clone", "fetch", "clone", "commit"];
+  assert.deepEqual(ownedGitArguments(fetch, { platform: "win32" }), ["-c", "core.longpaths=true", ...fetch]);
+  assert.equal(ownedGitArguments(args, { platform: "linux" }), args);
+  assert.equal(ownedGitArguments(args, { platform: "win32", executable: process.execPath }), args);
+});

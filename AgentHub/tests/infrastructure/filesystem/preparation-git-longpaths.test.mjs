@@ -68,8 +68,8 @@ test("isolated native preparation transports real pack descendants beyond Window
       assert.equal(await readFile(path.join(result.root, "base.txt"), "utf8"), "synthetic native transport\n");
       assert.equal(await gitAt(source, ["show-ref"]), sourceRefs, "transport must not change source refs");
       assert.equal(await gitAt(result.root, ["config", "--get", "core.longpaths"]), "true");
-      assert.equal(await gitAt(result.root, ["config", "--local", "--get", "core.longpaths"], { acceptableExitCodes: [1] }), "",
-        "long-path support is invocation-local, not a repository configuration write");
+      assert.equal(await gitAt(result.root, ["config", "--local", "--get", "core.longpaths"]), "true",
+        "new owned clones retain path support for their later upload-pack server");
       assert.equal(await gitAt(result.root, ["config", "--get", "fixture.untrusted"], { acceptableExitCodes: [1] }), "");
       assert.equal(path.resolve(await gitAt(result.root, ["config", "--get", "core.hooksPath"])), path.join(isolated, "empty-hooks"));
       assert.equal(await gitAt(result.root, ["config", "--get", "core.fsmonitor"]), "false");

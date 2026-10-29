@@ -9,6 +9,10 @@ process owners, environment scrubbing, hooks, guards and authority checks stay
 in control. This permanent application default does not write global/system
 configuration, change other applications' Git, or remove Git's independent
 repository-root length limits. Other operating systems keep their arguments.
+For a newly created owned clone the same policy also supplies clone-local
+`core.longpaths=true` at creation. Git clears client command configuration when
+starting another repository's upload-pack; that owned server must still read
+its own pack files. No source configuration/hooks or machine settings are copied.
 
 ## Cleanup of an exact historical direct delivery
 

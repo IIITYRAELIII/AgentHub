@@ -10,7 +10,17 @@ import gitInvocationPolicy from "./git-invocation-policy.json" with { type: "jso
 export function ownedGitArguments(args, { platform = process.platform, executable = "git" } = {}) {
   if (platform !== "win32" || !/(?:^|[\\/])git(?:\.exe)?$/iu.test(executable)) return args;
   const prefix = gitInvocationPolicy.win32;
-  return prefix.every((value, index) => args[index] === value) ? args : [...prefix, ...args];
+  let command = 0;
+  while (args[command]?.startsWith("-")) {
+    command += ["-c", "-C", "--config-env", "--git-dir", "--work-tree", "--namespace", "--super-prefix"].includes(args[command]) ? 2 : 1;
+  }
+  // Git clears client command configuration when starting another repository's
+  // upload-pack. Configure our newly created clone before its first fetch, so
+  // its later owned server can read packs too; never copy source configuration.
+  const cloneSetting = `--config=${prefix[1]}`;
+  const configured = args[command] === "clone" && args[command + 1] !== cloneSetting
+    ? [...args.slice(0, command + 1), cloneSetting, ...args.slice(command + 1)] : args;
+  return prefix.every((value, index) => configured[index] === value) ? configured : [...prefix, ...configured];
 }
 
 const contexts = new AsyncLocalStorage();
