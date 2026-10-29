@@ -23,6 +23,7 @@ test("release command service binds the public request to a real initiating Thre
     },
     taskBoard: {
       task: (taskId) => ({ id: taskId, workspaceId: workspace.id, streamId: "stream-1" }),
+      releaseTasks: () => ["task-a", "task-b"].map(id => ({ id, status: "open", workflowStatus: "awaiting_implementation" })),
     },
   });
 
@@ -43,6 +44,7 @@ test("release command service binds the public request to a real initiating Thre
     threadId: "thread-old",
     authorization: {
       taskIds: ["task-a", "task-b"],
+      taskScope: "all_await",
       validationMode: "full",
       approvedTargets: [{ targetId: "production", kind: "agent-hub-publication" }],
     },
@@ -64,6 +66,7 @@ test("release command service fails before admission without a real Thread", () 
     },
     taskBoard: {
       task: (taskId) => ({ id: taskId, workspaceId: "workspace-1" }),
+      releaseTasks: () => [{ id: "task-a", status: "open", workflowStatus: "awaiting_implementation" }],
     },
   });
   assert.throws(() => service.start({
@@ -76,4 +79,20 @@ test("release command service fails before admission without a real Thread", () 
     approvedTargets: [{ targetId: "production", kind: "agent-hub-publication" }],
   }), /exact initiating Stream and Thread/u);
   assert.equal(starts, 0);
+});
+
+test("whole prepared command preserves an optional version at the existing authorization owner port", () => {
+  let captured;
+  const service = new ReleaseOperationCommandService({
+    releaseOperations: { start: input => { captured = input; return input; }, get() {}, continue() {} },
+    workspaceCatalog: { workspace: () => ({ id: "workspace" }), hierarchy: () => [{ id: "workspace",
+      streams: [{ id: "stream", threads: [{ threadId: "thread" }] }] }] },
+    taskBoard: { task: id => ({ id, workspaceId: "workspace" }),
+      releaseTasks: () => [{ id: "accepted", status: "open", workflowStatus: "awaiting_implementation" }] },
+  });
+  service.start({ requestId: "version-forward", workspaceId: "workspace", streamId: "stream", threadId: "thread",
+    validationMode: "full", approvedTargets: [{ targetId: "runtime", kind: "runtime" }], releaseVersion: "3.7.9" });
+  assert.equal(captured.authorization.releaseVersion, "3.7.9");
+  assert.equal(captured.authorization.taskScope, "all_await");
+  assert.deepEqual(captured.authorization.taskIds, ["accepted"]);
 });

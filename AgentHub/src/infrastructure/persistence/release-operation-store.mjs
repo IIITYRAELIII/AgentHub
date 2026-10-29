@@ -9,6 +9,7 @@ import {
   createCandidateGeneration,
   completedReleaseGenerationEvidence,
   effectiveReleaseTaskIds,
+  effectiveReleaseTaskScope,
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
@@ -599,7 +600,7 @@ export class ReleaseOperationStore {
           id, current.revision,
         );
         if (update.changes !== 1) throw new Error("release operation revision conflict");
-        if (testSelectionAmendment) {
+        if (testSelectionAmendment || patch.selectedResults && effectiveReleaseTaskScope(result.operation) === "all_await") {
           const insertTask = database.prepare("INSERT OR IGNORE INTO release_operation_tasks(operation_id, task_id) VALUES (?, ?)");
           for (const taskId of effectiveReleaseTaskIds(result.operation)) insertTask.run(id, taskId);
         }
@@ -796,12 +797,15 @@ export class ReleaseOperationStore {
     `).all(Math.max(1, Math.min(2_000, Number(limit) || 500))).map(operationFromRow).filter(Boolean));
   }
 
-  forTask(taskId) {
+  forTask(taskId, { workspaceId = null } = {}) {
     return this.#withDatabase((database) => database.prepare(`
       SELECT operation_json FROM release_operations
       WHERE operation_id IN (SELECT operation_id FROM release_operation_tasks WHERE task_id = ?)
+        OR (workspace_id = ? AND state IN ('compose', 'validate', 'publish', 'waiting'))
       ORDER BY updated_at DESC
-    `).all(String(taskId)).map(operationFromRow).filter(operation => operation && effectiveReleaseTaskIds(operation).includes(String(taskId))));
+    `).all(String(taskId), String(workspaceId ?? "")).map(operationFromRow).filter(operation => operation
+      && (effectiveReleaseTaskIds(operation).includes(String(taskId))
+        || operation.workspaceId === workspaceId && effectiveReleaseTaskScope(operation) === "all_await")));
   }
 
   pendingEvents({ limit = 100 } = {}) {

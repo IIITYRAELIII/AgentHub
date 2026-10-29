@@ -410,7 +410,10 @@
         "src/infrastructure/filesystem/direct-task-publication.mjs",
         "tests/application/task-direct-published-cleanup.test.mjs",
         "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
-        "src/infrastructure/filesystem/cleanup-preservation.mjs"
+        "src/infrastructure/filesystem/cleanup-preservation.mjs",
+        "src/application/task-release-plan-service.mjs",
+        "tests/application/prepared-release-boundary.test.mjs",
+        "docs/decisions/ADR-HUB-364-whole-prepared-release.md"
       ]
     },
     {

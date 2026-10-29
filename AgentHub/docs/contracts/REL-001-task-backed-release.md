@@ -87,13 +87,35 @@ unretired ignored data still refuses. No other UNKNOWN family is settled.
 
 ## Normal release continuation (ADR-0132)
 
-The existing `hub_release_run` / `hub_release_continue` owner prepares a missing
-native candidate itself, then validates, freezes and publishes its immutable
-generation. A separate manual preparation/operator package is not a prerequisite
-for an ordinary transition. Exact selection/publication/base checks precede
-release changes. Release integration may synchronize already accepted main into
-managed dev under its normal lease/process guards; primary bytes remain intact.
-Ordinary Task integration retains its explicit adoption boundary.
+The existing `hub_release_run` / `hub_release_continue` owner captures the WHOLE
+already prepared PreRelease, equal to every current accepted Await Task in the
+Workspace. It does not call Await preparation or the native Task sequencer.
+Ordinary lifecycle acceptance owns composition/conflict resolution; excluding a
+Task requires normal Await-to-Test return and an updated prepared PreRelease.
+The release freezes version and consolidated CHANGELOG into its own immutable
+generation only after current membership/content/history/import closure/base
+and authority checks. Missing or stale preparation leaves the same operation
+waiting for normal lifecycle preparation; it never silently repairs the set.
+See ADR-HUB-364-whole-prepared-release, which supersedes ADR-0132's release-side
+automatic preparation decision. Primary bytes remain intact; no prefix cache
+or optimization of ordinary full Await composition is introduced.
+
+New public release authorization binds `taskScope=all_await` and retains the
+initial exact Task IDs as its immutable admission snapshot. Optional `task_ids`
+is only an expected-whole-set assertion, never a subset selector. A generation
+binds its actually captured full membership in existing `authorizedTaskIds`.
+Before publication admission the existing Await boundary compares the complete
+current set; changes recapture a later generation on the same operation.
+Already admitted publication stays pinned to its original generation/effects.
+
+Legacy authorizations without this field keep their exact bytes/fingerprint and
+saved selection. They can capture only when that selection is the whole current
+Await set. An explicit `hub_release_continue task_scope=all_await` amendment uses
+the existing revision/generation CAS and every target's not-applied readback;
+it records the captured full set and explicit-vs-omitted request arguments.
+Old amendments, generations and reviewed-main membership stay at their own
+historical boundary. This is no new tool, ledger, approval or publication lane.
+Changed code receives new validation, never a claimed old PASS.
 
 The source/default `node release.mjs run|continue|get|accept --provider <provider>
 --thread <thread> --stream <stream> --request-file <JSON>` consumes ordinary

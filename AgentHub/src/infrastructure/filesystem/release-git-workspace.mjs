@@ -1121,6 +1121,9 @@ export class ReleaseGitWorkspaceService {
       else if (manifest.baseProvenance?.adoptions) await assertInstalledAgreedMainOrigin({
         provenance: manifest.baseProvenance,
         git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }) });
+      await measureTaskOperation("release:prepared-runtime-import-closure", () => assertNativeRuntimeImportClosure(
+        (cwd, args, options = {}) => runGit(args, { ...options, cwd }),
+        { root: verificationRepository, head: source.preReleaseHead, tree: source.tree }));
       const binding = { kind: "native-prepared-release-v1", releaseRoot: source.releaseRoot,
         commit: source.preReleaseHead, tree: source.tree, manifestHash: source.manifestHash,
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
@@ -1181,16 +1184,8 @@ export class ReleaseGitWorkspaceService {
             throw Object.assign(new Error("Original generation prepared input changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
           }
           if (!localCheckpoint?.publicationFreeze) {
-            try { preparedSource = await this.#preparedGenerationSource(preparedInput); }
-            catch (error) {
-              if (error.code !== "RELEASE_PREPARED_CANDIDATE_STALE" || existingPrepared) throw error;
-              // Composition is an ordinary stage of this operation. The same
-              // candidate owner verifies/reuses its Git checkpoint; no external
-              // preparation command or disposable operator is required.
-              await this.prepareCandidate({ ...preparedInput, nativeResolutionReview,
-                validateBeforeCommit, preserveFrozen: true });
-              preparedSource = await this.#preparedGenerationSource(preparedInput);
-            }
+            if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+            preparedSource = await this.#preparedGenerationSource(preparedInput);
             if (existingPrepared && stableManifest(existingPrepared) !== stableManifest(preparedSource.binding)) {
               throw Object.assign(new Error("Original generation prepared PreRelease changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
             }
@@ -1230,6 +1225,7 @@ export class ReleaseGitWorkspaceService {
               throw Object.assign(new Error("Prepared PreRelease changed during generation capture"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
             }
           }
+          if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         };
         let candidate;
         if (!freezePublication) {

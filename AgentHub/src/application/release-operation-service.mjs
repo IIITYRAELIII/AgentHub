@@ -12,6 +12,8 @@ import {
   releaseApprovedTargets,
   effectiveTestSelection,
   effectiveReleaseTaskIds,
+  effectiveReleaseTaskScope,
+  normalizeReleaseTaskScope,
   normalizeReleaseTaskIds,
   normalizedReleaseMetadata,
 } from "../domain/release-operation.mjs";
@@ -265,7 +267,7 @@ export class ReleaseOperationService {
     // A captured amendment remains an amendment even when a replay omits all
     // optional fields. Check its identity before ordinary resume or recovery.
     if (current.testSelectionAmendments?.some(item => item.requestId === options.requestId)
-        || options.testSelection != null || options.taskIds != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
+        || options.testSelection != null || options.taskIds != null || options.taskScope != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
     if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     // Addressed observation also works while the original is waiting on an
     // external condition. It neither resumes nor publishes that condition.
@@ -305,13 +307,14 @@ export class ReleaseOperationService {
     }
   }
 
-  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, releaseMetadata, expectedRevision, expectedGeneration, reviewedMain }) {
+  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, taskScope, releaseMetadata, expectedRevision, expectedGeneration, reviewedMain }) {
     if (reviewedMain != null) throw new Error("Use separate original amendments for reviewed main and test selection");
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
     const requestArguments = { expectedRevision, expectedGeneration,
       ...(testSelection == null ? {} : { testSelection: normalizeTestSelection(testSelection) }),
       ...(taskIds == null ? {} : { taskIds: normalizeReleaseTaskIds(taskIds) }),
+      ...(taskScope == null ? {} : { taskScope: normalizeReleaseTaskScope(taskScope) }),
       ...(releaseMetadata == null ? {} : { releaseMetadata: normalizedReleaseMetadata(releaseMetadata) }),
     };
     requiredText(requestId, "amendment requestId");
@@ -339,6 +342,7 @@ export class ReleaseOperationService {
     }
     const generation = this.store.generation(operationId, current.currentGeneration);
     if (!generation) throw new Error("Original generation is missing");
+    const scope = taskScope == null ? effectiveReleaseTaskScope(current) : requestArguments.taskScope;
     const commit = async (taskSelection = null, validateBeforeCommit = async () => {}) => {
     const readbacks = [];
     for (const target of releaseApprovedTargets(current)) {
@@ -347,7 +351,9 @@ export class ReleaseOperationService {
       readbacks.push({ targetId: target.targetId, generation: current.currentGeneration, evidence });
     }
     await validateBeforeCommit();
-    const contents = { requestId, requestArguments, selection, taskIds: selectedTaskIds, taskSelection,
+    const capturedTaskIds = taskSelection ? [...new Set(taskSelection.map(item => item.taskId))].sort() : selectedTaskIds;
+    const contents = { requestId, requestArguments, selection, taskIds: capturedTaskIds, taskSelection,
+      ...(scope == null ? {} : { taskScope: scope }),
       ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }), priorRevision: current.revision, priorGeneration: current.currentGeneration,
       authorizationFingerprint: current.authorization.fingerprint,
       priorFailure: { state: current.state, completedAt: current.completedAt, error: current.lastError },
@@ -361,9 +367,10 @@ export class ReleaseOperationService {
     if (result.applied) { this.#observe(operationId); this.#schedule(operationId); }
     return { accepted: result.applied, reason: result.reason, operationId, revision: result.operation.revision, amendment };
     };
-    if (taskIds != null) {
+    if (taskIds != null || scope === "all_await") {
       if (typeof this.withTaskSelection !== "function") throw new Error("Accepted Task selection owner is unavailable");
-      return this.withTaskSelection({ operation: current, taskIds: selectedTaskIds, commit });
+      return this.withTaskSelection({ operation: current, taskIds: taskIds == null && scope === "all_await" ? null : selectedTaskIds,
+        taskScope: scope, commit });
     }
     return commit();
   }
@@ -408,10 +415,10 @@ export class ReleaseOperationService {
       } });
   }
 
-  wakeForTask(taskId) {
+  wakeForTask(taskId, { workspaceId = null } = {}) {
     const selectedTaskId = requiredText(taskId, "taskId");
-    const accepted = this.prepareForTaskAcceptance(selectedTaskId).map((item) => item.operationId);
-    const operations = this.store.forTask(selectedTaskId);
+    const accepted = this.prepareForTaskAcceptance(selectedTaskId, { workspaceId }).map((item) => item.operationId);
+    const operations = this.store.forTask(selectedTaskId, { workspaceId });
     for (const operation of operations) {
       if (releaseOperationIsTerminal(operation)) continue;
       if (operation.state === "waiting" && ["validation_failed", "correction_required"].includes(operation.waitReason?.code)) {
@@ -422,8 +429,8 @@ export class ReleaseOperationService {
     return accepted;
   }
 
-  prepareForTaskAcceptance(taskId) {
-    const operations = this.store.forTask(requiredText(taskId, "taskId"));
+  prepareForTaskAcceptance(taskId, { workspaceId = null } = {}) {
+    const operations = this.store.forTask(requiredText(taskId, "taskId"), { workspaceId });
     const prepared = [];
     for (const operation of operations) {
       if (releaseOperationIsTerminal(operation)) continue;
@@ -767,7 +774,9 @@ export class ReleaseOperationService {
       if (effectiveTestSelection(operation) && typeof this.resolveTestPlans !== "function") throw new Error("Release test inventory owner is unavailable");
       const generation = createCandidateGeneration({
         ...composed,
-        ...(operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
+        ...(effectiveReleaseTaskScope(operation) === "all_await"
+          ? { authorizedTaskIds: composed.authorizedTaskIds }
+          : operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
         ...(effectiveTestSelection(operation) ? { testPlans: await this.resolveTestPlans(composed.candidates, effectiveTestSelection(operation)),
           testSelectionAmendmentId: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
         operationId: operation.operationId,
