@@ -13,7 +13,8 @@ function run(executable, args, { execFileImpl = execFile } = {}) {
 }
 
 export function trustedWindowsPowerShellPath(environment = process.env) {
-  const rawSystemRoot = String(environment?.SystemRoot ?? "").trim();
+  // Spreading Windows process.env loses its case-insensitive property lookup.
+  const rawSystemRoot = String(environment?.SystemRoot ?? environment?.SYSTEMROOT ?? "").trim();
   if (
     !/^[a-z]:\\windows[\\]?$/iu.test(rawSystemRoot)
     || rawSystemRoot.includes("\0")
