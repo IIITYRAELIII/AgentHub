@@ -96,7 +96,11 @@ async function assertNativeRuntimeImportClosure(gitAt, composition) {
   }
 }
 
-function runGit(args, { cwd, timeoutMs = null, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
+function runGit(args, options = {}) {
+  return measureTaskOperation("release:git-command", () => runGitUnmeasured(args, options), { detail: true });
+}
+
+function runGitUnmeasured(args, { cwd, timeoutMs = null, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
   if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   const guarded = guardedPreparationGit(lease => {
     const invocation = preparationGitInvocation(args, cwd);
@@ -135,7 +139,11 @@ function runGit(args, { cwd, timeoutMs = null, rawOutput = false, acceptableExit
   });
 }
 
-function runGitWithInput(args, input, { cwd, timeoutMs = null } = {}) {
+function runGitWithInput(args, input, options = {}) {
+  return measureTaskOperation("release:git-input", () => runGitWithInputUnmeasured(args, input, options), { detail: true });
+}
+
+function runGitWithInputUnmeasured(args, input, { cwd, timeoutMs = null } = {}) {
   return new Promise((resolve, reject) => {
     const invocation = preparationGitInvocation(args, cwd);
     const child = spawn("git", invocation.args, { cwd, ...(invocation.env ? { env: invocation.env } : {}),
