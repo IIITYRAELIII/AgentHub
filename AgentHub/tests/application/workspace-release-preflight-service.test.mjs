@@ -192,6 +192,19 @@ test("installed local source preparation forwards exact baseline/review and rech
   assert.ok(f.verified() >= 3);
 });
 
+test("manual public version survives the actual preflight generation boundary", async () => {
+  const f = localSourceFixture();
+  const calls = [];
+  f.service.releaseGitWorkspaces.prepareGeneration = async request => {
+    await request.validateBeforeCommit(); calls.push(request); return f.candidate;
+  };
+  const input = { workspaceId: "workspace-1", operationId: "version-original", generation: 1, taskIds: ["task-current"] };
+  await f.service.prepareOperationGeneration({ ...input, releaseVersion: "3.7.9" });
+  assert.equal(calls[0].releaseVersion, "3.7.9");
+  await f.service.prepareOperationGeneration(input);
+  assert.equal(Object.hasOwn(calls[1], "releaseVersion"), false);
+});
+
 test("installed local source generation reuses the sealed exact selection without changing agreed main", async () => {
   const f = localSourceFixture();
   f.service.releaseGitWorkspaces.prepareGeneration = async request => {

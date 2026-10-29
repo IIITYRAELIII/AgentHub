@@ -470,7 +470,7 @@ export class WorkspaceReleasePreflightService {
 
   async prepareOperationGeneration({
     workspaceId, operationId, generation, taskIds, approvedRepositories = [], changelogContent = undefined,
-    previousSelectedResults = [],
+    previousSelectedResults = [], releaseVersion = undefined,
   } = {}) {
     if (typeof this.releaseGitWorkspaces.prepareGeneration !== "function") {
       throw new Error("immutable release generation preparation is unavailable");
@@ -479,6 +479,7 @@ export class WorkspaceReleasePreflightService {
       workspaceId,
       selectedTaskIds: taskIds,
       generationIdentity: { operationId, generation },
+      ...(releaseVersion !== undefined ? { releaseVersion } : {}),
       previousSelectedResults,
       ...(changelogContent === undefined ? {} : { changelogContent }),
       ...(approvedRepositories.length ? { reviewedMainApprovals: { approvedRepositories } } : {}),
@@ -648,7 +649,7 @@ export class WorkspaceReleasePreflightService {
     reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
     prospectiveOnly = false, freezeGeneration = true, ephemeralGeneration = false,
     previousSelectedResults = [], preparation = null, nativeAwaitRecovery = null,
-    nativeResolutionReview = null,
+    nativeResolutionReview = null, releaseVersion = undefined,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -876,6 +877,7 @@ export class WorkspaceReleasePreflightService {
         ...(generationIdentity ? { freezePublication: freezeGeneration } : {}),
         ...(generationIdentity ? { ephemeral: ephemeralGeneration } : {}),
         ...(generationIdentity ? { changelogContent } : {}),
+        ...(generationIdentity && releaseVersion !== undefined ? { releaseVersion } : {}),
         validateBeforeCommit: async () => {
           await validatePlan(); await validateBases();
           if (preparation) await this.measureOperation("preparation:precommit-pins", preparation.validate);
