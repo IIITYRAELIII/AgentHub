@@ -2737,3 +2737,33 @@ for (const scenario of ["changed selection", "changed base", "non-descendant res
     }
   });
 }
+
+test("prepared readback retains integration evidence for exact native validation", async context => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context);
+  const integrations = [{ commit: resultCommit, parent: setup.baseCommit, order: 7 }];
+  const request = { projectRoot: setup.primary, workspaceId: "integration-readback",
+    planRevision: "integration-readback-plan", approvedBaseCommit: setup.baseCommit,
+    baseProvenance: { schemaVersion: 1, kind: "agreed-main-native-git-v1",
+      publishedBaseCommit: setup.baseCommit, agreedMainCommit: setup.baseCommit },
+    frozenTasks: [{ taskId: "integration-readback-task", taskRevision: 3,
+      baseCommit: setup.baseCommit, resultCommit, integrations }] };
+  const candidate = await setup.service.prepareCandidate(request);
+  const checkpoint = await readFile(path.join(path.dirname(candidate.manifestFile), "..", "checkpoint.json"));
+  const manifest = await readFile(candidate.manifestFile);
+  const readback = await setup.service.frozenCandidate(setup.primary);
+  assert.deepEqual(readback.manifest.tasks[0].integrations, integrations);
+  const exact = { ...request, frozenTasks: readback.manifest.tasks };
+  const validated = await setup.service.validateCandidate(exact);
+  assert.equal(validated.status, "validated");
+  assert.equal(validated.tree, readback.tree);
+  for (const field of ["commit", "parent", "order"]) {
+    const tasks = structuredClone(readback.manifest.tasks);
+    tasks[0].integrations[0][field] = field === "order" ? 8 : "f".repeat(40);
+    await assert.rejects(setup.service.validateCandidate({ ...request, frozenTasks: tasks }),
+      { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  }
+  assert.deepEqual(await readFile(candidate.manifestFile), manifest);
+  assert.deepEqual(await readFile(path.join(path.dirname(candidate.manifestFile), "..", "checkpoint.json")), checkpoint);
+  assert.equal((await setup.service.frozenCandidate(setup.primary)).preReleaseHead, candidate.preReleaseHead);
+});

@@ -3429,6 +3429,7 @@ export class ReleaseGitWorkspaceService {
             : {}),
           ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
           resultCommit: task.resultCommit,
+          ...(task.integrations.length ? { integrations: task.integrations.map(integration => ({ ...integration })) } : {}),
           ...(task.squashTransfer ? { squashTransfer: task.squashTransfer } : {}),
           ...selectedCompositionFields(task),
         })),
