@@ -14,11 +14,17 @@ export function createReleaseOperationServices({
   dataDir, runtimeRoot, releasePreflight, taskBoard, taskLifecycle,
   workspaceCatalog, taskGitWorkspaces, releaseGitWorkspaces,
   runnerVersion, requestCorrection,
+  recordCommandTrace = () => false,
   observeOperation = createReleaseProgressObserver({ runtimeRoot }),
   store = new ReleaseOperationStore({ dataDir }),
   publication = new ReleaseOperationPublication({ dataDir, runtimeRoot }),
   finalization = new ReleaseOperationFinalization({ taskBoard, releaseGitWorkspaces, taskGitWorkspaces }),
 } = {}) {
+  store.recordPersistence = diagnostic => {
+    const { operationId, outcome, elapsedMs, queueWaitMs, ...metadata } = diagnostic;
+    return recordCommandTrace({ commandId: operationId, stage: "release-persistence", outcome,
+      transport: "release-owner", monotonicDurationMs: elapsedMs, lockWaitMs: queueWaitMs, metadata });
+  };
   const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight, publication, finalization });
   const operations = new ReleaseOperationService({
     resolveTestPlans: releaseTestPlans,

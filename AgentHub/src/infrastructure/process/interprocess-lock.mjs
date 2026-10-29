@@ -3,11 +3,23 @@ import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
 import { measureTaskOperationAwait } from "./task-operation-timing.mjs";
+import { taskOperationExecution } from "./task-operation-interruption-context.mjs";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const RELEASE_RETRY_DELAYS_MS = [0, 10, 25, 50, 100, 200];
 const TRANSIENT_LOCK_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
 const inProcessLocks = new Map();
+async function abortable(promise, signal) {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  let abort;
+  const interrupted = new Promise((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try { return await Promise.race([promise, interrupted]); }
+  finally { signal.removeEventListener("abort", abort); }
+}
 const PROCESS_INSTANCE_ID = randomUUID();
 const admissionTimeouts = new WeakMap();
 
@@ -17,7 +29,7 @@ export function interprocessLockAdmissionTimeoutPath(error) {
   return admissionTimeouts.get(error) ?? null;
 }
 
-async function acquireInProcessLock(lockPath) {
+async function acquireInProcessLock(lockPath, signal) {
   let state = inProcessLocks.get(lockPath);
   if (!state) {
     state = { pending: 0, tail: Promise.resolve() };
@@ -28,7 +40,8 @@ async function acquireInProcessLock(lockPath) {
   const turn = new Promise((resolve) => { releaseTurn = resolve; });
   state.tail = previous.then(() => turn);
   state.pending += 1;
-  await previous;
+  try { await abortable(previous, signal); }
+  catch (error) { state.pending -= 1; releaseTurn(); if (!state.pending) inProcessLocks.delete(lockPath); throw error; }
   let released = false;
   return () => {
     if (released) return;
@@ -348,10 +361,12 @@ async function acquire(lockPath, {
   quarantine = retireStaleLock,
   moveLegacyLock = rename,
   removeLegacyLock = null,
+  signal = null,
 } = {}) {
   const deadline = Date.now() + timeoutMs;
   const token = tokenFactory();
   for (;;) {
+    signal?.throwIfAborted();
     try {
       await mkdir(path.dirname(lockPath), { recursive: true });
       await mkdir(lockPath);
@@ -416,6 +431,8 @@ async function acquire(lockPath, {
 }
 
 export async function withInterprocessLocks(paths, operation, options = {}) {
+  const taskExecution = taskOperationExecution();
+  options = { ...options, signal: options.signal ?? taskExecution?.signal };
   const waitStartedAt = performance.now();
   const lockPaths = [...new Set(paths.filter(Boolean).map((value) => `${value}.lock`))].sort();
   const localReleases = [];
@@ -442,7 +459,7 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
   };
   try {
     for (const lockPath of lockPaths) {
-      localReleases.push(await acquireInProcessLock(lockPath));
+      localReleases.push(await acquireInProcessLock(lockPath, options.signal));
     }
     for (const lockPath of lockPaths) {
       acquired.push(await acquire(lockPath, options));
@@ -450,6 +467,8 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
     const staleMs = Math.max(500, Number(options.staleMs) || 60_000);
     const renew = typeof options.renewLease === "function" ? options.renewLease : renewLease;
     heartbeat = setInterval(() => {
+      try { taskExecution?.assertExecuting(); }
+      catch (error) { loseLease(error); return; }
       for (const record of acquired) {
         const renewal = Promise.resolve(renew(
           record.lockPath,
@@ -478,7 +497,7 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
       // Lock diagnostics are advisory and cannot change the protected operation.
     }
     const result = await operation({
-      signal: leaseController.signal,
+      signal: options.signal ? AbortSignal.any([options.signal, leaseController.signal]) : leaseController.signal,
       assertOwned,
       ownerId: acquired.map(({ lockPath, token }) => `${lockPath}:${token}`).join("|"),
     });

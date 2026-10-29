@@ -1,5 +1,29 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Explicit Task operation interruption
+
+`hub_task_operation_cancel` is an explicit audited mutation of future execution,
+not reconciliation of past effects. Exact original ID/hash/Task arguments and
+current Task CAS are required. The original Stream, a genuine RM, or the
+authenticated desktop user uses the same existing receipt owner. Caller scope
+and target Task scope remain distinct. Cancellation commands retain their own
+receipt; current original execution disposition is read independently.
+
+The existing MCP ledger retains the exact original receipt snapshot, result,
+error and timestamps with separate requested/stopped execution metadata.
+UNKNOWN stays UNKNOWN; a known pending execution becomes failed execution only
+after stopped, with prior effects still unknown. Requested is not stopped. A new
+worker must join and release its exact child/lease before stopped is sealed;
+late queued callbacks cannot write. A legacy UNKNOWN requires positive retirement
+of its whole prior runtime cohort through the existing native witness owner.
+PID absence, error text and elapsed time do not suffice. No original claim/Git
+replay, dirty-source removal or NO_EFFECT inference is authorized.
+
+The existing operation-reconcile CLI exposes the same cancel command via
+`--cancel-arguments <json>` with local provider/thread/Stream identity. A first
+request waiting for legacy retirement is not silently restarted or published.
+See [Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
+
 ## Normal release continuation (ADR-0132)
 
 `hub_release_run` keeps preparation inside the existing durable release owner.
@@ -863,3 +887,64 @@ or adding it on replay cannot retarget an existing amendment. Composition verifi
 the full effective artifact bytes before preparing the next generation. Initial
 authorization and old generations remain immutable. See REL-001 and
 ADR-HUB-351-release-metadata-amendment.
+
+## Pending stop and authenticated Desktop admission (HUB-368 R1/R2)
+
+A requested stop excludes new ordinary claim/workflow admission for that Task
+until confirmed stopped. The same indexed durable disposition is checked in
+receipt admission, before execution/next effects, and inside final Task SQL
+transactions. Cancellation continuation and other Tasks remain independently
+operable. A late assignment/finalization cannot overtake the requested stop.
+
+An authenticated Desktop workflow has actorKind=authenticated-user in the same
+MCP operation ledger, including an unassigned Workspace or Backlog Task. Its
+Stream/provider/Thread are null, not an invented provider turn or new Stream.
+Provider admissions retain their exact required caller identity. Existing rows,
+indexes, triggers, custody and receipt evidence survive the atomic nullable-user
+identity migration unchanged; no historical operation is reclassified or replayed.
+The existing Desktop controller and cancellation owner read and stop this exact
+operation before the next ordinary action, without changing Task assignment.
+
+## Task admission and original result readback
+
+Public MCP Task mutations return a `taskOperation` admission/readback envelope
+from the existing MCP ledger once the same worker is registered. Admission is
+not successful business completion. `hub_task_operation_get` reads that exact
+original ID, canonical argument hash, actual live-worker observation, lifecycle
+phase, cancellation, error and terminal result. Same original caller or genuine
+RM authority is required; supplied original arguments/hash must match. Reading
+never resumes or settles an operation. Same-ID mutation submissions read the
+existing receipt without starting another worker; changed arguments refuse.
+
+Long valid work has no transport-derived terminal deadline. A disconnected
+caller reads the original ID instead of submitting another mutation. A real
+UNKNOWN stays UNKNOWN; absence of a worker in the reader process is not proof of
+failure or retirement. Existing internal/ordinary CLI consumers may still await
+the same worker's terminal Promise. The existing reconciliation CLI exposes
+`--read-arguments` with ordinary local provider/thread/Stream authentication.
+No alternate writer, work queue, cancellation policy or recovery authority is
+introduced. See ADR-HUB-368.
+
+Authenticated Desktop create/update/workflow/Complete/Delete use the same
+ledger and real user identity, including null provider/Stream/Thread. Preview
+and confirmation retain their distinct original commands and exact token. The
+original identity and tool cannot be rewritten. A durable outer control receipt
+may acknowledge this admission envelope; only the inner canonical Task receipt
+establishes business completion. Existing domain, source, actor, CAS, Task/repo
+lease, cleanup and publication guards remain mandatory.
+
+## Existing release CLI persistence lifetime (HUB-368)
+
+The source release CLI and Hub share the same durable release service/store.
+Owned SQLite contention does not turn an admitted original into a completed
+command or close its runtime before its retained persistence continuation. The
+CLI still returns at a legitimate external waiting boundary and never waits for
+a foreign owner's lease. Public arguments, authorization, original request IDs
+and generation/recovery policy are unchanged.
+
+The committed custody readback path retains its original request/hash and execution
+metadata across service reopen. It uses the same canonical binding and custody
+proof, never new prepare/assignment or an execution owner transfer. Missing or
+changed committed proof refuses. Shared execution context is a port capability
+observed by both application and process/SQL adapters, with one async-local
+instance; application code does not import a process implementation.

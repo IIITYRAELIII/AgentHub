@@ -1,5 +1,14 @@
 # UI-001 — Canonical message projection
 
+The Task card's operation action exposes explicit interruption of a bound
+claim/workflow attempt, including pending and UNKNOWN. It reaches the same
+authenticated owner while the original UI/control mutation waits. Requested
+stopping and confirmed stopped are distinct; UNKNOWN past effects are never
+presented as undone. Already completed operations retain their completion.
+Refreshing the operation panel reads canonical disposition and does not replay
+the original action. Legacy rows without a Task binding require exact operator
+arguments through the supported owner, never guessed association by timestamp.
+
 The Server page exposes the private sync endpoint through its existing
 configuration save/cancel flow. Only HTTP(S) URLs without embedded credentials,
 query or fragment are admitted. A pending edit does not change the effective
@@ -750,3 +759,15 @@ A slow or failed health read after readiness does not reopen the startup overlay
 the connection owner retains its own diagnostic. An authoritative `ready=false`
 response still opens startup, including a replacement runtime with no stage
 metadata yet. A queued restart request alone does not prove replacement began.
+
+## Task operation result projection
+
+A durable Task admission is pending, not a successful status/update/cleanup.
+The shipped client reads the exact original ID/hash through the existing Task
+read control until canonical success, failure, explicit UNKNOWN or stopped
+disposition. Read reconnection never repeats the mutation. Existing Task pending
+controls and the independent cancellation action remain available; success toast
+and final snapshot follow canonical success only. Preview/confirmation keep
+their existing token and separate explicit command identities. A transport ACK
+is recorded once even if later work fails. A lost worker observation does not
+become fabricated failure, NO_EFFECT or permission to replay.

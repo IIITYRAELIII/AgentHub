@@ -584,6 +584,7 @@ const interactionShell = createInteractionShellPhase({
   },
   infrastructure: {
     trustedDeviceStore, workLogUsageStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
+    hubMcpService,
     taskReleasePlanner, workspaceReleaseService,
     taskLifecycle,
     attachmentDirectory,

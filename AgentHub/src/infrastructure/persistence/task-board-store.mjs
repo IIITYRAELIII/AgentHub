@@ -1,3 +1,4 @@
+import { assertNoPendingTaskInterruption } from "./task-operation-interruption-fence.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -2466,6 +2467,7 @@ export class TaskBoardStore {
       if (validateClaimAdmission != null) {
         if (typeof validateClaimAdmission !== "function" || validateClaimAdmission()?.then) throw new TypeError("Claim admission validator must be synchronous");
       }
+      assertNoPendingTaskInterruption(database, taskId);
       const current = this.#taskRow(database, taskId);
       if (current.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
       if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
@@ -2621,6 +2623,7 @@ export class TaskBoardStore {
       database.exec("BEGIN IMMEDIATE");
       try {
         const taskId = String(id);
+        assertNoPendingTaskInterruption(database, taskId);
         const current = this.#taskRow(database, taskId);
         if (expectedRevision != null && Number(current.row_revision) !== Number(expectedRevision)) {
           throw new Error("Task revision changed during workflow transition");
@@ -2845,6 +2848,7 @@ export class TaskBoardStore {
         if (database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(operation)) {
           throw new Error("Task lifecycle operation already has a terminal outcome");
         }
+        assertNoPendingTaskInterruption(database, taskId);
         const current = this.#taskRow(database, taskId);
         const revision = Number(expectedRevision);
         if (!Number.isInteger(revision) || revision !== Number(current.row_revision)) {
@@ -3226,6 +3230,7 @@ export class TaskBoardStore {
           WHERE operation_id = ? AND kind = 'workflow' AND phase = 'pending_git'
         `).get(operation);
         if (!transition) throw new Error("Task workflow transition is not pending");
+        assertNoPendingTaskInterruption(database, transition.task_id);
         const current = this.#taskRow(database, transition.task_id);
         const expectedRevision = metadataRecovery?.expectedCurrentRevision ?? transition.expected_task_revision;
         if (metadataRecovery) {

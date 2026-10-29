@@ -1827,22 +1827,81 @@ commandTrace.bindReporter(async (batch) => {
   if (!response.ok) throw new Error("Client trace batch rejected");
 });
 
+async function waitTaskOperationResult(admission, params) {
+  let receipt = admission;
+  const original = admission.taskOperation;
+  while (!receipt.taskOperation.terminal && receipt.taskOperation.status !== "unknown"
+      && receipt.taskOperation.cancellation?.phase !== "stopped") {
+    try {
+      const value = await control("board-task-read", { id: original.taskId ?? params.id,
+        operationRequestId: original.requestId, argumentsHash: original.argumentsHash,
+        clientTraceId: original.requestId });
+      receipt = value.operation;
+      if (!receipt || receipt.taskOperation.requestId !== original.requestId
+          || receipt.taskOperation.argumentsHash !== original.argumentsHash) throw new Error("Ответ относится к другой операции задачи");
+      if (receipt.taskOperation.terminal || receipt.taskOperation.status === "unknown"
+          || receipt.taskOperation.cancellation?.phase === "stopped") break;
+      if (!receipt.taskOperation.active) throw new Error(`Операция ${original.requestId} сохранена; требуется проверка её исходного исполнения`);
+    } catch (error) {
+      if (!isConnectionFailure(error) && !looksLikeConnectionFailure(error)) throw error;
+      // Read retries keep the exact admitted operation. They never repeat its
+      // mutation or impose a total deadline on valid long-running Git work.
+    }
+    await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
+  }
+  const operation = receipt.taskOperation;
+  commandTrace.record("ui-control", "task-operation-result", operation.elapsedMs, original.requestId,
+    { action: original.toolName, render: operation.status });
+  if (operation.status !== "succeeded") throw Object.assign(new Error(
+    operation.cancellation?.phase === "stopped" ? "Операция прервана. Незавершённая работа сохранена."
+      : operation.error || `Операция ${original.requestId} требует восстановления исходного результата`), { taskOperation: operation });
+  return { ...await control("snapshot"), lifecycleResult: receipt.result };
+}
+
 async function control(action, params = {}) {
   const snapshotBaseline = currentSnapshotBaseline();
   const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
+  const taskOperationId = ["board-task-create", "board-task-update", "board-task-status", "board-task-complete", "board-task-remove"].includes(action)
+    ? params.operationId || commandTrace.newId() : null;
   const started = performance.now();
-  const tracedParams = { ...params, clientTraceId: commandId, clientTiming: params.clientTiming ?? {
+  const tracedParams = { ...params, ...(taskOperationId ? { operationId: taskOperationId } : {}), clientTraceId: commandId, clientTiming: params.clientTiming ?? {
     submittedAtMs: Date.now(), submittedMonotonicMs: started,
     controlStartedAtMs: Date.now(), controlStartedMonotonicMs: started,
     surface: clientTraceSurface(),
   } };
   return commandTrace.measure("ui-control", action, async () => {
+    let transportAcknowledged = false;
     try {
-      const result = await controlTransport(action, tracedParams);
+      let result;
+      try { result = await controlTransport(action, tracedParams); }
+      catch (error) {
+        if (!taskOperationId || (!isConnectionFailure(error) && !looksLikeConnectionFailure(error))) throw error;
+        // The first admission reply may be lost. The client already chose the
+        // original identity; read it without guessing its hash or replaying work.
+        let read;
+        for (;;) {
+          try {
+            read = await control("board-task-read", { id: params.id, operationRequestId: taskOperationId,
+              clientTraceId: taskOperationId });
+            break;
+          } catch (readError) {
+            if (!isConnectionFailure(readError) && !looksLikeConnectionFailure(readError)) throw readError;
+            await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
+          }
+        }
+        if (read.operation?.taskOperation.requestId !== taskOperationId) throw error;
+        result = read.operation;
+      }
       reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
+      transportAcknowledged = true;
+      if (result?.taskOperation) {
+        commandTrace.record("ui-control", "task-operation-admitted", performance.now() - started,
+          result.taskOperation.requestId, { action, render: result.taskOperation.status });
+        result = await waitTaskOperationResult(result, params);
+      }
       return bindSnapshotBaseline(commandTrace.associate(result, commandId), snapshotBaseline);
     } catch (error) {
-      reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
+      if (!transportAcknowledged) reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
       throw error;
     }
   }, commandId);
@@ -4196,6 +4255,24 @@ document.addEventListener("agenthub:board-action", (event) => {
       result => window.AgentHubTaskBoard.showDetails({ ...detail, result }),
       error => window.AgentHubTaskBoard.showDetails({ ...detail, error: String(error?.message ?? error) }),
     );
+    return;
+  }
+  if (detail.type === "operation-read") {
+    void control("board-task-read", { id: detail.id }).then(result =>
+      window.AgentHubTaskBoard.showOperations({ id: detail.id, result }),
+      error => agentHub.toast(String(error?.message ?? error)));
+    return;
+  }
+  if (detail.type === "operation-cancel") {
+    // Stop must reach the backend while the original board command is waiting.
+    const { type, ...params } = detail;
+    void control("board-task-operation-cancel", params).then(result => {
+      window.AgentHubTaskBoard.showOperations({ id: detail.id, result });
+      agentHub.toast(result.cancellation?.phase === "stopped"
+        ? "Операция прервана. Незавершённая работа сохранена."
+        : result.cancellation?.phase === "already_terminal" ? "Операция уже завершена."
+          : "Остановка запрошена; прежние эффекты пока неизвестны.");
+    }, error => agentHub.toast(String(error?.message ?? error)));
     return;
   }
   if (detail.type === "diff") {

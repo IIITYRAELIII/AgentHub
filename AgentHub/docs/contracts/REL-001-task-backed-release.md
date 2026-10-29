@@ -1,5 +1,23 @@
 # REL-001 — Task-backed Workspace release
 
+## Explicit interruption of an execution attempt
+
+An explicit claim/Test/Await cancellation can stop future execution while its
+prior Git effects remain unknown. It does not accept, undo, publish, delete or
+relabel those effects as NO_EFFECT. The existing operation receipt retains its
+entire historical receipt snapshot/identity/error/result. UNKNOWN is unchanged;
+a known pending attempt becomes failed execution after confirmed stop without
+inferring absent Git effects. Only confirmed worker join or positive
+whole-runtime retirement, plus the existing Task recovery lease/process-guard
+checks, permits the stopped disposition and ordinary next action. Pending
+retirement retains blocking guards. A late worker cannot revive its original or
+write through its inherited SQL/TaskGit execution context. Previously committed
+outcomes, dirty files and native journals remain available to their usual owners.
+
+This does not change selection, source/content preservation, native review,
+publication or primary protections. No production restart is implicit. See
+[Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
+
 ## Normal release continuation (ADR-0132)
 
 The existing `hub_release_run` / `hub_release_continue` owner prepares a missing
@@ -3272,3 +3290,60 @@ The existing task-await-cutover CLI's explicit ordinary-test mode only calls
 normal public Test with the original CAS and optional authenticated native
 review, after pinned clean source and canonical repository checks. It grants no
 initial-native, returned, squash or cross-Task cutover authority.
+
+## Pending stop and authenticated Desktop admission (HUB-368 R1/R2)
+
+A requested stop excludes new ordinary claim/workflow admission for that Task
+until confirmed stopped. The same indexed durable disposition is checked in
+receipt admission, before execution/next effects, and inside final Task SQL
+transactions. Cancellation continuation and other Tasks remain independently
+operable. A late assignment/finalization cannot overtake the requested stop.
+
+An authenticated Desktop workflow has actorKind=authenticated-user in the same
+MCP operation ledger, including an unassigned Workspace or Backlog Task. Its
+Stream/provider/Thread are null, not an invented provider turn or new Stream.
+Provider admissions retain their exact required caller identity. Existing rows,
+indexes, triggers, custody and receipt evidence survive the atomic nullable-user
+identity migration unchanged; no historical operation is reclassified or replayed.
+The existing Desktop controller and cancellation owner read and stop this exact
+operation before the next ordinary action, without changing Task assignment.
+
+## Observable ordinary Task operation execution
+
+Claim, updates, Test/Await and cleanup keep their existing lifecycle and exact
+original receipts while public transports can acknowledge durable admission
+before work completes. Test/Await status, Git references and release membership
+change only through the existing successful integration/CAS owner. Reading an
+admission or timing out a transport grants no acceptance, publication, replay or
+NO_EFFECT authority. Complete/Delete domain rules and preview/token checks are
+unchanged. The authenticated user's nullable identity uses the same canonical
+ledger; provider identity and inherited execution/custody fences stay intact.
+
+## Release stage persistence under SQLite contention (HUB-368)
+
+The existing asynchronous persistence queue retries only short owner/CAS/receipt
+closures for heartbeat, step admission/settlement, generation storage, publication
+reservation and state advancement. External composition, validation, Git and
+publication effects stay outside those closures. A returned effect result remains
+with its exact worker across a queue contention budget and the existing retry
+cadence; retrying its persistence must not invoke the effect again. Each write
+rechecks the original owner epoch and current durable revision. An identical
+already committed transition is read back without another outbox event.
+
+Addressed draining retains this worker and its owned contention continuation. A
+live foreign owner or durable external waiting condition does not hold the CLI
+open. Task-addressed draining uses effective amended membership, while original
+authorization, generation identities, historical receipts and target fences stay
+immutable. No global lock, busy-timeout increase, new release attempt or G0
+recovery authority is introduced. See ADR-HUB-368-release-persistence-retry.
+
+## Committed custody claim readback after reopen
+
+An exact successor whose Task assignment is already durably committed may read
+that result through the existing custody owner after a process/service reopen.
+This is not another execution admission: its original execution binding remains
+unchanged, including absent legacy metadata. The custody owner rechecks caller,
+original hash, fence, namespace, exact Task revision and committed binding under
+the existing Task lease. A readback-only path cannot fall through to assignment.
+Cancellation/pending-stop checks remain inherited, and ordinary new execution
+still cannot replace another worker binding.
