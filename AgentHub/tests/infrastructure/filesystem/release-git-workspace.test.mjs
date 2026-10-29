@@ -168,13 +168,16 @@ async function publishedServiceFixture(context) {
     let candidate, cleanupError;
     const scheduled = [];
     const baseCommit = await git(f.primary, "rev-parse", "main");
+    const preparedInput = { workspaceId: "workspace", planRevision: `plan-${label}`,
+      projectRoot: f.primary, approvedBaseCommit: baseCommit,
+      frozenTasks: [{ taskId: selected.id, taskRevision: board.task(selected.id).revision,
+        baseCommit: managed.baseCommit, resultCommit: result.snapshot.headCommit }] };
+    await f.service.prepareCandidate(preparedInput);
     const operations = new ReleaseOperationService({ store, runnerVersion: "fixture",
       processAlive: pid => pid === process.pid, schedule: fn => scheduled.push(fn),
       compose: async ({ operation, generation }) => {
-        candidate = await f.service.prepareGeneration({ operationId: operation.operationId, generation,
-          workspaceId: "workspace", planRevision: `plan-${label}`, projectRoot: f.primary, approvedBaseCommit: baseCommit,
-          frozenTasks: [{ taskId: selected.id, taskRevision: board.task(selected.id).revision,
-            baseCommit: managed.baseCommit, resultCommit: result.snapshot.headCommit }],
+        candidate = await f.service.prepareGeneration({ ...preparedInput,
+          operationId: operation.operationId, generation,
           changelogContent: Buffer.from(`Release ${label}\n`) });
         return { repositoryBases: [{ repositoryRoot: f.primary, baseCommit }],
           selectedResults: [{ taskId: selected.id, resultCommit: result.snapshot.headCommit }],
