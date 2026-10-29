@@ -3090,6 +3090,21 @@ not required for allocation, while tampered bytes or missing unique content refu
 This does not restore a missing file or certify completeness/installation of any
 retained runtime body. No runtime files, pointers or manifests are changed.
 
+An original admitted partial runtime retirement may already have removed its
+last Android metadata copy. Allocation alone may then read the original canonical
+publication artifact (ADR-HUB-363-partial-retirement-allocation). Exact raw runtime
+manifest/root custody and the same admitted maintenance operation must match the
+pointer's pruning record. The artifact's complete identity/hash-derived directory,
+runtime result and PREPARED receipt bind that same manifest, source, original
+operation/generation and version; the Android artifact verifies its payload and
+the exact declared metadata size/hash. Pointer, root, original and archive custody
+are checked again after the final read. Current, rollback, running and unretired
+missing bodies gain no such authority. Missing/foreign/changed proof refuses.
+This observes allocation evidence only, never restores a file, completes pruning,
+settles a maintenance operation or declares publication successful. The historical
+path is removable when original partial retirements have completed normally and
+their runtime entries no longer exist; no archive retention policy is introduced.
+
 ## Standalone local release observation
 
 The optional `release-progress/server.mjs` projects only the requested existing
