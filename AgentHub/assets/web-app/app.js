@@ -431,13 +431,14 @@ syncComposerInputMode();
 function readThemeCatalog() {
   const source = document.querySelector("[data-theme-catalog]")?.textContent ?? "";
   const catalog = JSON.parse(source);
-  if (!Array.isArray(catalog) || !catalog.some((theme) => theme?.id === "orbit")) {
+  if (!Array.isArray(catalog) || !catalog[0]?.id) {
     throw new Error("Каталог тем Agent Hub повреждён");
   }
   return catalog;
 }
 
 const themeCatalog = readThemeCatalog();
+const defaultTheme = themeCatalog[0].id;
 const themes = Object.freeze(Object.fromEntries(themeCatalog.map((theme) => [theme.id, theme.color])));
 const backgroundNames = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
   theme.backgrounds.map((background) => [background.id, background.name])
@@ -617,16 +618,6 @@ const RANGE_LABELS = {
   all: "Всё время",
 };
 
-function savedTheme() {
-  try {
-    const value = localStorage.getItem("agent-hub-theme");
-    const selected = themeAliases[value] ?? value;
-    return Object.hasOwn(themes, selected) ? selected : "orbit";
-  } catch {
-    return "orbit";
-  }
-}
-
 /* Живые частицы тем.
  *
  * Плиткой это сделать нельзя: `background-repeat` повторяет один рисунок, и
@@ -736,7 +727,7 @@ function applyBackgroundMotion(value, { persist = false } = {}) {
 
 function applyTheme(theme, { persist = false } = {}) {
   const candidate = themeAliases[theme] ?? theme;
-  const selected = Object.hasOwn(themes, candidate) ? candidate : "orbit";
+  const selected = Object.hasOwn(themes, candidate) ? candidate : defaultTheme;
   document.documentElement.dataset.theme = selected;
   if (selected === "gothic") {
     for (const background of Object.keys(deferredBackgroundAssets)) {
@@ -749,7 +740,7 @@ function applyTheme(theme, { persist = false } = {}) {
   themeColor.content = themes[selected];
   if (persist) {
     try {
-      localStorage.setItem("agent-hub-theme", selected);
+      localStorage.setItem(window.AgentHubThemePreference.STORAGE_KEY, selected);
     } catch {
       // Тема останется активной до закрытия WebView.
     }
@@ -971,7 +962,12 @@ telegramFullscreenButton?.addEventListener("click", () => {
   else telegram?.requestFullscreen?.();
 });
 applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
-applyTheme(savedTheme());
+const themeStartup = window.AgentHubThemePreference.initialize({
+  storage: () => localStorage, catalog: themeCatalog, aliases: themeAliases, apply: applyTheme,
+});
+if (themeStartup.migration === "storage-unavailable") {
+  console.warn("Выбор темы не удалось сохранить; однократный переход на Nexus будет повторён при доступности хранилища.");
+}
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyActivityRailVisibility(activityRailPreference.stored(localStorage));
 const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
@@ -3725,7 +3721,7 @@ function applyBackground(background, { persist = false } = {}) {
 }
 
 function backgroundsForTheme(theme) {
-  return themeBackgrounds[theme] ?? ["orbit"];
+  return themeBackgrounds[theme] ?? themeBackgrounds[defaultTheme];
 }
 
 function normalizeBackground(theme, candidate) {
