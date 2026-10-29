@@ -931,7 +931,7 @@ export class ReleaseGitWorkspaceService {
           cwd: sourceRoot, timeoutMs: null,
         });
         await runGit([
-          "-c", "core.longpaths=true", "clone", "--single-branch", "--branch", "main",
+          "clone", "--single-branch", "--branch", "main",
           "--no-local", "--no-hardlinks", "--no-checkout",
           ...(this.#validationReferenceRoot ? ["--reference-if-able", this.#validationReferenceRoot] : []),
           bundle, layout.releaseRoot,

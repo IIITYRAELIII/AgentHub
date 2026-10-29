@@ -30,6 +30,8 @@ import { runtimePointerTransition, runtimeRollbackPointer } from "../infrastruct
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const RUNTIME_MODULE_ASSETS = [
+  ["src/infrastructure/filesystem/preparation-git-isolation.mjs",
+    "src/infrastructure/filesystem/git-invocation-policy.json"],
   ["src/infrastructure/process/test-resource-monitor.mjs",
     "src/infrastructure/process/test-resource-accounting.cs"],
   ["src/infrastructure/process/codex-executable-custody.mjs",

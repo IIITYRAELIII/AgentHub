@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "./preparation-git-isolation.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { link, lstat, readFile, writeFile, rename, rm } from "node:fs/promises";
@@ -15,7 +16,7 @@ const samePath = (a, b) => process.platform === "win32"
   : path.resolve(a) === path.resolve(b);
 
 async function git(root, args, environment = {}) {
-  return String((await execute("git", args, {
+  return String((await execute("git", ownedGitArguments(args), {
     cwd: root, env: { ...process.env, ...environment }, windowsHide: true,
     maxBuffer: Infinity, encoding: "utf8",
   })).stdout).trimEnd();

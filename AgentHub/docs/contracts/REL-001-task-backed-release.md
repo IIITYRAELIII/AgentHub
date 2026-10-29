@@ -1,5 +1,15 @@
 # REL-001 — Task-backed Workspace release
 
+## Windows Git path handling
+
+All Hub-owned Windows Git invocations use the shared argument policy in
+`git-invocation-policy.json`, including Task, release, isolated preparation,
+bundle/index-pack descendants and offline Python source tools. Existing
+process owners, environment scrubbing, hooks, guards and authority checks stay
+in control. This permanent application default does not write global/system
+configuration, change other applications' Git, or remove Git's independent
+repository-root length limits. Other operating systems keep their arguments.
+
 ## Cleanup of an exact historical direct delivery
 
 `completion_mode=published_delivery` is an explicit RM compatibility input for

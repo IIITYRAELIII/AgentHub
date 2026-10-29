@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "./preparation-git-isolation.mjs";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
@@ -225,7 +226,7 @@ function runTaskGitCommandUntraced(args, {
       reject(signal.reason instanceof Error ? signal.reason : new Error("Task Git lease ownership was lost"));
       return;
     }
-    const child = spawnProcess(executable, args, {
+    const child = spawnProcess(executable, ownedGitArguments(args, { executable }), {
       cwd,
       windowsHide: true,
       stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"],
