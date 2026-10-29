@@ -147,7 +147,9 @@ export async function explainTestInputFingerprint(file, {
           continue;
         }
         if (declaration?.packages?.includes(specifier)) continue;
-        reject(`undeclared-package:${specifier}`);
+        // The conservative scanner can encounter embedded fixture source.
+        // Never echo an arbitrary captured string into durable test output.
+        reject("undeclared-package");
       }
     }
   }

@@ -360,6 +360,15 @@ uncacheable policy reason); they never print environment values or fabricate
 reusable evidence. See ADR-0346. Existing frozen/admitted generations retain
 their original runner; this policy applies only to subsequent compositions.
 
+Targeted retry uses the same checkpoint eligibility for its read-only plan and
+execution. Retained failures survive runs of another subset. Only that file's
+successful execution/cleanup clears its failure. The effective isolated child
+environment binds profile overrides and real OS identity; overwritten private
+home/state/temp inputs use one stable ownership token for proof. Other environment,
+toolchain, transitive sources, declared assets and browser inputs remain bound.
+Unknown inputs stay unknown and rerun; arbitrary import-capture text is not logged.
+See ADR-HUB-374. No historical digest is upgraded into new-policy evidence.
+
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
 fallback physically reads/projects at most the latest 16 MiB plus two bounded
