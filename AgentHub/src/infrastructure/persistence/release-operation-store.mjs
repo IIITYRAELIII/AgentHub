@@ -8,6 +8,7 @@ import { normalizedOwnGitPublication } from "../../domain/release-base-provenanc
 
 import {
   createCandidateGeneration,
+  completedReleaseGenerationEvidence,
   effectiveReleaseTaskIds,
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
@@ -21,6 +22,70 @@ import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.
 import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
 
 const LEGACY_MIGRATION_PREFIX = "release-operation:legacy:";
+
+// Address only the original operations indexed by the selected Tasks. No global
+// latest-publication substitution, filesystem scan, migration or store writes.
+export function readPublishedReleaseServiceGeneration({ dataDir, workspaceId, repositoryRoot, selectedTasks } = {}) {
+  const file = runtimeDatabasePath(dataDir);
+  if (!selectedTasks?.length || !existsSync(file)) return null;
+  const rootKey = value => path.resolve(String(value)).replaceAll("\\", "/").toLowerCase();
+  const selected = items => items.map(item => `${item.taskId ?? item.id}:${item.resultCommit}`).sort();
+  const expected = selected(selectedTasks);
+  const database = new DatabaseSync(file, { readOnly: true });
+  try {
+    database.exec("BEGIN");
+    if (database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('release_operations','release_operation_tasks','release_candidate_generations','release_step_receipts')").get().count !== 4) return null;
+    const rows = database.prepare(`SELECT DISTINCT o.operation_json, g.generation_json, g.identity_sha256
+      FROM release_operations o JOIN release_operation_tasks t ON t.operation_id=o.operation_id
+      JOIN release_candidate_generations g ON g.operation_id=o.operation_id
+        AND g.generation=json_extract(o.operation_json, '$.currentGeneration')
+      WHERE o.workspace_id=? AND o.state='done' AND t.task_id IN (${selectedTasks.map(() => "?").join(",")})`)
+      .all(workspaceId, ...selectedTasks.map(item => item.id));
+    const matches = [];
+    for (const row of rows) {
+      const operation = JSON.parse(row.operation_json), generation = JSON.parse(row.generation_json);
+      if (operation.workspaceId !== workspaceId || JSON.stringify(selected(generation.selectedResults)) !== JSON.stringify(expected)) continue;
+      const { fingerprint, ...authorization } = operation.authorization;
+      if (releaseIdentitySha256(authorization) !== fingerprint
+          || generation.identitySha256 !== row.identity_sha256) throw new Error("Published release original identity changed");
+      const latest = name => {
+        const receipt = database.prepare(`SELECT receipt_json FROM release_step_receipts
+          WHERE operation_id=? AND generation=? AND step_id=? ORDER BY attempt DESC LIMIT 1`)
+          .get(operation.operationId, generation.generation, name);
+        return receipt ? JSON.parse(receipt.receipt_json) : null;
+      };
+      const proof = completedReleaseGenerationEvidence({ operation, generation,
+        validation: latest("validate"), finalization: latest("finalize") });
+      if (!proof) throw new Error("Published release completed-generation evidence changed");
+      if (JSON.stringify([...(generation.authorizedTaskIds ?? authorization.taskIds)].sort())
+          !== JSON.stringify(generation.selectedResults.map(item => item.taskId).sort())) {
+        throw new Error("Published release authorized selection changed");
+      }
+      const candidates = generation.candidates.filter(item => rootKey(item.repositoryRoot) === rootKey(repositoryRoot));
+      if (candidates.length !== 1) continue;
+      const candidate = candidates[0];
+      const targets = releaseApprovedTargets(restoreReleaseOperation(operation)).filter(target =>
+        target.kind === "agent-hub-publication" && rootKey(target.repositoryRoot) === rootKey(repositoryRoot));
+      if (targets.length !== 1) continue;
+      const published = latest(`publish:${targets[0].targetId}`);
+      if (!published || published.status !== "applied" || published.operationId !== operation.operationId
+          || published.generation !== generation.generation
+          || published.inputSha256 !== releaseIdentitySha256(published.input)
+          || published.input?.candidate !== generation.identitySha256
+          || releaseIdentitySha256(published.input.target) !== releaseIdentitySha256(targets[0])
+          || !["applied", "already_applied"].includes(published.effect?.status)
+          || published.effect?.revision !== candidate.commit
+          || releaseIdentitySha256(published.effect) !== releaseIdentitySha256(operation.publicationEffects.targets[targets[0].targetId])) {
+        throw new Error("Published release target receipt changed");
+      }
+      matches.push({ ...proof, candidate });
+    }
+    if (matches.length > 1) throw new Error("Published release service selection is ambiguous");
+    return matches[0] ?? null;
+  } finally {
+    try { database.exec("ROLLBACK"); } finally { database.close(); }
+  }
+}
 
 // Git publication is a narrower fact than successful runtime delivery. Reuse
 // existing immutable generation/receipt authority; never advance publication

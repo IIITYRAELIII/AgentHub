@@ -430,7 +430,11 @@
         "tests/application/task-operation-interruption-admission.test.mjs",
         "tests/infrastructure/persistence/task-operation-user-migration.test.mjs",
         "tests/application/release-operation-persistence.test.mjs",
-        "docs/decisions/ADR-HUB-368-release-persistence-retry.md"
+        "docs/decisions/ADR-HUB-368-release-persistence-retry.md",
+        "src/infrastructure/filesystem/direct-task-publication.mjs",
+        "tests/application/task-direct-published-cleanup.test.mjs",
+        "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
+        "src/infrastructure/filesystem/cleanup-preservation.mjs"
       ]
     },
     {
@@ -492,7 +496,11 @@
         "tests/application/task-operation-interruption-admission.test.mjs",
         "tests/infrastructure/persistence/task-operation-user-migration.test.mjs",
         "tests/application/release-operation-persistence.test.mjs",
-        "docs/decisions/ADR-HUB-368-release-persistence-retry.md"
+        "docs/decisions/ADR-HUB-368-release-persistence-retry.md",
+        "src/infrastructure/filesystem/direct-task-publication.mjs",
+        "tests/application/task-direct-published-cleanup.test.mjs",
+        "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
+        "src/infrastructure/filesystem/cleanup-preservation.mjs"
       ]
     },
     {

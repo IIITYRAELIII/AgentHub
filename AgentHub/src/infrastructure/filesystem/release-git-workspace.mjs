@@ -998,8 +998,9 @@ export class ReleaseGitWorkspaceService {
     return { ...layout, ...marker, markerFile };
   }
 
-  // This is the ordinary composer in a disposable owned repository, not a second
-  // projection policy. No live candidate/checkpoint is promoted or rolled back.
+  // Revalidate an exact prepared native result, including its accepted resolutions.
+  // Otherwise use the ordinary composer in a disposable owned repository.
+  // No live candidate/checkpoint is promoted or rolled back.
   // The application owner holds Await/Task/dev leases and revalidates identities.
   async validateCandidate({
     planRevision, projectRoot, workspaceId = null, frozenTasks = [],
@@ -1007,6 +1008,31 @@ export class ReleaseGitWorkspaceService {
   } = {}) {
     this.#assertAvailable("validateCandidate");
     if (commitPrepared != null) throw new Error("Composition validation cannot commit Task acceptance");
+    const checkpoint = await readJson(this.#layout(projectRoot).checkpointFile);
+    if (checkpoint?.phase === "prepared" && checkpoint.planRevision === planRevision
+        && checkpoint.baseCommit === approvedBaseCommit) {
+      const input = { projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit,
+        baseProvenance, exactBaseProvenance: true };
+      const verificationRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
+      try {
+        if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+        const prepared = await this.#preparedGenerationSource({ ...input,
+          verificationRoot: path.join(verificationRoot, "before") });
+        if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+        const current = await this.#preparedGenerationSource({ ...input,
+          verificationRoot: path.join(verificationRoot, "after") });
+        if (stableManifest(current.binding) !== stableManifest(prepared.binding)) {
+          throw new Error("Prepared composition changed during validation");
+        }
+        if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+        return { status: "validated", repositoryRoot: current.candidate.repositoryRoot,
+          planRevision, baseCommit: current.candidate.baseCommit, tree: current.candidate.tree,
+          taskIds: current.candidate.frozenTasks.map(task => task.taskId).sort(),
+          mergedTaskIds: current.candidate.mergedTaskIds };
+      } finally {
+        await rm(verificationRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      }
+    }
     const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
     try {
       const isolated = new ReleaseGitWorkspaceService({
@@ -1046,7 +1072,8 @@ export class ReleaseGitWorkspaceService {
     }
   }
 
-  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent, releaseVersion }) {
+  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent, releaseVersion,
+    exactBaseProvenance = false, verificationRoot = null }) {
     const layout = this.#layout(projectRoot);
     const stale = message => Object.assign(new Error(`${message}; prepare the current Await candidate through the normal owner`),
       { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
@@ -1058,12 +1085,26 @@ export class ReleaseGitWorkspaceService {
           || source.planRevision !== planRevision || source.baseCommit !== approvedBaseCommit
           || String(manifest.workspaceId ?? "") !== String(workspaceId ?? "")
           || stableManifest(normalizedFrozenTasks(manifest.tasks)) !== stableManifest(tasks)
+          || (exactBaseProvenance && stableManifest(normalizedBaseProvenance(manifest.baseProvenance, source.baseCommit))
+            !== stableManifest(normalizedBaseProvenance(baseProvenance, approvedBaseCommit)))
           || (manifest.baseProvenance?.publishedBaseCommit ?? null) !== (baseProvenance?.publishedBaseCommit ?? null)
           || ([manifest.baseProvenance?.kind, baseProvenance?.kind].includes(LOCAL_SOURCE_BASELINE_PROVENANCE)
             && stableManifest(manifest.baseProvenance) !== stableManifest(baseProvenance))) {
         throw stale("Prepared PreRelease selection, base or evidence is stale");
       }
-      const git = (args, options = {}) => runGit(args, { ...options, cwd: source.releaseRoot });
+      let verificationRepository = source.releaseRoot;
+      if (verificationRoot) {
+        await mkdir(verificationRoot, { recursive: true });
+        const bundle = path.join(verificationRoot, "source.bundle");
+        await createSelectedGitBundle({ root: verificationRoot, sourceRoot: source.releaseRoot, bundle,
+          mainCommit: source.baseCommit,
+          inputs: [source.baseCommit, source.preReleaseHead, ...tasks.map(task => task.resultCommit)],
+          gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: null }) });
+        verificationRepository = path.join(verificationRoot, "repository.git");
+        await runGit(["clone", "--bare", "--no-local", "--no-hardlinks", bundle, verificationRepository],
+          { cwd: verificationRoot });
+      }
+      const git = (args, options = {}) => runGit(args, { ...options, cwd: verificationRepository });
       const historyAuthority = await this.#nativeHistoryAuthority({ projectRoot, provenance: manifest.baseProvenance,
         planRevision, tasks });
       await assertNativePreparedComposition({ git, baseCommit: source.baseCommit, tasks,

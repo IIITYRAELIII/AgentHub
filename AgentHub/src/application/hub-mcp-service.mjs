@@ -889,6 +889,10 @@ export class HubMcpService {
         selected_preview_request_id: { type: "string" },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
+        cleanup_preview_request_id: { type: "string", description: "Exact successful original Delete preview for an already admitted cleanup continuation." },
+        cleanup_preserved_files: { type: "array", items: { type: "object", properties: {
+          projectRoot: { type: "string" }, relativePath: { type: "string" }, retainedPath: { type: "string" }, sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        }, required: ["projectRoot", "relativePath", "retainedPath", "sha256"], additionalProperties: false } },
       }, ["task_id", "operation_request_id", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Release Manager-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
         task_id: { type: "string" },
@@ -904,7 +908,14 @@ export class HubMcpService {
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
         absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
-        completion_mode: { type: "string", enum: ["published_release_service"], description: "Release Manager-only closure for a published service release Task with exact manifest/checklist linkage; preserves its managed worktree." },
+        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational"], description: "Release Manager-only published service closure, exact direct-delivery cleanup, or completed operational zero-own-delta cleanup." },
+        completed_operation_request_id: { type: "string", description: "Original canonical published-service closure supplying historical repository proof for its already closed zero-own-delta source." },
+        published_delivery: { type: "object", properties: {
+          runtimeRoot: { type: "string" }, publicationRunSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          publicationJournalPath: { type: "string", description: "Explicit retained original journal; its raw hash and original runtime identity remain required." },
+          preparedSha256: { type: "string", pattern: "^[a-f0-9]{64}$" }, sourceBaseCommit: { type: "string", pattern: "^[a-f0-9]{40}$" },
+          sourceCommit: { type: "string", pattern: "^[a-f0-9]{40}$" }, publicationBaseCommit: { type: "string", pattern: "^[a-f0-9]{40}$" },
+        }, required: ["runtimeRoot", "publicationRunSha256", "preparedSha256", "sourceBaseCommit", "sourceCommit", "publicationBaseCommit"], additionalProperties: false },
       }, ["task_id"]),
       tool("hub_task_delete", "Preview, then explicitly confirm permanent destructive deletion of a Task and its managed Git artifacts.", {
         task_id: { type: "string" },
@@ -1497,6 +1508,12 @@ export class HubMcpService {
         if (this.workspaceCatalog.mcpOperation(args.operation_request_id)?.toolName === "hub_task_claim") {
           return this.#reconcileSealedClaimRefusal(context, args);
         }
+        if (this.workspaceCatalog.mcpOperation(args.operation_request_id)?.toolName === "hub_task_complete") {
+          return this.#reconcilePublishedDeliveryComplete(context, args);
+        }
+        if (this.workspaceCatalog.mcpOperation(args.operation_request_id)?.toolName === "hub_task_delete") {
+          return this.#reconcileConfirmedDelete(context, args);
+        }
         if (!this.taskOperationReconciliation) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation is unavailable"));
         return this.taskOperationReconciliation.reconcileUnknownWorkflow({
           workspaceId: context.workspaceId,
@@ -1548,7 +1565,7 @@ export class HubMcpService {
         if (args.absorption_mode === "published_duplicate" && !this.#isReleaseManager(context)) {
           throw new Error("published duplicate closure requires a Release Manager Stream");
         }
-        if (args.completion_mode === "published_release_service" && !this.#isReleaseManager(context)) {
+        if (args.completion_mode != null && !this.#isReleaseManager(context)) {
           throw new Error("published release service closure requires a Release Manager Stream");
         }
         return this.#completeTask(context, args);
@@ -2330,17 +2347,22 @@ export class HubMcpService {
     return cleanupConfirmation(task, action, preview);
   }
 
-  async #completeTask(context, {
+  async #completeTask(context, args = {}) {
+    const {
     task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
     expected_cleanup_token: expectedCleanupToken = null,
     absorbed_into_task_id: absorbedIntoTaskId = null,
     absorption_mode: absorptionMode = null,
     completion_mode: completionMode = null,
-  } = {}) {
+    published_delivery: publishedDelivery = null,
+    completed_operation_request_id: completedOperationRequestId = null,
+    } = args;
     const task = this.#task(context, taskId);
     const result = await this.taskLifecycle.complete({
       taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
-      absorptionMode, completionMode,
+      absorptionMode, completionMode, publishedDelivery, completedOperationRequestId,
+      originalArguments: ["published_delivery", "operational"].includes(completionMode)
+        ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) : null,
     });
     return result?.confirmationRequired
       ? { ...result, task: compactTask(result.task) }
@@ -3409,6 +3431,69 @@ export class HubMcpService {
         || this.taskBoard.lifecycleTransition?.(receipt.requestId)
         || this.taskBoard.lifecycleOutcome?.(receipt.requestId)) return null;
     return proof;
+  }
+
+  async #reconcileConfirmedDelete(context, args) {
+    const refuse = message => { throw new TaskOperationReconciliationRefusedError(new Error(message)); };
+    if (Object.keys(args).some(k => !["context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile",
+      "cleanup_preview_request_id", "cleanup_preserved_files", "project_root"].includes(k))) refuse("Delete reconciliation accepts only the exact cleanup family");
+    const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+    const preview = this.workspaceCatalog.mcpOperation(args.cleanup_preview_request_id);
+    const prior = preview?.result;
+    const captured = { request_id: args.operation_request_id, task_id: args.task_id, confirm_cleanup: true,
+      expected_cleanup_token: prior?.cleanupToken };
+    if (!original || original.toolName !== "hub_task_delete" || original.workspaceId !== context.workspaceId
+        || !["pending", "unknown", "reconciling", "succeeded"].includes(original.status)
+        || !preview || preview.toolName !== "hub_task_delete" || preview.status !== "succeeded"
+        || ["workspaceId", "streamId", "provider", "threadId"].some(k => preview[k] !== original[k])
+        || prior?.task?.id !== args.task_id || prior.action !== "delete" || prior.confirmationRequired !== true
+        || !prior.preview || argumentsHash(captured) !== original.argumentsHash) refuse("Delete requires its exact original successful preview and confirmed argument hash");
+    const outcome = this.taskBoard.lifecycleOutcome(original.requestId);
+    const files = args.cleanup_preserved_files ?? [];
+    const expectedAuthority = { previewRequestId: preview.requestId, originalArguments: captured, preservedFiles: files, preview: prior.preview };
+    let result;
+    if (outcome) {
+      if (outcome.taskId !== args.task_id || outcome.kind !== "delete"
+          || JSON.stringify(outcome.result?.evidence?.cleanupForward?.authority) !== JSON.stringify(expectedAuthority)) refuse("Original Delete terminal authority differs");
+      result = { deleted: true, task: outcome.result.result.task, cleanup: outcome.result.evidence.cleanup };
+    } else result = await this.taskLifecycle.resumeConfirmedDelete({ taskId: args.task_id, operationId: original.requestId,
+      priorPreview: prior, originalArguments: captured, preservedFiles: files, previewRequestId: preview.requestId });
+    if (!result?.deleted || result.task?.id !== args.task_id) throw Error("Original Delete has no canonical completion");
+    result = { ...result, task: compactTask(result.task) };
+    if (original.status === "unknown") await this.workspaceCatalog.completeUnknownMcpOperation(original.requestId, {
+      workspaceId: context.workspaceId, toolName: "hub_task_delete", result,
+      reconciliation: { kind: "confirmed-delete-forward-v1", lifecycleOperationId: original.requestId },
+    });
+    else if (original.status !== "succeeded") await this.workspaceCatalog.completeMcpOperation(original.requestId, result);
+    return { taskId: args.task_id, operationId: original.requestId, outcome: "COMPLETED", result };
+  }
+
+  async #reconcilePublishedDeliveryComplete(context, args) {
+    const refuse = message => { throw new TaskOperationReconciliationRefusedError(new Error(message)); };
+    if (Object.keys(args).some(k => !["context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile", "project_root"].includes(k))) refuse("Complete reconciliation accepts only its original identity");
+    const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+    const transition = this.taskBoard.lifecycleTransition?.(args.operation_request_id);
+    const outcome = this.taskBoard.lifecycleOutcome?.(args.operation_request_id);
+    const evidence = outcome?.result?.evidence ?? transition?.evidence;
+    const captured = evidence?.originalArguments;
+    if (!original || original.workspaceId !== context.workspaceId || original.toolName !== "hub_task_complete"
+        || evidence?.publishedDelivery?.taskId !== args.task_id || !captured
+        || captured.task_id !== args.task_id || captured.request_id !== original.requestId
+        || !["published_delivery", "operational"].includes(captured.completion_mode) || captured.confirm_cleanup !== true
+        || argumentsHash(captured) !== original.argumentsHash
+        || (transition && (transition.taskId !== args.task_id || transition.kind !== "complete" || transition.phase !== "cleanup"))
+        || (outcome && (outcome.taskId !== args.task_id || outcome.kind !== "complete"))) {
+      refuse("Complete requires its exact admitted direct-publication cleanup or terminal outcome; unsealed originals remain unknown");
+    }
+    if (!["pending", "reconciling", "unknown", "succeeded"].includes(original.status)) refuse("Original Complete has a different terminal outcome");
+    const result = outcome ? compactTask(outcome.result.result) : await this.#completeTask(context, captured);
+    if (result?.id !== args.task_id || result?.status !== "done") throw Error("Original direct cleanup did not finish");
+    if (original.status === "unknown") await this.workspaceCatalog.completeUnknownMcpOperation(original.requestId, {
+      workspaceId: context.workspaceId, toolName: "hub_task_complete", result,
+      reconciliation: { kind: "direct-published-cleanup-original-v1", lifecycleOperationId: original.requestId },
+    });
+    else if (original.status !== "succeeded") await this.workspaceCatalog.completeMcpOperation(original.requestId, result);
+    return { taskId: args.task_id, operationId: original.requestId, outcome: "COMPLETED", result };
   }
 
   async #reconcileSealedClaimRefusal(context, args) {

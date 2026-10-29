@@ -39,6 +39,73 @@ The existing source `release.mjs run` accepts this business argument in its
 the same intent through its existing Desktop release command. Neither entry
 writes package metadata directly or creates another publisher.
 
+## Historical direct publication cleanup
+
+Release Manager-only `hub_task_complete completion_mode=published_delivery`
+uses the existing cleanup preview/confirm. Its `published_delivery` binds the
+original runtime journal SHA-256, prepared artifact SHA-256, source base/result
+and immediate publication parent. The owner verifies terminal published Task
+membership, artifact identity and the exact Git change projection before
+classifying clean managed artifacts as published. It creates no Task/Test ref.
+The preview token binds Task revision, original evidence and the deletion plan.
+Confirmation removes only those clean managed artifacts through the existing
+Git cleanup owner and archives the card without changing workflow status.
+
+Optional `publicationJournalPath` addresses a retained original journal after
+the current pointer has advanced; its raw hash, original runtimeRoot, artifact,
+Task membership and terminal identity are still checked, without path search or
+fallback. `publicationBaseCommit` may be the original run's exact `from` for a
+combined delivery. The owner proves that complete first-parent chain to the
+original terminal and every own Task change's unique ordered before/from and
+after/terminal context, path and mode. Added/deleted, binary, non-UTF8 or
+unterminated-file content needs whole before/after identity. Other tasks' edits
+outside those contexts remain. Arbitrary intermediate ranges or partial Task
+survival refuse. The previous exact-last-port input retains its behavior.
+Unique snippets alone cannot prove an original removal/replacement. For the
+combined route, every complete own edit must map inside one actual zero-context
+Git edit of the original from-to-terminal delta, including its removed and added
+line ranges. Retained context lines must map unchanged to their exact after
+positions. This is read-only; source objects, refs and index remain unchanged.
+
+Partial deletion retains its exact admitted lifecycle intent. Existing RM
+`hub_task_operation_reconcile`, addressed to the original Complete request,
+may finish its remaining pinned cleanup or settle its canonical outcome.
+It cannot retrofit an unsealed historical UNKNOWN, replace the source pin,
+discard ignored/dirty data or infer publication from a generic failure.
+Ordinary completion and the existing preserve-only absorption modes retain
+their previous contracts. See ADR-HUB-369-direct-published-cleanup.
+
+For an explicitly completed non-product operation, RM may select
+`completion_mode=operational` without a delivery envelope. This attests the
+operational outcome, not product publication. The same owner proves no result,
+adoption or squash evidence, HEAD exactly equal to the immutable Task base,
+and that base in durable published/tracked history. Existing ignored-data
+retirement and clean-source requirements still apply. The same preview,
+confirmed deletion and original cleanup reconciliation apply; no Test or
+workflow Done is manufactured for an operational card.
+An already closed release service may reference its canonical closure via
+`completed_operation_request_id` when its historical repository is absent from
+today's publication. The owner binds that exact Task's existing release-service
+outcome, preserved source HEAD and published revision; it does not reconstruct
+or insert a publication. The archived card and completion time stay unchanged.
+
+For an already admitted failed/partial Delete, the existing RM reconciliation
+accepts `cleanup_preview_request_id` and optional `cleanup_preserved_files`.
+The original successful preview must have the same actor/Task and reproduce
+the confirmed original's complete arguments hash. The existing Delete
+transition, prior/current Task revision, workflow, executor and results must
+match. Ignored artifacts must be retired first. Every remaining dirty or
+untracked file needs an exact hash-verified existing retained copy outside the
+deleted sources. This includes index-vs-HEAD bytes and every distinct unpublished
+working version; multiple entries for one path must have distinct SHA-256 hashes.
+A working copy does not prove preservation of different staged bytes. Both
+checks run before admission and immediately before removal. Changed source,
+retained bytes, Task or preview refuses.
+The same original transition records its prior failure and forward evidence
+before native cleanup. Partial deletion and lost replies retain that identity;
+terminal readback settles only that original. No no-effect claim, new Delete
+ID, raw receipt replacement or transfer of a separate claim's UNKNOWN occurs.
+
 ## Normal release continuation (ADR-0132)
 
 `hub_release_run` keeps preparation inside the existing durable release owner.

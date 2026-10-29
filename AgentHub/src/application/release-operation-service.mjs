@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   createCandidateGeneration,
+  completedReleaseGenerationEvidence,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
   releaseOperationIsTerminal,
@@ -252,26 +253,11 @@ export class ReleaseOperationService {
   // local Git head is never evidence that a release finished publication.
   retentionGeneration(operationId, number) {
     const operation = this.store.get(operationId);
-    if (operation?.state !== "done" || !operation.completedAt || operation.currentGeneration !== number) return null;
     const generation = this.store.generation(operationId, number);
-    if (!generation || generation.operationId !== operationId || generation.generation !== number
-        || generation.candidates?.length > 32) return null;
-    const { identitySha256, ...contents } = generation;
-    if (releaseIdentitySha256(contents) !== identitySha256) return null;
-    const effects = operation.publicationEffects;
-    if (effects?.generation !== number || effects.publishStarted?.candidate !== identitySha256
-        || !operation.authorization.approvedTargets.every(target => publishedTarget(effects.targets?.[target.targetId]))) return null;
-    const validation = this.store.latestStep(operationId, number, "validate");
-    const finalization = this.store.latestStep(operationId, number, "finalize");
-    for (const receipt of [validation, finalization]) {
-      if (receipt?.status !== "applied" || receipt.operationId !== operationId || receipt.generation !== number
-          || receipt.input?.candidate !== identitySha256 || releaseIdentitySha256(receipt.input) !== receipt.inputSha256) return null;
-    }
-    if (releaseIdentitySha256(finalization.input.effects) !== releaseIdentitySha256(effects)
-        || releaseIdentitySha256(finalization.input.selectedResults) !== releaseIdentitySha256(generation.selectedResults)) return null;
-    return { operationId, generation: number, operationRevision: operation.revision, completedAt: operation.completedAt,
-      identitySha256, candidates: generation.candidates.map(({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash }) =>
-        ({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash })) };
+    if (!generation || generation.operationId !== operationId || generation.generation !== number) return null;
+    return completedReleaseGenerationEvidence({ operation, generation,
+      validation: this.store.latestStep(operationId, number, "validate"),
+      finalization: this.store.latestStep(operationId, number, "finalize") });
   }
 
   continue(operationId, options = {}) {

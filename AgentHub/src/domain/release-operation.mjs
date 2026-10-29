@@ -417,6 +417,30 @@ function normalizedRepositoryBase(value) {
   };
 }
 
+// The release owner and retrospective readers share the same completed-generation
+// proof. This is read-only evidence, never permission to replay publication.
+export function completedReleaseGenerationEvidence({ operation, generation, validation, finalization } = {}) {
+  const number = generation?.generation;
+  if (operation?.state !== "done" || !operation.completedAt || operation.currentGeneration !== number
+      || generation?.operationId !== operation.operationId || generation.candidates?.length > 32) return null;
+  const { identitySha256, ...contents } = generation;
+  if (releaseIdentitySha256(contents) !== identitySha256) return null;
+  const effects = operation.publicationEffects;
+  if (effects?.generation !== number || effects.publishStarted?.candidate !== identitySha256
+      || !operation.authorization.approvedTargets.every(target =>
+        ["applied", "already_applied"].includes(effects.targets?.[target.targetId]?.status))) return null;
+  for (const receipt of [validation, finalization]) {
+    if (receipt?.status !== "applied" || receipt.operationId !== operation.operationId || receipt.generation !== number
+        || receipt.input?.candidate !== identitySha256 || releaseIdentitySha256(receipt.input) !== receipt.inputSha256) return null;
+  }
+  if (releaseIdentitySha256(finalization.input.effects) !== releaseIdentitySha256(effects)
+      || releaseIdentitySha256(finalization.input.selectedResults) !== releaseIdentitySha256(generation.selectedResults)) return null;
+  return { operationId: operation.operationId, generation: number, operationRevision: operation.revision,
+    completedAt: operation.completedAt, identitySha256,
+    candidates: generation.candidates.map(({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash }) =>
+      ({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash })) };
+}
+
 function normalizedCandidate(value) {
   return {
     repositoryRoot: requiredText(value?.repositoryRoot, "candidate repository root"),
