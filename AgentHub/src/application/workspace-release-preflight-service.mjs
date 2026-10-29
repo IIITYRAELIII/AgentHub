@@ -1147,7 +1147,8 @@ export class WorkspaceReleasePreflightService {
           phase: "prepared PreRelease",
         });
       } catch (error) {
-        throw new Error(`${error.message} for ${repository.projectRoot}`, { cause: error });
+        throw Object.assign(new Error(`${error.message} for ${repository.projectRoot}`, { cause: error }),
+          verifyOnly ? { code: "RELEASE_PREPARED_CANDIDATE_STALE" } : {});
       }
       const explicitApprovalSupplied = Boolean(
         approval.approvedLocalMainCommit && approval.approvedOriginMainCommit,

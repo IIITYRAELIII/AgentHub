@@ -224,6 +224,25 @@ test("installed local source generation reuses the sealed exact selection withou
   assert.equal(generationCalls, 1, "stale selection must refuse before another generation is captured");
 });
 
+test("stale prepared publication provenance remains a typed capture refusal with its original cause", async () => {
+  const f = localSourceFixture();
+  f.candidate.manifest.baseProvenance = { ...f.p, publishedBaseCommit: "0".repeat(40) };
+  const before = structuredClone(f.candidate);
+  f.service.releaseGitWorkspaces.prepareGeneration = () => assert.fail("stale provenance cannot capture a generation");
+  const check = (error, capture) => {
+    assert.match(error.message, /prepared PreRelease base provenance belongs to published/u);
+    assert.ok(error.cause instanceof Error);
+    assert.equal(error.message, `${error.cause.message} for ${f.projectRoot}`);
+    assert.equal(error.code, capture ? "RELEASE_PREPARED_CANDIDATE_STALE" : undefined);
+    return true;
+  };
+  await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
+    operationId: "release-original", generation: 1, taskIds: ["task-current"] }), error => check(error, true));
+  await assert.rejects(f.service.preflight({ workspaceId: "workspace-1",
+    expectedPlanRevision: f.plan.revision }), error => check(error, false));
+  assert.deepEqual(f.candidate, before, "refusal must preserve the prepared holder and evidence");
+});
+
 test("installed local source preflight verifies the sealed source base rather than silently using main", async () => {
   const f = localSourceFixture();
   const result = await f.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: f.plan.revision });

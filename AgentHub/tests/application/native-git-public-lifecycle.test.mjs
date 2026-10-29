@@ -148,8 +148,11 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
     get preflight() { return preflight; },
     async continueRelease(operationId) {
       retainRelease(releaseOperations, releaseStore, operationId);
-      await service.call("hub_release_continue", { context_token: token, operation_id: operationId, request_id: "prepared-release-continue" });
-      return releaseOperations.drain(operationId);
+      releaseValidationAllowed = true;
+      try {
+        await service.call("hub_release_continue", { context_token: token, operation_id: operationId, request_id: "prepared-release-continue" });
+        return await releaseOperations.drain(operationId);
+      } finally { releaseValidationAllowed = false; }
     },
     get publication() { return publication; },
     get releaseGit() { return releaseGit; },
@@ -726,7 +729,15 @@ test("public durable release composes native immutable generation with separatel
   const published = await git(publishedRoot, "rev-parse", "HEAD");
   await git(publishedRoot, "push", "origin", `${published}:refs/heads/main`);
   f.publication.repositories[0].revision = published;
-  // Normal release owns preparation with the already explicit approved main pins.
+  // Publication changed after Await. Its owner must refresh the prepared
+  // candidate with exact reviewed pins BEFORE release captures it.
+  const refreshed = await f.preflight.withAwaitTransition(f.workspace.id, () =>
+    f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id,
+      reviewedMainApprovals: { approvedLocalMainCommit: f.base, approvedOriginMainCommit: published } }));
+  const prepared = refreshed.releaseCandidates[0];
+  assert.equal(prepared.manifest.baseProvenance.publishedBaseCommit, published);
+  assert.equal(prepared.manifest.baseProvenance.approvedOriginMainCommit, published);
+  assert.equal(prepared.baseCommit, f.base);
   const snapshot = await f.release(a, published);
   assert.equal(snapshot.operation.state, "waiting", JSON.stringify(snapshot.operation.lastError));
   assert.equal(snapshot.operation.waitReason.code, "validation_failed");
@@ -734,6 +745,7 @@ test("public durable release composes native immutable generation with separatel
   const generation = snapshot.generations[0];
   assert.equal(generation.selectedResults[0].resultCommit, source);
   const candidate = generation.candidates[0];
+  assert.equal(candidate.manifest.preparedCandidate.commit, prepared.preReleaseHead);
   assert.equal(candidate.baseCommit, f.base);
   assert.equal(candidate.manifest.compositionPolicy, "main-selected-git-merge-v1");
   assert.equal(candidate.manifest.baseProvenance.approvedOriginMainCommit, published);
@@ -818,6 +830,9 @@ test("public release generation retains prepared PreRelease conflict resolution"
   const frozenHead = await git(candidate.releaseRoot, "rev-parse", "HEAD");
   const frozenManifestFile = path.join(path.dirname(candidate.releaseRoot), "evidence", `${candidate.manifestHash}.json`);
   const frozenManifest = await readFile(frozenManifestFile);
+  // A public subset cannot exclude B while it remains accepted Await.
+  await assert.rejects(f.release(a, f.base, "prepared-subset-refused"), /whole current Await set/u);
+  await f.status(b, "testing", "prepared-return-b-before-subset");
   const subset = await f.release(a, f.base, "prepared-stale-selection");
   assert.equal(subset.operation.state, "waiting");
   assert.equal(subset.operation.waitReason.code, "validation_failed");
