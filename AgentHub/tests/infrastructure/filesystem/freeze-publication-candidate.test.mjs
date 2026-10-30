@@ -60,6 +60,18 @@ const freezeThroughPublicWrapper = (fixture, options = {}) => freezePreparedPubl
   ...options,
 });
 
+test("manual public version uses the existing freeze and refuses replacing its saved expectation", async t => {
+  const f = await fixture(t, { publicVersion: "2.0.3" });
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze({ expectedVersion: "3.7.9" });
+  const original = JSON.parse(await readFile(frozen.manifestFile, "utf8")).publication;
+  assert.equal(original.releaseVersion, "3.7.9");
+  await assert.rejects(f.freeze({ expectedVersion: "4.8.10" }), /original frozen intent/u);
+  const repeated = await f.freeze({ expectedVersion: "3.7.9" });
+  assert.equal(repeated.manifestHash, frozen.manifestHash);
+  assert.deepEqual(JSON.parse(await readFile(repeated.manifestFile, "utf8")).publication, original);
+});
+
 test("freeze pins the artifact version separately and retry never reallocates it", async (t) => {
   const f = await fixture(t);
   const runtimeRoot = path.join(f.primary, "..", "runtime");

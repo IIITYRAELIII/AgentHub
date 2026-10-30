@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { selectedCompositionFields } from "./task-selected-composition.mjs";
 import { normalizedNativeResolution } from "./native-resolution-input.mjs";
+import { semanticVersion } from "./agent-hub-version.mjs";
 
 
 export const RELEASE_OPERATION_STATES = Object.freeze({
@@ -98,6 +99,12 @@ function normalizedTargets(value) {
   return targets;
 }
 
+export function normalizeReleaseVersion(value) {
+  const version = semanticVersion(value);
+  if (version.prerelease.length || version.metadata) throw new TypeError("Release version must be a complete X.Y.Z public version");
+  return value;
+}
+
 export function normalizedReleaseMetadata(value) {
   if (value == null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("releaseMetadata must be an object");
@@ -114,13 +121,27 @@ export function normalizedReleaseMetadata(value) {
   return { sourcePath, byteLength, rawSha256, canonicalSha256 };
 }
 
+export function normalizeReleaseTaskScope(value) {
+  if (value !== "all_await") throw new TypeError("taskScope must be all_await");
+  return value;
+}
+
+export function effectiveReleaseTaskScope(operation) {
+  for (const amendment of [...(operation.testSelectionAmendments ?? [])].reverse()) {
+    if (amendment.taskScope != null) return amendment.taskScope;
+  }
+  return operation.authorization.taskScope ?? null;
+}
+
 function normalizedAuthorization(value = {}) {
   const authorization = {
     taskIds: uniqueTextList(value.taskIds, "authorization taskIds"),
+    ...(value.taskScope == null ? {} : { taskScope: normalizeReleaseTaskScope(value.taskScope) }),
     approvedTargets: normalizedTargets(value.approvedTargets),
     validationMode: requiredText(value.validationMode, "validationMode"),
     ...(value.testSelection != null ? { testSelection: normalizeTestSelection(value.testSelection) } : {}),
     ...(value.releaseMetadata ? { releaseMetadata: normalizedReleaseMetadata(value.releaseMetadata) } : {}),
+    ...(value.releaseVersion !== undefined ? { releaseVersion: normalizeReleaseVersion(value.releaseVersion) } : {}),
   };
   return { ...authorization, fingerprint: releaseIdentitySha256(authorization) };
 }
@@ -323,6 +344,7 @@ export function restoreReleaseOperation(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   try {
     const operation = createReleaseOperation(value);
+    if (value.authorization?.fingerprint !== operation.authorization.fingerprint) return null;
     const revision = Number(value.revision);
     if (!Number.isSafeInteger(revision) || revision < 1) return null;
     operation.revision = revision;
@@ -408,6 +430,30 @@ function normalizedRepositoryBase(value) {
   };
 }
 
+// The release owner and retrospective readers share the same completed-generation
+// proof. This is read-only evidence, never permission to replay publication.
+export function completedReleaseGenerationEvidence({ operation, generation, validation, finalization } = {}) {
+  const number = generation?.generation;
+  if (operation?.state !== "done" || !operation.completedAt || operation.currentGeneration !== number
+      || generation?.operationId !== operation.operationId || generation.candidates?.length > 32) return null;
+  const { identitySha256, ...contents } = generation;
+  if (releaseIdentitySha256(contents) !== identitySha256) return null;
+  const effects = operation.publicationEffects;
+  if (effects?.generation !== number || effects.publishStarted?.candidate !== identitySha256
+      || !operation.authorization.approvedTargets.every(target =>
+        ["applied", "already_applied"].includes(effects.targets?.[target.targetId]?.status))) return null;
+  for (const receipt of [validation, finalization]) {
+    if (receipt?.status !== "applied" || receipt.operationId !== operation.operationId || receipt.generation !== number
+        || receipt.input?.candidate !== identitySha256 || releaseIdentitySha256(receipt.input) !== receipt.inputSha256) return null;
+  }
+  if (releaseIdentitySha256(finalization.input.effects) !== releaseIdentitySha256(effects)
+      || releaseIdentitySha256(finalization.input.selectedResults) !== releaseIdentitySha256(generation.selectedResults)) return null;
+  return { operationId: operation.operationId, generation: number, operationRevision: operation.revision,
+    completedAt: operation.completedAt, identitySha256,
+    candidates: generation.candidates.map(({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash }) =>
+      ({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash })) };
+}
+
 function normalizedCandidate(value) {
   return {
     repositoryRoot: requiredText(value?.repositoryRoot, "candidate repository root"),
@@ -478,6 +524,7 @@ export function normalizeTestSelectionAmendment(value, operation) {
       || !Number.isSafeInteger(contents.priorGeneration) || contents.priorGeneration < 1
       || contents.authorizationFingerprint !== operation.authorization.fingerprint
       || releaseIdentitySha256(contents) !== identitySha256
+      || contents.taskScope != null && normalizeReleaseTaskScope(contents.taskScope) !== contents.taskScope
       || contents.selection != null && releaseIdentitySha256(normalizeTestSelection(contents.selection)) !== releaseIdentitySha256(contents.selection)
       || releaseIdentitySha256(normalizeReleaseTaskIds(contents.taskIds)) !== releaseIdentitySha256(contents.taskIds)
       || contents.taskSelection != null && JSON.stringify([...new Set(contents.taskSelection.map(item => item.taskId))].sort()) !== JSON.stringify(contents.taskIds)
@@ -510,6 +557,11 @@ export function normalizeReleaseTaskIds(value) {
 }
 
 export function effectiveReleaseTaskIds(operation) {
+  const amendment = operation.testSelectionAmendments?.at(-1);
+  if (effectiveReleaseTaskScope(operation) === "all_await" && operation.selectedResults?.length
+      && (!amendment || operation.currentGeneration > amendment.priorGeneration)) {
+    return [...new Set(operation.selectedResults.map(item => item.taskId))].sort();
+  }
   return operation.testSelectionAmendments?.at(-1)?.taskIds ?? operation.authorization.taskIds;
 }
 
@@ -528,9 +580,10 @@ function releaseTaskIdsAtBoundary(operation, revision, generation) {
 function validAmendmentRequest(contents) {
   const args = contents.requestArguments;
   return args && typeof args === "object" && !Array.isArray(args)
-    && Object.keys(args).every(key => ["expectedRevision", "expectedGeneration", "testSelection", "taskIds", "releaseMetadata"].includes(key))
+    && Object.keys(args).every(key => ["expectedRevision", "expectedGeneration", "testSelection", "taskIds", "taskScope", "releaseMetadata"].includes(key))
     && args.expectedRevision === contents.priorRevision && args.expectedGeneration === contents.priorGeneration
     && (args.testSelection === undefined || releaseIdentitySha256(normalizeTestSelection(args.testSelection)) === releaseIdentitySha256(contents.selection))
+    && (args.taskScope === undefined || normalizeReleaseTaskScope(args.taskScope) === contents.taskScope)
     && (args.taskIds === undefined || releaseIdentitySha256(normalizeReleaseTaskIds(args.taskIds)) === releaseIdentitySha256(contents.taskIds))
     && (args.releaseMetadata === undefined || releaseIdentitySha256(normalizedReleaseMetadata(args.releaseMetadata)) === releaseIdentitySha256(contents.releaseMetadata));
 }

@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "../filesystem/preparation-git-isolation.mjs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
@@ -81,7 +82,7 @@ export function githubReleaseTransport({ run = execute, request = fetch } = {}) 
 // another operation store. The runner selects it ONLY for its approved target.
 export function createGitHubDistributionSteps({
   sourceRoot, repositoryRoot, executionRoot, runtimePublication, artifacts, journal,
-  capture = async (command, args) => (await execute(command, args, {
+  capture = async (command, args) => (await execute(command, ownedGitArguments(args, { executable: command }), {
     cwd: sourceRoot, encoding: "utf8", windowsHide: true, maxBuffer: Infinity,
     env: { ...process.env, PYTHONUTF8: "1" },
   })).stdout,

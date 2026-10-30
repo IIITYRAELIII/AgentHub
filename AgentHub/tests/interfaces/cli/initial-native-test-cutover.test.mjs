@@ -129,6 +129,92 @@ test("ordinary preparation continuation CLI retains original identity and reject
   assert.throws(() => parseTaskAwaitCutoverArguments([...argv, "--task", "foreign"]), /cannot change selection/u);
 });
 
+test("source release CLI retains real SQLite persistence retry and flushes its original trace", async t => {
+  const f = await fixture(t, { releaseManager: true });
+  const task = await f.create("persistence-release");
+  await mkdir(path.join(task.root, "AgentHub"));
+  await writeFile(path.join(task.root, "AgentHub/package.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12" }));
+  await writeFile(path.join(task.root, "AgentHub/package-lock.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12", packages: { "": { name: "agent-hub", version: "2026.10.12" } } }));
+  await commit(task.root, "fixture release metadata");
+  await f.status(task, "testing", "persist-test");
+  await f.status(task, "awaiting_implementation", "persist-await");
+  const prior = { LOCALAPPDATA: process.env.LOCALAPPDATA, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
+  process.env.LOCALAPPDATA = path.join(f.root, "state"); process.env.XDG_STATE_HOME = process.env.LOCALAPPDATA;
+  t.after(() => { for (const [key, value] of Object.entries(prior)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  } });
+  await mkdir(path.join(process.env.LOCALAPPDATA, "AgentHub"), { recursive: true });
+  await writeFile(path.join(process.env.LOCALAPPDATA, "AgentHub/publication-state.json"), JSON.stringify(f.publication));
+  let blocker, unlock, runtime, operationId, validations = 0, publications = 0, closed = false, settled = false, entered;
+  const held = new Promise(resolve => { entered = resolve; });
+  const dataDir = path.dirname(f.databaseFile);
+  const open = async options => {
+    runtime = await openReleaseRuntime({ ...options,
+      createServices: args => {
+        const store = new ReleaseOperationStore({ dataDir: args.dataDir });
+        const mutate = store.runOperationMutation.bind(store);
+        store.runOperationMutation = (id, callback, metadata) => mutate(id, callback, { ...metadata, timeoutMs: 30 });
+        const value = createReleaseOperationServices({ ...args, store, observeOperation: () => {},
+          publication: { publish: async () => { publications++; return { status: "applied" }; },
+            readback: async () => ({ status: "not_applied" }) },
+          finalization: { finalize: async () => ({ status: "fixture-terminal" }) } });
+        value.operations.retryDelayMs = 1000;
+        return value;
+      },
+      openTaskRuntime: async () => {
+        const value = await openTaskAwaitCutoverRuntime({ config: { dataDir, taskBoard: { autoPlaceConfidence: 0.8 } } });
+        value.service.releasePreflight.validateOperationGeneration = async ({ generation }) => {
+          validations++;
+          assert.equal(generation.generation, 1);
+          for (const candidate of generation.candidates) {
+            assert.equal(await git(candidate.releaseRoot, "rev-parse", "HEAD"), candidate.commit);
+          }
+          blocker = new DatabaseSync(path.join(dataDir, "runtime.sqlite"));
+          blocker.exec("BEGIN IMMEDIATE");
+          unlock = setTimeout(() => blocker.exec("ROLLBACK"), 180);
+          entered();
+          return { status: "ready" };
+        };
+        return value;
+      } });
+    const close = runtime.close;
+    runtime.close = async () => {
+      assert.equal(runtime.operations.get(operationId).operation.state, "done");
+      closed = true; await close();
+    };
+    return runtime;
+  };
+  const requestFile = path.join(f.root, "persistence-request.json");
+  await writeFile(requestFile, JSON.stringify({ request_id: "one-source-cli-persistence-original", task_ids: [task.id],
+    validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture", repositoryRoot: f.primary,
+      approvedLocalMainCommit: f.main, approvedOriginMainCommit: f.main }] }));
+  const pending = executeRelease({ action: "run", requestFile, provider: "codex", threadId: "fixture-thread", streamId: f.streamId },
+    { openRuntime: open, onAccepted: value => { operationId = value.operationId; } })
+    .then(value => { settled = true; return value; });
+  try {
+    await Promise.race([held, pending.then(value => { throw new Error("CLI returned before validation barrier: " + value.operation.state); })]);
+    await new Promise(resolve => setTimeout(resolve, 90));
+    assert.equal(settled, false); assert.equal(closed, false); assert.equal(publications, 0);
+    const result = await pending;
+    assert.equal(result.operation.state, "done");
+    assert.equal(result.operation.requestId, "one-source-cli-persistence-original");
+    assert.equal(result.generations.length, 1);
+    assert.equal(validations, 1); assert.equal(publications, 1); assert.equal(closed, true);
+    const traces = new DatabaseSync(path.join(dataDir, "command-traces.sqlite"), { readOnly: true });
+    try {
+      const rows = traces.prepare("SELECT metadata_json FROM command_trace_spans WHERE command_id=? AND stage='release-persistence'").all(operationId);
+      const diagnostics = rows.map(row => JSON.parse(row.metadata_json));
+      assert.ok(diagnostics.some(value => value.method === "finish-step" && value.step === "validate"
+        && value.sqlitePrimaryCode === 5 && value.phase === "begin"));
+      assert.equal(JSON.stringify(diagnostics).includes(f.root), false);
+    } finally { traces.close(); }
+    assert.equal(await git(f.primary, "rev-parse", "main"), f.main);
+  } finally {
+    clearTimeout(unlock); try { blocker?.exec("ROLLBACK"); } catch {} blocker?.close();
+    await pending.catch(() => {});
+  }
+});
+
 test("source release CLI uses shared default owners for run, refusal, terminal recovery and readonly retry", { timeout: 240000 }, async t => {
   const f = await fixture(t, { releaseManager: true });
   const task = await f.create("normal-release");
@@ -195,14 +281,32 @@ test("source release CLI uses shared default owners for run, refusal, terminal r
   const refused = await command("get", { operation_id: accepted.at(-1).operationId });
   const operationId = refused.operation.operationId;
   assert.equal(refused.operation.state, "waiting");
-  assert.equal(refused.operation.waitReason.code, "preparation_refused");
+  assert.equal(refused.operation.waitReason.code, "prepared_candidate_stale");
+  assert.equal(refused.operation.lastError.code, "RELEASE_MAIN_APPROVAL_STALE");
   assert.equal(store.latestStep(operationId, 1, "compose").status, "failed");
   assert.equal(await git(f.primary, "rev-parse", "dev"), oldDev);
   assert.equal(publishes, 0);
+  const stalePrepared = await f.releaseGit.frozenCandidate(f.primary);
   await git(f.primary, "push", "origin", "main");
+  const stillStale = await command("continue", { request_id: "same-normal-release-origin-ready", operation_id: operationId });
+  assert.equal(stillStale.operation.state, "waiting", JSON.stringify(stillStale.operation.lastError));
+  assert.equal(stillStale.operation.waitReason.code, "prepared_candidate_stale");
+  assert.equal(stillStale.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+  assert.deepEqual(await f.releaseGit.frozenCandidate(f.primary), stalePrepared);
+  assert.equal(publishes, 0); assert.equal(validations, 0);
+  assert.equal(await git(f.primary, "rev-parse", "dev"), oldDev);
+  // Preparation owns accepted-main integration and the new prepared composition.
+  await f.taskGit.prepareDev(f.primary, { synchronizeAcceptedMain: true });
+  await f.preflight.withAwaitTransition(f.workspaceId, () => f.preflight.prepareAwaitSet({ workspaceId: f.workspaceId,
+    reviewedMainApprovals: { approvedLocalMainCommit: main, approvedOriginMainCommit: main } }));
+  const prepared = await f.releaseGit.frozenCandidate(f.primary);
+  assert.equal(prepared.baseCommit, main);
+  assert.equal(prepared.checkpointPhase, "prepared");
   const done = await command("continue", { request_id: "same-normal-release-continue", operation_id: operationId });
   assert.equal(done.operation.state, "done", JSON.stringify(done.operation.lastError));
   assert.equal(done.generations.length, 1);
+  assert.equal(done.generations[0].candidates[0].manifest.preparedCandidate.commit, prepared.preReleaseHead);
+  assert.equal(done.generations[0].candidates[0].manifest.preparedCandidate.tree, prepared.tree);
   assert.equal(publishes, 1); assert.equal(validations, 1);
   assert.equal(await git(f.primary, "rev-parse", "HEAD"), main);
   assert.equal(await git(f.primary, "status", "--porcelain=v1"), "");

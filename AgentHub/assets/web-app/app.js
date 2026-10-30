@@ -431,13 +431,14 @@ syncComposerInputMode();
 function readThemeCatalog() {
   const source = document.querySelector("[data-theme-catalog]")?.textContent ?? "";
   const catalog = JSON.parse(source);
-  if (!Array.isArray(catalog) || !catalog.some((theme) => theme?.id === "orbit")) {
+  if (!Array.isArray(catalog) || !catalog[0]?.id) {
     throw new Error("Каталог тем Agent Hub повреждён");
   }
   return catalog;
 }
 
 const themeCatalog = readThemeCatalog();
+const defaultTheme = themeCatalog[0].id;
 const themes = Object.freeze(Object.fromEntries(themeCatalog.map((theme) => [theme.id, theme.color])));
 const backgroundNames = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
   theme.backgrounds.map((background) => [background.id, background.name])
@@ -617,16 +618,6 @@ const RANGE_LABELS = {
   all: "Всё время",
 };
 
-function savedTheme() {
-  try {
-    const value = localStorage.getItem("agent-hub-theme");
-    const selected = themeAliases[value] ?? value;
-    return Object.hasOwn(themes, selected) ? selected : "orbit";
-  } catch {
-    return "orbit";
-  }
-}
-
 /* Живые частицы тем.
  *
  * Плиткой это сделать нельзя: `background-repeat` повторяет один рисунок, и
@@ -736,7 +727,7 @@ function applyBackgroundMotion(value, { persist = false } = {}) {
 
 function applyTheme(theme, { persist = false } = {}) {
   const candidate = themeAliases[theme] ?? theme;
-  const selected = Object.hasOwn(themes, candidate) ? candidate : "orbit";
+  const selected = Object.hasOwn(themes, candidate) ? candidate : defaultTheme;
   document.documentElement.dataset.theme = selected;
   if (selected === "gothic") {
     for (const background of Object.keys(deferredBackgroundAssets)) {
@@ -749,7 +740,7 @@ function applyTheme(theme, { persist = false } = {}) {
   themeColor.content = themes[selected];
   if (persist) {
     try {
-      localStorage.setItem("agent-hub-theme", selected);
+      localStorage.setItem(window.AgentHubThemePreference.STORAGE_KEY, selected);
     } catch {
       // Тема останется активной до закрытия WebView.
     }
@@ -971,7 +962,12 @@ telegramFullscreenButton?.addEventListener("click", () => {
   else telegram?.requestFullscreen?.();
 });
 applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
-applyTheme(savedTheme());
+const themeStartup = window.AgentHubThemePreference.initialize({
+  storage: () => localStorage, catalog: themeCatalog, aliases: themeAliases, apply: applyTheme,
+});
+if (themeStartup.migration === "storage-unavailable") {
+  console.warn("Выбор темы не удалось сохранить; однократный переход на Nexus будет повторён при доступности хранилища.");
+}
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyActivityRailVisibility(activityRailPreference.stored(localStorage));
 const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
@@ -3725,7 +3721,7 @@ function applyBackground(background, { persist = false } = {}) {
 }
 
 function backgroundsForTheme(theme) {
-  return themeBackgrounds[theme] ?? ["orbit"];
+  return themeBackgrounds[theme] ?? themeBackgrounds[defaultTheme];
 }
 
 function normalizeBackground(theme, candidate) {
@@ -4521,11 +4517,18 @@ function renderStreamTabs() {
   scheduleStreamTabsOverflow();
 }
 
+let publishedRetainedHistoryTaskIds = [];
+
 function publishVisibleStreamTasks(tasks) {
   const ids = tasks.map((task) => task.id);
-  if (sameData(ids, state.visibleStreamTaskIds)) return;
+  const retainedTaskIds = state.tasks.filter((task) => (
+    state.openStreamsByWorkspace.get(workspaceKey(task))?.includes(streamKey(task))
+  )).map((task) => task.id);
+  if (sameData(ids, state.visibleStreamTaskIds)
+    && sameData(retainedTaskIds, publishedRetainedHistoryTaskIds)) return;
   state.visibleStreamTaskIds = ids;
-  emit("workspace:visible-streams", { taskIds: ids });
+  publishedRetainedHistoryTaskIds = retainedTaskIds;
+  emit("workspace:visible-streams", { taskIds: ids, retainedTaskIds });
 }
 
 const { ChatScrollController, shouldLoadOlderPage } = window.AgentHubChatScroll;
@@ -4581,6 +4584,8 @@ function renderStreamChatPreview(task) {
   const preview = el("article", {
     class: "stream-chat-preview",
     "data-stream-chat-task-id": task.id,
+    "data-stream-chat-provider": String(task.provider ?? ""),
+    "data-stream-chat-thread-id": String(task.threadId ?? ""),
   });
   preview.addEventListener("click", (event) => {
     if (event.target.closest("a, button, input, textarea, select, summary")) return;
@@ -4669,7 +4674,7 @@ function renderStreamChatPreview(task) {
 let renderedStreamChatDeckKey = "";
 
 function renderStreamChatDeck() {
-  const { force = false } = arguments[0] ?? {};
+  const { force = false, refreshTaskId = "" } = arguments[0] ?? {};
   if (!streamChatColumns) return;
   const selected = currentTask();
   const visible = visibleWorkspaceStreamTasks();
@@ -4680,6 +4685,28 @@ function renderStreamChatDeck() {
     && streamChatColumns.querySelectorAll(".stream-chat-preview").length
       === shown.filter((task) => task.id !== selected?.id).length;
   if (!force && deckStructureIntact && deckKey === renderedStreamChatDeckKey) return;
+  // A payload update belongs to one preview. Rebuild the full deck only when
+  // its structure or exact current bindings no longer match the rendered DOM.
+  // Unrelated columns retain their scroll, disclosures and event ownership.
+  if (force && refreshTaskId && deckStructureIntact && deckKey === renderedStreamChatDeckKey) {
+    const columns = Array.from(streamChatColumns.querySelectorAll(".stream-chat-preview"));
+    const exactColumns = shown.filter((task) => task.id !== selected?.id).every((task) => {
+      const matches = columns.filter((node) => node.dataset.streamChatTaskId === task.id);
+      return matches.length === 1
+        && matches[0].dataset.streamChatProvider === String(task.provider ?? "")
+        && matches[0].dataset.streamChatThreadId === String(task.threadId ?? "")
+        && matches[0].style.order === String(shown.indexOf(task));
+    });
+    const index = shown.findIndex((task) => task.id === refreshTaskId && task.id !== selected?.id);
+    const existing = columns.find((node) => node.dataset.streamChatTaskId === refreshTaskId);
+    if (index >= 0 && existing && exactColumns
+      && chatPane.dataset.streamChatTaskId === String(selected?.id ?? "")) {
+      const preview = renderStreamChatPreview(shown[index]);
+      preview.style.order = String(index);
+      existing.replaceWith(preview);
+      return;
+    }
+  }
   const selectedIndex = shown.findIndex((task) => task.id === selected?.id);
   for (const preview of streamChatColumns.querySelectorAll(".stream-chat-preview")) preview.remove();
   chatPane.hidden = selectedIndex < 0;
@@ -4703,7 +4730,7 @@ function renderStreamChatDeck() {
 
 function refreshSupplementaryStreamChat(taskId) {
   if (taskId === state.selectedId || !state.visibleStreamTaskIds.includes(taskId)) return;
-  renderStreamChatDeck({ force: true });
+  renderStreamChatDeck({ force: true, refreshTaskId: taskId });
 }
 
 function renderTaskItem(task, { workspaceGrouped = false } = {}) {
@@ -11719,6 +11746,13 @@ const AgentHub = {
       renderLive();
       renderStreamChatHeader(currentTask());
     } else refreshSupplementaryStreamChat(taskId);
+  },
+  releaseTaskHistory(taskId) {
+    if (taskId === state.selectedId || state.visibleStreamTaskIds.includes(taskId)) return false;
+    state.messages.delete(taskId);
+    state.historyPagination.delete(taskId);
+    state.messageRenderLimits.delete(taskId);
+    return true;
   },
   setMessagesForExactNavigation(taskId, messages, exactNavigation) {
     const next = Array.isArray(messages) ? messages.slice() : [];

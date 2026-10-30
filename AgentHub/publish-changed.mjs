@@ -1,4 +1,4 @@
-import { normalizeReleaseTaskIds } from "./src/domain/release-operation.mjs";
+import { normalizeReleaseTaskIds, normalizeReleaseVersion } from "./src/domain/release-operation.mjs";
 import { normalizeTestSelection, resolveTestSelection, verifyTestPlan } from "./src/domain/test-selection.mjs";
 import { discoverReleaseTestInventory, RELEASE_CHECK_IDS } from "./src/infrastructure/filesystem/release-test-inventory.mjs";
 import { fileURLToPath } from "node:url";
@@ -310,6 +310,7 @@ export function parseChangedArguments(args, { requireOperationId = false } = {})
   let testSelection = null;
   let testPlan = null;
   let taskIds = null;
+  let releaseVersion;
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--skip-restart") skipRestart = true;
     else if (args[index] === "--full-tests") fullTests = true;
@@ -327,6 +328,7 @@ export function parseChangedArguments(args, { requireOperationId = false } = {})
     else if (args[index] === "--workspace" && args[index + 1]) workspaceId = args[++index];
     else if (args[index] === "--stream" && args[index + 1]) streamId = args[++index];
     else if (args[index] === "--thread" && args[index + 1]) threadId = args[++index];
+    else if (args[index] === "--version" && args[index + 1] && releaseVersion === undefined) releaseVersion = normalizeReleaseVersion(args[++index]);
     else if (args[index] === "--bootstrap-mcp-context") {
       throw new Error("--bootstrap-mcp-context is obsolete; publication reads the release plan from the candidate runtime");
     }
@@ -336,12 +338,14 @@ export function parseChangedArguments(args, { requireOperationId = false } = {})
   if ((testSelection || testPlan) && (quick || fullTests || testContour) || testSelection && testPlan) throw new Error("Choose one explicit test policy");
   if (quick && fullTests) throw new Error("Choose either quick or full validation");
   if (resume && status) throw new Error("Choose either --resume or --status");
+  if (releaseVersion !== undefined && (resume || status)) throw new Error("--version belongs to a new release; resume/status use the original version");
   if (requireOperationId && (resume || status) && !operationId) {
     throw new Error("--resume and --status require the original --operation id");
   }
   if (operationId && !resume && !status) throw new Error("--operation requires --resume or --status");
   return { from, skipRestart, fullTests, testContour, quick, resume, status, operationId,
-    workspaceId, streamId, threadId, ...(taskIds ? { taskIds } : {}), ...(testSelection ? { testSelection } : {}), ...(testPlan ? { testPlan } : {}) };
+    workspaceId, streamId, threadId, ...(taskIds ? { taskIds } : {}), ...(testSelection ? { testSelection } : {}), ...(testPlan ? { testPlan } : {}),
+    ...(releaseVersion !== undefined ? { releaseVersion } : {}) };
 }
 
 export async function publishChanged(args = process.argv.slice(2), {
@@ -679,11 +683,13 @@ export async function runReleaseOperationCli(args = process.argv.slice(2), {
     target,
     validationMode,
     releaseMetadata,
+    ...(options.releaseVersion !== undefined ? { releaseVersion: options.releaseVersion } : {}),
     ...(options.testSelection ? { testSelection: options.testSelection } : {}),
   };
   const requestId = `release-cli-${createHash("sha256").update(JSON.stringify(requestIdentity)).digest("hex")}`;
   const acknowledgement = await control("release-operation-run", {
     requestId, workspaceId, streamId, threadId, taskIds, approvedTargets: [target], validationMode, releaseMetadata,
+    ...(options.releaseVersion !== undefined ? { releaseVersion: options.releaseVersion } : {}),
     ...(options.testSelection ? { testSelection: options.testSelection } : {}),
   }, { runtimeRoot, commandId: requestId });
   const operationId = String(acknowledgement?.operationId ?? "").trim();

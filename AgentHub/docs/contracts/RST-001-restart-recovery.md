@@ -24,7 +24,14 @@ instance lock; a timeout does not prove the child stopped. Policy v1 owns
 redundant completed/published native merge transports. Policy v2 adds only
 explicitly retired runtime bodies with exact current-pointer custody, fresh
 current/rollback/running/prepared/source pins and original child identity. The
-reviewed owner-list append preserves v1 pending intents. Partial batches remain
+public source-free manifest is a valid installed pin only when its complete raw
+manifest hash and physical release-root binding match the installer's existing
+current/rollback custody. Explicit invalid sourceRoot values, changed bindings
+and unselected/prepared source-free bodies remain unknown and block retirement.
+No whole-body rehash is added before each batch; installed custody, bounded
+manifest reads and the existing native per-batch content guards remain owners.
+See ADR-HUB-363-source-free-runtime-pins. The reviewed owner-list append
+preserves v1 pending intents. Partial batches remain
 attached to the same admitted child; unknown outcomes are not replayed as new
 deletion. An older or unknown registry/version defers without clearing state.
 Policy v3 appends only redundant release-generation bundle transports after the
@@ -38,6 +45,12 @@ recursive generation deletion or age-based legacy adoption follows from this pol
 Other persistent artifacts
 remain under their existing cleanup contracts and are preserved until those
 owners supply their own verified eligibility/effect adapters.
+
+An allocation evidence read may open the existing maintenance store read-only,
+without schema initialization, migration or a writer reservation. It verifies
+the original admitted partial retirement, but cannot settle, replay or continue
+it. Its existing resource owner and scheduler retain all effect authority; see
+ADR-HUB-363-partial-retirement-allocation and REL-001.
 
 Catalog reads during startup must not indirectly launch optional historical
 pricing backfill. Its existing post-readiness coordinator remains the owner;
@@ -362,3 +375,19 @@ so main readiness or Worker availability never becomes full gateway readiness.
 Gateway health recovery does not replay Worker startup or settle that promise.
 Shutdown/generation changes fence late publication and menu callbacks. No new
 retry loop, gateway writer, process authority or restart is introduced.
+
+## Fixed Windows lock-publication capability
+
+The existing RuntimeHost has one fixed directory-publication mode. Its paths are
+stdin data and its no-replace operation cannot enter Hub startup, lifetime logs,
+restart, acceptance, provider or publication workflows. Source execution prepares
+its hash-bound native consumer through the existing builder before lock admission,
+without requiring that lock or an already installed Host. The same four declared
+Host source inputs are retained by the ordinary runtime producer and source
+membership selector. Prepared consumers verify their complete manifest, own Host
+and source/binary hashes; missing or changed inputs refuse without compilation
+or installed-launcher fallback. Source bootstrap coalesces only within its
+process. Normal shutdown fences calls, joins native work and retires only its
+exact owned temporary body; forced termination may retain an orphan, with no
+global cache or scavenger. This capability does not itself recover an unknown
+lock or start any runtime.

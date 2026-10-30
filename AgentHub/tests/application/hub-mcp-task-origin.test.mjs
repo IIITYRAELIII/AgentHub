@@ -50,6 +50,7 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     updateStreamDeveloperRules: methodStub({}),
     workspaceEvents: methodStub([]),
     mcpOperations: () => [...operations.values()],
+    mcpOperation: requestId => operations.get(requestId) ?? null,
     beginMcpOperation: (operation) => {
       const value = { ...operation, status: "pending", result: null, replayed: false };
       operations.set(operation.requestId, value);

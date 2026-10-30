@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { TaskCommandService } from "../../src/application/task-command-service.mjs";
+import { TaskMetadataStore } from "../../src/application/task-metadata-store.mjs";
 import { TaskCatalogService } from "../../src/application/task-catalog-service.mjs";
 
 test("task catalog service preserves array identity and advances revision", async () => {
@@ -121,4 +123,61 @@ test("task catalog service force refresh bypasses cache and recovers after failu
   await service.refresh({ force: true });
   assert.deepEqual(service.entries, [{ id: "recovered" }]);
   assert.equal(service.revision, 1);
+});
+
+
+test("invalidated catalog refresh cannot revert an acknowledged exact Thread rename", async () => {
+  const gate = () => Promise.withResolvers();
+  const firstStarted = gate(), releaseFirst = gate(), nextStarted = gate(), releaseNext = gate();
+  const target = { provider: "codex", threadId: "thread-second", projectRoot: "D:/fixture" };
+  const selected = { ...target, threadId: "thread-first" };
+  const metadata = new TaskMetadataStore();
+  const initial = [{ ...selected, title: "First" }, { ...target, title: "New Workspace - Поток 1 1" }];
+  let builds = 0, providerTitle = initial[1].title;
+  const catalog = new TaskCatalogService({ initialEntries: structuredClone(initial), build: async () => {
+    builds++;
+    if (builds === 1) {
+      const oldSnapshot = structuredClone(initial);
+      firstStarted.resolve();
+      await releaseFirst.promise;
+      return oldSnapshot;
+    }
+    nextStarted.resolve();
+    await releaseNext.promise;
+    return initial.map(entry => entry.threadId === target.threadId
+      ? { ...entry, title: metadata.pinnedTitle(target) } : { ...entry });
+  } });
+  const reference = catalog.entries;
+  const same = (left, right) => left.provider === right.provider && left.threadId === right.threadId;
+  const commands = new TaskCommandService({
+    resolveTarget: async () => target,
+    pinTitle: (provider, threadId, title) => metadata.pinTitle({ provider, threadId }, title),
+    expectTitleConfirmation: (provider, threadId, title) => metadata.expectTitle({ provider, threadId }, title),
+    renameCodexTask: async (threadId, title) => { assert.equal(threadId, target.threadId); providerTitle = title; },
+    invalidateCatalog: () => catalog.invalidate(), runForTask: () => null,
+    catalogEntries: () => catalog.entries, catalogEntryIsSelected: same,
+    selection: { current: () => selected, setTitle: () => assert.fail("other selected Thread must not be renamed") },
+    saveTitles: async () => {},
+    saveState: async () => { releaseFirst.resolve(); await nextStarted.promise; },
+    snapshot: async () => ({ selected, tasks: catalog.entries.map(entry => ({ ...entry, threadTitle: entry.title })) }),
+  });
+  const refreshing = catalog.refresh({ force: true });
+  await firstStarted.promise;
+  try {
+    const renamed = await commands.rename({ ...target, title: "Desktop second exact" });
+    assert.equal(providerTitle, "Desktop second exact");
+    assert.equal(metadata.pinnedTitle(target), "Desktop second exact");
+    assert.equal(metadata.pendingTitle(target), "Desktop second exact");
+    assert.equal(renamed.renamedTitle, "Desktop second exact");
+    assert.equal(renamed.selected.threadId, selected.threadId);
+    assert.equal(renamed.tasks.find(entry => same(entry, target)).threadTitle, "Desktop second exact");
+    assert.equal(catalog.entries, reference);
+    assert.equal(catalog.entries.find(entry => same(entry, selected)).title, "First");
+    assert.equal(catalog.revision, 0, "invalidated provider result must not be published while its replacement is pending");
+  } finally {
+    releaseFirst.resolve(); releaseNext.resolve(); await refreshing;
+  }
+  assert.equal(builds, 2);
+  assert.equal(catalog.entries, reference);
+  assert.equal(catalog.entries.find(entry => same(entry, target)).title, "Desktop second exact");
 });

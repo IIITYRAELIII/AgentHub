@@ -204,7 +204,10 @@ test('snapshot refreshes cannot starve a valid in-flight first history page', { 
     assert.ok(text.indexOf('Question 2') < text.indexOf('Answer 2'));
     await frames(page);
     const traceId = await page.evaluate(index => window.__heldHistory[index].message.params.clientTraceId, index);
-    await page.waitForFunction(() => window.AgentHubCommandTrace.diagnostics().pending === 0);
+    await page.waitForFunction(() => {
+      const { pending, paintPending, flushing } = window.AgentHubCommandTrace.diagnostics();
+      return pending === 0 && paintPending === 0 && !flushing;
+    });
     const events = batches.flatMap(batch => batch.events);
     assert.ok(events.some(e => e.commandId === traceId && e.metadata?.action === 'history-queue'));
     assert.ok(events.some(e => e.commandId === traceId && e.metadata?.action === 'history-page-paint'
