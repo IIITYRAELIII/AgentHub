@@ -5,11 +5,50 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { relativeModuleSpecifiers } from "../../../src/infrastructure/filesystem/module-import-specifiers.mjs";
 import { RUNTIME_HOST_SOURCE_INPUTS } from "../../../src/infrastructure/process/runtime-host-builder.mjs";
 
 const source = fileURLToPath(new URL("../../../", import.meta.url));
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const execute = promisify(execFile);
+
+for (const mode of ["idle-then-work", "natural-exit", "natural-exit-replaced"]) test(`source lock publisher lifetime: ${mode}`, {
+  skip: process.platform !== "win32", timeout: 30_000,
+}, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hub-lock-lifetime-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const child = fileURLToPath(new URL("../../fixtures/windows-lock-publisher-lifetime-child.mjs", import.meta.url));
+  const moduleUrl = new URL("../../../src/infrastructure/process/windows-lock-directory-publication.mjs", import.meta.url).href;
+  let result;
+  try { result = await execute(process.execPath, [child, moduleUrl, root, mode], { windowsHide: true, encoding: "utf8" }); }
+  catch (error) { result = error; }
+  const observed = JSON.parse(result.stdout.trim());
+  if (mode === "natural-exit-replaced") t.after(async () => {
+    for (const owned of [observed.nativeRoot, observed.retainedNativeRoot]) {
+      assert.equal(path.dirname(owned), os.tmpdir());
+      assert.equal((await fs.lstat(owned)).isSymbolicLink(), false);
+      await fs.rm(owned, { recursive: true, force: true });
+    }
+  });
+  assert.equal(observed.errorCode, undefined, JSON.stringify(observed));
+  assert.equal(result.stderr, "");
+  assert.equal(observed.firstPublished, true);
+  if (mode === "idle-then-work") {
+    assert.equal(observed.resumedAfterIdle, true);
+    assert.equal(observed.secondPublished, true);
+    assert.equal(observed.explicitShutdownFencedAndDrained, true);
+  }
+  // Joined natural child exit retires its exact bootstrap body. Parent/source
+  // directories and unrelated fixture bytes are not cleanup authority.
+  if (mode === "natural-exit-replaced") {
+    assert.equal(await fs.readFile(path.join(observed.nativeRoot, "foreign"), "utf8"), "retained foreign bytes");
+    assert.ok((await fs.lstat(observed.retainedNativeRoot)).isDirectory());
+  } else await assert.rejects(fs.lstat(observed.nativeRoot), { code: "ENOENT" });
+  assert.deepEqual(await fs.readdir(root), mode !== "idle-then-work" ? ["first.lock"]
+    : ["after-idle.lock", "first.lock", "in-flight.lock"]);
+});
 
 async function copyClosure(destination) {
   const pending = ["src/runtime/runtime-manager.mjs", "src/infrastructure/process/windows-lock-directory-publication.mjs"];

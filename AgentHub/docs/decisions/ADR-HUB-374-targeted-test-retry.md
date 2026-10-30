@@ -51,3 +51,21 @@ Changing this input policy invalidates affected old fingerprints once. No old G5
 hash is upgraded into new-policy proof. This does not promise all old tests can be
 skipped: unresolved IO needs an actual audited input contract or an explicit,
 truthful selection decision. No production speedup is inferred from fixture counts.
+
+## G1 correction: source lock-publisher lifetime
+
+The targeted runner's actual nested default-lock regression exposed an existing
+source native-publisher lifecycle defect. `beforeExit` could close the cached
+consumer at event-loop idle; subsequent work then reused that closed instance.
+The unchanged actual-owner continuation case reproduces CLOSED after one real
+publication and a natural idle event. This is not evidence that the seven nested
+files shared a process or that a native child died.
+
+Keep the same verified source consumer across nonterminal idle. Explicit shutdown
+remains a permanent fence and drains already-admitted native calls. Only actual
+process exit performs synchronous cleanup of an idle exact-owned temporary body;
+active/ambiguous or replaced bodies are retained. Existing no-replace publication,
+source/binary provenance and unknown-effect readback remain unchanged. No new
+publisher, retry, timeout, cache waiver, keepalive or assertion removal.
+Original G1 generation/failed logs and 11 other file outcomes are immutable;
+later reuse still requires valid input fingerprints, never an automatic PASS.

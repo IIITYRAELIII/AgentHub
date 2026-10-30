@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { lstatSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -32,15 +33,22 @@ async function prepare() {
     throw error;
   });
   let binary, binaryHash, ownedRoot = null, ownedIdentity = null;
+  const assertOwnedRoot = (info) => {
+    if (!info.isDirectory() || info.isSymbolicLink()
+      || info.dev !== ownedIdentity.dev || info.ino !== ownedIdentity.ino) {
+      throw new Error("Owned lock publisher directory changed; cleanup refused");
+    }
+  };
   const removeOwnedRoot = async () => {
     if (!ownedRoot) return;
     const info = await lstat(ownedRoot, { bigint: true }).catch(error => {
       if (error.code === "ENOENT") return null;
       throw error;
     });
-    if (info && (!info.isDirectory() || info.isSymbolicLink()
-        || info.dev !== ownedIdentity.dev || info.ino !== ownedIdentity.ino)) throw new Error("Owned lock publisher directory changed; cleanup refused");
-    if (info) await rm(ownedRoot, { recursive: true, force: true });
+    if (info) {
+      assertOwnedRoot(info);
+      await rm(ownedRoot, { recursive: true, force: true });
+    }
     ownedRoot = null;
   };
   const provenance = { sourceHash, sourceInputs, compilerExecutions: [] };
@@ -105,7 +113,20 @@ async function prepare() {
     await Promise.allSettled([...active]);
     await removeOwnedRoot();
   };
-  if (ownedRoot) process.once("beforeExit", () => { void shutdown().catch(() => {}); });
+  // beforeExit is event-loop quiescence, not terminal shutdown: a library/test
+  // owner can schedule more work from it. Keep the same verified consumer live.
+  // Explicit shutdown still fences and joins. At actual exit async work cannot
+  // be drained; preserve any active/unknown effect and clean only a proven idle
+  // body with the exact same physical-identity guard as explicit cleanup.
+  if (ownedRoot) process.once("exit", () => {
+    closed = true;
+    if (active.size || !ownedRoot) return;
+    try {
+      assertOwnedRoot(lstatSync(ownedRoot, { bigint: true }));
+      rmSync(ownedRoot, { recursive: true, force: true });
+      ownedRoot = null;
+    } catch { /* Unknown/replaced bodies remain retained; no cleanup fallback. */ }
+  });
   return {
     provenance: structuredClone(provenance),
     shutdown,

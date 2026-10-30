@@ -391,3 +391,11 @@ process. Normal shutdown fences calls, joins native work and retires only its
 exact owned temporary body; forced termination may retain an orphan, with no
 global cache or scavenger. This capability does not itself recover an unknown
 lock or start any runtime.
+
+Event-loop quiescence (`beforeExit`) is not terminal process shutdown. A source
+consumer remains usable when a caller schedules more work after idle. Explicit
+shutdown still permanently fences that instance and joins admitted native work;
+it never resurrects a closed consumer or retries publication. Actual process
+exit may synchronously retire only an idle exact-identity owned bootstrap body.
+Active/unknown effects or changed/replaced roots stay retained. This exit hook
+performs no asynchronous launch, global scavenging or foreign cleanup.
