@@ -116,7 +116,7 @@ async function prepare() {
   // beforeExit is event-loop quiescence, not terminal shutdown: a library/test
   // owner can schedule more work from it. Keep the same verified consumer live.
   // Explicit shutdown still fences and joins. At actual exit async work cannot
-  // be drained; preserve any active/unknown effect and clean only a proven idle
+  // be drained; retain the body for unresolved active work and clean only idle
   // body with the exact same physical-identity guard as explicit cleanup.
   if (ownedRoot) process.once("exit", () => {
     closed = true;

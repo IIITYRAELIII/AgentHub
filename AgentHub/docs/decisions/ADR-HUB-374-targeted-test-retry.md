@@ -64,7 +64,8 @@ files shared a process or that a native child died.
 Keep the same verified source consumer across nonterminal idle. Explicit shutdown
 remains a permanent fence and drains already-admitted native calls. Only actual
 process exit performs synchronous cleanup of an idle exact-owned temporary body;
-active/ambiguous or replaced bodies are retained. Existing no-replace publication,
+active unresolved or replaced bodies are retained. Unknown canonical effect data
+remain under the unchanged interprocess owner. Existing no-replace publication,
 source/binary provenance and unknown-effect readback remain unchanged. No new
 publisher, retry, timeout, cache waiver, keepalive or assertion removal.
 Original G1 generation/failed logs and 11 other file outcomes are immutable;

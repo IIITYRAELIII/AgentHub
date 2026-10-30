@@ -14,7 +14,7 @@ const source = fileURLToPath(new URL("../../../", import.meta.url));
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const execute = promisify(execFile);
 
-for (const mode of ["idle-then-work", "natural-exit", "natural-exit-replaced"]) test(`source lock publisher lifetime: ${mode}`, {
+for (const mode of ["idle-then-work", "natural-exit", "natural-exit-replaced", "exit-with-active"]) test(`source lock publisher lifetime: ${mode}`, {
   skip: process.platform !== "win32", timeout: 30_000,
 }, async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "hub-lock-lifetime-"));
@@ -25,8 +25,8 @@ for (const mode of ["idle-then-work", "natural-exit", "natural-exit-replaced"]) 
   try { result = await execute(process.execPath, [child, moduleUrl, root, mode], { windowsHide: true, encoding: "utf8" }); }
   catch (error) { result = error; }
   const observed = JSON.parse(result.stdout.trim());
-  if (mode === "natural-exit-replaced") t.after(async () => {
-    for (const owned of [observed.nativeRoot, observed.retainedNativeRoot]) {
+  if (["natural-exit-replaced", "exit-with-active"].includes(mode)) t.after(async () => {
+    for (const owned of [observed.nativeRoot, observed.retainedNativeRoot].filter(Boolean)) {
       assert.equal(path.dirname(owned), os.tmpdir());
       assert.equal((await fs.lstat(owned)).isSymbolicLink(), false);
       await fs.rm(owned, { recursive: true, force: true });
@@ -42,11 +42,15 @@ for (const mode of ["idle-then-work", "natural-exit", "natural-exit-replaced"]) 
   }
   // Joined natural child exit retires its exact bootstrap body. Parent/source
   // directories and unrelated fixture bytes are not cleanup authority.
-  if (mode === "natural-exit-replaced") {
+  if (mode === "exit-with-active") {
+    assert.ok((await fs.lstat(observed.nativeRoot)).isDirectory());
+    assert.equal(sha(await fs.readFile(path.join(observed.pendingReady, observed.pendingFile))), observed.pendingSha256);
+    await assert.rejects(fs.lstat(observed.pendingCanonical), { code: "ENOENT" });
+  } else if (mode === "natural-exit-replaced") {
     assert.equal(await fs.readFile(path.join(observed.nativeRoot, "foreign"), "utf8"), "retained foreign bytes");
     assert.ok((await fs.lstat(observed.retainedNativeRoot)).isDirectory());
   } else await assert.rejects(fs.lstat(observed.nativeRoot), { code: "ENOENT" });
-  assert.deepEqual(await fs.readdir(root), mode !== "idle-then-work" ? ["first.lock"]
+  if (mode !== "exit-with-active") assert.deepEqual(await fs.readdir(root), mode !== "idle-then-work" ? ["first.lock"]
     : ["after-idle.lock", "first.lock", "in-flight.lock"]);
 });
 

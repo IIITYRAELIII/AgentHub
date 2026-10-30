@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import { writeSync } from "node:fs";
 import path from "node:path";
 
 const [moduleUrl, root, mode] = process.argv.slice(2);
@@ -52,6 +53,17 @@ try {
         report.explicitShutdownFencedAndDrained = true;
       })().then(resolve, reject);
     })));
+  } else if (mode === "exit-with-active") {
+    const pending = await input("unresolved");
+    report.pendingReady = pending.ready;
+    report.pendingCanonical = pending.target;
+    report.pendingFile = pending.file;
+    report.pendingSha256 = createHash("sha256").update(pending.bytes).digest("hex");
+    // publish registers its active promise before returning, then awaits real
+    // binary I/O. Exit this ONLYowned child before that asynchronous work runs.
+    void publisher.publish(pending.ready, pending.target).catch(() => {});
+    writeSync(1, JSON.stringify(report)+"\n");
+    process.exit(0);
   } else if (mode === "natural-exit-replaced") {
     report.retainedNativeRoot = `${report.nativeRoot}.retained`;
     await fs.rename(report.nativeRoot, report.retainedNativeRoot);
