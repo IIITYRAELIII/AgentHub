@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   explainTestInputFingerprint,
   fingerprintTestInputs,
+  testAllocationParent,
 } from "./src/infrastructure/persistence/test-input-fingerprint.mjs";
 
 import {
@@ -125,7 +125,7 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
   // transient failure; retries require a new explicit run and reuse successes.
   // Keep the disposable owner short: deep Git refs in Windows fixtures still
   // have to fit below MAX_PATH when they create repositories under os.tmpdir().
-  const childRoot = await mkdtemp(path.join(os.tmpdir(), "ah-"));
+  const childRoot = await mkdtemp(path.join(testAllocationParent(), "ah-"));
   let executionFailed = false;
   let executionError;
   let cleanupError;

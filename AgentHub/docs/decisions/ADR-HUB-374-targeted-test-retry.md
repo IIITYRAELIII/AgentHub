@@ -28,6 +28,13 @@ locks, transitive modules, declared assets and browser binary remain bound. Raw
 package capture text cannot enter cache miss diagnostics. The conservative import
 scanner is not a complete JavaScript analyzer; dynamic/unknown refusals remain.
 
+SAME review R1 qualified a real exception to overwritten parent values: the
+temporary allocator consumes its parent before child projection. Both owners now
+share that source. Proof retains the absolute allocation parent, resolved path
+and filesystem device/inode, without volatile directory modification timestamps
+or the random child suffix. Missing allocation proof means unknown eligibility,
+not a new execution prohibition. Unrelated overwritten HOME/state still reuse.
+
 ## Application and limits
 
 The plan writes no checkpoint, starts no dependencies/test child/accounting and

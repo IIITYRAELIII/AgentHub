@@ -369,6 +369,11 @@ toolchain, transitive sources, declared assets and browser inputs remain bound.
 Unknown inputs stay unknown and rerun; arbitrary import-capture text is not logged.
 See ADR-HUB-374. No historical digest is upgraded into new-policy evidence.
 
+The temporary allocator consumes its parent before child environment projection.
+That shared input retains its absolute/resolved location and device/inode in the
+proof; directory modification times and random child suffixes do not invalidate
+reuse. Unavailable allocator identity remains unknown, not an execution ban.
+
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
 fallback physically reads/projects at most the latest 16 MiB plus two bounded

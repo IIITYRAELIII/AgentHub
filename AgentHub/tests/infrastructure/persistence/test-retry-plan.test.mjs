@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import * as checkpoints from "../../../src/infrastructure/persistence/test-file-checkpoint.mjs";
 import { explainTestInputFingerprint } from "../../../src/infrastructure/persistence/test-input-fingerprint.mjs";
 import * as runner from "../../../test-suite.mjs";
@@ -184,4 +186,62 @@ test("diagnostic import refusals contain no arbitrary captured source", async t 
   assert.equal(observed.fingerprint, null);
   assert.deepEqual(observed.missReasons, ["undeclared-package"]);
   assert.equal(JSON.stringify(observed).includes("private-package-secret"), false);
+});
+
+test("actual allocation-parent drift invalidates success before an isolated child crosses its path budget", async t => {
+  const root = await fixture(t);
+  const short = path.join(root, "short");
+  const long = path.join(root, "long-" + "x".repeat(20));
+  await mkdir(short); await mkdir(long);
+  const file = path.join(root, "allocator.test.mjs");
+  const limit = short.length + 12;
+  await writeFile(file, [
+    'import assert from "node:assert/strict";',
+    'import test from "node:test";',
+    `test("owned root meets the same fixed path budget", () => assert.ok(process.env.TEMP.length < ${limit}, "owned root crossed the fixed budget"));`,
+  ].join("\n"));
+  const previous = Object.fromEntries(["TEMP", "TMP", "TMPDIR"].map(key => [key, process.env[key]]));
+  const use = parent => { for (const key of Object.keys(previous)) process.env[key] = parent; };
+  const fingerprint = () => explainTestInputFingerprint(path.basename(file), { cwd: root,
+    declaration: { globals: ["process"] },
+    environment: runner.isolatedTestEnvironment(process.env, "<owned-per-child-temp>") });
+  let executions = 0;
+  const actualRoots = [];
+  const options = { suite: "unit", identity: "allocation-proof", log: () => {}, fingerprint,
+    checkpoint: checkpoints.testFileCheckpointStore(path.join(root, "checkpoint.json")),
+    run: () => runner.runIsolatedTestCommand(process.execPath, ["--test", "--test-reporter=tap", file], { cwd: root,
+      execute: async (command, args, { cwd, env }) => {
+        executions += 1;
+        actualRoots.push(env.TEMP);
+        // This fixture runs inside Node's own test worker; its internal child
+        // context must not turn the independently launched test into a worker.
+        const child = await promisify(execFile)(command, args, {
+          cwd, env: { ...env, NODE_TEST_CONTEXT: undefined }, encoding: "utf8", windowsHide: true,
+        });
+        assert.match(child.stdout, /# tests 1\b/u, "the real child assertion executed");
+        return child;
+      } }),
+  };
+  try {
+    use(short);
+    const before = await fingerprint();
+    assert.match(before.fingerprint, /^[a-f0-9]{64}$/u);
+    await checkpoints.runCheckpointedTestFiles([path.basename(file)], options);
+    await checkpoints.runCheckpointedTestFiles([path.basename(file)], options);
+    assert.equal(executions, 1, "random child suffix does not invalidate a durable success");
+    use(long);
+    const after = await fingerprint();
+    assert.deepEqual(after.missReasons, []);
+    assert.notEqual(after.fingerprint, before.fingerprint, "actual allocation location is a proven input");
+    await assert.rejects(checkpoints.runCheckpointedTestFiles([path.basename(file)], options), error =>
+      error.errors?.some(child => /owned root crossed the fixed budget/u.test(child.stdout ?? "")));
+    assert.equal(executions, 2, "changed allocation runs rather than borrowing the old success");
+    assert.equal(actualRoots[0].length < limit, true);
+    assert.equal(actualRoots[1].length > limit, true);
+    assert.equal((await options.checkpoint.read()).suites.unit.completedFingerprints[path.basename(file)], undefined);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });
