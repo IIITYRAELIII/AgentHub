@@ -158,7 +158,10 @@ for (const scenario of ['first', 'newer-final', 'rotated', 'navigation', 'existi
         });
         await page.getByText('Explicit older page', { exact: true }).waitFor({ timeout: 3000 });
         await page.evaluate(() => { delete window.__firstHistory.setupHistory; });
-        await click('stream-a');
+        // This case protects an existing open window. Ordinary replacement
+        // legitimately releases a closed column's canonical pages (ADR-HUB-343).
+        await page.locator('[data-stream-task-id="stream-a"]:visible').first().click({ modifiers: ['Control'] });
+        assert.equal(await page.locator('.stream-tabs-track [data-stream-tab-id="stream-b"]').getAttribute('aria-pressed'), 'true');
       }
       await click('stream-b');
       const count = scenario === 'existing-older' ? 2 : 1;

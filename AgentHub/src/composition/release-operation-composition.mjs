@@ -44,7 +44,7 @@ export function createReleaseOperationServices({
     observeOperation,
   });
   const commands = new ReleaseOperationCommandService({ releaseOperations: operations, workspaceCatalog, taskBoard });
-  taskLifecycle.setReleaseOperationWake(taskId => operations.wakeForTask(taskId));
-  taskLifecycle.setReleaseOperationPrepare(taskId => operations.prepareForTaskAcceptance(taskId));
+  taskLifecycle.setReleaseOperationWake(taskId => operations.wakeForTask(taskId, { workspaceId: taskBoard.task(taskId)?.workspaceId }));
+  taskLifecycle.setReleaseOperationPrepare(taskId => operations.prepareForTaskAcceptance(taskId, { workspaceId: taskBoard.task(taskId)?.workspaceId }));
   return { store, operations, commands };
 }

@@ -3,6 +3,7 @@ import { createHash, createHmac, timingSafeEqual, randomUUID } from "node:crypto
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { preparedAwaitAuthorization } from "./release-operation-command-service.mjs";
 
 import {
   MAX_ATTACHMENT_BYTES,
@@ -946,7 +947,7 @@ export class HubMcpService {
         expected_preparation_revision: { type: "integer", minimum: 0 },
         native_resolution_review: { type: "object", description: "Optional exact reviewed resolution bundle for an already isolated legacy forward original; does not replace original arguments." },
       }, ["expected_arguments_hash", "expected_preparation_revision"]),
-      tool("hub_release_run", "Persist one authorized release operation and return its operation id immediately. The durable owner continues compose, validation, publication and finalization without holding this MCP request open.", {
+      tool("hub_release_run", "Authorize the whole current prepared Await/PreRelease set and return one durable release operation id. Optional task_ids asserts that entire membership; release captures the existing prepared candidate without recomposing Task branches.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         release_version: { type: "string", pattern: "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$", description: "Optional complete public X.Y.Z version for this new release intent. Omit for automatic patch selection. A frozen retry retains its original version." },
         task_ids: { type: "array", minItems: 1, items: { type: "string" } },
@@ -984,11 +985,11 @@ export class HubMcpService {
             required: ["targetId", "kind"],
           },
         },
-      }, ["task_ids", "validation_mode", "approved_targets"]),
+      }, ["validation_mode", "approved_targets"]),
       tool("hub_release_get", "Read one durable release operation, immutable candidate generations, step receipts and delivery events.", {
         operation_id: { type: "string" },
       }, ["operation_id"]),
-      tool("hub_release_continue", "Wake an existing waiting release operation without changing its original authorization or creating a new operation.", {
+      tool("hub_release_continue", "Continue the same original release. Explicit task_scope=all_await uses the existing revision/generation and not-applied amendment owner; original authorization and historical receipts remain immutable.", {
         operation_id: { type: "string" },
         test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
           mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
@@ -1006,6 +1007,7 @@ export class HubMcpService {
           required: ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"],
         },
         task_ids: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string" } },
+        task_scope: { type: "string", enum: ["all_await"], description: "Explicitly authorize the whole current prepared Await set for this same original release; task_ids, if supplied, is an exact membership assertion." },
         expected_revision: { type: "integer", minimum: 1 },
         expected_generation: { type: "integer", minimum: 1 },
         reviewed_main: { type: "object", additionalProperties: false, required: ["expectedRevision", "approvedRepositories"], properties: {
@@ -2693,19 +2695,20 @@ export class HubMcpService {
         catch (cause) { throw new ReleasePreparationRejectedError(cause.message); }
       }
     }
+    const authorization = {
+      validationMode: requiredText(args.validation_mode, "validation mode", 32),
+      approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
+      ...(args.test_selection !== undefined ? { testSelection: args.test_selection } : {}),
+      ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
+      ...(args.release_version !== undefined ? { releaseVersion: args.release_version } : {}),
+    };
     return this.#releaseOperation().start({
       requestId: requiredText(args.request_id, "request id", 200),
       workspaceId,
       streamId: context.streamId,
       threadId: context.auditThreadId,
-      authorization: {
-        taskIds: Array.isArray(args.task_ids) ? args.task_ids : [],
-        validationMode: requiredText(args.validation_mode, "validation mode", 32),
-        approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
-        ...(args.test_selection !== undefined ? { testSelection: args.test_selection } : {}),
-        ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
-        ...(args.release_version !== undefined ? { releaseVersion: args.release_version } : {}),
-      },
+      authorization,
+      resolveAuthorization: preparedAwaitAuthorization(this.taskBoard, workspaceId, args.task_ids, authorization),
     });
   }
 
@@ -2721,7 +2724,7 @@ export class HubMcpService {
     this.#workspace(context, snapshot.operation.workspaceId);
     return this.#releaseOperation().continue(operationId, {
       requestId: args.request_id, reviewedMain: args.reviewed_main,
-      testSelection: args.test_selection, taskIds: args.task_ids, releaseMetadata: args.release_metadata, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
+      testSelection: args.test_selection, taskIds: args.task_ids, taskScope: args.task_scope, releaseMetadata: args.release_metadata, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
     });
   }
 

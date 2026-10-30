@@ -1,4 +1,4 @@
-import { effectiveReleaseTaskIds, effectiveReleaseMetadata } from "../domain/release-operation.mjs";
+import { effectiveReleaseTaskIds, effectiveReleaseMetadata, effectiveReleaseTaskScope } from "../domain/release-operation.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
@@ -67,9 +67,10 @@ export class WorkspaceReleaseOperationAdapter {
       workspaceId: operation.workspaceId,
       operationId: operation.operationId,
       generation,
-      taskIds: effectiveReleaseTaskIds(operation),
+      ...(effectiveReleaseTaskScope(operation) === "all_await" ? {} : { taskIds: effectiveReleaseTaskIds(operation) }),
       previousSelectedResults: operation.selectedResults,
       approvedRepositories: approvedRepositories(operation),
+      ...(operation.authorization.releaseVersion !== undefined ? { releaseVersion: operation.authorization.releaseVersion } : {}),
       ...(changelogContent ? { changelogContent } : {}),
       ...(operation.authorization.releaseVersion !== undefined ? { releaseVersion: operation.authorization.releaseVersion } : {}),
     });
@@ -87,6 +88,8 @@ export class WorkspaceReleaseOperationAdapter {
         baseCommit: candidate.baseCommit,
       })),
       selectedResults,
+      ...(effectiveReleaseTaskScope(operation) === "all_await"
+        ? { authorizedTaskIds: [...new Set(selectedResults.map(item => item.taskId))].sort() } : {}),
       candidates: prepared.releaseCandidates.map((candidate) => ({
         repositoryRoot: candidate.repositoryRoot,
         releaseRoot: candidate.releaseRoot,
@@ -99,15 +102,16 @@ export class WorkspaceReleaseOperationAdapter {
         frozenTasks: candidate.frozenTasks,
         manifest: candidate.manifest,
       })),
-      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}${operation.reviewedMain ? `:${operation.reviewedMain.identitySha256}` : ""}`,
+      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}${operation.reviewedMain ? `:${operation.reviewedMain.identitySha256}` : ""}${effectiveReleaseTaskScope(operation) === "all_await" ? `:all_await:${operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? "initial"}` : ""}`,
     };
   }
 
-  withTaskSelection({ operation, taskIds, commit }) {
+  withTaskSelection({ operation, taskIds, taskScope = null, commit }) {
     return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
       const capture = async () => {
-        const results = await this.releasePreflight.operationSelection({ workspaceId: operation.workspaceId, taskIds });
-        if (JSON.stringify([...new Set(results.map(item => item.taskId))].sort()) !== JSON.stringify(taskIds)) {
+        const results = await this.releasePreflight.operationSelection({ workspaceId: operation.workspaceId,
+          ...(taskScope === "all_await" ? {} : { taskIds }) });
+        if (taskIds != null && JSON.stringify([...new Set(results.map(item => item.taskId))].sort()) !== JSON.stringify(taskIds)) {
           throw new Error("Explicit Task membership contains unaccepted, unknown or foreign Tasks");
         }
         return results;
@@ -135,7 +139,7 @@ export class WorkspaceReleaseOperationAdapter {
     return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
       const current = await this.releasePreflight.operationSelection({
         workspaceId: operation.workspaceId,
-        taskIds: effectiveReleaseTaskIds(operation),
+        ...(effectiveReleaseTaskScope(operation) === "all_await" ? {} : { taskIds: effectiveReleaseTaskIds(operation) }),
       });
       return selectionIdentity(current) === selectionIdentity(generation.selectedResults)
         ? reserve()

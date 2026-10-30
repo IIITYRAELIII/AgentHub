@@ -31,9 +31,10 @@ for (const width of [1366, 390]) test(`Task card interrupts a held Test through 
     data.workspaces.push({ id: workspace.id, name: "Cancellation fixture", streams: [] });
     data.boardTasks = f.tasks.snapshot();
     const diagnostics = await openFixture(page, { fixtureSnapshot: data });
-    const commands = [];
+    const commands = []; let operationId;
     await page.exposeFunction("__ownTaskOperation", async message => {
       commands.push(message.action);
+      if (message.action === "board-task-status") operationId = message.params.operationId;
       try {
         const result = message.action === "board-task-read" ? controller.read(message.params)
           : message.action === "board-task-operation-cancel" ? await controller.cancelOperation(message.params)
@@ -61,7 +62,7 @@ for (const width of [1366, 390]) test(`Task card interrupts a held Test through 
     await panel.getByRole('button', { name: "Операции задачи", exact: true }).click();
     await panel.getByRole('button', { name: "Прервать операцию", exact: true }).click();
     await panel.getByText("Операция прервана. Уже выполненные действия сохранены.", { exact: true }).waitFor();
-    assert.equal(f.catalog.mcpOperation("desktop-held-test").taskExecution.cancellation.phase, "stopped");
+    assert.equal(f.catalog.mcpOperation(operationId).taskExecution.cancellation.phase, "stopped");
     assert.equal(f.tasks.task(f.prior.id).workflowStatus, f.prior.workflowStatus);
     assert.equal(commands.filter(action => action === "board-task-operation-cancel").length, 1);
     assert.deepEqual(diagnostics, []);

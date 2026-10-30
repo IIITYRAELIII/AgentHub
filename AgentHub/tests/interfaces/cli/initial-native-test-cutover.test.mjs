@@ -281,14 +281,32 @@ test("source release CLI uses shared default owners for run, refusal, terminal r
   const refused = await command("get", { operation_id: accepted.at(-1).operationId });
   const operationId = refused.operation.operationId;
   assert.equal(refused.operation.state, "waiting");
-  assert.equal(refused.operation.waitReason.code, "preparation_refused");
+  assert.equal(refused.operation.waitReason.code, "prepared_candidate_stale");
+  assert.equal(refused.operation.lastError.code, "RELEASE_MAIN_APPROVAL_STALE");
   assert.equal(store.latestStep(operationId, 1, "compose").status, "failed");
   assert.equal(await git(f.primary, "rev-parse", "dev"), oldDev);
   assert.equal(publishes, 0);
+  const stalePrepared = await f.releaseGit.frozenCandidate(f.primary);
   await git(f.primary, "push", "origin", "main");
+  const stillStale = await command("continue", { request_id: "same-normal-release-origin-ready", operation_id: operationId });
+  assert.equal(stillStale.operation.state, "waiting", JSON.stringify(stillStale.operation.lastError));
+  assert.equal(stillStale.operation.waitReason.code, "prepared_candidate_stale");
+  assert.equal(stillStale.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+  assert.deepEqual(await f.releaseGit.frozenCandidate(f.primary), stalePrepared);
+  assert.equal(publishes, 0); assert.equal(validations, 0);
+  assert.equal(await git(f.primary, "rev-parse", "dev"), oldDev);
+  // Preparation owns accepted-main integration and the new prepared composition.
+  await f.taskGit.prepareDev(f.primary, { synchronizeAcceptedMain: true });
+  await f.preflight.withAwaitTransition(f.workspaceId, () => f.preflight.prepareAwaitSet({ workspaceId: f.workspaceId,
+    reviewedMainApprovals: { approvedLocalMainCommit: main, approvedOriginMainCommit: main } }));
+  const prepared = await f.releaseGit.frozenCandidate(f.primary);
+  assert.equal(prepared.baseCommit, main);
+  assert.equal(prepared.checkpointPhase, "prepared");
   const done = await command("continue", { request_id: "same-normal-release-continue", operation_id: operationId });
   assert.equal(done.operation.state, "done", JSON.stringify(done.operation.lastError));
   assert.equal(done.generations.length, 1);
+  assert.equal(done.generations[0].candidates[0].manifest.preparedCandidate.commit, prepared.preReleaseHead);
+  assert.equal(done.generations[0].candidates[0].manifest.preparedCandidate.tree, prepared.tree);
   assert.equal(publishes, 1); assert.equal(validations, 1);
   assert.equal(await git(f.primary, "rev-parse", "HEAD"), main);
   assert.equal(await git(f.primary, "status", "--porcelain=v1"), "");

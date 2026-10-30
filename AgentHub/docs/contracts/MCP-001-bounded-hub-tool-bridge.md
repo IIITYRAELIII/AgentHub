@@ -108,8 +108,24 @@ ID, raw receipt replacement or transfer of a separate claim's UNKNOWN occurs.
 
 ## Normal release continuation (ADR-0132)
 
-`hub_release_run` keeps preparation inside the existing durable release owner.
-Approved repositories may include an exact authenticated native resolution input
+`hub_release_run` authorizes and captures the whole existing prepared PreRelease
+(every current accepted Await Task), without calling ordinary Await preparation
+or the native Task sequencer. `task_ids` is optional expected-whole membership;
+a subset or Test-only inclusion refuses. New immutable authorization includes
+`taskScope=all_await`. Current generations bind actual complete membership,
+then native/history/content/import-closure/base/authority guards and the existing
+freeze owner materialize exact prepared bytes plus version/consolidated notes.
+Missing/stale preparation waits on the same original for normal Test/Await;
+release does not rebuild it. Publication already admitted remains immutable.
+
+Legacy authorization and receipts are not reinterpreted. Optional explicit
+`hub_release_continue task_scope=all_await` activates this scope through the
+existing amendment/not-applied/revision/generation owner. Omission retains the
+previous scope; original replay retains exact explicit/omitted arguments.
+`task_ids`, when supplied, asserts the entire current set. No new tool, approval
+gate, cache, writer or timeout is introduced. See REL-001 and
+ADR-HUB-364-whole-prepared-release. Approved repositories may retain an exact
+authenticated historical native resolution input
 (`nativeResolutionReview`), either a single review or a digest-bound bundle with
 multiple reviews. This is part of immutable operation authorization; it is not
 a force flag or caller-declared conflict allowlist.

@@ -11,7 +11,11 @@ test("replacing a single chat releases closed history and reopening reloads its 
   const browser = await launchBrowser();
   try {
     const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } });
-    await page.addInitScript(() => localStorage.setItem("agent-hub-theme", "pulsar"));
+    await page.addInitScript(() => {
+      // This scenario exercises a manual Pulsar selection after the one-time migration.
+      localStorage.setItem("agent-hub:theme-migration:nexus", "done");
+      localStorage.setItem("agent-hub-theme", "pulsar");
+    });
     const initial = snapshot();
     const prototype = initial.tasks[0];
     initial.tasks = Array.from({ length: 8 }, (_, index) => ({ ...prototype,

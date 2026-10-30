@@ -251,6 +251,17 @@ monotonic durations and original UTC endpoints are captured before the work and
 submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.
 A process failure before trace initialization cannot leave these records; the
 startup error log remains the evidence for that boundary.
+The same startup span may record content-free SQLite recovery phases before the
+trace worker exists: database-lock admission, recovery-lock acquisition, marker
+and intent reads, rollback/resume, database inspection/quarantine and lock release.
+Admission ends at protected callback entry; protected recovery duration is not
+labelled lock wait. Only fixed phase/outcome and elapsed/UTC scalars are retained,
+without database paths, owner tokens or SQL content. Successful phase observations
+flush through the same trace worker; failure before that worker remains in the
+ordinary startup log. Diagnostic failure cannot change recovery or admission.
+Missing terminal phases and a passing private restart do not establish a
+historical holder or resolve the original stalled startup.
+
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
 startup, on writes and at most once per minute while idle. Limit maintenance
@@ -758,3 +769,22 @@ and receipt-settlement error codes remain distinguishable. The normal source
 release CLI flushes its existing trace worker before closing the local runtime.
 These observations identify the failing persistence boundary; a controlled writer
 fixture does not establish which process held a historical production lock.
+
+
+## Task preparation timing after detailed retention (HUB-372)
+
+The existing original-operation timing summary retains fixed-class call/error
+counts, suppressed counts, inclusive elapsed sum and maximum even after its
+unchanged 512-detail-span budget. Fixed Git verb classes and named preparation
+owner phases contain no arguments, paths, owner tokens or message/file content.
+Nested inclusive aggregates are not additive wall time, CPU or disk attribution.
+Base/integration evidence, history authority/history checks, cutover and final
+promotion authority retain their existing callbacks and fresh guard order.
+Ordinary candidate-lock admission reports elapsed to protected callback entry;
+the protected body is not reported as queue wait. The same batch/log owner flushes
+the summary on normal success or thrown failure. Process death before summary is
+still incomplete evidence, not a reconstructed aggregate or completed operation.
+Diagnostic sink failure cannot change outcomes. These measurements do not remove
+proofs, cache authority, optimize Await or establish production speedup. The next
+otherwise-required lifecycle check must execute the reviewed instrumented owner;
+merely storing this code in a Task result does not instrument an older runtime.

@@ -9,19 +9,26 @@ import { createHash } from "node:crypto";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
+
+import { withTaskOperationTiming, measureTaskOperation, createTaskOperationTimingBatchRecorder }
+  from "../../../src/infrastructure/process/task-operation-timing.mjs";
 
 const execute = promisify(execFile);
 async function git(root, ...args) {
-  return String((await execute("git", args, { cwd: root, windowsHide: true })).stdout).trim();
+  return measureTaskOperation("fixture:git", async () => String((await execute("git", args, { cwd: root, windowsHide: true })).stdout).trim(), { detail: true });
 }
 async function commit(root, message) {
   await git(root, "add", "-A");
   await git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", message);
   return git(root, "rev-parse", "HEAD");
 }
-async function fixture(t, { versioned = false, publicVersion = "2026.10.12" } = {}) {
+async function fixture(t, { versioned = false, publicVersion = "2026.10.12", joinOwnedWork = null } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "ng-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => {
+    await joinOwnedWork?.();
+    await rm(root, { recursive: true, force: true });
+  });
   const origin = path.join(root, "origin.git");
   const primary = path.join(root, "primary");
   await git(root, "init", "--bare", "--initial-branch=main", origin);
@@ -112,13 +119,30 @@ test("one native sequencer call consumes reviewed resolutions and reopens a lost
   const writeJson = (pathname, value) => writeFile(pathname, JSON.stringify(value));
   const request = { root: proofRoot, sourceRoot: f.primary, baseCommit, tasks, identity,
     gitAt: (cwd, args, options = {}) => runTaskGitCommand(args, { ...options, cwd }), readJson, writeJson,
-    verifyReview: async (review, binding) => bindings.set(review.requestId, binding) };
+    verifyReview: async (review, binding) => {
+      const declaration = JSON.parse(/<native-merge-review>([^]*?)<\/native-merge-review>/u.exec(review.text)[1]);
+      assert.deepEqual(declaration.binding, binding);
+      bindings.set(review.requestId, binding);
+    } };
   await assert.rejects(mergeSelectedResults(request), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
   for (const [index, task] of tasks.entries()) {
     await writeFile(path.join(proofRoot, "repository", "shared.txt"), `reviewed ${task.taskId}\n`);
-    await commit(path.join(proofRoot, "repository"), `resolve ${task.taskId}`);
+    const repository = path.join(proofRoot, "repository");
+    const resolved = await commit(repository, `resolve ${task.taskId}`);
+    const parents = (await git(repository, "show", "-s", "--format=%P", resolved)).split(" ");
+    const automatic = await execute("git", ["merge-tree", "--write-tree", "--name-only", "-z", ...parents],
+      { cwd: repository, windowsHide: true, encoding: "buffer" }).catch(error => {
+        assert.equal(error.code, 1); return { stdout: error.stdout };
+      });
+    const automaticTree = automatic.stdout.toString("utf8").split("\0")[0];
+    const tree = await git(repository, "rev-parse", `${resolved}^{tree}`);
+    const diff = (await execute("git", ["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree],
+      { cwd: repository, windowsHide: true, encoding: "buffer" })).stdout;
+    const binding = { identityHash: taskGitIdentityHash(identity), parents, commit: resolved, tree,
+      automaticTree, diffSha256: createHash("sha256").update(diff).digest("hex") };
     const result = mergeSelectedResults({ ...request,
-      resolutionReview: { requestId: `review-${task.taskId}`, text: "reviewed exact result" } });
+      resolutionReview: { requestId: `review-${task.taskId}`,
+        text: `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>` } });
     if (index === 0) await assert.rejects(result, { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
     else await result;
   }
@@ -207,10 +231,14 @@ test("manual public version freezes all three numbers and reopens its original i
   assert.equal(JSON.parse(await readFile(path.join(f.primary, "AgentHub/package.json"), "utf8")).version, "2.0.3");
 });
 
-test("normal publication generation prepares its candidate without a separate prepare command", { timeout: 120000 }, async t => {
+test("normal publication generation requires and captures its ordinary prepared candidate", { timeout: 120000 }, async t => {
   const f = await fixture(t, { versioned: true }), a = await f.result("A", "a.txt", "accepted\n");
   const request = { ...f.request([a]), operationId: "one-command", generation: 1 };
+  await assert.rejects(f.service.prepareGeneration(request), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  const prepared = await f.service.prepareCandidate(f.request([a]));
   const generated = await f.service.prepareGeneration(request);
+  assert.equal(generated.manifest.preparedCandidate.commit, prepared.preReleaseHead);
+  assert.equal(generated.manifest.preparedCandidate.tree, prepared.tree);
   assert.equal(generated.manifest.tasks[0].resultCommit, a.resultCommit);
   const reflog = await git(generated.releaseRoot, "reflog", "show", "PreRelease");
   const reopened = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
@@ -220,35 +248,40 @@ test("normal publication generation prepares its candidate without a separate pr
 });
 
 test("native merge selects exact independent main branches and complete corrections", { timeout: 60000 }, async (t) => {
-  const f = await fixture(t);
-  const a = await f.result("A", "a.txt", "a1\n");
-  const b = await f.result("B", "b.txt", "b1\n");
-  const testOnly = await f.result("TestOnly", "not-selected.txt", "preview only\n");
-  const candidate = await f.service.prepareCandidate(f.request([a, b]));
-  assert.equal(candidate.manifest.compositionPolicy, "main-selected-git-merge-v1");
-  assert.equal(candidate.manifest.merges.length, 2);
-  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:a.txt`), "a1");
-  await assert.rejects(git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:not-selected.txt`));
-  assert.notEqual(testOnly.resultCommit, candidate.preReleaseHead);
-  for (const item of [a, b]) await git(candidate.releaseRoot, "merge-base", "--is-ancestor", item.resultCommit, candidate.preReleaseHead);
-  const correction = await f.result("A", "another.txt", "second commit\n");
-  correction.taskRevision = 2;
-  const next = await f.service.prepareCandidate(f.request([correction, b], "correction"));
-  assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:a.txt`), "a1");
-  assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:another.txt`), "second commit");
-  const taskRoot = f.branches.get("A");
-  await git(taskRoot, "rm", "a.txt");
-  await git(taskRoot, "mv", "another.txt", "moved.txt");
-  await git(taskRoot, "update-index", "--chmod=+x", "moved.txt");
-  const renamed = { ...correction, taskRevision: 3, resultCommit: await commit(taskRoot, "delete rename and mode correction") };
-  const full = await f.service.prepareCandidate(f.request([renamed, b], "full-correction"));
-  await assert.rejects(git(full.releaseRoot, "show", "PreRelease:a.txt"));
-  await assert.rejects(git(full.releaseRoot, "show", "PreRelease:another.txt"));
-  assert.equal(await git(full.releaseRoot, "show", "PreRelease:moved.txt"), "second commit");
-  assert.match(await git(full.releaseRoot, "ls-tree", "PreRelease", "moved.txt"), /^100755 blob /u);
-  const remaining = await f.service.prepareCandidate(f.request([b], "remove-A"));
-  await assert.rejects(git(remaining.releaseRoot, "show", `${remaining.preReleaseHead}:a.txt`));
-  assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
+  let ownedWork;
+  ownedWork = withTaskOperationTiming({ operationId: "native-independent-corrections", taskId: "fixture",
+    record: createTaskOperationTimingBatchRecorder(events => console.info(JSON.stringify(events))) }, async () => {
+    const f = await measureTaskOperation("fixture:setup", () => fixture(t, { joinOwnedWork: () => ownedWork.catch(() => {}) }));
+    const a = await measureTaskOperation("fixture:branch-A", () => f.result("A", "a.txt", "a1\n"));
+    const b = await measureTaskOperation("fixture:branch-B", () => f.result("B", "b.txt", "b1\n"));
+    const testOnly = await measureTaskOperation("fixture:branch-TestOnly", () => f.result("TestOnly", "not-selected.txt", "preview only\n"));
+    const candidate = await measureTaskOperation("fixture:prepare-initial", () => f.service.prepareCandidate(f.request([a, b])));
+    assert.equal(candidate.manifest.compositionPolicy, "main-selected-git-merge-v1");
+    assert.equal(candidate.manifest.merges.length, 2);
+    assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:a.txt`), "a1");
+    await assert.rejects(git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:not-selected.txt`));
+    assert.notEqual(testOnly.resultCommit, candidate.preReleaseHead);
+    for (const item of [a, b]) await git(candidate.releaseRoot, "merge-base", "--is-ancestor", item.resultCommit, candidate.preReleaseHead);
+    const correction = await measureTaskOperation("fixture:correct-A", () => f.result("A", "another.txt", "second commit\n"));
+    correction.taskRevision = 2;
+    const next = await measureTaskOperation("fixture:prepare-correction", () => f.service.prepareCandidate(f.request([correction, b], "correction")));
+    assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:a.txt`), "a1");
+    assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:another.txt`), "second commit");
+    const taskRoot = f.branches.get("A");
+    await git(taskRoot, "rm", "a.txt");
+    await git(taskRoot, "mv", "another.txt", "moved.txt");
+    await git(taskRoot, "update-index", "--chmod=+x", "moved.txt");
+    const renamed = { ...correction, taskRevision: 3, resultCommit: await commit(taskRoot, "delete rename and mode correction") };
+    const full = await measureTaskOperation("fixture:prepare-rename-delete-mode", () => f.service.prepareCandidate(f.request([renamed, b], "full-correction")));
+    await assert.rejects(git(full.releaseRoot, "show", "PreRelease:a.txt"));
+    await assert.rejects(git(full.releaseRoot, "show", "PreRelease:another.txt"));
+    assert.equal(await git(full.releaseRoot, "show", "PreRelease:moved.txt"), "second commit");
+    assert.match(await git(full.releaseRoot, "ls-tree", "PreRelease", "moved.txt"), /^100755 blob /u);
+    const remaining = await measureTaskOperation("fixture:prepare-removal", () => f.service.prepareCandidate(f.request([b], "remove-A")));
+    await assert.rejects(git(remaining.releaseRoot, "show", `${remaining.preReleaseHead}:a.txt`));
+    assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
+  });
+  return await ownedWork;
 });
 
 test("native transport retains exact selected objects imported without intermediate refs", async t => {
@@ -491,9 +524,17 @@ test("publication generation retains dirty preparation and binds its immutable i
   const request = { ...f.request([a]), operationId: "prepared-original", generation: 1 };
   const foreign = path.join(prepared.releaseRoot, "foreign.txt");
   await writeFile(foreign, "unbound source bytes\n");
-  await assert.rejects(f.service.prepareGeneration(request), /Native release checkout changed; foreign bytes retained/u);
+  const sourceHead = await git(prepared.releaseRoot, "rev-parse", "HEAD");
+  const sourceRef = await git(prepared.releaseRoot, "rev-parse", "PreRelease");
+  const sourceStages = await git(prepared.releaseRoot, "ls-files", "--stage", "-z");
+  const sourceReflog = await git(prepared.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  await assert.rejects(f.service.prepareGeneration(request), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
   assert.equal(await readFile(foreign, "utf8"), "unbound source bytes\n");
   assert.deepEqual(await readFile(checkpointFile), checkpoint);
+  assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), sourceHead);
+  assert.equal(await git(prepared.releaseRoot, "rev-parse", "PreRelease"), sourceRef);
+  assert.equal(await git(prepared.releaseRoot, "ls-files", "--stage", "-z"), sourceStages);
+  assert.equal(await git(prepared.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), sourceReflog);
   await rm(foreign);
   const frozen = await f.service.prepareGeneration(request);
   const frozenReflog = await git(frozen.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");

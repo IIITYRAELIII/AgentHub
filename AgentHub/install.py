@@ -17,6 +17,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+WINDOWS_GIT_ARGS = json.loads((ROOT / "src/infrastructure/filesystem/git-invocation-policy.json").read_text(encoding="utf-8"))["win32"] if os.name == "nt" else []
 COMPONENTS = ("telegram", "mini-app", "android-app", "shared-dashboard-bot", "test-contour")
 LEGACY_PROFILE_COMPONENTS = {
     "full": {"telegram": True, "miniApp": True, "androidApp": True, "sharedDashboardBot": False, "codexContextCleanup": False, "testContour": False},
@@ -409,7 +410,7 @@ def numeric_extension_version(value: str) -> tuple[int, int, int]:
 def extension_source_revision() -> str:
     try:
         revision = subprocess.run(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD^{commit}"],
+            ["git", *WINDOWS_GIT_ARGS, "-C", str(ROOT), "rev-parse", "HEAD^{commit}"],
             check=True,
             capture_output=True,
             encoding="utf-8",
@@ -424,7 +425,7 @@ def extension_source_revision() -> str:
 def extension_revision_is_ancestor(previous: str, current: str) -> bool:
     try:
         result = subprocess.run(
-            ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", previous, current],
+            ["git", *WINDOWS_GIT_ARGS, "-C", str(ROOT), "merge-base", "--is-ancestor", previous, current],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

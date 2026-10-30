@@ -16,6 +16,7 @@ import { TaskIntegrationConflictError, TaskIntegrationRejectedError, TaskAwaitIn
 import { ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../../src/domain/task-board-task.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
+import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TASK_TITLE_MAX_LENGTH, TaskDependencyPendingError } from "../../src/domain/task-board-task.mjs";
 import { incomingLedgerRecord } from "../../src/application/work-log-usage-projection.mjs";
 import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
@@ -820,15 +821,34 @@ async function fixture(context, {
 }
 
 async function preparationFixture(t) {
-  const setup = await fixture(t, { releaseWorkflowEnabled: true });
+  let ledger;
+  const setup = await fixture(t, { releaseWorkflowEnabled: true,
+    beforeRemoveDirectory: async () => ledger?.close(),
+  });
+  ledger = new WorkspaceCatalogStore({ databaseFile: path.join(setup.projectRoot, "preparation.sqlite") });
+  await ledger.load();
+  ledger.createWorkspace({ id: "workspace-1", name: "Preparation fixture" });
+  ledger.createStream({ id: "stream-1", workspaceId: "workspace-1" });
+  // Exercise the actual receipt/checkpoint CAS instead of maintaining a second
+  // preparation state machine in the general-purpose catalog double.
+  for (const method of ["beginMcpOperation", "completeMcpOperation", "failMcpOperation",
+    "markMcpOperationUnknown", "mcpOperation", "checkpointMcpPreparation", "settleMcpPreparationFailure"]) {
+    setup.workspaceCatalog[method] = ledger[method].bind(ledger);
+  }
+  setup.operations = {
+    get: ledger.mcpOperation.bind(ledger),
+    get size() { return ledger.mcpOperations("workspace-1").length; },
+  };
   const envelope = preparationEnvelope(setup.projectRoot);
   envelope.sourceClosureHash = (await readPreparationSourceClosure()).hash;
   setup.tasks.get("task-current").workflowStatus = "awaiting_implementation";
   let calls = 0;
-  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ validate, commitPrepared, requestId }) => {
+  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ ownPreparation, validate, beforeCompose, commitPrepared, requestId }) => {
     calls += 1;
     assert.equal(setup.operations.get(requestId).status, "pending", "intake precedes composer");
+    await ownPreparation();
     await validate();
+    await beforeCompose();
     return commitPrepared({ planRevision: envelope.planRevision, taskIds: ["task-current"],
       releaseCandidates: [{ repositoryRoot: setup.projectRoot, preReleaseHead: "8".repeat(40),
         tree: envelope.repositories[0].approvedTree, baseCommit: envelope.repositories[0].approvedBaseCommit,
@@ -2009,7 +2029,8 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   const calls = [];
   const snapshots = new Map();
   const releaseOperations = {
-    start: (input) => {
+    start: ({ resolveAuthorization, ...input }) => {
+      input.authorization = resolveAuthorization(null);
       calls.push(["start", input]);
       const operationId = "release-operation-1";
       snapshots.set(operationId, { operation: { operationId, workspaceId: input.workspaceId, state: "compose", revision: 1 } });
@@ -2022,7 +2043,9 @@ test("HubMcpService exposes cursor events and one durable release operation owne
     },
     setEventDelivery() {},
   };
-  const { service, token } = await fixture(context, { releaseOperations });
+  const { service, token, taskBoard, tasks } = await fixture(context, { releaseOperations });
+  tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  taskBoard.releaseTasks = () => [tasks.get("task-current")];
   const events = await service.call("hub_events_list", { context_token: token, after_sequence: 4 });
   assert.equal(events.events[0].sequence, 5);
   assert.equal(events.nextSequence, 5);
@@ -2035,6 +2058,7 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   });
   assert.equal(ack.operationId, "release-operation-1");
   assert.equal(calls[0][1].authorization.validationMode, "full");
+  assert.deepEqual(calls[0][1].authorization.taskIds, ["task-current"]);
   assert.equal(Object.hasOwn(calls[0][1].authorization, "releaseMetadata"), false);
   const snapshot = await service.call("hub_release_get", {
     context_token: token, operation_id: ack.operationId,
@@ -2054,7 +2078,10 @@ test("HubMcpService forwards original-addressed reviewed-main recovery through t
   const calls = [];
   const { service, token } = await fixture(context, { releaseOperations: {
     get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "failed", revision: 699 } }),
-    continue: async (...args) => { calls.push(args); return { accepted: true, operationId: args[0] }; },
+    continue: async (...args) => {
+      calls.push([args[0], Object.fromEntries(Object.entries(args[1]).filter(([, value]) => value !== undefined))]);
+      return { accepted: true, operationId: args[0] };
+    },
     setEventDelivery() {},
   } });
   const reviewedMain = { expectedRevision: 699, approvedRepositories: [{ projectRoot: "D:/repo",
@@ -2071,7 +2098,9 @@ test("manual public version reaches the same durable release admission and survi
   const forbidden = async () => assert.fail("admission must not run publication inline");
   const operations = new ReleaseOperationService({ store, schedule: () => {}, processAlive: () => true,
     compose: forbidden, validate: forbidden, publishTarget: forbidden, readTarget: forbidden, finalize: forbidden });
-  const { service, token } = await fixture(context, { releaseOperations: operations });
+  const { service, token, taskBoard, tasks } = await fixture(context, { releaseOperations: operations });
+  tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  taskBoard.releaseTasks = () => [tasks.get("task-current")];
   const schema = service.tools().find(tool => tool.name === "hub_release_run").inputSchema;
   assert.equal(schema.required.includes("release_version"), false);
   assert.equal(new RegExp(schema.properties.release_version.pattern, "u").test("3.7.9"), true);
@@ -2092,14 +2121,16 @@ test("manual public version reaches the same durable release admission and survi
 
 test("HubMcpService carries exact release metadata through the domain and byte-checking composition owner", async (context) => {
   let admitted;
-  const { service, token, projectRoot } = await fixture(context, { releaseOperations: {
-    start: (input) => {
-      admitted = createReleaseOperation({ ...input, operationId: input.requestId,
+  const { service, token, projectRoot, taskBoard, tasks } = await fixture(context, { releaseOperations: {
+    start: ({ resolveAuthorization, ...input }) => {
+      admitted = createReleaseOperation({ ...input, authorization: resolveAuthorization(null), operationId: input.requestId,
         runnerVersion: "test", createdAt: "2026-10-18T00:00:00.000Z" });
       return { accepted: true, operationId: admitted.operationId };
     },
     get() {}, continue() {}, setEventDelivery() {},
   } });
+  tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  taskBoard.releaseTasks = () => [tasks.get("task-current")];
   const bytes = Buffer.from("release notes\r\n", "utf8");
   const sourcePath = path.join(projectRoot, "CHANGELOG.md");
   await writeFile(sourcePath, bytes);
@@ -2211,7 +2242,7 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
   }]);
   const schema = service.tools().find((tool) => tool.name === "hub_task_operation_reconcile").inputSchema;
   assert.deepEqual(schema.required, [
-    "context_token", "request_id", "task_id", "operation_request_id", "project_root", "confirm_reconcile",
+    "context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile",
   ]);
   const terminalArgs = { ...args, request_id: "reconcile-command-terminal" };
   delete terminalArgs.guard_id;

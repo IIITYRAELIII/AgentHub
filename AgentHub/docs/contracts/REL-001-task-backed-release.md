@@ -18,6 +18,20 @@ This does not change selection, source/content preservation, native review,
 publication or primary protections. No production restart is implicit. See
 [Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
 
+## Windows Git path handling
+
+All Hub-owned Windows Git invocations use the shared argument policy in
+`git-invocation-policy.json`, including Task, release, isolated preparation,
+bundle/index-pack descendants and offline Python source tools. Existing
+process owners, environment scrubbing, hooks, guards and authority checks stay
+in control. This permanent application default does not write global/system
+configuration, change other applications' Git, or remove Git's independent
+repository-root length limits. Other operating systems keep their arguments.
+For a newly created owned clone the same policy also supplies clone-local
+`core.longpaths=true` at creation. Git clears client command configuration when
+starting another repository's upload-pack; that owned server must still read
+its own pack files. No source configuration/hooks or machine settings are copied.
+
 ## Cleanup of an exact historical direct delivery
 
 `completion_mode=published_delivery` is an explicit RM compatibility input for
@@ -91,13 +105,46 @@ unretired ignored data still refuses. No other UNKNOWN family is settled.
 
 ## Normal release continuation (ADR-0132)
 
-The existing `hub_release_run` / `hub_release_continue` owner prepares a missing
-native candidate itself, then validates, freezes and publishes its immutable
-generation. A separate manual preparation/operator package is not a prerequisite
-for an ordinary transition. Exact selection/publication/base checks precede
-release changes. Release integration may synchronize already accepted main into
-managed dev under its normal lease/process guards; primary bytes remain intact.
-Ordinary Task integration retains its explicit adoption boundary.
+The existing `hub_release_run` / `hub_release_continue` owner captures the WHOLE
+already prepared PreRelease, equal to every current accepted Await Task in the
+Workspace. It does not call Await preparation or the native Task sequencer.
+Ordinary lifecycle acceptance owns composition/conflict resolution; excluding a
+Task requires normal Await-to-Test return and an updated prepared PreRelease.
+The release freezes version and consolidated CHANGELOG into its own immutable
+generation only after current membership/content/history/import closure/base
+and authority checks. Missing or stale preparation leaves the same operation
+waiting for normal lifecycle preparation; it never silently repairs the set.
+An expired exact local/origin main approval is likewise a prepared-candidate
+waiting condition, not terminal publication failure. Once origin is corrected,
+an older prepared base still refuses capture until its normal preparation owner
+has integrated accepted main and rebuilt the complete Await composition. Neither
+refusal advances a generation or authorizes release-side composition; the same
+original operation and authorization remain available for continuation.
+
+See ADR-HUB-364-whole-prepared-release, which supersedes ADR-0132's release-side
+automatic preparation decision. Primary bytes remain intact; no prefix cache
+or optimization of ordinary full Await composition is introduced.
+
+New public release authorization binds `taskScope=all_await` and retains the
+initial exact Task IDs as its immutable admission snapshot. Optional `task_ids`
+is only an expected-whole-set assertion, never a subset selector.
+Original request lookup and identity matching precede mutable Await derivation
+in the same durable admission transaction. Replays use the original admission
+snapshot, even after Await additions/removals; changed caller/options still refuse.
+A generation binds its actually captured full membership in existing
+`authorizedTaskIds`.
+Before publication admission the existing Await boundary compares the complete
+current set; changes recapture a later generation on the same operation.
+Already admitted publication stays pinned to its original generation/effects.
+
+Legacy authorizations without this field keep their exact bytes/fingerprint and
+saved selection. They can capture only when that selection is the whole current
+Await set. An explicit `hub_release_continue task_scope=all_await` amendment uses
+the existing revision/generation CAS and every target's not-applied readback;
+it records the captured full set and explicit-vs-omitted request arguments.
+Old amendments, generations and reviewed-main membership stay at their own
+historical boundary. This is no new tool, ledger, approval or publication lane.
+Changed code receives new validation, never a claimed old PASS.
 
 The source/default `node release.mjs run|continue|get|accept --provider <provider>
 --thread <thread> --stream <stream> --request-file <JSON>` consumes ordinary
@@ -3454,3 +3501,23 @@ original hash, fence, namespace, exact Task revision and committed binding under
 the existing Task lease. A readback-only path cannot fall through to assignment.
 Cancellation/pending-stop checks remain inherited, and ordinary new execution
 still cannot replace another worker binding.
+
+## Complete Windows lock-owner publication
+
+The existing interprocess lock owner writes and syncs its unchanged token owner
+in a unique same-parent ready directory, closes the source handle, then uses the
+fixed RuntimeHost directory-publication mode with MoveFileExW flags zero. Occupied
+directories, files and junctions refuse without replacement or deletion authority.
+Before protected work the owner verifies exact bigint directory/file identities,
+non-following regular entries, full payload and current owner through a retained
+reopened handle. A lost native reply is resolved only by that same exact object
+effect; it never authorizes a second publication attempt. Legacy, live, dead,
+mismatched, released and unknown-owner rules retain their existing authority.
+
+A crash before publication can leave a private ready sibling, not an incomplete
+canonical owner. A crash after publication leaves a complete ordinary owner for
+existing dead-process recovery. Unknown old bytes are not removed or relabelled.
+The native child is joined before readback or shutdown. This is a local Windows
+process-crash protocol; POSIX behavior, remote filesystems and power-failure
+durability receive no new guarantee. Bootstrap and native publication are traced
+separately from admission wait by the existing operation timing owner.

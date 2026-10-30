@@ -10,6 +10,7 @@ import {
   createCandidateGeneration,
   completedReleaseGenerationEvidence,
   effectiveReleaseTaskIds,
+  effectiveReleaseTaskScope,
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
@@ -515,19 +516,28 @@ export class ReleaseOperationStore {
     }
   }
 
-  create(input = {}) {
-    const operation = createReleaseOperation({
+  create(input = {}, { resolveAuthorization = null } = {}) {
+    if (resolveAuthorization != null && typeof resolveAuthorization !== "function") {
+      throw new TypeError("resolveAuthorization must be a function");
+    }
+    const materialize = authorization => createReleaseOperation({
       ...input,
+      authorization,
       operationId: input.operationId ?? this.idFactory(),
       createdAt: input.createdAt ?? this.now(),
       updatedAt: input.updatedAt ?? input.createdAt ?? this.now(),
     });
+    const immediate = resolveAuthorization ? null : materialize(input.authorization);
     return this.#withDatabase((database) => {
       transactionPhase(database, "BEGIN IMMEDIATE", "begin");
       try {
         const existing = operationFromRow(database.prepare(`
           SELECT operation_json FROM release_operations WHERE workspace_id = ? AND request_id = ?
-        `).get(operation.workspaceId, operation.requestId));
+        `).get(immediate?.workspaceId ?? String(input.workspaceId ?? "").trim(),
+          immediate?.requestId ?? String(input.requestId ?? "").trim()));
+        // Resolve a new snapshot only after the original lookup, in the SAME
+        // transaction. A racing intake cannot replace the saved admission.
+        const operation = immediate ?? materialize(resolveAuthorization(existing ? structuredClone(existing) : null));
         if (existing) {
           if (!sameCreationIdentity(existing, operation)) throw new Error("release operation request identity conflict");
           database.exec("ROLLBACK");
@@ -650,7 +660,7 @@ export class ReleaseOperationStore {
           id, current.revision,
         );
         if (update.changes !== 1) throw new Error("release operation revision conflict");
-        if (testSelectionAmendment) {
+        if (testSelectionAmendment || patch.selectedResults && effectiveReleaseTaskScope(result.operation) === "all_await") {
           const insertTask = database.prepare("INSERT OR IGNORE INTO release_operation_tasks(operation_id, task_id) VALUES (?, ?)");
           for (const taskId of effectiveReleaseTaskIds(result.operation)) insertTask.run(id, taskId);
         }
@@ -847,12 +857,15 @@ export class ReleaseOperationStore {
     `).all(Math.max(1, Math.min(2_000, Number(limit) || 500))).map(operationFromRow).filter(Boolean));
   }
 
-  forTask(taskId) {
+  forTask(taskId, { workspaceId = null } = {}) {
     return this.#withDatabase((database) => database.prepare(`
       SELECT operation_json FROM release_operations
       WHERE operation_id IN (SELECT operation_id FROM release_operation_tasks WHERE task_id = ?)
+        OR (workspace_id = ? AND state IN ('compose', 'validate', 'publish', 'waiting'))
       ORDER BY updated_at DESC
-    `).all(String(taskId)).map(operationFromRow).filter(operation => operation && effectiveReleaseTaskIds(operation).includes(String(taskId))));
+    `).all(String(taskId), String(workspaceId ?? "")).map(operationFromRow).filter(operation => operation
+      && (effectiveReleaseTaskIds(operation).includes(String(taskId))
+        || operation.workspaceId === workspaceId && effectiveReleaseTaskScope(operation) === "all_await")));
   }
 
   pendingEvents({ limit = 100 } = {}) {

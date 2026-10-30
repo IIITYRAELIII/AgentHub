@@ -25,7 +25,15 @@ for (const [width, lookupRefusal] of [[1366, false], [390, false], [1366, true]]
   const controller = new DesktopTaskBoardController({ taskBoard: f.tasks, workspaceCatalog: f.catalog,
     taskGitWorkspaces: f.workspaces, taskLifecycle: lifecycle, hubMcpService: f.hub,
     taskLauncher: {}, snapshot: async () => fresh() });
-  const browser = await launchBrowser(); let id;
+  let id, settled;
+  const workerSettled = new Promise(resolve => { settled = resolve; });
+  const recordCommandTrace = f.hub.recordCommandTrace;
+  f.hub.recordCommandTrace = span => {
+    const result = recordCommandTrace(span);
+    if (span.commandId === id && span.stage === "task-operation-result") settled();
+    return result;
+  };
+  const browser = await launchBrowser();
   try {
     const page = await browser.newPage({ viewport: { width, height: 900 } }); page.setDefaultTimeout(9000);
     const diagnostics = await openFixture(page, { fixtureSnapshot: fresh() });
@@ -93,7 +101,8 @@ for (const [width, lookupRefusal] of [[1366, false], [390, false], [1366, true]]
         && !document.querySelector('[data-task-card-status]')?.disabled, f.prior.workflowStatus);
     } else {
       release();
-      await assertEventually(() => f.catalog.mcpOperation(id).status === "succeeded");
+      await workerSettled;
+      assert.equal(f.catalog.mcpOperation(id).status, "succeeded");
       await page.waitForFunction(() => document.querySelector('[data-task-card-status]')?.value === "testing"
         && !document.querySelector('[data-task-card-status]')?.disabled);
       assert.match(await panel.locator('[data-task-card-status]').locator('..').getByRole('button').textContent(), /Test/);
@@ -107,7 +116,12 @@ for (const [width, lookupRefusal] of [[1366, false], [390, false], [1366, true]]
     await page.screenshot({ path: fileURLToPath(new URL(`result-${width}${lookupRefusal ? "-refusal" : ""}.png`, dir)), fullPage: true });
   } finally {
     release();
-    try { if (id) await assertEventually(() => !f.hub.readDesktopTaskOperation({}, id).taskOperation.active); }
+    try {
+      if (id) {
+        if (f.hub.readDesktopTaskOperation({}, id).taskOperation.active) await workerSettled;
+        assert.equal(f.hub.readDesktopTaskOperation({}, id).taskOperation.active, false);
+      }
+    }
     finally { await browser.close(); }
   }
 });

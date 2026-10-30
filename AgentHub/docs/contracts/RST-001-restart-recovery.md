@@ -375,3 +375,19 @@ so main readiness or Worker availability never becomes full gateway readiness.
 Gateway health recovery does not replay Worker startup or settle that promise.
 Shutdown/generation changes fence late publication and menu callbacks. No new
 retry loop, gateway writer, process authority or restart is introduced.
+
+## Fixed Windows lock-publication capability
+
+The existing RuntimeHost has one fixed directory-publication mode. Its paths are
+stdin data and its no-replace operation cannot enter Hub startup, lifetime logs,
+restart, acceptance, provider or publication workflows. Source execution prepares
+its hash-bound native consumer through the existing builder before lock admission,
+without requiring that lock or an already installed Host. The same four declared
+Host source inputs are retained by the ordinary runtime producer and source
+membership selector. Prepared consumers verify their complete manifest, own Host
+and source/binary hashes; missing or changed inputs refuse without compilation
+or installed-launcher fallback. Source bootstrap coalesces only within its
+process. Normal shutdown fences calls, joins native work and retires only its
+exact owned temporary body; forced termination may retain an orphan, with no
+global cache or scavenger. This capability does not itself recover an unknown
+lock or start any runtime.

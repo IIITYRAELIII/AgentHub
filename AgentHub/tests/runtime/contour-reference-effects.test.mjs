@@ -87,10 +87,11 @@ test("recording Git owners deny every executable public operation before argumen
   assert.equal(changed, false);
 });
 
-test("recording claim custody entries refuse before reading supplied arguments or lease ports", async (t) => {
+test("recording claim custody and cleanup entries refuse before reading supplied arguments or lease ports", async (t) => {
   const { root, recording, policy } = await fixture(t);
   const methods = ["claimAdmissionNoEffectEvidence", "reuseClaimWorkspaceOwned",
-    "planIndependentClaimNamespace", "stageIndependentClaimNamespaceOwned", "readIndependentClaimNamespaceOwned"];
+    "planIndependentClaimNamespace", "stageIndependentClaimNamespaceOwned", "readIndependentClaimNamespaceOwned",
+    "publishedDeliveryPreviewOwned", "confirmedDeleteResumePreviewOwned"];
   let argumentReads = 0;
   const forbidden = new Proxy({}, { get() {
     argumentReads += 1;
@@ -125,10 +126,11 @@ test("ordinary claim custody keeps deterministic planning and the existing owned
   let leaseChecks = 0;
   const failure = new Error("ordinary lease witness");
   const lease = { assertOwned() { leaseChecks += 1; throw failure; }, beginProcessTreeGuard() {} };
-  for (const method of ["reuseClaimWorkspaceOwned", "stageIndependentClaimNamespaceOwned", "readIndependentClaimNamespaceOwned"]) {
+  for (const method of ["reuseClaimWorkspaceOwned", "stageIndependentClaimNamespaceOwned", "readIndependentClaimNamespaceOwned",
+    "publishedDeliveryPreviewOwned", "confirmedDeleteResumePreviewOwned"]) {
     await assert.rejects(owner[method]({ lease }), error => error === failure);
   }
-  assert.equal(leaseChecks, 3);
+  assert.equal(leaseChecks, 5);
 });
 
 async function fixture(t) {

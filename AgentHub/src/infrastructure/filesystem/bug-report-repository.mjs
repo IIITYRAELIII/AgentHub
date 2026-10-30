@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "./preparation-git-isolation.mjs";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { copyFile, lstat, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
@@ -79,7 +80,7 @@ function reportFromMarkdown({ id, folder, markdown }) {
 
 async function defaultRunGit(repository, args) {
   try {
-    const result = await execFileAsync("git", args, {
+    const result = await execFileAsync("git", ownedGitArguments(args), {
       cwd: repository,
       encoding: "utf8",
       maxBuffer: 2 * 1024 * 1024,
