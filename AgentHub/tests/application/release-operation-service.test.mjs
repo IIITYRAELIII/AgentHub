@@ -64,6 +64,20 @@ function start(service, requestId = "request-1") {
   });
 }
 
+test("published dev sync refuses every amendment family before owner acquisition", async t => {
+  const f = await fixture(t, { schedule: () => assert.fail("no scheduling") });
+  const created = f.store.create({ requestId: "exclusive-sync", workspaceId: "workspace-1", streamId: "stream-1",
+    threadId: "thread-1", runnerVersion: "test", authorization: { taskIds, approvedTargets: targets, validationMode: "full" } });
+  const operationId = created.operation.operationId;
+  const before = f.store.get(operationId);
+  f.service.synchronizePublishedDevEffect = () => assert.fail("no effects");
+  for (const extra of [{ reviewedMain: {} }, { testSelection: {} }, { taskIds: [] },
+    { taskScope: "all_await" }, { releaseMetadata: {} }]) {
+    await assert.rejects(f.service.continue(operationId, { requestId: "refused-sync", publishedDevSync: {}, ...extra }), /exclusive/u);
+    assert.deepEqual(f.store.get(operationId), before);
+  }
+});
+
 async function waitUntil(predicate, { timeoutMs = 2_000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

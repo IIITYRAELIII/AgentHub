@@ -313,9 +313,9 @@ export class ReleaseOperationService {
   }
 
   async #synchronizePublishedDev(operationId, { publishedDevSync, expectedRevision, expectedGeneration,
-    requestId, reviewedMain, testSelection, taskIds, releaseMetadata }) {
+    requestId, reviewedMain, testSelection, taskIds, taskScope, releaseMetadata }) {
     requiredText(requestId, "published dev sync requestId");
-    if (reviewedMain != null || testSelection != null || taskIds != null || releaseMetadata != null
+    if (reviewedMain != null || testSelection != null || taskIds != null || taskScope != null || releaseMetadata != null
         || this.#running.has(operationId) || this.#scheduled.has(operationId)
         || typeof this.synchronizePublishedDevEffect !== "function") throw new Error("Published dev sync requires an exclusive addressed finalization request");
     let operation;

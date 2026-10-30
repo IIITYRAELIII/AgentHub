@@ -2568,6 +2568,9 @@ export class HubMcpService {
     const snapshot = this.#releaseOperation().get(operationId);
     this.#workspace(context, snapshot.operation.workspaceId);
     if (args.published_dev_sync != null) {
+      if (["reviewed_main", "test_selection", "task_ids", "task_scope", "release_metadata"].some(key => args[key] != null)) {
+        throw new ReleasePreparationRejectedError("Published dev sync requires exclusive recovery without amendments");
+      }
       const input = args.published_dev_sync;
       if (!input || typeof input !== "object" || Array.isArray(input)
           || Object.keys(input).some(key => !["projectRoot", "expectedDevCommit", "nativeResolutionReview"].includes(key))
