@@ -11,9 +11,12 @@ import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/nat
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
 
+import { withTaskOperationTiming, measureTaskOperation, createTaskOperationTimingBatchRecorder }
+  from "../../../src/infrastructure/process/task-operation-timing.mjs";
+
 const execute = promisify(execFile);
 async function git(root, ...args) {
-  return String((await execute("git", args, { cwd: root, windowsHide: true })).stdout).trim();
+  return measureTaskOperation("fixture:git", async () => String((await execute("git", args, { cwd: root, windowsHide: true })).stdout).trim(), { detail: true });
 }
 async function commit(root, message) {
   await git(root, "add", "-A");
@@ -246,21 +249,22 @@ test("normal publication generation requires and captures its ordinary prepared 
 
 test("native merge selects exact independent main branches and complete corrections", { timeout: 60000 }, async (t) => {
   let ownedWork;
-  ownedWork = (async () => {
-    const f = await fixture(t, { joinOwnedWork: () => ownedWork.catch(() => {}) });
-    const a = await f.result("A", "a.txt", "a1\n");
-    const b = await f.result("B", "b.txt", "b1\n");
-    const testOnly = await f.result("TestOnly", "not-selected.txt", "preview only\n");
-    const candidate = await f.service.prepareCandidate(f.request([a, b]));
+  ownedWork = withTaskOperationTiming({ operationId: "native-independent-corrections", taskId: "fixture",
+    record: createTaskOperationTimingBatchRecorder(events => console.info(JSON.stringify(events))) }, async () => {
+    const f = await measureTaskOperation("fixture:setup", () => fixture(t, { joinOwnedWork: () => ownedWork.catch(() => {}) }));
+    const a = await measureTaskOperation("fixture:branch-A", () => f.result("A", "a.txt", "a1\n"));
+    const b = await measureTaskOperation("fixture:branch-B", () => f.result("B", "b.txt", "b1\n"));
+    const testOnly = await measureTaskOperation("fixture:branch-TestOnly", () => f.result("TestOnly", "not-selected.txt", "preview only\n"));
+    const candidate = await measureTaskOperation("fixture:prepare-initial", () => f.service.prepareCandidate(f.request([a, b])));
     assert.equal(candidate.manifest.compositionPolicy, "main-selected-git-merge-v1");
     assert.equal(candidate.manifest.merges.length, 2);
     assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:a.txt`), "a1");
     await assert.rejects(git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:not-selected.txt`));
     assert.notEqual(testOnly.resultCommit, candidate.preReleaseHead);
     for (const item of [a, b]) await git(candidate.releaseRoot, "merge-base", "--is-ancestor", item.resultCommit, candidate.preReleaseHead);
-    const correction = await f.result("A", "another.txt", "second commit\n");
+    const correction = await measureTaskOperation("fixture:correct-A", () => f.result("A", "another.txt", "second commit\n"));
     correction.taskRevision = 2;
-    const next = await f.service.prepareCandidate(f.request([correction, b], "correction"));
+    const next = await measureTaskOperation("fixture:prepare-correction", () => f.service.prepareCandidate(f.request([correction, b], "correction")));
     assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:a.txt`), "a1");
     assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:another.txt`), "second commit");
     const taskRoot = f.branches.get("A");
@@ -268,15 +272,15 @@ test("native merge selects exact independent main branches and complete correcti
     await git(taskRoot, "mv", "another.txt", "moved.txt");
     await git(taskRoot, "update-index", "--chmod=+x", "moved.txt");
     const renamed = { ...correction, taskRevision: 3, resultCommit: await commit(taskRoot, "delete rename and mode correction") };
-    const full = await f.service.prepareCandidate(f.request([renamed, b], "full-correction"));
+    const full = await measureTaskOperation("fixture:prepare-rename-delete-mode", () => f.service.prepareCandidate(f.request([renamed, b], "full-correction")));
     await assert.rejects(git(full.releaseRoot, "show", "PreRelease:a.txt"));
     await assert.rejects(git(full.releaseRoot, "show", "PreRelease:another.txt"));
     assert.equal(await git(full.releaseRoot, "show", "PreRelease:moved.txt"), "second commit");
     assert.match(await git(full.releaseRoot, "ls-tree", "PreRelease", "moved.txt"), /^100755 blob /u);
-    const remaining = await f.service.prepareCandidate(f.request([b], "remove-A"));
+    const remaining = await measureTaskOperation("fixture:prepare-removal", () => f.service.prepareCandidate(f.request([b], "remove-A")));
     await assert.rejects(git(remaining.releaseRoot, "show", `${remaining.preReleaseHead}:a.txt`));
     assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
-  })();
+  });
   return await ownedWork;
 });
 

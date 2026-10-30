@@ -146,11 +146,11 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
     root, primary, base, workspace,
     get board() { return board; }, get taskGit() { return taskGit; }, get lifecycle() { return lifecycle; }, get catalog() { return catalog; },
     get preflight() { return preflight; },
-    async continueRelease(operationId) {
+    async continueRelease(operationId, requestId = "prepared-release-continue") {
       retainRelease(releaseOperations, releaseStore, operationId);
       releaseValidationAllowed = true;
       try {
-        await service.call("hub_release_continue", { context_token: token, operation_id: operationId, request_id: "prepared-release-continue" });
+        await service.call("hub_release_continue", { context_token: token, operation_id: operationId, request_id: requestId });
         return await releaseOperations.drain(operationId);
       } finally { releaseValidationAllowed = false; }
     },
@@ -833,11 +833,26 @@ test("public release generation retains prepared PreRelease conflict resolution"
   // A public subset cannot exclude B while it remains accepted Await.
   await assert.rejects(f.release(a, f.base, "prepared-subset-refused"), /whole current Await set/u);
   await f.status(b, "testing", "prepared-return-b-before-subset");
-  const subset = await f.release(a, f.base, "prepared-stale-selection");
+  const stale = await f.release(a, f.base, "prepared-stale-selection");
+  assert.equal(stale.operation.state, "waiting");
+  assert.equal(stale.operation.waitReason.code, "prepared_candidate_stale", JSON.stringify(stale.operation.lastError));
+  assert.equal(stale.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+  assert.match(stale.operation.lastError.message, /prepared PreRelease does not match the accepted release plan/u);
+  assert.equal(stale.generations.length, 0);
+  // Returning B to Test changes membership; release cannot rebuild that holder.
+  // Prepare the whole remaining Await set through its ordinary owner, then
+  // continue the same refused original without changing the frozen A+B release.
+  const remaining = await f.preflight.withAwaitTransition(f.workspace.id, () =>
+    f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id }));
+  const remainingCandidate = remaining.releaseCandidates[0];
+  const subset = await f.continueRelease(stale.operation.operationId, "prepared-stale-selection-continue");
+  assert.equal(subset.operation.operationId, stale.operation.operationId);
   assert.equal(subset.operation.state, "waiting");
   assert.equal(subset.operation.waitReason.code, "validation_failed");
   assert.equal(subset.generations.length, 1);
   assert.deepEqual(subset.generations[0].selectedResults.map(item => item.taskId), [a.id]);
+  assert.equal(subset.generations[0].candidates[0].manifest.preparedCandidate.commit, remainingCandidate.preReleaseHead);
+  assert.equal(subset.generations[0].candidates[0].manifest.preparedCandidate.tree, remainingCandidate.tree);
   assert.equal(await git(subset.generations[0].candidates[0].releaseRoot, "show", "HEAD:shared.txt"), "A");
   assert.equal(await git(candidate.releaseRoot, "rev-parse", "HEAD"), frozenHead);
   assert.deepEqual(await readFile(frozenManifestFile), frozenManifest);

@@ -20,6 +20,7 @@ import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-boa
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
 import { WorkspaceReleasePreflightService } from "../../../src/application/workspace-release-preflight-service.mjs";
+import { createTaskOperationTimingBatchRecorder, measureTaskOperation, withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
 import { partialOwnGitPublication } from "../../fixtures/own-git-publication-fixture.mjs";
 
 const run = promisify(execFile), sha = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -27,7 +28,7 @@ async function git(root, args, options = {}) {
   const pending = run("git", args, { cwd: root, windowsHide: true,
     encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
   pending.child.stdin.end(options.input ?? "");
-  const { stdout } = await pending;
+  const { stdout } = await measureTaskOperation("fixture:git", () => pending, { detail: true });
   return options.rawOutput ? stdout : stdout.toString("utf8").trim();
 }
 async function save(root, file, bytes) {
@@ -39,9 +40,12 @@ async function commit(root, message) {
   await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message]);
   return git(root, ["rev-parse", "HEAD"]);
 }
-async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111", owningTaskRevision = 2, agreedOrigin = false, ownPublishedOrigin = false, versionedRuntime = false) {
+async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111", owningTaskRevision = 2, agreedOrigin = false, ownPublishedOrigin = false, versionedRuntime = false, { joinOwnedWork = null } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-adoption-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => {
+    await joinOwnedWork?.();
+    await rm(root, { recursive: true, force: true });
+  });
   const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
   const primary = path.join(root, "primary"), origin = path.join(root, "origin.git"), runtimeRoot = defaultRuntimeRoot({ environment });
   await git(root, ["init", "--bare", "--initial-branch=main", origin]);
@@ -116,31 +120,37 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
 }
 
 test("own partial Git publication permits ordinary Test and candidate reuse without claiming runtime success", { timeout: 90000 }, async t => {
-  const f = await fixture(t, undefined, undefined, false, true);
-  assert.equal(f.p.ownGitPublication.commit, f.adopted);
-  const rows = f.ownPublication.rows(), pointer = await readFile(path.join(f.runtimeRoot, "current.json"));
-  const integrated = await f.service.snapshotAndMerge({ taskId: f.task.taskId, projectRoot: f.primary,
-    operationId: "own-partial-next-test" });
-  assert.equal(integrated.snapshot.headCommit, f.result);
-  assert.equal(integrated.integration.integrated, true);
-  const prepared = await f.candidate.prepareCandidate(f.request);
-  assert.equal((await f.candidate.prepareCandidate(f.request)).preReleaseHead, prepared.preReleaseHead);
-  assert.equal(await git(f.primary, ["rev-parse", "refs/heads/main"]), f.main);
-  assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), pointer);
-  assert.equal(f.ownPublication.rows(), rows);
-  const verify = extra => assertInstalledLocalSourceBaseline({ provenance: f.p, git: f.port,
-    repositoryRoot: f.primary, primaryMainCommit: f.main, publishedRevision: f.published,
-    planRevision: "exact", tasks: f.tasks, runtimeRoot: f.runtimeRoot,
-    readOwnGitPublication: f.ownPublication.read, ...extra });
-  await verify({});
-  await assert.rejects(verify({ readOwnGitPublication: null }), /OWN Git publication/u);
-  await assert.rejects(verify({ provenance: { ...f.p, ownGitPublication: { ...f.p.ownGitPublication, extra: true } } }), /publication|provenance/iu);
-  await save(f.external, "AgentHub/foreign.mjs", "export const foreign = true;\n");
-  await commit(f.external, "foreign after exact own publication");
-  await git(f.external, ["push", "origin", "HEAD:main"]);
-  await assert.rejects(verify({}), /OWN Git publication|origin/iu);
-  await assert.rejects(f.candidate.prepareCandidate(f.request), /OWN Git publication|origin/iu);
-  assert.equal(f.ownPublication.rows(), rows);
+  let ownedWork;
+  ownedWork = withTaskOperationTiming({ operationId: "own-partial-next-test",
+    record: createTaskOperationTimingBatchRecorder(events => console.info(JSON.stringify(events))) }, async () => {
+    const f = await measureTaskOperation("fixture:setup", () => fixture(t, undefined, undefined, false, true, false,
+      { joinOwnedWork: () => ownedWork.catch(() => {}) }));
+    assert.equal(f.p.ownGitPublication.commit, f.adopted);
+    const rows = f.ownPublication.rows(), pointer = await readFile(path.join(f.runtimeRoot, "current.json"));
+    const integrated = await measureTaskOperation("fixture:ordinary-test", () => f.service.snapshotAndMerge({ taskId: f.task.taskId, projectRoot: f.primary,
+      operationId: "own-partial-next-test" }));
+    assert.equal(integrated.snapshot.headCommit, f.result);
+    assert.equal(integrated.integration.integrated, true);
+    const prepared = await measureTaskOperation("fixture:candidate-first", () => f.candidate.prepareCandidate(f.request));
+    assert.equal((await measureTaskOperation("fixture:candidate-reuse", () => f.candidate.prepareCandidate(f.request))).preReleaseHead, prepared.preReleaseHead);
+    assert.equal(await git(f.primary, ["rev-parse", "refs/heads/main"]), f.main);
+    assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), pointer);
+    assert.equal(f.ownPublication.rows(), rows);
+    const verify = extra => assertInstalledLocalSourceBaseline({ provenance: f.p, git: f.port,
+      repositoryRoot: f.primary, primaryMainCommit: f.main, publishedRevision: f.published,
+      planRevision: "exact", tasks: f.tasks, runtimeRoot: f.runtimeRoot,
+      readOwnGitPublication: f.ownPublication.read, ...extra });
+    await measureTaskOperation("fixture:authority", () => verify({}));
+    await assert.rejects(verify({ readOwnGitPublication: null }), /OWN Git publication/u);
+    await assert.rejects(verify({ provenance: { ...f.p, ownGitPublication: { ...f.p.ownGitPublication, extra: true } } }), /publication|provenance/iu);
+    await save(f.external, "AgentHub/foreign.mjs", "export const foreign = true;\n");
+    await commit(f.external, "foreign after exact own publication");
+    await git(f.external, ["push", "origin", "HEAD:main"]);
+    await assert.rejects(verify({}), /OWN Git publication|origin/iu);
+    await assert.rejects(f.candidate.prepareCandidate(f.request), /OWN Git publication|origin/iu);
+    assert.equal(f.ownPublication.rows(), rows);
+  });
+  return await ownedWork;
 });
 
 async function terminalAuthority(t, agreedOrigin = false, ownPublishedOrigin = false) {
