@@ -3483,7 +3483,11 @@ function enqueueTaskHistoryLoad(id, identity, {
             count: settled.value?.items?.length ?? 0 });
         if (settled.status === "rejected" || !current) continue;
         const history = verifiedTaskHistory(settled.value, pending.identity);
-        if (!sameIdentity(taskIdentity(id), history)) continue;
+        const sameBinding = sameIdentity(taskIdentity(id), history);
+        commandTrace.record("ui-control", "history-binding-decision", 0, pending.traceId,
+          { ...stableIdentity(history), clientAssetRevision: "hub333.history.1",
+            decision: sameBinding ? "current" : "changed", count: history.items?.length ?? 0 });
+        if (!sameBinding) continue;
         if (pending.onlyWhenSelected && selectedTaskId !== id) continue;
         if (history?.notModified === true) {
           const page = historyPageByTask.get(id);

@@ -582,6 +582,12 @@ A live Stream representative follows its highest durable Thread position before
 historical selection or retained running state. Stream-only Desktop navigation
 uses the catalog owner's current binding, independently of catalog ordering;
 an explicit retained provider/Thread reference selects that exact catalog entry.
+Stream history responses use that same highest attached lineage position for
+their envelope, even when the retained catalog lists an older Thread first.
+Historical items keep their own provider/Thread identities. A missing current
+catalog entry cannot silently substitute an older envelope. The existing history
+trace reports response-binding admission separately from request freshness and
+visible paint, under the original history request ID.
 A historical turn route retains its exact history page while the head evolves.
 Selecting the Stream explicitly resumes head-history navigation. Retained links
 whose Thread no longer has a catalog entry still resolve through their owning
