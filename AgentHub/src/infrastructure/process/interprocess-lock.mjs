@@ -1,13 +1,26 @@
-import { mkdir, open, readFile, readdir, rename, rm, rmdir, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
-import { measureTaskOperationAwait } from "./task-operation-timing.mjs";
+import { measureTaskOperation, measureTaskOperationAwait } from "./task-operation-timing.mjs";
+import { prepareWindowsLockDirectoryPublisher } from "./windows-lock-directory-publication.mjs";
+import { taskOperationExecution } from "./task-operation-interruption-context.mjs";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const RELEASE_RETRY_DELAYS_MS = [0, 10, 25, 50, 100, 200];
 const TRANSIENT_LOCK_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
 const inProcessLocks = new Map();
+async function abortable(promise, signal) {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  let abort;
+  const interrupted = new Promise((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try { return await Promise.race([promise, interrupted]); }
+  finally { signal.removeEventListener("abort", abort); }
+}
 const PROCESS_INSTANCE_ID = randomUUID();
 const admissionTimeouts = new WeakMap();
 
@@ -17,7 +30,7 @@ export function interprocessLockAdmissionTimeoutPath(error) {
   return admissionTimeouts.get(error) ?? null;
 }
 
-async function acquireInProcessLock(lockPath) {
+async function acquireInProcessLock(lockPath, signal) {
   let state = inProcessLocks.get(lockPath);
   if (!state) {
     state = { pending: 0, tail: Promise.resolve() };
@@ -28,7 +41,8 @@ async function acquireInProcessLock(lockPath) {
   const turn = new Promise((resolve) => { releaseTurn = resolve; });
   state.tail = previous.then(() => turn);
   state.pending += 1;
-  await previous;
+  try { await abortable(previous, signal); }
+  catch (error) { state.pending -= 1; releaseTurn(); if (!state.pending) inProcessLocks.delete(lockPath); throw error; }
   let released = false;
   return () => {
     if (released) return;
@@ -208,27 +222,96 @@ export async function readInterprocessLockStatus(target, options = {}) {
   };
 }
 
-async function createOwnership(lockPath, token, staleMs, processInstanceId) {
+function sameFileIdentity(expected, actual) {
+  return expected?.dev === actual?.dev && expected?.ino === actual?.ino;
+}
+
+async function createOwnership(lockPath, token, staleMs, processInstanceId, publisher) {
   const fileName = ownerFileName(token);
   const ownerPath = path.join(lockPath, fileName);
   const owner = {
-    token,
-    pid: process.pid,
-    processInstanceId,
-    createdAt: Date.now(),
-    leaseExpiresAt: Date.now() + staleMs,
-    fileName,
-    ownerPath,
-    format: "token",
+    token, pid: process.pid, processInstanceId,
+    createdAt: Date.now(), leaseExpiresAt: Date.now() + staleMs,
+    fileName, ownerPath, format: "token",
   };
-  const handle = await open(ownerPath, "wx", 0o600);
+  const windows = process.platform === "win32";
+  const readyPath = windows ? `${lockPath}.ready-${randomUUID()}` : lockPath;
+  if (windows) await mkdir(readyPath);
+  const readyOwnerPath = path.join(readyPath, fileName);
+  let handle, preparedDirectory, preparedFile;
+  let createdOwner = false;
   try {
+    if (windows) preparedDirectory = await lstat(readyPath, { bigint: true });
+    handle = await open(readyOwnerPath, "wx", 0o600);
+    createdOwner = true;
+    if (windows) preparedFile = await handle.stat({ bigint: true });
     await handle.writeFile(ownerPayload(owner), "utf8");
     await handle.sync();
+    if (windows) {
+      // Windows cannot move a directory with this descendant handle open.
+      // The fixed native mode publishes without replacement; fs.rename cannot.
+      await handle.close();
+      handle = null;
+      const [directory, entry] = await Promise.all([
+        lstat(readyPath, { bigint: true }), lstat(readyOwnerPath, { bigint: true }),
+      ]);
+      if (!directory.isDirectory() || !entry.isFile()
+          || !sameFileIdentity(preparedDirectory, directory) || !sameFileIdentity(preparedFile, entry)) {
+        throw new Error("Interprocess lock staging identity changed before publication");
+      }
+      let publicationError = null;
+      try {
+        await measureTaskOperation("lock-native-publish", () => publisher.publish(readyPath, lockPath), { detail: true });
+      }
+      catch (error) {
+        if (error?.code === "EEXIST") throw error;
+        // A lost native reply is not a no-effect receipt. Read this exact
+        // prepared object's effect; never invoke the native mutation again.
+        publicationError = error;
+      }
+      try {
+        if (publicationError) {
+          const remainingReady = await lstat(readyPath).catch(error => {
+            if (error?.code === "ENOENT") return null;
+            throw error;
+          });
+          if (remainingReady) throw publicationError;
+        }
+        handle = await open(ownerPath, "r+");
+        const [file, directory, entry] = await Promise.all([
+          handle.stat({ bigint: true }), lstat(lockPath, { bigint: true }), lstat(ownerPath, { bigint: true }),
+        ]);
+        if (!file.isFile() || !directory.isDirectory() || !entry.isFile()
+            || !sameFileIdentity(preparedFile, file) || !sameFileIdentity(preparedDirectory, directory)
+            || !sameFileIdentity(file, entry)
+            || await handle.readFile("utf8") !== ownerPayload(owner)
+            || !sameOwner(owner, await readOwner(lockPath))) {
+          throw new Error("Interprocess lock publication identity changed before ownership");
+        }
+      } catch (error) {
+        throw publicationError ?? error;
+      }
+    }
     return { lockPath, token, owner, handle };
   } catch (error) {
-    await handle.close().catch(() => {});
-    await rm(ownerPath, { force: true }).catch(() => {});
+    await handle?.close().catch(() => {});
+    if (!windows) {
+      if (createdOwner) await rm(ownerPath, { force: true }).catch(() => {});
+    } else {
+      // Never target canonical, a replacement ready directory or a foreign
+      // entry during cleanup. A crash may retain an owned ready sibling.
+      const directory = await lstat(readyPath, { bigint: true }).catch(() => null);
+      if (directory?.isDirectory() && sameFileIdentity(preparedDirectory, directory)) {
+        const entry = await lstat(readyOwnerPath, { bigint: true }).catch(() => null);
+        if (entry?.isFile() && sameFileIdentity(preparedFile, entry)) {
+          await rm(readyOwnerPath, { force: false }).catch(() => {});
+        }
+        const current = await lstat(readyPath, { bigint: true }).catch(() => null);
+        if (current?.isDirectory() && sameFileIdentity(preparedDirectory, current)) {
+          await rmdir(readyPath).catch(() => {});
+        }
+      }
+    }
     throw error;
   }
 }
@@ -348,14 +431,16 @@ async function acquire(lockPath, {
   quarantine = retireStaleLock,
   moveLegacyLock = rename,
   removeLegacyLock = null,
-} = {}) {
+  signal = null,
+} = {}, publisher = null) {
   const deadline = Date.now() + timeoutMs;
   const token = tokenFactory();
   for (;;) {
+    signal?.throwIfAborted();
     try {
       await mkdir(path.dirname(lockPath), { recursive: true });
-      await mkdir(lockPath);
-      return await createOwnership(lockPath, token, staleMs, processInstanceId);
+      if (process.platform !== "win32") await mkdir(lockPath);
+      return await createOwnership(lockPath, token, staleMs, processInstanceId, publisher);
     } catch (error) {
       const contention = ["EEXIST", "EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]
         .includes(error?.code);
@@ -370,10 +455,9 @@ async function acquire(lockPath, {
       const ageMs = owner
         ? Date.now() - Number(owner.createdAt ?? 0)
         : Date.now() - Number(info?.mtimeMs ?? Date.now());
-      // mkdir followed by the immutable token-addressed owner file is a
-      // two-step protocol. A
-      // directory without an owner is therefore protected by its mtime grace
-      // period; it must not be stolen while its creator is writing that file.
+      // Legacy and non-Windows mkdir-then-owner publication has a two-step
+      // window. Its ownerless directory retains the same mtime grace; Windows
+      // now publishes only a complete owner directory without replacement.
       // Recovery never relies on age once a durable owner identity exists.
       const identityState = owner && !owner.unresolved
         ? await processIdentityState(owner, {
@@ -416,8 +500,15 @@ async function acquire(lockPath, {
 }
 
 export async function withInterprocessLocks(paths, operation, options = {}) {
-  const waitStartedAt = performance.now();
+  const taskExecution = taskOperationExecution();
+  options = { ...options, signal: options.signal ?? taskExecution?.signal };
+  options.signal?.throwIfAborted();
   const lockPaths = [...new Set(paths.filter(Boolean).map((value) => `${value}.lock`))].sort();
+  // Bootstrap has no dependency on these locks and is outside admission wait.
+  const publisher = process.platform === "win32" && lockPaths.length
+    ? await measureTaskOperation("lock-native-bootstrap", prepareWindowsLockDirectoryPublisher, { detail: true }) : null;
+  options.signal?.throwIfAborted();
+  const waitStartedAt = performance.now();
   const localReleases = [];
   const acquired = [];
   let heartbeat = null;
@@ -442,14 +533,16 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
   };
   try {
     for (const lockPath of lockPaths) {
-      localReleases.push(await acquireInProcessLock(lockPath));
+      localReleases.push(await acquireInProcessLock(lockPath, options.signal));
     }
     for (const lockPath of lockPaths) {
-      acquired.push(await acquire(lockPath, options));
+      acquired.push(await acquire(lockPath, options, publisher));
     }
     const staleMs = Math.max(500, Number(options.staleMs) || 60_000);
     const renew = typeof options.renewLease === "function" ? options.renewLease : renewLease;
     heartbeat = setInterval(() => {
+      try { taskExecution?.assertExecuting(); }
+      catch (error) { loseLease(error); return; }
       for (const record of acquired) {
         const renewal = Promise.resolve(renew(
           record.lockPath,
@@ -478,7 +571,7 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
       // Lock diagnostics are advisory and cannot change the protected operation.
     }
     const result = await operation({
-      signal: leaseController.signal,
+      signal: options.signal ? AbortSignal.any([options.signal, leaseController.signal]) : leaseController.signal,
       assertOwned,
       ownerId: acquired.map(({ lockPath, token }) => `${lockPath}:${token}`).join("|"),
     });

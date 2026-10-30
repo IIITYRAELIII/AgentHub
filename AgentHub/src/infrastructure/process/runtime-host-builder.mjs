@@ -7,6 +7,10 @@ import { promisify } from "node:util";
 const runFile = promisify(execFile);
 const ICON_SOURCE = path.join("VSCodeExtension", "media", "agent-hub-mark.png");
 const ICON_BUILDER_SOURCE = path.join("RuntimeHost", "AgentHub.IconBuilder.cs");
+const HOST_SOURCE_NAMES = Object.freeze(["AgentHub.RuntimeHost.cs", "AgentHub.IconBuilder.cs", "app.manifest"]);
+export const RUNTIME_HOST_SOURCE_INPUTS = Object.freeze([
+  ...HOST_SOURCE_NAMES.map(name => `RuntimeHost/${name}`), "VSCodeExtension/media/agent-hub-mark.png",
+]);
 
 export function windowsIconEntries(icon) {
   if (!Buffer.isBuffer(icon) || icon.length < 6
@@ -53,7 +57,7 @@ export async function runtimeHostSourceHash(sourceRoot) {
   const hostRoot = path.join(sourceRoot, "RuntimeHost");
   const hash = createHash("sha256");
   hash.update("agent-hub-runtime-host-build-v3\0", "utf8");
-  for (const name of ["AgentHub.RuntimeHost.cs", "AgentHub.IconBuilder.cs", "app.manifest"]) {
+  for (const name of HOST_SOURCE_NAMES) {
     hash.update(name, "utf8");
     hash.update("\0", "utf8");
     hash.update(await readFile(path.join(hostRoot, name)));

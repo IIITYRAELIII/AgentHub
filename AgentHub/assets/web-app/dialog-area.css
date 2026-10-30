@@ -181,9 +181,9 @@ html[data-view="chat"][data-surface][data-theme] {
   --stream-tab-inline-padding: 16px;
   align-items: center;
   appearance: none;
-  background: transparent !important;
+  background: var(--dialog-tab-background, transparent) !important;
   border: 0 !important;
-  border-radius: 0 !important;
+  border-radius: var(--dialog-tab-radius, 0) !important;
   box-shadow: none !important;
   color: var(--dialog-text-2);
   cursor: pointer;
@@ -216,10 +216,10 @@ html[data-view="chat"][data-surface][data-theme] {
 }
 
 .stream-tabs-track .stream-tab[data-current] {
-  background: var(--dialog-canvas) !important;
+  background: var(--dialog-tab-active-background, var(--dialog-canvas)) !important;
   border: 0 !important;
-  border-radius: 0 !important;
-  box-shadow: inset 0 -2px 0 var(--dialog-accent) !important;
+  border-radius: var(--dialog-tab-radius, 0) !important;
+  box-shadow: var(--dialog-tab-active-shadow, inset 0 -2px 0 var(--dialog-accent)) !important;
   color: var(--dialog-text);
   font-weight: 600;
 }

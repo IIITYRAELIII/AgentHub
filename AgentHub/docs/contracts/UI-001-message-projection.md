@@ -1,5 +1,14 @@
 # UI-001 — Canonical message projection
 
+The Task card's operation action exposes explicit interruption of a bound
+claim/workflow attempt, including pending and UNKNOWN. It reaches the same
+authenticated owner while the original UI/control mutation waits. Requested
+stopping and confirmed stopped are distinct; UNKNOWN past effects are never
+presented as undone. Already completed operations retain their completion.
+Refreshing the operation panel reads canonical disposition and does not replay
+the original action. Legacy rows without a Task binding require exact operator
+arguments through the supported owner, never guessed association by timestamp.
+
 The Server page exposes the private sync endpoint through its existing
 configuration save/cancel flow. Only HTTP(S) URLs without embedded credentials,
 query or fragment are admitted. A pending edit does not change the effective
@@ -54,6 +63,12 @@ visibly rather than guessing offsets. All three hashes remain mandatory on
 navigation. Legacy citations already bound to shortened content are not rewritten.
 
 ## Invariants
+
+A message, live-answer or queue update in one supplementary visible Stream
+refreshes that column without replacing the other current columns. Their scroll,
+expanded disclosures and the selected composer remain intact. A changed layout,
+selection or missing/foreign rendered binding still uses the canonical full-deck
+rebuild; partial rendering never supplies message, read or lifecycle authority.
 
 - Local sending is visible before a transport response. The exact durable Hub
   ACK updates that same command immediately, before snapshot/history refresh;
@@ -266,6 +281,15 @@ Legacy answers without this accepted metadata retain their raw display; neither
 text-prefix guessing nor command replay is a migration path.
 
 ## Canonical reducer
+
+Closing/replacing a Stream in the client's existing open-column layout releases
+its disposable canonical history pages and message projection. Other still-open
+columns, including another Workspace's saved open columns, retain their loaded
+pages. Reopening reads current canonical history with the original provider,
+Thread and Stream identity; it never replays a command or infers read state.
+In-flight pages for a closed column are superseded through the existing request
+generation fence. Pending sends, drafts, queue/live authority and exact read
+receipts are independent and are not evicted with history (ADR-HUB-343).
 
 Hidden or zero-sized chat panes do not automatically expand cached history or
 request older pages. Queued frame and scroll callbacks recheck current visibility;
@@ -701,6 +725,21 @@ No new cursor table, timestamp rewrite or background reconciliation is introduce
 (ADR-0112). Existing legacy-revision migration guards remain narrowly scoped.
 Cached history may be returned with the open response, but provider/history
 hydration starts strictly as background work and is never awaited by mark-read.
+The read owner resolves that exact catalog (or still-selected transient) Thread
+and its saved final without building the full conversation/board/telemetry/server
+snapshot. A supplied Stream must match the same identity. Account resolution,
+final revision comparison, cursor serialization and durable receipt remain on
+their existing owners; no cached final or receipt grants read authority.
+
+An unrelated global snapshot advance does not invalidate a first canonical
+latest history page. The client may display that page while refusing its stale
+embedded snapshot only when the runtime, current Stream/provider/Thread and
+latest terminal revision still match exactly, the complete page ends at its
+reported total, and no canonical or focused window exists yet. Navigation and
+history-generation fences still apply. An existing page, explicit older-page
+intent, changed binding or newer final cannot be replaced through this path.
+Read acknowledgement still requires actual rendered final and after-paint
+eligibility; receipt of the page alone never clears unread state.
 
 ## Migration guards
 
@@ -741,3 +780,15 @@ A slow or failed health read after readiness does not reopen the startup overlay
 the connection owner retains its own diagnostic. An authoritative `ready=false`
 response still opens startup, including a replacement runtime with no stage
 metadata yet. A queued restart request alone does not prove replacement began.
+
+## Task operation result projection
+
+A durable Task admission is pending, not a successful status/update/cleanup.
+The shipped client reads the exact original ID/hash through the existing Task
+read control until canonical success, failure, explicit UNKNOWN or stopped
+disposition. Read reconnection never repeats the mutation. Existing Task pending
+controls and the independent cancellation action remain available; success toast
+and final snapshot follow canonical success only. Preview/confirmation keep
+their existing token and separate explicit command identities. A transport ACK
+is recorded once even if later work fails. A lost worker observation does not
+become fabricated failure, NO_EFFECT or permission to replay.

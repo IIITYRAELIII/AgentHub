@@ -1383,7 +1383,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.ok((await taiga.arrayBuffer()).byteLength > 100_000);
     assert.ok((await pulsar.arrayBuffer()).byteLength > 100_000);
     const page = await (await fetch(address.url)).text();
-    assert.match(page, /data-theme="orbit"/u);
     assert.match(page, /<option value="taiga">Rain<\/option>/u);
     assert.match(page, /data-panel-open="settings"/u);
     assert.match(page, /data-view-button="statistics"/u);
@@ -1449,7 +1448,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /data-action="annotate-selection"/u);
     assert.doesNotMatch(page, /data-action="annotate"/u);
     const script = await (await fetch(`${address.url}app.js`)).text();
-    assert.match(script, /agent-hub-theme/u);
+    assert.match(page, /src="\/theme-preference\.js"/u);
     assert.match(script, /function readThemeCatalog/u);
     assert.match(script, /themeCatalog\.map\(\(theme\) => \[theme\.id, theme\.color\]\)/u);
     assert.match(

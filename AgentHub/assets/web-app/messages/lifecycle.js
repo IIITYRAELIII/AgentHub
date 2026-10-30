@@ -1674,6 +1674,9 @@ function messageSendDefinitelyRejected(error) {
 }
 
 function looksLikeConnectionFailure(error) {
+  // Browser Blob/IndexedDB errors can also be named TimeoutError/AbortError.
+  // They occur before network begin and must not claim the Hub is disconnected.
+  if (error?.attachmentStorageCode) return false;
   const code = String(error?.code ?? "").trim().toUpperCase();
   const name = String(error?.name ?? "").trim();
   const message = String(error?.message ?? error ?? "").trim();

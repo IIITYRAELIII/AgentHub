@@ -6,6 +6,10 @@
       "title": "Resumable attachment upload",
       "document": "MSG-002-resumable-attachments.md",
       "paths": [
+        "docs/decisions/ADR-0274-upload-attempt-storage.md",
+        "tests/public/attachment-upload.test.mjs",
+        "tests/public/attachment-upload-production.test.mjs",
+        "tests/composition/message-lifecycle.test.mjs",
         "assets/web-app/hub-client.js",
         "VSCodeExtension/vscode-bootstrap.js",
         "VSCodeExtension/agent-hub-bridge.js",
@@ -97,6 +101,9 @@
       "title": "Canonical message projection",
       "document": "UI-001-message-projection.md",
       "paths": [
+        "docs/decisions/ADR-0274-upload-attempt-storage.md",
+        "tests/composition/message-lifecycle.test.mjs",
+        "tests/public/attachment-upload-production.test.mjs",
         "docs/decisions/ADR-0044-readiness-gated-rotation.md",
         "assets/web-app/**",
         "src/interfaces/desktop/desktop-read-model-service.mjs",
@@ -113,7 +120,8 @@
         "src/providers/codex/codex-task-snapshot-service.mjs",
         "src/infrastructure/persistence/task-read-state-store.mjs",
         "src/infrastructure/persistence/task-sync-store.mjs",
-        "tests/public/composer-send-isolation.test.mjs"
+        "tests/public/composer-send-isolation.test.mjs",
+        "tests/public/task-operation-interruption-dom.test.mjs"
       ]
     },
     {
@@ -206,6 +214,7 @@
         "tests/composition/storage-retention-composition.test.mjs",
         "src/runtime/runtime-manager.mjs",
         "src/infrastructure/filesystem/runtime-installation-custody.mjs",
+        "docs/decisions/ADR-HUB-363-source-free-runtime-pins.md",
         "src/infrastructure/filesystem/runtime-release-retention*.mjs",
         "src/infrastructure/filesystem/sealed-runtime-release.*",
         "tests/infrastructure/filesystem/runtime-release-retention*.test.mjs",
@@ -271,7 +280,9 @@
         "tests/infrastructure/persistence/task-board-journal-scalars.test.mjs",
         "tests/interfaces/web/journal-publication.test.mjs",
         "src/infrastructure/persistence/task-turn-projection.mjs",
-        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs",
+        "tests/application/release-operation-persistence.test.mjs",
+        "docs/decisions/ADR-HUB-368-release-persistence-retry.md"
       ]
     },
     {
@@ -370,6 +381,10 @@
         "task-operation-reconcile.mjs",
         "docs/decisions/ADR-0105-bound-absorbed-own-admission.md",
         "src/infrastructure/filesystem/native-release-merge.mjs",
+        "src/infrastructure/filesystem/native-merge-reuse.mjs",
+        "tests/infrastructure/filesystem/native-merge-reuse.test.mjs",
+        "tests/infrastructure/filesystem/native-merge-reuse-authority.test.mjs",
+        "docs/decisions/ADR-HUB-372-verified-native-reuse.md",
         "tests/infrastructure/filesystem/native-selected-content-preservation.test.mjs",
         "src/infrastructure/filesystem/legacy-selected-composition-materializer-v1.mjs",
         "docs/decisions/ADR-0106-native-git-release-composition.md",
@@ -408,10 +423,30 @@
         "src/composition/publication-freeze.mjs",
         "src/infrastructure/filesystem/runtime-release-version.mjs",
         "tests/infrastructure/filesystem/runtime-release-version.test.mjs",
+        "tests/infrastructure/filesystem/retired-runtime-allocation.test.mjs",
+        "docs/decisions/ADR-HUB-363-partial-retirement-allocation.md",
         "tests/public/runtime-manager.test.mjs",
         "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
         "src/infrastructure/persistence/task-turn-projection.mjs",
-        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs",
+        "src/application/task-operation-interruption.mjs",
+        "src/infrastructure/process/task-operation-interruption-context.mjs",
+        "src/ports/task-operation-execution-context.mjs",
+        "tests/application/task-operation-interruption.test.mjs",
+        "tests/interfaces/cli/task-operation-cancel.test.mjs",
+        "tests/public/task-operation-interruption-dom.test.mjs",
+        "src/infrastructure/persistence/task-operation-interruption-fence.mjs",
+        "tests/application/task-operation-interruption-admission.test.mjs",
+        "tests/infrastructure/persistence/task-operation-user-migration.test.mjs",
+        "tests/application/release-operation-persistence.test.mjs",
+        "docs/decisions/ADR-HUB-368-release-persistence-retry.md",
+        "src/infrastructure/filesystem/direct-task-publication.mjs",
+        "tests/application/task-direct-published-cleanup.test.mjs",
+        "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
+        "src/infrastructure/filesystem/cleanup-preservation.mjs",
+        "src/application/task-release-plan-service.mjs",
+        "tests/application/prepared-release-boundary.test.mjs",
+        "docs/decisions/ADR-HUB-364-whole-prepared-release.md"
       ]
     },
     {
@@ -455,12 +490,29 @@
         "tools/claim-custody-native-witness.mjs",
         "tests/application/hub-mcp-claim-custody.test.mjs",
         "tests/application/hub-mcp-claim-lock-admission.test.mjs",
+        "tests/application/hub-mcp-claim-source-admission.test.mjs",
+        "docs/decisions/ADR-HUB-367-source-discovery-refusal.md",
         "tests/fixtures/claim-custody-public-fixture.mjs",
         "tests/infrastructure/process/claim-custody-runtime.native.test.mjs",
         "tests/application/hub-mcp-claim-isolated-custody.test.mjs",
         "tests/application/hub-mcp-claim-unassigned-custody.test.mjs",
         "tests/application/hub-mcp-claim-successor-admission.test.mjs",
-        "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs"
+        "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs",
+        "src/application/task-operation-interruption.mjs",
+        "src/infrastructure/process/task-operation-interruption-context.mjs",
+        "src/ports/task-operation-execution-context.mjs",
+        "tests/application/task-operation-interruption.test.mjs",
+        "tests/interfaces/cli/task-operation-cancel.test.mjs",
+        "tests/public/task-operation-interruption-dom.test.mjs",
+        "src/infrastructure/persistence/task-operation-interruption-fence.mjs",
+        "tests/application/task-operation-interruption-admission.test.mjs",
+        "tests/infrastructure/persistence/task-operation-user-migration.test.mjs",
+        "tests/application/release-operation-persistence.test.mjs",
+        "docs/decisions/ADR-HUB-368-release-persistence-retry.md",
+        "src/infrastructure/filesystem/direct-task-publication.mjs",
+        "tests/application/task-direct-published-cleanup.test.mjs",
+        "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
+        "src/infrastructure/filesystem/cleanup-preservation.mjs"
       ]
     },
     {

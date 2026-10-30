@@ -373,6 +373,7 @@ function responseHeaders(contentType, {
   crossOrigin = false,
   immutable = false,
   telegramRuntime = true,
+  styleNonce = "",
 } = {}) {
   return {
     "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-store",
@@ -385,7 +386,7 @@ function responseHeaders(contentType, {
       "img-src 'self' data: blob:",
       "object-src 'none'",
       `script-src 'self'${telegramRuntime ? " https://telegram.org" : ""}`,
-      "style-src 'self'",
+      `style-src 'self'${styleNonce ? ` 'nonce-${styleNonce}'` : ""}`,
     ].join("; "),
     "Content-Type": contentType,
     "Referrer-Policy": "no-referrer",
@@ -822,7 +823,7 @@ export class MiniAppServer {
     return { versionCode, versionName, sha256, bytes, apkFile };
   }
 
-  async #staticBody(pathname, bundle) {
+  async #staticBody(pathname, bundle, { nonce = "" } = {}) {
     if (pathname === "/work-log.css") return readFile(bundle.workLogCssFile, "utf8");
     const themeResource = bundle.themeRegistry.resources.get(pathname);
     if (themeResource) {
@@ -836,7 +837,7 @@ export class MiniAppServer {
     const body = asset.binary
       ? await readFile(target)
       : await readFile(target, "utf8");
-    return pathname === "/" ? renderThemeHtml(body, bundle.themeRegistry) : body;
+    return pathname === "/" ? renderThemeHtml(body, bundle.themeRegistry, { nonce }) : body;
   }
 
   #staticDescriptor(pathname, bundle) {
@@ -1929,7 +1930,8 @@ export class MiniAppServer {
     }
     const telegramRuntime = this.#telegramRuntimeAllowed(request);
     try {
-      const read = () => this.#staticBody(url.pathname, assetBundle);
+      const styleNonce = url.pathname === "/" ? randomBytes(18).toString("base64") : "";
+      const read = () => this.#staticBody(url.pathname, assetBundle, { nonce: styleNonce });
       const body = timing ? await timing.measure("http-asset-read", read) : await read();
       send(
         response,
@@ -1941,6 +1943,7 @@ export class MiniAppServer {
           crossOrigin: url.searchParams.has("v"),
           immutable: descriptor.immutable || url.searchParams.has("v"),
           telegramRuntime,
+          styleNonce,
         },
       );
     } catch (error) {

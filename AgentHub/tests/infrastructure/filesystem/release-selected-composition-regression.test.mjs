@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   LF_NORMALIZATION_ALREADY_PRESENT,
@@ -17,16 +16,6 @@ import { releaseTaskNetProjections } from "../../../src/infrastructure/filesyste
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 
 const execFileAsync = promisify(execFile);
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const repositoryRoot = path.dirname(projectRoot);
-
-const MAIN = "19bd6728478413da8b3a8a4eedca52b2058af042";
-const DEV = "0b7047c2075fe82367add07540545311fe5d0faa";
-const REVIEWED_RESULT = process.env.AGENT_HUB_SELECTED_COMPOSITION_RESULT
-  ?? "c64d83f21f17f35e9f008cd170c80daade922389";
-const REVIEWED_DEV_AFTER_TREE = process.env.AGENT_HUB_SELECTED_COMPOSITION_DEV_AFTER_TREE ?? null;
-const REVIEWED_INTEGRATION = process.env.AGENT_HUB_SELECTED_COMPOSITION_INTEGRATION ?? null;
-const PREVIOUS_RESULT = "b717d5db6b8a826007e20bd14afc5da9b3d90042";
 const SELECTED_DESCENDANT_NORMALIZATION_PATHS = new Set([
   "AgentHub/docs/contracts/PERF-001-local-latency.md",
   "AgentHub/docs/contracts/RST-001-restart-recovery.md",
@@ -62,18 +51,17 @@ async function treeEntry(cwd, treeish, file) {
   return { mode: match[1], object: match[2] };
 }
 
-async function canonicalProof(cwd, dataDir, integrationCommit, devAfterTree) {
-  const sourceBase = "5c2917340256fae8f67efacf55b6a0aee01085a6";
-  const sourceResult = "03d67ba0704cecadd3d4a0eea10ec27a1fe8ba70";
-  const sourceId = "66eecccb-69f4-4e2e-b094-01369297f17d";
-  const survivorId = "cb6f2929-7b1a-4513-9481-68e39a108480";
+async function canonicalProof(cwd, dataDir, integrationCommit, devAfterTree,
+  { sourceBase, sourceResult, previousResult, reviewedResult, dev }) {
+  const sourceId = "11111111-1111-4111-8111-111111111111";
+  const survivorId = "22222222-2222-4222-8222-222222222222";
   const service = new TaskGitWorkspaceService({ dataDir });
-  const sourceWorkspace = await service.prepare({ taskId: sourceId, taskNumber: "HUB-224", projectRoot: cwd });
-  const survivorWorkspace = await service.prepare({ taskId: survivorId, taskNumber: "HUB-235", projectRoot: cwd });
+  const sourceWorkspace = await service.prepare({ taskId: sourceId, taskNumber: "HUB-1", projectRoot: cwd });
+  const survivorWorkspace = await service.prepare({ taskId: survivorId, taskNumber: "HUB-2", projectRoot: cwd });
   const devWorkspace = await service.prepareDev(cwd);
   await git(sourceWorkspace.projectRoot, ["reset", "--hard", sourceResult]);
-  await git(survivorWorkspace.projectRoot, ["reset", "--hard", REVIEWED_RESULT]);
-  await git(devWorkspace.projectRoot, ["reset", "--hard", DEV]);
+  await git(survivorWorkspace.projectRoot, ["reset", "--hard", reviewedResult]);
+  await git(devWorkspace.projectRoot, ["reset", "--hard", dev]);
   const repositoryKey = taskRepositoryKey(cwd);
   await git(cwd, ["update-ref", `refs/agent-hub/task-bases/${sourceId}/${repositoryKey}`, sourceBase]);
   await git(cwd, ["update-ref", `refs/agent-hub/task-bases/${survivorId}/${repositoryKey}`, sourceBase]);
@@ -83,20 +71,20 @@ async function canonicalProof(cwd, dataDir, integrationCommit, devAfterTree) {
   };
   const survivor = {
     id: survivorId, revision: 164, releaseRevision: 163, workflowStatus: "testing",
-    gitReferences: [{ projectRoot: cwd, branch: survivorWorkspace.branch, resultCommit: PREVIOUS_RESULT }],
+    gitReferences: [{ projectRoot: cwd, branch: survivorWorkspace.branch, resultCommit: previousResult }],
   };
   return service.withTaskLocks([sourceId, survivorId], async (lease) => {
     const preview = await service.previewSquashTransferOwned({
       source, survivor, projectRoot: cwd,
-      baselineResultCommit: PREVIOUS_RESULT,
-      newResultCommit: REVIEWED_RESULT,
+      baselineResultCommit: previousResult,
+      newResultCommit: reviewedResult,
       devAfterTree,
       authority: {
       workspaceId: "workspace",
       streamId: "release",
       provider: "codex",
       threadId: "thread",
-      proofRequestId: "hub-235-selected-composition-regression",
+      proofRequestId: "synthetic-selected-composition-regression",
       },
       lease,
     });
@@ -104,33 +92,54 @@ async function canonicalProof(cwd, dataDir, integrationCommit, devAfterTree) {
   }, { guardTaskId: survivorId });
 }
 
-test("historical five-Task proof retains complete source witnesses without applying dev", async (t) => {
+test("self-contained squash proof retains complete source witnesses without applying dev", async (t) => {
+  // Synthetic regression inputs only. Historical Utilities OIDs/receipts remain
+  // historical evidence; this fixture never claims their publication authority.
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-selected-composition-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 3 }));
   const primary = path.join(root, "primary");
-  await git(root, ["clone", "--no-hardlinks", "--no-checkout", repositoryRoot, primary]);
+  await git(root, ["init", "--initial-branch=main", primary]);
   await git(primary, ["config", "core.autocrlf", "false"]);
-  await git(primary, ["checkout", "--detach", MAIN]);
-
-  let devAfterTree = REVIEWED_DEV_AFTER_TREE;
-  let integrationCommit = REVIEWED_INTEGRATION;
-  if (Boolean(devAfterTree) !== Boolean(integrationCommit)) {
-    throw new Error("exact selected composition override requires both dev-after tree and integration commit");
-  }
-  if (devAfterTree) {
-    assert.equal(await value(primary, ["rev-parse", `${integrationCommit}^{tree}`]), devAfterTree);
-    assert.equal(
-      await value(primary, ["show", "-s", "--format=%P", integrationCommit]),
-      `${DEV} ${REVIEWED_RESULT}`,
-    );
-  } else {
+  await git(primary, ["config", "user.name", "Test"]);
+  await git(primary, ["config", "user.email", "test@example.invalid"]);
+  const record = async message => {
+    await git(primary, ["add", "."]); await git(primary, ["commit", "-m", message]);
+    return value(primary, ["rev-parse", "HEAD"]);
+  };
+  await writeFile(path.join(primary, ".gitattributes"), "* -text\n");
+  await writeFile(path.join(primary, "seed.txt"), "seed\n");
+  await mkdir(path.join(primary, "AgentHub/docs/contracts"), { recursive: true });
+  for (const file of SELECTED_DESCENDANT_NORMALIZATION_PATHS) await writeFile(path.join(primary, file), "first\r\nsecond\r\n");
+  const main = await record("synthetic agreed main");
+  await git(primary, ["checkout", "-b", "source"]);
+  await writeFile(path.join(primary, "source.txt"), "complete source work\n");
+  await writeFile(path.join(primary, "binary.dat"), Buffer.from([0, 1, 255, 7]));
+  const sourceResult = await record("synthetic source result");
+  await git(primary, ["checkout", "-b", "survivor", main]);
+  await writeFile(path.join(primary, "survivor.txt"), "before\n");
+  const previousResult = await record("synthetic prior survivor");
+  await git(primary, ["checkout", sourceResult, "--", "source.txt", "binary.dat"]);
+  await writeFile(path.join(primary, "survivor.txt"), "after\n");
+  for (const file of SELECTED_DESCENDANT_NORMALIZATION_PATHS) await writeFile(path.join(primary, file), "first\nsecond\n");
+  for (let i = 1; i <= 5; i++) await writeFile(path.join(primary, `task-${i}.txt`), `independent ${i}\n`);
+  const reviewedResult = await record("synthetic merged source and five contributions");
+  await git(primary, ["checkout", "-b", "synthetic-dev", main]);
+  await writeFile(path.join(primary, "survivor.txt"), "after\n");
+  await writeFile(path.join(primary, "independent.txt"), "outside selected source\n");
+  for (const file of SELECTED_DESCENDANT_NORMALIZATION_PATHS) await writeFile(path.join(primary, file), "first\r\nsecond\r\nindependent later context\r\n");
+  for (let i = 1; i <= 5; i++) await writeFile(path.join(primary, `task-${i}.txt`), `independent ${i}\n`);
+  const dev = await record("synthetic independent dev state");
+  await git(primary, ["checkout", "main"]);
+  let devAfterTree = null;
+  let integrationCommit = null;
+  {
     const index = path.join(root, "dev-after.index");
     const env = { GIT_INDEX_FILE: index };
-    await git(primary, ["read-tree", DEV], { env });
-    for (const [position, file] of (await changedPaths(primary, PREVIOUS_RESULT, REVIEWED_RESULT)).entries()) {
+    await git(primary, ["read-tree", dev], { env });
+    for (const [position, file] of (await changedPaths(primary, previousResult, reviewedResult)).entries()) {
     const [before, reviewed] = await Promise.all([
-      treeEntry(primary, DEV, file),
-      treeEntry(primary, REVIEWED_RESULT, file),
+      treeEntry(primary, dev, file),
+      treeEntry(primary, reviewedResult, file),
     ]);
     if (!reviewed) {
       await git(primary, ["update-index", "--force-remove", "--", file], { env });
@@ -139,7 +148,7 @@ test("historical five-Task proof retains complete source witnesses without apply
     let object = reviewed.object;
     let mode = reviewed.mode;
     if (before && SELECTED_DESCENDANT_NORMALIZATION_PATHS.has(file)) {
-      const { stdout } = await git(primary, ["show", `${DEV}:${file}`], { encoding: "buffer" });
+      const { stdout } = await git(primary, ["show", `${dev}:${file}`], { encoding: "buffer" });
       const normalized = Buffer.from(stdout.toString("binary").replace(/\r\n/g, "\n"), "binary");
       const temporary = path.join(root, `normalized-${position}`);
       await writeFile(temporary, normalized);
@@ -151,22 +160,26 @@ test("historical five-Task proof retains complete source witnesses without apply
     devAfterTree = await value(primary, ["write-tree"], { env });
     integrationCommit = await value(primary, [
       "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
-      "commit-tree", devAfterTree, "-p", DEV, "-p", REVIEWED_RESULT,
+      "commit-tree", devAfterTree, "-p", dev, "-p", reviewedResult,
       "-m", "test: exact normalized squash integration",
     ]);
   }
   await git(primary, ["update-ref", "refs/heads/dev", integrationCommit]);
-  await git(primary, ["update-ref", "refs/heads/main", MAIN]);
+  await git(primary, ["update-ref", "refs/heads/main", main]);
   await git(primary, ["checkout", "main"]);
 
-  const proof = await canonicalProof(primary, path.join(root, "task-data"), integrationCommit, devAfterTree);
-  assert.equal(proof.source.resultCommit, "03d67ba0704cecadd3d4a0eea10ec27a1fe8ba70");
-  assert.equal(proof.survivor.resultCommit, REVIEWED_RESULT);
+  const proof = await canonicalProof(primary, path.join(root, "task-data"), integrationCommit, devAfterTree,
+    { sourceBase: main, sourceResult, previousResult, reviewedResult, dev });
+  assert.equal(proof.source.resultCommit, sourceResult);
+  assert.equal(proof.survivor.resultCommit, reviewedResult);
   assert.deepEqual(proof.sourceWitnesses.map(witness => witness.path).sort(),
     await changedPaths(primary, proof.source.baseCommit, proof.source.resultCommit));
   assert.ok(proof.sourceWitnesses.every(witness => !witness.source || witness.survivor));
   assert.equal(await value(primary, ["status", "--porcelain"]), "");
-  assert.equal(await value(primary, ["rev-parse", "HEAD"]), MAIN);
+  assert.equal(await value(primary, ["rev-parse", "HEAD"]), main);
+  assert.equal(await value(primary, ["rev-parse", "dev"]), dev, "proof must not apply the proposed integration");
+  for (let i = 1; i <= 5; i++) assert.equal(await value(primary, ["show", `dev:task-${i}.txt`]), `independent ${i}`);
+  assert.equal(await value(primary, ["show", "dev:independent.txt"]), "outside selected source");
 });
 
 test("release projection rejects a forged LF disposition with real semantic Git entries", async (t) => {

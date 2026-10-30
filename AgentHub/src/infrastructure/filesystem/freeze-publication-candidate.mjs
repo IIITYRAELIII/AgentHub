@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "./preparation-git-isolation.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { link, lstat, readFile, writeFile, rename, rm } from "node:fs/promises";
@@ -15,7 +16,7 @@ const samePath = (a, b) => process.platform === "win32"
   : path.resolve(a) === path.resolve(b);
 
 async function git(root, args, environment = {}) {
-  return String((await execute("git", args, {
+  return String((await execute("git", ownedGitArguments(args), {
     cwd: root, env: { ...process.env, ...environment }, windowsHide: true,
     maxBuffer: Infinity, encoding: "utf8",
   })).stdout).trimEnd();
@@ -69,6 +70,7 @@ async function persistChangelogPayload(layout, content, expectedHash) {
 export async function freezePreparedPublicationCandidate({
   layout, marker, expectedPlanRevision, expectedPreparedHead, workspaceId,
   changelogContent, reusePersistedChangelog = false, releaseDate = new Date(), releaseType = "patch",
+  expectedVersion = undefined,
   runtimeRoot = defaultRuntimeRoot(),
   validateBeforeCommit = async () => {}, onPhase = async () => {},
 }) {
@@ -79,6 +81,9 @@ export async function freezePreparedPublicationCandidate({
   if (digest(manifestBytes) !== checkpoint.manifestHash) throw new Error("prepared release manifest digest changed");
   let manifest = JSON.parse(manifestBytes.toString("utf8"));
   const priorFreeze = checkpoint.publicationFreeze;
+  if (priorFreeze && expectedVersion !== undefined && priorFreeze.releaseVersion !== expectedVersion) {
+    throw new Error("publication version differs from the original frozen intent");
+  }
   const callerSuppliedChangelog = changelogContent == null ? null : Buffer.from(changelogContent);
   const callerSuppliedChangelogHash = callerSuppliedChangelog === null ? null : digest(callerSuppliedChangelog);
   let suppliedChangelog = callerSuppliedChangelog;
@@ -170,6 +175,7 @@ export async function freezePreparedPublicationCandidate({
     const changelogPayloadFile = await persistChangelogPayload(layout, suppliedChangelog, suppliedChangelogHash);
     const versionState = await inspectAgentHubReleaseVersion({
       root: path.join(root, "AgentHub"), now: releaseDate, releaseType,
+      ...(expectedVersion !== undefined ? { expectedVersion } : {}),
     });
     // This is a frozen expectation, not a reservation or allocation. The
     // installation owner compares it again under its existing lease before

@@ -24,6 +24,30 @@ import { captureRuntimeReleaseBinding } from "../../src/infrastructure/filesyste
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+test("prepared runtime ships the shared Git policy and refuses a missing policy before dependency work", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const module = "src/infrastructure/filesystem/preparation-git-isolation.mjs";
+  const asset = "src/infrastructure/filesystem/git-invocation-policy.json";
+  await mkdir(path.dirname(path.join(sourceRoot, module)), { recursive: true });
+  for (const file of [module, asset]) await cp(path.join(ROOT, file), path.join(sourceRoot, file));
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "git-policy-companion" });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  const entry = manifest.files.find(value => value.path.replaceAll("\\", "/") === asset);
+  assert.ok(entry);
+  const bytes = await readFile(path.join(sourceRoot, asset));
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, asset)), bytes);
+  assert.equal(entry.sha256, createHash("sha256").update(bytes).digest("hex"));
+  const consumer = await import(pathToFileURL(path.join(prepared.releaseRoot, module)).href);
+  assert.deepEqual(consumer.ownedGitArguments(["status"], { platform: "win32" }), ["-c", "core.longpaths=true", "status"]);
+  await rm(path.join(sourceRoot, asset));
+  let dependencyCalls = 0;
+  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "missing-git-policy",
+    installProductionDependencies: async () => { dependencyCalls += 1; } }), /Runtime module asset is missing/u);
+  assert.equal(dependencyCalls, 0);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), { code: "ENOENT" });
+});
+
 test("prepared runtime retains the Codex custody companion and refuses its absence", async t => {
   const { sourceRoot, runtimeRoot } = await fixture();
   t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
@@ -735,7 +759,7 @@ test("deployRuntime restores a missing RuntimeHost without changing user data", 
   const configFile = path.join(runtimeRoot, "config.json");
   const journalFile = path.join(runtimeRoot, "data", "journal.sqlite");
   await mkdir(path.dirname(journalFile), { recursive: true });
-  await writeFile(configFile, '{"provider":"codex","customSetting":true}\n');
+  await writeFile(configFile, '{"provider":"codex","customSetting":true,"usageSyncServerUrl":""}\n');
   await writeFile(journalFile, "retained journal bytes");
   const configBefore = await readFile(configFile);
   const journalBefore = await readFile(journalFile);

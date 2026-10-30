@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { RUNTIME_HOST_SOURCE_INPUTS } from "../process/runtime-host-builder.mjs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -50,7 +51,9 @@ export function isRuntimeSourceModule(relative) {
 
 export function isRuntimeSourceFile(relative) {
   const file = normalizedRelative(relative);
-  return RUNTIME_TOP_LEVEL_FILES.has(file) || file.startsWith("assets/")
+  return RUNTIME_TOP_LEVEL_FILES.has(file) || RUNTIME_HOST_SOURCE_INPUTS.includes(file) || file.startsWith("assets/")
+    // This declared module companion is also required by native source closure.
+    || file === "src/infrastructure/filesystem/git-invocation-policy.json"
     || RELEASE_PROGRESS_RUNTIME_FILES.has(file) || isRuntimeSourceModule(file);
 }
 

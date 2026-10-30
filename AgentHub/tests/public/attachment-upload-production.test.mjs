@@ -200,3 +200,93 @@ test("production legacy upload completion after cancel cannot admit a message", 
     assert.equal((await persisted(page))[0].recoveryRequestId, "legacy-original-id");
   } finally { await browser.close(); }
 });
+
+async function holdStorageCompletion(page, allWrites = false) {
+  await page.evaluate((allWrites) => {
+    const original = IDBDatabase.prototype.transaction;
+    window.__attemptArchiveScans = 0;
+    IDBDatabase.prototype.transaction = function (...args) {
+      const tx = original.apply(this, args);
+      if (this.name !== "agent-hub-composer-files-v1" || args[1] !== "readwrite") return tx;
+      let callback;
+      let archive = false;
+      Object.defineProperty(tx, "oncomplete", {
+        configurable: true, get: () => callback, set: value => { callback = value; },
+      });
+      tx.addEventListener("complete", event => {
+        if (!allWrites && !archive) callback?.call(tx, event);
+      });
+      const objectStore = tx.objectStore.bind(tx);
+      tx.objectStore = (...names) => {
+        const store = objectStore(...names);
+        const cursor = store.openCursor.bind(store);
+        store.openCursor = (...options) => {
+          archive = true; window.__attemptArchiveScans += 1;
+          return cursor(...options);
+        };
+        return store;
+      };
+      return tx;
+    };
+  }, allWrites);
+}
+
+test("production attempt metadata avoids a stalled archive while three original PNGs reach message admission", async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  page.setDefaultTimeout(15000);
+  try {
+    const issues = await openFixture(page, { chunkedUpload: true });
+    await page.locator("[data-composer-input]").fill("Three own fixture screenshots");
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=", "base64");
+    await page.locator("[data-file-input]").setInputFiles([1, 2, 3].map(n => ({
+      name: `own-${n}.png`, mimeType: "image/png", buffer: png,
+    })));
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachments] [data-attachment-index]").length === 3);
+    const originals = (await persisted(page))[0].attachments.map(file => file.uploadId);
+    await holdStorageCompletion(page);
+    await page.evaluate(() => localStorage.setItem("fixture:send-mode", "accept"));
+    await page.locator("[data-composer]").evaluate(form => form.requestSubmit());
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]")
+      .some(entry => entry.action === "send-message") || document.querySelector("[data-upload-resume]"));
+    const sends = await bridgeCalls(page, "send-message");
+    assert.equal(sends.length, 1, "unrelated archive traversal cannot prevent these prepared files from sending");
+    assert.equal(await page.evaluate(() => window.__attemptArchiveScans), 0);
+    const uploads = await page.evaluate(() => JSON.parse(localStorage.getItem("fixture:upload-log") ?? "[]"));
+    assert.deepEqual(uploads.filter(entry => entry.method === "POST" && !entry.id).map(entry => entry.value.uploadId), originals);
+    assert.equal(sends[0].params.attachments.length, 3);
+    assert.deepEqual(issues, []);
+    if (process.env.AGENT_HUB_UPLOAD_QA_DIR) await page.screenshot({ path: path.join(process.env.AGENT_HUB_UPLOAD_QA_DIR, "attempt-three-png-after.png") });
+  } finally { await browser.close(); }
+});
+
+test("production paused storage timeout retains its file and never labels it a Hub disconnection", async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  page.setDefaultTimeout(15000);
+  try {
+    await openFixture(page, { chunkedUpload: true });
+    await page.evaluate(() => window.AgentHub.showSelectedTask());
+    await attach(page, 4096);
+    const original = (await persisted(page))[0].attachments[0];
+    await holdStorageCompletion(page, true);
+    await page.locator("[data-composer]").evaluate(form => form.requestSubmit());
+    await page.locator("[data-upload-resume]").waitFor({ state: "visible" });
+    const paused = await page.getByText(/Загрузка приостановлена:/u).innerText();
+    assert.match(paused, /локальное хранилище/u);
+    assert.doesNotMatch(paused, /Нет связи с Agent Hub/u);
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    const retained = await page.evaluate(manifest => {
+      const record = AgentHubComposerFiles.resolve(manifest);
+      return { uploadId: record?.uploadId, size: record?.blob.size,
+        pendingId: record?.pendingUploadAttempt?.uploadAttemptId, durable: record?.durable };
+    }, original);
+    assert.equal(retained.uploadId, original.uploadId);
+    assert.equal(retained.pendingId, original.uploadId);
+    assert.equal(retained.size, 4096);
+    assert.equal(retained.durable, false, "an unconfirmed write cannot promise reload recovery");
+    const uploads = await page.evaluate(() => JSON.parse(localStorage.getItem("fixture:upload-log") ?? "[]"));
+    assert.equal(uploads.filter(entry => entry.method === "POST" && !entry.id).length, 0);
+    if (process.env.AGENT_HUB_UPLOAD_QA_DIR) await page.screenshot({ path: path.join(process.env.AGENT_HUB_UPLOAD_QA_DIR, "attempt-storage-error-after.png") });
+  } finally { await browser.close(); }
+});

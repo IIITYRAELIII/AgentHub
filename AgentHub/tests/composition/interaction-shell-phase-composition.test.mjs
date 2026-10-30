@@ -156,6 +156,7 @@ function mcpTaskLaunchFixture() {
       Object.assign(operations.get(requestId), { status: "failed", error: error.message });
     },
     mcpOperations: () => [...operations.values()],
+    mcpOperation: requestId => operations.get(requestId) ?? null,
     runMutation: async (operation) => operation(),
     mutationDiagnostics: () => ({ pending: 0 }),
   };

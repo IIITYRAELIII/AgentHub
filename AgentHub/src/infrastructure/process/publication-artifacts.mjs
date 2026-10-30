@@ -269,6 +269,9 @@ export function createPublicationArtifactSteps({
     if (has("Установка расширения VS Code")) {
       await ensure(identity, "extension", async (output) => {
         await cp(path.join(sourceRoot, "install.py"), path.join(output, "install.py"));
+        const gitPolicy = "src/infrastructure/filesystem/git-invocation-policy.json";
+        await mkdir(path.dirname(path.join(output, gitPolicy)), { recursive: true });
+        await cp(path.join(sourceRoot, gitPolicy), path.join(output, gitPolicy));
         await cp(path.join(sourceRoot, "VSCodeExtension"), path.join(output, "VSCodeExtension"), {
           recursive: true, filter: (file) => !["node_modules", "__pycache__"].includes(path.basename(file)) && !file.endsWith(".vsix"),
         });

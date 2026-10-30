@@ -6,6 +6,9 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
+import { migrateUsageSyncServerSetting } from "../../src/infrastructure/filesystem/usage-sync-settings-migration.mjs";
+import { runtimeLayout, runtimeReleaseDirectory } from "../../src/infrastructure/filesystem/runtime-layout.mjs";
 
 import { taskRepositoryKey } from "../../src/domain/task-git-reference.mjs";
 import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
@@ -294,6 +297,7 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
   assert.equal(config.codexRateLimitPolling, false);
   assert.equal(config.claudeRateLimitPolling, false);
   assert.equal(config.createInitialThreadOnStartup, false);
+  assert.equal(config.usageSyncServerUrl, "", "isolated config explicitly disables external usage sync");
   assert.throws(
     () => testContourConfig({ paths, telegramApiBaseUrl: "https://api.telegram.org" }),
     /must use 127\.0\.0\.1/u,
@@ -1010,6 +1014,64 @@ test("Test Contour component is default-off and read from production config", as
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("candidate preparation preserves enrolled isolated data with disabled usage sync before install and on repeat", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-usage-setting-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const paths = testContourPaths(root);
+  const layout = runtimeLayout(root);
+  const sourceRoot = path.join(os.tmpdir(), "agent-hub-contour-usage-source");
+  await mkdir(paths.dataDir, { recursive: true });
+  const preserved = new Map([
+    ["usage-sync-identity.json", Buffer.from(JSON.stringify({ schemaVersion: 1, deviceId: "synthetic-contour", fixture: true }))],
+    ["usage-sync-cursor.json", Buffer.from('{"revision":42}\n')],
+    ["journal.sqlite", Buffer.concat([Buffer.from("isolated journal bytes"), Buffer.from([0, 1])])],
+  ]);
+  for (const [name, bytes] of preserved) await writeFile(path.join(paths.dataDir, name), bytes);
+  const defaultFile = "src/domain/default-usage-sync-server.mjs";
+  const previousRoot = runtimeReleaseDirectory(root, "previous");
+  await mkdir(path.dirname(path.join(previousRoot, defaultFile)), { recursive: true });
+  const previousDefault = Buffer.from('export const DEFAULT_USAGE_SYNC_SERVER_URL = "";\n');
+  await writeFile(path.join(previousRoot, defaultFile), previousDefault);
+  await writeFile(path.join(previousRoot, "runtime-manifest.json"), JSON.stringify({
+    releaseId: "previous", files: [{ path: defaultFile, bytes: previousDefault.length,
+      sha256: createHash("sha256").update(previousDefault).digest("hex") }],
+  }));
+  const original = Buffer.from(JSON.stringify({ dataDir: paths.dataDir, preservedOption: { keep: true } }));
+  await writeFile(paths.configFile, original);
+  // The production migration remains fail-closed for an enrolled installation
+  // with no explicit setting, remote address or verified nonempty old default.
+  await assert.rejects(migrateUsageSyncServerSetting({ layout, previousReleaseId: "previous", environment: {} }),
+    /Existing usage sync enrollment requires its previous server setting/);
+  assert.deepEqual(await readFile(paths.configFile), original);
+  let installs = 0;
+  const prepare = () => prepareTestContourCandidate({
+    root, sourceRoot,
+    prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "exact-dev-head" }),
+    deploy: async () => {
+      installs++;
+      assert.deepEqual(await migrateUsageSyncServerSetting({ layout, previousReleaseId: "previous", environment: {} }),
+        { migrated: false, reason: "configured" });
+      const configured = JSON.parse(await readFile(paths.configFile, "utf8"));
+      assert.equal(configured.usageSyncServerUrl, "");
+      assert.deepEqual(configured.preservedOption, { keep: true });
+      assert.equal(configured.dataDir, paths.dataDir);
+      return { releaseId: `candidate-${installs}`, releaseRoot: path.join(root, "releases", `candidate-${installs}`) };
+    },
+  });
+  assert.equal((await prepare()).releaseId, "candidate-1");
+  const once = await readFile(paths.configFile);
+  assert.equal((await prepare()).releaseId, "candidate-2");
+  assert.deepEqual(await readFile(paths.configFile), once, "repeat preserves the explicit config bytes");
+  for (const recording of [null, { root: path.join(root, "recording"), projectRoot: paths.projectRoot, projects: [] }]) {
+    const generated = testContourConfig({ paths, telegramApiBaseUrl: "http://127.0.0.1:12345", recording });
+    assert.equal(generated.usageSyncServerUrl, "");
+    await writeFile(paths.configFile, JSON.stringify(generated));
+    assert.equal((await migrateUsageSyncServerSetting({ layout, previousReleaseId: "previous", environment: {} })).reason, "configured");
+  }
+  for (const [name, bytes] of preserved) assert.deepEqual(await readFile(path.join(paths.dataDir, name)), bytes);
+  await assert.rejects(readFile(path.join(paths.dataDir, "usage-sync-remote.json")), { code: "ENOENT" });
 });
 
 test("candidate preparation deploys only into the isolated runtime root", async () => {
