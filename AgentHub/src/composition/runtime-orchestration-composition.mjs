@@ -397,6 +397,7 @@ export function createRuntimeOrchestrationComposition({
       taskReadStateStore,
       runtimeStateStore,
       commandTrace,
+      maintenanceOperations: restartRequestService.operationStore,
       updateOffset: () => hostState.updateOffset,
       setWaiting: (value) => restartRequestService.setWaiting(value),
       stopRuntimeTimers: timers.stopRuntimeTimers,

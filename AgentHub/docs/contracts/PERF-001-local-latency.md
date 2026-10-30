@@ -802,3 +802,20 @@ Diagnostic sink failure cannot change outcomes. These measurements do not remove
 proofs, cache authority, optimize Await or establish production speedup. The next
 otherwise-required lifecycle check must execute the reviewed instrumented owner;
 merely storing this code in a Task result does not instrument an older runtime.
+
+## Repeated runtime directory protection (HUB-376)
+
+The existing directory-security owner may avoid a repeated icacls invocation
+only after fresh exact root DACL and physical identity proof. The requested
+account resolves to the same SID used by the existing grant arguments; exact
+protected/canonical Allow FullControl OI/CI with unrestricted propagation for
+that account, SYSTEM and Administrators is required, with no extra, inherited
+or deny ACE. Unknown/changed proof takes the original apply/error path. This is
+not a saved stamp, recursive descendant audit or a change to config-file ACL.
+Normal newly created files/directories must still inherit the intended grants.
+
+Package shutdown retains existing original-ID restart phase spans; package
+preparation, backup, installer and readiness are real independent work, not
+queue/lock wait merely because they take time. Private fixture wall time and
+saved ACL calls do not establish production speedup or fixed downtime. Unobserved
+cross-process stages remain unmeasured; no inferred CPU/disk attribution.

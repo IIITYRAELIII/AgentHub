@@ -1,11 +1,14 @@
 """Thin stdlib bootstrap for a versioned, checksum-pinned ready Hub package.
 
-No Git, npm, build, provider operation, runtime stop or automatic restart.
+No Git, npm, build, provider operation or automatic runtime stop. Ordinary
+install/rollback never starts Hub. The explicit package-update mode waits for a
+user-stopped legacy cohort, then delegates backup/install/start to RuntimeHost.
 Copy only this file and its installation guide to Utilities at managed cutover.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -13,6 +16,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -297,6 +301,58 @@ def extract_verified(archive: Path, expected_sha256: str, destination: Path) -> 
     return descriptor
 
 
+def update_status(runtime_root: Path, operation_id: str) -> dict:
+    """Bounded read projection only; this never grants retry/install authority."""
+    with sqlite3.connect((runtime_root/"data/runtime.sqlite").as_uri()+"?mode=ro", uri=True, timeout=0) as database:
+        row = database.execute("SELECT operation_json FROM maintenance_operations WHERE operation_id = ?", (operation_id,)).fetchone()
+    if row is None:
+        return {"operationId": operation_id, "state": "unknown", "effectsReplayed": False}
+    original = json.loads(row[0])
+    if original.get("operationId") != operation_id or original.get("kind") != "restart":
+        raise ValueError("Different original maintenance identity")
+    return {"operationId": operation_id, "status": original.get("status"), "phase": original.get("phase"),
+            "outcome": original.get("outcome"), "effectsReplayed": False}
+
+
+def prepare_update(args) -> None:
+    # One retained transport, not another updater registry. All lifecycle writes
+    # and effects belong to the existing maintenance/restart/Host owners.
+    identity = hashlib.sha256((str(args.runtime_root.resolve())+"\0"+args.operation_id).encode()).hexdigest()[:32]
+    cache = args.scratch_root/("agenthub-update-"+identity)
+    if cache.exists():
+        prior_file = cache/"update-request.json"
+        if prior_file.exists():
+            prior = json.loads(prior_file.read_text(encoding="utf-8"))
+            if (prior.get("tag") != args.release or prior.get("operationId") != args.operation_id
+                    or Path(prior.get("runtimeRoot", "")).resolve() != args.runtime_root.resolve()):
+                raise ValueError("Original update selection changed; no new effects were submitted")
+        print(json.dumps(update_status(args.runtime_root.resolve(), args.operation_id)))
+        return  # Never re-launch a possibly admitted original.
+    cache.mkdir()
+    archive, tag, selected = fetch_release(args.release, cache)
+    if args.sha256 and args.sha256 != selected["sha256"]:
+        raise ValueError("Selected release differs from the additional SHA-256 pin")
+    package = cache/"verified"
+    inner = extract_verified(archive, selected["sha256"], package)
+    verify_release_descriptor(inner, package, selected)
+    request = {"schema": 1, "operationId": args.operation_id, "runtimeRoot": str(args.runtime_root.resolve()),
+               "packageRoot": str(package.resolve()), "tag": tag, "archive": str(archive.resolve()),
+               "descriptor": str((cache/"release.json").resolve()), "installer": str(Path(__file__).resolve())}
+    request_file = cache/"update-request.json"
+    with request_file.open("x", encoding="utf-8") as output:
+        json.dump(request, output); output.flush(); os.fsync(output.fileno())
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("Node.js with node:sqlite is required")
+    entry = package/"runtime/src/runtime/runtime-package-handoff.mjs"
+    result = subprocess.run([node, str(entry), "bootstrap-start", str(request_file)], check=False)
+    if result.returncode:
+        raise RuntimeError("Update admission was not confirmed; retained original must be read, not re-launched")
+    print("Keep the retained package/backup until the original update completes. "
+          "A legacy updater waits for your explicit old-app stop; a capable installed Hub uses its ordinary graceful restart owner.")
+    print(json.dumps({"operationId": args.operation_id, "retainedPackage": str(cache), "effectsReplayed": False}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
@@ -307,16 +363,31 @@ def main():
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--scratch-root", type=Path, required=True, help="Private temporary area on the intended volume")
     parser.add_argument("--rollback", action="store_true")
+    parser.add_argument("--inspect-package", action="store_true", help="Verify/extract public input only; no runtime effect")
+    parser.add_argument("--prepare-update", action="store_true", help="Arm the package-side legacy updater; the user stops old Hub")
+    parser.add_argument("--update-status", action="store_true", help="Read the exact original without replaying effects")
+    parser.add_argument("--operation-id", help="Original stable identity for package update/readback")
     args = parser.parse_args()
     if not args.release and not args.sha256:
         parser.error("--sha256 is required with --url or --archive")
     if args.sha256 and not re.fullmatch(r"[0-9a-f]{64}", args.sha256):
         parser.error("--sha256 must be 64 lowercase hexadecimal characters")
+    if sum((args.rollback, args.inspect_package, args.prepare_update, args.update_status)) > 1:
+        parser.error("Choose one installer operation")
+    if args.prepare_update or args.update_status:
+        if not args.release or args.release == "latest" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.operation_id or ""):
+            parser.error("Update requires an exact --release and original --operation-id")
     if os.name != "nt":
         raise RuntimeError("Ready packages currently support Windows x64 only")
     if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
         raise ValueError("Runtime must be outside the disposable package scratch root")
+    if args.update_status:
+        print(json.dumps(update_status(args.runtime_root.resolve(), args.operation_id)))
+        return
     args.scratch_root.mkdir(parents=True, exist_ok=True)
+    if args.prepare_update:
+        prepare_update(args)
+        return
     with tempfile.TemporaryDirectory(prefix="agenthub-package-", dir=windows_filesystem_path(args.scratch_root)) as temporary:
         scratch = Path(temporary)
         archive = args.archive
@@ -334,6 +405,13 @@ def main():
         descriptor = extract_verified(archive, checksum, scratch/"verified")
         if selected:
             verify_release_descriptor(descriptor, scratch/"verified", selected)
+        if args.inspect_package:
+            manifest = (scratch/"verified/runtime/runtime-manifest.json").read_bytes()
+            print(json.dumps({"schema": 1, "kind": "verified-package-input", "releaseId": descriptor["releaseId"],
+                              "packageManifestSha256": file_hash(scratch/"verified/package-manifest.json"),
+                              "runtimeManifestSha256": hashlib.sha256(manifest).hexdigest(),
+                              "runtimeManifestBase64": base64.b64encode(manifest).decode("ascii")}))
+            return
         node = shutil.which("node")
         if not node:
             raise RuntimeError("Node.js runtime with node:sqlite is required; no npm or compiler is needed")

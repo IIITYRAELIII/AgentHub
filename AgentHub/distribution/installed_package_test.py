@@ -10,12 +10,63 @@ import tempfile
 import unittest
 
 from install_release import extract_verified, file_hash
+from build_package import build_package
 
 ROOT = Path(__file__).resolve().parent
 
 
 @unittest.skipUnless(os.name == "nt", "Windows native RuntimeHost packaging contract")
 class InstalledPackageTests(unittest.TestCase):
+    def test_exact_prepared_parent_is_retained_for_public_update_and_changed_parent_refuses(self):
+        with tempfile.TemporaryDirectory(prefix="hub-prepared-public-", dir=os.environ.get("AGENT_HUB_TEST_TEMP")) as temporary:
+            root = Path(temporary)
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENT_HUB_", "CODEX_", "CLAUDE_", "ANTHROPIC_", "GIT_"))
+                   and k not in {"NODE_OPTIONS", "NODE_PATH"}}
+            def run(args, success=True):
+                result = subprocess.run(args, env=env, capture_output=True, encoding="utf-8", timeout=90)
+                self.assertEqual(result.returncode == 0, success, result.stdout+result.stderr)
+                return result
+            output = run(["node", str(ROOT/"prepare-fixture.mjs"), str(root/"area"), "prepared-parent",
+                          "synthetic update body", "a"*40, "2.1.0"])
+            prepared = Path(json.loads(output.stdout.splitlines()[-1])["releaseRoot"])
+            runtime = root/"area/build"
+            private_raw = (prepared/"runtime-manifest.json").read_bytes()
+            # Actual existing owner creates only this isolated fixture's original
+            # prepared installation; public update below uses the recipient CLI.
+            setup = root/"setup.mjs"
+            setup.write_text("import {installPreparedRuntime} from "+json.dumps((prepared/"src/runtime/runtime-manager.mjs").as_uri())+
+                             ";await installPreparedRuntime({runtimeRoot:"+json.dumps(str(runtime))+
+                             ",releaseId:'prepared-parent'});\n", encoding="utf-8")
+            run(["node", str(setup)])
+            config = runtime/"config.json"
+            config.write_text('{"privateMarker":"keep","usageSyncServerUrl":""}', encoding="utf-8")
+            (runtime/"data").mkdir(exist_ok=True)
+            original = runtime/"data/original.keep"
+            original.write_bytes(b"UNKNOWN original; never replay")
+            license_file, notices = root/"LICENSE", root/"NOTICES"
+            license_file.write_text("Synthetic fixture license", encoding="utf-8")
+            notices.write_text("Synthetic fixture notices", encoding="utf-8")
+            archive = root/"package.zip"
+            result = build_package(prepared, license_file, notices, "a"*40, archive)
+            command = [sys.executable, "-X", "utf8", "-B", str(ROOT/"install_release.py"), "--archive", str(archive),
+                       "--sha256", result["sha256"], "--runtime-root", str(runtime), "--scratch-root", str(root/"scratch")]
+            prior_config, prior_pointer = config.read_bytes(), (runtime/"current.json").read_bytes()
+            run(command)
+            self.assertEqual((prepared/"runtime-manifest.json").read_bytes(), private_raw)
+            self.assertEqual((runtime/"current.json").read_bytes(), prior_pointer)
+            self.assertEqual(config.read_bytes(), prior_config)
+            self.assertEqual(original.read_bytes(), b"UNKNOWN original; never replay")
+            changed = json.loads(private_raw)
+            changed["createdAt"] = "foreign changed parent"
+            changed_raw = json.dumps(changed).encode()
+            (prepared/"runtime-manifest.json").write_bytes(changed_raw)
+            refused = run(command, success=False)
+            self.assertRegex(refused.stderr, "downgrade or reuse|different bytes")
+            self.assertEqual((prepared/"runtime-manifest.json").read_bytes(), changed_raw)
+            self.assertEqual((runtime/"current.json").read_bytes(), prior_pointer)
+            self.assertEqual(config.read_bytes(), prior_config)
+            self.assertEqual(original.read_bytes(), b"UNKNOWN original; never replay")
+
     def test_real_preparation_native_host_install_update_rollback_and_running_refusal(self):
         with tempfile.TemporaryDirectory(prefix="hub-installed-package-", dir=os.environ.get("AGENT_HUB_TEST_TEMP")) as temporary:
             root = Path(temporary)

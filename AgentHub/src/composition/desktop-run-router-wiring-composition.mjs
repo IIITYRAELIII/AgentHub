@@ -264,6 +264,7 @@ export function createDesktopRunRouterWiring({
       statusDetails: desktop.statusDetails,
       speakLastAnswer: desktop.speakLastAnswer,
       restartServer: desktop.restartServer,
+      restartPackage: desktop.restartPackage,
       setAutostart: services.setAutostart,
       updateServerConfiguration: services.updateServerConfiguration,
       startProviderLogin: services.startProviderLogin,

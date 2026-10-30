@@ -42,6 +42,7 @@ export class RuntimeRestartController {
     logger = console,
     measure = (_id, _stage, action) => action(),
     captureException = () => false,
+    packageHandoff = null,
   } = {}) {
     for (const [name, value] of Object.entries({
       getRequest, updateOffset, hasBlockingWork, setWaiting, updateMessage, saveState,
@@ -55,7 +56,7 @@ export class RuntimeRestartController {
       getRequest, updateOffset, hasBlockingWork, setWaiting, updateMessage, saveState,
       resources, beginStopping, stopTimers, stopMedia, resumeAfterAbort, launchReplacement,
       recoverPrevious, abortRestart, finishSuccessfulReplacement, isStopping, logger,
-      captureException, measure,
+      captureException, measure, packageHandoff,
     });
   }
 
@@ -111,6 +112,31 @@ export class RuntimeRestartController {
     } catch (error) {
       if (timedOut(error)) return this.#halt(error, error?.phase ?? "prepare");
       return this.#abort(error, error?.phase ?? "prepare", true);
+    }
+
+    if (request.metadata?.packageHandoff) {
+      // This branch cannot recover the old in-process stores after finalization.
+      // The independent owned Host waits actual process/job retirement, not just
+      // the instance lock, before running the unchanged stopped-only installer.
+      try {
+        if (!this.packageHandoff) throw new Error("Package handoff owner is unavailable");
+        await measure("package-arm", () => this.packageHandoff.arm(request));
+        const close = await measure("package-close", () => this.resources.close({
+          label: "Package restart close failed", reason: "package-handoff",
+        }));
+        if (failed(close)) throw lifecycleFailure("package-close", close);
+        const finalize = await measure("package-finalize", () => this.resources.finalize({
+          label: "Package restart finalize failed",
+        }));
+        if (failed(finalize)) throw lifecycleFailure("package-finalize", finalize);
+        await this.packageHandoff.writersClosed(request);
+        const release = await this.resources.releaseLock({ label: "Package restart lock release failed" });
+        if (failed(release)) throw lifecycleFailure("package-release-lock", release);
+        await this.finishSuccessfulReplacement();
+        return { status: "handed-off", operationId: request.operationId };
+      } catch (error) {
+        return this.#halt(error, error?.phase ?? "package-handoff");
+      }
     }
 
     let lockReleased = false;
@@ -173,7 +199,7 @@ export class RuntimeRestartController {
 
   #halt(error, phase) {
     this.#capture(error, phase);
-    this.logger.error(`Runtime restart halted after ${phase} timeout; the instance lock remains held.`);
+    this.logger.error(`Runtime restart halted after ${phase}; original ownership requires reconciliation.`);
     return { status: "failed", phase, error };
   }
 

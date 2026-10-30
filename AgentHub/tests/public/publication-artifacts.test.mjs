@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,12 +16,17 @@ import { artifactVersionIdentity } from "../../src/domain/agent-hub-version.mjs"
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const save = async (file, value) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, value); };
 
-async function fixture(t, { runtimePublication = null } = {}) {
+async function fixture(t, { runtimePublication = null, relocated = false } = {}) {
   const semantic = runtimePublication?.version.includes("+build.") ? artifactVersionIdentity(runtimePublication.version) : null;
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-artifacts-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceRoot = path.join(root, "source");
-  const runtimeRoot = path.join(root, "runtime");
+  const physicalRuntimeRoot = path.join(root, "runtime");
+  const runtimeRoot = relocated ? path.join(root, "runtime-alias") : physicalRuntimeRoot;
+  if (relocated) {
+    await mkdir(physicalRuntimeRoot);
+    await symlink(physicalRuntimeRoot, runtimeRoot, process.platform === "win32" ? "junction" : "dir");
+  }
   const home = path.join(root, "home");
   const pkg = { publisher: "test", name: "hub", version: "1.0.0" };
   await save(path.join(sourceRoot, "VSCodeExtension", "package.json"), JSON.stringify(pkg));
@@ -101,10 +106,14 @@ async function fixture(t, { runtimePublication = null } = {}) {
         const version = semantic?.publicVersion ?? "2026.9.16";
         const bytes = JSON.stringify({ name: "agent-hub", version });
         await save(path.join(releaseRoot, "package.json"), bytes);
+        const extra = relocated ? { "AgentHub.RuntimeHost.exe": "synthetic; never execute", "agent-hub-main.mjs": "export {};\n" } : {};
+        for (const [name, value] of Object.entries(extra)) await save(path.join(releaseRoot, name), value);
         await save(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify({ releaseId, version,
           ...(semantic ? semantic : {}),
           ...(expectedReleaseVersion ? { releaseVersion: state.overrideRuntimeVersion ?? expectedReleaseVersion } : {}), publicationRevision, sourceRoot,
-          files: [{ path: "package.json", bytes: Buffer.byteLength(bytes), sha256: hash(bytes) }] }));
+          files: [{ path: "package.json", bytes: Buffer.byteLength(bytes), sha256: hash(bytes) },
+            ...Object.entries(extra).map(([name, value]) => ({ path: name, bytes: Buffer.byteLength(value), sha256: hash(value) }))] }));
+        if (state.afterPrepare) await state.afterPrepare();
         if (state.losePreparedReply) { state.losePreparedReply = false; throw new Error("lost prepared reply"); }
       },
       installRuntimeImpl: async ({ releaseId }) => {
@@ -128,11 +137,102 @@ async function fixture(t, { runtimePublication = null } = {}) {
       finalizePublication: async () => ({ status: "completed" }),
     };
   };
-  return { root, sourceRoot, runtimeRoot, home, events, state, create };
+  return { root, sourceRoot, runtimeRoot, physicalRuntimeRoot, home, events, state, create };
 }
 
 const frozenRuntime = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2,
   sourceCommit: "a".repeat(40), version: "2026.9.16.7" };
+
+test("relocated artifact owner supplies physical receipt and body to the unchanged Python packager", async t => {
+  const f = await fixture(t, { runtimePublication: frozenRuntime, relocated: true });
+  const owner = f.create();
+  await publishChanged(["--full-tests"], owner);
+  const identity = (await owner.journal.read()).identity;
+  const prepared = await owner.artifacts.preparedRuntimeReceipt(identity);
+  const original = await readFile(prepared.receiptFile);
+  const license = path.join(f.root, "LICENSE"), notices = path.join(f.root, "NOTICES");
+  await writeFile(license, "synthetic license"); await writeFile(notices, "synthetic notices");
+  const script = "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import build_release as b; i,p,r=b._inputs(Path(sys.argv[2]),sys.argv[3],sys.argv[4],sys.argv[5],Path(sys.argv[6]),Path(sys.argv[7])); print(i['preparedReceiptSha256'])";
+  const checkInput = () => promisify(execFile)(process.platform === "win32" ? "python.exe" : "python3", [
+    "-X", "utf8", "-c", script, path.resolve(import.meta.dirname, "../../distribution"), prepared.receiptFile,
+    prepared.receiptSha256, frozenRuntime.sourceCommit, frozenRuntime.version, license, notices,
+  ], { encoding: "utf8", windowsHide: true, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+  const { stdout } = await checkInput();
+  assert.equal(stdout.trim(), prepared.receiptSha256);
+  assert.equal(prepared.receipt.releaseRoot, path.join(await realpath(f.physicalRuntimeRoot), "releases", f.state.release));
+  assert.equal(prepared.receiptFile, await realpath(prepared.receiptFile));
+  assert.deepEqual(await f.create().artifacts.preparedRuntimeReceipt(identity), prepared);
+  assert.deepEqual(await readFile(prepared.receiptFile), original);
+  assert.equal(f.events.filter(x => x === "runtime build").length, 1);
+  // Resolving the configured root must not erase an unexpected body junction.
+  const retainedBody = `${prepared.receipt.releaseRoot}-retained`;
+  await rename(prepared.receipt.releaseRoot, retainedBody);
+  await symlink(retainedBody, prepared.receipt.releaseRoot, process.platform === "win32" ? "junction" : "dir");
+  assert.equal((await owner.artifacts.preparedRuntimeReceipt(identity)).receipt.releaseRoot, prepared.receipt.releaseRoot);
+  await assert.rejects(checkInput(), /Reparse checkpoint path refused/u);
+  await unlink(prepared.receipt.releaseRoot); await rename(retainedBody, prepared.receipt.releaseRoot);
+  const receiptNamespace = path.dirname(path.dirname(prepared.receiptFile));
+  const retainedNamespace = `${receiptNamespace}-retained`;
+  await rename(receiptNamespace, retainedNamespace);
+  await symlink(retainedNamespace, receiptNamespace, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(checkInput(), /Reparse checkpoint path refused/u);
+  await unlink(receiptNamespace); await rename(retainedNamespace, receiptNamespace);
+  const foreign = path.join(f.root, "foreign"); await mkdir(foreign);
+  await unlink(f.runtimeRoot);
+  await symlink(foreign, f.runtimeRoot, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(owner.artifacts.preparedRuntimeReceipt(identity), /runtime root changed/u);
+  assert.deepEqual(await readdir(foreign), []);
+  assert.deepEqual(await readFile(prepared.receiptFile), original);
+});
+
+test("physical runtime root replacement and old alias receipts refuse without rewriting their originals", async t => {
+  const f = await fixture(t, { runtimePublication: frozenRuntime, relocated: true });
+  const owner = f.create(); await publishChanged(["--full-tests"], owner);
+  const identity = (await owner.journal.read()).identity;
+  const prepared = await owner.artifacts.preparedRuntimeReceipt(identity);
+  // Construct the old producer's exact lexical receipt shape in this own fixture.
+  const legacy = Buffer.from(`${JSON.stringify({ ...prepared.receipt,
+    releaseRoot: path.join(f.runtimeRoot, "releases", prepared.receipt.releaseId) }, null, 2)}\n`);
+  await writeFile(prepared.receiptFile, legacy);
+  const artifactFile = path.join(path.dirname(path.dirname(prepared.receiptFile)), "artifact.json");
+  const artifact = JSON.parse(await readFile(artifactFile));
+  artifact.files.find(file => file.path === "prepared-runtime.json").sha256 = hash(legacy);
+  await writeFile(artifactFile, `${JSON.stringify(artifact, null, 2)}\n`);
+  const old = await owner.journal.read();
+  await owner.journal.updateProgress({ artifactHashes: { ...old.progress.artifactHashes, runtime: hash(JSON.stringify(artifact)) } });
+  const originalArtifact = await readFile(artifactFile);
+  await assert.rejects(f.create().artifacts.preparedRuntimeReceipt(identity), /receipt differs from the original/u);
+  assert.deepEqual(await readFile(prepared.receiptFile), legacy);
+  assert.deepEqual(await readFile(artifactFile), originalArtifact);
+  // A same-spelling physical directory replacement is also drift, not just a
+  // different realpath. Keep the original directory alive to prevent inode reuse.
+  const retained = `${f.physicalRuntimeRoot}-retained`;
+  await rename(f.physicalRuntimeRoot, retained); await mkdir(f.physicalRuntimeRoot);
+  await assert.rejects(owner.artifacts.preparedRuntimeReceipt(identity), /runtime root changed/u);
+  assert.deepEqual(await readdir(f.physicalRuntimeRoot), []);
+  assert.deepEqual(await readFile(path.join(retained, path.relative(f.physicalRuntimeRoot, prepared.receiptFile))), legacy);
+});
+
+test("runtime alias drift during preparation preserves the body and refuses before issuing a receipt", async t => {
+  const f = await fixture(t, { runtimePublication: frozenRuntime, relocated: true });
+  const owner = f.create(), identity = { revision: frozenRuntime.sourceCommit };
+  const steps = await owner.artifacts.steps([{ label: "Сборка runtime-релиза" }], identity);
+  await owner.journal.start(identity, steps);
+  const foreign = path.join(f.root, "foreign"); await mkdir(foreign);
+  f.state.afterPrepare = async () => {
+    await unlink(f.runtimeRoot);
+    await symlink(foreign, f.runtimeRoot, process.platform === "win32" ? "junction" : "dir");
+  };
+  await assert.rejects(steps.find(step => step.label === "Подготовка артефактов публикации").execute(), /runtime root changed/u);
+  assert.equal(f.events.filter(x => x === "runtime build").length, 1);
+  assert.equal(f.events.includes("Git"), false);
+  assert.equal(f.events.includes("runtime install"), false);
+  assert.deepEqual(await readdir(foreign), []);
+  const [releaseId] = await readdir(path.join(f.physicalRuntimeRoot, "releases"));
+  assert.equal(JSON.parse(await readFile(path.join(f.physicalRuntimeRoot, "releases", releaseId, "runtime-manifest.json"))).publicationRevision, frozenRuntime.sourceCommit);
+  const [namespace] = await readdir(path.join(f.physicalRuntimeRoot, "publication-artifacts"));
+  assert.deepEqual(await readdir(path.join(f.physicalRuntimeRoot, "publication-artifacts", namespace)), []);
+});
 
 test("semantic artifact freeze keeps original build and Android identity after lost prepare reply", async t => {
   const runtimePublication = { ...frozenRuntime, version: "2.0.0+build.30000001" };
