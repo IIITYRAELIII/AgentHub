@@ -48,6 +48,7 @@ export function createDesktopCommandComposition({
 
   const restartRequestService = new RestartRequestService(restart);
   const desktopRestartServer = () => restartRequestService.fromDesktop();
+  const desktopRestartPackage = (params) => restartRequestService.fromPackage(params);
 
   const taskNavigationService = new TaskNavigationService(navigation);
   desktopSettingsService = new DesktopSettingsService(settings);
@@ -118,6 +119,7 @@ export function createDesktopCommandComposition({
       rotateStream: desktopRotateStream,
       updateSetting: desktopUpdateSetting,
       restartServer: desktopRestartServer,
+      restartPackage: desktopRestartPackage,
     },
     dispatchApplicationCommand,
     settingCommandTarget,

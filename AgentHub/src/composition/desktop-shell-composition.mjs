@@ -634,6 +634,7 @@ export function createDesktopShellComposition({
       statusDetails: desktopReadSystem.desktopStatusDetails,
       speakLastAnswer: desktopReadSystem.desktopSpeakLastAnswer,
       restartServer: desktopActions.restartServer,
+      restartPackage: desktopActions.restartPackage,
       openAttachment: desktopOpenAttachment,
       uploadAttachment: desktopUploadAttachment,
       browseDirectory: (params, context) => desktopDirectoryPicker.browse(params, context),

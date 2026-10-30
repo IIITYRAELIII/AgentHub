@@ -5,7 +5,7 @@ const MUTATION_ACTIONS = Object.freeze([
   "select-task", "send-message", "new-task", "rotate-stream", "create-stream",
   "update-setting", "rename-task", "archive-task", "cancel-run",
   "refresh-model-catalog",
-  "resolve-approval", "deferred-input", "restart-server", "retry-startup", "set-autostart",
+  "resolve-approval", "deferred-input", "restart-server", "restart-package", "retry-startup", "set-autostart",
   "update-server-configuration", "update-root-agents", "update-global-pre-turn-instructions", "compact-context", "create-device-pairing",
   "revoke-device", "submit-bug-report",
   "rename-workspace", "update-workspace-settings", "move-workspace-to-folder", "rename-workspace-folder", "update-workspace-rules", "complete-workspace-release", "create-workspace", "archive-workspace", "restore-workspace", "delete-archived-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
@@ -20,7 +20,7 @@ const MUTATION_ACTIONS = Object.freeze([
 ]);
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
-  "send-message", "cancel-run", "deferred-input", "restart-server", "retry-startup",
+  "send-message", "cancel-run", "deferred-input", "restart-server", "restart-package", "retry-startup",
   "refresh-model-catalog",
   "usage-sync-now", "usage-sync-invite", "usage-sync-enroll", "usage-sync-device-label",
 ]);
@@ -32,6 +32,7 @@ const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
  * credentials.
  */
 const LOCAL_ONLY_ACTIONS = Object.freeze([
+  "restart-package",
   "attachment-upload",
   "update-server-configuration",
   "start-provider-login",
@@ -124,6 +125,10 @@ export function createDesktopApplicationRouter({
       "status-details": handlers.statusDetails,
       "speak-last-answer": handlers.speakLastAnswer,
       "restart-server": handlers.restartServer,
+      "restart-package": (params) => {
+        if (!handlers.restartPackage) throw new Error("Package restart is unavailable in this runtime");
+        return handlers.restartPackage(params);
+      },
       "set-autostart": handlers.setAutostart,
       "update-server-configuration": handlers.updateServerConfiguration,
       "start-provider-login": (params) => {
