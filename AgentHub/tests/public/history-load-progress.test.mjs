@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { createDesktopTaskHistoryFactory } from '../../src/interfaces/desktop/desktop-task-history.mjs';
 import { launchBrowser, openFixture, snapshot, applyFixtureSnapshot } from './composer-production.fixture.mjs';
 
 const fullHistory = {
@@ -59,6 +60,91 @@ async function holdHistory(page) {
     };
   });
 }
+
+test('rotated Stream history paints the current head with an old catalog entry first', { timeout: 30000 }, async t => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    const batches = [];
+    page.on('request', request => {
+      if (request.url().endsWith('/api/command-trace/client-events')) batches.push(request.postDataJSON());
+    });
+    await holdHistory(page);
+    const initial = snapshot();
+    const old = { ...initial.tasks[0], selected: false };
+    Object.assign(initial.tasks[0], { threadId: 'thread-next', threadPosition: 2 });
+    initial.tasks.unshift(old);
+    initial.selected.threadId = 'thread-next';
+    initial.workspaces[0].streams[0].threads.push({ id: 'thread-next' });
+    const errors = await openFixture(page, await fixtureOptions(initial));
+    await page.waitForFunction(() => window.__heldHistory.some(x => x.message.action === 'open-task'));
+    await applyFixtureSnapshot(page, { ...initial, version: 'rotated-notification' });
+    await page.waitForFunction(() => window.__heldHistory.some(x => x.message.action === 'task-history'));
+    const index = await page.evaluate(() => window.__heldHistory.findIndex(x => x.message.action === 'task-history'));
+    const history = createDesktopTaskHistoryFactory({
+      selection: { activeProvider: () => 'codex', threadId: () => 'thread-next', chatId: () => null },
+      catalog: {
+        entries: () => initial.tasks,
+        threadsForStream: () => [
+          { provider: 'codex', threadId: 'thread-a', position: 1 },
+          { provider: 'codex', threadId: 'thread-next', position: 2 },
+        ],
+      },
+      historyReader: { read: async ({ threadId }) => ({ history: threadId === 'thread-a'
+        ? [1, 2].map(n => ({ id: `turn-${n}`, completed: true,
+          startedAt: `2026-10-01T10:00:0${n}.000Z`, prompt: `Question ${n}`, answer: `Answer ${n}` })) : [] }) },
+      runs: { forTask: () => null },
+      historyMerger: { mergeActive: () => {}, mergeCompleted: () => {} },
+      responseBudget: { fit: value => value },
+    });
+    const request = await page.evaluate(index => window.__heldHistory[index].message.params, index);
+    const response = await history(request);
+    t.diagnostic(JSON.stringify({ requestedThreadId: request.threadId, responseThreadId: response.threadId,
+      count: response.items.length, originalRequest: request.clientTraceId }));
+    await page.evaluate(({ index, history }) => window.__deliverHistory({ index, history }), { index, history: response });
+    await page.waitForFunction(() => document.querySelector('[data-chat-log]')?.textContent.includes('Answer 2'), null, { timeout: 1500 });
+    const firstVisible = await page.evaluate(index => ({
+      responseToVisibleMs: performance.now() - window.__heldHistory[index].releasedAt,
+    }), index);
+    assert.equal(response.threadId, 'thread-next');
+    assert.equal(new URL(page.url()).hostname, 'agent-hub.test');
+    assert.ok((await page.title()).length > 0);
+    assert.equal(await page.locator('[data-history-loader]').getAttribute('data-loading'), null);
+    const messages = await page.locator('[data-chat-log] [data-message-id]').evaluateAll(nodes => nodes.map(n => ({
+      id: n.dataset.messageId, threadId: n.dataset.threadId, role: n.dataset.role,
+    })));
+    assert.equal(messages.length, 4);
+    assert.equal(new Set(messages.map(m => m.id)).size, 4);
+    assert.ok(messages.every(m => m.threadId === 'thread-a'), 'historical messages retain their exact source Thread');
+    const text = await page.locator('[data-chat-log]').innerText();
+    assert.ok(text.indexOf('Question 1') < text.indexOf('Answer 1'));
+    assert.ok(text.indexOf('Answer 1') < text.indexOf('Question 2'));
+    assert.ok(text.indexOf('Question 2') < text.indexOf('Answer 2'));
+    await frames(page);
+    await page.waitForFunction(() => {
+      const d = window.AgentHubCommandTrace.diagnostics();
+      return d.pending === 0 && d.paintPending === 0 && !d.flushing;
+    });
+    const events = batches.flatMap(batch => batch.events);
+    assert.ok(events.some(e => e.commandId === request.clientTraceId
+      && e.metadata?.action === 'history-binding-decision' && e.metadata?.decision === 'current'
+      && e.metadata?.threadId === 'thread-next'));
+    assert.ok(events.some(e => e.commandId === request.clientTraceId
+      && e.metadata?.action === 'history-page-paint' && e.outcome === 'succeeded'
+      && e.metadata?.render === 'viewport'));
+    assert.ok(!JSON.stringify(events).includes('Answer 2'));
+    t.diagnostic(JSON.stringify({ ...firstVisible, ...await page.evaluate(() => ({
+      url: location.href, title: document.title,
+      messageCount: document.querySelectorAll('[data-chat-log] [data-message-id]').length,
+      loaderVisible: document.querySelector('[data-history-loader]')?.getAttribute('data-loading') != null,
+    })) }));
+    assert.deepEqual(errors, []);
+    if (process.env.AGENT_HUB_HISTORY_EVIDENCE_DIR) {
+      await mkdir(process.env.AGENT_HUB_HISTORY_EVIDENCE_DIR, { recursive: true });
+      await page.screenshot({ path: path.join(process.env.AGENT_HUB_HISTORY_EVIDENCE_DIR, 'current-head.png') });
+    }
+  } finally { await page.close(); await browser.close(); }
+});
 
 test('snapshot refreshes cannot starve a valid in-flight first history page', { timeout: 30000 }, async t => {
   const browser = await launchBrowser();
