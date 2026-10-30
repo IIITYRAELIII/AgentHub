@@ -22,7 +22,7 @@ import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
-import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
+import { taskRepositoryKey, taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import {
   assertReleaseBaseProvenance,
   EXPLICIT_REVIEWED_MAIN_PROVENANCE,
@@ -2177,8 +2177,46 @@ export class ReleaseGitWorkspaceService {
       await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
+      const readLegacyReuseBinding = async () => measureTaskOperation("native:legacy-prepared-verify", async () => {
+        if (checkpoint?.phase !== "prepared" || checkpoint.baseCommit !== baseCommit
+            || stableManifest(checkpoint.baseProvenance ?? null) !== stableManifest(provenance ?? null)) return null;
+        const retained = await this.frozenCandidate(initial.root);
+        const manifestBytes = await readFile(retained.manifestFile);
+        if (sha256(manifestBytes) !== retained.manifestHash) throw new Error("Retained native manifest changed");
+        const old = JSON.parse(manifestBytes);
+        if (retained.checkpointPhase !== "prepared" || old.compositionPolicy !== NATIVE_RELEASE_POLICY
+            || String(old.workspaceId ?? "") !== String(workspaceId ?? "")
+            || stableManifest(old.baseProvenance ?? null) !== stableManifest(provenance ?? null)) return null;
+        const oldTasks = normalizedFrozenTasks(old.tasks);
+        const oldIdentity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: retained.planRevision, baseCommit, tasks: oldTasks };
+        const oldRoot = path.join(layout.root, "native-merges", sha256(stableManifest(oldIdentity)).slice(0, 24));
+        const stateFile = path.join(oldRoot, "merge.json");
+        const stateInfo = await lstat(stateFile).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+        if (!stateInfo?.isFile() || stateInfo.isSymbolicLink()) return null;
+        const bytes = await readFile(stateFile), state = JSON.parse(bytes);
+        if (taskGitIdentityHash(state.identity) !== taskGitIdentityHash(oldIdentity) || state.head !== retained.preReleaseHead
+            || taskGitIdentityHash(state.merges) !== taskGitIdentityHash(old.merges)) return null;
+        const oldAuthority = await this.#nativeHistoryAuthority({ projectRoot: initial.root, provenance,
+          planRevision: retained.planRevision, tasks: oldTasks });
+        if (taskGitIdentityHash(oldAuthority) !== taskGitIdentityHash(historyAuthority)) return null;
+        const checkpointBytes = await readFile(clone.checkpointFile);
+        if (sha256(await readFile(retained.manifestFile)) !== retained.manifestHash
+            || stableManifest(JSON.parse(checkpointBytes)) !== stableManifest(checkpoint)) {
+          throw new Error("Retained prepared prefix custody changed");
+        }
+        return { root: oldRoot, identityHash: taskGitIdentityHash(oldIdentity), head: retained.preReleaseHead,
+          tree: retained.tree, journalHash: sha256(bytes), mergesHash: taskGitIdentityHash(old.merges),
+          verifyInRepository: retainedGit => assertNativePreparedComposition({ git: retainedGit, baseCommit,
+            tasks: oldTasks, merges: old.merges, head: retained.preReleaseHead, tree: retained.tree,
+            identity: oldIdentity, verifyReview: this.verifyNativeResolutionReview, historyAuthority: oldAuthority }),
+          unchanged: async () => sha256(await readFile(clone.checkpointFile)) === sha256(checkpointBytes)
+            && sha256(await readFile(retained.manifestFile)) === retained.manifestHash };
+      });
       const composition = await mergeSelectedResults({
         root: mergeRoot, sourceRoot: clone.releaseRoot, baseCommit, tasks, identity,
+        reuseContext: { repositoryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
+          baseProvenance: provenance ?? null, historyAuthority: historyAuthority ?? null },
+        readLegacyReuseBinding,
         resolutionReview: nativeResolutionReview, verifyReview: this.verifyNativeResolutionReview,
         deliveredHead: checkpoint?.preReleaseHead ?? null,
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
