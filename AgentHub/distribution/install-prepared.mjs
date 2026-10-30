@@ -7,6 +7,7 @@ import { verifyRuntimeManifest } from "./runtime/src/infrastructure/filesystem/r
 import { protectRuntimeDirectory, protectRuntimeConfig } from "./runtime/src/infrastructure/filesystem/runtime-security.mjs";
 import { withPublicationLock } from "./runtime/src/infrastructure/process/publication-lock.mjs";
 import { assertAgentHubUpgrade } from "./runtime/src/domain/agent-hub-version.mjs";
+import { runtimeManifestMatchesPackage } from "./runtime/src/domain/runtime-package-identity.mjs";
 
 // Packaged entry: it delegates pointer/stable-launcher/rollback to the existing
 // runtime owner. It never builds, starts, stops or restarts a process.
@@ -70,7 +71,9 @@ await withPublicationLock(async () => {
       await requireRegularAncestors(currentRoot);
       await verifyRuntimeManifest(currentRoot, pointer.current);
       const currentBytes = await readFile(path.join(currentRoot, "runtime-manifest.json"));
-      assertAgentHubUpgrade(JSON.parse(currentBytes), candidateManifest, { sameArtifact: currentBytes.equals(candidateBytes) });
+      assertAgentHubUpgrade(JSON.parse(currentBytes), candidateManifest, {
+        sameArtifact: runtimeManifestMatchesPackage(currentBytes, candidateBytes),
+      });
     };
     await requireUpgrade();
     const exists = await lstat(releaseRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
@@ -87,7 +90,7 @@ await withPublicationLock(async () => {
     } else {
       const [actual, expected] = await Promise.all([readFile(path.join(releaseRoot, "runtime-manifest.json")),
         readFile(path.join(source, "runtime-manifest.json"))]);
-      if (!actual.equals(expected)) throw new Error("Release ID already exists with different bytes");
+      if (!runtimeManifestMatchesPackage(actual, expected)) throw new Error("Release ID already exists with different bytes");
       await verifyRuntimeManifest(releaseRoot, releaseId);
     }
   }

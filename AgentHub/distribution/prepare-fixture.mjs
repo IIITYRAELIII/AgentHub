@@ -24,6 +24,7 @@ async function copyModule(relative) {
 }
 await copyModule("src/runtime/runtime-manager.mjs");
 await copyModule("src/infrastructure/process/publication-lock.mjs");
+await copyModule("src/domain/runtime-package-identity.mjs");
 await cp(path.join(actual, "RuntimeHost"), path.join(source, "RuntimeHost"), { recursive: true });
 await mkdir(path.join(source, "VSCodeExtension", "media"), { recursive: true });
 await cp(path.join(actual, "VSCodeExtension", "media", "agent-hub-mark.png"), path.join(source, "VSCodeExtension", "media", "agent-hub-mark.png"));

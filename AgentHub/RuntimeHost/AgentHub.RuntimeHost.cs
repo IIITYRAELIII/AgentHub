@@ -104,6 +104,35 @@ namespace AgentHub.RuntimeHost
         private static extern IntPtr GetShellWindow();
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool Process32First(IntPtr snapshot, ref ParentEntry entry);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool Process32Next(IntPtr snapshot, ref ParentEntry entry);
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ParentEntry
+        {
+            public uint Size, Usage, Pid; public UIntPtr Heap;
+            public uint Module, Threads, Parent; public int Priority; public uint Flags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Image;
+        }
+
+        private static int ProcessParentId(int pid)
+        {
+            IntPtr snapshot = CreateToolhelp32Snapshot(2, 0);
+            if (snapshot == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            try
+            {
+                ParentEntry entry = new ParentEntry(); entry.Size = (uint)Marshal.SizeOf(typeof(ParentEntry));
+                if (Process32First(snapshot, ref entry)) do
+                {
+                    if (entry.Pid == (uint)pid) return checked((int)entry.Parent);
+                } while (Process32Next(snapshot, ref entry));
+                throw new InvalidOperationException("Original process parent is unavailable");
+            }
+            finally { CloseHandle(snapshot); }
+        }
 
         private static long ProcessLogonIdentity(IntPtr process)
         {
@@ -423,14 +452,16 @@ namespace AgentHub.RuntimeHost
                 Path.AltDirectorySeparatorChar);
             try
             {
-                if (args.Length == 6 && args[0] == "--package-handoff")
+                if ((args.Length == 6 && args[0] == "--package-handoff")
+                    || (args.Length == 4 && args[0] == "--package-bootstrap"))
                 {
                     bool inherited;
                     if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inherited))
                         throw new Win32Exception(Marshal.GetLastWin32Error());
-                    if (!inherited) return PackageHandoff(args);
-                    Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_LAUNCHER_PID",
-                        Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture));
+                    if (inherited || String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGENT_HUB_PACKAGE_LAUNCHER_PID")))
+                        Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_LAUNCHER_PID",
+                            Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture));
+                    if (!inherited) return args[0] == "--package-bootstrap" ? PackageBootstrap(args) : PackageHandoff(args);
                     StringBuilder forwarded = new StringBuilder();
                     foreach (string argument in args) forwarded.Append(" ").Append(QuoteArgument(argument));
                     uint parentPid;
@@ -635,6 +666,51 @@ namespace AgentHub.RuntimeHost
             if (!ManifestDeclares(releaseRoot, "src/runtime/runtime-package-handoff.mjs"))
                 throw new InvalidOperationException("Package handoff entry is not manifested");
             EnsureRegularFile(entry, "Installed package handoff entry is unavailable");
+            return RunPackageCohort(entry, root, operationId, nodePid, hostPid);
+        }
+
+        private static int PackageBootstrap(string[] args)
+        {
+            string root = Path.GetFullPath(args[1]), package = Path.GetFullPath(args[2]), operationId = args[3];
+            if (!Regex.IsMatch(operationId, "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))
+                throw new InvalidOperationException("Invalid package operation identity");
+            EnsureDirectoryWithoutReparsePoint(root, "Unsafe old runtime root");
+            EnsureDirectoryWithoutReparsePoint(package, "Unsafe package root");
+            string payload = Path.Combine(package, "runtime");
+            EnsureDirectoryWithoutReparsePoint(payload, "Unsafe public runtime payload");
+            Dictionary<string, object> incoming = ReadJsonObject(Path.Combine(payload, "runtime-manifest.json"));
+            VerifyManifest(payload, RequiredString(incoming, "releaseId"));
+            if (ComputeSha256(Assembly.GetExecutingAssembly().Location) != ComputeSha256(Path.Combine(payload, "AgentHub.RuntimeHost.exe")))
+                throw new InvalidOperationException("Bootstrap Host differs from the verified package");
+            Dictionary<string, object> pointer = ReadJsonObject(Path.Combine(root, "current.json"));
+            string current = RequiredString(pointer, "current");
+            if (!ReleaseIdPattern.IsMatch(current) || current == "." || current == "..")
+                throw new InvalidOperationException("Unknown old current release");
+            string oldRelease = Path.Combine(root, "releases", current);
+            EnsureDirectoryWithoutReparsePoint(oldRelease, "Unsafe old release");
+            VerifyManifest(oldRelease, current);
+            Dictionary<string, object> instance = ReadJsonObject(Path.Combine(root, "data", "bot.lock"));
+            if (!Object.Equals(instance["ready"], true) || RequiredString(instance, "releaseId") != current)
+                throw new InvalidOperationException("Legacy update must pin the ready old runtime before the user stops it");
+            int nodePid = Convert.ToInt32(instance["pid"], CultureInfo.InvariantCulture);
+            int hostPid = ProcessParentId(nodePid);
+            using (Process oldHost = Process.GetProcessById(hostPid))
+            {
+                StringBuilder image = new StringBuilder(32768); uint length = (uint)image.Capacity;
+                if (!QueryFullProcessImageName(oldHost.Handle, 0, image, ref length)
+                    || !String.Equals(Path.GetFullPath(image.ToString()), Path.Combine(root, "AgentHub.RuntimeHost.exe"), StringComparison.OrdinalIgnoreCase)
+                    || ComputeSha256(image.ToString()) != ComputeSha256(Path.Combine(oldRelease, "AgentHub.RuntimeHost.exe")))
+                    throw new InvalidOperationException("Legacy Host is not the exact installed stable owner");
+            }
+            string entry = Path.Combine(payload, "src", "runtime", "runtime-package-handoff.mjs");
+            if (!ManifestDeclares(payload, "src/runtime/runtime-package-handoff.mjs"))
+                throw new InvalidOperationException("Package has no declared update entry");
+            Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_BOOTSTRAP_ROOT", package);
+            return RunPackageCohort(entry, root, operationId, nodePid, hostPid);
+        }
+
+        private static int RunPackageCohort(string entry, string root, string operationId, int nodePid, int hostPid)
+        {
             Mutex gate = EnterPackageGate(root);
             IntPtr job = IntPtr.Zero;
             try
