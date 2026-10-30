@@ -12,7 +12,7 @@ const MUTATION_ACTIONS = Object.freeze([
   "release-operation-run", "release-operation-continue",
   "archive-stream", "update-stream-settings", "update-stream-rules", "move-stream",
   "board-task-create", "board-task-ingest", "board-task-update", "board-task-checklist", "board-task-checklist-linked-action", "board-task-attachment-add", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
-  "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
+  "board-task-retry-triage", "board-task-start", "board-task-operation-cancel", "board-column-move", "board-column-comment",
   "board-workspace-move",
   "usage-sync", "usage-sync-status", "usage-sync-now", "usage-sync-invite", "usage-sync-enroll",
   "usage-sync-device-label",
@@ -20,7 +20,7 @@ const MUTATION_ACTIONS = Object.freeze([
 ]);
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
-  "send-message", "cancel-run", "deferred-input", "restart-server", "restart-package", "retry-startup",
+  "send-message", "cancel-run", "deferred-input", "restart-server", "restart-package", "retry-startup", "board-task-operation-cancel",
   "refresh-model-catalog",
   "usage-sync-now", "usage-sync-invite", "usage-sync-enroll", "usage-sync-device-label",
 ]);
@@ -190,6 +190,7 @@ export function createDesktopApplicationRouter({
       "board-task-ingest": handlers.boardTaskIngest,
       "board-task-update": handlers.boardTaskUpdate,
       "board-task-read": handlers.boardTaskRead,
+      "board-task-operation-cancel": handlers.boardTaskOperationCancel,
       "board-task-diff": handlers.boardTaskDiff,
       "board-task-checklist": handlers.boardTaskChecklist,
       "board-task-checklist-linked-action": handlers.boardTaskChecklistLinkedAction,

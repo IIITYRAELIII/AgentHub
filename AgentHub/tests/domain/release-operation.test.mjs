@@ -29,6 +29,32 @@ function operation(overrides = {}) {
   });
 }
 
+test("manual public version binds all three numbers and omitted legacy authorization stays byte-identical", () => {
+  const old = operation();
+  const legacy = { taskIds: ["task-1", "task-2"], approvedTargets: [{ targetId: "production", kind: "git-runtime" }], validationMode: "full" };
+  assert.deepEqual(old.authorization, { ...legacy, fingerprint: "93d6fcbb4c8f351f5bc3dbb49daa3d14fed7e21ee88b96de173d8668f4700b78" });
+  assert.deepEqual(restoreReleaseOperation(JSON.parse(JSON.stringify(old))), old);
+  const fingerprints = new Set([old.authorization.fingerprint]);
+  for (const releaseVersion of ["2.0.9", "2.7.9", "3.7.9"]) {
+    const next = operation({ authorization: { ...legacy, releaseVersion } });
+    assert.equal(next.authorization.releaseVersion, releaseVersion);
+    assert.deepEqual(restoreReleaseOperation(JSON.parse(JSON.stringify(next))), next);
+    const changed = structuredClone(next);
+    changed.authorization.releaseVersion = "4.8.10";
+    assert.equal(restoreReleaseOperation(changed), null);
+    const omitted = structuredClone(next);
+    delete omitted.authorization.releaseVersion;
+    assert.equal(omitted.authorization.fingerprint, next.authorization.fingerprint);
+    assert.equal(restoreReleaseOperation(omitted), null);
+    fingerprints.add(next.authorization.fingerprint);
+    assert.throws(() => transitionReleaseOperation(next, { authorization: { ...legacy, releaseVersion: "4.8.10" } }), /immutable/u);
+  }
+  assert.equal(fingerprints.size, 4);
+  for (const releaseVersion of [null, 3, "2.1", "2.01.0", " 2.1.0", "2.1.0-beta", "2.1.0+build.1"]) {
+    assert.throws(() => operation({ authorization: { ...legacy, releaseVersion } }), /version/iu);
+  }
+});
+
 test("reviewed main accepts complete large repository membership and refuses foreign or duplicate inputs", () => {
   const targets = Array.from({ length: 33 }, (_, index) => ({
     targetId: `original-${index}`, kind: "agent-hub-publication", repositoryRoot: `/synthetic-original-${index}`,

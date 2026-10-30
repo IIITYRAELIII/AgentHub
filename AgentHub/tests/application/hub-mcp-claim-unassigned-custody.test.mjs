@@ -163,6 +163,7 @@ for (const boundary of ["before-plan", "before-fence", "init", "fetch", "snapsho
       f.tasks.recordEvent = async () => { throw Error("crash after assignment before event/receipt"); };
       await assert.rejects(f.hub.call("hub_task_claim", f.consume), /crash after assignment/);
     }
+    const originalExecution = f.catalog.mcpOperation(f.consume.request_id)?.taskExecution;
     const stores = await f.open();
     const workspaces = new TaskGitWorkspaceService({ dataDir: f.workspaces.dataDir, recordTiming: () => {},
       readClaimCustodyNamespace: id => stores.catalog.claimCustodyNamespaceForTask(id),
@@ -176,6 +177,7 @@ for (const boundary of ["before-plan", "before-fence", "init", "fetch", "snapsho
     const { operatorReconciliation: priorReconciliation, ...firstClaim } = claimed;
     assert.deepEqual(repeatedClaim, JSON.parse(JSON.stringify(firstClaim)));
     if (boundary === "after-assignment") assert.equal(reconciliation.kind, "forward-claim-binding-reuse-v1");
+    if (boundary === "after-assignment") assert.deepEqual(stores.catalog.mcpOperation(consume.request_id).taskExecution, originalExecution);
     assert.equal(stores.tasks.task(f.prior.id).revision, f.prior.revision + 1);
     assert.deepEqual(stores.catalog.mcpOperation(f.original.requestId), f.original);
     assert.equal(f.prepares(), 0);

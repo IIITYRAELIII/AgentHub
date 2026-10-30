@@ -127,6 +127,7 @@ test("stable publication runner preserves the initiating Stream and Thread for s
 test("stable runner refuses publication when the exact generation lacks the required contour", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-runner-process-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const operationId = "fefefefe-fefe-4efe-8efe-fefefefefefe";
   const remote = path.join(root, "origin.git");
   const primary = path.join(root, "primary");
   const taskRoot = path.join(root, "task");
@@ -166,7 +167,7 @@ test("stable runner refuses publication when the exact generation lacks the requ
   await writeFile(path.join(prepared.releaseRoot, "CHANGELOG.md"), changelogContent);
   await git(prepared.releaseRoot, "add", "CHANGELOG.md");
   const candidate = await generationWorkspaces.prepareGeneration({
-    operationId: "operation-process",
+    operationId,
     generation: 1,
     planRevision: "plan-process",
     projectRoot: primary,
@@ -177,7 +178,7 @@ test("stable runner refuses publication when the exact generation lacks the requ
   });
   const dataDir = path.join(root, "operation-data");
   await mkdir(dataDir, { recursive: true });
-  const store = new ReleaseOperationStore({ dataDir, idFactory: () => "operation-process" });
+  const store = new ReleaseOperationStore({ dataDir, idFactory: () => operationId });
   const target = { targetId: "production", kind: "agent-hub-publication", repositoryRoot: primary };
   const operation = store.create({
     requestId: "runner-process-request",
@@ -219,6 +220,7 @@ test("stable runner refuses publication when the exact generation lacks the requ
   });
   await assert.rejects(publication.publish({ operation, generation, target }), {
     code: "RELEASE_VALIDATION_FAILED",
+    failedStep: "Проверка release candidate в изолированном контуре",
   });
   assert.equal(await git(remote, "rev-parse", "refs/heads/main"), baseCommit);
   const effect = await publication.readback({ operation, generation, target });

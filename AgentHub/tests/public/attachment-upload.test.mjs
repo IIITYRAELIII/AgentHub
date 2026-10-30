@@ -30,6 +30,8 @@ function storageFixture({ mode = "ready", seed = [], keyByBlobId = false } = {})
   let timerId = 0;
   let aborts = 0;
   let digests = 0;
+  let cursorReads = 0;
+  let writes = 0;
   let clock = Date.now();
   const finishOpen = (request) => {
     const db = {
@@ -45,6 +47,7 @@ function storageFixture({ mode = "ready", seed = [], keyByBlobId = false } = {})
         });
         transaction.objectStore = () => ({
           openCursor() {
+            cursorReads += 1;
             const request = {};
             const values = [...records.entries()];
             let index = 0;
@@ -64,13 +67,15 @@ function storageFixture({ mode = "ready", seed = [], keyByBlobId = false } = {})
               transaction.abort();
               return {};
             }
+            writes += 1;
             records.set(value.blobId, value);
             complete();
             return {};
           },
           get(id) {
-            assert.equal(access, "readonly");
+            assert.ok(["readonly", "readwrite"].includes(access));
             const request = {};
+            if (mode === "readonly-hang" && access === "readonly") return request;
             queueMicrotask(() => {
               const record = records.get(id);
               request.result = mode === "corrupt-read" && record
@@ -119,6 +124,8 @@ function storageFixture({ mode = "ready", seed = [], keyByBlobId = false } = {})
     setMode: (value) => { mode = value; },
     aborts: () => aborts,
     digests: () => digests,
+    cursorReads: () => cursorReads,
+    writes: () => writes,
     finishOpen: () => finishOpen(opens.at(-1)),
     expire: () => { for (const callback of [...timers.values()]) callback(); },
   };
@@ -507,13 +514,88 @@ test("failed fresh-attempt persistence blocks begin and reuses its pending UUID 
     if (init.method === "PUT") return response({});
     return response({ protocol, uploadId: id, status: "ready", path: "/attachment/fresh", sha256: "a".repeat(64) });
   } });
-  await assert.rejects(uploader.upload(file), /quota|квот/iu);
+  await assert.rejects(uploader.upload(file), error => error.attachmentStorageCode === "quota"
+    && error.cause?.name === "QuotaExceededError");
   assert.equal(begins.length, 0);
   const pendingId = stored.api.resolve(file).pendingUploadAttempt.uploadAttemptId;
   stored.setMode("ready");
   assert.equal(await uploader.upload(file), "/attachment/fresh");
   assert.deepEqual(begins, [pendingId]);
   assert.equal(file.uploadId, file.blobId);
+});
+
+test("attempt metadata persistence does not traverse the unrelated Blob archive", async () => {
+  const stored = storageFixture();
+  const file = await prepareSmall(stored.api);
+  const before = stored.cursorReads();
+  // The archive cursor is held; direct lookup/put on this exact Blob still work.
+  stored.setMode("write-hang");
+  let settled = false;
+  const pending = stored.api.markUploadStarted(file).then(() => null, error => error)
+    .finally(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  if (!settled) stored.expire();
+  const failure = await pending;
+  assert.equal(failure, null, "a slow unrelated archive must not block this prepared file's attempt");
+  assert.equal(stored.cursorReads(), before);
+  assert.equal(stored.records.get(file.blobId).uploadAttemptId, file.uploadId);
+  assert.equal(stored.api.durable(file), true);
+});
+
+test("an unknown committed attempt resumes by exact readback without rewriting the Blob", async () => {
+  const stored = storageFixture();
+  const file = await prepareSmall(stored.api);
+  stored.setMode("readonly-hang");
+  const pending = stored.api.markUploadStarted(file).then(() => null, error => error);
+  await new Promise(resolve => setImmediate(resolve));
+  stored.expire();
+  assert.equal((await pending).attachmentStorageCode, "timeout");
+  const original = stored.api.resolve(file).pendingUploadAttempt;
+  const writes = stored.writes();
+  assert.equal(stored.records.get(file.blobId).uploadAttemptedAt, original.uploadAttemptedAt);
+  stored.setMode("ready");
+  await stored.api.markUploadStarted(file);
+  assert.equal(stored.writes(), writes, "committed identical metadata is read, not rewritten");
+  assert.equal(file.uploadAttemptId, original.uploadAttemptId);
+  assert.equal(file.uploadAttemptedAt, original.uploadAttemptedAt);
+  assert.equal(stored.api.durable(file), true);
+});
+
+test("same-key attempt update preserves foreign metadata and still verifies committed Blob bytes", async () => {
+  for (const failure of ["foreign-attempt", "corrupt-read"]) {
+    const stored = storageFixture(); const file = await prepareSmall(stored.api);
+    const writes = stored.writes();
+    if (failure === "foreign-attempt") {
+      stored.records.set(file.blobId, { ...stored.records.get(file.blobId), uploadStarted: true,
+        uploadAttemptId: webcrypto.randomUUID(), uploadAttemptedAt: Date.now() });
+    } else stored.setMode("corrupt-read");
+    await assert.rejects(stored.api.markUploadStarted(file), error => error.attachmentStorageCode === "verification");
+    assert.equal(stored.api.durable(file), false);
+    assert.equal(stored.api.resolve(file).blob.size, 3, "the original in-memory file survives failure");
+    if (failure === "foreign-attempt") assert.equal(stored.writes(), writes, "foreign attempt cannot be overwritten");
+  }
+});
+
+test("a removed Blob returns through ordinary capacity admission before persisting an attempt", async () => {
+  const stored = storageFixture(); const file = await prepareSmall(stored.api);
+  stored.records.delete(file.blobId);
+  for (let i=0;i<128;i++) stored.records.set(`retained-${i}`, { blobId: `retained-${i}`, storedAt: Date.now(), size: 1 });
+  await assert.rejects(stored.api.markUploadStarted(file), error => error.attachmentStorageCode === "capacity");
+  assert.equal(stored.records.size, 128);
+  assert.equal(stored.api.resolve(file).blob.size, 3);
+});
+
+test("native attempt transaction abort remains a typed storage failure with its original cause", async () => {
+  const stored = storageFixture(); const file = await prepareSmall(stored.api);
+  stored.setMode("abort-write");
+  await assert.rejects(stored.api.markUploadStarted(file), error => {
+    assert.equal(error.attachmentStorageCode, "failed");
+    assert.equal(error.cause.name, "AbortError");
+    assert.notEqual(error.name, "AbortError");
+    return true;
+  });
+  assert.equal(stored.api.resolve(file).blob.size, 3);
+  assert.ok(stored.api.resolve(file).pendingUploadAttempt);
 });
 
 test("fresh attempt recovery is bounded and cannot upload from a preview without original bytes", async () => {

@@ -132,7 +132,8 @@ export class MaintenanceOperationStore {
     ).get(id)));
   }
 
-  // Observation by an armed Host must not initialize a second runtime writer.
+  // Evidence consumers must not initialize/migrate a runtime or acquire its WAL
+  // writer merely to observe an existing original. The ordinary writer is unchanged.
   getReadonly(operationId) {
     const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
     try {

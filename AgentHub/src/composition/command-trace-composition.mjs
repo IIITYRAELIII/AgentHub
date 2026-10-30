@@ -10,24 +10,44 @@ import { createRuntimePerformanceSampler } from "../application/runtime-performa
 // A failure before the worker exists still belongs to the ordinary startup log.
 export async function measureStartupBeforeTrace(stage, operation, {
   clock = Date.now, monotonicClock = () => performance.now(), logger = console,
+  providePhaseRecorder = false,
 } = {}) {
   const operationSpanId = randomUUID();
   const startedAtMs = clock();
   const startedMonotonicMs = monotonicClock();
   const checkpoint = (outcome, error = null) => {
     try {
-      logger.info("[startup]", JSON.stringify({
+      const logged = logger.info("[startup]", JSON.stringify({
         pid: process.pid, releaseId: process.env.AGENT_HUB_RELEASE_ID ?? "",
         operationSpanId, stage, outcome,
         durationMs: Math.max(0, monotonicClock() - startedMonotonicMs),
         ...(error ? { error: String(error.message ?? error) } : {}),
       }));
+      logged?.catch?.(() => {});
+    } catch {}
+  };
+  const phaseMarkers = [];
+  const recordPhase = ({ phase, outcome, durationMs } = {}) => {
+    try {
+      if (stage !== "sqlite-recovery"
+        || !["database-lock", "recovery-lock-acquire", "marker-read", "resume",
+          "intent-read", "intent-rollback", "database-stat", "database-check",
+          "quarantine", "recovery-lock-release"].includes(phase)
+        || !["started", "succeeded", "failed"].includes(outcome)
+        || !Number.isFinite(durationMs) || durationMs < 0) return;
+      const marker = { phase, outcome, durationMs, observedAtMs: clock() };
+      phaseMarkers.push(marker);
+      const logged = logger.info("[startup]", JSON.stringify({
+        pid: process.pid, releaseId: process.env.AGENT_HUB_RELEASE_ID ?? "",
+        operationSpanId, stage, ...marker,
+      }));
+      logged?.catch?.(() => {});
     } catch {}
   };
   checkpoint("started");
   let value;
   try {
-    value = await operation();
+    value = providePhaseRecorder ? await operation(recordPhase) : await operation();
   } catch (error) {
     checkpoint("failed", error);
     throw error;
@@ -36,7 +56,8 @@ export async function measureStartupBeforeTrace(stage, operation, {
   const observedAtMs = clock();
   const monotonicDurationMs = Math.max(0, monotonicClock() - startedMonotonicMs);
   const common = { commandId: `startup:${operationSpanId}`, stage: `startup-${stage}`, transport: "server-runtime",
-    metadata: { operationSpanId, startedAtMs, operationId: stage, bufferedUntilTraceReady: true } };
+    metadata: { operationSpanId, startedAtMs, operationId: stage, bufferedUntilTraceReady: true,
+      ...(phaseMarkers.length ? { phaseMarkers } : {}) } };
   let recorded = false;
   return { value, record(trace) {
     if (recorded) return;

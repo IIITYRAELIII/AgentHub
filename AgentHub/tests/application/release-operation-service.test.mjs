@@ -212,13 +212,14 @@ test("startup recovery leaves a reviewed external native owner and its receipts 
   rawAfterDb.close();
 });
 
-test("stale prepared candidate waits for normal preparation on the original operation", async t => {
+for (const refusalCode of ["RELEASE_PREPARED_CANDIDATE_STALE", "RELEASE_MAIN_APPROVAL_STALE"]) {
+test(`stale prepared candidate waits for normal preparation on the original operation: ${refusalCode}`, async t => {
   let prepared = false;
   const attempts = [];
   const f = await fixture(t, {
     compose: async input => {
       attempts.push(input.generation);
-      if (!prepared) throw Object.assign(new Error("prepared selection is stale"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+      if (!prepared) throw Object.assign(new Error("prepared selection is stale"), { code: refusalCode });
       return generation();
     },
     validate: async () => { throw Object.assign(new Error("fixture stops before publication"), { code: "RELEASE_VALIDATION_FAILED" }); },
@@ -229,6 +230,7 @@ test("stale prepared candidate waits for normal preparation on the original oper
   assert.equal(refused.operation.state, "waiting");
   assert.equal(refused.operation.waitReason.code, "prepared_candidate_stale");
   assert.equal(refused.operation.resumeState, "compose");
+  assert.equal(refused.operation.lastError.code, refusalCode);
   assert.equal(refused.generations.length, 0);
   prepared = true;
   f.service.continue(ack.operationId);
@@ -241,6 +243,7 @@ test("stale prepared candidate waits for normal preparation on the original oper
   assert.deepEqual(attempts, [1, 1]);
   assert.equal(start(f.service).operationId, ack.operationId);
 });
+}
 
 test("definite preparation refusal continues the same release without replaying completed steps", async t => {
   let ready = false, composeCalls = 0;

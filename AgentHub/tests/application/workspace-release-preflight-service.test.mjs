@@ -192,9 +192,24 @@ test("installed local source preparation forwards exact baseline/review and rech
   assert.ok(f.verified() >= 3);
 });
 
+test("manual public version survives the actual preflight generation boundary", async () => {
+  const f = localSourceFixture();
+  const calls = [];
+  f.service.releaseGitWorkspaces.prepareGeneration = async request => {
+    await request.validateBeforeCommit(); calls.push(request); return f.candidate;
+  };
+  const input = { workspaceId: "workspace-1", operationId: "version-original", generation: 1, taskIds: ["task-current"] };
+  await f.service.prepareOperationGeneration({ ...input, releaseVersion: "3.7.9" });
+  assert.equal(calls[0].releaseVersion, "3.7.9");
+  await f.service.prepareOperationGeneration(input);
+  assert.equal(Object.hasOwn(calls[1], "releaseVersion"), false);
+});
+
 test("installed local source generation reuses the sealed exact selection without changing agreed main", async () => {
   const f = localSourceFixture();
+  let generationCalls = 0;
   f.service.releaseGitWorkspaces.prepareGeneration = async request => {
+    generationCalls++;
     assert.equal(request.approvedBaseCommit, f.p.sourceBaseCommit);
     assert.equal(request.baseProvenance.agreedMainCommit, f.p.agreedMainCommit);
     await request.validateBeforeCommit();
@@ -205,7 +220,45 @@ test("installed local source generation reuses the sealed exact selection withou
   assert.equal(result.releaseCandidates[0].baseCommit, f.p.sourceBaseCommit);
   f.candidate.manifest.tasks = [{ ...f.plan.ready[0], resultCommit: "0".repeat(40) }];
   await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
-    operationId: "release-other", generation: 1, taskIds: ["task-current"] }), /selection changed/);
+    operationId: "release-other", generation: 1, taskIds: ["task-current"] }), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  assert.equal(generationCalls, 1, "stale selection must refuse before another generation is captured");
+});
+
+test("stale prepared publication provenance remains a typed capture refusal with its original cause", async () => {
+  const f = localSourceFixture();
+  f.candidate.manifest.baseProvenance = { ...f.p, publishedBaseCommit: "0".repeat(40) };
+  const before = structuredClone(f.candidate);
+  f.service.releaseGitWorkspaces.prepareGeneration = () => assert.fail("stale provenance cannot capture a generation");
+  const check = (error, capture) => {
+    assert.match(error.message, /prepared PreRelease base provenance belongs to published/u);
+    assert.ok(error.cause instanceof Error);
+    assert.equal(error.message, `${error.cause.message} for ${f.projectRoot}`);
+    assert.equal(error.code, capture ? "RELEASE_PREPARED_CANDIDATE_STALE" : undefined);
+    return true;
+  };
+  await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
+    operationId: "release-original", generation: 1, taskIds: ["task-current"] }), error => check(error, true));
+  await assert.rejects(f.service.preflight({ workspaceId: "workspace-1",
+    expectedPlanRevision: f.plan.revision }), error => check(error, false));
+  assert.deepEqual(f.candidate, before, "refusal must preserve the prepared holder and evidence");
+});
+
+test("stale prepared base refuses capture with a typed code and preserves ordinary preflight refusal", async () => {
+  const f = localSourceFixture();
+  f.candidate.baseCommit = "0".repeat(40);
+  f.candidate.manifest.baseCommit = f.candidate.baseCommit;
+  const before = structuredClone(f.candidate);
+  f.service.releaseGitWorkspaces.prepareGeneration = () => assert.fail("stale base cannot capture a generation");
+  const check = (error, capture) => {
+    assert.match(error.message, /prepared PreRelease base does not match reviewed main/u);
+    assert.equal(error.code, capture ? "RELEASE_PREPARED_CANDIDATE_STALE" : undefined);
+    return true;
+  };
+  await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
+    operationId: "release-original", generation: 1, taskIds: ["task-current"] }), error => check(error, true));
+  await assert.rejects(f.service.preflight({ workspaceId: "workspace-1",
+    expectedPlanRevision: f.plan.revision }), error => check(error, false));
+  assert.deepEqual(f.candidate, before);
 });
 
 test("installed local source preflight verifies the sealed source base rather than silently using main", async () => {

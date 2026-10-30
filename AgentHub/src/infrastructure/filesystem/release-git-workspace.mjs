@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
+import { normalizeReleaseVersion } from "../../domain/release-operation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
@@ -21,7 +22,7 @@ import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
-import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
+import { taskRepositoryKey, taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import {
   assertReleaseBaseProvenance,
   EXPLICIT_REVIEWED_MAIN_PROVENANCE,
@@ -95,7 +96,11 @@ async function assertNativeRuntimeImportClosure(gitAt, composition) {
   }
 }
 
-function runGit(args, { cwd, timeoutMs = null, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
+function runGit(args, options = {}) {
+  return measureTaskOperation("release:git-command", () => runGitUnmeasured(args, options), { detail: true });
+}
+
+function runGitUnmeasured(args, { cwd, timeoutMs = null, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
   if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   const guarded = guardedPreparationGit(lease => {
     const invocation = preparationGitInvocation(args, cwd);
@@ -134,7 +139,11 @@ function runGit(args, { cwd, timeoutMs = null, rawOutput = false, acceptableExit
   });
 }
 
-function runGitWithInput(args, input, { cwd, timeoutMs = null } = {}) {
+function runGitWithInput(args, input, options = {}) {
+  return measureTaskOperation("release:git-input", () => runGitWithInputUnmeasured(args, input, options), { detail: true });
+}
+
+function runGitWithInputUnmeasured(args, input, { cwd, timeoutMs = null } = {}) {
   return new Promise((resolve, reject) => {
     const invocation = preparationGitInvocation(args, cwd);
     const child = spawn("git", invocation.args, { cwd, ...(invocation.env ? { env: invocation.env } : {}),
@@ -931,7 +940,7 @@ export class ReleaseGitWorkspaceService {
           cwd: sourceRoot, timeoutMs: null,
         });
         await runGit([
-          "-c", "core.longpaths=true", "clone", "--single-branch", "--branch", "main",
+          "clone", "--single-branch", "--branch", "main",
           "--no-local", "--no-hardlinks", "--no-checkout",
           ...(this.#validationReferenceRoot ? ["--reference-if-able", this.#validationReferenceRoot] : []),
           bundle, layout.releaseRoot,
@@ -997,8 +1006,9 @@ export class ReleaseGitWorkspaceService {
     return { ...layout, ...marker, markerFile };
   }
 
-  // This is the ordinary composer in a disposable owned repository, not a second
-  // projection policy. No live candidate/checkpoint is promoted or rolled back.
+  // Revalidate an exact prepared native result, including its accepted resolutions.
+  // Otherwise use the ordinary composer in a disposable owned repository.
+  // No live candidate/checkpoint is promoted or rolled back.
   // The application owner holds Await/Task/dev leases and revalidates identities.
   async validateCandidate({
     planRevision, projectRoot, workspaceId = null, frozenTasks = [],
@@ -1006,6 +1016,31 @@ export class ReleaseGitWorkspaceService {
   } = {}) {
     this.#assertAvailable("validateCandidate");
     if (commitPrepared != null) throw new Error("Composition validation cannot commit Task acceptance");
+    const checkpoint = await readJson(this.#layout(projectRoot).checkpointFile);
+    if (checkpoint?.phase === "prepared" && checkpoint.planRevision === planRevision
+        && checkpoint.baseCommit === approvedBaseCommit) {
+      const input = { projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit,
+        baseProvenance, exactBaseProvenance: true };
+      const verificationRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
+      try {
+        if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+        const prepared = await this.#preparedGenerationSource({ ...input,
+          verificationRoot: path.join(verificationRoot, "before") });
+        if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+        const current = await this.#preparedGenerationSource({ ...input,
+          verificationRoot: path.join(verificationRoot, "after") });
+        if (stableManifest(current.binding) !== stableManifest(prepared.binding)) {
+          throw new Error("Prepared composition changed during validation");
+        }
+        if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+        return { status: "validated", repositoryRoot: current.candidate.repositoryRoot,
+          planRevision, baseCommit: current.candidate.baseCommit, tree: current.candidate.tree,
+          taskIds: current.candidate.frozenTasks.map(task => task.taskId).sort(),
+          mergedTaskIds: current.candidate.mergedTaskIds };
+      } finally {
+        await rm(verificationRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      }
+    }
     const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
     try {
       const isolated = new ReleaseGitWorkspaceService({
@@ -1045,7 +1080,8 @@ export class ReleaseGitWorkspaceService {
     }
   }
 
-  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent }) {
+  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent, releaseVersion,
+    exactBaseProvenance = false, verificationRoot = null }) {
     const layout = this.#layout(projectRoot);
     const stale = message => Object.assign(new Error(`${message}; prepare the current Await candidate through the normal owner`),
       { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
@@ -1057,12 +1093,26 @@ export class ReleaseGitWorkspaceService {
           || source.planRevision !== planRevision || source.baseCommit !== approvedBaseCommit
           || String(manifest.workspaceId ?? "") !== String(workspaceId ?? "")
           || stableManifest(normalizedFrozenTasks(manifest.tasks)) !== stableManifest(tasks)
+          || (exactBaseProvenance && stableManifest(normalizedBaseProvenance(manifest.baseProvenance, source.baseCommit))
+            !== stableManifest(normalizedBaseProvenance(baseProvenance, approvedBaseCommit)))
           || (manifest.baseProvenance?.publishedBaseCommit ?? null) !== (baseProvenance?.publishedBaseCommit ?? null)
           || ([manifest.baseProvenance?.kind, baseProvenance?.kind].includes(LOCAL_SOURCE_BASELINE_PROVENANCE)
             && stableManifest(manifest.baseProvenance) !== stableManifest(baseProvenance))) {
         throw stale("Prepared PreRelease selection, base or evidence is stale");
       }
-      const git = (args, options = {}) => runGit(args, { ...options, cwd: source.releaseRoot });
+      let verificationRepository = source.releaseRoot;
+      if (verificationRoot) {
+        await mkdir(verificationRoot, { recursive: true });
+        const bundle = path.join(verificationRoot, "source.bundle");
+        await createSelectedGitBundle({ root: verificationRoot, sourceRoot: source.releaseRoot, bundle,
+          mainCommit: source.baseCommit,
+          inputs: [source.baseCommit, source.preReleaseHead, ...tasks.map(task => task.resultCommit)],
+          gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: null }) });
+        verificationRepository = path.join(verificationRoot, "repository.git");
+        await runGit(["clone", "--bare", "--no-local", "--no-hardlinks", bundle, verificationRepository],
+          { cwd: verificationRoot });
+      }
+      const git = (args, options = {}) => runGit(args, { ...options, cwd: verificationRepository });
       const historyAuthority = await this.#nativeHistoryAuthority({ projectRoot, provenance: manifest.baseProvenance,
         planRevision, tasks });
       await assertNativePreparedComposition({ git, baseCommit: source.baseCommit, tasks,
@@ -1080,11 +1130,15 @@ export class ReleaseGitWorkspaceService {
       else if (manifest.baseProvenance?.adoptions) await assertInstalledAgreedMainOrigin({
         provenance: manifest.baseProvenance,
         git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }) });
+      await measureTaskOperation("release:prepared-runtime-import-closure", () => assertNativeRuntimeImportClosure(
+        (cwd, args, options = {}) => runGit(args, { ...options, cwd }),
+        { root: verificationRepository, head: source.preReleaseHead, tree: source.tree }));
       const binding = { kind: "native-prepared-release-v1", releaseRoot: source.releaseRoot,
         commit: source.preReleaseHead, tree: source.tree, manifestHash: source.manifestHash,
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
         inputHash: sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit, tasks, baseProvenance,
-          changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)) })) };
+          changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)),
+          ...(releaseVersion !== undefined ? { releaseVersion } : {}) })) };
       return { binding, candidate: { ...source, baseProvenance, frozenTasks: tasks,
         mergedTaskIds: tasks.map(task => task.taskId),
         manifest: { ...manifest, ...(baseProvenance ? { baseProvenance } : {}), preparedCandidate: binding } } };
@@ -1095,9 +1149,10 @@ export class ReleaseGitWorkspaceService {
     operationId, generation, planRevision, projectRoot, workspaceId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
-    ephemeral = false, nativeResolutionReview = null,
+    ephemeral = false, nativeResolutionReview = null, releaseVersion = undefined,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
+    if (releaseVersion !== undefined) normalizeReleaseVersion(releaseVersion);
     const operation = String(operationId ?? "").trim();
     const generationNumber = Number(generation);
     if (!operation || !Number.isSafeInteger(generationNumber) || generationNumber < 1) {
@@ -1127,7 +1182,8 @@ export class ReleaseGitWorkspaceService {
         if (existingPrepared) identity = existingIdentity;
         if (!existingIdentity) await writeJsonAtomic(identityFile, identity);
         const preparedInput = { projectRoot: sourceRoot, workspaceId, planRevision,
-          frozenTasks, approvedBaseCommit, baseProvenance, changelogContent };
+          frozenTasks, approvedBaseCommit, baseProvenance, changelogContent,
+          ...(releaseVersion !== undefined ? { releaseVersion } : {}) };
         const generationLayout = this.#layout(sourceRoot);
         const localCheckpointFile = path.join(generationDataDir, "release-repositories", generationLayout.repositoryKey, "checkpoint.json");
         const localCheckpoint = freezePublication ? await readJson(localCheckpointFile) : null;
@@ -1135,21 +1191,14 @@ export class ReleaseGitWorkspaceService {
         if (freezePublication) {
           const inputHash = sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit,
             tasks: normalizedFrozenTasks(frozenTasks), baseProvenance,
-            changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)) }));
+            changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)),
+            ...(releaseVersion !== undefined ? { releaseVersion } : {}) }));
           if (existingPrepared && existingPrepared.inputHash !== inputHash) {
             throw Object.assign(new Error("Original generation prepared input changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
           }
           if (!localCheckpoint?.publicationFreeze) {
-            try { preparedSource = await this.#preparedGenerationSource(preparedInput); }
-            catch (error) {
-              if (error.code !== "RELEASE_PREPARED_CANDIDATE_STALE" || existingPrepared) throw error;
-              // Composition is an ordinary stage of this operation. The same
-              // candidate owner verifies/reuses its Git checkpoint; no external
-              // preparation command or disposable operator is required.
-              await this.prepareCandidate({ ...preparedInput, nativeResolutionReview,
-                validateBeforeCommit, preserveFrozen: true });
-              preparedSource = await this.#preparedGenerationSource(preparedInput);
-            }
+            if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+            preparedSource = await this.#preparedGenerationSource(preparedInput);
             if (existingPrepared && stableManifest(existingPrepared) !== stableManifest(preparedSource.binding)) {
               throw Object.assign(new Error("Original generation prepared PreRelease changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
             }
@@ -1189,6 +1238,7 @@ export class ReleaseGitWorkspaceService {
               throw Object.assign(new Error("Prepared PreRelease changed during generation capture"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
             }
           }
+          if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         };
         let candidate;
         if (!freezePublication) {
@@ -1245,6 +1295,7 @@ export class ReleaseGitWorkspaceService {
           expectedPreparedHead: candidate.preReleaseHead,
           changelogContent: frozenChangelog,
           reusePersistedChangelog: Boolean(localCheckpoint?.publicationFreeze),
+          ...(releaseVersion !== undefined ? { expectedVersion: releaseVersion } : {}),
           validateBeforeCommit: validatePrepared,
         });
         const frozen = await isolated.frozenCandidate(sourceRoot);
@@ -1370,6 +1421,7 @@ export class ReleaseGitWorkspaceService {
   // checkpoint bytes and source commits remain historical authorities, never
   // migration aliases or new inputs to an ordinary merge.
   async #nativeCutover(clone, checkpoint) {
+    return measureTaskOperation("native:cutover", async () => {
     if (!checkpoint) return null;
     const bytes = await readFile(clone.checkpointFile);
     const manifestBytes = await readFile(checkpoint.manifestFile);
@@ -1422,6 +1474,7 @@ export class ReleaseGitWorkspaceService {
       // This envelope preserves history; it grants no merge-side exception.
       originalTasks: manifest.tasks,
     };
+    });
   }
 
   async promoteGenerationCandidate({ projectRoot, candidate, validateBeforeCommit = null, commitPrepared = null } = {}) {
@@ -1651,6 +1704,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks, expectedPublishedMetadata = undefined }) {
+    return measureTaskOperation("native:history-authority", async () => {
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
       const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
       return { bases: [verified.provenance.sourceBaseCommit,
@@ -1676,6 +1730,7 @@ export class ReleaseGitWorkspaceService {
       throw new Error("Native candidate published metadata authority changed");
     }
     return { bases: [publishedMetadata.commit], metadataBases: [publishedMetadata.commit], adoptions: [], publishedMetadata };
+    });
   }
 
   async inspectNativeAwaitRecovery({ projectRoot, original, frozenTasks } = {}) {
@@ -1918,9 +1973,9 @@ export class ReleaseGitWorkspaceService {
     const tasks = normalizedFrozenTasks(frozenTasks);
     const layout = this.#layout(initial.root);
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
-    const preparationLockStarted = preparationGuard ? performance.now() : null;
+    const preparationLockStarted = performance.now();
     return withInterprocessLocks([lock], async () => {
-      if (preparationGuard) recordTaskOperationTiming("preparation:candidate-lock-wait", {
+      recordTaskOperationTiming("preparation:candidate-lock-wait", {
         durationMs: performance.now() - preparationLockStarted,
       });
       const validateArchive = async () => {
@@ -2119,11 +2174,49 @@ export class ReleaseGitWorkspaceService {
       const historyRequest = { projectRoot: initial.root, provenance, planRevision: revision, tasks };
       let historyAuthority = await this.#nativeHistoryAuthority(historyRequest);
       if (historyAuthority?.publishedMetadata) historyRequest.expectedPublishedMetadata = historyAuthority.publishedMetadata;
-      await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
+      await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
+      const readLegacyReuseBinding = async () => measureTaskOperation("native:legacy-prepared-verify", async () => {
+        if (checkpoint?.phase !== "prepared" || checkpoint.baseCommit !== baseCommit
+            || stableManifest(checkpoint.baseProvenance ?? null) !== stableManifest(provenance ?? null)) return null;
+        const retained = await this.frozenCandidate(initial.root);
+        const manifestBytes = await readFile(retained.manifestFile);
+        if (sha256(manifestBytes) !== retained.manifestHash) throw new Error("Retained native manifest changed");
+        const old = JSON.parse(manifestBytes);
+        if (retained.checkpointPhase !== "prepared" || old.compositionPolicy !== NATIVE_RELEASE_POLICY
+            || String(old.workspaceId ?? "") !== String(workspaceId ?? "")
+            || stableManifest(old.baseProvenance ?? null) !== stableManifest(provenance ?? null)) return null;
+        const oldTasks = normalizedFrozenTasks(old.tasks);
+        const oldIdentity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: retained.planRevision, baseCommit, tasks: oldTasks };
+        const oldRoot = path.join(layout.root, "native-merges", sha256(stableManifest(oldIdentity)).slice(0, 24));
+        const stateFile = path.join(oldRoot, "merge.json");
+        const stateInfo = await lstat(stateFile).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+        if (!stateInfo?.isFile() || stateInfo.isSymbolicLink()) return null;
+        const bytes = await readFile(stateFile), state = JSON.parse(bytes);
+        if (taskGitIdentityHash(state.identity) !== taskGitIdentityHash(oldIdentity) || state.head !== retained.preReleaseHead
+            || taskGitIdentityHash(state.merges) !== taskGitIdentityHash(old.merges)) return null;
+        const oldAuthority = await this.#nativeHistoryAuthority({ projectRoot: initial.root, provenance,
+          planRevision: retained.planRevision, tasks: oldTasks });
+        if (taskGitIdentityHash(oldAuthority) !== taskGitIdentityHash(historyAuthority)) return null;
+        const checkpointBytes = await readFile(clone.checkpointFile);
+        if (sha256(await readFile(retained.manifestFile)) !== retained.manifestHash
+            || stableManifest(JSON.parse(checkpointBytes)) !== stableManifest(checkpoint)) {
+          throw new Error("Retained prepared prefix custody changed");
+        }
+        return { root: oldRoot, identityHash: taskGitIdentityHash(oldIdentity), head: retained.preReleaseHead,
+          tree: retained.tree, journalHash: sha256(bytes), mergesHash: taskGitIdentityHash(old.merges),
+          verifyInRepository: retainedGit => assertNativePreparedComposition({ git: retainedGit, baseCommit,
+            tasks: oldTasks, merges: old.merges, head: retained.preReleaseHead, tree: retained.tree,
+            identity: oldIdentity, verifyReview: this.verifyNativeResolutionReview, historyAuthority: oldAuthority }),
+          unchanged: async () => sha256(await readFile(clone.checkpointFile)) === sha256(checkpointBytes)
+            && sha256(await readFile(retained.manifestFile)) === retained.manifestHash };
+      });
       const composition = await mergeSelectedResults({
         root: mergeRoot, sourceRoot: clone.releaseRoot, baseCommit, tasks, identity,
+        reuseContext: { repositoryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
+          baseProvenance: provenance ?? null, historyAuthority: historyAuthority ?? null },
+        readLegacyReuseBinding,
         resolutionReview: nativeResolutionReview, verifyReview: this.verifyNativeResolutionReview,
         deliveredHead: checkpoint?.preReleaseHead ?? null,
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
@@ -2180,7 +2273,7 @@ export class ReleaseGitWorkspaceService {
           && journal.manifestHash !== manifestHash) {
         throw Object.assign(new Error("A different native preparation remains unresolved"), { code: "AWAIT_PREPARATION_UNKNOWN" });
       }
-      const validate = async () => {
+      const validate = async () => measureTaskOperation("native:promotion-authority", async () => {
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         await validatePreparationMain();
         const current = await primarySnapshot(initial.root);
@@ -2203,7 +2296,7 @@ export class ReleaseGitWorkspaceService {
         }
         await validateLocalSource();
         historyAuthority = await this.#nativeHistoryAuthority(historyRequest);
-        await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
+        await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority }));
         if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
           git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
           adoptions: historyAuthority.adoptions, originCommit: localSource.approvedOriginMainCommit });
@@ -2219,7 +2312,7 @@ export class ReleaseGitWorkspaceService {
             throw Object.assign(new Error("Original Await origin changed after archive"), { code: "AWAIT_PREPARATION_UNKNOWN" });
           }
         }
-      };
+      });
       const requireCheckout = async (head) => {
         if (await git(["rev-parse", "HEAD^{commit}"]) !== head
             || await git(["write-tree"]) !== await git(["rev-parse", `${head}^{tree}`])
@@ -3392,6 +3485,7 @@ export class ReleaseGitWorkspaceService {
             : {}),
           ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
           resultCommit: task.resultCommit,
+          ...(task.integrations.length ? { integrations: task.integrations.map(integration => ({ ...integration })) } : {}),
           ...(task.squashTransfer ? { squashTransfer: task.squashTransfer } : {}),
           ...selectedCompositionFields(task),
         })),
