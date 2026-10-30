@@ -72,6 +72,60 @@ function testFailureFacts(error, depth = 0) {
   } catch { return { name: "UninspectableFailure" }; }
 }
 
+function retainedCheckpoint(saved, { identity, now, retentionMs, maxEntries }) {
+  const state = saved?.version === 2 ? structuredClone(saved) : { version: 2, suites: {} };
+  state.identity = identity;
+  const entries = [];
+  const cutoff = now() - retentionMs;
+  for (const [suiteName, value] of Object.entries(state.suites ?? {})) {
+    for (const [file, fingerprint] of Object.entries(value.completedFingerprints ?? {})) {
+      const timestamp = value.completedAt?.[file];
+      if (typeof fingerprint === "string" && Number.isFinite(timestamp) && timestamp >= cutoff && timestamp <= now()) {
+        entries.push({ suiteName, file, fingerprint, timestamp });
+      }
+    }
+  }
+  const failures = Object.entries(state.suites ?? {}).map(([name, value]) =>
+    [name, Array.isArray(value.failedFiles) ? value.failedFiles.filter(file => typeof file === "string") : []]);
+  state.suites = Object.fromEntries(failures.map(([name, failedFiles]) =>
+    [name, { completedFingerprints: {}, completedAt: {}, failedFiles }]));
+  for (const entry of entries.sort((a, b) => b.timestamp - a.timestamp).slice(0, maxEntries)) {
+    const value = state.suites[entry.suiteName];
+    value.completedFingerprints[entry.file] = entry.fingerprint;
+    value.completedAt[entry.file] = entry.timestamp;
+  }
+  return state;
+}
+
+async function checkpointDecision(file, suite, state, fingerprint, enabled) {
+  const result = await fingerprint(file);
+  const currentFingerprint = typeof result === "string" ? result : result?.fingerprint ?? null;
+  const missReasons = Array.isArray(result?.missReasons)
+    ? result.missReasons.filter(value => typeof value === "string" && value) : [];
+  const previous = state.suites[suite];
+  const status = previous?.failedFiles?.includes(file) ? "failed"
+    : !currentFingerprint ? "unknown"
+      : enabled && previous?.completedFingerprints?.[file] === currentFingerprint ? "reusable"
+        : previous?.completedFingerprints?.[file] ? "affected" : "unproven";
+  return { file, suite, status, fingerprint: currentFingerprint, missReasons };
+}
+
+// Read-only input to the existing exact selection owner. Execution recomputes
+// these decisions; this plan is neither a PASS nor publication authority.
+export async function planCheckpointedTestFiles(files, {
+  suite, suiteForFile = () => suite, identity = "", checkpoint = null,
+  fingerprint = async () => null, now = Date.now,
+  retentionMs = 30 * 24 * 60 * 60_000, maxEntries = 2_000,
+} = {}) {
+  const enabled = Boolean(checkpoint && identity);
+  const state = retainedCheckpoint(enabled ? await checkpoint.read() : null,
+    { identity, now, retentionMs, maxEntries });
+  const entries = [];
+  for (const file of files) entries.push(await checkpointDecision(file, suiteForFile(file), state, fingerprint, enabled));
+  return { entries, selectedFiles: entries.filter(entry => entry.status !== "reusable").map(entry => entry.file),
+    reusedFiles: entries.filter(entry => entry.status === "reusable").map(entry => entry.file) };
+}
+
 export async function runCheckpointedTestFiles(files, {
   suite,
   suiteForFile = () => suite,
@@ -91,24 +145,7 @@ export async function runCheckpointedTestFiles(files, {
   const saved = checkpoint && identity ? await checkpoint.read() : null;
   // Legacy hashes omitted IO inputs and toolchains, so never upgrade them into
   // successful evidence. Release identity is metadata; v2 hashes own reuse.
-  const state = saved?.version === 2 ? structuredClone(saved) : { version: 2, suites: {} };
-  state.identity = identity;
-  const entries = [];
-  const cutoff = now() - retentionMs;
-  for (const [suiteName, value] of Object.entries(state.suites ?? {})) {
-    for (const [file, fingerprint] of Object.entries(value.completedFingerprints ?? {})) {
-      const timestamp = value.completedAt?.[file];
-      if (typeof fingerprint === "string" && Number.isFinite(timestamp) && timestamp >= cutoff && timestamp <= now()) {
-        entries.push({ suiteName, file, fingerprint, timestamp });
-      }
-    }
-  }
-  state.suites = {};
-  for (const entry of entries.sort((a, b) => b.timestamp - a.timestamp).slice(0, maxEntries)) {
-    const value = state.suites[entry.suiteName] ??= { completedFingerprints: {}, completedAt: {} };
-    value.completedFingerprints[entry.file] = entry.fingerprint;
-    value.completedAt[entry.file] = entry.timestamp;
-  }
+  const state = retainedCheckpoint(saved, { identity, now, retentionMs, maxEntries });
   const suites = new Map();
   for (const file of files) {
     const name = suiteForFile(file);
@@ -116,7 +153,8 @@ export async function runCheckpointedTestFiles(files, {
       const savedSuite = state.suites[name];
       suites.set(name, { savedSuite,
         completedFingerprints: { ...(savedSuite?.completedFingerprints ?? {}) },
-        completedAt: { ...(savedSuite?.completedAt ?? {}) } });
+        completedAt: { ...(savedSuite?.completedAt ?? {}) },
+        failedFiles: new Set(savedSuite?.failedFiles ?? []) });
     }
   }
   const failures = [];
@@ -126,19 +164,18 @@ export async function runCheckpointedTestFiles(files, {
   for (const [index, file] of files.entries()) {
     const suiteName = suiteForFile(file);
     const { savedSuite, completedFingerprints, completedAt } = suites.get(suiteName);
-    const fingerprintResult = await fingerprint(file);
-    const currentFingerprint = typeof fingerprintResult === "string"
-      ? fingerprintResult : fingerprintResult?.fingerprint ?? null;
-    const missReasons = Array.isArray(fingerprintResult?.missReasons)
-      ? fingerprintResult.missReasons.filter((value) => typeof value === "string" && value) : [];
-    if (checkpoint && identity && currentFingerprint && completedFingerprints[file] === currentFingerprint) {
+    const decision = await checkpointDecision(file, suiteName, state, fingerprint, Boolean(checkpoint && identity));
+    const { fingerprint: currentFingerprint, missReasons } = decision;
+    if (decision.status === "reusable") {
       log(`Тест уже пройден, продолжаю: ${file}`);
+      onFile({ file, suite: suiteName, outcome: "reused", reason: "unchanged-input-proof" });
       continue;
     }
     delete completedFingerprints[file];
     delete completedAt[file];
     if (checkpoint && identity) {
-      if (!currentFingerprint) log(`Тест без кэша (${missReasons.join(", ") || "input-proof-unavailable"}): ${file}`);
+      if (decision.status === "failed") log(`Повторяю упавший тест: ${file}`);
+      else if (!currentFingerprint) log(`Тест без кэша (${missReasons.join(", ") || "input-proof-unavailable"}): ${file}`);
       else if (savedSuite?.completedFingerprints?.[file]) log(`Кэш теста изменился (input fingerprint): ${file}`);
       else log(`Кэш теста отсутствует: ${file}`);
     }
@@ -148,6 +185,7 @@ export async function runCheckpointedTestFiles(files, {
       suiteName,
       index,
       currentFingerprint,
+      reason: decision.status,
       queuedAt: now(),
       parallel: policy?.parallel === true,
       shared: new Set(Array.isArray(policy?.shared) ? policy.shared : []),
@@ -161,7 +199,7 @@ export async function runCheckpointedTestFiles(files, {
       state.suites[name] = {
         completedFingerprints: value.completedFingerprints,
         completedAt: value.completedAt,
-        failedFiles: failures.filter((failure) => failure.suiteName === name).map((failure) => failure.file),
+        failedFiles: [...value.failedFiles].sort(),
       };
     }
     // Enforce the same count bound as new results arrive, not only next run.
@@ -193,6 +231,7 @@ export async function runCheckpointedTestFiles(files, {
     const startedAt = now();
     try {
       await run(item.file);
+      suites.get(item.suiteName).failedFiles.delete(item.file);
       if (item.currentFingerprint) {
         const { completedFingerprints, completedAt } = suites.get(item.suiteName);
         completedFingerprints[item.file] = item.currentFingerprint;
@@ -200,6 +239,7 @@ export async function runCheckpointedTestFiles(files, {
       }
     } catch (caught) {
       error = caught;
+      suites.get(item.suiteName).failedFiles.add(item.file);
       failures.push({ file: item.file, suiteName: item.suiteName, error: caught, index: item.index });
     } finally {
       active.delete(item);
@@ -207,7 +247,7 @@ export async function runCheckpointedTestFiles(files, {
       const finishedAt = now();
       await persistState();
       onFile({ file: item.file, suite: item.suiteName, waitMs: startedAt - item.queuedAt,
-        runMs: finishedAt - startedAt, outcome: error ? "failed" : "passed",
+        runMs: finishedAt - startedAt, outcome: error ? "failed" : "passed", reason: item.reason,
         ...(error ? { failure: testFailureFacts(error) } : {}),
       });
     }

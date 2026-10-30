@@ -3368,6 +3368,17 @@ Unselected IDs are reported `not-selected`; they create no PASS/cache entry.
 Publication identity, checkpoint scope and result retain the frozen plan. This is
 no second publisher, automatic release, GUI or global validation bypass.
 
+`test-suite.mjs --plan-retry=<selection JSON>` reads the current inventory and
+the existing v2 checkpoint without running children or writing state. Its per-ID
+reasons and proposed include selection retain failed/affected/unproven/unknown
+checks; reusable means current content-proven success, not merely omitted scope.
+This is a proposal, not an amendment, frozen authority or permission to skip input
+drift after planning. Preserve the original selection, including release checks;
+ordinary execution rechecks inputs. Applying a narrower explicit selection still
+requires the existing RM continue, original readback and revision/generation CAS.
+An active generation is never replaced or stopped by retry planning. ADR-HUB-374
+records the conservative unknown-IO and crash-before-checkpoint boundaries.
+
 The same optional amendment can carry explicit `task_ids` (CLI `--task-ids=<JSON array>`).
 Only the existing Await/preflight owner verifies those exact IDs and accepted
 result/composition identities under its transition boundary, then rechecks them
