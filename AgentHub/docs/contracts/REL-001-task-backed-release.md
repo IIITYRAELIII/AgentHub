@@ -1,5 +1,108 @@
 # REL-001 — Task-backed Workspace release
 
+## Explicit interruption of an execution attempt
+
+An explicit claim/Test/Await cancellation can stop future execution while its
+prior Git effects remain unknown. It does not accept, undo, publish, delete or
+relabel those effects as NO_EFFECT. The existing operation receipt retains its
+entire historical receipt snapshot/identity/error/result. UNKNOWN is unchanged;
+a known pending attempt becomes failed execution after confirmed stop without
+inferring absent Git effects. Only confirmed worker join or positive
+whole-runtime retirement, plus the existing Task recovery lease/process-guard
+checks, permits the stopped disposition and ordinary next action. Pending
+retirement retains blocking guards. A late worker cannot revive its original or
+write through its inherited SQL/TaskGit execution context. Previously committed
+outcomes, dirty files and native journals remain available to their usual owners.
+
+This does not change selection, source/content preservation, native review,
+publication or primary protections. No production restart is implicit. See
+[Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
+
+## Windows Git path handling
+
+All Hub-owned Windows Git invocations use the shared argument policy in
+`git-invocation-policy.json`, including Task, release, isolated preparation,
+bundle/index-pack descendants and offline Python source tools. Existing
+process owners, environment scrubbing, hooks, guards and authority checks stay
+in control. This permanent application default does not write global/system
+configuration, change other applications' Git, or remove Git's independent
+repository-root length limits. Other operating systems keep their arguments.
+For a newly created owned clone the same policy also supplies clone-local
+`core.longpaths=true` at creation. Git clears client command configuration when
+starting another repository's upload-pack; that owned server must still read
+its own pack files. No source configuration/hooks or machine settings are copied.
+
+## Cleanup of an exact historical direct delivery
+
+`completion_mode=published_delivery` is an explicit RM compatibility input for
+original terminal direct-publication records, including an exact source port
+whose commit is not an ancestor of publication and has no Test ref. It uses
+the existing Complete preview/confirm and canonical Git cleanup, not a new
+publication, fake result, preserved branch archive or lifecycle writer.
+The owner binds original journal/artifact bytes, Task membership, repository,
+source HEAD/immutable base, published tree and immediate projection parent.
+Publication must remain in tracked origin/main. An entire source result already
+contained in that exact publication uses native ancestry. Otherwise source and published changes
+must match in paths, modes and added/removed bytes (including binary payload);
+only patch hunk coordinates/blob-ID headers and root release notes are excluded.
+Text ports retain the original context and require unique before/after hunk
+matches in both source and publication. Ambiguous repeated blocks refuse;
+binary/non-UTF8 ports require exact before/after blobs. Existing batched Git
+object reads retain raw whitespace and EOF bytes.
+
+For a combined original delivery, `publicationBaseCommit` may instead equal
+that journal's exact `from`. Its first-parent chain must terminate at the
+original published revision. Each complete Task delta must survive there:
+unique ordered raw text contexts in source/from and result/terminal, exact
+paths/modes, and whole identity for additions/deletions, binary, non-UTF8 or
+unterminated files. Unrelated edits outside those contexts are retained.
+No arbitrary intermediate range or per-Task commit is assumed. Optional
+`publicationJournalPath` selects one hash-pinned retained original; all runtime,
+artifact, membership, tracked ancestry and double-read checks stay unchanged.
+Combined cleanup also maps every complete Task removal/addition to one actual
+zero-context Git edit of the from-to-terminal delta. Retained context lines must
+map unchanged to their exact after positions. This proves replacement at the
+original context, beyond separate unique text occurrences, using only Git reads.
+A source baseline merge may only combine its immutable Task base with the
+original publication base, with no new non-notes entry outside either parent.
+
+Dirty/untracked/ignored data, a later source commit, changed evidence or stale
+Task preview refuses before cleanup. Existing Task/dev leases, process guards,
+CAS and native non-forced removal remain. After admission, partial cleanup
+resumes only the same stored original and remaining pinned artifacts. Closure
+preserves card/history and workflow; it does not assert a fresh workflow Done.
+Other historical absorption/UNKNOWN families require their own original proof
+and gain no authority from this mode. Removal condition: retire this legacy
+input after the remaining exact direct-delivery records have been cleaned.
+
+An explicitly completed non-product Task with zero own source delta uses
+RM-only `completion_mode=operational` on the same Complete operation. The
+owner requires no result/adoption/squash, exact HEAD==immutable Task base and
+that base in durable published history retained by tracked main. This is
+operational closure, not a new delivery claim or acceptance of untested code.
+Its ignored artifacts must already be retired by their owner; preview/confirm
+cannot discard them. Existing native cleanup removes the now-unused clean
+managed artifacts, preserving Task history and its original workflow status.
+For an already closed service card, this mode performs only its verified
+zero-own-delta cleanup and records the outcome; its card and original completion
+timestamp remain unchanged. This is not a reopening.
+Its `completed_operation_request_id` may supply the existing canonical
+published-release-service closure for an older repository. The same Task,
+preserved HEAD, outcome hash and published/tracked ancestry are bound; this
+consumes the existing reader's accepted result, not another manifest reader.
+
+An original confirmed Delete can continue after owned ignored-artifact
+retirement through the existing RM reconciliation owner. Its successful
+original preview/actor/token must reproduce the exact original argument hash,
+and its admitted Delete transition/current Task CAS/source/result pins must
+still match. Remaining dirty bytes require exact retained-copy proof, checked
+before admission and again before native removal. Distinct unpublished index
+and working byte versions each require a retained copy; equal bytes share one
+hash proof. Staged-only changes cannot bypass this check. The original failure stays
+in lifecycle evidence; the same original completes forward without claiming
+no effect or issuing a replacement Delete. Missing admission/preview, drift or
+unretired ignored data still refuses. No other UNKNOWN family is settled.
+
 ## Reviewed published main to dev recovery (ADR-HUB-375)
 
 An already-applied original waiting at `finalize` may use the existing RM
@@ -37,13 +140,46 @@ implied. See ADR-HUB-375 for the callable input and migration boundary.
 
 ## Normal release continuation (ADR-0132)
 
-The existing `hub_release_run` / `hub_release_continue` owner prepares a missing
-native candidate itself, then validates, freezes and publishes its immutable
-generation. A separate manual preparation/operator package is not a prerequisite
-for an ordinary transition. Exact selection/publication/base checks precede
-release changes. Release integration may synchronize already accepted main into
-managed dev under its normal lease/process guards; primary bytes remain intact.
-Ordinary Task integration retains its explicit adoption boundary.
+The existing `hub_release_run` / `hub_release_continue` owner captures the WHOLE
+already prepared PreRelease, equal to every current accepted Await Task in the
+Workspace. It does not call Await preparation or the native Task sequencer.
+Ordinary lifecycle acceptance owns composition/conflict resolution; excluding a
+Task requires normal Await-to-Test return and an updated prepared PreRelease.
+The release freezes version and consolidated CHANGELOG into its own immutable
+generation only after current membership/content/history/import closure/base
+and authority checks. Missing or stale preparation leaves the same operation
+waiting for normal lifecycle preparation; it never silently repairs the set.
+An expired exact local/origin main approval is likewise a prepared-candidate
+waiting condition, not terminal publication failure. Once origin is corrected,
+an older prepared base still refuses capture until its normal preparation owner
+has integrated accepted main and rebuilt the complete Await composition. Neither
+refusal advances a generation or authorizes release-side composition; the same
+original operation and authorization remain available for continuation.
+
+See ADR-HUB-364-whole-prepared-release, which supersedes ADR-0132's release-side
+automatic preparation decision. Primary bytes remain intact; no prefix cache
+or optimization of ordinary full Await composition is introduced.
+
+New public release authorization binds `taskScope=all_await` and retains the
+initial exact Task IDs as its immutable admission snapshot. Optional `task_ids`
+is only an expected-whole-set assertion, never a subset selector.
+Original request lookup and identity matching precede mutable Await derivation
+in the same durable admission transaction. Replays use the original admission
+snapshot, even after Await additions/removals; changed caller/options still refuse.
+A generation binds its actually captured full membership in existing
+`authorizedTaskIds`.
+Before publication admission the existing Await boundary compares the complete
+current set; changes recapture a later generation on the same operation.
+Already admitted publication stays pinned to its original generation/effects.
+
+Legacy authorizations without this field keep their exact bytes/fingerprint and
+saved selection. They can capture only when that selection is the whole current
+Await set. An explicit `hub_release_continue task_scope=all_await` amendment uses
+the existing revision/generation CAS and every target's not-applied readback;
+it records the captured full set and explicit-vs-omitted request arguments.
+Old amendments, generations and reviewed-main membership stay at their own
+historical boundary. This is no new tool, ledger, approval or publication lane.
+Changed code receives new validation, never a claimed old PASS.
 
 The source/default `node release.mjs run|continue|get|accept --provider <provider>
 --thread <thread> --stream <stream> --request-file <JSON>` consumes ordinary
@@ -165,6 +301,18 @@ this does not copy dependencies, change the frozen tree or relax version checks.
 
 ## Semantic public version and original build (ADR-HUB-334)
 
+For a new operation an explicit complete `release_version` (`X.Y.Z`) overrides
+automatic semantic selection (ADR-HUB-371). Every core number is operator input;
+no major/minor/patch preset is required. The existing semantic grammar and
+non-downgrade checks apply. Immutable authorization and generation input both
+bind the optional value through the same adapter/preflight/freeze chain. Omitted
+values preserve the historical hash and default. Freeze passes the explicit
+value to its existing version inspector, and persisted freeze/version/build
+expectations are reused after interruption. A changed or omitted explicit value
+cannot retarget the same generation. Source/default CLI invocation is documented
+above; `publish:changed -- --version X.Y.Z` is the existing operator input, not a
+separate administrator UI. No browser release-launch form is introduced.
+
 New installer publications migrate recognized calendar versions to public
 `2.0.0`. Later compatible corrections use patch, compatible features minor,
 and changes to supported interfaces/update compatibility major. The existing
@@ -262,6 +410,15 @@ does not change composition selection, provenance, candidate fetch/freeze or
 publication guards. Disposable composition validation uses the same selected
 main/base/result transport and still returns only a read-only composition proof;
 its existing invocation-local temporary cleanup and acceptance refusal remain.
+For an exact current prepared native candidate, read-only composition validation
+reuses the existing prepared-source verifier rather than discarding its accepted
+merge resolutions. Plan, whole selected evidence, base and whole provenance must
+match. Fresh native history/content, manifest/hash, checkout and primary guards
+run before and after the existing authority callback; a changed holder refuses.
+Git verification writes its mathematical objects only into invocation-owned
+selected-object bundle clones; the prepared holder is not its object scratch.
+No candidate is promoted, repaired or accepted by validation. Without a matching
+prepared holder, the existing disposable composition route remains authoritative.
 
 After an update's normal runtime start, policy v1 may retire only the redundant
 task-native-merge transport from a completed, durably published Task. The existing
@@ -789,7 +946,43 @@ Reopen rechecks exact source HEAD/base/branch/cleanliness/process ownership and
 dev checkout under the existing leases before terminal persistence. Restoring
 the exact source permits the same original to finish with no additional Git CAS.
 
-Await recomposes the current selected exact branches from agreed main. Native
+Await prepares the current selected exact branches from agreed main. The same
+native sequencer may reuse a verified unchanged ordered prefix from another
+completed capture, rather than repeat its Git merges. Repository/common directory,
+Workspace, policy, base, whole provenance/history authority and implementation
+stamp must agree. Complete normalized Task entries are compared in order. The
+first changed, removed or reordered entry ends the reusable prefix; no old suffix
+or final HEAD is adopted. Every reused step is verified by the current owner with
+no historical review capability. Extra compatibility bytes still require a new
+exact review. Old journals, identities, receipts and source checkouts stay intact.
+
+There is one narrow pre-upgrade seed: the existing owner may bind its exact current
+prepared checkpoint, immutable manifest, root/ref/common directory, provenance and
+whole native journal/merges/head/tree. It revalidates that complete old candidate
+and its old authority in the new invocation's private Git objects, then rechecks
+each reused prefix step under the new identity without old review. Arbitrary
+unstamped captures and frozen publication bodies do not qualify. Raw checkpoint,
+manifest and journal hashes are rechecked at use. No old journal is stamped or
+enriched. This migration bridge is unnecessary once matching captures carry the
+current implementation context; it does not weaken a current authority refusal.
+
+An identical conflict may reuse only exact whole path/stage/mode/blob context.
+Git objects retain the entire new automatic tree and substitute only the retained
+regular-file conflict entries; the current verifier proves unchanged clean context
+outside actual marker ranges. A new two-parent resolution belongs to the current
+parents and identity. Old review/selected-content exemptions are never transferred.
+Changed contexts or unsupported afterimage forms retain ordinary conflict/review
+handling. This is not a general per-file projector or a promise of no new conflicts.
+Object transport and prefix/retained-resolution checkout intents are persisted in
+the existing new journal before their effects. Reopen validates the actual Git
+readback; dirty/ignored collisions are preserved. No new writer, registry or cache
+authority is introduced. The entire current selected history/content, runtime
+import closure and fresh owning authority/lease/CAS checks still precede promotion.
+Existing original-ID spans distinguish lookup, transport, prefix verification,
+remaining merges and final checks; protected work is not queue-wait evidence.
+See ADR-HUB-372-verified-native-reuse.
+
+Native
 checkout in the exclusive Hub-owned clone precedes ref CAS and is guarded by
 native index/worktree readback. No reset --hard, force checkout, clean or custom
 physical-byte serialization may overwrite a busy checkout. Ignored/private
@@ -1163,15 +1356,18 @@ See ADR-0068.
 ## Conflict continuation and Blocked (HUB-235)
 
 The accepted conflict workflow is agent-led Task consolidation (ADR-0049).
-The policy calls this absorption: use it for duplicate outcomes or changes that
-cannot reasonably be implemented, checked and released independently. Shared
-file paths alone do not require absorption. Preserve source cards and history,
-and keep transferred unfinished requirements open. See ADR-0065.
-The Stream encountering the conflict takes over the other, surviving Task after
-notifying its executor and confirming saved work and handoff. It transfers its
-own requirements, checklist and useful results, merges its own branch into the
-surviving branch, resolves conflicts and validates the combined work. Only then
-does it close its own Task as combined, with a link to the surviving Task.
+При любом пересечении задач обнаруживший его исполнитель поглощает другую задачу в свою, сохраняя всю работу и требования, проверяя результат и завершая штатное поглощение. Так связанные изменения получают одного ответственного и доводятся до выпуска целиком. Согласование не требуется: исполнитель уведомляет TL, а TL — пользователя; ответа не ждут. При включённом авто-ревью, если поглощаемая часть не имеет положительного ревью, обязательно провести её ревью в составе объединённого результата.
+
+The detecting executor retains its own Task as the survivor. It confirms that the
+source executor has saved and stopped, transfers all source requirements,
+checklist, useful results and attachment references, then merges in the survivor's
+managed worktree, resolves conflicts and validates the combined result. Source
+cards and history remain retained; transferred unfinished requirements stay open.
+After verified transfer and canonical selected composition, the source is closed
+through the supported combined-closure preview/confirmation with a survivor link.
+An unchanged previously accepted part retains its exact review; new combined
+changes and open findings follow the existing Auto-review policy. See the
+HUB-369 addendum in ADR-HUB-369-direct-published-cleanup.
 Task-local save and merge commits for this operation are authorized. Consolidation
 does not imply publication or Done and requires no automatic consolidation engine.
 Previously integrated results are superseded through the ordinary lifecycle;
@@ -1235,6 +1431,18 @@ publication generation, manifest, selected result revisions and preserve-only
 cleanup plan; confirmation rechecks them. No result is fabricated and its clean
 managed worktree is retained. Publication, Task closure and cleanup remain
 separate facts.
+
+For a completed durable ReleaseOperation, the original indexed selected set,
+immutable generation identity, authorization and applied validation/publication/
+finalization receipts bind this proof independently of later publication-state
+updates. The existing completed-generation eligibility also owns retention.
+The reader hashes the original raw manifest in the exact live generation or its
+normal retention archive; it does not reconstruct raw bytes from the reduced
+SQLite manifest projection or import an operator's audit copy. Multiple matching
+original releases are ambiguous and refuse. Missing original raw evidence stays
+an explicit historical migration gap. The legacy current-publication path is
+retained only when no matching durable completed generation exists; it grants
+no historical substitution. See ADR-HUB-360-published-service-evidence.
 
 Preview binds both Task revisions, every source base/branch/HEAD, every survivor
 result, repository-scoped published revisions, publication generation, explicit
@@ -3125,6 +3333,21 @@ not required for allocation, while tampered bytes or missing unique content refu
 This does not restore a missing file or certify completeness/installation of any
 retained runtime body. No runtime files, pointers or manifests are changed.
 
+An original admitted partial runtime retirement may already have removed its
+last Android metadata copy. Allocation alone may then read the original canonical
+publication artifact (ADR-HUB-363-partial-retirement-allocation). Exact raw runtime
+manifest/root custody and the same admitted maintenance operation must match the
+pointer's pruning record. The artifact's complete identity/hash-derived directory,
+runtime result and PREPARED receipt bind that same manifest, source, original
+operation/generation and version; the Android artifact verifies its payload and
+the exact declared metadata size/hash. Pointer, root, original and archive custody
+are checked again after the final read. Current, rollback, running and unretired
+missing bodies gain no such authority. Missing/foreign/changed proof refuses.
+This observes allocation evidence only, never restores a file, completes pruning,
+settles a maintenance operation or declares publication successful. The historical
+path is removable when original partial retirements have completed normally and
+their runtime entries no longer exist; no archive retention policy is introduced.
+
 ## Standalone local release observation
 
 The optional `release-progress/server.mjs` projects only the requested existing
@@ -3292,3 +3515,80 @@ The existing task-await-cutover CLI's explicit ordinary-test mode only calls
 normal public Test with the original CAS and optional authenticated native
 review, after pinned clean source and canonical repository checks. It grants no
 initial-native, returned, squash or cross-Task cutover authority.
+
+## Pending stop and authenticated Desktop admission (HUB-368 R1/R2)
+
+A requested stop excludes new ordinary claim/workflow admission for that Task
+until confirmed stopped. The same indexed durable disposition is checked in
+receipt admission, before execution/next effects, and inside final Task SQL
+transactions. Cancellation continuation and other Tasks remain independently
+operable. A late assignment/finalization cannot overtake the requested stop.
+
+An authenticated Desktop workflow has actorKind=authenticated-user in the same
+MCP operation ledger, including an unassigned Workspace or Backlog Task. Its
+Stream/provider/Thread are null, not an invented provider turn or new Stream.
+Provider admissions retain their exact required caller identity. Existing rows,
+indexes, triggers, custody and receipt evidence survive the atomic nullable-user
+identity migration unchanged; no historical operation is reclassified or replayed.
+The existing Desktop controller and cancellation owner read and stop this exact
+operation before the next ordinary action, without changing Task assignment.
+
+## Observable ordinary Task operation execution
+
+Claim, updates, Test/Await and cleanup keep their existing lifecycle and exact
+original receipts while public transports can acknowledge durable admission
+before work completes. Test/Await status, Git references and release membership
+change only through the existing successful integration/CAS owner. Reading an
+admission or timing out a transport grants no acceptance, publication, replay or
+NO_EFFECT authority. Complete/Delete domain rules and preview/token checks are
+unchanged. The authenticated user's nullable identity uses the same canonical
+ledger; provider identity and inherited execution/custody fences stay intact.
+
+## Release stage persistence under SQLite contention (HUB-368)
+
+The existing asynchronous persistence queue retries only short owner/CAS/receipt
+closures for heartbeat, step admission/settlement, generation storage, publication
+reservation and state advancement. External composition, validation, Git and
+publication effects stay outside those closures. A returned effect result remains
+with its exact worker across a queue contention budget and the existing retry
+cadence; retrying its persistence must not invoke the effect again. Each write
+rechecks the original owner epoch and current durable revision. An identical
+already committed transition is read back without another outbox event.
+
+Addressed draining retains this worker and its owned contention continuation. A
+live foreign owner or durable external waiting condition does not hold the CLI
+open. Task-addressed draining uses effective amended membership, while original
+authorization, generation identities, historical receipts and target fences stay
+immutable. No global lock, busy-timeout increase, new release attempt or G0
+recovery authority is introduced. See ADR-HUB-368-release-persistence-retry.
+
+## Committed custody claim readback after reopen
+
+An exact successor whose Task assignment is already durably committed may read
+that result through the existing custody owner after a process/service reopen.
+This is not another execution admission: its original execution binding remains
+unchanged, including absent legacy metadata. The custody owner rechecks caller,
+original hash, fence, namespace, exact Task revision and committed binding under
+the existing Task lease. A readback-only path cannot fall through to assignment.
+Cancellation/pending-stop checks remain inherited, and ordinary new execution
+still cannot replace another worker binding.
+
+## Complete Windows lock-owner publication
+
+The existing interprocess lock owner writes and syncs its unchanged token owner
+in a unique same-parent ready directory, closes the source handle, then uses the
+fixed RuntimeHost directory-publication mode with MoveFileExW flags zero. Occupied
+directories, files and junctions refuse without replacement or deletion authority.
+Before protected work the owner verifies exact bigint directory/file identities,
+non-following regular entries, full payload and current owner through a retained
+reopened handle. A lost native reply is resolved only by that same exact object
+effect; it never authorizes a second publication attempt. Legacy, live, dead,
+mismatched, released and unknown-owner rules retain their existing authority.
+
+A crash before publication can leave a private ready sibling, not an incomplete
+canonical owner. A crash after publication leaves a complete ordinary owner for
+existing dead-process recovery. Unknown old bytes are not removed or relabelled.
+The native child is joined before readback or shutdown. This is a local Windows
+process-crash protocol; POSIX behavior, remote filesystems and power-failure
+durability receive no new guarantee. Bootstrap and native publication are traced
+separately from admission wait by the existing operation timing owner.

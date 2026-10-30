@@ -706,6 +706,27 @@ export function createDesktopSnapshotFactory({
     };
   }
 
+  function desktopReadTask({ provider, threadId, streamId } = {}) {
+    const exactProvider = String(provider ?? "").trim().toLowerCase();
+    const exactThread = String(threadId ?? "").trim();
+    const exactStream = String(streamId ?? "").trim();
+    if (!exactProvider || !exactThread) return null;
+    const matches = (entry) => String(entry?.provider ?? "").trim().toLowerCase() === exactProvider
+      && String(entry?.threadId ?? "").trim() === exactThread
+      && (!exactStream || String(entry?.streamId ?? "").trim() === exactStream);
+    const entry = catalog.entries().find(matches);
+    if (entry) return entry;
+    // Full snapshots retain the current selected Thread before catalog discovery
+    // catches up. Preserve that same exact identity without building its UI.
+    const selected = selection.hasThread() ? selection.selectedTurnTarget() : null;
+    if (!selected) return null;
+    const transient = {
+      ...selected,
+      ...workspaceBindingForTask(selected, board.workspaces?.() ?? catalog.hierarchy?.() ?? []),
+    };
+    return matches(transient) ? transient : null;
+  }
+
   async function desktopSnapshot({
     refresh = false,
     accountId = "",
@@ -1034,6 +1055,7 @@ export function createDesktopSnapshotFactory({
     desktopContextSnapshot,
     desktopRunSnapshot,
     desktopTaskSnapshot,
+    desktopReadTask,
     desktopSnapshot,
   };
 }

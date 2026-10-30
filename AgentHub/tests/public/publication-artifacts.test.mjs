@@ -27,6 +27,8 @@ async function fixture(t, { runtimePublication = null } = {}) {
   await save(path.join(sourceRoot, "VSCodeExtension", "package.json"), JSON.stringify(pkg));
   await save(path.join(sourceRoot, "VSCodeExtension", "extension.js"), "prepared extension");
   await save(path.join(sourceRoot, "install.py"), "# fixture installer");
+  await save(path.join(sourceRoot, "src/infrastructure/filesystem/git-invocation-policy.json"),
+    await readFile(path.resolve(import.meta.dirname, "../../src/infrastructure/filesystem/git-invocation-policy.json")));
   await save(path.join(sourceRoot, "cloudflare-worker", "wrangler.jsonc"), JSON.stringify({ name: "fixture", main: "src/worker.mjs", assets: {}, routes: ["fixture.test/*"] }));
   const events = [];
   const state = { release: null, remoteTag: null, publication: { revision: "base" }, failBuild: false, failRuntime: false, failWorker: false, failExtension: false };
@@ -389,6 +391,20 @@ test("prepared extension is applied and reconciled by the real Python installer 
   identity.labels = steps.map((step) => step.label);
   await journal.start(identity, steps);
   await steps[0].execute();
+  const [artifactId] = await readdir(path.join(f.runtimeRoot, "publication-artifacts"));
+  const extensionArtifact = path.join(f.runtimeRoot, "publication-artifacts", artifactId, "extension");
+  const gitPolicy = "src/infrastructure/filesystem/git-invocation-policy.json";
+  const policyBytes = await readFile(path.join(f.sourceRoot, gitPolicy));
+  const preparedPolicy = path.join(extensionArtifact, "payload", gitPolicy);
+  assert.deepEqual(await readFile(preparedPolicy), policyBytes);
+  const manifest = await readArtifact(extensionArtifact, {
+    revision: identity.revision, sourceRoot: f.sourceRoot, runtimeRoot: f.runtimeRoot, protocol: 1,
+  });
+  assert.equal(manifest.files.find((file) => file.path === gitPolicy)?.sha256, hash(policyBytes));
+  await writeFile(preparedPolicy, "{}");
+  await assert.rejects(steps[1].execute(), /Publication artifact bytes changed or are missing/);
+  assert.equal(installations, 0, "changed installer policy must refuse before application");
+  await writeFile(preparedPolicy, policyBytes);
   await assert.rejects(steps[1].execute(), /installer reply lost/);
   await steps[1].execute();
   assert.equal(installations, 1);

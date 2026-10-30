@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { performance } from "node:perf_hooks";
 import { selectedCompositionIdentity } from "../../domain/task-selected-composition.mjs";
 import { normalizedOwnGitPublication } from "../../domain/release-base-provenance.mjs";
 
 import {
   createCandidateGeneration,
+  completedReleaseGenerationEvidence,
   effectiveReleaseTaskIds,
+  effectiveReleaseTaskScope,
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
@@ -20,6 +23,70 @@ import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.
 import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
 
 const LEGACY_MIGRATION_PREFIX = "release-operation:legacy:";
+
+// Address only the original operations indexed by the selected Tasks. No global
+// latest-publication substitution, filesystem scan, migration or store writes.
+export function readPublishedReleaseServiceGeneration({ dataDir, workspaceId, repositoryRoot, selectedTasks } = {}) {
+  const file = runtimeDatabasePath(dataDir);
+  if (!selectedTasks?.length || !existsSync(file)) return null;
+  const rootKey = value => path.resolve(String(value)).replaceAll("\\", "/").toLowerCase();
+  const selected = items => items.map(item => `${item.taskId ?? item.id}:${item.resultCommit}`).sort();
+  const expected = selected(selectedTasks);
+  const database = new DatabaseSync(file, { readOnly: true });
+  try {
+    database.exec("BEGIN");
+    if (database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('release_operations','release_operation_tasks','release_candidate_generations','release_step_receipts')").get().count !== 4) return null;
+    const rows = database.prepare(`SELECT DISTINCT o.operation_json, g.generation_json, g.identity_sha256
+      FROM release_operations o JOIN release_operation_tasks t ON t.operation_id=o.operation_id
+      JOIN release_candidate_generations g ON g.operation_id=o.operation_id
+        AND g.generation=json_extract(o.operation_json, '$.currentGeneration')
+      WHERE o.workspace_id=? AND o.state='done' AND t.task_id IN (${selectedTasks.map(() => "?").join(",")})`)
+      .all(workspaceId, ...selectedTasks.map(item => item.id));
+    const matches = [];
+    for (const row of rows) {
+      const operation = JSON.parse(row.operation_json), generation = JSON.parse(row.generation_json);
+      if (operation.workspaceId !== workspaceId || JSON.stringify(selected(generation.selectedResults)) !== JSON.stringify(expected)) continue;
+      const { fingerprint, ...authorization } = operation.authorization;
+      if (releaseIdentitySha256(authorization) !== fingerprint
+          || generation.identitySha256 !== row.identity_sha256) throw new Error("Published release original identity changed");
+      const latest = name => {
+        const receipt = database.prepare(`SELECT receipt_json FROM release_step_receipts
+          WHERE operation_id=? AND generation=? AND step_id=? ORDER BY attempt DESC LIMIT 1`)
+          .get(operation.operationId, generation.generation, name);
+        return receipt ? JSON.parse(receipt.receipt_json) : null;
+      };
+      const proof = completedReleaseGenerationEvidence({ operation, generation,
+        validation: latest("validate"), finalization: latest("finalize") });
+      if (!proof) throw new Error("Published release completed-generation evidence changed");
+      if (JSON.stringify([...(generation.authorizedTaskIds ?? authorization.taskIds)].sort())
+          !== JSON.stringify(generation.selectedResults.map(item => item.taskId).sort())) {
+        throw new Error("Published release authorized selection changed");
+      }
+      const candidates = generation.candidates.filter(item => rootKey(item.repositoryRoot) === rootKey(repositoryRoot));
+      if (candidates.length !== 1) continue;
+      const candidate = candidates[0];
+      const targets = releaseApprovedTargets(restoreReleaseOperation(operation)).filter(target =>
+        target.kind === "agent-hub-publication" && rootKey(target.repositoryRoot) === rootKey(repositoryRoot));
+      if (targets.length !== 1) continue;
+      const published = latest(`publish:${targets[0].targetId}`);
+      if (!published || published.status !== "applied" || published.operationId !== operation.operationId
+          || published.generation !== generation.generation
+          || published.inputSha256 !== releaseIdentitySha256(published.input)
+          || published.input?.candidate !== generation.identitySha256
+          || releaseIdentitySha256(published.input.target) !== releaseIdentitySha256(targets[0])
+          || !["applied", "already_applied"].includes(published.effect?.status)
+          || published.effect?.revision !== candidate.commit
+          || releaseIdentitySha256(published.effect) !== releaseIdentitySha256(operation.publicationEffects.targets[targets[0].targetId])) {
+        throw new Error("Published release target receipt changed");
+      }
+      matches.push({ ...proof, candidate });
+    }
+    if (matches.length > 1) throw new Error("Published release service selection is ambiguous");
+    return matches[0] ?? null;
+  } finally {
+    try { database.exec("ROLLBACK"); } finally { database.close(); }
+  }
+}
 
 // Git publication is a narrower fact than successful runtime delivery. Reuse
 // existing immutable generation/receipt authority; never advance publication
@@ -255,11 +322,20 @@ function assertDatabaseOwner(database, operationId, expectedOwner) {
   }
 }
 
+function transactionPhase(database, statement, phase) {
+  try { return database.exec(statement); }
+  catch (error) { if (error && typeof error === "object") error.releasePersistencePhase = phase; throw error; }
+}
+
+function diagnosticCode(value) {
+  return /^[A-Z][A-Z0-9_]*$/u.test(String(value ?? "")) ? String(value) : null;
+}
+
 function immediateTransaction(database, operation) {
-  database.exec("BEGIN IMMEDIATE");
+  transactionPhase(database, "BEGIN IMMEDIATE", "begin");
   try {
     const result = operation();
-    database.exec("COMMIT");
+    transactionPhase(database, "COMMIT", "commit");
     return result;
   } catch (error) {
     try { database.exec("ROLLBACK"); } catch {}
@@ -360,11 +436,39 @@ export class ReleaseOperationStore {
   // A retry rereads durable CAS/owner evidence inside the closure.
   async runOperationMutation(operationId, mutation, options = {}) {
     const id = String(operationId);
+    const { persistence = {}, ...queueOptions } = options;
+    const started = performance.now();
+    let firstAttempt = null, attempts = 0, lastError = null, failed = false;
     let queue = this.#mutationQueues.get(id);
     if (!queue) this.#mutationQueues.set(id, queue = new AsyncSqliteMutationQueue());
     try {
-      return await queue.run(mutation, { ...options, requestId: id });
+      return await queue.run(async () => {
+        firstAttempt ??= performance.now();
+        attempts++;
+        try { return await mutation(); }
+        catch (error) { lastError = error; throw error; }
+      }, { ...queueOptions, requestId: id });
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
+      // Error/retry summaries only. No SQL, error text, paths, or payload bytes.
+      if (lastError) {
+        try {
+          this.recordPersistence({ operationId: id, outcome: failed ? "failed" : "succeeded",
+            elapsedMs: performance.now() - started, queueWaitMs: (firstAttempt ?? started) - started,
+            attempts, processId: process.pid, method: persistence.method ?? "mutation",
+            phase: lastError.releasePersistencePhase ?? "body",
+            ownerEpoch: persistence.ownerEpoch ?? null, generation: persistence.generation ?? null,
+            step: persistence.step == null ? null : String(persistence.step).split(":")[0],
+            attempt: persistence.attempt ?? null,
+            errorCode: diagnosticCode(lastError.code) ?? "RELEASE_PERSISTENCE_ERROR",
+            sqliteCode: Number(lastError.errcode) || null,
+            sqlitePrimaryCode: Number(lastError.errcode) ? Number(lastError.errcode) & 0xff : null,
+            causeCode: diagnosticCode(persistence.causeCode ?? lastError.cause?.code),
+            settlementCode: diagnosticCode(lastError.settlementError?.code) });
+        } catch { /* Observability cannot veto the original persistence result. */ }
+      }
       if (queue.diagnostics().queued === 0 && this.#mutationQueues.get(id) === queue) {
         this.#mutationQueues.delete(id);
       }
@@ -375,43 +479,65 @@ export class ReleaseOperationStore {
     return sqliteContention(error);
   }
 
-  constructor({ dataDir, idFactory = randomUUID, now = () => new Date().toISOString() } = {}) {
+  constructor({ dataDir, idFactory = randomUUID, now = () => new Date().toISOString(), recordPersistence = () => {} } = {}) {
     if (!String(dataDir ?? "").trim()) throw new TypeError("dataDir is required");
     this.dataDir = String(dataDir);
     this.idFactory = idFactory;
     this.now = now;
+    this.recordPersistence = recordPersistence;
   }
 
   #withDatabase(callback) {
-    const database = this.#initialized
-      ? new DatabaseSync(runtimeDatabasePath(this.dataDir))
-      : openRuntimeDatabase(this.dataDir);
+    let database, failure, phase = "open";
     try {
+      database = this.#initialized
+        ? new DatabaseSync(runtimeDatabasePath(this.dataDir))
+        : openRuntimeDatabase(this.dataDir);
+      phase = "configure";
       if (!this.#initialized) {
         configure(database);
         this.#initialized = true;
       } else {
         database.exec("PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 0;");
       }
+      phase = "body";
       return callback(database);
+    } catch (error) {
+      failure = error;
+      if (error && typeof error === "object") error.releasePersistencePhase ??= phase;
+      throw error;
     } finally {
-      database.close();
+      try { database?.close(); }
+      catch (error) {
+        error.releasePersistencePhase = "close";
+        if (failure) failure.settlementError = error;
+        else throw error;
+      }
     }
   }
 
-  create(input = {}) {
-    const operation = createReleaseOperation({
+  create(input = {}, { resolveAuthorization = null } = {}) {
+    if (resolveAuthorization != null && typeof resolveAuthorization !== "function") {
+      throw new TypeError("resolveAuthorization must be a function");
+    }
+    const materialize = authorization => createReleaseOperation({
       ...input,
+      authorization,
       operationId: input.operationId ?? this.idFactory(),
       createdAt: input.createdAt ?? this.now(),
       updatedAt: input.updatedAt ?? input.createdAt ?? this.now(),
     });
+    const immediate = resolveAuthorization ? null : materialize(input.authorization);
     return this.#withDatabase((database) => {
-      database.exec("BEGIN IMMEDIATE");
+      transactionPhase(database, "BEGIN IMMEDIATE", "begin");
       try {
         const existing = operationFromRow(database.prepare(`
           SELECT operation_json FROM release_operations WHERE workspace_id = ? AND request_id = ?
-        `).get(operation.workspaceId, operation.requestId));
+        `).get(immediate?.workspaceId ?? String(input.workspaceId ?? "").trim(),
+          immediate?.requestId ?? String(input.requestId ?? "").trim()));
+        // Resolve a new snapshot only after the original lookup, in the SAME
+        // transaction. A racing intake cannot replace the saved admission.
+        const operation = immediate ?? materialize(resolveAuthorization(existing ? structuredClone(existing) : null));
         if (existing) {
           if (!sameCreationIdentity(existing, operation)) throw new Error("release operation request identity conflict");
           database.exec("ROLLBACK");
@@ -419,7 +545,7 @@ export class ReleaseOperationStore {
         }
         writeOperation(database, operation);
         writeEvent(database, operation, "operation.created", { operationId: operation.operationId, state: operation.state });
-        database.exec("COMMIT");
+        transactionPhase(database, "COMMIT", "commit");
         return { operation, created: true };
       } catch (error) {
         try { database.exec("ROLLBACK"); } catch {}
@@ -476,7 +602,7 @@ export class ReleaseOperationStore {
     const id = String(operationId ?? "").trim();
     if (!id) throw new TypeError("operationId is required");
     return this.#withDatabase((database) => {
-      database.exec("BEGIN IMMEDIATE");
+      transactionPhase(database, "BEGIN IMMEDIATE", "begin");
       try {
         const row = database.prepare(
           "SELECT operation_json FROM release_operations WHERE operation_id = ?",
@@ -534,7 +660,7 @@ export class ReleaseOperationStore {
           id, current.revision,
         );
         if (update.changes !== 1) throw new Error("release operation revision conflict");
-        if (testSelectionAmendment) {
+        if (testSelectionAmendment || patch.selectedResults && effectiveReleaseTaskScope(result.operation) === "all_await") {
           const insertTask = database.prepare("INSERT OR IGNORE INTO release_operation_tasks(operation_id, task_id) VALUES (?, ?)");
           for (const taskId of effectiveReleaseTaskIds(result.operation)) insertTask.run(id, taskId);
         }
@@ -547,7 +673,7 @@ export class ReleaseOperationStore {
             nextAction: result.operation.nextAction,
           });
         }
-        database.exec("COMMIT");
+        transactionPhase(database, "COMMIT", "commit");
         return result;
       } catch (error) {
         try { database.exec("ROLLBACK"); } catch {}
@@ -731,12 +857,15 @@ export class ReleaseOperationStore {
     `).all(Math.max(1, Math.min(2_000, Number(limit) || 500))).map(operationFromRow).filter(Boolean));
   }
 
-  forTask(taskId) {
+  forTask(taskId, { workspaceId = null } = {}) {
     return this.#withDatabase((database) => database.prepare(`
       SELECT operation_json FROM release_operations
       WHERE operation_id IN (SELECT operation_id FROM release_operation_tasks WHERE task_id = ?)
+        OR (workspace_id = ? AND state IN ('compose', 'validate', 'publish', 'waiting'))
       ORDER BY updated_at DESC
-    `).all(String(taskId)).map(operationFromRow).filter(operation => operation && effectiveReleaseTaskIds(operation).includes(String(taskId))));
+    `).all(String(taskId), String(workspaceId ?? "")).map(operationFromRow).filter(operation => operation
+      && (effectiveReleaseTaskIds(operation).includes(String(taskId))
+        || operation.workspaceId === workspaceId && effectiveReleaseTaskScope(operation) === "all_await")));
   }
 
   pendingEvents({ limit = 100 } = {}) {

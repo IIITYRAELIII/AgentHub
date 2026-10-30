@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "../filesystem/preparation-git-isolation.mjs";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -130,7 +131,7 @@ export async function writePublicationState(value, file = publicationStateFile()
 }
 
 export async function gitOutput(args, { cwd } = {}) {
-  const { stdout } = await execFileAsync("git", args, {
+  const { stdout } = await execFileAsync("git", ownedGitArguments(args), {
     cwd,
     encoding: "utf8",
     windowsHide: true,

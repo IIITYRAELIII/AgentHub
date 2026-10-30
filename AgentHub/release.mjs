@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openTaskAwaitCutoverRuntime } from "./task-await-cutover.mjs";
 import { createReleaseOperationServices } from "./src/composition/release-operation-composition.mjs";
+import { createCommandTraceComposition } from "./src/composition/command-trace-composition.mjs";
 import { createReleaseCorrectionRequester } from "./src/composition/infrastructure-composition.mjs";
 import { AGENT_HUB_VERSION } from "./src/infrastructure/filesystem/agent-hub-package.mjs";
 
@@ -27,10 +28,19 @@ export function parseReleaseArguments(argv) {
 export async function openReleaseRuntime({
   openTaskRuntime = openTaskAwaitCutoverRuntime,
   createServices = createReleaseOperationServices,
+  createTrace = createCommandTraceComposition,
+  enablePersistenceTrace = true,
 } = {}) {
   const runtime = await openTaskRuntime();
+  let trace = null;
   try {
     const { service, config, taskBoard, workspaceCatalog } = runtime;
+    if (enablePersistenceTrace) {
+      try {
+        trace = createTrace({ dataDir: config.dataDir });
+        await trace.initialize();
+      } catch { console.warn("Release persistence trace unavailable"); }
+    }
     const { operations } = createServices({
       dataDir: config.dataDir, runtimeRoot: path.dirname(config.dataDir),
       taskBoard, taskLifecycle: service.taskLifecycle, workspaceCatalog,
@@ -38,10 +48,19 @@ export async function openReleaseRuntime({
       taskGitWorkspaces: service.taskGitWorkspaces, releaseGitWorkspaces: service.releasePreflight.releaseGitWorkspaces,
       requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle: service.taskLifecycle }),
       runnerVersion: AGENT_HUB_VERSION,
+      recordCommandTrace: span => trace?.service?.recordBestEffort?.(span) ?? false,
     });
     service.releaseOperations = operations;
-    return { ...runtime, operations };
-  } catch (error) { runtime.close(); throw error; }
+    return { ...runtime, operations, async close() {
+      try { await trace?.close?.(); }
+      catch { console.warn("Release persistence trace shutdown unavailable"); }
+      finally { await runtime.close(); }
+    } };
+  } catch (error) {
+    try { await trace?.close?.(); } catch {}
+    await runtime.close();
+    throw error;
+  }
 }
 
 export async function executeRelease(input, {
@@ -60,7 +79,7 @@ export async function executeRelease(input, {
     throw new Error("Release acceptance requires an addressed Task Await request");
   }
   const addressedTaskId = input.action === "accept" ? request.task_id.trim() : null;
-  const runtime = await openRuntime();
+  const runtime = await openRuntime({ enablePersistenceTrace: input.action !== "get" });
   try {
     const token = runtime.service.contextToken({ provider: input.provider, threadId: input.threadId, streamId: input.streamId });
     let result;
@@ -90,7 +109,7 @@ export async function executeRelease(input, {
     } else snapshot = await runtime.operations.drain(result.operationId);
     if (replyError) throw replyError;
     return snapshot;
-  } finally { runtime.close(); }
+  } finally { await runtime.close(); }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

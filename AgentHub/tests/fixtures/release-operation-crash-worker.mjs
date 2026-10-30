@@ -37,6 +37,9 @@ const commands = new ReleaseOperationCommandService({
   },
   taskBoard: {
     task: (taskId) => ({ id: taskId, workspaceId: fixture.workspaceId, streamId: fixture.streamId }),
+    releaseTasks: workspaceId => workspaceId === fixture.workspaceId
+      ? fixture.request.taskIds.map(id => ({ id, workspaceId, streamId: fixture.streamId,
+        status: "started", workflowStatus: "awaiting_implementation" })) : [],
   },
 });
 const ack = commands.start(fixture.request);

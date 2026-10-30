@@ -3,6 +3,26 @@ import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import path from "node:path";
 
+import gitInvocationPolicy from "./git-invocation-policy.json" with { type: "json" };
+
+// Arguments only: existing callers retain process, environment and custody ownership.
+// Native Git subcommands inherit command-scoped config, including index-pack.
+export function ownedGitArguments(args, { platform = process.platform, executable = "git" } = {}) {
+  if (platform !== "win32" || !/(?:^|[\\/])git(?:\.exe)?$/iu.test(executable)) return args;
+  const prefix = gitInvocationPolicy.win32;
+  let command = 0;
+  while (args[command]?.startsWith("-")) {
+    command += ["-c", "-C", "--config-env", "--git-dir", "--work-tree", "--namespace", "--super-prefix"].includes(args[command]) ? 2 : 1;
+  }
+  // Git clears client command configuration when starting another repository's
+  // upload-pack. Configure our newly created clone before its first fetch, so
+  // its later owned server can read packs too; never copy source configuration.
+  const cloneSetting = `--config=${prefix[1]}`;
+  const configured = args[command] === "clone" && args[command + 1] !== cloneSetting
+    ? [...args.slice(0, command + 1), cloneSetting, ...args.slice(command + 1)] : args;
+  return prefix.every((value, index) => configured[index] === value) ? configured : [...prefix, ...configured];
+}
+
 const contexts = new AsyncLocalStorage();
 export const isolationDigest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function preparationIsolationLayout(dataDir, projectRoot, requestId, argumentsHash) {
@@ -34,7 +54,7 @@ export function guardedPreparationGit(operation) {
 }
 export function preparationGitInvocation(args, cwd) {
   const active = contexts.getStore();
-  if (!active) return { args };
+  if (!active) return { args: ownedGitArguments(args) };
   const noHooks = ["-c", `core.hooksPath=${path.join(active.dataDir, "empty-hooks")}`, "-c", "core.fsmonitor=false",
     "-c", "gc.auto=0", "-c", "maintenance.auto=false"];
   // Read-only remote authentication remains with the existing credential owner;
@@ -45,10 +65,10 @@ export function preparationGitInvocation(args, cwd) {
     // Use ordinary remote authentication, but never inherit Git directory,
     // object/index, command-config or worktree redirects for this local clone.
     if (process.env.GIT_CONFIG_GLOBAL) env.GIT_CONFIG_GLOBAL = process.env.GIT_CONFIG_GLOBAL;
-    return { args: [...noHooks, "-c", `core.worktree=${cwd}`, ...args], env };
+    return { args: ownedGitArguments([...noHooks, "-c", `core.worktree=${cwd}`, ...args]), env };
   }
   Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(active.dataDir, "empty-gitconfig"),
     GIT_TERMINAL_PROMPT: "0" });
-  return { args: ["--no-replace-objects", "--no-lazy-fetch", ...noHooks,
-    "-c", `init.templateDir=${path.join(active.dataDir, "empty-hooks")}`, ...args], env };
+  return { args: ownedGitArguments(["--no-replace-objects", "--no-lazy-fetch", ...noHooks,
+    "-c", `init.templateDir=${path.join(active.dataDir, "empty-hooks")}`, ...args]), env };
 }

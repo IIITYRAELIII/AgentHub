@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "../filesystem/preparation-git-isolation.mjs";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -81,7 +82,7 @@ async function gitRemoteHead(candidate) {
   // The immutable clone deliberately has no remotes. The registered repository
   // owns origin; ls-remote only observes it and does not change primary Git state.
   return new Promise((resolve) => {
-    const child = spawn("git", ["ls-remote", "--exit-code", "origin", "refs/heads/main"], {
+    const child = spawn("git", ownedGitArguments(["ls-remote", "--exit-code", "origin", "refs/heads/main"]), {
       cwd: candidate.repositoryRoot,
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
@@ -100,7 +101,7 @@ async function candidateAbsentFromRemote(candidate, remote) {
   const git = promisify(execFile);
   const options = { encoding: "utf8", windowsHide: true, maxBuffer: Infinity };
   const args = ["--no-replace-objects", "--no-optional-locks", "-C", candidate.repositoryRoot];
-  const run = async tail => (await git("git", [...args, ...tail], options)).stdout.trim();
+  const run = async tail => (await git("git", ownedGitArguments([...args, ...tail]), options)).stdout.trim();
   try {
     if (process.env.GIT_SHALLOW_FILE || process.env.GIT_GRAFT_FILE
         || await run(["rev-parse", "--is-shallow-repository"]) !== "false") return false;
@@ -110,7 +111,7 @@ async function candidateAbsentFromRemote(candidate, remote) {
     });
     if (grafts) return false;
     return await new Promise(resolve => {
-      const child = spawn("git", [...args, "rev-list", "--parents", remote, "--"], {
+      const child = spawn("git", ownedGitArguments([...args, "rev-list", "--parents", remote, "--"]), {
         windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
       });
       const commits = new Set(), missingParents = new Set();

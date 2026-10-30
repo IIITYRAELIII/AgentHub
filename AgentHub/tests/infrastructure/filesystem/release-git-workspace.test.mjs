@@ -18,6 +18,12 @@ import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/
 import { taskBranchName, taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { createTaskBoardMutationOwner } from "../../../src/application/sqlite-mutation-owner.mjs";
 import { WorkspaceReleaseService } from "../../../src/application/workspace-release-service.mjs";
+import { ReleaseOperationService } from "../../../src/application/release-operation-service.mjs";
+import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
+import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
+import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
+import { DatabaseSync } from "node:sqlite";
 import {
   PUBLICATION_STAGE_CONTRACT,
   publicationRunPaths,
@@ -134,6 +140,163 @@ async function registeredTaskBranch(setup, context, { taskId, startCommit, baseC
     `refs/agent-hub/task-bases/${taskId}/${taskRepositoryKey(setup.primary)}`, baseCommit);
   return { branch, taskRoot };
 }
+
+async function publishedServiceFixture(context) {
+  const disposals = [];
+  const f = await fixture({ after: cleanup => disposals.push(cleanup) });
+  const board = new TaskBoardStore({ databaseFile: path.join(f.dataDir, "board.sqlite") });
+  context.after(async () => { board.close(); for (const cleanup of disposals) await cleanup(); });
+  let publication = null;
+  const taskGit = new TaskGitWorkspaceService({ dataDir: f.dataDir, readPublication: async () => publication });
+  const boardService = new TaskBoardService({ store: board, workspaceCatalog: { hierarchy: () => ({ workspaces: [] }) } });
+  const lifecycle = new TaskLifecycleService({ taskBoard: boardService, taskGitWorkspaces: taskGit,
+    workspaceCatalog: { workspace: () => ({ id: "workspace" }), stream: () => ({ id: "stream" }) } });
+  const store = new ReleaseOperationStore({ dataDir: f.dataDir });
+  const calls = [];
+  async function publish(label) {
+    const selected = board.create({ text: label, bucket: "workspace", workspaceId: "workspace", taskPrefix: "T" });
+    const source = board.create({ text: `Release ${label}`, bucket: "workspace", workspaceId: "workspace", taskPrefix: "T" });
+    const managed = await taskGit.prepare({ taskId: selected.id, taskNumber: selected.taskNumber, projectRoot: f.primary });
+    await taskGit.prepare({ taskId: source.id, taskNumber: source.taskNumber, projectRoot: f.primary });
+    await writeFile(path.join(managed.projectRoot, `${label}.txt`), `${label}\n`);
+    const result = await taskGit.snapshotAndMerge({ taskId: selected.id,
+      taskNumber: selected.taskNumber, projectRoot: managed.projectRoot });
+    board.recordTaskGitReference({ taskId: selected.id, projectRoot: f.primary, branch: managed.branch,
+      resultSnapshot: { repoRoot: f.primary, tree: result.snapshot.headCommit } });
+    board.setWorkflowStatus(selected.id, "awaiting_implementation");
+    board.setWorkflowStatus(source.id, "in_progress");
+    let candidate, cleanupError;
+    const scheduled = [];
+    const baseCommit = await git(f.primary, "rev-parse", "main");
+    const preparedInput = { workspaceId: "workspace", planRevision: `plan-${label}`,
+      projectRoot: f.primary, approvedBaseCommit: baseCommit,
+      frozenTasks: [{ taskId: selected.id, taskRevision: board.task(selected.id).revision,
+        baseCommit: managed.baseCommit, resultCommit: result.snapshot.headCommit }] };
+    await f.service.prepareCandidate(preparedInput);
+    const operations = new ReleaseOperationService({ store, runnerVersion: "fixture",
+      processAlive: pid => pid === process.pid, schedule: fn => scheduled.push(fn),
+      compose: async ({ operation, generation }) => {
+        candidate = await f.service.prepareGeneration({ ...preparedInput,
+          operationId: operation.operationId, generation,
+          changelogContent: Buffer.from(`Release ${label}\n`) });
+        return { repositoryBases: [{ repositoryRoot: f.primary, baseCommit }],
+          selectedResults: [{ taskId: selected.id, resultCommit: result.snapshot.headCommit }],
+          candidates: [{ ...candidate, commit: candidate.preReleaseHead }] };
+      },
+      validate: async () => ({ status: "passed" }),
+      publishTarget: async () => {
+        calls.push(label);
+        const revision = await publishCandidate(candidate);
+        await git(f.primary, "fetch", "origin", "main");
+        await git(f.primary, "merge", "--ff-only", "origin/main");
+        publication = { generation: label, repositories: [{ root: f.primary, revision,
+          planRevision: candidate.planRevision, manifestHash: candidate.manifestHash }] };
+        return { status: "applied", revision };
+      },
+      readTarget: async () => ({ status: "not_applied" }),
+      finalize: async ({ operation, generation }) => {
+        const finalized = board.completeReleaseOperation("workspace", {
+          operationId: operation.operationId, generation: generation.generation,
+          selectedResults: generation.selectedResults, publicationEffects: operation.publicationEffects });
+        await taskGit.synchronizeMainIntoDev({ projectRoot: f.primary, publishedRevision: candidate.preReleaseHead });
+        return finalized;
+      },
+      cleanupGeneration: async () => {
+        try { await f.service.discardGenerationCandidate(candidate); }
+        catch (error) { cleanupError = error; throw error; }
+      },
+    });
+    const ack = operations.start({ requestId: `release-${label}`, workspaceId: "workspace",
+      streamId: "stream", threadId: "thread", authorization: {
+        taskIds: [selected.id], validationMode: "full",
+        approvedTargets: [{ targetId: "publication", kind: "agent-hub-publication", repositoryRoot: f.primary }] } });
+    await scheduled.shift()();
+    const terminal = await operations.drain(ack.operationId);
+    if (cleanupError) throw cleanupError;
+    assert.equal(terminal.operation.state, "done", JSON.stringify(terminal.operation.lastError));
+    assert.equal(board.task(selected.id).workflowStatus, "done");
+    board.updateChecklist({ id: source.id, operation: "add",
+      text: `[Selected](agent-hub://task/${selected.id})`, linkedTaskId: selected.id,
+      completed: true, expectedRevision: board.task(source.id).revision, requestId: `checklist-${label}` });
+    board.updateChecklist({ id: source.id, operation: "toggle", itemId: board.task(source.id).checklist[0].id,
+      completed: true, expectedRevision: board.task(source.id).revision, requestId: `checklist-done-${label}` });
+    const archive = path.join(f.dataDir, "release-generation-evidence", path.basename(candidate.generationRoot));
+    await assert.rejects(stat(candidate.generationRoot), { code: "ENOENT" });
+    return { source, selected, candidate, archive, operationId: ack.operationId, terminal };
+  }
+  const preview = source => lifecycle.complete({ taskId: source.id, operationId: `close-${source.id}`,
+    completionMode: "published_release_service" });
+  return { ...f, board, taskGit, lifecycle, store, publish, preview, calls };
+}
+
+test("published service closes from its original frozen generation after normal retention and a later release", async context => {
+  const f = await publishedServiceFixture(context);
+  const old = await f.publish("first");
+  const before = await f.preview(old.source);
+  assert.equal(before.preview.releaseService.manifestHash, old.candidate.manifestHash);
+  assert.equal(before.preview.releaseService.releaseOperation.operationId, old.operationId);
+  const next = await f.publish("second");
+  const after = await f.preview(old.source);
+  assert.equal(after.cleanupToken, before.cleanupToken, "later publication cannot retarget the old service");
+  assert.notEqual(after.preview.releaseService.manifestHash, next.candidate.manifestHash);
+  assert.equal(after.preview.deleting.length, 0);
+  const original = f.store.snapshot(old.operationId);
+  const request = { taskId: old.source.id, operationId: `close-${old.source.id}`,
+    completionMode: "published_release_service", confirmCleanup: true, expectedCleanupToken: after.cleanupToken };
+  assert.equal((await f.lifecycle.complete(request)).status, "done");
+  assert.equal((await f.lifecycle.complete(request)).status, "done");
+  assert.deepEqual(f.store.snapshot(old.operationId), original, "closure cannot replay or mutate release receipts");
+  assert.deepEqual(f.calls, ["first", "second"]);
+  assert.equal((await f.taskGit.describe(old.source.id)).length, 1);
+  assert.notEqual(f.board.task(next.source.id).status, "done", "new service is not implicitly closed");
+});
+
+test("published service refuses missing or changed retained evidence, receipts, result identity and stale confirmation", async context => {
+  const f = await publishedServiceFixture(context);
+  const item = await f.publish("guarded");
+  const manifestFile = path.join(item.archive, "evidence", `${item.candidate.manifestHash}.json`);
+  const bytes = await readFile(manifestFile);
+  await writeFile(manifestFile, Buffer.concat([bytes, Buffer.from(" ")]));
+  await assert.rejects(f.preview(item.source), /manifest bytes changed/);
+  await rm(manifestFile);
+  await assert.rejects(f.preview(item.source), /manifest evidence is unavailable/);
+  await writeFile(manifestFile, bytes);
+  const db = new DatabaseSync(path.join(f.dataDir, "runtime.sqlite"));
+  try {
+    const row = db.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND step_id='finalize'")
+      .get(item.operationId);
+    const receipt = JSON.parse(row.receipt_json);
+    db.prepare("UPDATE release_step_receipts SET receipt_json=? WHERE operation_id=? AND step_id='finalize'")
+      .run(JSON.stringify({ ...receipt, status: "unknown" }), item.operationId);
+    await assert.rejects(f.preview(item.source), /completed-generation evidence changed/);
+    db.prepare("UPDATE release_step_receipts SET receipt_json=? WHERE operation_id=? AND step_id='finalize'")
+      .run(row.receipt_json, item.operationId);
+  } finally { db.close(); }
+  const preview = await f.preview(item.source);
+  const entry = f.board.task(item.source.id).checklist[0];
+  for (const completed of [false, true]) f.board.updateChecklist({ id: item.source.id, operation: "toggle",
+    itemId: entry.id, completed, expectedRevision: f.board.task(item.source.id).revision,
+    requestId: `revise-${completed}` });
+  await assert.rejects(f.lifecycle.complete({ taskId: item.source.id, operationId: `close-${item.source.id}`,
+    completionMode: "published_release_service", confirmCleanup: true, expectedCleanupToken: preview.cleanupToken }),
+  /confirmation is stale/);
+  const selectedBranch = f.board.task(item.selected.id).gitReferences[0].branch;
+  f.board.recordTaskGitReference({ taskId: item.selected.id, projectRoot: f.primary, branch: selectedBranch,
+    resultSnapshot: { repoRoot: f.primary, tree: f.baseCommit } });
+  await assert.rejects(f.preview(item.source), /manifest evidence is unavailable|does not match exact published Done results/);
+  f.board.recordTaskGitReference({ taskId: item.selected.id, projectRoot: f.primary, branch: selectedBranch,
+    resultSnapshot: { repoRoot: f.primary, tree: item.candidate.frozenTasks[0].resultCommit } });
+  await writeFile(path.join((await f.taskGit.describe(item.source.id))[0].projectRoot, "valuable.txt"), "preserve");
+  await assert.rejects(f.preview(item.source), /clean managed worktree/);
+  await rm(path.join((await f.taskGit.describe(item.source.id))[0].projectRoot, "valuable.txt"));
+  f.board.updateChecklist({ id: item.source.id, operation: "add", text: "unfulfilled live-event proof",
+    completed: false, expectedRevision: f.board.task(item.source.id).revision, requestId: "unfinished-proof" });
+  await assert.rejects(f.lifecycle.complete({ taskId: item.source.id, operationId: `close-${item.source.id}`,
+    completionMode: "published_release_service", confirmCleanup: true, expectedCleanupToken: preview.cleanupToken }),
+  /checklist is incomplete/);
+  assert.notEqual(f.board.task(item.source.id).status, "done");
+  assert.equal(f.board.lifecycleOutcome(`close-${item.source.id}`), null);
+});
 
 test("one operation generation isolates source bundles per repository", async (context) => {
   const first = await fixture(context);
@@ -2577,3 +2740,33 @@ for (const scenario of ["changed selection", "changed base", "non-descendant res
     }
   });
 }
+
+test("prepared readback retains integration evidence for exact native validation", async context => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context);
+  const integrations = [{ commit: resultCommit, parent: setup.baseCommit, order: 7 }];
+  const request = { projectRoot: setup.primary, workspaceId: "integration-readback",
+    planRevision: "integration-readback-plan", approvedBaseCommit: setup.baseCommit,
+    baseProvenance: { schemaVersion: 1, kind: "agreed-main-native-git-v1",
+      publishedBaseCommit: setup.baseCommit, agreedMainCommit: setup.baseCommit },
+    frozenTasks: [{ taskId: "integration-readback-task", taskRevision: 3,
+      baseCommit: setup.baseCommit, resultCommit, integrations }] };
+  const candidate = await setup.service.prepareCandidate(request);
+  const checkpoint = await readFile(path.join(path.dirname(candidate.manifestFile), "..", "checkpoint.json"));
+  const manifest = await readFile(candidate.manifestFile);
+  const readback = await setup.service.frozenCandidate(setup.primary);
+  assert.deepEqual(readback.manifest.tasks[0].integrations, integrations);
+  const exact = { ...request, frozenTasks: readback.manifest.tasks };
+  const validated = await setup.service.validateCandidate(exact);
+  assert.equal(validated.status, "validated");
+  assert.equal(validated.tree, readback.tree);
+  for (const field of ["commit", "parent", "order"]) {
+    const tasks = structuredClone(readback.manifest.tasks);
+    tasks[0].integrations[0][field] = field === "order" ? 8 : "f".repeat(40);
+    await assert.rejects(setup.service.validateCandidate({ ...request, frozenTasks: tasks }),
+      { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  }
+  assert.deepEqual(await readFile(candidate.manifestFile), manifest);
+  assert.deepEqual(await readFile(path.join(path.dirname(candidate.manifestFile), "..", "checkpoint.json")), checkpoint);
+  assert.equal((await setup.service.frozenCandidate(setup.primary)).preReleaseHead, candidate.preReleaseHead);
+});

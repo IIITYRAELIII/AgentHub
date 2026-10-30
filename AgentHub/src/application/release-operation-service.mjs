@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   createCandidateGeneration,
+  completedReleaseGenerationEvidence,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
   releaseOperationIsTerminal,
@@ -11,6 +12,8 @@ import {
   releaseApprovedTargets,
   effectiveTestSelection,
   effectiveReleaseTaskIds,
+  effectiveReleaseTaskScope,
+  normalizeReleaseTaskScope,
   normalizeReleaseTaskIds,
   normalizedReleaseMetadata,
 } from "../domain/release-operation.mjs";
@@ -88,6 +91,7 @@ function classifiedFailure(error, state, now, retryDelayMs) {
         nextAction: "read back this original candidate effect before continuation",
         lastError: { ...details, step: state },
       };
+    case "RELEASE_MAIN_APPROVAL_STALE":
     case "RELEASE_PREPARED_CANDIDATE_STALE":
       return {
         state: "waiting", currentStep: state, resumeState: "compose",
@@ -143,6 +147,7 @@ export class ReleaseOperationService {
   #scheduled = new Set();
   #running = new Set();
   #retryTimers = new Map();
+  #ownedRetries = new Set();
   #deliveryTimer = null;
   #deliveryRunning = false;
   #deliveryRerun = false;
@@ -221,11 +226,11 @@ export class ReleaseOperationService {
     this.withTaskSelection = withTaskSelection;
   }
 
-  start({ requestId, workspaceId, streamId, threadId, authorization } = {}) {
+  start({ requestId, workspaceId, streamId, threadId, authorization, resolveAuthorization = null } = {}) {
     const created = this.store.create({
       requestId, workspaceId, streamId, threadId, authorization,
       runnerVersion: this.runnerVersion,
-    });
+    }, { resolveAuthorization });
     this.#observe(created.operation.operationId);
     this.#schedule(created.operation.operationId);
     return {
@@ -253,26 +258,11 @@ export class ReleaseOperationService {
   // local Git head is never evidence that a release finished publication.
   retentionGeneration(operationId, number) {
     const operation = this.store.get(operationId);
-    if (operation?.state !== "done" || !operation.completedAt || operation.currentGeneration !== number) return null;
     const generation = this.store.generation(operationId, number);
-    if (!generation || generation.operationId !== operationId || generation.generation !== number
-        || generation.candidates?.length > 32) return null;
-    const { identitySha256, ...contents } = generation;
-    if (releaseIdentitySha256(contents) !== identitySha256) return null;
-    const effects = operation.publicationEffects;
-    if (effects?.generation !== number || effects.publishStarted?.candidate !== identitySha256
-        || !operation.authorization.approvedTargets.every(target => publishedTarget(effects.targets?.[target.targetId]))) return null;
-    const validation = this.store.latestStep(operationId, number, "validate");
-    const finalization = this.store.latestStep(operationId, number, "finalize");
-    for (const receipt of [validation, finalization]) {
-      if (receipt?.status !== "applied" || receipt.operationId !== operationId || receipt.generation !== number
-          || receipt.input?.candidate !== identitySha256 || releaseIdentitySha256(receipt.input) !== receipt.inputSha256) return null;
-    }
-    if (releaseIdentitySha256(finalization.input.effects) !== releaseIdentitySha256(effects)
-        || releaseIdentitySha256(finalization.input.selectedResults) !== releaseIdentitySha256(generation.selectedResults)) return null;
-    return { operationId, generation: number, operationRevision: operation.revision, completedAt: operation.completedAt,
-      identitySha256, candidates: generation.candidates.map(({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash }) =>
-        ({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash })) };
+    if (!generation || generation.operationId !== operationId || generation.generation !== number) return null;
+    return completedReleaseGenerationEvidence({ operation, generation,
+      validation: this.store.latestStep(operationId, number, "validate"),
+      finalization: this.store.latestStep(operationId, number, "finalize") });
   }
 
   continue(operationId, options = {}) {
@@ -282,7 +272,7 @@ export class ReleaseOperationService {
     // A captured amendment remains an amendment even when a replay omits all
     // optional fields. Check its identity before ordinary resume or recovery.
     if (current.testSelectionAmendments?.some(item => item.requestId === options.requestId)
-        || options.testSelection != null || options.taskIds != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
+        || options.testSelection != null || options.taskIds != null || options.taskScope != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
     if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     // Addressed observation also works while the original is waiting on an
     // external condition. It neither resumes nor publishes that condition.
@@ -385,13 +375,14 @@ export class ReleaseOperationService {
     }
   }
 
-  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, releaseMetadata, expectedRevision, expectedGeneration, reviewedMain }) {
+  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, taskScope, releaseMetadata, expectedRevision, expectedGeneration, reviewedMain }) {
     if (reviewedMain != null) throw new Error("Use separate original amendments for reviewed main and test selection");
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
     const requestArguments = { expectedRevision, expectedGeneration,
       ...(testSelection == null ? {} : { testSelection: normalizeTestSelection(testSelection) }),
       ...(taskIds == null ? {} : { taskIds: normalizeReleaseTaskIds(taskIds) }),
+      ...(taskScope == null ? {} : { taskScope: normalizeReleaseTaskScope(taskScope) }),
       ...(releaseMetadata == null ? {} : { releaseMetadata: normalizedReleaseMetadata(releaseMetadata) }),
     };
     requiredText(requestId, "amendment requestId");
@@ -419,6 +410,7 @@ export class ReleaseOperationService {
     }
     const generation = this.store.generation(operationId, current.currentGeneration);
     if (!generation) throw new Error("Original generation is missing");
+    const scope = taskScope == null ? effectiveReleaseTaskScope(current) : requestArguments.taskScope;
     const commit = async (taskSelection = null, validateBeforeCommit = async () => {}) => {
     const readbacks = [];
     for (const target of releaseApprovedTargets(current)) {
@@ -427,7 +419,9 @@ export class ReleaseOperationService {
       readbacks.push({ targetId: target.targetId, generation: current.currentGeneration, evidence });
     }
     await validateBeforeCommit();
-    const contents = { requestId, requestArguments, selection, taskIds: selectedTaskIds, taskSelection,
+    const capturedTaskIds = taskSelection ? [...new Set(taskSelection.map(item => item.taskId))].sort() : selectedTaskIds;
+    const contents = { requestId, requestArguments, selection, taskIds: capturedTaskIds, taskSelection,
+      ...(scope == null ? {} : { taskScope: scope }),
       ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }), priorRevision: current.revision, priorGeneration: current.currentGeneration,
       authorizationFingerprint: current.authorization.fingerprint,
       priorFailure: { state: current.state, completedAt: current.completedAt, error: current.lastError },
@@ -441,9 +435,10 @@ export class ReleaseOperationService {
     if (result.applied) { this.#observe(operationId); this.#schedule(operationId); }
     return { accepted: result.applied, reason: result.reason, operationId, revision: result.operation.revision, amendment };
     };
-    if (taskIds != null) {
+    if (taskIds != null || scope === "all_await") {
       if (typeof this.withTaskSelection !== "function") throw new Error("Accepted Task selection owner is unavailable");
-      return this.withTaskSelection({ operation: current, taskIds: selectedTaskIds, commit });
+      return this.withTaskSelection({ operation: current, taskIds: taskIds == null && scope === "all_await" ? null : selectedTaskIds,
+        taskScope: scope, commit });
     }
     return commit();
   }
@@ -488,10 +483,10 @@ export class ReleaseOperationService {
       } });
   }
 
-  wakeForTask(taskId) {
+  wakeForTask(taskId, { workspaceId = null } = {}) {
     const selectedTaskId = requiredText(taskId, "taskId");
-    const accepted = this.prepareForTaskAcceptance(selectedTaskId).map((item) => item.operationId);
-    const operations = this.store.forTask(selectedTaskId);
+    const accepted = this.prepareForTaskAcceptance(selectedTaskId, { workspaceId }).map((item) => item.operationId);
+    const operations = this.store.forTask(selectedTaskId, { workspaceId });
     for (const operation of operations) {
       if (releaseOperationIsTerminal(operation)) continue;
       if (operation.state === "waiting" && ["validation_failed", "correction_required"].includes(operation.waitReason?.code)) {
@@ -502,8 +497,8 @@ export class ReleaseOperationService {
     return accepted;
   }
 
-  prepareForTaskAcceptance(taskId) {
-    const operations = this.store.forTask(requiredText(taskId, "taskId"));
+  prepareForTaskAcceptance(taskId, { workspaceId = null } = {}) {
+    const operations = this.store.forTask(requiredText(taskId, "taskId"), { workspaceId });
     const prepared = [];
     for (const operation of operations) {
       if (releaseOperationIsTerminal(operation)) continue;
@@ -609,7 +604,7 @@ export class ReleaseOperationService {
 
   async drain(operationId) {
     const id = requiredText(operationId, "operationId");
-    while (this.#scheduled.has(id) || this.#running.has(id)) {
+    while (this.#scheduled.has(id) || this.#running.has(id) || this.#ownedRetries.has(id)) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     return this.get(id);
@@ -618,11 +613,11 @@ export class ReleaseOperationService {
   async drainAddressed({ requestId, operationId, taskId } = {}) {
     // Local lifetime bookkeeping is not recovery/admission. Read the durable
     // identity of work already scheduled by this consumer and never wake it.
-    const pending = new Set([...this.#scheduled, ...this.#running]);
+    const pending = new Set([...this.#scheduled, ...this.#running, ...this.#ownedRetries]);
     for (const id of pending) {
       const original = this.store.get(id);
       if (original && (operationId ? original.operationId === operationId
-        : taskId ? original.authorization.taskIds.includes(taskId)
+        : taskId ? effectiveReleaseTaskIds(original).includes(taskId)
         : typeof requestId === "string" && original.requestId === requestId)) {
         await this.drain(id);
       }
@@ -630,10 +625,12 @@ export class ReleaseOperationService {
   }
 
   #schedule(operationId) {
+    // A wake cannot discard a continuation still awaited by this exact worker.
+    if (this.#scheduled.has(operationId) || this.#running.has(operationId)) return;
     const timer = this.#retryTimers.get(operationId);
     if (timer) clearTimeout(timer);
     this.#retryTimers.delete(operationId);
-    if (this.#scheduled.has(operationId) || this.#running.has(operationId)) return;
+    this.#ownedRetries.delete(operationId);
     this.#scheduled.add(operationId);
     this.scheduleTask(() => {
       this.#scheduled.delete(operationId);
@@ -650,6 +647,8 @@ export class ReleaseOperationService {
     let heartbeat = null;
     let persistenceUnavailable = false;
     let runFailed = false;
+    let runError = null;
+    let heartbeatPending = false;
     try {
       const acquired = await this.store.runOperationMutation(operationId, () => {
         const prior = this.store.get(operationId);
@@ -665,12 +664,18 @@ export class ReleaseOperationService {
       owned = true;
       owner = acquired.operation.owner;
       heartbeat = setInterval(() => {
-        try { this.store.heartbeat(operationId, this.ownerId, { leaseMs: this.leaseMs, epoch: owner.epoch }); } catch {}
+        if (heartbeatPending) return;
+        heartbeatPending = true;
+        void this.store.runOperationMutation(operationId, () =>
+          this.store.heartbeat(operationId, this.ownerId, { leaseMs: this.leaseMs, epoch: owner.epoch }),
+          { persistence: { method: "heartbeat", ownerEpoch: owner.epoch } })
+          .catch(() => {}).finally(() => { heartbeatPending = false; });
       }, Math.max(50, Math.floor(this.leaseMs / 3)));
       heartbeat.unref?.();
       let operation = acquired.operation;
       while (operation && !releaseOperationIsTerminal(operation) && operation.state !== "waiting") {
-        const beat = this.store.heartbeat(operationId, this.ownerId, { leaseMs: this.leaseMs, epoch: owner.epoch });
+        const beat = await this.#persist(operationId, owner, "heartbeat", () =>
+          this.store.heartbeat(operationId, this.ownerId, { leaseMs: this.leaseMs, epoch: owner.epoch }));
         if (!beat.applied) break;
         try {
           if (operation.state === "compose") operation = await this.#compose(operation, owner);
@@ -680,7 +685,7 @@ export class ReleaseOperationService {
           else throw new Error(`unsupported release operation state: ${operation.state}`);
         } catch (error) {
           if (this.store.isContentionError(error)) throw error;
-          const latest = this.store.get(operationId) ?? operation;
+          const latest = await this.#persist(operationId, null, "failure-owner-read", () => this.store.get(operationId)) ?? operation;
           if (!ownsRelease(latest, owner)) break;
           if (error?.code === "RELEASE_RESULT_LINEAGE_MISMATCH" && this.requestCorrection) {
             try {
@@ -696,36 +701,42 @@ export class ReleaseOperationService {
             }
           }
           const patch = classifiedFailure(error, latest.state, this.now, this.retryDelayMs);
-          const failed = this.store.transition(operationId, patch, {
-            expectedRevision: latest.revision,
-            expectedOwner: owner,
-            eventKind: patch.state === "waiting" ? "operation.waiting" : "operation.failed",
+          const failed = await this.#persist(operationId, owner, "record-failure", () => {
+            const current = this.store.get(operationId);
+            return this.store.transition(operationId, patch, {
+              expectedRevision: current.revision, expectedOwner: owner,
+              eventKind: patch.state === "waiting" ? "operation.waiting" : "operation.failed",
+            });
           });
           operation = failed.operation;
         }
       }
     } catch (error) {
       runFailed = true;
+      runError = error;
       persistenceUnavailable = this.store.isContentionError(error);
       throw error;
     } finally {
       if (heartbeat) clearInterval(heartbeat);
+      let current = null;
       try {
-        if (owned) await this.store.runOperationMutation(operationId, () => this.store.release(operationId, owner));
+        current = await this.store.runOperationMutation(operationId, () =>
+          owned ? this.store.release(operationId, owner) : this.store.get(operationId),
+          { persistence: { method: owned ? "release-owner" : "read-owner", ownerEpoch: owner?.epoch } });
       } catch (error) {
-        this.#backgroundFailure(operationId, error, owner);
+        if (runError) runError.settlementError = error;
+        this.#backgroundFailure(operationId, runError ?? error, owner);
         persistenceUnavailable = this.store.isContentionError(error);
         runFailed = true;
       } finally {
         this.#running.delete(operationId);
       }
-      const current = this.store.get(operationId);
       if (current && releaseOperationIsTerminal(current) && current.currentGeneration > 0) {
         const generation = this.store.generation(current.operationId, current.currentGeneration);
         if (generation) await this.cleanupGeneration?.({ operation: current, generation }).catch(() => {});
       }
       if (persistenceUnavailable) this.#scheduleOwnedRetry(operationId);
-      else if (acquisitionDenied === "owned") this.#scheduleOwnedRetry(operationId);
+      else if (acquisitionDenied === "owned") this.#scheduleOwnedRetry(operationId, null, false);
       else if (owned && !runFailed) {
         if (current?.state === "waiting") this.#scheduleRetry(current);
         else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
@@ -743,10 +754,12 @@ export class ReleaseOperationService {
     if (this.store.isContentionError(error)) this.#scheduleOwnedRetry(operationId, ownerToRelease);
   }
 
-  #scheduleOwnedRetry(operationId, ownerToRelease = null) {
+  #scheduleOwnedRetry(operationId, ownerToRelease = null, retainLifetime = true) {
     if (this.#retryTimers.has(operationId)) return;
+    if (retainLifetime) this.#ownedRetries.add(operationId);
     const timer = setTimeout(() => {
       this.#retryTimers.delete(operationId);
+      this.#ownedRetries.delete(operationId);
       void this.store.runOperationMutation(operationId, () => {
         if (ownerToRelease) this.store.release(operationId, ownerToRelease);
         const current = this.store.get(operationId);
@@ -764,6 +777,7 @@ export class ReleaseOperationService {
     const delay = Math.max(0, retryAtMs - Date.parse(this.now()));
     const existing = this.#retryTimers.get(operation.operationId);
     if (existing) clearTimeout(existing);
+    this.#ownedRetries.delete(operation.operationId);
     const timer = setTimeout(() => {
       this.#retryTimers.delete(operation.operationId);
       void this.store.runOperationMutation(operation.operationId, () => {
@@ -800,21 +814,21 @@ export class ReleaseOperationService {
       ...(effectiveTestSelection(operation) ? { testSelection: effectiveTestSelection(operation), amendment: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
       ...(operation.reviewedMain ? { reviewedMain: operation.reviewedMain.identitySha256 } : {}),
     };
-    const started = this.store.beginStep({
+    const started = await this.#beginStep({
       operationId: operation.operationId,
       generation: generationNumber,
       stepId: "compose",
       input,
       expectedOwner: owner,
     });
-    const existingGeneration = this.store.generation(operation.operationId, generationNumber);
+    const existingGeneration = await this.#persist(operation.operationId, owner, "generation-read", () => this.store.generation(operation.operationId, generationNumber));
     if (!started.created && ["intent", "unknown"].includes(started.receipt.status) && existingGeneration) {
-      this.store.finishStep(started.receipt, {
+      await this.#finishStep(started.receipt, {
         status: "applied",
         effect: { identitySha256: existingGeneration.identitySha256 },
         expectedOwner: owner,
       });
-      const advanced = this.#advance(operation.operationId, "validate", {
+      const advanced = await this.#advance(operation.operationId, "validate", {
         currentGeneration: generationNumber,
         selectedResults: existingGeneration.selectedResults,
         nextAction: "validate immutable candidate generation",
@@ -833,7 +847,7 @@ export class ReleaseOperationService {
       if (!generation || (recordedIdentity && generation.identitySha256 !== recordedIdentity)) {
         throw new Error("composed generation receipt does not match immutable candidate evidence");
       }
-      const advanced = this.#advance(operation.operationId, "validate", {
+      const advanced = await this.#advance(operation.operationId, "validate", {
         currentGeneration: generationNumber,
         selectedResults: generation.selectedResults,
         nextAction: "validate immutable candidate generation",
@@ -847,7 +861,9 @@ export class ReleaseOperationService {
       if (effectiveTestSelection(operation) && typeof this.resolveTestPlans !== "function") throw new Error("Release test inventory owner is unavailable");
       const generation = createCandidateGeneration({
         ...composed,
-        ...(operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
+        ...(effectiveReleaseTaskScope(operation) === "all_await"
+          ? { authorizedTaskIds: composed.authorizedTaskIds }
+          : operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
         ...(effectiveTestSelection(operation) ? { testPlans: await this.resolveTestPlans(composed.candidates, effectiveTestSelection(operation)),
           testSelectionAmendmentId: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
         operationId: operation.operationId,
@@ -857,12 +873,13 @@ export class ReleaseOperationService {
         createdAt: started.receipt.createdAt,
       });
       composedGeneration = generation;
-      this.store.putGeneration(generation, { expectedOwner: owner });
-      this.store.finishStep(started.receipt, {
+      await this.#persist(operation.operationId, owner, "put-generation", () =>
+        this.store.putGeneration(generation, { expectedOwner: owner }), { generation: generationNumber });
+      await this.#finishStep(started.receipt, {
         status: "applied",
         effect: { identitySha256: generation.identitySha256 }, expectedOwner: owner,
       });
-      const advanced = this.#advance(operation.operationId, "validate", {
+      const advanced = await this.#advance(operation.operationId, "validate", {
         currentGeneration: generationNumber,
         selectedResults: generation.selectedResults,
         nextAction: "validate immutable candidate generation",
@@ -870,15 +887,15 @@ export class ReleaseOperationService {
       await this.#discardSupersededFailedValidation(operation);
       return advanced;
     } catch (error) {
-      const saved = composedGeneration && this.store.generation(operation.operationId, generationNumber);
+      const saved = composedGeneration && await this.#persist(operation.operationId, owner, "generation-read", () => this.store.generation(operation.operationId, generationNumber));
       if (saved?.identitySha256 === composedGeneration?.identitySha256 && saved) {
-        this.#assertOwner(operation.operationId, owner);
-        this.store.finishStep(started.receipt, { status: "applied",
+        await this.#persist(operation.operationId, owner, "owner-read", () => this.#assertOwner(operation.operationId, owner));
+        await this.#finishStep(started.receipt, { status: "applied",
           effect: { identitySha256: saved.identitySha256 }, expectedOwner: owner });
         return this.#advance(operation.operationId, "validate", { currentGeneration: generationNumber,
           selectedResults: saved.selectedResults, nextAction: "validate immutable candidate generation" }, owner);
       }
-      this.store.finishStep(started.receipt, {
+      await this.#finishStep(started.receipt, {
         status: ["AWAIT_PREPARATION_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN"].includes(error?.code) ? "unknown" : "failed",
         error, expectedOwner: owner });
       throw error;
@@ -886,8 +903,8 @@ export class ReleaseOperationService {
   }
 
   async #validate(operation, owner) {
-    const generation = this.#generation(operation);
-    const started = this.store.beginStep({
+    const generation = await this.#persist(operation.operationId, owner, "generation-read", () => this.#generation(operation));
+    const started = await this.#beginStep({
       operationId: operation.operationId,
       generation: generation.generation,
       stepId: "validate",
@@ -898,29 +915,37 @@ export class ReleaseOperationService {
     if (!started.created && started.receipt.status === "applied") {
       return this.#advance(operation.operationId, "publish", { nextAction: "publish authorized targets" }, owner);
     }
+    let evidence;
     try {
-      const evidence = await this.validate({ operation, generation });
-      this.#assertOwner(operation.operationId, owner);
-      this.store.finishStep(started.receipt, { status: "applied", effect: evidence ?? { status: "passed" }, expectedOwner: owner });
-      return this.#advance(operation.operationId, "publish", { nextAction: "publish authorized targets" }, owner);
+      evidence = await this.validate({ operation, generation });
     } catch (cause) {
-      this.store.finishStep(started.receipt, { status: "failed", error: cause, expectedOwner: owner });
+      await this.#finishStep(started.receipt, { status: "failed", error: cause, expectedOwner: owner });
       const error = cause instanceof Error ? cause : new Error(String(cause));
       if (!error.code) error.code = "RELEASE_VALIDATION_FAILED";
       throw error;
     }
+    await this.#finishStep(started.receipt, { status: "applied", effect: evidence ?? { status: "passed" }, expectedOwner: owner });
+    return this.#advance(operation.operationId, "publish", { nextAction: "publish authorized targets" }, owner);
   }
 
   async #publish(operation, owner) {
-    const generation = this.#generation(operation);
-    let latest = this.store.get(operation.operationId);
+    const generation = await this.#persist(operation.operationId, owner, "generation-read", () => this.#generation(operation));
+    let latest = await this.#persist(operation.operationId, owner, "owner-read", () => this.store.get(operation.operationId));
     if (!latest.publicationEffects?.publishStarted
         || latest.publicationEffects.generation !== generation.generation) {
       // Selection is awaited under the adapter's Await boundary. A heartbeat may
       // advance the revision there; it cannot authorize a different publication.
-      const transitionBoundary = (patch, options) => {
+      const transitionBoundary = (patch, options) => this.#persist(operation.operationId, owner, "reserve-publication", () => {
         const current = this.store.get(latest.operationId);
         if (!ownsRelease(current, owner)) return { applied: false, reason: "owner-fenced" };
+        const sameGeneration = current.currentGeneration === generation.generation
+          && this.#generation(current).identitySha256 === generation.identitySha256
+          && releaseIdentitySha256(current.selectedResults) === releaseIdentitySha256(latest.selectedResults);
+        if (sameGeneration && (patch.publicationEffects
+          && releaseIdentitySha256(current.publicationEffects) === releaseIdentitySha256(patch.publicationEffects)
+          || patch.state === "compose" && current.state === "compose")) {
+          return { applied: true, operation: current };
+        }
         if (current.state !== "publish" || current.currentGeneration !== generation.generation
             || this.#generation(current).identitySha256 !== generation.identitySha256
             || releaseIdentitySha256(current.selectedResults) !== releaseIdentitySha256(latest.selectedResults)
@@ -930,7 +955,7 @@ export class ReleaseOperationService {
         return this.store.transition(current.operationId, patch, {
           ...options, expectedRevision: current.revision, expectedOwner: owner,
         });
-      };
+      });
       const boundary = await this.reservePublication({
         operation: latest,
         generation,
@@ -966,7 +991,7 @@ export class ReleaseOperationService {
       if (publishedTarget(effects[target.targetId])) continue;
       const stepId = `publish:${target.targetId}`;
       const input = { candidate: generation.identitySha256, target };
-      const started = this.store.beginStep({
+      const started = await this.#beginStep({
         operationId: latest.operationId,
         generation: generation.generation,
         stepId,
@@ -981,7 +1006,7 @@ export class ReleaseOperationService {
         }));
         if (publishedTarget(readback)) effect = readback;
         else if (readback.status === "unknown") {
-          this.store.finishStep(started.receipt, { status: "unknown", effect: readback, reconcileCursor: readback.cursor ?? null, expectedOwner: owner });
+          await this.#finishStep(started.receipt, { status: "unknown", effect: readback, reconcileCursor: readback.cursor ?? null, expectedOwner: owner });
           const error = new Error(`publication effect for ${target.targetId} is unknown`);
           error.code = "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
           throw error;
@@ -989,7 +1014,7 @@ export class ReleaseOperationService {
       }
       if (!effect) {
         try {
-          this.#assertOwner(operation.operationId, owner);
+          await this.#persist(operation.operationId, owner, "owner-read", () => this.#assertOwner(operation.operationId, owner));
           effect = normalizeReadback(await this.publishTarget({
             operation: latest, generation, target, receipt: started.receipt,
           }));
@@ -999,7 +1024,7 @@ export class ReleaseOperationService {
           }));
           if (publishedTarget(readback)) effect = readback;
           else {
-            this.store.finishStep(started.receipt, {
+            await this.#finishStep(started.receipt, {
               status: ["not_applied", "partial"].includes(readback.status) ? "failed" : "unknown",
               effect: readback,
               error: cause,
@@ -1023,18 +1048,23 @@ export class ReleaseOperationService {
         error.code = ["not_applied", "partial"].includes(effect.status)
           ? "RELEASE_EXTERNAL_CONDITION"
           : "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
-        this.store.finishStep(started.receipt, {
+        await this.#finishStep(started.receipt, {
           status: ["not_applied", "partial"].includes(effect.status) ? "failed" : "unknown",
           effect,
           expectedOwner: owner,
         });
         throw error;
       }
-      this.#assertOwner(operation.operationId, owner);
-      this.store.finishStep(started.receipt, { status: "applied", effect, expectedOwner: owner });
+      await this.#persist(operation.operationId, owner, "owner-read", () => this.#assertOwner(operation.operationId, owner));
+      await this.#finishStep(started.receipt, { status: "applied", effect, expectedOwner: owner });
       effects = { ...effects, [target.targetId]: effect };
+      const saved = await this.#persist(operation.operationId, owner, "save-publication", () => {
       const beforeSave = this.store.get(latest.operationId);
-      const saved = this.store.transition(beforeSave.operationId, {
+      if (beforeSave.publicationEffects.generation === generation.generation
+          && releaseIdentitySha256(beforeSave.publicationEffects.targets?.[target.targetId] ?? null) === releaseIdentitySha256(effect)) {
+        return { applied: true, operation: beforeSave };
+      }
+      return this.store.transition(beforeSave.operationId, {
         publicationEffects: { ...beforeSave.publicationEffects, generation: generation.generation, targets: effects },
         nextAction: "publish remaining authorized targets",
       }, {
@@ -1043,6 +1073,7 @@ export class ReleaseOperationService {
         eventKind: "operation.target-published",
         event: { operationId: beforeSave.operationId, generation: generation.generation, targetId: target.targetId, effect },
       });
+      });
       if (!saved.applied) throw new Error("release operation changed while recording target publication");
       latest = saved.operation;
     }
@@ -1050,8 +1081,8 @@ export class ReleaseOperationService {
   }
 
   async #finalize(operation, owner) {
-    const generation = this.#generation(operation);
-    const started = this.store.beginStep({
+    const generation = await this.#persist(operation.operationId, owner, "generation-read", () => this.#generation(operation));
+    const started = await this.#beginStep({
       operationId: operation.operationId,
       generation: generation.generation,
       stepId: "finalize",
@@ -1065,18 +1096,18 @@ export class ReleaseOperationService {
     if (!started.created && started.receipt.status === "applied") {
       return this.#advance(operation.operationId, "done", { lastError: null }, owner);
     }
+    let effect;
     try {
-      const effect = await this.finalize({ operation, generation });
-      this.#assertOwner(operation.operationId, owner);
-      this.store.finishStep(started.receipt, { status: "applied", effect: effect ?? { status: "completed" }, expectedOwner: owner });
-      return this.#advance(operation.operationId, "done", { lastError: null }, owner);
+      effect = await this.finalize({ operation, generation });
     } catch (error) {
-      this.store.finishStep(started.receipt, { status: "failed", error,
+      await this.#finishStep(started.receipt, { status: "failed", error,
         ...(error?.finalization ? { effect: error.finalization } : {}), expectedOwner: owner });
       const wrapped = error instanceof Error ? error : new Error(String(error));
       if (!wrapped.code) wrapped.code = "RELEASE_EXTERNAL_CONDITION";
       throw wrapped;
     }
+    await this.#finishStep(started.receipt, { status: "applied", effect: effect ?? { status: "completed" }, expectedOwner: owner });
+    return this.#advance(operation.operationId, "done", { lastError: null }, owner);
   }
 
   #generation(operation) {
@@ -1093,8 +1124,13 @@ export class ReleaseOperationService {
     }
   }
 
-  #advance(operationId, state, patch = {}, owner = null) {
+  async #advance(operationId, state, patch = {}, owner = null) {
+    // Read an already committed identical transition after a lost SQL reply.
+    // Every write still uses the original owner epoch and a fresh row CAS.
+    return this.#persist(operationId, null, "advance", () => {
     const current = this.store.get(operationId);
+    if (current.state === state && Object.entries(patch).every(([key, value]) =>
+      value === undefined || releaseIdentitySha256(current[key]) === releaseIdentitySha256(value))) return current;
     const result = this.store.transition(operationId, {
       ...patch,
       state,
@@ -1105,8 +1141,56 @@ export class ReleaseOperationService {
       expectedRevision: current.revision,
       expectedOwner: owner,
       eventKind: state === "done" ? "operation.completed" : "operation.progress",
-    });
+    }, { ownerEpoch: owner?.epoch });
     if (!result.applied) throw new Error(`release operation could not advance: ${result.reason}`);
     return result.operation;
+    });
+  }
+
+  #beginStep(input) {
+    return this.#persist(input.operationId, input.expectedOwner, "begin-step", () => this.store.beginStep(input),
+      { generation: input.generation, step: input.stepId });
+  }
+
+  async #finishStep(receipt, options) {
+    try {
+      return await this.#persist(receipt.operationId, options.expectedOwner, "finish-step", () =>
+        this.store.finishStep(receipt, options), { generation: receipt.generation, step: receipt.stepId,
+          attempt: receipt.attempt, causeCode: options.error?.code });
+    } catch (settlement) {
+      if (options.error && options.error !== settlement) {
+        const cause = options.error instanceof Error ? options.error : new Error(String(options.error));
+        const error = new AggregateError([cause, settlement],
+          `${cause.message}; release receipt settlement failed: ${settlement.message}`, { cause });
+        error.code = settlement.code ?? cause.code;
+        error.errcode = settlement.errcode;
+        throw error;
+      }
+      throw settlement;
+    }
+  }
+
+  async #persist(operationId, owner, method, mutation, metadata = {}) {
+    for (;;) {
+      try {
+        return await this.store.runOperationMutation(operationId, () => {
+          if (owner) this.#assertOwner(operationId, owner);
+          return mutation();
+        }, { persistence: { method, ownerEpoch: owner?.epoch, ...metadata } });
+      } catch (error) {
+        if (!this.store.isContentionError(error)) throw error;
+        // Retain this exact closure and the already returned effect result.
+        // Exhaustion never restarts validation, Git or publication execution.
+        await new Promise(resolve => {
+          this.#ownedRetries.add(operationId);
+          const timer = setTimeout(() => {
+            this.#retryTimers.delete(operationId);
+            this.#ownedRetries.delete(operationId);
+            resolve();
+          }, this.retryDelayMs);
+          this.#retryTimers.set(operationId, timer);
+        });
+      }
+    }
   }
 }
