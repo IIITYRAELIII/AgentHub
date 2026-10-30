@@ -20,6 +20,7 @@ import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-boa
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
 import { WorkspaceReleasePreflightService } from "../../../src/application/workspace-release-preflight-service.mjs";
+import { createTaskOperationTimingBatchRecorder, measureTaskOperation, withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
 import { partialOwnGitPublication } from "../../fixtures/own-git-publication-fixture.mjs";
 
 const run = promisify(execFile), sha = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -27,7 +28,7 @@ async function git(root, args, options = {}) {
   const pending = run("git", args, { cwd: root, windowsHide: true,
     encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
   pending.child.stdin.end(options.input ?? "");
-  const { stdout } = await pending;
+  const { stdout } = await measureTaskOperation("fixture:git", () => pending, { detail: true });
   return options.rawOutput ? stdout : stdout.toString("utf8").trim();
 }
 async function save(root, file, bytes) {
@@ -39,9 +40,12 @@ async function commit(root, message) {
   await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message]);
   return git(root, ["rev-parse", "HEAD"]);
 }
-async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111", owningTaskRevision = 2, agreedOrigin = false, ownPublishedOrigin = false) {
+async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111", owningTaskRevision = 2, agreedOrigin = false, ownPublishedOrigin = false, versionedRuntime = false, { joinOwnedWork = null } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-adoption-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => {
+    await joinOwnedWork?.();
+    await rm(root, { recursive: true, force: true });
+  });
   const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
   const primary = path.join(root, "primary"), origin = path.join(root, "origin.git"), runtimeRoot = defaultRuntimeRoot({ environment });
   await git(root, ["init", "--bare", "--initial-branch=main", origin]);
@@ -91,11 +95,11 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
     projectRoot: primary, taskBaseCommit: main, acceptedLocalMainCommit: main, adoptedCommit: adopted,
     snapshotCommit: result, requestId: "fixture-explicit-adoption" });
   const release = path.join(runtimeRoot, "releases", "installed-repair"), physical = Buffer.from("export const repair = 1;\n");
-  const ownVersion = ownPublishedOrigin ? readAgentHubVersion({ packageFile: path.join(carry, "AgentHub", "package.json") }) : null;
-  const ownReleaseVersion = ownPublishedOrigin ? await nextRuntimeReleaseVersion({ releasesDir: path.dirname(release), packageVersion: ownVersion }) : null;
+  const ownVersion = ownPublishedOrigin || versionedRuntime ? readAgentHubVersion({ packageFile: path.join(carry, "AgentHub", "package.json") }) : null;
+  const ownReleaseVersion = ownPublishedOrigin || versionedRuntime ? await nextRuntimeReleaseVersion({ releasesDir: path.dirname(release), packageVersion: ownVersion }) : null;
   await save(release, "server.mjs", physical);
   const manifest = Buffer.from(JSON.stringify({ releaseId: "installed-repair", sourceRoot: path.join(carry, "AgentHub"),
-    ...(ownPublishedOrigin ? { version: ownVersion, releaseVersion: ownReleaseVersion } : {}),
+    ...((ownPublishedOrigin || versionedRuntime) ? { version: ownVersion, releaseVersion: ownReleaseVersion } : {}),
     files: [{ path: "server.mjs", bytes: physical.length, sha256: sha(physical) }] }));
   await save(release, "runtime-manifest.json", manifest);
   await save(runtimeRoot, "current.json", JSON.stringify({ current: "installed-repair" }));
@@ -116,31 +120,37 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
 }
 
 test("own partial Git publication permits ordinary Test and candidate reuse without claiming runtime success", { timeout: 90000 }, async t => {
-  const f = await fixture(t, undefined, undefined, false, true);
-  assert.equal(f.p.ownGitPublication.commit, f.adopted);
-  const rows = f.ownPublication.rows(), pointer = await readFile(path.join(f.runtimeRoot, "current.json"));
-  const integrated = await f.service.snapshotAndMerge({ taskId: f.task.taskId, projectRoot: f.primary,
-    operationId: "own-partial-next-test" });
-  assert.equal(integrated.snapshot.headCommit, f.result);
-  assert.equal(integrated.integration.integrated, true);
-  const prepared = await f.candidate.prepareCandidate(f.request);
-  assert.equal((await f.candidate.prepareCandidate(f.request)).preReleaseHead, prepared.preReleaseHead);
-  assert.equal(await git(f.primary, ["rev-parse", "refs/heads/main"]), f.main);
-  assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), pointer);
-  assert.equal(f.ownPublication.rows(), rows);
-  const verify = extra => assertInstalledLocalSourceBaseline({ provenance: f.p, git: f.port,
-    repositoryRoot: f.primary, primaryMainCommit: f.main, publishedRevision: f.published,
-    planRevision: "exact", tasks: f.tasks, runtimeRoot: f.runtimeRoot,
-    readOwnGitPublication: f.ownPublication.read, ...extra });
-  await verify({});
-  await assert.rejects(verify({ readOwnGitPublication: null }), /OWN Git publication/u);
-  await assert.rejects(verify({ provenance: { ...f.p, ownGitPublication: { ...f.p.ownGitPublication, extra: true } } }), /publication|provenance/iu);
-  await save(f.external, "AgentHub/foreign.mjs", "export const foreign = true;\n");
-  await commit(f.external, "foreign after exact own publication");
-  await git(f.external, ["push", "origin", "HEAD:main"]);
-  await assert.rejects(verify({}), /OWN Git publication|origin/iu);
-  await assert.rejects(f.candidate.prepareCandidate(f.request), /OWN Git publication|origin/iu);
-  assert.equal(f.ownPublication.rows(), rows);
+  let ownedWork;
+  ownedWork = withTaskOperationTiming({ operationId: "own-partial-next-test",
+    record: createTaskOperationTimingBatchRecorder(events => console.info(JSON.stringify(events))) }, async () => {
+    const f = await measureTaskOperation("fixture:setup", () => fixture(t, undefined, undefined, false, true, false,
+      { joinOwnedWork: () => ownedWork.catch(() => {}) }));
+    assert.equal(f.p.ownGitPublication.commit, f.adopted);
+    const rows = f.ownPublication.rows(), pointer = await readFile(path.join(f.runtimeRoot, "current.json"));
+    const integrated = await measureTaskOperation("fixture:ordinary-test", () => f.service.snapshotAndMerge({ taskId: f.task.taskId, projectRoot: f.primary,
+      operationId: "own-partial-next-test" }));
+    assert.equal(integrated.snapshot.headCommit, f.result);
+    assert.equal(integrated.integration.integrated, true);
+    const prepared = await measureTaskOperation("fixture:candidate-first", () => f.candidate.prepareCandidate(f.request));
+    assert.equal((await measureTaskOperation("fixture:candidate-reuse", () => f.candidate.prepareCandidate(f.request))).preReleaseHead, prepared.preReleaseHead);
+    assert.equal(await git(f.primary, ["rev-parse", "refs/heads/main"]), f.main);
+    assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), pointer);
+    assert.equal(f.ownPublication.rows(), rows);
+    const verify = extra => assertInstalledLocalSourceBaseline({ provenance: f.p, git: f.port,
+      repositoryRoot: f.primary, primaryMainCommit: f.main, publishedRevision: f.published,
+      planRevision: "exact", tasks: f.tasks, runtimeRoot: f.runtimeRoot,
+      readOwnGitPublication: f.ownPublication.read, ...extra });
+    await measureTaskOperation("fixture:authority", () => verify({}));
+    await assert.rejects(verify({ readOwnGitPublication: null }), /OWN Git publication/u);
+    await assert.rejects(verify({ provenance: { ...f.p, ownGitPublication: { ...f.p.ownGitPublication, extra: true } } }), /publication|provenance/iu);
+    await save(f.external, "AgentHub/foreign.mjs", "export const foreign = true;\n");
+    await commit(f.external, "foreign after exact own publication");
+    await git(f.external, ["push", "origin", "HEAD:main"]);
+    await assert.rejects(verify({}), /OWN Git publication|origin/iu);
+    await assert.rejects(f.candidate.prepareCandidate(f.request), /OWN Git publication|origin/iu);
+    assert.equal(f.ownPublication.rows(), rows);
+  });
+  return await ownedWork;
 });
 
 async function terminalAuthority(t, agreedOrigin = false, ownPublishedOrigin = false) {
@@ -340,47 +350,97 @@ test("installed source object batch reaches actual TaskGit Test through the exis
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
-test("native installed source and exact ordinary adoption survive Test, candidate reuse and generation", { timeout: 240000 }, async t => {
-  const f = await fixture(t);
-  await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.main, tasks: f.tasks }), /release-owned/);
-  const snapshot = await f.service.snapshot({ taskId: f.task.taskId, taskNumber: "HUB-1", projectRoot: f.task.projectRoot });
-  const integrated = await f.service.mergeIntoDev(snapshot);
-  assert.equal(integrated.integrated, true);
-  assert.equal(await git(integrated.dev.projectRoot, ["show", "HEAD:AgentHub/server.mjs"]), "export const repair = 1;");
-  const first = await f.candidate.prepareCandidate(f.request);
-  const again = await f.candidate.prepareCandidate(f.request);
-  assert.equal(again.preReleaseHead, first.preReleaseHead);
-  assert.equal(again.manifestHash, first.manifestHash);
-  for (const name of ["server", "incoming", "selected"]) assert.ok(await git(first.releaseRoot, ["show", `HEAD:AgentHub/${name}.mjs`]));
-  const notes = Buffer.from("# Consolidated release\n");
-  await save(first.releaseRoot, "CHANGELOG.md", notes);
-  await save(first.releaseRoot, "foreign.txt", "foreign bytes stay intact\n");
-  const generationInput = { ...f.request, operationId: "release-original", generation: 1, changelogContent: notes };
-  await assert.rejects(f.candidate.prepareGeneration(generationInput), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  assert.equal(await readFile(path.join(first.releaseRoot, "foreign.txt"), "utf8"), "foreign bytes stay intact\n");
-  await unlink(path.join(first.releaseRoot, "foreign.txt"));
-  await assert.rejects(f.candidate.prepareGeneration({ ...generationInput, changelogContent: Buffer.from("substituted notes\n") }),
-    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  const generation = await f.candidate.prepareGeneration(generationInput);
-  assert.equal(generation.manifest.baseProvenance.adoptions[0].recordHash, f.receipt.recordHash);
-  const frozen = await f.candidate.freezePublicationCandidate({ projectRoot: f.primary, workspaceId: "fixture",
-    expectedPlanRevision: "exact", expectedPreparedHead: first.preReleaseHead, changelogContent: notes,
-    releaseDate: new Date("2026-10-17T00:00:00Z") });
-  assert.equal(frozen.phase, "frozen");
-  assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
-  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
-  let terminalWrites = 0;
-  await assert.rejects(f.service.withTaskLock(f.task.taskId, lease => f.service.withAppliedNativeTerminalOwned({
-    taskId: f.task.taskId, projectRoot: f.primary, operationId: `native:${f.task.taskId}:${f.result}`, lease,
-  }, async (_record, recheck) => {
-    await recheck();
-    await save(f.external, "AgentHub/later.mjs", "unapproved after awaited terminal callback\n");
-    await commit(f.external, "origin changed before terminal CAS");
-    await git(f.external, ["push", "origin", "HEAD:main"]);
-    await recheck();
-    terminalWrites++;
-  })), /identity changed/);
-  assert.equal(terminalWrites, 0);
+test("native installed source and exact ordinary adoption survive Test, candidate reuse and generation", async t => {
+  // These sequential phases share ONE owned fixture. The existing 240s budget
+  // applies to each measured phase, rather than hiding later oracles behind one
+  // aggregate timeout. No production timeout or authority boundary changes.
+  let f, first, notes, generationInput, preparedHead, preparedIndex, holderEvidence;
+  const stage = async (name, run) => {
+    let completed = false;
+    await t.test(name, { timeout: 240000 }, async context => {
+      const started = performance.now();
+      try { await run(); completed = true; }
+      finally { context.diagnostic(JSON.stringify({ stage: name,
+        elapsedMs: performance.now() - started, completed })); }
+    });
+    assert.ok(completed, `fixture stage did not complete: ${name}`);
+  };
+  await stage("installed source, ordinary Test and exact candidate reuse", async () => {
+    f = await fixture(t, undefined, undefined, false, false, true);
+    await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.main, tasks: f.tasks }), /release-owned/);
+    const snapshot = await f.service.snapshot({ taskId: f.task.taskId, taskNumber: "HUB-1", projectRoot: f.task.projectRoot });
+    const integrated = await f.service.mergeIntoDev(snapshot);
+    assert.equal(integrated.integrated, true);
+    assert.equal(await git(integrated.dev.projectRoot, ["show", "HEAD:AgentHub/server.mjs"]), "export const repair = 1;");
+    first = await f.candidate.prepareCandidate(f.request);
+    const again = await f.candidate.prepareCandidate(f.request);
+    assert.equal(again.preReleaseHead, first.preReleaseHead);
+    assert.equal(again.manifestHash, first.manifestHash);
+    for (const name of ["server", "incoming", "selected"]) assert.ok(await git(first.releaseRoot, ["show", `HEAD:AgentHub/${name}.mjs`]));
+  });
+  await stage("foreign checkout refusal preserves original holder", async () => {
+    const holder = await f.candidate.frozenCandidate(f.primary);
+    holderEvidence = { checkpointFile: holder.checkpointFile, manifestFile: holder.manifestFile,
+      checkpoint: await readFile(holder.checkpointFile), manifest: await readFile(holder.manifestFile) };
+    notes = Buffer.from("# Consolidated release\n");
+    await save(first.releaseRoot, "CHANGELOG.md", notes);
+    await save(first.releaseRoot, "foreign.txt", "foreign bytes stay intact\n");
+    generationInput = { ...f.request, operationId: "release-original", generation: 1, changelogContent: notes };
+    preparedHead = await git(first.releaseRoot, ["rev-parse", "HEAD"]);
+    preparedIndex = await git(first.releaseRoot, ["ls-files", "--stage", "-z"]);
+    await assert.rejects(f.candidate.prepareGeneration(generationInput), error => {
+      // Release capture reads the existing holder; it never retries Await composition.
+      assert.equal(error.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+      assert.match(error.message, /release checkpoint clone is not an exact clean PreRelease checkout/u);
+      assert.match(error.message, /prepare the current Await candidate through the normal owner/u);
+      return true;
+    });
+    assert.equal(await git(first.releaseRoot, ["rev-parse", "HEAD"]), preparedHead);
+    assert.equal(await git(first.releaseRoot, ["ls-files", "--stage", "-z"]), preparedIndex);
+    assert.deepEqual(await readFile(path.join(first.releaseRoot, "CHANGELOG.md")), notes);
+    assert.equal(await readFile(path.join(first.releaseRoot, "foreign.txt"), "utf8"), "foreign bytes stay intact\n");
+    assert.deepEqual(await readFile(holderEvidence.checkpointFile), holderEvidence.checkpoint);
+    assert.deepEqual(await readFile(holderEvidence.manifestFile), holderEvidence.manifest);
+  });
+  await stage("substituted notes refusal preserves authorized bytes", async () => {
+    await unlink(path.join(first.releaseRoot, "foreign.txt"));
+    await assert.rejects(f.candidate.prepareGeneration({ ...generationInput, changelogContent: Buffer.from("substituted notes\n") }), error => {
+      // Release capture reads the existing holder; it never retries Await composition.
+      assert.equal(error.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+      assert.match(error.message, /release checkpoint clone is not an exact clean PreRelease checkout/u);
+      assert.match(error.message, /prepare the current Await candidate through the normal owner/u);
+      return true;
+    });
+    assert.equal(await git(first.releaseRoot, ["rev-parse", "HEAD"]), preparedHead);
+    assert.equal(await git(first.releaseRoot, ["ls-files", "--stage", "-z"]), preparedIndex);
+    assert.deepEqual(await readFile(path.join(first.releaseRoot, "CHANGELOG.md")), notes);
+    assert.deepEqual(await readFile(holderEvidence.checkpointFile), holderEvidence.checkpoint);
+    assert.deepEqual(await readFile(holderEvidence.manifestFile), holderEvidence.manifest);
+  });
+  await stage("healthy generation and publication freeze retain adoption", async () => {
+    const generation = await f.candidate.prepareGeneration(generationInput);
+    assert.equal(generation.manifest.baseProvenance.adoptions[0].recordHash, f.receipt.recordHash);
+    const frozen = await f.candidate.freezePublicationCandidate({ projectRoot: f.primary, workspaceId: "fixture",
+      expectedPlanRevision: "exact", expectedPreparedHead: first.preReleaseHead, changelogContent: notes,
+      releaseDate: new Date("2026-10-17T00:00:00Z") });
+    assert.equal(frozen.phase, "frozen");
+    assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
+    assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+  });
+  await stage("late origin drift refuses before terminal writes", async () => {
+    let terminalWrites = 0;
+    await assert.rejects(f.service.withTaskLock(f.task.taskId, lease => f.service.withAppliedNativeTerminalOwned({
+      taskId: f.task.taskId, projectRoot: f.primary, operationId: `native:${f.task.taskId}:${f.result}`, lease,
+    }, async (_record, recheck) => {
+      await recheck();
+      await save(f.external, "AgentHub/later.mjs", "unapproved after awaited terminal callback\n");
+      await commit(f.external, "origin changed before terminal CAS");
+      await git(f.external, ["push", "origin", "HEAD:main"]);
+      await recheck();
+      terminalWrites++;
+    })), /identity changed/);
+    assert.equal(terminalWrites, 0);
+  });
 });
 
 test("native composition rejects substituted receipts, changed snapshot and post-validation origin drift", async t => {

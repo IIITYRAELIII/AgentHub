@@ -232,6 +232,7 @@ async function lockSnapshot(dataDir) {
 export function createClaimCustodyRuntime({ dataDir } = {}) {
   if (!dataDir) throw new TypeError("dataDir is required");
   return {
+    requiresRetainedWitness: true,
     async capture({ original, witness = null } = {}) {
       if (!Number.isSafeInteger(original?.createdAtMs) || original.createdAtMs <= 0) refuse("original intake time is required");
       const dataRoot = await directoryBinding(dataDir);

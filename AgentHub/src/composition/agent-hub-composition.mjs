@@ -172,6 +172,7 @@ const {
   updateActiveCodexThreadSettings,
   persistManagedRunHistory,
   persistClaudeRunHistory,
+  importCodexAssistantAttachments,
   startClaudeTurn, steerClaudeTurn,
   stopClaudeRunProcess,
   attachClaudeRunAfterRestart,
@@ -298,6 +299,7 @@ const providerApplication = await createProviderApplicationComposition({
     saveState,
     deliverTurnEndNotification,
     persistManagedRunHistory,
+    importCodexAssistantAttachments,
     discardContextCompactionRun,
     finalizeRunDelivery,
     restartHasBlockingWork,
@@ -582,6 +584,7 @@ const interactionShell = createInteractionShellPhase({
   },
   infrastructure: {
     trustedDeviceStore, workLogUsageStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
+    hubMcpService,
     taskReleasePlanner, workspaceReleaseService,
     taskLifecycle,
     attachmentDirectory,

@@ -37,6 +37,16 @@ accept a repeat begin with the same ID, immutable metadata and original attempt
 time. A generic 404, cancelled/consumed/expired receipt, missing original attempt
 time, or elapsed original 30-minute window fails closed. Both stores cap a late
 first admission at the original attempt deadline; a repeat never extends it.
+
+An existing durable Blob's attempt update looks up only its exact stored key;
+it does not re-admit the whole archive. Descriptor, retention timestamp and
+captured/desired attempt are checked transactionally, then committed Blob bytes,
+hashes and attempt identity are verified before begin. An identical pending write
+that already committed is read back without rewriting it. A removed record uses
+the existing full capacity/retention admission in the original I/O budget.
+Storage failure remains typed browser storage failure, not proof of a network
+disconnect; durability, original IDs and explicit-resume rules remain unchanged.
+See ADR-0274.
 Expired IDs retain a bounded seven-day tombstone so a delayed retry cannot
 recreate them after staging cleanup. The client never admits a message during
 this recovery; manual resume and reload use the persisted Blob and ID.

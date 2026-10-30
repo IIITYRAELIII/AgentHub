@@ -173,7 +173,7 @@ test("CLI amendment addresses same original and forwards exact CAS/request; comm
   assert.equal(calls.some(call => call.action === "release-operation-run"), false);
   let received;
   const bridge = new ReleaseOperationCommandService({ releaseOperations: { start() {}, get() {}, continue: (...args) => { received = args; } },
-    workspaceCatalog: { workspace() {}, hierarchy() {} }, taskBoard: { task() {} } });
+    workspaceCatalog: { workspace() {}, hierarchy() {} }, taskBoard: { task() {}, releaseTasks: () => assert.fail("continuation must not read mutable Await membership") } });
   bridge.continue(amendment);
   assert.deepEqual(received, ["original", Object.fromEntries(Object.entries(amendment).filter(([key]) => key !== "operationId"))]);
 });
@@ -422,7 +422,7 @@ test("metadata-only replay is recognized before ordinary/reviewed continuation d
   const observed = [];
   const f = await fixture(t, { observeOperation: id => observed.push(id) });
   const command = new ReleaseOperationCommandService({ releaseOperations: f.service,
-    workspaceCatalog: { workspace: () => ({}), hierarchy: () => [] }, taskBoard: { task: () => null } });
+    workspaceCatalog: { workspace: () => ({}), hierarchy: () => [] }, taskBoard: { task: () => null, releaseTasks: () => assert.fail("continuation must not read mutable Await membership") } });
   const original = f.store.get("original");
   const args = { operationId: "original", requestId: "metadata-only-dispatch",
     releaseMetadata: { sourcePath: "notes.md", byteLength: 42, rawSha256: "a".repeat(64), canonicalSha256: "b".repeat(64) },

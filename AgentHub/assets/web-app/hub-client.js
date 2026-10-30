@@ -128,6 +128,7 @@ let selectionTail = Promise.resolve();
 let initialRouteOpening = true;
 const historyRefreshAtByTask = new Map();
 let visibleStreamTaskIds = new Set();
+let retainedHistoryTaskIds = null;
 let boardTaskViewsSource = null;
 let boardTaskViewsCache = [];
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
@@ -448,6 +449,7 @@ function readSelectedTaskId() {
 
 function rememberSelectedTaskId(id) {
   selectedTaskId = String(id ?? "").trim();
+  releaseClosedTaskHistories();
   try {
     if (selectedTaskId) localStorage.setItem(selectedTaskKey, selectedTaskId);
     else localStorage.removeItem(selectedTaskKey);
@@ -1825,22 +1827,81 @@ commandTrace.bindReporter(async (batch) => {
   if (!response.ok) throw new Error("Client trace batch rejected");
 });
 
+async function waitTaskOperationResult(admission, params) {
+  let receipt = admission;
+  const original = admission.taskOperation;
+  while (!receipt.taskOperation.terminal && receipt.taskOperation.status !== "unknown"
+      && receipt.taskOperation.cancellation?.phase !== "stopped") {
+    try {
+      const value = await control("board-task-read", { id: original.taskId ?? params.id,
+        operationRequestId: original.requestId, argumentsHash: original.argumentsHash,
+        clientTraceId: original.requestId });
+      receipt = value.operation;
+      if (!receipt || receipt.taskOperation.requestId !== original.requestId
+          || receipt.taskOperation.argumentsHash !== original.argumentsHash) throw new Error("Ответ относится к другой операции задачи");
+      if (receipt.taskOperation.terminal || receipt.taskOperation.status === "unknown"
+          || receipt.taskOperation.cancellation?.phase === "stopped") break;
+      if (!receipt.taskOperation.active) throw new Error(`Операция ${original.requestId} сохранена; требуется проверка её исходного исполнения`);
+    } catch (error) {
+      if (!isConnectionFailure(error) && !looksLikeConnectionFailure(error)) throw error;
+      // Read retries keep the exact admitted operation. They never repeat its
+      // mutation or impose a total deadline on valid long-running Git work.
+    }
+    await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
+  }
+  const operation = receipt.taskOperation;
+  commandTrace.record("ui-control", "task-operation-result", operation.elapsedMs, original.requestId,
+    { action: original.toolName, render: operation.status });
+  if (operation.status !== "succeeded") throw Object.assign(new Error(
+    operation.cancellation?.phase === "stopped" ? "Операция прервана. Незавершённая работа сохранена."
+      : operation.error || `Операция ${original.requestId} требует восстановления исходного результата`), { taskOperation: operation });
+  return { ...await control("snapshot"), lifecycleResult: receipt.result };
+}
+
 async function control(action, params = {}) {
   const snapshotBaseline = currentSnapshotBaseline();
   const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
+  const taskOperationId = ["board-task-create", "board-task-update", "board-task-status", "board-task-complete", "board-task-remove"].includes(action)
+    ? params.operationId || commandTrace.newId() : null;
   const started = performance.now();
-  const tracedParams = { ...params, clientTraceId: commandId, clientTiming: params.clientTiming ?? {
+  const tracedParams = { ...params, ...(taskOperationId ? { operationId: taskOperationId } : {}), clientTraceId: commandId, clientTiming: params.clientTiming ?? {
     submittedAtMs: Date.now(), submittedMonotonicMs: started,
     controlStartedAtMs: Date.now(), controlStartedMonotonicMs: started,
     surface: clientTraceSurface(),
   } };
   return commandTrace.measure("ui-control", action, async () => {
+    let transportAcknowledged = false;
     try {
-      const result = await controlTransport(action, tracedParams);
+      let result;
+      try { result = await controlTransport(action, tracedParams); }
+      catch (error) {
+        if (!taskOperationId || (!isConnectionFailure(error) && !looksLikeConnectionFailure(error))) throw error;
+        // The first admission reply may be lost. The client already chose the
+        // original identity; read it without guessing its hash or replaying work.
+        let read;
+        for (;;) {
+          try {
+            read = await control("board-task-read", { id: params.id, operationRequestId: taskOperationId,
+              clientTraceId: taskOperationId });
+            break;
+          } catch (readError) {
+            if (!isConnectionFailure(readError) && !looksLikeConnectionFailure(readError)) throw readError;
+            await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
+          }
+        }
+        if (read.operation?.taskOperation.requestId !== taskOperationId) throw error;
+        result = read.operation;
+      }
       reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
+      transportAcknowledged = true;
+      if (result?.taskOperation) {
+        commandTrace.record("ui-control", "task-operation-admitted", performance.now() - started,
+          result.taskOperation.requestId, { action, render: result.taskOperation.status });
+        result = await waitTaskOperationResult(result, params);
+      }
       return bindSnapshotBaseline(commandTrace.associate(result, commandId), snapshotBaseline);
     } catch (error) {
-      reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
+      if (!transportAcknowledged) reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
       throw error;
     }
   }, commandId);
@@ -3053,6 +3114,31 @@ function traceHistoryCard(id, history, { liveBefore, cleared, commandId }) {
   }));
 }
 
+function firstCurrentLatestHistory(result, id) {
+  const history = result?.history;
+  if (!history || result.focusedTurn || history.notModified === true
+    || history.transportTruncated === true || historyPageByTask.has(id)
+    || historyWindowByTask.get(id)?.length || focusedHistoryWindowByTask.has(id)) return false;
+  // Only the global snapshot generation may have advanced. A response from a
+  // different runtime, Thread or explicit history window remains superseded.
+  const baseline = responseSnapshotBaselines.get(result);
+  const separator = typeof baseline === "string" ? baseline.indexOf("\0") : -1;
+  const serverKey = snapshotServerKey(observedServerIdentity);
+  if (!serverKey || separator < 0 || baseline.slice(separator + 1) !== serverKey) return false;
+  const current = representativeSnapshotTasks(lastSnapshot?.tasks).find((task) => (
+    taskId(task.provider, task.threadId, task.streamId) === id
+  ));
+  if (!history.streamId || !sameIdentity(current, history)) return false;
+  const { start, end, total } = history;
+  if (![start, end, total].every(Number.isSafeInteger) || start < 0 || start >= end
+    || end !== total || !Array.isArray(history.items) || history.items.length !== end - start) return false;
+  return displayedFinalAcknowledgement({
+    messages: historyMessages(history).filter((message) => message.kind !== "subagent"),
+    final: current?.latestFinal,
+    selectTask: true, taskId: id,
+  });
+}
+
 function applyOpened(result, {
   preserveScroll = false,
   skipSnapshot = false,
@@ -3067,7 +3153,17 @@ function applyOpened(result, {
     return;
   }
   const id = taskId(history.provider, history.threadId, history.streamId);
-  if (!result?.focusedTurn && snapshotResponseIsStale(result)) {
+  const staleSnapshot = !result?.focusedTurn && snapshotResponseIsStale(result);
+  const firstCurrentPage = staleSnapshot && selectTask && !exactNavigation
+    && firstCurrentLatestHistory(result, id);
+  if (staleSnapshot) {
+    const commandId = commandTrace.objectId(result);
+    if (commandId) commandTrace.record("ui-control", "history-page-decision", 0, commandId, {
+      trigger: "first-open", render: firstCurrentPage ? "current" : "stale",
+      count: Array.isArray(history.items) ? history.items.length : 0,
+    });
+  }
+  if (staleSnapshot && !firstCurrentPage) {
     // The embedded history belongs to the same old open-task response as its
     // snapshot. Keep any newer final already rendered while finishing the
     // user's navigation, then load this Thread from its current authority.
@@ -3083,6 +3179,11 @@ function applyOpened(result, {
     if (!skipSnapshot) void refresh();
     return;
   }
+  // History and its optional global snapshot have separate authority. Retain
+  // the newer snapshot, but display the exact still-current first local page
+  // without awaiting another provider/history refresh. Read ACK remains owned
+  // by the existing rendered-final/after-paint path below.
+  if (firstCurrentPage) skipSnapshot = true;
   if (history.notModified === true) {
     const page = historyPageByTask.get(id);
     if (page) page.version = history.version;
@@ -3517,11 +3618,31 @@ function enqueueTaskHistoryLoad(id, identity, {
   return state.running;
 }
 
-async function loadVisibleTaskHistories(taskIds) {
+function releaseClosedTaskHistories() {
+  if (!retainedHistoryTaskIds) return;
+  for (const id of historyWindowByTask.keys()) {
+    if (id === selectedTaskId || retainedHistoryTaskIds.has(id)) continue;
+    if (!agentHub.releaseTaskHistory(id)) continue;
+    // Canonical pages are disposable. Durable history, receipt/read cursors,
+    // outgoing sends and active-turn ownership remain with their existing owners.
+    historyRequestGenerationByTask.set(id, (historyRequestGenerationByTask.get(id) ?? 0) + 1);
+    const load = historyLoadStates.get(id);
+    if (load) load.pending = null;
+    historyByTask.delete(id);
+    historyWindowByTask.delete(id);
+    historyPageByTask.delete(id);
+    focusedHistoryWindowByTask.delete(id);
+    historyRefreshAtByTask.delete(id);
+  }
+}
+
+async function loadVisibleTaskHistories(taskIds, retainedTaskIds) {
   const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
     .map((id) => String(id ?? "").trim())
     .filter(Boolean))];
   visibleStreamTaskIds = new Set(ids);
+  retainedHistoryTaskIds = new Set(retainedTaskIds);
+  releaseClosedTaskHistories();
   if (initialRouteOpening) return;
   await Promise.all(ids.map(async (id) => {
     // История выбранного Thread уже загружается open-task. Остальные колонки
@@ -3533,7 +3654,8 @@ async function loadVisibleTaskHistories(taskIds) {
   }));
 }
 
-agentHub.on("workspace:visible-streams", ({ taskIds }) => void loadVisibleTaskHistories(taskIds));
+agentHub.on("workspace:visible-streams", ({ taskIds, retainedTaskIds }) =>
+  void loadVisibleTaskHistories(taskIds, retainedTaskIds));
 
 agentHub.on("devices:refresh", () => void runAction(async () => {
   agentHub.setTrustedDevices({ loading: true });
@@ -3898,7 +4020,6 @@ function sendUserMessage(request, frozenParams = null) {
         if (route.hash) replaceRoute(route.hash);
         agentHub.showSelectedTask();
       }
-      renderTaskMessages(request.taskId);
       renderTaskQueue(request.taskId, result?.snapshot ?? lastSnapshot);
       renderTaskMessages(request.taskId);
     },
@@ -4173,6 +4294,24 @@ document.addEventListener("agenthub:board-action", (event) => {
       result => window.AgentHubTaskBoard.showDetails({ ...detail, result }),
       error => window.AgentHubTaskBoard.showDetails({ ...detail, error: String(error?.message ?? error) }),
     );
+    return;
+  }
+  if (detail.type === "operation-read") {
+    void control("board-task-read", { id: detail.id }).then(result =>
+      window.AgentHubTaskBoard.showOperations({ id: detail.id, result }),
+      error => agentHub.toast(String(error?.message ?? error)));
+    return;
+  }
+  if (detail.type === "operation-cancel") {
+    // Stop must reach the backend while the original board command is waiting.
+    const { type, ...params } = detail;
+    void control("board-task-operation-cancel", params).then(result => {
+      window.AgentHubTaskBoard.showOperations({ id: detail.id, result });
+      agentHub.toast(result.cancellation?.phase === "stopped"
+        ? "Операция прервана. Незавершённая работа сохранена."
+        : result.cancellation?.phase === "already_terminal" ? "Операция уже завершена."
+          : "Остановка запрошена; прежние эффекты пока неизвестны.");
+    }, error => agentHub.toast(String(error?.message ?? error)));
     return;
   }
   if (detail.type === "diff") {

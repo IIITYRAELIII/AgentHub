@@ -193,7 +193,10 @@ test("stale Task after fencing cannot be silently rebound to a new CAS", async t
 test("same recovery ID with changed business args and foreign successor cannot consume authority", async t => {
   const f = await fixture(t); await fenced(f);
   await assert.rejects(f.hub.call("hub_task_claim", { ...f.consume, context_token: f.managerToken }), /Successor claim differs/);
-  await assert.rejects(f.hub.call("hub_task_claim", { ...f.consume, dependency_mode: "skip" }), /another operation/);
+  const originalSuccessor = f.catalog.mcpOperation(f.consume.request_id);
+  await assert.rejects(f.hub.call("hub_task_claim", { ...f.consume, dependency_mode: "skip" }),
+    { code: "TASK_CLAIM_CUSTODY_REJECTED" });
+  assert.deepEqual(f.catalog.mcpOperation(f.consume.request_id), originalSuccessor);
   assert.deepEqual(f.tasks.task(f.prior.id), f.prior); assert.equal(f.prepares(), 0);
 });
 

@@ -22,8 +22,11 @@ export class TaskReleasePlanService {
       const available = new Set(tasks.map((task) => task.id));
       const missing = selected.filter((taskId) => !available.has(taskId));
       if (missing.length) throw new Error(`selected release Tasks were not found: ${missing.join(", ")}`);
-      const selectedSet = new Set(selected);
-      tasks = tasks.filter((task) => selectedSet.has(task.id));
+      const awaiting = tasks.filter(task => task.status !== "done" && task.workflowStatus === "awaiting_implementation")
+        .map(task => task.id).sort();
+      if (JSON.stringify([...selected].sort()) !== JSON.stringify(awaiting)) {
+        throw new Error("Release membership must equal the whole current Await set; return exclusions through the normal lifecycle");
+      }
     }
     if (acceptingTask) {
       const current = tasks.find((task) => task.id === acceptingTask.id);
