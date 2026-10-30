@@ -294,6 +294,72 @@ rollback with the same runtime and unchanged participant choices/config/data.
 Only transport is synthetic; no actual Utilities source removal or public
 download acceptance follows from this fixture. No graphical Setup.exe is added.
 
+## Updating an installed Hub from a public package
+
+Download the release's canonical `install_release.py` asset and verify its
+published digest. Use an explicit stable version, one retained private scratch
+directory outside the runtime, and one original operation ID:
+
+```powershell
+python install_release.py --release <exact-stable-version> --prepare-update --operation-id <original-update-id> --runtime-root <installed-runtime-root> --scratch-root <separate-private-scratch>
+```
+
+This requires Windows x64, Python, Node with `node:sqlite`, a same-user interactive
+desktop shell and the standard `<runtime-root>/data` layout. It downloads/verifies
+the exact canonical ZIP/descriptor, verifies the installer against the same
+public metadata, and retains the package. No npm, compiler, source rebuild or
+new publication runs on the recipient. Custom external data roots or different
+elevation/security contexts refuse; do not relocate data to bypass the check.
+
+For **public 2.0.4 without package handoff**, first finish active work. Keep Hub
+running while arming from a separate terminal outside its process Job. Confirm
+the displayed one-time manual step. Only after `awaiting-user-stop` reports the
+exact old Host/Node PIDs and release, stop that old Hub cohort yourself within
+the reported 120-second window. Closing an unrelated window is not proof of
+stopping Hub. Do not introduce new work, start another Hub or log in/out during
+this window. The updater does **not** terminate any process. A manual forced
+stop is crash-consistent, not graceful; uncommitted work may remain UNKNOWN.
+
+The native continuation holds original process/Job handles, waits for every old
+Job member to disappear and rechecks before each effect. Unknown/foreign/live
+writers stop the operation. It then backs up regular config/data using SQLite's
+backup API with writer reservations and integrity checks, runs the verified
+stopped-only installer and launches the exact target once. It does not copy live
+WAL files, restore data, replay unknown work or silently roll back. Backup size
+and verification determine downtime; 45 seconds is only the Job-accounting
+observation bound, not a downtime promise. Keep enough private free space for
+the unpacked package and all runtime data/config plus backup.
+
+After this one-time upgrade, a capable installed Hub advertises its real package
+restart protocol. The SAME command submits its ordinary graceful restart request:
+active work finishes normally before the existing stopping fence, all writers
+close, then native retirement/backup/install/start occur. A lost authenticated
+request never falls back to manual stop or creates another original.
+
+Read the original after interruption or a lost result:
+
+```powershell
+python install_release.py --release <same-exact-version> --update-status --operation-id <same-original-update-id> --runtime-root <same-runtime-root> --scratch-root <same-private-scratch>
+```
+
+This reads only status/phase/outcome. `succeeded` requires the replacement's exact
+ready/original settlement, not merely install exit0. An absent original or
+incomplete pre-admission download is unknown, not success. Existing retained
+transport never launches again automatically; preserve it and diagnose the
+original before further action. A different version with the same ID refuses.
+Do not delete receipts/cache/backup to make a retry pass. If install/start failed,
+the current pointer, verified manifests, exact live process evidence and original
+must first be inspected. Any explicit code-only rollback uses the existing
+stopped installer `--rollback`; it does not restore a database or settle UNKNOWN.
+Do not start manually across an unresolved package-original admission fence.
+
+The focused `package_update_test.py` uses the actual immutable public 2.0.4
+native Host and a literal local application, controlled HTTPS metadata, real
+SQLite/control/backup/installer and exact replacement readiness. Its own natural
+fixture stop represents the manual user action; it is not an old product stop
+callback. It never stops the real App or Hub. Product/provider/public-download
+acceptance remains separate from this bounded fixture.
+
 ## Existing identities and cutover
 
 - Existing Task refs/worktrees, audit receipts and frozen generations stay in the

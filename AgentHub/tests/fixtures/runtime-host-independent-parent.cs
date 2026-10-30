@@ -31,6 +31,7 @@ internal static class IndependentParentProbe
     [DllImport("kernel32.dll", SetLastError=true)] private static extern IntPtr CreateJobObject(IntPtr sa,string name);
     [DllImport("kernel32.dll", SetLastError=true)] private static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
     [DllImport("kernel32.dll", SetLastError=true)] private static extern bool TerminateJobObject(IntPtr job,uint code);
+    [DllImport("kernel32.dll", SetLastError=true)] private static extern bool TerminateProcess(IntPtr process,uint code);
     [DllImport("kernel32.dll", SetLastError=true)] private static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool member);
     [DllImport("kernel32.dll")] private static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
@@ -60,12 +61,79 @@ internal static class IndependentParentProbe
         Console.OutputEncoding=new UTF8Encoding(false); Console.Error.Write("");
         try {
             if(args.Length==0) return Child(Environment.GetEnvironmentVariable("HUB376_TEST_ROOT"),Environment.GetEnvironmentVariable("HUB376_TEST_STOP"));
+            if(args[0]=="cohort-parent") return CohortParent(args[1]);
+            if(args[0]=="cohort-leaf") {WaitFile(Path.Combine(args[1],args[2]+"-stop"),10000);return 0;}
+            if(args[0]=="cohort-controller") {
+                Type host=typeof(AgentHub.RuntimeHost.Program);
+                try {return (int)host.GetMethod("RunPackageCohort",BindingFlags.Static|BindingFlags.NonPublic).Invoke(null,
+                    new object[]{Path.Combine(args[1],"stage.mjs"),args[1],"owned-original",Int32.Parse(args[2]),Int32.Parse(args[3])});}
+                catch(TargetInvocationException error){throw error.InnerException;}
+            }
+            if(args.Length==2&&args[1]=="cohort")return CohortDriver(args[0]);
             if(args[0]=="child") return Child(args[1],args[2]);
             if(args[0]=="worker") return Worker(args[1],args[2]);
             return Driver(args[0],args[1]);
         } catch(Exception error) {
             if(args[0]=="worker"||args[0]=="child") File.WriteAllText(Path.Combine(args[1],args[0]+"-error.txt"),error.ToString(),new UTF8Encoding(false));
             Console.Error.WriteLine(error);return 1;
+        }
+    }
+    private static void WaitFile(string file,int timeout)
+    {
+        Stopwatch watch=Stopwatch.StartNew();
+        while(!File.Exists(file)){Require(watch.ElapsedMilliseconds<timeout,"owned file deadline");Thread.Sleep(20);}
+    }
+    private static int CohortParent(string root)
+    {
+        IntPtr job=CreateJobObject(IntPtr.Zero,"Local\\IIITYRAELIII.AgentHub."+Process.GetCurrentProcess().Id);
+        Require(job!=IntPtr.Zero&&AssignProcessToJobObject(job,Process.GetCurrentProcess().Handle),"original named job");
+        string executable=Assembly.GetExecutingAssembly().Location;
+        ProcessStartInfo a=new ProcessStartInfo(executable,"cohort-leaf "+Quote(root)+" main");a.UseShellExecute=false;a.CreateNoWindow=true;
+        ProcessStartInfo b=new ProcessStartInfo(executable,"cohort-leaf "+Quote(root)+" extra");b.UseShellExecute=false;b.CreateNoWindow=true;
+        try {
+            using(Process node=Process.Start(a)) using(Process extra=Process.Start(b)) {
+                File.WriteAllText(Path.Combine(root,"old.json"),Json.Serialize(new {hostPid=Process.GetCurrentProcess().Id,nodePid=node.Id}));
+                WaitFile(Path.Combine(root,"main-stop"),10000);
+                Require(node.WaitForExit(5000),"original main exit");
+                return 0; // The extra writer intentionally remains alive in the SAME job.
+            }
+        } finally {CloseHandle(job);}
+    }
+    private static int CohortDriver(string root)
+    {
+        IntPtr outer=CreateJobObject(IntPtr.Zero,null);Require(outer!=IntPtr.Zero,"owned outer job");
+        ProcessInfo old=new ProcessInfo();IntPtr controller=IntPtr.Zero,controllerThread=IntPtr.Zero;
+        try {
+            string executable=Assembly.GetExecutingAssembly().Location;
+            StartupInfo si=new StartupInfo();si.Size=(uint)Marshal.SizeOf(typeof(StartupInfo));
+            Require(CreateProcess(executable,new StringBuilder(Quote(executable)+" cohort-parent "+Quote(root)),
+                IntPtr.Zero,IntPtr.Zero,false,4|0x08000000,IntPtr.Zero,root,ref si,out old),"old fixture create");
+            Require(AssignProcessToJobObject(outer,old.Process)&&ResumeThread(old.Thread)==1,"old fixture ownership");
+            WaitFile(Path.Combine(root,"old.json"),10000);
+            Dictionary<string,object> identity=Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(Path.Combine(root,"old.json")));
+            object[] input={executable," cohort-controller "+Quote(root)+" "+identity["nodePid"]+" "+identity["hostPid"],root,(uint)0};
+            object created;
+            try {created=typeof(AgentHub.RuntimeHost.Program).GetMethod("CreateIndependentProcess",BindingFlags.Static|BindingFlags.NonPublic).Invoke(null,input);}
+            catch(TargetInvocationException error){throw error.InnerException;}
+            controller=(IntPtr)created.GetType().GetField("Process").GetValue(created);
+            controllerThread=(IntPtr)created.GetType().GetField("Thread").GetValue(created);
+            WaitFile(Path.Combine(root,"armed.json"),10000);
+            Require(!File.Exists(Path.Combine(root,"continued.json")),"no effect with original writers alive");
+            File.WriteAllText(Path.Combine(root,"main-stop"),"user-owned natural stop");
+            Require(WaitForSingleObject(old.Process,5000)==0,"original Host exit");
+            CloseHandle(old.Thread);CloseHandle(old.Process);old=new ProcessInfo();
+            Thread.Sleep(350);
+            Require(!File.Exists(Path.Combine(root,"continued.json")),"extra writer must defer install boundary");
+            File.WriteAllText(Path.Combine(root,"extra-stop"),"user-owned natural stop");
+            Require(WaitForSingleObject(controller,5000)==0,"controller terminal join");
+            Require(File.Exists(Path.Combine(root,"continued.json")),"fresh original Job zero authorizes continuation");
+            Console.WriteLine(Json.Serialize(new {originalHostExit=true,extraWriterDeferred=true,continuationAfterWholeJobZero=true,oldPidsReopened=false}));
+            return 0;
+        } finally {
+            File.WriteAllText(Path.Combine(root,"main-stop"),"cleanup");File.WriteAllText(Path.Combine(root,"extra-stop"),"cleanup");
+            if(old.Process!=IntPtr.Zero){TerminateJobObject(outer,79);WaitForSingleObject(old.Process,5000);CloseHandle(old.Thread);CloseHandle(old.Process);}
+            if(controller!=IntPtr.Zero){if(WaitForSingleObject(controller,1000)==258){TerminateProcess(controller,79);WaitForSingleObject(controller,5000);}CloseHandle(controllerThread);CloseHandle(controller);}
+            CloseHandle(outer);
         }
     }
     private static int Child(string root,string stopName)

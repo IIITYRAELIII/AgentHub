@@ -452,6 +452,11 @@ namespace AgentHub.RuntimeHost
                 Path.AltDirectorySeparatorChar);
             try
             {
+                if (args.Length == 2 && args[0] == "--check-package-bootstrap")
+                {
+                    CheckBootstrapOperator(Path.GetFullPath(args[1]));
+                    return 0;
+                }
                 if ((args.Length == 6 && args[0] == "--package-handoff")
                     || (args.Length == 4 && args[0] == "--package-bootstrap"))
                 {
@@ -500,6 +505,11 @@ namespace AgentHub.RuntimeHost
             }
             catch (Exception error)
             {
+                if (args.Length > 0 && args[0] == "--check-package-bootstrap")
+                {
+                    Console.Error.WriteLine("Package bootstrap operator is unavailable or belongs to the old Hub job");
+                    return 2;
+                }
                 bool inJob;
                 IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inJob);
                 WriteLifetime(runtimeRoot, "host-failed", 0, 1, inJob);
@@ -545,7 +555,8 @@ namespace AgentHub.RuntimeHost
             VerifyManifest(releaseRoot, current);
 
             string packageEntry = Path.Combine(releaseRoot, "src", "runtime", "runtime-package-handoff.mjs");
-            if (ManifestDeclares(releaseRoot, "src/runtime/runtime-package-handoff.mjs"))
+            bool packageHandoffAvailable = ManifestDeclares(releaseRoot, "src/runtime/runtime-package-handoff.mjs");
+            if (packageHandoffAvailable && !checkOnly)
                 ProbePackageAdmission(packageEntry, runtimeRoot);
 
             string server = Path.Combine(releaseRoot, "agent-hub-main.mjs");
@@ -572,6 +583,7 @@ namespace AgentHub.RuntimeHost
             start.EnvironmentVariables["AGENT_HUB_RUNTIME_ROOT"] = runtimeRoot;
             start.EnvironmentVariables["AGENT_HUB_RELEASE_ID"] = current;
             start.EnvironmentVariables["AGENT_HUB_HOST_PID"] = Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture);
+            start.EnvironmentVariables["AGENT_HUB_PACKAGE_HANDOFF_PROTOCOL"] = packageHandoffAvailable ? "1" : "";
             // The one-use native launch capability is not an application secret
             // and must not be inherited by provider children or public snapshots.
             start.EnvironmentVariables.Remove("AGENT_HUB_PACKAGE_LAUNCH_TOKEN");
@@ -689,7 +701,7 @@ namespace AgentHub.RuntimeHost
             string oldRelease = Path.Combine(root, "releases", current);
             EnsureDirectoryWithoutReparsePoint(oldRelease, "Unsafe old release");
             VerifyManifest(oldRelease, current);
-            Dictionary<string, object> instance = ReadJsonObject(Path.Combine(root, "data", "bot.lock"));
+            Dictionary<string, object> instance = ReadSharedInstance(Path.Combine(root, "data", "bot.lock"));
             if (!Object.Equals(instance["ready"], true) || RequiredString(instance, "releaseId") != current)
                 throw new InvalidOperationException("Legacy update must pin the ready old runtime before the user stops it");
             int nodePid = Convert.ToInt32(instance["pid"], CultureInfo.InvariantCulture);
@@ -735,7 +747,7 @@ namespace AgentHub.RuntimeHost
                     nodeStarted = oldNode.StartTime.ToUniversalTime().Ticks;
                     hostStarted = oldHost.StartTime.ToUniversalTime().Ticks;
                     if (RunPackageStage(entry, root, operationId, "arm", nodePid, hostPid,
-                        nodeStarted, hostStarted, ref gate) != 0) return 1;
+                        nodeStarted, hostStarted, ref gate, job) != 0) return 1;
                     if (!oldNode.WaitForExit(120000) || !oldHost.WaitForExit(120000))
                         throw new InvalidOperationException("Original cohort retirement remains unknown");
                 }
@@ -755,7 +767,7 @@ namespace AgentHub.RuntimeHost
                     Thread.Sleep(25);
                 }
                 return RunPackageStage(entry, root, operationId, "continue", nodePid, hostPid,
-                    nodeStarted, hostStarted, ref gate);
+                    nodeStarted, hostStarted, ref gate, job);
             }
             finally
             {
@@ -765,7 +777,7 @@ namespace AgentHub.RuntimeHost
         }
 
         private static int RunPackageStage(string entry, string root, string operationId, string stage,
-            int nodePid, int hostPid, long nodeStarted, long hostStarted, ref Mutex gate)
+            int nodePid, int hostPid, long nodeStarted, long hostStarted, ref Mutex gate, IntPtr originalJob)
         {
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = FindNodeExecutable();
@@ -790,10 +802,21 @@ namespace AgentHub.RuntimeHost
                 bool released = false;
                 while ((line = child.StandardOutput.ReadLine()) != null)
                 {
+                    if (line == "AGENT_HUB_PACKAGE_CHECK_STOPPED")
+                    {
+                        child.StandardInput.WriteLine(stage == "continue" && PackageJobIsEmpty(originalJob)
+                            ? "AGENT_HUB_PACKAGE_STOPPED" : "AGENT_HUB_PACKAGE_REFUSED");
+                        child.StandardInput.Flush();
+                        continue;
+                    }
                     if (line == "AGENT_HUB_PACKAGE_LAUNCH")
                     {
-                        if (stage != "continue" || released || gate == null)
-                            throw new InvalidOperationException("Duplicate package launch boundary");
+                        if (stage != "continue" || released || gate == null || !PackageJobIsEmpty(originalJob))
+                        {
+                            child.StandardInput.WriteLine("AGENT_HUB_PACKAGE_REFUSED");
+                            child.StandardInput.Flush();
+                            continue;
+                        }
                         LeaveAcceptanceGate(ref gate);
                         released = true;
                         child.StandardInput.WriteLine("AGENT_HUB_PACKAGE_GATE_RELEASED");
@@ -803,6 +826,43 @@ namespace AgentHub.RuntimeHost
                 child.WaitForExit();
                 return child.ExitCode;
             }
+        }
+
+        private static bool PackageJobIsEmpty(IntPtr job)
+        {
+            JobAccounting accounting;
+            return job != IntPtr.Zero && QueryInformationJobObject(job, 1, out accounting,
+                (uint)Marshal.SizeOf(typeof(JobAccounting)), IntPtr.Zero) && accounting.ActiveProcesses == 0;
+        }
+
+        private static Dictionary<string, object> ReadSharedInstance(string file)
+        {
+            try
+            {
+                using (FileStream stream = new FileStream(file, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+                {
+                    if (stream.Length > 65536) throw new InvalidOperationException();
+                    using (StreamReader reader = new StreamReader(stream, new UTF8Encoding(false, true)))
+                        return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
+                }
+            }
+            catch { throw new InvalidOperationException("Old instance ownership is unreadable"); }
+        }
+
+        private static void CheckBootstrapOperator(string root)
+        {
+            int nodePid = Convert.ToInt32(ReadSharedInstance(Path.Combine(root, "data", "bot.lock"))["pid"], CultureInfo.InvariantCulture);
+            int hostPid = ProcessParentId(nodePid);
+            IntPtr job = OpenJobObject(4, false, "Local\\IIITYRAELIII.AgentHub." + hostPid.ToString(CultureInfo.InvariantCulture));
+            if (job == IntPtr.Zero) throw new InvalidOperationException("Original job is unavailable");
+            try
+            {
+                bool member;
+                if (!IsProcessInJob(GetCurrentProcess(), job, out member) || member)
+                    throw new InvalidOperationException("Bootstrap operator belongs to the old Hub cohort");
+            }
+            finally { CloseHandle(job); }
         }
 
         private static int StartIndependent(string runtimeRoot)

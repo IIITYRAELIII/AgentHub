@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { verifyRuntimeManifest } from "./runtime-manifest-verifier.mjs";
+import { waitForRuntimeReplacement } from "../../runtime/publication-readiness.mjs";
 
 const REPOSITORY = "IIITYRAELIII/AgentHub";
 const SHA = /^[a-f0-9]{64}$/u;
@@ -22,6 +23,12 @@ export async function packageFile(file) {
     throw new Error("Package input changed while reading");
   }
   return { file: resolved, bytes: info.size, sha256: hash.digest("hex") };
+}
+
+export async function packageDirectory(directory) {
+  const physical = await realpath(directory), info = await lstat(physical);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Package directory ownership is unavailable");
+  return { directory: physical, dev: String(info.dev), ino: String(info.ino), birthtimeMs: info.birthtimeMs };
 }
 
 async function metadataFor(tag) {
@@ -81,7 +88,7 @@ export async function verifyPublicPackageTarget(input, { readMetadata = metadata
 }
 
 export async function assertPackageFiles(target) {
-  for (const key of ["archive", "descriptor", "installer"]) {
+  for (const key of ["archive", "descriptor", "installer", ...(target.runtimeManifest ? ["runtimeManifest"] : [])]) {
     const actual = await packageFile(target[key].file);
     if (actual.sha256 !== target[key].sha256 || actual.bytes !== target[key].bytes) {
       throw new Error("Admitted public package bytes changed");
@@ -104,7 +111,8 @@ export async function capturePackageRuntime(runtimeRoot, dataDir, { pid = proces
   const releaseRoot = path.join(root, "releases", pointer.current);
   await verifyRuntimeManifest(releaseRoot, pointer.current);
   const manifest = await readFile(path.join(releaseRoot, "runtime-manifest.json"));
-  const lock = JSON.parse(await readFile(path.join(data, "bot.lock"), "utf8"));
+  const lockRaw = await readFile(path.join(data, "bot.lock"));
+  const lock = JSON.parse(lockRaw);
   if (lock.pid !== pid || lock.releaseId !== pointer.current || lock.ready !== true
     || typeof lock.instanceToken !== "string" || !lock.instanceToken
     || !Number.isSafeInteger(hostPid) || hostPid <= 0) {
@@ -115,7 +123,13 @@ export async function capturePackageRuntime(runtimeRoot, dataDir, { pid = proces
   if (!declared || declared.sha256 !== launcher.sha256 || declared.bytes !== launcher.bytes) {
     throw new Error("Stable Host differs from the current runtime manifest");
   }
-  return { runtimeRoot: root, dataDir: data, old: { releaseId: pointer.current,
+  await waitForRuntimeReplacement({ runtimeRoot: root, expectedReleaseId: pointer.current, timeoutMs: 10000 });
+  if (!currentRaw.equals(await readFile(path.join(root, "current.json")))
+    || !manifest.equals(await readFile(path.join(releaseRoot, "runtime-manifest.json")))
+    || !lockRaw.equals(await readFile(path.join(data, "bot.lock")))) throw new Error("Old ready runtime drifted during admission");
+  return { runtimeRoot: root, dataDir: data,
+    roots: { runtime: await packageDirectory(root), data: await packageDirectory(data) },
+    old: { releaseId: pointer.current,
     currentSha256: packageDigest(currentRaw), manifestSha256: packageDigest(manifest),
     pid, hostPid, instanceSha256: packageDigest(lock.instanceToken), launcher } };
 }

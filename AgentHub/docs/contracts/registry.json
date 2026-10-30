@@ -224,7 +224,17 @@
         "tests/public/runtime-manager.test.mjs",
         "src/infrastructure/filesystem/file-transfer-service.mjs",
         "src/interfaces/web/direct-gateway.mjs",
-        "src/infrastructure/process/direct-gateway-handoff.mjs"
+        "src/infrastructure/process/direct-gateway-handoff.mjs",
+        "RuntimeHost/**",
+        "src/infrastructure/filesystem/runtime-package-target.mjs",
+        "src/infrastructure/persistence/runtime-maintenance-backup.mjs",
+        "src/domain/runtime-package-identity.mjs",
+        "tests/runtime/runtime-package-handoff.test.mjs",
+        "tests/runtime/runtime-host-independent-parent.test.mjs",
+        "tests/fixtures/runtime-host-independent-parent.cs",
+        "distribution/install_release.py",
+        "distribution/package_update_test.py",
+        "docs/decisions/ADR-HUB-376-public-package-handoff.md"
       ]
     },
     {
@@ -282,7 +292,10 @@
         "src/infrastructure/persistence/task-turn-projection.mjs",
         "tests/infrastructure/persistence/task-turn-projection.test.mjs",
         "tests/application/release-operation-persistence.test.mjs",
-        "docs/decisions/ADR-HUB-368-release-persistence-retry.md"
+        "docs/decisions/ADR-HUB-368-release-persistence-retry.md",
+        "src/infrastructure/filesystem/runtime-security.mjs",
+        "tests/infrastructure/filesystem/runtime-directory-protection.test.mjs",
+        "docs/decisions/ADR-HUB-376-public-package-handoff.md"
       ]
     },
     {
@@ -441,7 +454,12 @@
         "src/infrastructure/filesystem/cleanup-preservation.mjs",
         "src/application/task-release-plan-service.mjs",
         "tests/application/prepared-release-boundary.test.mjs",
-        "docs/decisions/ADR-HUB-364-whole-prepared-release.md"
+        "docs/decisions/ADR-HUB-364-whole-prepared-release.md",
+        "src/domain/runtime-package-identity.mjs",
+        "src/infrastructure/filesystem/runtime-package-target.mjs",
+        "tests/domain/runtime-package-identity.test.mjs",
+        "tests/runtime/runtime-package-handoff.test.mjs",
+        "docs/decisions/ADR-HUB-376-public-package-handoff.md"
       ]
     },
     {

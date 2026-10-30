@@ -3557,3 +3557,32 @@ The native child is joined before readback or shutdown. This is a local Windows
 process-crash protocol; POSIX behavior, remote filesystems and power-failure
 durability receive no new guarantee. Bootstrap and native publication are traced
 separately from admission wait by the existing operation timing owner.
+
+## Recipient exact-package handoff (ADR-HUB-376)
+
+The public installer has an explicit `--prepare-update` with exact stable
+`--release` and original `--operation-id`. It retains verified transport and
+delegates to the incoming manifested package entry; it never rebuilds source,
+publishes a release or invents a second updater/operation ledger. Runtime and
+retained scratch roots are disjoint. `--update-status` reads the same maintenance
+original without dispatch or write. Existing/partial retained transport is
+readback-only; no automatic retry can turn UNKNOWN into another effect.
+
+The package entry joins canonical stable GitHub metadata to ZIP, descriptor,
+installer and complete runtime manifest/source/version. A capable installed
+runtime advertises the protocol only when its real Host and restart action are
+available. It receives the exact request once through authenticated local
+control; a lost response never switches to manual stop. Public 2.0.4 migration
+uses the explicit user-stopped window in RST-001, with actual old-cohort proof
+before backup/install. New source alone does not update an old process.
+
+Same-ID private prepared/public installation compatibility is directional and
+narrow: the canonical public distributionSource binds the complete RAW private
+manifest digest, exact publisher and same source commit. Removing only private
+sourceRoot versus public distributionSource must leave every other parsed field
+exact. No arbitrary ignored metadata or same-files shortcut. The original
+private manifest and public artifact remain immutable; a changed parent refuses.
+Installer stopped/process, version/build, current/stable and rollback guards
+remain mandatory. A successful package install is distinct from exact new ready,
+Task acceptance and publication. Code-only rollback remains explicit and cannot
+restore data or replay original unknown operations.

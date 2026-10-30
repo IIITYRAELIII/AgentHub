@@ -163,8 +163,12 @@ rejection; a startup/read exception or idle status alone still cannot release.
   submits an escaping WMI start, retries an ownership timeout or adds a fallback
   launch. The controlled path uses a direct detached host and retains exact
   cleanup ownership until lock/ready proof. Cold `--spawn-independent` uses
-  synchronous native process creation with explicit job breakaway; denied
-  breakaway fails visibly, with no WMI fallback or delayed launch. Cold start
+  synchronous native process creation with the pinned actual desktop shell as
+  explicit parent. A suspended child must be outside every Job, have that exact
+  parent and the same effective security context before Resume. Missing or
+  changed shell/token/job proof fails visibly, with no flags-only or WMI fallback
+  or delayed launch. This observation does not prohibit later foreign Job
+  assignment. Cold start
   cannot carry a managed restart operation identity.
   The expected release is persisted before launch; exact operation/release/PID/
   instance evidence fences readiness. The old owner recovers only after confirmed
@@ -391,3 +395,42 @@ process. Normal shutdown fences calls, joins native work and retires only its
 exact owned temporary body; forced termination may retain an orphan, with no
 global cache or scavenger. This capability does not itself recover an unknown
 lock or start any runtime.
+
+## Exact public-package restart (ADR-HUB-376)
+
+`restart-package` is an authenticated local action on the existing restart
+request service and maintenance-operation original. Exact tag, canonical
+publisher asset URLs/digests/lengths, whole runtime manifest, source/version,
+physical runtime/data roots and current old instance are captured before actual
+stopping. A pending request keeps ordinary work/admission running. Only the
+existing synchronous stopping fence admits the capable-runtime cutover.
+
+Package-only closure drains and closes normally preserved resources and
+finalizes all writer stores BEFORE instance release. A native continuation
+holds original process/Job handles and the root gate; old lock release alone is
+never retirement. After original exits, owned Process references are disposed
+before observing same-Job ActiveProcesses zero. Every backup/install/launch
+boundary obtains a fresh reply from that holding native parent. Unknown,
+foreign or changed evidence refuses without killing or replaying work.
+
+Backup uses SQLite backup API with all discovered SQLite writer reservations
+held together, integrity checks and before/after hashes for regular config/data.
+WAL/SHM and ephemeral bot.lock are not raw backup copies. Linked/unknown data
+refuses. Original config, auth, cursors and UNKNOWN outcomes remain in place;
+backup never restores or replays them. The stopped-only installer retains its
+own guards. A durable one-use launch intent binds the replacement Host, original,
+release, instance and control readiness. Ambiguous install/start is reconciling,
+not permission for another launch or automatic rollback. A cold launch cannot
+consume an unresolved original; read-only `--check` cannot consume its admission.
+
+The incoming public package provides the legacy entry when installed public
+2.0.4 lacks this protocol. The user explicitly finishes work and manually stops
+the reported exact old cohort AFTER arming from outside its Job. This is a
+one-time manual maintenance window, not an old graceful port or an automatic
+forced kill. Old admission cannot be fenced by new source: no new work/starts
+may be introduced during that window. Manual termination may be crash-consistent;
+the native old-Job zero proof and existing foreign process/SQLite checks are
+still required. A lost modern request never falls back to legacy stop. Remove
+this compatibility branch when non-protocol public versions cease to be
+supported update sources. Runtime-root/data layout and an interactive same-user
+security context are explicit v1 bounds; other layouts/authority refuse.

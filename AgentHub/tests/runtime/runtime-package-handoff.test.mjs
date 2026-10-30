@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,9 +10,9 @@ import { RuntimeRestartController } from "../../src/runtime/runtime-restart-cont
 import { RuntimeResourceRegistry } from "../../src/runtime/runtime-resource-registry.mjs";
 import { RestartRequestService } from "../../src/application/restart-request-service.mjs";
 import { backupStoppedRuntime } from "../../src/infrastructure/persistence/runtime-maintenance-backup.mjs";
-import { packageBindingDigest, packageDigest, packageFile, verifyPublicPackageTarget } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
+import { packageBindingDigest, packageDigest, packageFile, packageDirectory, verifyPublicPackageTarget } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
 import { armPackageRestart, continuePackageRestart, packageCheckpoint, packageHandoffBinding,
-  packageHostMain } from "../../src/runtime/runtime-package-handoff.mjs";
+  packageHostMain, startPackageBootstrap } from "../../src/runtime/runtime-package-handoff.mjs";
 
 const noop = async () => {};
 const quiet = { log() {}, error() {}, warn() {} };
@@ -37,6 +37,7 @@ async function fixture(t, phase = "package-writers-closed") {
   const hostCopy = path.join(scratchRoot, "AgentHub.RuntimeHost.exe");
   await writeFile(hostCopy, "fixture-host");
   const binding = { operationId: "original-package", runtimeRoot: root, dataDir, scratchRoot, hostCopy,
+    roots: { runtime: await packageDirectory(root), data: await packageDirectory(dataDir) },
     old: { releaseId: "old", currentSha256: packageDigest(pointer), manifestSha256: packageDigest(manifest),
       pid: process.pid, hostPid: 123, instanceSha256: packageDigest("old-instance"),
       launcher: await packageFile(hostCopy) }, target };
@@ -255,4 +256,104 @@ test("a later foreign SQLite reservation preserves its busy error and releases e
     last.exec("ROLLBACK");
     assert.equal(last.prepare("SELECT count(*) AS n FROM t").get().n, 0);
   } finally { last.close(); first.close(); }
+});
+
+async function packageEntryFixture(t) {
+  const f = await fixture(t);
+  f.store.settle(f.binding.operationId, { succeeded: false, phase: "fixture-finished" });
+  const packageRoot = path.join(f.scratchRoot, "verified"), payload = path.join(packageRoot, "runtime");
+  await mkdir(payload, { recursive: true });
+  const files = { "AgentHub.RuntimeHost.exe": "synthetic; never execute", "package.json": '{"name":"agent-hub","version":"2.0.5"}' };
+  const manifest = { releaseId: "new", publicationRevision: "a".repeat(40), version: "2.0.5", releaseVersion: "2.0.5+build.18",
+    versionScheme: "semver-build-v1", publicVersion: "2.0.5", buildNumber: 18, files: [] };
+  for (const [name, body] of Object.entries(files)) {
+    await writeFile(path.join(payload, name), body);
+    manifest.files.push({ path: name, bytes: Buffer.byteLength(body), sha256: packageDigest(body) });
+  }
+  const manifestRaw = JSON.stringify(manifest);
+  await writeFile(path.join(payload, "runtime-manifest.json"), manifestRaw);
+  const inventory = JSON.stringify({ releaseId: "new", sourceCommit: "a".repeat(40), version: "2.0.5+build.18",
+    files: [{ path: "runtime/runtime-manifest.json", bytes: Buffer.byteLength(manifestRaw), sha256: packageDigest(manifestRaw) }] });
+  await writeFile(path.join(packageRoot, "package-manifest.json"), inventory);
+  const descriptor = { schema: 1, repository: "IIITYRAELIII/AgentHub", platform: "win32-x64", asset: "AgentHub-win32-x64.zip",
+    bytes: f.binding.target.archive.bytes, sha256: f.binding.target.archive.sha256,
+    packageManifestSha256: packageDigest(inventory), sourceCommit: "a".repeat(40), releaseId: "new",
+    version: "2.0.5+build.18", versionScheme: "semver-build-v1", publicVersion: "2.0.5", buildNumber: 18 };
+  await writeFile(f.binding.target.descriptor.file, JSON.stringify(descriptor));
+  const input = { schema: 1, operationId: "package-entry-original", runtimeRoot: f.root, packageRoot, tag: "2.0.5",
+    archive: f.binding.target.archive.file, descriptor: f.binding.target.descriptor.file, installer: f.binding.target.installer.file };
+  const requestFile = path.join(f.scratchRoot, "update-request.json"); await writeFile(requestFile, JSON.stringify(input));
+  const metadata = { tag_name: input.tag, draft: false, prerelease: false, published_at: "2026-10-30", assets: [] };
+  for (const [key, name] of [["archive", "AgentHub-win32-x64.zip"], ["descriptor", "AgentHub-win32-x64.zip.json"], ["installer", "install_release.py"]]) {
+    const file = await packageFile(input[key]);
+    metadata.assets.push({ name, state: "uploaded", size: file.bytes, digest: `sha256:${file.sha256}`,
+      browser_download_url: `https://github.com/IIITYRAELIII/AgentHub/releases/download/${input.tag}/${name}` });
+  }
+  await writeFile(path.join(f.dataDir, "bot.lock"), JSON.stringify({ pid: process.pid, releaseId: "old", ready: true, instanceToken: "old-instance" }));
+  return { ...f, input, requestFile, readMetadata: async () => metadata };
+}
+
+for (const lostReply of [false, true]) test(`public package entry uses one graceful original; lostReply=${lostReply} never starts a manual fallback`, async (t) => {
+  const f = await packageEntryFixture(t); let request = null, saves = 0, dispatches = 0;
+  const binding = { ...f.binding, operationId: f.input.operationId };
+  const service = new RestartRequestService({ operationStore: f.store, currentTarget: () => ({}),
+    getRequest: () => request, setRequest: (value) => { request = value; }, blockingWorkCount: () => 1,
+    currentChatId: () => null, updateOffset: () => 0, processingUpdateId: () => null,
+    saveState: async () => { saves++; assert.ok(f.store.getReadonly(f.input.operationId)); },
+    announceDesktop: noop, sendTelegram: noop, performRestart: () => assert.fail("active work cannot stop"),
+    scheduleRestart: () => assert.fail("active work cannot schedule"),
+    preparePackage: async () => ({ schema: 1, binding, sha256: packageBindingDigest(binding) }) });
+  const control = async (action, business) => {
+    if (action === "runtime-health") return { live: true, ready: true, process: { pid: process.pid, releaseId: "old" }, packageHandoff: { protocol: 1 } };
+    assert.equal(action, "restart-package"); dispatches++;
+    const response = await service.fromPackage(business);
+    if (lostReply) throw new Error("lost addressed reply");
+    return response;
+  };
+  const invoke = () => startPackageBootstrap(f.requestFile, { readMetadata: f.readMetadata, control,
+    confirmManualStop: () => assert.fail("no manual fallback"), spawnImpl: () => assert.fail("no external legacy launch") });
+  if (lostReply) await assert.rejects(invoke(), /lost addressed reply/u);
+  else assert.equal((await invoke()).status, "accepted-graceful");
+  assert.equal(dispatches, 1); assert.equal(saves, 1);
+  const replay = await startPackageBootstrap(f.requestFile, { readMetadata: () => assert.fail("readback must not prepare again"),
+    control: () => assert.fail("no repeated dispatch"), spawnImpl: () => assert.fail("no repeated native launch") });
+  assert.equal(replay.effectsReplayed, false); assert.equal(replay.status, "blocked");
+});
+
+test("legacy package entry requires explicit manual step; health and canonical payload drift cannot admit it", async (t) => {
+  const f = await packageEntryFixture(t); let confirmations = 0;
+  const options = { readMetadata: f.readMetadata,
+    control: async () => ({ live: true, ready: true, process: { pid: process.pid, releaseId: "old" } }),
+    confirmManualStop: async () => { confirmations++; throw new Error("user cancelled before admission"); },
+    spawnImpl: () => assert.fail("no automatic stop or native launch") };
+  await assert.rejects(startPackageBootstrap(f.requestFile, options), /user cancelled/u);
+  assert.equal(confirmations, 1); assert.equal(f.store.getReadonly(f.input.operationId), null);
+  await assert.rejects(startPackageBootstrap(f.requestFile, { ...options,
+    control: async () => ({ live: true, ready: true, process: { pid: process.pid + 1, releaseId: "old" } }) }), /health does not match/u);
+  await writeFile(path.join(f.input.packageRoot, "package-manifest.json"), "foreign inventory");
+  await assert.rejects(startPackageBootstrap(f.requestFile, options), /canonical public descriptor/u);
+  assert.equal(confirmations, 1); assert.equal(f.store.getReadonly(f.input.operationId), null);
+});
+
+test("equal original files in a replaced physical runtime root cannot authorize backup or install", async (t) => {
+  const f = await fixture(t), oldRoot = `${f.root}-original`;
+  await rename(f.root, oldRoot);
+  await cp(oldRoot, f.root, { recursive: true, force: false, errorOnExist: true });
+  await assert.rejects(continuePackageRestart({ store: f.store, operationId: f.binding.operationId,
+    assertRetired: noop, backup: () => assert.fail("no backup after root replacement"),
+    install: () => assert.fail("no install after root replacement") }), /old runtime identity changed/u);
+  assert.equal(f.store.getReadonly(f.binding.operationId).outcome, "unknown");
+  assert.deepEqual(await readFile(path.join(f.root, "config.json")), await readFile(path.join(oldRoot, "config.json")));
+});
+
+test("overlapping retained scratch refuses before legacy stop or durable admission", async (t) => {
+  const f = await packageEntryFixture(t);
+  const requestFile = path.join(f.root, "overlapping-update.json");
+  await writeFile(requestFile, JSON.stringify(f.input));
+  await assert.rejects(startPackageBootstrap(requestFile, {
+    readMetadata: () => assert.fail("scratch refusal precedes remote preparation"),
+    control: () => assert.fail("no old runtime command"), confirmManualStop: () => assert.fail("no stopping"),
+    spawnImpl: () => assert.fail("no Host admission"),
+  }), /scratch roots must be separate/u);
+  assert.equal(f.store.getReadonly(f.input.operationId), null);
 });
