@@ -354,6 +354,15 @@ new preparation. A lost preparation reply may reuse its verified completed body;
 a partial body without a manifest or changed inputs remains preserved/refused.
 This receipt grants no Git, installation, restart or remote publication authority.
 
+For a configured runtime relocation, the artifact producer resolves only that
+root boundary and binds its physical path/device/inode for the operation. New
+PREPARED body and receipt paths use ordinary descendants of that same root;
+the configured-root artifact identity/hash namespace remains unchanged. The
+distribution caller similarly binds its execution root before joining output
+paths. Root drift refuses; descendant links remain subject to the unchanged
+packager reparse checks. Historical receipts are never rewritten or given a new
+digest: an old alias-bearing receipt can require a corrected later generation.
+
 ## Native transport retirement (ADR-0126)
 
 New native merge transport contains exact selected base/result ancestry through

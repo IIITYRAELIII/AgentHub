@@ -65,6 +65,16 @@ payload lists alone cannot authorize same-ID reuse.
 
 ## Scope and evidence limits
 
+G2 packaging correction: a configured runtime relocation is resolved only at
+the existing artifact producer's root boundary. New receipts bind the physical
+runtime body and return a physical receipt path, keeping the configured-root
+artifact identity and namespace hash. The distribution owner does the same for
+its execution root before joining output paths. Both bind physical path/device/
+inode and refuse drift; neither resolves arbitrary descendants or changes the
+Python packager's reparse policy. Historical alias-bearing receipts and failed
+generations remain immutable; they are not repaired in place or rehashed as an
+old original. A corrected source follows the normal later-generation lifecycle.
+
 Windows x64, existing Node with node:sqlite/Python prerequisites, interactive
 same-user unelevated shell and runtime-root/data layout. Custom external data
 roots, another user/elevation, noninteractive shell, foreign writers or unresolved

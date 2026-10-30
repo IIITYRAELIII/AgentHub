@@ -157,7 +157,13 @@ acquire a newly invented PREPARED receipt.
 After normal preparation, `artifacts.preparedRuntimeReceipt(identity)` verifies
 the original artifact, full runtime and frozen source/version, then returns
 `{ receipt, receiptFile, receiptSha256 }`. The exact nine-field JSON is retained in
-that artifact's immutable payload. Pass its file and hash to `build_release.py`
+that artifact's immutable payload. New receipts use the physical configured
+runtime root, retaining ordinary descendants and the original artifact namespace
+identity. The distribution caller likewise resolves only its execution root;
+root path/device/inode drift refuses. Python still rejects descendant reparse
+paths. An old alias-bearing receipt is preserved and can require a corrected
+later generation; do not rewrite its JSON or merely replace its CLI path.
+Pass its file and hash to `build_release.py`
 above. A completed artifact, or a verified prepared body whose build reply was
 lost, is reused before another preparation/allocation. Partial bodies without a
 manifest and changed original inputs refuse and remain available for inspection.

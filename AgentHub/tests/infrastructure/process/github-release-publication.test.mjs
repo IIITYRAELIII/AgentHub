@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,12 +17,17 @@ import { ReleaseOperationPublication } from "../../../src/infrastructure/process
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const names = ["AgentHub-win32-x64.zip", "AgentHub-win32-x64.zip.json", "install_release.py", "SHA256SUMS"];
 
-async function fixture(t) {
+async function fixture(t, { relocated = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-gh-release-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceRoot = path.join(root, "source", "AgentHub");
   await mkdir(sourceRoot, { recursive: true });
-  const executionRoot = path.join(root, "execution");
+  const physicalExecutionRoot = path.join(root, "execution");
+  const executionRoot = relocated ? path.join(root, "execution-alias") : physicalExecutionRoot;
+  if (relocated) {
+    await mkdir(physicalExecutionRoot);
+    await symlink(physicalExecutionRoot, executionRoot, process.platform === "win32" ? "junction" : "dir");
+  }
   const runtimeRoot = path.join(root, "runtime");
   const frozen = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 1,
     sourceCommit: "a".repeat(40), version: "2.0.1+build.100" };
@@ -33,6 +40,14 @@ async function fixture(t) {
     assert.ok(command.startsWith("python"));
     assert.equal(args[args.indexOf("--source-commit") + 1], frozen.sourceCommit);
     assert.equal(args[args.indexOf("--version") + 1], frozen.version);
+    if (relocated) {
+      const output = args[args.indexOf("--output-root") + 1];
+      assert.equal(output, path.join(await realpath(physicalExecutionRoot), "distribution"));
+      await promisify(execFile)(command, ["-X", "utf8", "-c",
+        "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); import build_release as b; b._plain_chain(Path(sys.argv[2]))",
+        path.resolve(import.meta.dirname, "../../../distribution"), output],
+      { encoding: "utf8", windowsHide: true, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+    }
     if (!result) {
       state.events.push("package"); state.packs += 1;
       await mkdir(assetsRoot, { recursive: true });
@@ -102,8 +117,27 @@ async function fixture(t) {
     prepareArtifactSteps: adapter.steps, verifyArtifacts: adapter.verify,
     publishGit: async () => state.events.push("git"),
   });
-  return { root, state, frozen, journal, artifacts, distribution, run, assetsRoot, capture, api };
+  return { root, executionRoot, state, frozen, journal, artifacts, distribution, run, assetsRoot, capture, api };
 }
+
+test("distribution resolves only its execution root and refuses actual alias retarget before packaging", async t => {
+  const f = await fixture(t, { relocated: true });
+  await f.run();
+  assert.equal(f.state.packs, 1);
+  const foreign = path.join(f.root, "foreign"); await mkdir(foreign);
+  const output = path.dirname(path.dirname(f.assetsRoot));
+  const retained = `${output}-retained`;
+  await rename(output, retained);
+  await symlink(foreign, output, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(f.distribution.steps({ revision: f.frozen.sourceCommit })[0].execute(), /Reparse checkpoint path refused/u);
+  assert.deepEqual(await readdir(foreign), []);
+  await unlink(output); await rename(retained, output);
+  await unlink(f.executionRoot);
+  await symlink(foreign, f.executionRoot, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(f.distribution.steps({ revision: f.frozen.sourceCommit })[0].execute(), /execution root changed/u);
+  assert.equal(f.state.packs, 1);
+  assert.deepEqual(await readdir(foreign), []);
+});
 
 test("approved GitHub target uses the existing publication journal: prepare/package/Git/assets, repeat has no effects", async t => {
   const f = await fixture(t);

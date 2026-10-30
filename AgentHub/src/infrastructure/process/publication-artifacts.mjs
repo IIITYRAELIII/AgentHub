@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -99,6 +99,18 @@ export function createPublicationArtifactSteps({
     return { revision: identity.revision, sourceRoot, runtimeRoot, protocol: 1,
       ...(preparedInput ? { runtimePublication: preparedInput } : {}) };
   };
+  let rootBinding;
+  async function bindRuntimeRoot() {
+    // Resolve only the configured relocation boundary, never an artifact child.
+    const physical = await realpath(runtimeRoot);
+    const info = await lstat(physical, { bigint: true });
+    if (!info.isDirectory() || info.isSymbolicLink() || await realpath(runtimeRoot) !== physical
+      || rootBinding && (rootBinding.physical !== physical || rootBinding.dev !== info.dev || rootBinding.ino !== info.ino)) {
+      throw new Error("Publication runtime root changed");
+    }
+    rootBinding ??= { physical, dev: info.dev, ino: info.ino };
+    return physical;
+  }
   const runtimeReceipt = ({ releaseId, releaseRoot, manifestHash }) => ({
     schema: 1, phase: "PREPARED", operationId: preparedInput.operationId,
     generation: preparedInput.generation, sourceCommit: preparedInput.sourceCommit,
@@ -106,18 +118,21 @@ export function createPublicationArtifactSteps({
   });
   // Keep paths short enough for Wrangler's nested Windows temporary files;
   // the complete identity is still checked in every manifest.
-  const directory = (identity, component) => path.join(runtimeRoot, "publication-artifacts", sha(JSON.stringify(artifactIdentity(identity))).slice(0, 32), component);
+  const directory = (identity, component) => path.join(rootBinding?.physical ?? runtimeRoot, "publication-artifacts", sha(JSON.stringify(artifactIdentity(identity))).slice(0, 32), component);
   const payload = (identity, component) => path.join(directory(identity, component), "payload");
   const progress = async () => (await journal?.read?.())?.progress ?? journal?.progress ?? {};
   const read = async (identity, component) => {
+    if (preparedInput) await bindRuntimeRoot();
     const artifact = await readArtifact(directory(identity, component), artifactIdentity(identity));
     const pinned = (await progress()).artifactHashes?.[component];
     if (pinned && (!artifact || sha(JSON.stringify(artifact)) !== pinned)) throw new Error(`Pinned ${component} artifact changed or is missing`);
+    if (preparedInput) await bindRuntimeRoot();
     return artifact;
   };
   const ensure = async (identity, component, build) => {
     await read(identity, component);
     const artifact = await buildArtifact(directory(identity, component), artifactIdentity(identity), build);
+    if (preparedInput) await bindRuntimeRoot();
     const prior = await progress();
     await journal.updateProgress({ artifactHashes: { ...prior.artifactHashes, [component]: sha(JSON.stringify(artifact)) } });
     return artifact;
@@ -160,7 +175,7 @@ export function createPublicationArtifactSteps({
     const artifact = await read(identity, "runtime");
     if (!artifact) throw new Error("Prepared runtime artifact is missing");
     const releaseId = artifact.result.releaseId;
-    const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
+    const releaseRoot = runtimeReleaseDirectory(rootBinding?.physical ?? runtimeRoot, releaseId);
     if (sha(await readFile(path.join(releaseRoot, "runtime-manifest.json"))) !== artifact.result.manifestHash) {
       throw new Error("Prepared runtime manifest changed");
     }
@@ -236,7 +251,7 @@ export function createPublicationArtifactSteps({
     if (has("Сборка runtime-релиза")) {
       await ensure(identity, "runtime", async (output) => {
         const releaseId = `publication-${sha(JSON.stringify(artifactIdentity(identity))).slice(0, 32)}`;
-        const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
+        const releaseRoot = runtimeReleaseDirectory(rootBinding?.physical ?? runtimeRoot, releaseId);
         const existing = await json(path.join(releaseRoot, "runtime-manifest.json")).catch(absent);
         if (existing) {
           if (existing.publicationRevision !== identity.revision || existing.sourceRoot !== path.resolve(sourceRoot)) {
@@ -246,7 +261,7 @@ export function createPublicationArtifactSteps({
         } else {
           // A body without its manifest is partial evidence, never a new build.
           if (await lstat(releaseRoot).catch(absent)) throw new Error("Existing prepared runtime is incomplete");
-          await prepareRuntimeImpl({ sourceRoot, runtimeRoot, releaseId, publicationRevision: identity.revision,
+          await prepareRuntimeImpl({ sourceRoot, runtimeRoot: rootBinding?.physical ?? runtimeRoot, releaseId, publicationRevision: identity.revision,
             ...(preparedInput ? { expectedReleaseVersion: preparedInput.version } : {}),
             mobileAssetsRoot: has("Сборка Agent Hub Mobile") ? mobileRoot : null });
         }
@@ -259,6 +274,7 @@ export function createPublicationArtifactSteps({
             throw new Error("Prepared runtime differs from the frozen publication input");
           }
           await verifyRuntimeManifest(releaseRoot, releaseId);
+          await bindRuntimeRoot();
           await writeFile(path.join(output, "prepared-runtime.json"),
             `${JSON.stringify(runtimeReceipt({ releaseId, releaseRoot, manifestHash }), null, 2)}\n`, "utf8");
         }
@@ -353,6 +369,7 @@ print(json.dumps(values, ensure_ascii=False))`;
       if (JSON.stringify(receipt) !== JSON.stringify(runtimeReceipt({ ...runtime, manifestHash: artifact.result.manifestHash }))) {
         throw new Error("Prepared runtime receipt differs from the original artifact");
       }
+      await bindRuntimeRoot();
       return { receipt, receiptFile, receiptSha256: sha(bytes) };
     },
     async steps(steps, identity) {
