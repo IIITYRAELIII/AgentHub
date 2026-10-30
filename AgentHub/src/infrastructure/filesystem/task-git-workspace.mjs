@@ -19,6 +19,7 @@ import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
 import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
+import { synchronizePublishedDev } from "./published-dev-sync.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
   assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, publishedMetadataContext } from "./local-source-baseline.mjs";
@@ -1466,10 +1467,15 @@ export class TaskGitWorkspaceService {
     );
   }
 
-  async #withClearDevLock(repoRoot, outerLease, operation) {
+  async #withClearDevLock(repoRoot, outerLease, operation, { publishedSyncRecovery = false } = {}) {
     const repositoryRootValue = canonicalPath(repoRoot);
     return this.#withDevLock(repositoryRootValue, outerLease, async (lease) => {
       await this.#assertRepositoryProcessTreeClear(repositoryRootValue);
+      const block = await readFile(await this.#integrationBlockFile(repositoryRootValue), "utf8")
+        .then(JSON.parse, error => { if (error.code === "ENOENT") return null; throw error; });
+      if (block?.publishedDevSync && !publishedSyncRecovery) {
+        throw new Error("Published dev synchronization requires its original native effect readback");
+      }
       return operation(lease);
     });
   }
@@ -1668,6 +1674,9 @@ export class TaskGitWorkspaceService {
     await this.#recoverDevBootstrapTransaction(repoRoot, devRoot, lease);
     const blockFile = await this.#integrationBlockFile(repoRoot);
     const priorBlock = await readFile(blockFile, "utf8").then(JSON.parse, () => null);
+    if (priorBlock?.publishedDevSync) {
+      throw new Error("Published dev synchronization requires its original native effect readback");
+    }
     if (priorBlock?.processTreeStopUnproven === true) {
       throw new Error(`dev integration is blocked: process-tree termination requires operator proof (${devRoot})`);
     }
@@ -2600,7 +2609,8 @@ export class TaskGitWorkspaceService {
       headCommit, acceptedMainIntegrated: true, forwardReadOnly: true };
   }
 
-  async synchronizeMainIntoDev({ projectRoot, publishedRevision = null } = {}) {
+  async synchronizeMainIntoDev({ projectRoot, publishedRevision = null,
+    publishedSync = null, nativeResolutionReview = null, validatePublishedSync = null } = {}) {
     this.#assertAvailable("synchronizeMainIntoDev");
     const expectedMainCommit = exactCommitId(publishedRevision, "published revision");
     const repoRoot = await repositoryRoot(projectRoot);
@@ -2628,6 +2638,11 @@ export class TaskGitWorkspaceService {
           await this.#runOwned(["merge-base", "--is-ancestor", currentLocalMain, expectedMainCommit], { cwd: repoRoot, lease });
         };
       }
+      if (publishedSync) {
+        return this.#synchronizePublishedMainOwned({ repoRoot, expectedMainCommit, currentLocalMain,
+          publishedSync, nativeResolutionReview, validatePublishedSync, verifySynchronization, lease });
+      }
+      if (nativeResolutionReview) throw new Error("Published native review requires exact original finalization identity");
       return this.#synchronizeMainIntoDevOwned({
         repoRoot,
         expectedMainCommit,
@@ -2635,7 +2650,98 @@ export class TaskGitWorkspaceService {
         verifySynchronization,
         lease,
       });
+    }, { publishedSyncRecovery: !!publishedSync });
+  }
+
+  async #synchronizePublishedMainOwned({ repoRoot, expectedMainCommit, currentLocalMain,
+    publishedSync, nativeResolutionReview, validatePublishedSync, verifySynchronization, lease }) {
+    if (typeof validatePublishedSync !== "function" || !publishedSync.operationId
+        || !publishedSync.workspaceId || !Number.isSafeInteger(publishedSync.generation)
+        || publishedSync.generation < 1 || !/^[a-f0-9]{64}$/u.test(publishedSync.candidateIdentity)
+        || !Array.isArray(publishedSync.tasks) || !publishedSync.tasks.length) {
+      throw new Error("Published native synchronization requires current original finalization authority");
+    }
+    const devCommit = exactCommitId(publishedSync.expectedDevCommit, "expected dev revision");
+    const boundDevRoot = await worktreeForBranch(repoRoot, this.devBranch);
+    const devRoot = canonicalPath(boundDevRoot ?? path.join(this.devWorktreesRoot, taskRepositoryKey(repoRoot)));
+    if (!devRoot || !pathInside(this.devWorktreesRoot, devRoot)) throw new Error("Published sync requires existing managed dev");
+    const directoryIdentity = async root => {
+      const entry = await lstat(root, { bigint: true });
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Published sync directory custody changed");
+      return `${await realpath(root)}:${entry.dev}:${entry.ino}`;
+    };
+    const devDirectory = await directoryIdentity(devRoot);
+    const commonDir = path.resolve(repoRoot, await this.#runOwned(["rev-parse", "--git-common-dir"], { cwd: repoRoot, lease }));
+    const commonDirectory = await directoryIdentity(commonDir);
+    const publication = await this.readPublication();
+    const entry = publicationStateRepositories(publication ?? {}).find(item => samePath(item.root, repoRoot));
+    if (!publication?.generation || entry?.revision !== expectedMainCommit) throw new Error("Published sync publication changed");
+    const publicationIdentity = JSON.stringify({ generation: publication.generation, entry });
+    const mergeBase = await this.#runOwned(["merge-base", "--all", devCommit, expectedMainCommit], { cwd: repoRoot, lease });
+    exactCommitId(mergeBase, "published sync merge base");
+    const identity = { policy: "published-main-dev-sync-v1", operationId: publishedSync.operationId,
+      workspaceId: publishedSync.workspaceId, generation: publishedSync.generation,
+      candidateIdentity: publishedSync.candidateIdentity, tasks: publishedSync.tasks,
+      repositoryRoot: repoRoot, devRoot, devBranch: this.devBranch, devDirectory, commonDirectory,
+      devCommit, localMainCommit: currentLocalMain, publishedRevision: expectedMainCommit,
+      mergeBase, publicationIdentity };
+    const identityHash = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
+    const root = path.join(this.dataDir, "task-native-merges", identityHash.slice(0, 24));
+    const readJson = file => readFile(file, "utf8").then(JSON.parse, error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
     });
+    const writeJson = async (file, value) => {
+      const temporary = `${file}.${randomUUID()}.tmp`;
+      await writeSelectedRecord(temporary, value); await rename(temporary, file);
+    };
+    const blockFile = await this.#integrationBlockFile(repoRoot);
+    const priorBlock = await readJson(blockFile);
+    if (priorBlock && priorBlock.publishedDevSync !== identityHash) throw new Error("Published sync preserves another recovery owner");
+    if (!boundDevRoot && !priorBlock?.publishedDevSync) throw new Error("Published sync detached dev lacks its original recovery intent");
+    if (!priorBlock) await this.#assertRecoverableDev(repoRoot, devRoot, { lease });
+    const fence = async () => {
+      await lease.assertOwned();
+      await validatePublishedSync();
+      await verifySynchronization?.();
+      const current = await this.readPublication();
+      const currentEntry = publicationStateRepositories(current ?? {}).find(item => samePath(item.root, repoRoot));
+      if (JSON.stringify({ generation: current?.generation, entry: currentEntry }) !== publicationIdentity
+          || await localMainCommit(repoRoot) !== currentLocalMain
+          || await directoryIdentity(devRoot) !== devDirectory || await directoryIdentity(commonDir) !== commonDirectory) {
+        throw new Error("Published sync publication, main or directory identity changed");
+      }
+      const remote = await this.#runOwned(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], { cwd: repoRoot, lease });
+      await this.#runOwned(["merge-base", "--is-ancestor", expectedMainCommit, remote], { cwd: repoRoot, lease });
+      await this.#runOwned(["merge-base", "--is-ancestor", currentLocalMain, expectedMainCommit], { cwd: repoRoot, lease });
+    };
+    return this.withOperationTrace({ operationId: publishedSync.operationId }, () =>
+      measureTaskOperation("published-dev-sync", () => synchronizePublishedDev({
+        root, sourceRoot: repoRoot, devRoot, devBranch: this.devBranch, identity, readJson, writeJson,
+        resolutionReview: nativeResolutionReview, verifyReview: this.verifyNativeResolutionReview, fence,
+        gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
+          guardRepositoryRoot: repoRoot, timeoutMs: 300_000 }),
+        beforeDelivery: async () => {
+          await fence();
+          const block = await readJson(blockFile);
+          if (block && block.publishedDevSync !== identityHash) throw new Error("Published sync recovery owner changed");
+          if (!block) {
+            await mkdir(path.dirname(blockFile), { recursive: true });
+            await writeSelectedRecord(blockFile, { publishedDevSync: identityHash, nativeRoot: root });
+          }
+        },
+        afterDelivery: async () => {
+          await fence();
+          const block = await readJson(blockFile);
+          if (block?.publishedDevSync !== identityHash) throw new Error("Published sync recovery owner changed");
+          await unlink(blockFile);
+        },
+      }))).catch(error => {
+        if (!["RELEASE_NATIVE_MERGE_CONFLICT", "RELEASE_NATIVE_REVIEW_REQUIRED"].includes(error.code)) throw error;
+        return { status: "review_required", integrated: false, code: error.code, reason: error.message,
+          nativeConflictRoot: error.conflictRoot ?? path.join(root, "repository"),
+          ...(error.binding ? { binding: error.binding, diffPath: error.diffPath } : {}) };
+      });
   }
 
   async bootstrapAcceptedMainIntoDev({

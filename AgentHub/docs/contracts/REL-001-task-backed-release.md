@@ -1,5 +1,40 @@
 # REL-001 — Task-backed Workspace release
 
+## Reviewed published main to dev recovery (ADR-HUB-375)
+
+An already-applied original waiting at `finalize` may use the existing RM
+continuation with exclusive `published_dev_sync`, exact operation revision and
+generation CAS, repository and before-dev commit. The existing release owner
+leases that original without waking composition, validation or publication.
+It verifies the immutable generation, applied targets and preserved primary.
+Task closure is not repeated by this recovery request.
+
+The existing native sequencer stages only `(beforeDev, publishedRevision)` in
+an owned isolated clone. Identity binds original operation/Workspace/generation,
+candidate digest, selected Task IDs, publication entry/generation, local main,
+repository/common directory and managed dev directory identities. Every conflict
+requires the existing authenticated independent RM-recipient exact native review,
+including marker-only choices. Whole automatic clean entries and both parent
+histories are checked; later Test work is retained. A review for another Task,
+dev head, publication or generation is not authority.
+
+The same native journal records the exact target before delivery. The existing
+repository lease/process guards, no-overwrite checkout and expected-old dev CAS
+apply it; an integration block prevents another normal dev writer while owned
+materialization is incomplete. Lost replies read back this original journal and
+the exact head/ref/index/worktree checkpoints without another CAS. Partial or
+foreign state stays UNKNOWN and is never reset, aborted or cleaned by recovery.
+Pre-effect publication/main/dev/custody drift refuses. Primary HEAD/index/files,
+publication authorization, package, frozen generation and closed Tasks are intact.
+Successful recovery does not complete the release: ordinary same-original
+finalize verifies already-applied dev and idempotent Task delivery.
+
+`node release.mjs continue` forwards this same business input and returns its
+addressed native result without draining/waking the release, including on error.
+Legacy unchanged Test and accepted-main/CHANGELOG bootstrap are separate owners.
+No new publication, Task lifecycle, approval ledger or manual shared merge is
+implied. See ADR-HUB-375 for the callable input and migration boundary.
+
 ## Normal release continuation (ADR-0132)
 
 The existing `hub_release_run` / `hub_release_continue` owner prepares a missing

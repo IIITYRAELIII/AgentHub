@@ -958,6 +958,12 @@ export class HubMcpService {
       }, ["operation_id"]),
       tool("hub_release_continue", "Wake an existing waiting release operation without changing its original authorization or creating a new operation.", {
         operation_id: { type: "string" },
+        published_dev_sync: { type: "object", additionalProperties: false,
+          description: "Exclusive published-finalization recovery. Prepares/applies only the original native dev synchronization; does not wake release work.",
+          required: ["projectRoot", "expectedDevCommit"], properties: {
+            projectRoot: { type: "string" }, expectedDevCommit: { type: "string", pattern: "^[a-f0-9]{40}$" },
+            nativeResolutionReview: { type: "object" },
+          } },
         test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
           mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
         } },
@@ -2561,9 +2567,24 @@ export class HubMcpService {
     const operationId = requiredText(args.operation_id, "operation id", 200);
     const snapshot = this.#releaseOperation().get(operationId);
     this.#workspace(context, snapshot.operation.workspaceId);
+    if (args.published_dev_sync != null) {
+      const input = args.published_dev_sync;
+      if (!input || typeof input !== "object" || Array.isArray(input)
+          || Object.keys(input).some(key => !["projectRoot", "expectedDevCommit", "nativeResolutionReview"].includes(key))
+          || typeof input.projectRoot !== "string" || !input.projectRoot.trim()
+          || !/^[a-f0-9]{40}$/u.test(input.expectedDevCommit ?? "")
+          || !Number.isSafeInteger(args.expected_revision) || !Number.isSafeInteger(args.expected_generation)) {
+        throw new ReleasePreparationRejectedError("Published dev sync requires exact repository/dev and original revision/generation CAS");
+      }
+      if (input.nativeResolutionReview != null) {
+        try { normalizedNativeResolution(input.nativeResolutionReview); }
+        catch (cause) { throw new ReleasePreparationRejectedError(cause.message); }
+      }
+    }
     return this.#releaseOperation().continue(operationId, {
       requestId: args.request_id, reviewedMain: args.reviewed_main,
       testSelection: args.test_selection, taskIds: args.task_ids, releaseMetadata: args.release_metadata, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
+      ...(args.published_dev_sync != null ? { publishedDevSync: args.published_dev_sync } : {}),
     });
   }
 
