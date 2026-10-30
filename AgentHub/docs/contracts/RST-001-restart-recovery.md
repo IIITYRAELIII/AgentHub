@@ -378,6 +378,14 @@ retry loop, gateway writer, process authority or restart is introduced.
 
 ## Fixed Windows lock-publication capability
 
+Event-loop quiescence (`beforeExit`) is not terminal process shutdown. A source
+consumer remains usable when a caller schedules more work after idle. Explicit
+shutdown still permanently fences that instance and joins admitted native work;
+it never resurrects a closed consumer or retries publication. Actual process
+exit may synchronously retire only an idle exact-identity owned bootstrap body.
+Active/unknown effects or changed/replaced roots stay retained. This exit hook
+performs no asynchronous launch, global scavenging or foreign cleanup.
+
 The existing RuntimeHost has one fixed directory-publication mode. Its paths are
 stdin data and its no-replace operation cannot enter Hub startup, lifetime logs,
 restart, acceptance, provider or publication workflows. Source execution prepares
@@ -391,11 +399,3 @@ process. Normal shutdown fences calls, joins native work and retires only its
 exact owned temporary body; forced termination may retain an orphan, with no
 global cache or scavenger. This capability does not itself recover an unknown
 lock or start any runtime.
-
-Event-loop quiescence (`beforeExit`) is not terminal process shutdown. A source
-consumer remains usable when a caller schedules more work after idle. Explicit
-shutdown still permanently fences that instance and joins admitted native work;
-it never resurrects a closed consumer or retries publication. Actual process
-exit may synchronously retire only an idle exact-identity owned bootstrap body.
-Active/unknown effects or changed/replaced roots stay retained. This exit hook
-performs no asynchronous launch, global scavenging or foreign cleanup.
