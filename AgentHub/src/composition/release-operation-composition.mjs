@@ -35,6 +35,7 @@ export function createReleaseOperationServices({
     publishTarget: input => adapter.publishTarget(input),
     readTarget: input => adapter.readTarget(input),
     finalize: input => adapter.finalize(input),
+    synchronizePublishedDev: input => finalization.synchronizePublishedDev(input),
     reservePublication: input => adapter.reservePublication(input),
     withReviewedMainRecovery: input => adapter.withReviewedMainRecovery(input),
     requestCorrection,

@@ -388,6 +388,8 @@
         "tests/infrastructure/filesystem/native-merge-reuse.test.mjs",
         "tests/infrastructure/filesystem/native-merge-reuse-authority.test.mjs",
         "docs/decisions/ADR-HUB-372-verified-native-reuse.md",
+        "src/infrastructure/filesystem/published-dev-sync.mjs",
+        "tests/application/published-dev-sync.test.mjs",
         "tests/infrastructure/filesystem/native-selected-content-preservation.test.mjs",
         "src/infrastructure/filesystem/legacy-selected-composition-materializer-v1.mjs",
         "docs/decisions/ADR-0106-native-git-release-composition.md",

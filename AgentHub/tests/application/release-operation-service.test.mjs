@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { createCandidateGeneration } from "../../src/domain/release-operation.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
+import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
 
 const taskIds = ["task-a", "task-b"];
 const targets = [
@@ -63,6 +66,96 @@ function start(service, requestId = "request-1") {
     authorization: { taskIds, approvedTargets: targets, validationMode: "full" },
   });
 }
+
+test("published dev sync refuses every amendment family before owner acquisition", async t => {
+  const f = await fixture(t, { schedule: () => assert.fail("no scheduling") });
+  const created = f.store.create({ requestId: "exclusive-sync", workspaceId: "workspace-1", streamId: "stream-1",
+    threadId: "thread-1", runnerVersion: "test", authorization: { taskIds, approvedTargets: targets, validationMode: "full" } });
+  const operationId = created.operation.operationId;
+  const before = f.store.get(operationId);
+  f.service.synchronizePublishedDevEffect = () => assert.fail("no effects");
+  for (const extra of [{ reviewedMain: {} }, { testSelection: {} }, { taskIds: [] },
+    { taskScope: "all_await" }, { releaseMetadata: {} }]) {
+    await assert.rejects(f.service.continue(operationId, { requestId: "refused-sync", publishedDevSync: {}, ...extra }), /exclusive/u);
+    assert.deepEqual(f.store.get(operationId), before);
+  }
+});
+
+test("published dev sync reopens only an expired positively dead original owner", async t => {
+  let clock = Date.UTC(2026, 9, 30), effects = 0, liveness = "actual", livenessChecks = 0;
+  const now = () => new Date(clock).toISOString();
+  const scheduled = [];
+  const f = await fixture(t, { now, schedule: callback => scheduled.push(callback), retryDelayMs: 3_600_000,
+    finalize: async () => { throw Object.assign(new Error("native recovery pending"), { code: "RELEASE_EXTERNAL_CONDITION" }); } });
+  const ack = start(f.service, "original-published-reopen");
+  scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  const original = f.store.snapshot(ack.operationId);
+  assert.equal(original.operation.state, "waiting");
+  assert.equal(original.operation.resumeState, "finalize");
+  assert.equal(original.operation.owner, null);
+  const childSource = `const { ReleaseOperationStore } = await import(process.argv[1]);
+    const store = new ReleaseOperationStore({ dataDir: process.argv[2], now: () => process.argv[3] });
+    const result = store.acquire(process.argv[4], 'exited-published-sync', { leaseMs: 1000, processId: process.pid });
+    if (!result.acquired) throw new Error(result.reason);
+    console.log(JSON.stringify(result.operation.owner));`;
+  const child = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", childSource,
+    new URL("../../src/infrastructure/persistence/release-operation-store.mjs", import.meta.url).href,
+    f.root, now(), ack.operationId], { windowsHide: true });
+  assert.equal(child.stderr, "");
+  const priorOwner = JSON.parse(child.stdout);
+  assert.equal(processIsAlive(priorOwner.processId), false, "execFile joined the actual exited lease owner");
+  const store = new ReleaseOperationStore({ dataDir: f.root, now });
+  const service = new ReleaseOperationService({ store, now, ownerId: "reopened-published-sync", processId: process.pid,
+    processAlive: pid => { livenessChecks++; assert.equal(pid, priorOwner.processId);
+      return liveness === "actual" ? processIsAlive(pid) : liveness; },
+    schedule: () => assert.fail("addressed recovery cannot schedule the pipeline"),
+    compose: () => assert.fail("no composition"), validate: () => assert.fail("no validation"),
+    publishTarget: () => assert.fail("no publication"), readTarget: () => assert.fail("no target effect read"),
+    finalize: () => assert.fail("no Task finalization"),
+    synchronizePublishedDev: async ({ validate, operation, generation: captured }) => {
+      await validate();
+      effects++;
+      const owned = store.get(ack.operationId).owner;
+      assert.ok(owned.epoch > priorOwner.epoch);
+      assert.equal(owned.processId, process.pid);
+      assert.equal(store.heartbeat(ack.operationId, priorOwner.ownerId, { epoch: priorOwner.epoch }).applied, false);
+      store.release(ack.operationId, priorOwner);
+      assert.deepEqual(store.get(ack.operationId).owner, owned, "old epoch cannot release the new owner");
+      assert.deepEqual(operation.publicationEffects, original.operation.publicationEffects);
+      assert.deepEqual(captured, original.generations[0]);
+      return { status: "synchronized", integrated: true };
+    } });
+  const request = () => ({ requestId: "same-original-native-readback", expectedRevision: store.get(ack.operationId).revision,
+    expectedGeneration: 1, publishedDevSync: { projectRoot: "D:/repo", expectedDevCommit: "a".repeat(40) } });
+  const refusedWithoutEffects = async () => {
+    const before = store.snapshot(ack.operationId);
+    await assert.rejects(service.continue(ack.operationId, request()), /owner|CAS/u);
+    assert.deepEqual(store.snapshot(ack.operationId), before);
+    assert.equal(effects, 0);
+  };
+  await refusedWithoutEffects(); // Actual dead PID still has an unexpired lease.
+  clock += 1001;
+  liveness = true;
+  await refusedWithoutEffects(); // A live owner cannot be taken over just because its lease expired.
+  liveness = null;
+  await refusedWithoutEffects(); // An unknown liveness result is not positive death evidence.
+  liveness = "actual";
+  const input = request();
+  assert.equal((await service.continue(ack.operationId, input)).devSynchronization.integrated, true);
+  assert.equal(effects, 1);
+  assert.ok(livenessChecks > 0);
+  await assert.rejects(service.continue(ack.operationId, input), /CAS/u);
+  assert.equal(effects, 1, "a stale original CAS cannot repeat the native effect");
+  const complete = store.snapshot(ack.operationId);
+  assert.equal(complete.operation.owner, null);
+  assert.equal(complete.operation.state, "waiting");
+  assert.equal(complete.operation.resumeState, "finalize");
+  assert.deepEqual(complete.generations, original.generations);
+  assert.deepEqual(complete.operation.publicationEffects, original.operation.publicationEffects);
+  assert.deepEqual(complete.steps, original.steps);
+  assert.equal(scheduled.length, 0);
+});
 
 async function waitUntil(predicate, { timeoutMs = 2_000 } = {}) {
   const deadline = Date.now() + timeoutMs;

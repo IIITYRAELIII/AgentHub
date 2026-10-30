@@ -325,7 +325,7 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
 // a mutable journal's next/head counters. Git identifies the actual conflict
 // boundary; additional compatibility bytes require an exact independent review.
 async function verifyMergeStep(git, before, result, target, { identity, review = null, verifyReview = null,
-  evidenceRoot = null, storedBinding = null, compatibilityReview = null } = {}) {
+  evidenceRoot = null, storedBinding = null, compatibilityReview = null, requireConflictReview = false } = {}) {
   compatibilityReview ??= contentCompatibilityReview(review);
   review ??= compatibilityReview;
   const contained = await maybe(git, ["merge-base", "--is-ancestor", result, before]) !== null;
@@ -355,7 +355,7 @@ async function verifyMergeStep(git, before, result, target, { identity, review =
     if (automatic.get(file) !== resolved.get(file)
         && await changesCleanConflictContext(git, automaticTree, target, file, before, result)) extraPaths.push(file);
   }
-  if (extraPaths.length || review) {
+  if (extraPaths.length || review || requireConflictReview && conflicts.size) {
     const tree = String(await git(["rev-parse", `${target}^{tree}`]));
     const diff = await git(["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree], { rawOutput: true });
     const binding = { identityHash: taskGitIdentityHash(identity), parents: [before, result],
@@ -424,6 +424,7 @@ export async function mergeSelectedResults({
   deliveredHead = null,
   reuseContext = null,
   readLegacyReuseBinding = null,
+  requireConflictReview = false,
 }) {
   const repository = path.join(root, "repository");
   const stateFile = path.join(root, "merge.json");
@@ -508,8 +509,18 @@ export async function mergeSelectedResults({
     delete state.reuseIntent;
     await writeJson(stateFile, state);
   }
+  const verifyStep = (before, result, target, options) => verifyMergeStep(git, before, result, target,
+    { ...options, requireConflictReview });
   const input = resolutionReview == null ? null : normalizedNativeResolution(resolutionReview);
   const choices = [];
+  if (requireConflictReview && input && !input.reviews) {
+    let binding;
+    try { binding = JSON.parse(/<native-merge-review>\s*([^]*?)\s*<\/native-merge-review>/u.exec(input.text)?.[1]).binding; }
+    catch { throw new Error("Published synchronization exact review is malformed"); }
+    if (binding?.identityHash !== taskGitIdentityHash(identity)
+        || typeof verifyReview !== "function") throw new Error("Published synchronization review identity changed");
+    await verifyReview(input, binding, identity);
+  }
   if (input?.reviews) {
     // Authenticate before importing any supplied object. A bundle imports no
     // source configuration/hooks and cannot move the primary or selected refs.
@@ -579,7 +590,7 @@ export async function mergeSelectedResults({
     const index = state.next - 1;
     const previous = index === 0 ? baseCommit : state.merges[index - 1].commit;
     await requireClean(git);
-    const reviewedResolution = await verifyMergeStep(git, previous, tasks[index].resultCommit, currentHead,
+    const reviewedResolution = await verifyStep(previous, tasks[index].resultCommit, currentHead,
       { identity, review: reviewFor(previous, tasks[index].resultCommit, currentHead), verifyReview, evidenceRoot: root });
     if (!reviewedResolution) throw failure("Native merge amendment lacks exact review", "RELEASE_NATIVE_REVIEW_REQUIRED");
     state.merges[index] = { taskId: tasks[index].taskId, resultCommit: tasks[index].resultCommit,
@@ -603,7 +614,7 @@ export async function mergeSelectedResults({
     if (changedCompatibility && deliveredHead) throw failure("Delivered native compatibility authority cannot change",
       "RELEASE_NATIVE_CHECKOUT_CHANGED");
     const compatibilityReview = incomingCompatibility ?? storedCompatibility;
-    const resolution = index < verifiedPrefixCount && !compatibilityReview ? null : await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
+    const resolution = index < verifiedPrefixCount && !compatibilityReview && !requireConflictReview ? null : await verifyStep(prefix, step.resultCommit, step.commit,
       { identity, review: step.reviewedResolution?.review ?? compatibilityReview, verifyReview, evidenceRoot: root,
         storedBinding: step.reviewedResolution?.binding, compatibilityReview });
     if (resolution) resolutions.push(resolution);
@@ -622,7 +633,7 @@ export async function mergeSelectedResults({
           throw failure("Interrupted native merge has no exact automatic readback", "RELEASE_NATIVE_CHECKOUT_CHANGED");
         }
         await requireClean(git);
-        const reviewedResolution = await verifyMergeStep(git, state.head, task.resultCommit, head,
+        const reviewedResolution = await verifyStep(state.head, task.resultCommit, head,
           { identity, review: reviewFor(state.head, task.resultCommit, head), verifyReview, evidenceRoot: root });
         if (reviewedResolution) resolutions.push(reviewedResolution);
         state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head,
@@ -674,7 +685,7 @@ export async function mergeSelectedResults({
         else if (mergeHead || !state.conflict.reviewedResolution && !choice.retained) {
           throw failure("Native conflict operation changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
         } else await requireClean(git);
-        const accepted = await verifyMergeStep(git, state.head, task.resultCommit, choice.binding.commit,
+        const accepted = await verifyStep(state.head, task.resultCommit, choice.binding.commit,
           { identity, review: choice.review, verifyReview, evidenceRoot: root });
         // Retain the accepted boundary BEFORE abort/checkout, so either side of
         // a lost local response is read back through this same journal.
@@ -694,7 +705,7 @@ export async function mergeSelectedResults({
         throw failure("Native resolution has different merge parents", "RELEASE_NATIVE_CHECKOUT_CHANGED");
       }
       await requireClean(git);
-      const reviewedResolution = await verifyMergeStep(git, state.head, task.resultCommit, head,
+      const reviewedResolution = await verifyStep(state.head, task.resultCommit, head,
         { identity, review: reviewFor(state.head, task.resultCommit, head), verifyReview, evidenceRoot: root });
       if (reviewedResolution) resolutions.push(reviewedResolution);
       state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head, resolved: true,
@@ -719,7 +730,7 @@ export async function mergeSelectedResults({
     const choice = choices.find(item => item.binding.parents[0] === state.head
       && item.binding.parents[1] === task.resultCommit);
     if (choice) {
-      const reviewedResolution = await verifyMergeStep(git, state.head, task.resultCommit, choice.binding.commit,
+      const reviewedResolution = await verifyStep(state.head, task.resultCommit, choice.binding.commit,
         { identity, review: choice.review, verifyReview, evidenceRoot: root });
       if (reviewedResolution) resolutions.push(reviewedResolution);
       // The existing intent/readback handles a lost checkout or journal reply.

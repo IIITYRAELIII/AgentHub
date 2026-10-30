@@ -159,6 +159,7 @@ export class ReleaseOperationService {
     publishTarget,
     readTarget,
     finalize,
+    synchronizePublishedDev = null,
     reservePublication = ({ reserve }) => reserve(),
     deliverEvent = null,
     schedule = (operation) => setImmediate(operation),
@@ -205,6 +206,7 @@ export class ReleaseOperationService {
     this.publishTarget = publishTarget;
     this.readTarget = readTarget;
     this.finalize = finalize;
+    this.synchronizePublishedDevEffect = synchronizePublishedDev;
     this.reservePublication = reservePublication;
     this.deliverEvent = deliverEvent;
     this.scheduleTask = schedule;
@@ -266,6 +268,7 @@ export class ReleaseOperationService {
   continue(operationId, options = {}) {
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
+    if (options.publishedDevSync != null) return this.#synchronizePublishedDev(operationId, options);
     // A captured amendment remains an amendment even when a replay omits all
     // optional fields. Check its identity before ordinary resume or recovery.
     if (current.testSelectionAmendments?.some(item => item.requestId === options.requestId)
@@ -297,6 +300,69 @@ export class ReleaseOperationService {
     }
     this.#schedule(operation.operationId);
     return { accepted: true, operationId: operation.operationId, state: operation.state, revision: operation.revision };
+  }
+
+  async #synchronizePublishedDev(operationId, { publishedDevSync, expectedRevision, expectedGeneration,
+    requestId, reviewedMain, testSelection, taskIds, taskScope, releaseMetadata }) {
+    requiredText(requestId, "published dev sync requestId");
+    if (reviewedMain != null || testSelection != null || taskIds != null || taskScope != null || releaseMetadata != null
+        || this.#running.has(operationId) || this.#scheduled.has(operationId)
+        || typeof this.synchronizePublishedDevEffect !== "function") throw new Error("Published dev sync requires an exclusive addressed finalization request");
+    let operation;
+    let generation;
+    const assertOriginal = current => {
+      if (!current || current.currentGeneration !== expectedGeneration || current.state !== "waiting"
+          || current.resumeState !== "finalize" || current.publicationEffects?.generation !== expectedGeneration
+          || !current.authorization.approvedTargets.every(target => publishedTarget(current.publicationEffects.targets?.[target.targetId]))) {
+        throw new Error("Published dev sync requires the applied original waiting at finalize");
+      }
+      if (operation && releaseIdentitySha256({ workspaceId: current.workspaceId, authorization: current.authorization,
+        publicationEffects: current.publicationEffects, selectedResults: current.selectedResults }) !== releaseIdentitySha256({
+        workspaceId: operation.workspaceId, authorization: operation.authorization,
+        publicationEffects: operation.publicationEffects, selectedResults: operation.selectedResults })) {
+        throw new Error("Published dev sync original authority changed");
+      }
+      const frozen = this.store.generation(operationId, expectedGeneration);
+      if (!frozen || frozen.operationId !== operationId || frozen.generation !== expectedGeneration) throw new Error("Published dev sync generation changed");
+      const { identitySha256, ...contents } = frozen;
+      if (releaseIdentitySha256(contents) !== identitySha256
+          || current.publicationEffects.publishStarted?.candidate !== identitySha256
+          || generation && releaseIdentitySha256(generation) !== releaseIdentitySha256(frozen)) throw new Error("Published dev sync frozen authority changed");
+      return frozen;
+    };
+    const acquired = await this.store.runOperationMutation(operationId, () => {
+      const current = this.store.get(operationId);
+      if (!Number.isSafeInteger(expectedRevision) || !Number.isSafeInteger(expectedGeneration)
+          || current?.revision !== expectedRevision) throw new Error("Published dev sync original CAS or owner changed");
+      generation = assertOriginal(current);
+      operation = current;
+      const takeoverAllowed = Boolean(current.owner?.processId && this.processAlive(current.owner.processId) === false);
+      return this.store.acquire(operationId, `${this.ownerId}:published-dev-sync`, {
+        leaseMs: this.leaseMs, processId: this.processId, takeoverAllowed,
+      });
+    });
+    if (!acquired.acquired) throw new Error(`Published dev sync owner refused: ${acquired.reason}`);
+    const owner = acquired.operation.owner;
+    const validate = async () => {
+      this.#assertOwner(operationId, owner);
+      assertOriginal(this.store.get(operationId));
+    };
+    const heartbeat = setInterval(() => {
+      try { this.store.heartbeat(operationId, owner.ownerId, { leaseMs: this.leaseMs, epoch: owner.epoch }); } catch {}
+    }, Math.max(50, Math.floor(this.leaseMs / 3)));
+    heartbeat.unref?.();
+    this.#running.add(operationId);
+    try {
+      const effect = await this.synchronizePublishedDevEffect({ operation, generation,
+        projectRoot: publishedDevSync.projectRoot, expectedDevCommit: publishedDevSync.expectedDevCommit,
+        nativeResolutionReview: publishedDevSync.nativeResolutionReview ?? null, validate });
+      await validate();
+      return { operationId, generation: expectedGeneration, devSynchronization: effect };
+    } finally {
+      clearInterval(heartbeat);
+      try { await this.store.runOperationMutation(operationId, () => this.store.release(operationId, owner)); }
+      finally { this.#running.delete(operationId); }
+    }
   }
 
   #observe(operationId) {

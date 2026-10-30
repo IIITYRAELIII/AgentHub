@@ -106,6 +106,21 @@ before native cleanup. Partial deletion and lost replies retain that identity;
 terminal readback settles only that original. No no-effect claim, new Delete
 ID, raw receipt replacement or transfer of a separate claim's UNKNOWN occurs.
 
+## Original published dev synchronization
+
+`hub_release_continue` optionally carries exclusive `published_dev_sync` with
+`projectRoot`, `expectedDevCommit` and optional existing `nativeResolutionReview`.
+Positive `expected_revision`/`expected_generation` and original `request_id` are
+required. Existing genuine RM/Workspace authorization and canonical MCP receipt
+apply; it cannot be combined with selection, notes or reviewed-main amendments.
+The release owner acquires its existing original lease and permits only an
+applied generation waiting at finalize. It returns isolated conflict/review
+evidence or exact dev effect; it neither schedules nor drains the pipeline.
+Unknown delivery retains the original native journal; a fresh addressed recovery
+with current operation CAS reads that effect, while the old ambiguous MCP receipt
+stays immutable. A completed same-request replay returns its original receipt.
+No Task is reopened and publication/Task-finalization effects are not repeated.
+
 ## Normal release continuation (ADR-0132)
 
 `hub_release_run` authorizes and captures the whole existing prepared PreRelease
