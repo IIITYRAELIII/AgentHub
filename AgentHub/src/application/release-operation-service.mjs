@@ -343,11 +343,12 @@ export class ReleaseOperationService {
     const acquired = await this.store.runOperationMutation(operationId, () => {
       const current = this.store.get(operationId);
       if (!Number.isSafeInteger(expectedRevision) || !Number.isSafeInteger(expectedGeneration)
-          || current?.revision !== expectedRevision || current.owner) throw new Error("Published dev sync original CAS or owner changed");
+          || current?.revision !== expectedRevision) throw new Error("Published dev sync original CAS or owner changed");
       generation = assertOriginal(current);
       operation = current;
+      const takeoverAllowed = Boolean(current.owner?.processId && this.processAlive(current.owner.processId) === false);
       return this.store.acquire(operationId, `${this.ownerId}:published-dev-sync`, {
-        leaseMs: this.leaseMs, processId: this.processId,
+        leaseMs: this.leaseMs, processId: this.processId, takeoverAllowed,
       });
     });
     if (!acquired.acquired) throw new Error(`Published dev sync owner refused: ${acquired.reason}`);
