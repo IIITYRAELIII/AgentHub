@@ -8,6 +8,8 @@ import {
   releaseOperationIsTerminal,
   reviewedMainBinding,
   failedComposeRecoveryEligible,
+  failedCompositionRecovery,
+  releaseCompositionInput,
   releaseApprovedTargets,
   effectiveTestSelection,
   effectiveReleaseTaskIds,
@@ -361,7 +363,9 @@ export class ReleaseOperationService {
       readbacks.push({ targetId: target.targetId, generation: current.currentGeneration, evidence });
     }
     await validateBeforeCommit();
+    const composeRecovery = failedCompositionRecovery(this.store.snapshot(operationId));
     const contents = { requestId, requestArguments, selection, taskIds: selectedTaskIds, taskSelection,
+      ...(composeRecovery ? { composeRecovery } : {}),
       ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }), priorRevision: current.revision, priorGeneration: current.currentGeneration,
       authorizationFingerprint: current.authorization.fingerprint,
       priorFailure: { state: current.state, completedAt: current.completedAt, error: current.lastError },
@@ -726,14 +730,22 @@ export class ReleaseOperationService {
   }
 
   async #compose(operation, owner) {
-    const generationNumber = operation.currentGeneration + 1;
-    const input = {
-      authorization: operation.authorization,
-      ...(operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
-      priorGeneration: operation.currentGeneration,
-      ...(effectiveTestSelection(operation) ? { testSelection: effectiveTestSelection(operation), amendment: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
-      ...(operation.reviewedMain ? { reviewedMain: operation.reviewedMain.identitySha256 } : {}),
-    };
+    const amendment = operation.testSelectionAmendments?.at(-1);
+    const recovery = amendment?.priorGeneration === operation.currentGeneration ? amendment.composeRecovery : null;
+    const generationNumber = recovery?.nextGeneration ?? operation.currentGeneration + 1;
+    if (recovery) {
+      const original = this.store.generation(operation.operationId, operation.currentGeneration);
+      if (!original) throw new Error("Original generation is missing");
+      for (const target of releaseApprovedTargets(operation)) {
+        const evidence = normalizeReadback(await this.readTarget({ operation, generation: original, target }));
+        if (evidence.status !== "not_applied") {
+          const error = new Error(`Original publication effect is ${evidence.status}`);
+          error.code = "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
+          throw error;
+        }
+      }
+    }
+    const input = releaseCompositionInput(operation);
     const started = this.store.beginStep({
       operationId: operation.operationId,
       generation: generationNumber,

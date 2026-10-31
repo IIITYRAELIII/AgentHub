@@ -1,7 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
 import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createHash } from "node:crypto";
+import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -17,6 +21,7 @@ import { runSelectedTests } from "../../test-suite.mjs";
 import { discoverReleaseTestInventory } from "../../src/infrastructure/filesystem/release-test-inventory.mjs";
 
 const selection = (mode, ids = []) => ({ mode, ids });
+const generationGit = async (cwd, ...args) => String((await promisify(execFile)("git", args, { cwd, windowsHide: true })).stdout).trim();
 const inventory = ["syntax-check.mjs", "install_test.py", "tests/a.test.mjs", "VSCodeExtension/render.test.js", "check:worker", "check:release-candidate", "check:contour"];
 const generationInput = {
   repositoryBases: [{ repositoryRoot: "repo", baseCommit: "base" }], selectedResults: [{ taskId: "task", resultCommit: "result" }],
@@ -448,4 +453,171 @@ test("metadata-only replay is recognized before ordinary/reviewed continuation d
   assert.equal(f.scheduled.length, queued + 1);
   f.scheduled.shift()();
   await f.service.drain("original");
+});
+
+
+test("partial generation amendment freezes a fresh identity and preserves both old generations and the failed partial", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-partial-generation-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
+  const primary = path.join(root, "primary"), origin = path.join(root, "origin.git"), sourceData = path.join(root, "source"), sqlData = path.join(root, "sql");
+  await mkdir(sqlData);
+  await generationGit(root, "init", "--bare", "--initial-branch=main", origin);
+  await generationGit(root, "clone", origin, primary);
+  await generationGit(primary, "config", "core.autocrlf", "false");
+  await mkdir(path.join(primary, "AgentHub"));
+  await writeFile(path.join(primary, ".gitattributes"), "* text eol=lf\n");
+  const pkg = { name: "agent-hub", version: "2.1.1" };
+  await writeFile(path.join(primary, "AgentHub/package.json"), JSON.stringify(pkg)+"\n");
+  await writeFile(path.join(primary, "AgentHub/package-lock.json"), JSON.stringify({ ...pkg, packages: { "": pkg } })+"\n");
+  await writeFile(path.join(primary, "app.txt"), "base\n");
+  const commit = async message => {
+    await generationGit(primary, "add", "-A");
+    await generationGit(primary, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", message);
+    return generationGit(primary, "rev-parse", "HEAD");
+  };
+  const base = await commit("main");
+  await generationGit(primary, "push", "origin", "main");
+  await generationGit(primary, "checkout", "-b", "HUB-partial-fixture");
+  await writeFile(path.join(primary, "feature.txt"), "accepted source\n");
+  const resultCommit = await commit("accepted result");
+  await generationGit(primary, "checkout", "main");
+  const frozenTasks = [{ taskId: "task", taskRevision: 3, resultCommit }];
+  const gitOwner = new ReleaseGitWorkspaceService({ dataDir: sourceData });
+  const preparedInput = { projectRoot: primary, workspaceId: "workspace", planRevision: "prepared-plan", approvedBaseCommit: base, frozenTasks };
+  await gitOwner.prepareCandidate(preparedInput);
+  const metadata = async (name, text) => {
+    const sourcePath = path.join(root, name), bytes = Buffer.from(text);
+    await writeFile(sourcePath, bytes);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    return { sourcePath, byteLength: bytes.length, rawSha256: hash, canonicalSha256: hash };
+  };
+  const oldMetadata = await metadata("old-notes.md", "# 2.1.1\n\nOriginal selected release notes.\n");
+  const nextMetadata = await metadata("next-notes.md", "# 2.1.1\n\nComplete accepted release notes after explicit amendment.\n");
+  let failCapture = false;
+  const scheduled = [];
+  const adapter = new WorkspaceReleaseOperationAdapter({
+    releasePreflight: {
+      async prepareOperationGeneration({ operationId, generation, changelogContent }) {
+        const candidate = await gitOwner.prepareGeneration({ ...preparedInput, operationId, generation, changelogContent,
+          validateBeforeCommit: async () => { if (failCapture) throw new Error("retained terminal pre-checkpoint compose failure"); } });
+        return { planRevision: preparedInput.planRevision, releaseCandidates: [candidate] };
+      },
+      validateOperationGeneration() {}, operationSelection() {}, withAwaitTransition() {},
+    },
+    publication: { publish: () => assert.fail("no publication"), readback() {} }, finalization: { finalize() {} },
+  });
+  const store = new ReleaseOperationStore({ dataDir: sqlData });
+  const service = new ReleaseOperationService({ store, schedule: callback => scheduled.push(callback), processAlive: () => false,
+    compose: input => adapter.compose(input),
+    validate: async () => { throw Object.assign(new Error("fixture stops before publication"), { code: "RELEASE_VALIDATION_FAILED" }); },
+    publishTarget: () => assert.fail("no publication"), finalize: async () => {},
+    readTarget: async () => ({ status: (await generationGit(primary, "ls-remote", "origin", "refs/heads/main")).split(/\s+/u)[0] === base ? "not_applied" : "unknown", revision: base }),
+    resolveTestPlans: async candidates => candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection("none"), []) })),
+  });
+  const run = async () => { assert.equal(scheduled.length, 1); await scheduled.shift()(); await service.drain(ack.operationId); };
+  const ack = service.start({ requestId: "same-original", workspaceId: "workspace", streamId: "manager", threadId: "thread",
+    authorization: { taskIds: ["task"], testSelection: selection("none"), validationMode: "full", releaseMetadata: oldMetadata,
+      approvedTargets: [{ targetId: "origin", kind: "git", repositoryRoot: primary }] } });
+  await run();
+  assert.equal(store.get(ack.operationId).currentGeneration, 1);
+  service.continue(ack.operationId); await run();
+  assert.equal(store.get(ack.operationId).currentGeneration, 2);
+  const oldGenerations = store.snapshot(ack.operationId).generations;
+  failCapture = true; service.continue(ack.operationId); await run(); failCapture = false;
+  const failed = store.snapshot(ack.operationId);
+  assert.equal(failed.operation.state, "failed");assert.equal(failed.operation.currentGeneration, 2);
+  assert.equal(store.generation(ack.operationId, 3), null);
+  assert.equal(store.latestStep(ack.operationId, 3, "compose").status, "failed");
+  const key = createHash("sha256").update(`${ack.operationId}:3:${primary}`).digest("hex").slice(0, 24);
+  const partial = path.join(sourceData, "release-gens", key), identity = await readFile(path.join(partial, "identity.json"));
+  assert.ok(JSON.parse(identity).preparedCandidate.inputHash);
+  const oldBundle = await readFile(path.join(partial, "source.bundle"));
+  await writeFile(path.join(partial, "retained.keep"), "useful partial evidence\n");
+  const options = { requestId: "explicit-corrected-metadata", expectedRevision: failed.operation.revision, expectedGeneration: 2,
+    releaseMetadata: nextMetadata, testSelection: selection("none") };
+  const amendment = await service.continue(ack.operationId, options);assert.equal(amendment.accepted, true);
+  assert.deepEqual((await service.continue(ack.operationId, options)).amendment, amendment.amendment);
+  const reopened = new ReleaseOperationStore({ dataDir: sqlData });
+  assert.deepEqual(reopened.get(ack.operationId).testSelectionAmendments, store.get(ack.operationId).testSelectionAmendments);
+  await run();
+  const after = store.snapshot(ack.operationId);
+  assert.equal(after.operation.currentGeneration, 4, `changed metadata needs a new honest generation: ${after.operation.lastError?.message}`);
+  assert.equal(after.operation.state, "waiting");assert.equal(after.operation.waitReason.code, "validation_failed");
+  assert.deepEqual(after.generations.slice(0, 2), oldGenerations);
+  assert.deepEqual(after.receipts.filter(item => item.generation <= 3), failed.receipts);
+  assert.deepEqual(after.operation.authorization, failed.operation.authorization);
+  assert.equal(after.operation.operationId, ack.operationId);assert.equal(store.generation(ack.operationId, 3), null);
+  assert.deepEqual(await readFile(path.join(partial, "identity.json")), identity);
+  assert.deepEqual(await readFile(path.join(partial, "source.bundle")), oldBundle);
+  assert.equal(await readFile(path.join(partial, "retained.keep"), "utf8"), "useful partial evidence\n");
+  const candidate = store.generation(ack.operationId, 4).candidates[0];
+  assert.notEqual(candidate.generationRoot, partial);
+  assert.equal(await generationGit(candidate.releaseRoot, "show", `${candidate.commit}:CHANGELOG.md`), (await readFile(nextMetadata.sourcePath, "utf8")).trim());
+  assert.equal(await generationGit(primary, "status", "--porcelain"), "");
+  assert.equal(await generationGit(primary, "rev-parse", "HEAD"), base);
+});
+
+async function failedPartialReceiptFixture(t, status = "failed") {
+  const f = await fixture(t);
+  const current = f.store.get("original");
+  const receipt = f.store.beginStep({ operationId: "original", generation: 2, stepId: "compose",
+    input: { authorization: current.authorization, priorGeneration: 1 } }).receipt;
+  if (status !== "intent") f.store.finishStep(receipt, { status, error: new Error("retained compose failure") });
+  const operation = f.store.get("original");
+  f.store.transition("original", { state: "waiting", currentStep: "compose", resumeState: "compose",
+    waitReason: { code: "prepared_candidate_stale" }, lastError: { message: "retained compose failure", step: "compose" } }, { expectedRevision: operation.revision });
+  return f;
+}
+
+test("partial generation amendment does not supersede UNKNOWN, intent or applied composition", async t => {
+  for (const status of ["unknown", "intent", "applied"]) await t.test(status, async t => {
+    const f = await failedPartialReceiptFixture(t, status), before = f.store.snapshot("original");
+    const options = { requestId: "cannot-supersede-ambiguous", testSelection: selection("none"), expectedRevision: before.operation.revision, expectedGeneration: 1 };
+    assert.equal((await f.service.continue("original", options)).accepted, true);
+    assert.equal(f.store.get("original").testSelectionAmendments.at(-1).composeRecovery, undefined);
+    await f.scheduled.shift()(); await f.service.drain("original");
+    assert.equal(f.store.get("original").currentGeneration, 1);
+    assert.equal(f.store.generation("original", 3), null);
+    assert.deepEqual(f.store.snapshot("original").receipts, before.receipts);
+  });
+});
+
+test("partial generation amendment requires fresh not-applied, owner/CAS and original receipt proof", async t => {
+  const f = await failedPartialReceiptFixture(t), before = f.store.get("original");
+  const options = { requestId: "checked-partial", testSelection: selection("none"), expectedRevision: before.revision, expectedGeneration: 1 };
+  for (const status of ["unknown", "applied", "partial"]) {
+    f.service.readTarget = async () => ({ status });
+    await assert.rejects(f.service.continue("original", options), /publication effect/u);
+    assert.deepEqual(f.store.get("original"), before);
+  }
+  f.service.readTarget = async () => ({ status: "not_applied" });
+  const held = f.store.acquire("original", "active-original", { processId: process.pid }).operation;
+  assert.equal((await f.service.continue("original", { ...options, expectedRevision: held.revision })).reason, "ineligible");
+  f.store.release("original", held.owner);
+  const current = f.store.get("original");
+  assert.equal((await f.service.continue("original", options)).reason, "stale-revision");
+  assert.equal((await f.service.continue("original", { ...options, expectedRevision: current.revision })).accepted, true);
+  // Synthetic corruption after capture tests the final transactional recheck, never a live receipt edit.
+  const db = new DatabaseSync(runtimeDatabasePath(f.root));
+  const row = db.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id='original' AND generation=2 AND step_id='compose'").get();
+  const corrupt = JSON.parse(row.receipt_json);corrupt.input.authorization.fingerprint = "foreign";
+  db.prepare("UPDATE release_step_receipts SET receipt_json=? WHERE operation_id='original' AND generation=2 AND step_id='compose'").run(JSON.stringify(corrupt));db.close();
+  const saved = f.store.snapshot("original").receipts;
+  await f.scheduled.shift()(); await f.service.drain("original");
+  assert.equal(f.store.get("original").currentGeneration, 1);assert.equal(f.store.generation("original", 3), null);
+  assert.deepEqual(f.store.snapshot("original").receipts, saved);
+});
+
+test("partial generation amendment rechecks target effects before admitting its fresh generation", async t => {
+  const f = await failedPartialReceiptFixture(t), current = f.store.get("original");
+  const result = await f.service.continue("original", { requestId: "fresh-target-before-compose", testSelection: selection("none"),
+    expectedRevision: current.revision, expectedGeneration: 1 });
+  assert.equal(result.accepted, true);assert.equal(result.amendment.composeRecovery.nextGeneration, 3);
+  const receipts = f.store.snapshot("original").receipts;
+  f.service.readTarget = async () => ({ status: "unknown" });
+  await f.scheduled.shift()();await f.service.drain("original");
+  assert.equal(f.store.get("original").currentGeneration, 1);
+  assert.equal(f.store.get("original").waitReason.code, "external_effect_readback");
+  assert.deepEqual(f.store.snapshot("original").receipts, receipts);
+  assert.equal(f.store.generation("original", 3), null);
 });

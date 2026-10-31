@@ -1,5 +1,24 @@
 # REL-001 — Task-backed Workspace release
 
+## Unregistered partial generations after explicit amendment
+
+An ordinary addressed amendment may capture the exact terminal failed compose
+receipts after the last registered generation. Its existing positive not-applied
+target readback, original authorization and revision CAS remain required. The
+same release then reserves the first generation after those failed slots; it
+does not change currentGeneration until the new immutable candidate is stored.
+Old partial directories, prepared input, receipts and registered generations are
+preserved. The old prepared-input equality guard is unchanged.
+
+The existing SQLite owner verifies every captured receipt/hash and the current
+amendment/input/owner again when it admits the new compose intent. UNKNOWN,
+intent, applied, missing/foreign or changed proof cannot authorize this move.
+Target readback is repeated before composition; unknown or applied effects stop
+it. A later normal explicit amendment can capture another terminal failed slot.
+No caller generation increment, new release, schema, flag or cleanup is needed.
+Version, consolidated metadata identity and exact accepted selection still flow
+through the existing composition/freeze owners. See ADR-HUB-382-partial-generation.
+
 ## Normal release continuation (ADR-0132)
 
 The existing `hub_release_run` / `hub_release_continue` owner prepares a missing

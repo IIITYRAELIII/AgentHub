@@ -8,6 +8,8 @@ import { normalizedOwnGitPublication } from "../../domain/release-base-provenanc
 import {
   createCandidateGeneration,
   effectiveReleaseTaskIds,
+  failedCompositionRecovery,
+  releaseCompositionInput,
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
@@ -512,6 +514,14 @@ export class ReleaseOperationStore {
         if (testSelectionAmendment && expectedRevision === current.revision) {
           const raw = JSON.parse(row.operation_json);
           if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("Test selection amendment is source-owner-fenced");
+          const captured = failedCompositionRecovery({ operation: current,
+            receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=?")
+              .all(id).map(row => readJson(row.receipt_json)),
+            generations: database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=?")
+              .all(id).map(row => readJson(row.generation_json)) });
+          if (releaseIdentitySha256(testSelectionAmendment.composeRecovery ?? null) !== releaseIdentitySha256(captured)) {
+            throw new Error("Failed composition recovery capture changed");
+          }
         }
         if (testSelectionAmendment && expectedRevision === current.revision
             && database.prepare("SELECT 1 FROM release_candidate_generations WHERE operation_id=? AND generation=?")
@@ -651,11 +661,34 @@ export class ReleaseOperationStore {
     const inputSha256 = releaseIdentitySha256(input ?? {});
     return this.#withDatabase((database) => immediateTransaction(database, () => {
       assertDatabaseOwner(database, id, expectedOwner);
+      if (step === "compose") {
+        const operation = operationFromRow(database.prepare("SELECT operation_json FROM release_operations WHERE operation_id=?").get(id));
+        const amendment = operation?.testSelectionAmendments?.at(-1);
+        const recovery = amendment?.priorGeneration === operation?.currentGeneration ? amendment.composeRecovery : null;
+        if (recovery) {
+          const captured = failedCompositionRecovery({ operation: { ...operation, owner: null,
+            state: amendment.priorFailure.state, lastError: amendment.priorFailure.error },
+            receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND generation<?")
+              .all(id, recovery.nextGeneration).map(row => readJson(row.receipt_json)),
+            generations: database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=? AND generation<?")
+              .all(id, recovery.nextGeneration).map(row => readJson(row.generation_json)) });
+          if (Number(generation) !== recovery.nextGeneration || input?.amendment !== amendment.identitySha256
+              || operation.state !== "compose"
+              || releaseIdentitySha256(input) !== releaseIdentitySha256(releaseCompositionInput(operation))
+              || releaseIdentitySha256(captured) !== releaseIdentitySha256(recovery)) {
+            throw new Error("Failed composition recovery original identity changed");
+          }
+        } else if (Number(generation) > operation.currentGeneration + 1) {
+          throw new Error("Composition generation has no original amendment authority");
+        }
+      }
       const latest = database.prepare(`
         SELECT receipt_json FROM release_step_receipts
         WHERE operation_id = ? AND generation = ? AND step_id = ? ORDER BY attempt DESC LIMIT 1
       `).get(id, Number(generation), step);
       const restored = readJson(latest?.receipt_json);
+      if (step === "compose" && restored && ["intent", "unknown", "applied"].includes(restored.status)
+          && restored.inputSha256 !== inputSha256) throw new Error("Original composition outcome must be reconciled before changed input");
       if (restored && ["intent", "unknown", "applied"].includes(restored.status) && restored.inputSha256 === inputSha256) {
         return { receipt: restored, created: false };
       }
