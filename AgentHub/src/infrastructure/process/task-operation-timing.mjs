@@ -7,7 +7,8 @@ const MAX_DETAIL_SPANS = 512;
 const AGGREGATE_STAGES = new Set(["git-child", "owned-command", "lease-assert", "process-guard",
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
   "release:integration-evidence", "native:history-authority", "native:task-histories",
-  "native:cutover", "native:promotion-authority", "lock-native-bootstrap", "lock-native-publish"]);
+  "native:cutover", "native:promotion-authority", "lock-native-bootstrap", "lock-native-publish",
+  "release:planner", "release:publication", "release:main-validation", "release:primary-validation", "release:validate-prepared", "release:prepared-source", "release:promotion-validate", "release:promotion-checkout", "release:freeze-admission", "release:freeze-owned", "release:freeze-candidate", "release:freeze-base", "release:freeze-installed-baseline", "release:freeze-callback", "release:freeze-callback-baseline"]);
 const AGGREGATE_COMMANDS = new Set(["rev-parse", "status", "log", "show", "diff", "merge-base", "merge",
   "worktree", "sparse-checkout", "config", "symbolic-ref", "update-ref", "for-each-ref", "cat-file",
   "rev-list", "add", "commit", "reset", "read-tree", "checkout", "ls-files", "merge-abort", "external"]);
@@ -37,6 +38,7 @@ function emit(state, event) {
   try {
     const result = state.record({ component: "task-operation-timing", operationId: state.operationId,
       traceId: state.traceId,
+      ...(state.generation === undefined ? {} : { generation: state.generation }),
       taskId: state.taskId, at: new Date().toISOString(), ...event });
     result?.catch?.(() => {});
   } catch { /* Diagnostics never change the operation outcome. */ }
@@ -104,7 +106,8 @@ export function createTaskOperationTimingBatchRecorder(writeBatch, { maxEvents =
         // This second, bounded diagnostic write reports the cost of the final
         // summary batch. Its own latency is the one explicitly unmeasured tail.
         writeBatch([{ component: event.component, operationId: event.operationId,
-          traceId: event.traceId, taskId: event.taskId, at: new Date().toISOString(),
+          traceId: event.traceId, taskId: event.taskId,
+          ...(event.generation === undefined ? {} : { generation: event.generation }), at: new Date().toISOString(),
           stage: "timing-sink-final", phase: "checkpoint", finalBatchWriteMs,
           totalBatchWriteMs: priorTotalMs + finalBatchWriteMs,
           batchWrites: priorWrites + 1, unmeasuredTailWrites: 1 }]);
@@ -148,9 +151,10 @@ export function recordTaskOperationTiming(stage, metadata = {}) {
   emit(context.getStore(), { stage, phase: "checkpoint", ...metadata });
 }
 
-export function withTaskOperationTiming({ operationId, taskId, record }, operation) {
+export function withTaskOperationTiming({ operationId, taskId, generation, record }, operation) {
   if (!operationId || typeof record !== "function") return operation();
   const state = { operationId: String(operationId).slice(0, 512), taskId: String(taskId ?? "").slice(0, 160),
+    ...(Number.isSafeInteger(generation) && generation > 0 ? { generation } : {}),
     traceId: ++nextTraceId,
     record, sequence: 0, details: 0, suppressed: 0, closed: false, aggregates: new Map(),
     synchronousRecordMs: 0, maxSynchronousRecordMs: 0 };

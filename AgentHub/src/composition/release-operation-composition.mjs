@@ -30,7 +30,9 @@ export function createReleaseOperationServices({
     resolveTestPlans: releaseTestPlans,
     withTaskSelection: input => adapter.withTaskSelection(input),
     store,
-    compose: input => adapter.compose(input),
+    compose: input => taskGitWorkspaces.withOperationTrace({
+      operationId: input.operation.operationId, generation: input.generation,
+    }, () => adapter.compose(input)),
     validate: input => adapter.validate(input),
     publishTarget: input => adapter.publishTarget(input),
     readTarget: input => adapter.readTarget(input),
