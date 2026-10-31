@@ -3891,6 +3891,8 @@ export class TaskGitWorkspaceService {
               || successor.nativeAbsorptionInput || successor.nativeAbsorptionHistory || successor.initialNativeTest) {
             throw new Error("Native Test successor original intent changed");
           }
+          const historyAuthority = successor.nativeHistoryAuthority ? await this.#nativeHistoryAuthority(successor.snapshot,
+            { mainCommit: successor.mainCommit, headCommit: successor.before }, ownedLease, successor.nativeHistoryAuthority) : null;
           const staging = this.#nativeIntegrationStaging(successor);
           const captured = JSON.parse(await readFile(path.join(staging.root, "merge.json"), "utf8"));
           if (!samePath(successor.stageRoot, path.join(staging.root, "repository"))
@@ -3902,12 +3904,13 @@ export class TaskGitWorkspaceService {
             git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: successor.stageRoot, lease: ownedLease }),
             baseCommit: successor.before, tasks: [{ taskId: proof.taskId, baseCommit: successor.snapshot.baseCommit,
               resultCommit: proof.resultCommit }], merges: captured.merges, head: tip, tree: successor.targetTree,
-            identity: staging.identity, verifyReview: this.verifyNativeResolutionReview,
+            identity: staging.identity, verifyReview: this.verifyNativeResolutionReview, historyAuthority,
           });
+          await this.#nativeHistoryOrigin(successor.snapshot, successor.nativeHistoryAuthority, ownedLease);
           tip = successor.before;
         }
-        if (record.nativeHistoryAuthority) await this.#nativeHistoryAuthority(s,
-          { mainCommit: record.mainCommit, headCommit: record.before }, ownedLease, record.nativeHistoryAuthority);
+        const historyAuthority = record.nativeHistoryAuthority ? await this.#nativeHistoryAuthority(s,
+          { mainCommit: record.mainCommit, headCommit: record.before }, ownedLease, record.nativeHistoryAuthority) : null;
         const managedRoot = await this.managedRepositoryRoot(s.projectRoot, { taskId, taskNumber: s.branch });
         if (!managedRoot || !samePath(managedRoot, repoRoot)) {
           throw new Error("Native Test managed source binding changed");
@@ -3950,7 +3953,7 @@ export class TaskGitWorkspaceService {
             baseCommit: record.before,
             tasks: [{ taskId, baseCommit: s.baseCommit, resultCommit: s.headCommit }],
             merges: capture.merges, head: record.target, tree: record.targetTree,
-            identity, verifyReview: this.verifyNativeResolutionReview,
+            identity, verifyReview: this.verifyNativeResolutionReview, historyAuthority,
           });
         }
         await this.#nativeHistoryOrigin(s, record.nativeHistoryAuthority, ownedLease);
