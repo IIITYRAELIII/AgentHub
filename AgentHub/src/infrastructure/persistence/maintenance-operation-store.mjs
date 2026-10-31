@@ -132,6 +132,17 @@ export class MaintenanceOperationStore {
     ).get(id)));
   }
 
+  // Evidence consumers must not initialize/migrate a runtime or acquire its WAL
+  // writer merely to observe an existing original. The ordinary writer is unchanged.
+  getReadonly(operationId) {
+    const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
+    try {
+      return operationFromRow(database.prepare(
+        "SELECT operation_json FROM maintenance_operations WHERE operation_id = ?",
+      ).get(operationId));
+    } finally { database.close(); }
+  }
+
   activeFor({ kind, streamId, threadId } = {}) {
     return this.#withDatabase((database) => operationFromRow(database.prepare(`
       SELECT operation_json FROM maintenance_operations
@@ -139,6 +150,18 @@ export class MaintenanceOperationStore {
         AND status NOT IN ('succeeded', 'failed')
       ORDER BY updated_at DESC, revision DESC LIMIT 1
     `).get(String(kind ?? ""), String(streamId ?? ""), String(threadId ?? ""))));
+  }
+
+  activeForReadonly({ kind, streamId, threadId } = {}) {
+    const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
+    try {
+      return operationFromRow(database.prepare(`
+        SELECT operation_json FROM maintenance_operations
+        WHERE kind = ? AND stream_id = ? AND thread_id = ?
+          AND status NOT IN ('succeeded', 'failed')
+        ORDER BY updated_at DESC, revision DESC LIMIT 1
+      `).get(String(kind ?? ""), String(streamId ?? ""), String(threadId ?? "")));
+    } finally { database.close(); }
   }
 
   forProviderTurn({ kind, threadId, providerTurnId } = {}) {

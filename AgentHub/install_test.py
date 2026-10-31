@@ -226,7 +226,15 @@ class ParticipantProfileTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual("Holier-Than-Thou", install.participant_github_login())
+        with tempfile.TemporaryDirectory() as directory:
+            utilities_root = Path(directory)
+            with mock.patch.object(install, "ROOT", utilities_root / "AgentHub"):
+                self.assertIsNone(install.participant_github_login())
+                run.assert_not_called()
+                profile_tool = utilities_root / "AI_INFRA_SETUP" / "team_profile.py"
+                profile_tool.parent.mkdir()
+                profile_tool.touch()
+                self.assertEqual("Holier-Than-Thou", install.participant_github_login())
         self.assertNotIn("text", run.call_args.kwargs)
         self.assertNotIn("encoding", run.call_args.kwargs)
 

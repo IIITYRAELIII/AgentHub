@@ -410,6 +410,11 @@ export class TaskBoardService {
     });
   }
 
+  resumeConfirmedDeleteTransition(operationId, payload) {
+    requiredMethod(this.store, "resumeConfirmedDeleteTransition");
+    return this.store.resumeConfirmedDeleteTransition(operationId, payload);
+  }
+
   finalizeCleanupTransition(operationId, payload = {}) {
     requiredMethod(this.store, "finalizeCleanupTransition");
     return this.store.finalizeCleanupTransition(operationId, payload);

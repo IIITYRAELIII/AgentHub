@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
+import { assertTaskOperationExecuting } from "../ports/task-operation-execution-context.mjs";
 
 const WORKSPACE_MUTATIONS = new Set([
   "ensureExperiments", "createWorkspace", "createWorkspaceWithStream", "renameWorkspace", "updateWorkspaceComment",
   "updateWorkspaceSettings", "moveWorkspaceToFolder", "renameWorkspaceFolder",
   "archiveWorkspace", "restoreWorkspace", "deleteArchivedWorkspace",
   "updateWorkspaceDeveloperRules", "recordWorkspaceEvent", "beginMcpOperation",
-  "bindMcpOperationInterstreamContentHash",
+  "bindMcpOperationInterstreamContentHash", "bindTaskOperationExecution", "requestTaskOperationInterruption", "finishTaskOperationInterruption",
   "completeMcpOperation", "failMcpOperation", "recordClaimAdmissionRefusal", "cancelMcpOperation", "beginMcpOperationReconciliation",
   "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation",
   "checkpointMcpPreparation", "settleMcpPreparationFailure", "checkpointClaimCustody", "checkpointMcpPreparationForward",
@@ -21,7 +22,7 @@ const WORKSPACE_READS = new Set([
   "claimCustodyForOriginal", "claimCustodyForTask", "claimCustodyNamespaceForTask", "claimCustodyTaskSnapshot", "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage", "preparationIsolationAuthority",
   "workspace", "workspaceBySystemKey", "stream", "streamDeveloperRules", "developerRulesForThread",
   "developerRulesForStream", "thread", "activeThread", "threadsForStream", "resolveThread", "hierarchy",
-  "meta", "threadNaming", "mutationDiagnostics", "close",
+  "taskOperationExecutions", "meta", "threadNaming", "mutationDiagnostics", "close",
 ]);
 
 const TASK_MUTATIONS = new Set([
@@ -31,7 +32,7 @@ const TASK_MUTATIONS = new Set([
   "assignWorkspaceTaskNumbers", "moveColumn", "setNotesComment", "prepareStart",
   "admitPreparedStart", "cancelPreparedStart", "fencePreparedStartCancellation",
   "completePreparedStartCancellation", "markStarted", "complete", "setWorkflowStatus", "claim",
-  "requestWorkflowStatus", "beginLifecycleTransition", "recordWorkflowAdmissionRefusal", "failLifecycleTransition",
+  "requestWorkflowStatus", "beginLifecycleTransition", "recordWorkflowAdmissionRefusal", "failLifecycleTransition", "resumeConfirmedDeleteTransition",
   "commitWorkflowTransition", "commitSquashTransferTransition", "rollbackWorkflowOutcome", "finalizeCleanupTransition", "recordTaskTurn",
   "recordTaskGitReference", "adoptLegacyGitReference", "completeRelease", "completeReleaseOperation", "remove", "setCaptureEnabled",
   "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending", "recordReleaseFinalizationStage",
@@ -79,7 +80,7 @@ function createMutationOwner(store, { scope, mutations, reads, managedEffects = 
         const value = Reflect.get(store, property, store);
         if (typeof value !== "function") return undefined;
         return (...args) => store.runMutation(
-          () => value.apply(store, args),
+          () => { assertTaskOperationExecuting(); return value.apply(store, args); },
           { requestId: mutationIdentity(scope, property, args), method: property, args },
         );
       }

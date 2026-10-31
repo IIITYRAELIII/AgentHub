@@ -6,6 +6,8 @@ import {
   restartRequestProjection,
   RUNTIME_RESTART_SCOPE,
 } from "../domain/maintenance-operation.mjs";
+import { preparePackageRestart, packageRestartInput } from "../runtime/runtime-package-handoff.mjs";
+import { packageBindingDigest } from "../infrastructure/filesystem/runtime-package-target.mjs";
 
 function normalizedTarget(value) {
   const streamId = String(value?.streamId ?? "").trim();
@@ -35,6 +37,7 @@ export class RestartRequestService {
     scheduleRestart = (callback) => setTimeout(callback, 0).unref(),
     nowIso = () => new Date().toISOString(),
     logger = console,
+    preparePackage = (input) => preparePackageRestart(input, { dataDir: operationStore.dataDir }),
   }) {
     if (!operationStore) throw new TypeError("operationStore is required");
     if (typeof currentTarget !== "function") throw new TypeError("currentTarget is required");
@@ -56,6 +59,7 @@ export class RestartRequestService {
       scheduleRestart,
       nowIso,
       logger,
+      preparePackage,
     });
   }
 
@@ -158,7 +162,9 @@ export class RestartRequestService {
         metadata: { failurePhase: result.phase ?? null },
       });
       if (operation) this.#project(operation);
-      await this.saveState();
+      // Package closure may already have finalized every runtime writer. Only
+      // the short-lived maintenance-operation owner can persist reconciliation.
+      if (!operation?.metadata?.packageHandoff) await this.saveState();
     } else if (["aborted", "recovered"].includes(String(result?.status ?? ""))
       && typeof result.restartStateSettled !== "boolean") {
       await this.fail(operationId, result?.error);
@@ -267,6 +273,45 @@ export class RestartRequestService {
         ? "Перезапуск ожидает завершения потоков"
         : "Agent Hub Server перезапускается",
     };
+  }
+
+  async fromPackage(input) {
+    input = packageRestartInput(input);
+    const operationId = String(input?.operationId ?? "");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(operationId)) {
+      throw new Error("Package restart requires its original operationId");
+    }
+    const inputSha256 = packageBindingDigest(input);
+    const previous = this.operationStore.get(operationId);
+    if (previous) {
+      if (previous.metadata?.packageInputSha256 !== inputSha256) throw new Error("Package restart input changed");
+      return { accepted: false, operationId, status: previous.status, phase: previous.phase };
+    }
+    if (this.isStopping()) throw new Error("Runtime is already stopping");
+    const packageHandoff = await this.preparePackage(input);
+    const blockingCount = this.blockingWorkCount();
+    const notification = this.#notification({ messageId: null, minimumUpdateOffset: this.updateOffset(),
+      notifyTelegram: false, blockingCount });
+    const operation = await mutateRestartOperation(this.operationStore, () => {
+      const replay = this.operationStore.get(operationId);
+      if (replay) {
+        if (replay.metadata?.packageInputSha256 !== inputSha256) throw new Error("Package restart input changed");
+        return replay;
+      }
+      if (this.getRequest() || this.isStopping() || this.operationStore.activeFor({
+        kind: MAINTENANCE_OPERATION_KINDS.RESTART, ...RUNTIME_RESTART_SCOPE,
+      })) throw new Error("Another original restart already owns this runtime");
+      return this.operationStore.create({ operationId, kind: MAINTENANCE_OPERATION_KINDS.RESTART,
+        ...RUNTIME_RESTART_SCOPE, status: blockingCount ? "blocked" : "requested",
+        phase: blockingCount ? "waiting-for-work" : "requested",
+        blockers: blockingCount ? ["active-work"] : [],
+        metadata: { ...notification, packageHandoff, packageInputSha256: inputSha256 },
+      });
+    }, operationId);
+    this.#project(operation);
+    await this.saveState();
+    if (!blockingCount) this.#schedule(operation);
+    return { accepted: true, waiting: blockingCount > 0, operationId };
   }
 
   async fromTelegram() {

@@ -13,6 +13,8 @@ import {
 } from "../runtime/restart-recovery.mjs";
 import { readFile } from "node:fs/promises";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
+import { armPackageRestart, packageCheckpoint } from "../runtime/runtime-package-handoff.mjs";
+import { inspectRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
 
 export function createRuntimeRestartComposition({
   getRestartRequest,
@@ -69,6 +71,7 @@ export function createRuntimeRestartComposition({
   updateRestartMessage,
   startRuntimeTimers,
   delay,
+  maintenanceOperations = null,
 }) {
   const restartNotifications = new RestartNotificationService({
     getRequest: getRestartRequest,
@@ -155,6 +158,12 @@ export function createRuntimeRestartComposition({
     stopTimers: stopRuntimeTimers,
     stopMedia: () => mediaController.stop(),
     resumeAfterAbort: () => startRuntimeTimers(),
+    packageHandoff: maintenanceOperations ? {
+      preflight: (request) => inspectRuntimeBackupScope({ runtimeRoot: request.metadata.packageHandoff.binding.runtimeRoot }),
+      arm: (request) => armPackageRestart({ request, store: maintenanceOperations }),
+      writersClosed: (request) => packageCheckpoint(maintenanceOperations,
+        request.operationId, "package-writers-closed"),
+    } : null,
     launchReplacement: async () => {
       const operationId = getRestartRequest()?.operationId;
       const pointer = JSON.parse(await readFile(path.join(agentHubRoot, "..", "..", "current.json"), "utf8").catch(() => "{}"));

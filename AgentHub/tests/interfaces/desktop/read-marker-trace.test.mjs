@@ -22,6 +22,7 @@ test('original read ID persists wait/work/projection and client paint, including
       completedAt: '2026-10-06T07:00:00.000Z' };
     const task = { provider: final.provider, threadId: final.threadId, streamId: 'stream' };
     const service = new DesktopReadModelService({
+      resolveReadTask: () => task,
       snapshot: ({ projectTask = (entry) => entry }) => ({ tasks: [projectTask(task)] }),
       readStateStore: store, trustedDeviceUserId: () => 'owner',
       lastTaskMessage: () => ({ ...final, updatedAt: final.completedAt, terminalRevision: final.revision }),

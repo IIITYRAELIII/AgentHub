@@ -1649,6 +1649,12 @@ test("desktop Stream history resolves a stale request and preserves mixed-provid
     catalog: {
       entries: () => [{
         streamId: "stream-1",
+        provider: "codex",
+        projectRoot: "D:/work",
+        threadId: "thread-old",
+        title: "Retained old Thread",
+      }, {
+        streamId: "stream-1",
         provider: "claude",
         projectRoot: "D:/work",
         threadId: "thread-new",
@@ -1698,6 +1704,36 @@ test("desktop Stream history resolves a stale request and preserves mixed-provid
     { id: "turn-thread-old", provider: "codex", threadId: "thread-old" },
     { id: "turn-thread-new", provider: "claude", threadId: "thread-new" },
   ]);
+});
+
+test("Stream history head selection refuses missing lineage and preserves exact Thread reads", async () => {
+  const old = { streamId: "lineage", provider: "codex", threadId: "old", position: 1 };
+  const current = { ...old, threadId: "current", position: 2 };
+  let entries = [old, current];
+  let threads = [old, current];
+  let reads = 0;
+  const history = createDesktopTaskHistoryFactory({
+    selection: { activeProvider: () => "codex", threadId: () => "old", chatId: () => null },
+    catalog: { entries: () => entries, threadsForStream: () => threads },
+    historyReader: { read: async () => { reads += 1; return { history: [] }; } },
+    runs: { forTask: () => null },
+    historyMerger: { mergeActive: () => {}, mergeCompleted: () => {} },
+    responseBudget: { fit: value => value },
+  });
+  const request = { streamId: "lineage", provider: "codex", threadId: "old", includeActive: false };
+  assert.equal((await history(request)).threadId, "current");
+  entries = [current, old];
+  assert.equal((await history(request)).threadId, "current", "catalog ordering is not head authority");
+  assert.equal((await history({ provider: "codex", threadId: "old", includeActive: false })).threadId, "old");
+  threads = [old, { ...current, detachedAtMs: 1 }];
+  assert.equal((await history(request)).threadId, "old", "detached later Thread is not the current head");
+  const readCount = reads;
+  for (const absent of [[], [{ ...old, detachedAtMs: 1 }], [current]]) {
+    threads = absent;
+    entries = [old];
+    await assert.rejects(history(request), /Поток не найден в локальном каталоге/u);
+    assert.equal(reads, readCount, "missing current authority cannot read an old page as its substitute");
+  }
 });
 
 test("desktop task history returns a compact marker for an unchanged completed page", async () => {

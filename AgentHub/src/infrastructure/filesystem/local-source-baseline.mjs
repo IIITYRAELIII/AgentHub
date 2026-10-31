@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rmdir, unlink } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash,
   normalizedReleaseBaseProvenance, assertHistoricalChangelogOriginal } from "../../domain/release-base-provenance.mjs";
@@ -10,14 +11,74 @@ import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./nativ
 import { publicationStateRepositories } from "../persistence/publication-state.mjs";
 import { canonicalPath } from "./config.mjs";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
+import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const reject = message => { throw new ReleasePreparationRejectedError(`Installed local source baseline: ${message}`); };
 const normalized = bytes => Buffer.from(Buffer.from(bytes).toString("utf8").replace(/\r\n/gu, "\n"));
 const metadata = name => /^(?:docs|tests)\//u.test(name)
-  || /(?:^|\/)[^/]+\.test\.(?:mjs|cjs|js)$/u.test(name) || /^(?:README|AGENTS)\.md$/u.test(name);
+  || /(?:^|\/)[^/]+\.test\.(?:mjs|cjs|js)$/u.test(name) || /^(?:README|AGENTS)\.md$/u.test(name)
+  || name === "distribution/INSTALL.md";
 const hostInputs = new Set(["RuntimeHost/AgentHub.RuntimeHost.cs", "RuntimeHost/AgentHub.IconBuilder.cs",
   "RuntimeHost/app.manifest", "VSCodeExtension/media/agent-hub-mark.png"]);
+
+// Object availability is not source authority. Import only the exact retained
+// HEAD's reachable graph, without fetch/config/ref/FETCH_HEAD writes. The full
+// installed-byte, selection, adoption and origin verifiers still decide carry.
+async function ensureRetainedSourceHistory({ git, sourceGit, sourceRoot, commit, tree }) {
+  const oid = value => typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(value);
+  if (!oid(commit) || !oid(tree)) reject("retained source Git identity is malformed");
+  const readSource = sourceGit ?? ((cwd, args, options) => git(["-C", cwd, ...args], options));
+  const assertSource = async () => {
+    const root = await lstat(sourceRoot, { bigint: true });
+    if (!root.isDirectory() || root.isSymbolicLink()
+        || await readSource(sourceRoot, ["rev-parse", "HEAD^{commit}"]) !== commit
+        || await readSource(sourceRoot, ["rev-parse", "HEAD^{tree}"]) !== tree
+        || await readSource(sourceRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+      reject("retained source HEAD/tree/clean custody changed");
+    }
+    return root;
+  };
+  const sourceIdentity = await assertSource();
+  const present = String(await git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input: `${commit}\n` }));
+  if (present === `${commit} commit`) {
+    const graph = String(await git(["rev-list", "--objects", "--missing=print", commit]));
+    if (!graph.split(/\r?\n/u).some(line => line.startsWith("?"))) return;
+  } else if (present !== `${commit} missing`) reject("consumer source object identity changed");
+
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-installed-history-"));
+  const rootIdentity = await lstat(root, { bigint: true });
+  const bundle = path.join(root, "source.bundle");
+  try {
+    await createSelectedGitBundle({ root, sourceRoot, bundle, inputs: [commit], gitAt: readSource });
+    const fileIdentity = await lstat(bundle, { bigint: true });
+    const after = await assertSource();
+    if (after.dev !== sourceIdentity.dev || after.ino !== sourceIdentity.ino
+        || after.birthtimeNs !== sourceIdentity.birthtimeNs) reject("retained source directory changed");
+    await git(["bundle", "verify", bundle]);
+    await git(["bundle", "unbundle", bundle]);
+    if (await git(["rev-parse", `${commit}^{commit}`]) !== commit
+        || await git(["rev-parse", `${commit}^{tree}`]) !== tree
+        || String(await git(["rev-list", "--objects", "--missing=print", commit]))
+          .split(/\r?\n/u).some(line => line.startsWith("?"))) reject("imported source graph changed");
+    const finalSource = await assertSource();
+    if (finalSource.dev !== sourceIdentity.dev || finalSource.ino !== sourceIdentity.ino
+        || finalSource.birthtimeNs !== sourceIdentity.birthtimeNs) reject("retained source directory changed");
+    const [named, directory] = await Promise.all([lstat(bundle, { bigint: true }), lstat(root, { bigint: true })]);
+    if (!named.isFile() || named.isSymbolicLink() || named.dev !== fileIdentity.dev || named.ino !== fileIdentity.ino
+        || !directory.isDirectory() || directory.isSymbolicLink() || directory.dev !== rootIdentity.dev
+        || directory.ino !== rootIdentity.ino || directory.birthtimeNs !== rootIdentity.birthtimeNs) {
+      reject("installed history transport custody changed");
+    }
+    await unlink(bundle);
+    await rmdir(root);
+  } catch (error) {
+    // Preserve failed/ambiguous transport for its caller; never remove a
+    // replacement or reinterpret imported objects as an accepted mutation.
+    error.installedHistoryTransportRoot = root;
+    throw error;
+  }
+}
 
 // Existing OWN publication is authority for its exact immutable historical
 // notes/version, independently of local installed-source carry. Callers seal
@@ -84,11 +145,12 @@ export async function sourceBlobs(git, entries, paths) {
   return new Map(paths.map(file => [file, requested.get(entries.get(file).oid)]));
 }
 
-async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCommit }) {
+async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCommit, publishedCommit, tasks,
+  inheritedMainMetadata }) {
   const outside = async commit => {
     const raw = Buffer.from(await git(["ls-tree", "-r", "-z", "--full-tree", commit], { rawOutput: true }));
     if (raw.length && raw.at(-1) !== 0) reject("repository inventory is malformed");
-    const paths = new Set(), retained = [];
+    const paths = new Set(), retained = new Map();
     let offset = 0;
     while (offset < raw.length) {
       const end = raw.indexOf(0, offset);
@@ -100,14 +162,41 @@ async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCom
       const key = name.toString("hex");
       if (paths.has(key)) reject("repository inventory has ambiguous paths");
       paths.add(key);
-      if (!name.subarray(0, 9).equals(Buffer.from("AgentHub/"))) retained.push(record.toString("base64"));
+      if (!name.subarray(0, 9).equals(Buffer.from("AgentHub/"))) retained.set(key, record.toString("base64"));
       offset = end + 1;
     }
-    return retained.sort();
+    return retained;
   };
   const source = await outside(sourceCommit);
   const agreed = await outside(agreedMainCommit);
-  if (JSON.stringify(source) !== JSON.stringify(agreed)) reject("repository files differ from agreed main");
+  const differences = [...new Set([...source.keys(), ...agreed.keys()])]
+    .filter(key => source.get(key) !== agreed.get(key));
+  if (!differences.length) return;
+  const published = await outside(publishedCommit);
+  const documentation = ["README.md", "AGENTS.md"].map(name => Buffer.from(name).toString("hex"));
+  const changelog = Buffer.from("CHANGELOG.md").toString("hex");
+  // Publication owns its already-published notes. Selected registered results
+  // own exact root documentation, not arbitrary repository code/configuration.
+  // Only TaskGit's protected Test preview may supply its existing dev metadata;
+  // release callers never inherit rolling dev or a caller-provided public flag.
+  const selected = tasks.filter(task => task.baseCommit === agreedMainCommit).map(task => task.resultCommit);
+  const candidates = [...new Set([...selected, ...inheritedMainMetadata])];
+  if (candidates.some(commit => typeof commit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(commit))) {
+    reject("repository metadata identity is malformed");
+  }
+  const known = [];
+  for (const commit of candidates) {
+    await git(["merge-base", "--is-ancestor", agreedMainCommit, commit]);
+    known.push(await outside(commit));
+  }
+  for (const key of differences) {
+    const entry = source.get(key);
+    const regular = value => value && Buffer.from(value, "base64").subarray(0, 12).equals(Buffer.from("100644 blob "));
+    if (key === changelog && regular(entry) && entry === published.get(key)) continue;
+    if (documentation.includes(key) && regular(entry) && regular(agreed.get(key))
+        && known.some(table => table.get(key) === entry)) continue;
+    reject("repository files differ from agreed main");
+  }
 }
 
 // Read-only verifier inside the existing candidate owner. No base/ref, runtime
@@ -173,11 +262,23 @@ export async function assertInstalledLocalSourceBaseline({
   adoptionGit = git, repositoryRoot = null,
   originalAuthority = null,
   readOwnGitPublication = null,
+  inheritedMainMetadata = [],
 }) {
   const p = normalizedReleaseBaseProvenance(provenance);
   if (p?.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE) reject("missing provenance");
   if (p.agreedMainCommit !== primaryMainCommit || p.publishedBaseCommit !== publishedRevision
       || p.planRevision !== planRevision || p.selectionHash !== localSourceSelectionHash(tasks)) reject("base, plan or selection changed");
+  const current = JSON.parse(await regular(path.join(runtimeRoot, "current.json")));
+  if (current.current !== p.installedReleaseId) reject("installed release changed");
+  const releaseRoot = path.join(runtimeRoot, "releases", p.installedReleaseId);
+  const manifestBytes = await regular(path.join(releaseRoot, "runtime-manifest.json"));
+  if (sha(manifestBytes) !== p.installedManifestSha256) reject("installed manifest changed");
+  const manifest = JSON.parse(manifestBytes);
+  if (typeof manifest.publicationRevision === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(manifest.publicationRevision)
+      && typeof manifest.sourceRoot === "string" && path.isAbsolute(manifest.sourceRoot)) {
+    const tree = await git(["-C", manifest.sourceRoot, "rev-parse", "HEAD^{tree}"]);
+    await ensureRetainedSourceHistory({ git, sourceRoot: manifest.sourceRoot, commit: manifest.publicationRevision, tree });
+  }
   let adoptions = [];
   if (p.adoptions) {
     if (!repositoryRoot) reject("adoption repository is absent");
@@ -206,12 +307,6 @@ export async function assertInstalledLocalSourceBaseline({
   if (String(await git(["rev-parse", `${p.sourceBaseCommit}^{tree}`])) !== p.sourceBaseTree) reject("source tree changed");
   const patch = await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, p.sourceBaseCommit], { rawOutput: true });
   if (sha(patch) !== p.sourcePatchSha256) reject("source patch changed");
-  const current = JSON.parse(await regular(path.join(runtimeRoot, "current.json")));
-  if (current.current !== p.installedReleaseId) reject("installed release changed");
-  const releaseRoot = path.join(runtimeRoot, "releases", p.installedReleaseId);
-  const manifestBytes = await regular(path.join(releaseRoot, "runtime-manifest.json"));
-  if (sha(manifestBytes) !== p.installedManifestSha256) reject("installed manifest changed");
-  const manifest = JSON.parse(manifestBytes);
   if (manifest.releaseId !== p.installedReleaseId || !Array.isArray(manifest.files)
       || manifest.files.some(file => typeof file.path !== "string"
         || !/^[a-f0-9]{64}$/u.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0)) reject("installed identity changed");
@@ -244,7 +339,7 @@ export async function assertInstalledLocalSourceBaseline({
     if (!file.startsWith("AgentHub/")) {
       if (!repositoryFilesVerified) {
         await assertInheritedRepositoryFiles({ git, sourceCommit: p.sourceBaseCommit,
-          agreedMainCommit: primaryMainCommit });
+          agreedMainCommit: primaryMainCommit, publishedCommit: publishedRevision, tasks, inheritedMainMetadata });
         repositoryFilesVerified = true;
       }
       continue;
@@ -293,6 +388,8 @@ export async function assertInstalledLocalSourceBaseline({
   }
   await validateOrigin();
   const changelogEntries = await assertHistoricalChangelog({ provenance: p, originalAuthority, tasks, repositoryRoot, git, runtimeRoot });
+  if (current.current !== JSON.parse(await regular(path.join(runtimeRoot, "current.json"))).current) reject("installed release changed");
+  if (!manifestBytes.equals(await regular(path.join(releaseRoot, "runtime-manifest.json")))) reject("installed manifest changed");
   return { provenance: p, runtimeFiles, hostChanged, metadataBases, ...(changelogEntries.length ? { changelogEntries } : {}), ...(p.adoptions ? { adoptions } : {}) };
 }
 
@@ -300,7 +397,8 @@ export async function assertInstalledLocalSourceBaseline({
 // retained source checkout supplies a candidate commit; it is not trusted until
 // the complete ordinary baseline verifier above accepts it.
 export async function installedNativeHistoryBaseline({ git, sourceGit, repositoryRoot,
-  primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [], readOwnGitPublication = null }) {
+  primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [], readOwnGitPublication = null,
+  inheritedMainMetadata = [] }) {
   const currentFile = path.join(runtimeRoot, "current.json");
   if (!await lstat(currentFile).catch(error => { if (error.code === "ENOENT") return null; throw error; })) return null;
   const currentBytes = await regular(currentFile);
@@ -325,7 +423,11 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
   const sourceBaseCommit = await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{commit}"]);
   const sourceBaseTree = await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{tree}"]);
   if (await sourceGit(manifest.sourceRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])) reject("retained source checkout changed");
+  if (typeof manifest.publicationRevision === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(manifest.publicationRevision)
+      && manifest.publicationRevision !== sourceBaseCommit) reject("retained installed source identity changed");
   if (sourceBaseCommit === publishedRevision) return null;
+  await ensureRetainedSourceHistory({ git, sourceGit, sourceRoot: manifest.sourceRoot,
+    commit: sourceBaseCommit, tree: sourceBaseTree });
   const agreedOrigin = !adoptions.length && primaryMainCommit !== publishedRevision
     && String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] === primaryMainCommit;
   const ownGitPublication = !adoptions.length && !agreedOrigin && readOwnGitPublication
@@ -342,6 +444,12 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
         ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit })),
     } : ownGitPublication ? { approvedOriginMainCommit: ownGitPublication.commit, adoptions: [], ownGitPublication }
       : agreedOrigin ? { approvedOriginMainCommit: primaryMainCommit, adoptions: [] } : {}) };
-  return (await assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
-    publishedRevision, planRevision, tasks, runtimeRoot, readOwnGitPublication })).provenance;
+  const verified = await assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
+    publishedRevision, planRevision, tasks, runtimeRoot, readOwnGitPublication, inheritedMainMetadata });
+  if (!currentBytes.equals(await regular(currentFile))) reject("installed release changed");
+  if (!bytes.equals(await regular(path.join(runtimeRoot, "releases", current.current, "runtime-manifest.json")))) reject("installed manifest changed");
+  if (await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{commit}"]) !== sourceBaseCommit
+      || await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{tree}"]) !== sourceBaseTree
+      || await sourceGit(manifest.sourceRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])) reject("retained source checkout changed");
+  return verified.provenance;
 }
