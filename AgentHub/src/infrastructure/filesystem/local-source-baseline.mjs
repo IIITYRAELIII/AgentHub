@@ -12,6 +12,7 @@ import { publicationStateRepositories } from "../persistence/publication-state.m
 import { canonicalPath } from "./config.mjs";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
+import { verifyRuntimeManifest } from "./runtime-manifest-verifier.mjs";
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const reject = message => { throw new ReleasePreparationRejectedError(`Installed local source baseline: ${message}`); };
@@ -307,6 +308,18 @@ export async function assertInstalledLocalSourceBaseline({
   if (String(await git(["rev-parse", `${p.sourceBaseCommit}^{tree}`])) !== p.sourceBaseTree) reject("source tree changed");
   const patch = await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, p.sourceBaseCommit], { rawOutput: true });
   if (sha(patch) !== p.sourcePatchSha256) reject("source patch changed");
+  const publishedOnly = p.sourceBaseCommit === p.publishedBaseCommit;
+  const currentBytes = publishedOnly ? await regular(path.join(runtimeRoot, "current.json")) : null;
+  if (publishedOnly) {
+    // No installed code is overlaid: the newer durable publication is the base.
+    // Retain the old installation's separate identity and physical verification.
+    if (!/^[a-f0-9]{40}$/u.test(manifest.publicationRevision ?? "")
+        || manifest.publicationRevision === p.sourceBaseCommit
+        || typeof manifest.sourceRoot !== "string" || !path.isAbsolute(manifest.sourceRoot)) {
+      reject("published baseline requires an older retained installed source");
+    }
+    await verifyRuntimeManifest(releaseRoot, p.installedReleaseId);
+  }
   if (manifest.releaseId !== p.installedReleaseId || !Array.isArray(manifest.files)
       || manifest.files.some(file => typeof file.path !== "string"
         || !/^[a-f0-9]{64}$/u.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0)) reject("installed identity changed");
@@ -390,6 +403,9 @@ export async function assertInstalledLocalSourceBaseline({
   const changelogEntries = await assertHistoricalChangelog({ provenance: p, originalAuthority, tasks, repositoryRoot, git, runtimeRoot });
   if (current.current !== JSON.parse(await regular(path.join(runtimeRoot, "current.json"))).current) reject("installed release changed");
   if (!manifestBytes.equals(await regular(path.join(releaseRoot, "runtime-manifest.json")))) reject("installed manifest changed");
+  if (publishedOnly) {
+    if (!currentBytes.equals(await regular(path.join(runtimeRoot, "current.json")))) reject("installed release changed");
+  }
   return { provenance: p, runtimeFiles, hostChanged, metadataBases, ...(changelogEntries.length ? { changelogEntries } : {}), ...(p.adoptions ? { adoptions } : {}) };
 }
 
@@ -428,6 +444,13 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
   if (sourceBaseCommit === publishedRevision) return null;
   await ensureRetainedSourceHistory({ git, sourceGit, sourceRoot: manifest.sourceRoot,
     commit: sourceBaseCommit, tree: sourceBaseTree });
+  // A confirmed publication already containing this exact installation owns
+  // composition; it is not an installed-file carry or an installation outcome.
+  const compositionBaseCommit = manifest.publicationRevision === sourceBaseCommit
+    && await git(["merge-base", sourceBaseCommit, publishedRevision]) === sourceBaseCommit
+    ? publishedRevision : sourceBaseCommit;
+  const compositionBaseTree = compositionBaseCommit === sourceBaseCommit ? sourceBaseTree
+    : await git(["rev-parse", `${compositionBaseCommit}^{tree}`]);
   const agreedOrigin = !adoptions.length && primaryMainCommit !== publishedRevision
     && String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] === primaryMainCommit;
   const ownGitPublication = !adoptions.length && !agreedOrigin && readOwnGitPublication
@@ -435,8 +458,8 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
       originCommit: String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0],
       taskIds: tasks.map(task => task.taskId) }) : null;
   const p = { schemaVersion: 1, kind: LOCAL_SOURCE_BASELINE_PROVENANCE, publishedBaseCommit: publishedRevision,
-    agreedMainCommit: primaryMainCommit, sourceBaseCommit, sourceBaseTree,
-    sourcePatchSha256: sha(await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, sourceBaseCommit], { rawOutput: true })),
+    agreedMainCommit: primaryMainCommit, sourceBaseCommit: compositionBaseCommit, sourceBaseTree: compositionBaseTree,
+    sourcePatchSha256: sha(await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, compositionBaseCommit], { rawOutput: true })),
     installedReleaseId: current.current, installedManifestSha256: sha(bytes), planRevision,
     selectionHash: localSourceSelectionHash(tasks), ...(adoptions.length ? {
       approvedOriginMainCommit: adoptions[0].adoptedCommit,
