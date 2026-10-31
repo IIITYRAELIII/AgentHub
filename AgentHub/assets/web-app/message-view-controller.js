@@ -179,8 +179,8 @@
     return minutes ? `${hours} ч ${minutes} мин` : `${hours} ч`;
   }
 
-  function composerFollowUpMode() {
-    return "steer";
+  function composerFollowUpMode(_task, { steerWhileRunning = false } = {}) {
+    return steerWhileRunning ? "steer" : "queue";
   }
 
   function messageCopyRequest(message) {

@@ -9,18 +9,24 @@ The user's instruction is: «ты в какойто монент нахуято 
 текущий. если хода нет, просто в очередь.. ну, как обычное сообщение».
 
 This supersedes the policy that a Stream-bound ordinary steer must demand a
-manual decision whenever its original Run/Turn ends. Ordinary composer send,
-Enter, quote send and inter-Stream `mode=steer` address the destination Stream.
-An explicit after-turn queue action retains its separate meaning. Direct exact
+manual decision whenever its original Run/Turn ends. An explicitly chosen
+composer steer and inter-Stream `mode=steer` address the destination Stream.
+A queue action retains its separate meaning. Direct exact
 Run/Turn service operations keep their expected-target guards.
 
-Current 2.1.0 compatibility retains the existing personal shortcut preference.
-An explicitly saved queue action passes the existing `followUpMode=queue`
-through the same composer submit owner. The already-owned `configured` marker
-distinguishes that action from the unconfigured legacy Enter default, which now
-uses ordinary current-Stream routing. No new preference, public flag or writer is
-introduced. Button, ordinary Enter, quote and explicit steer still share the
-current-or-queue route; an explicit saved queue does not become a steer.
+On 2026-10-31 the user explicitly reaffirmed: «обычные Enter/кнопка отправки
+ПО УМОЛЧАНИЮ В ОЧЕРЕДЬ, отправка в текущий ход ОТДЕЛЬНЫМ действием»;
+«да, так и было ведь, я не просил менять это». The earlier implementation and
+wording incorrectly conflated routing an already chosen steer with choosing the
+default composer action. Ordinary desktop Enter, the send button, ordinary quote
+send and quick-send default to `followUpMode=queue` through the existing shared
+composer owner. Queue waits behind an active turn and starts normally when idle.
+Meta+Enter and saved steer shortcuts choose steer explicitly, even if the client
+currently observes no active turn; the server owns current-or-queue resolution.
+Existing saved queue/steer/newline mappings, mobile Enter newline and the local
+preference schema remain unchanged. A saved steer shortcut does not change the
+ordinary button, quote or quick-send default. No new preference, public flag or
+writer is introduced; the configured marker grants no routing authority.
 
 ## Owner and attempt boundary
 
@@ -48,7 +54,7 @@ use the existing trace; monotonic timer lateness distinguishes callback delay
 from guard execution. This correction is not a claim that production compaction
 itself became faster or that a later production AFTER has already occurred.
 
-An initially idle command retains `message-intake` and its existing submitted
+An initially idle explicit-steer command retains `message-intake` and its submitted
 `followUpMode=steer`; an active-turn command uses `message-steer`. This preserves
 the ordinary idle conversation projection while retaining current-or-queue intent
 through later occupancy changes.

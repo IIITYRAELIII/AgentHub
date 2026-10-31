@@ -44,11 +44,13 @@ not imply current execution. Known saved/queued/starting/running, structured
 provider retry, terminal error and unknown outcomes remain distinct; durations
 use observed timestamps and never establish an outcome. No failed input is
 automatically resubmitted on an unknown result. A definite ended-target refusal
-for an ordinary Stream message returns that same command to current-or-queue
-routing instead of the red original-turn decision. Enter, button and quote send
-use that route, including when their client active-run snapshot is stale;
-explicit after-turn queue remains separate. This is the user's policy change
-in ADR-0136, not a projection-only suppression. Retained unknown occupancy stays visible in the
+for a Stream message explicitly submitted as steer returns that same command to
+current-or-queue routing instead of the red original-turn decision, including
+when its client active-run snapshot is stale. Ordinary Enter, the send button,
+quote send and quick-send default to queue; Meta+Enter and saved steer shortcuts
+select steer separately. Queue waits behind an active turn and launches normally
+when idle. This distinction is recorded in ADR-0136, not a projection-only
+suppression. Retained unknown occupancy stays visible in the
 activity rail with its exact Stop target and queue reason, without a running
 animation or an active claim in Stream history.
 
