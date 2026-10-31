@@ -417,7 +417,12 @@ permission is introduced. See ADR-0124.
 
 An ordinary original native Test whose merge is already exactly applied may
 finish after a metadata-only Task revision advance. Its original argument hash
-must contain no explicit CAS, cutover, absorption or review family. Recovery
+must match its original explicit CAS and optional authenticated single native
+review exactly; cutover, absorption and initial-source families stay excluded.
+The original revision identifies admission, never the current metadata revision.
+Review custody must belong to the original RM actor; the existing native
+composition verifier repeats receipt authentication and full Git binding checks.
+Recovery
 compares the unchanged Task/Workspace/executor/status/workflow/result state,
 the original native intent, ordered merge parents, source and dev trees and
 clean indexes under their existing leases. A retained process guard refuses.
@@ -426,7 +431,12 @@ and CASes the current row revision, preserving current metadata. It commits the
 original outcome/references/status and settles the same receipt; it never
 prepares, snapshots or merges again. Concurrent metadata edits fail the CAS;
 other state or Git drift remains unknown. An already settled matching original
-is a read-only result. See [ADR-0113](../decisions/ADR-0113-native-test-metadata-terminal.md).
+is a read-only result. Only title/description presentation fields may differ;
+other semantic state and unknown evidence refuse. A later dev head is preserved
+only through a chain of committed canonical Test outcomes, matching successful
+original receipts and exact native intents/compositions. Ancestry alone is not
+acceptance; this proof grants no release selection or new Git effects. See [ADR-0113](../decisions/ADR-0113-native-test-metadata-terminal.md)
+and [ADR-HUB-389](../decisions/ADR-HUB-389-reviewed-native-terminal.md).
 
 The local Await cutover uses the same canonical `hub_task_status_update` receipt.
 When its projector source is a separate Task, the receipt includes that source

@@ -3257,3 +3257,14 @@ The existing task-await-cutover CLI's explicit ordinary-test mode only calls
 normal public Test with the original CAS and optional authenticated native
 review, after pinned clean source and canonical repository checks. It grants no
 initial-native, returned, squash or cross-Task cutover authority.
+
+
+## Reviewed Test terminal persistence after presentation edits
+
+ADR-HUB-389 extends the existing ADR-0113 terminal-only recovery to exact
+original CAS and authenticated single-review Test requests. Original identity,
+review receiver, source, full native composition and process/lease guards are
+rechecked before the current-row terminal CAS. Presentation is preserved; no
+merge or admission is replayed. A later canonical Test descendant is preserved
+only with its committed outcome, successful receipt and original native capture
+chain. This terminal proof never selects that successor for Await/publication.

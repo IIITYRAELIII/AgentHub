@@ -8,7 +8,7 @@ import { TaskLifecycleNoEffectError, TaskLifecycleBeginRejectedError } from "../
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
-import { TaskGitHistoryRejectedError, normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
+import { TaskGitHistoryRejectedError, normalizedInitialNativeTest, normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
 import { nativeTestMetadataDrift, sameTaskWorkflowState } from "../domain/native-test-terminal-recovery.mjs";
 import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 
@@ -1371,13 +1371,34 @@ export class TaskLifecycleService {
     taskId, operationId, projectRoot, guardId, proof, lease, finalizeCommittedWithdrawal = false,
     verifyInitialNativeTest = null,
     allowMetadataRecovery = false,
+    nativeResolutionReview = null,
   } = {}) {
     await this.#assertOwned(lease);
     const current = this.#task(taskId);
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
     if (allowMetadataRecovery) {
       if (guardId || !nativeTestMetadataDrift(current, transition)) throw new Error("Native Test metadata recovery state changed");
-      return this.taskGitWorkspaces.withAppliedNativeTerminalOwned({ taskId, operationId, projectRoot, lease },
+      const readCommittedSuccessor = devCommit => {
+        const outcome = this.taskBoard.committedNativeTestForDev({ workspaceId: current.workspaceId, devCommit });
+        const committed = outcome?.result?.task, evidence = outcome?.result?.evidence;
+        const receipt = this.workspaceCatalog.mcpOperation(outcome?.operationId);
+        const task = committed && this.#task(committed.id);
+        const reference = normalizedTaskGitReferences(committed?.gitReferences)
+          .find(ref => samePath(ref.projectRoot, projectRoot));
+        if (!committed || committed.id === taskId || !task
+            || committed.workspaceId !== current.workspaceId || task.workspaceId !== current.workspaceId
+            || !["testing", "awaiting_implementation", "done"].includes(task.workflowStatus)
+            || JSON.stringify(normalizedTaskGitReferences(task.gitReferences)) !== JSON.stringify(normalizedTaskGitReferences(committed.gitReferences))
+            || !reference || reference.resultCommit !== evidence?.resultCommit
+            || evidence.devHeadCommit !== devCommit || evidence.response?.gitIntegration?.integrated !== true
+            || receipt?.workspaceId !== current.workspaceId || receipt.toolName !== "hub_task_status_update"
+            || receipt.operationStatus !== "succeeded" || receipt.receiptState !== "succeeded") {
+          throw new Error("Native dev successor canonical Test identity changed");
+        }
+        return { taskId: committed.id, operationId: outcome.operationId, resultCommit: reference.resultCommit };
+      };
+      return this.taskGitWorkspaces.withAppliedNativeTerminalOwned({ taskId, operationId, projectRoot, lease,
+        nativeResolutionReview, readCommittedSuccessor },
         async (native, verify) => {
           const fresh = this.#task(taskId);
           if (!nativeTestMetadataDrift(fresh, this.taskBoard.lifecycleTransition(operationId))) {
@@ -1385,13 +1406,15 @@ export class TaskLifecycleService {
           }
           const nativeTerminalRecovery = { kind: "native-test-metadata-terminal-v1",
             expectedCurrentRevision: fresh.revision, sourceCommit: native.snapshot.headCommit,
-            devCommit: native.target, originalExpectedRevision: transition.expectedRevision };
+            devCommit: native.target, preservedDevCommit: native.preservedDevCommit,
+            originalExpectedRevision: transition.expectedRevision };
           const result = await this.#mutation(async () => {
             await verify();
             return this.taskBoard.commitWorkflowTransition({ operationId, metadataRecovery: nativeTerminalRecovery,
               gitReferences: [{ projectRoot: native.snapshot.repositoryRoot, branch: native.snapshot.branch,
                 resultCommit: native.snapshot.headCommit }],
-              evidence: { outcome: "integrated", resultCommit: native.snapshot.headCommit,
+              evidence: { ...(nativeResolutionReview ? { nativeResolutionReview } : {}),
+                outcome: "integrated", resultCommit: native.snapshot.headCommit,
                 devHeadCommit: native.target, nativeTerminalRecovery,
                 response: { gitWorkspace: { branch: native.snapshot.branch, projectRoot: native.snapshot.projectRoot,
                   baseCommit: native.snapshot.baseCommit, headCommit: native.snapshot.headCommit },

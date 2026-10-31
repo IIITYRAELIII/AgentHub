@@ -18,7 +18,7 @@ import { readSelectedCheckoutAuthority, verifySelectedCompositionFiles, verifySe
 import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
-import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
+import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition } from "./native-release-merge.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
   assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, publishedMetadataContext } from "./local-source-baseline.mjs";
@@ -3721,21 +3721,57 @@ export class TaskGitWorkspaceService {
     return record.phase === "failed" ? null : record;
   }
 
-  async withAppliedNativeTerminalOwned({ taskId, projectRoot, operationId, lease } = {}, commit) {
+  async withAppliedNativeTerminalOwned({ taskId, projectRoot, operationId, lease, nativeResolutionReview = null,
+    readCommittedSuccessor = null } = {}, commit) {
     this.#assertAvailable("withAppliedNativeTerminalOwned");
     const repoRoot = await repositoryRoot(projectRoot);
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
       const original = await this.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease: ownedLease });
       if (!original?.target || original.nativeAbsorptionInput || original.nativeAbsorptionHistory
-          || original.initialNativeTest || original.nativeResolutionReview) {
+          || original.initialNativeTest
+          || JSON.stringify(original.nativeResolutionReview ?? null) !== JSON.stringify(nativeResolutionReview)) {
         throw new Error("Applied ordinary native Test intent is required");
       }
+      let preservedDevCommit = null;
       const verify = async () => {
         await ownedLease.assertOwned();
         await this.#assertNoProcessTreeGuard(taskId);
         const record = await this.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease: ownedLease });
         if (JSON.stringify(record) !== JSON.stringify(original)) throw new Error("Native Test original intent changed");
         const s = record.snapshot;
+        const currentDev = await this.#runOwned(["rev-parse", "refs/heads/dev^{commit}"], { cwd: repoRoot, lease: ownedLease });
+        if (preservedDevCommit && currentDev !== preservedDevCommit) throw new Error("Native Test preserved dev changed");
+        preservedDevCommit = currentDev;
+        // Preserve only a chain of independently committed ordinary Test
+        // effects. An arbitrary Git descendant is not lifecycle authority.
+        const visited = new Set();
+        let tip = currentDev;
+        while (tip !== record.target) {
+          if (visited.has(tip) || typeof readCommittedSuccessor !== "function") throw new Error("Native Test dev has no canonical successor proof");
+          visited.add(tip);
+          const proof = readCommittedSuccessor(tip);
+          const successor = await this.pendingNativeIntegrationOwned({ taskId: proof.taskId,
+            operationId: proof.operationId, projectRoot, lease: ownedLease });
+          if (!successor || successor.target !== tip || successor.snapshot.headCommit !== proof.resultCommit
+              || successor.mainCommit !== record.mainCommit || !samePath(successor.devRoot, record.devRoot)
+              || successor.nativeAbsorptionInput || successor.nativeAbsorptionHistory || successor.initialNativeTest) {
+            throw new Error("Native Test successor original intent changed");
+          }
+          const staging = this.#nativeIntegrationStaging(successor);
+          const captured = JSON.parse(await readFile(path.join(staging.root, "merge.json"), "utf8"));
+          if (!samePath(successor.stageRoot, path.join(staging.root, "repository"))
+              || JSON.stringify(captured.identity) !== JSON.stringify(staging.identity)
+              || captured.next !== 1 || captured.head !== tip || captured.conflict || captured.merging
+              || (successor.nativeResolutionReview && JSON.stringify(captured.merges?.[0]?.reviewedResolution?.review)
+                !== JSON.stringify(successor.nativeResolutionReview))) throw new Error("Native Test successor capture changed");
+          await assertNativePreparedComposition({
+            git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: successor.stageRoot, lease: ownedLease }),
+            baseCommit: successor.before, tasks: [{ taskId: proof.taskId, baseCommit: successor.snapshot.baseCommit,
+              resultCommit: proof.resultCommit }], merges: captured.merges, head: tip, tree: successor.targetTree,
+            identity: staging.identity, verifyReview: this.verifyNativeResolutionReview,
+          });
+          tip = successor.before;
+        }
         if (record.nativeHistoryAuthority) await this.#nativeHistoryAuthority(s,
           { mainCommit: record.mainCommit, headCommit: record.before }, ownedLease, record.nativeHistoryAuthority);
         const managedRoot = await this.managedRepositoryRoot(s.projectRoot, { taskId, taskNumber: s.branch });
@@ -3754,7 +3790,7 @@ export class TaskGitWorkspaceService {
             || await git(["rev-parse", `${s.baseRef}^{commit}`]) !== s.baseCommit
             || await git(["show", "-s", "--format=%P", record.target]) !== `${record.before} ${s.headCommit}`
             || await git(["rev-parse", `${record.target}^{tree}`]) !== record.targetTree
-            || await git(["rev-parse", "refs/heads/dev^{commit}"]) !== record.target
+            || await git(["rev-parse", "refs/heads/dev^{commit}"]) !== currentDev
             || await git(["symbolic-ref", "-q", "HEAD"], s.projectRoot) !== `refs/heads/${s.branch}`
             || await git(["rev-parse", "HEAD^{commit}"], s.projectRoot) !== s.headCommit
             || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], s.projectRoot)
@@ -3762,17 +3798,32 @@ export class TaskGitWorkspaceService {
           throw new Error("Applied native Test Git binding changed");
         }
         for (const cwd of [record.devRoot, record.stageRoot]) {
-          if (await git(["rev-parse", "HEAD^{commit}"], cwd) !== record.target
-              || await git(["rev-parse", "HEAD^{tree}"], cwd) !== record.targetTree
+          const expected = cwd === record.devRoot ? currentDev : record.target;
+          if (await git(["rev-parse", "HEAD^{commit}"], cwd) !== expected
+              || await git(["rev-parse", "HEAD^{tree}"], cwd) !== await git(["rev-parse", `${expected}^{tree}`])
               || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd)) {
             throw new Error("Applied native Test materialization changed");
           }
+        }
+        if (nativeResolutionReview) {
+          if (JSON.stringify(capture.merges[0].reviewedResolution?.review) !== JSON.stringify(nativeResolutionReview)) {
+            throw new Error("Applied native Test original review changed");
+          }
+          // Existing read-only composition verifier authenticates the original
+          // receipt and recomputes parents/tree/full diff. Never resume merge.
+          await assertNativePreparedComposition({
+            git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: record.stageRoot, lease: ownedLease }),
+            baseCommit: record.before,
+            tasks: [{ taskId, baseCommit: s.baseCommit, resultCommit: s.headCommit }],
+            merges: capture.merges, head: record.target, tree: record.targetTree,
+            identity, verifyReview: this.verifyNativeResolutionReview,
+          });
         }
         await this.#nativeHistoryOrigin(s, record.nativeHistoryAuthority, ownedLease);
         await ownedLease.assertOwned();
       };
       await verify();
-      return commit(original, verify);
+      return commit({ ...original, preservedDevCommit }, verify);
     });
   }
 
