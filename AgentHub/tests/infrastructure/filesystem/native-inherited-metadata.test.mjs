@@ -103,11 +103,15 @@ test("installed manifest preserves accepted metadata through the actual native c
 
 test("installed metadata authority refuses source HEAD drift, dirty capture and manifest drift", async t => {
   const f = await fixture(t);
+  const retainedCustodyChanged = {
+    code: "RELEASE_PREPARATION_REJECTED",
+    message: "Installed local source baseline: retained source HEAD/tree/clean custody changed",
+  };
   await f.save(f.retained, "untracked.txt", "foreign\n");
-  await assert.rejects(f.verify(), /retained installed source identity changed/);
+  await assert.rejects(f.verify(), retainedCustodyChanged);
   await rm(path.join(f.retained, "untracked.txt"));
   await f.gitAt(f.retained, ["checkout", "--detach", f.manifest.publicationRevision + "^"]);
-  await assert.rejects(f.verify(), /retained installed source identity changed/);
+  await assert.rejects(f.verify(), retainedCustodyChanged);
   await f.gitAt(f.retained, ["checkout", "--detach", f.installedSource]);
   await f.save(f.release, "runtime-manifest.json", JSON.stringify({ ...f.manifest, publicationRevision: f.sourceBase }));
   await assert.rejects(f.verify(), /installed manifest changed/);
