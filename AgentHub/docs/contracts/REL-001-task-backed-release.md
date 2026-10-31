@@ -239,6 +239,19 @@ verified at each boundary; compiled Host inputs and binary/LFS/text comparison
 rules retain their existing owner. No installation result is cached or inferred
 from the source batch.
 
+Installed local-source history can live in a separate retained Git object store.
+Before dependent diff, ancestry or content checks, the existing baseline owner
+transports only the exact clean retained HEAD's reachable graph through the
+selected Git bundle owner and unbundles it without changing refs, configuration,
+FETCH_HEAD, index or worktree. It rechecks retained HEAD/tree/directory custody
+and imported object identities; unrelated refs are not transport inputs. Object
+availability grants no source, metadata, adoption, selection or publication
+authority. The complete ordinary verifier and fresh pointer/manifest checks still
+apply. Failed or ambiguous transport is retained rather than inferred rejected.
+The maintained `distribution/INSTALL.md` instructions are source documentation,
+not an installed runtime artifact; distribution executable changes still require
+the same exact manifest and physical-byte proof.
+
 Forward effect inventory streams the digest of retained native merge journals:
 their complete index/automatic path inventories are not small checkpoint records.
 Regular-file identity and stable bytes are checked across the read; directories,

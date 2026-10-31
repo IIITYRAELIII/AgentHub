@@ -4146,7 +4146,7 @@ export class TaskGitWorkspaceService {
       baseline = await installedNativeHistoryBaseline({ git, repositoryRoot: snapshot.repositoryRoot,
         primaryMainCommit: dev.mainCommit, publishedRevision: published, tasks, runtimeRoot, planRevision, adoptions,
         readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.dataDir, ...input }),
-        sourceGit: (cwd, args) => this.#runOwned(args, { cwd, lease, guardRepositoryRoot: snapshot.repositoryRoot }) });
+        sourceGit: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease, guardRepositoryRoot: snapshot.repositoryRoot }) });
     } else if (baseline) {
       await assertInstalledLocalSourceBaseline({ provenance: baseline, git, repositoryRoot: snapshot.repositoryRoot,
         primaryMainCommit: dev.mainCommit, publishedRevision: published, planRevision, tasks, runtimeRoot,
