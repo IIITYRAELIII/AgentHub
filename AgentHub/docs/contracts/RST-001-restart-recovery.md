@@ -148,11 +148,15 @@ rejection; a startup/read exception or idle status alone still cannot release.
   Terminal reconciliation accounts their usage without emitting a user response
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
-- Ordinary and new-turn admission is blocked by an exact active Stream context-maintenance
-  operation. An explicit steer targeting an exact active managed turn may be
-  admitted during provider-internal compaction, but its provider dispatch waits
-  durably for that compaction to settle. Hub-owned compaction and rotation
-  reservations remain admission barriers.
+- Admission that would launch a new turn is blocked by an exact active Stream
+  context-maintenance operation. An ordinary Stream-addressed steer with an
+  exact active Hub-owned turn may be admitted and dispatched during that turn's
+  provider-internal compaction, without waiting for compaction to settle.
+  Its expected-turn guard and unknown-acceptance readback remain unchanged.
+  Hub-managed compaction and rotation reservations and actual runtime stopping
+  remain admission barriers. Idle, missing/unbound or foreign turn identity,
+  explicit after-turn queue and direct exact-target service operations do not
+  gain this ordinary-steer exception (MSG-001, ADR-0136).
 - A restart requested with no selected Stream and Thread is persisted under the
   explicit runtime scope; a target naming only one of them is rejected.
 - Restart waits for durable finals, command receipts, delivery outbox and
