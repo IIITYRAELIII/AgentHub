@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -132,4 +132,46 @@ test("partial custody, linked retained roots and orphan SQLite companions fail s
   await writeFile(path.join(f.data, "lost.sqlite-wal"), "orphan evidence");
   await assert.rejects(owner.inspectRuntimeBackupScope({ runtimeRoot: f.root }), /orphan/u);
   assert.equal(await readFile(path.join(f.data, "lost.sqlite-wal"), "utf8"), "orphan evidence");
+});
+
+test("outside-volume destination reaches exclusive output refusal without touching an existing directory", async (t) => {
+  const f = await fixture(t);
+  const sourceDrive = path.parse(f.root).root;
+  const repositoryDrive = path.parse(import.meta.dirname).root;
+  const crossVolume = process.platform === "win32" && sourceDrive.toLowerCase() !== repositoryDrive.toLowerCase();
+  const existingOutside = crossVolume ? import.meta.dirname : f.base;
+  const before = await lstat(existingOutside, { bigint: true });
+  assert.ok(before.isDirectory() && !before.isSymbolicLink());
+  let proofs = 0;
+  await assert.rejects(owner.backupStoppedRuntime({ runtimeRoot: f.root, destination: existingOutside,
+    assertStopped: async () => { proofs++; } }), { code: "EEXIST" });
+  const after = await lstat(existingOutside, { bigint: true });
+  assert.equal(after.dev, before.dev); assert.equal(after.ino, before.ino);
+  assert.equal(proofs, 1);
+  t.diagnostic(`actualCrossVolume=${crossVolume}; existingOutputUnchanged=true`);
+});
+
+test("same-volume outside output remains exclusive while runtime root and child destinations refuse", async (t) => {
+  const f = await fixture(t);
+  for (const destination of [f.root, path.join(f.root, "new-backup")]) {
+    await assert.rejects(owner.backupStoppedRuntime({ runtimeRoot: f.root, destination,
+      assertStopped: async () => {} }), /outside runtime root/u);
+  }
+  assert.deepEqual((await readdir(f.root)).sort(), ["config.json", "data"]);
+  await assert.rejects(owner.backupStoppedRuntime({ runtimeRoot: f.root, destination: f.base,
+    assertStopped: async () => {} }), { code: "EEXIST" });
+});
+
+for (const scalar of ["intent.json", "snapshot.json"]) test(`custody mandatory ${scalar} must be a regular scalar before stop`, async (t) => {
+  const f = await fixture(t), custody = path.join(f.data, "task-custody", "c".repeat(32));
+  await mkdir(path.join(custody, "repository"), { recursive: true });
+  await mkdir(path.join(custody, scalar));
+  await writeFile(path.join(custody, scalar === "intent.json" ? "snapshot.json" : "intent.json"), "{}");
+  await assert.rejects(owner.inspectRuntimeBackupScope({ runtimeRoot: f.root }), /plain|scalar/u);
+  let stopped = 0;
+  await assert.rejects(owner.backupStoppedRuntime({ runtimeRoot: f.root, destination: f.destination,
+    assertStopped: async () => { stopped++; } }), /plain|scalar/u);
+  assert.equal(stopped, 1);
+  assert.ok(!(await readdir(f.base)).includes("backup"));
+  assert.ok((await lstat(path.join(custody, scalar))).isDirectory());
 });

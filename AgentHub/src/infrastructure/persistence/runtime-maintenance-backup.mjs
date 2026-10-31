@@ -56,13 +56,18 @@ export async function inspectRuntimeBackupScope({ runtimeRoot }) {
   async function walk(source, relative) {
     const names = (await readdir(source)).sort();
     const parts = relative.split(path.sep);
-    if (parts.length === 3 && parts[1] === "task-custody" && /^[a-f0-9]{32}$/u.test(parts[2])
-      && names.some(name => ["repository", "retained-wip"].includes(name))
-      && (!names.includes("intent.json") || !names.includes("snapshot.json"))) {
-      throw new Error("Maintenance custody metadata is incomplete");
+    const mandatory = parts.length === 3 && parts[1] === "task-custody" && /^[a-f0-9]{32}$/u.test(parts[2])
+      && names.some(name => ["repository", "retained-wip"].includes(name)) ? ["intent.json", "snapshot.json"] : [];
+    for (const name of mandatory) {
+      if (!names.includes(name)) throw new Error("Maintenance custody metadata is incomplete");
+      await plain(path.join(source, name), "file");
     }
     for (const name of names) {
       const child = path.join(source, name), childRelative = path.join(relative, name);
+      if (mandatory.includes(name)) {
+        await file(child, childRelative);
+        continue;
+      }
       const info = await lstat(child, { bigint: true });
       if (info.isSymbolicLink()) throw new Error("Maintenance backup refuses linked state");
       if (info.isDirectory()) {
@@ -128,7 +133,9 @@ export async function backupStoppedRuntime({ runtimeRoot, destination, assertSto
   await assertStopped();
   const inventory = await inspectRuntimeBackupScope({ runtimeRoot });
   const relative = path.relative(inventory.runtimeRoot, path.resolve(destination));
-  if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== "..") || path.isAbsolute(relative)) {
+  // Windows relative() returns an absolute path for a different volume. That
+  // is outside the source too; the ordinary exclusive mkdir guard still applies.
+  if (!relative || (!path.isAbsolute(relative) && !relative.startsWith(`..${path.sep}`) && relative !== "..")) {
     throw new Error("Maintenance backup destination must be outside runtime root");
   }
   await mkdir(destination); // Exclusive: never overwrite a prior backup.

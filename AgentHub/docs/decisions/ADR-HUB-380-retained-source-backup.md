@@ -13,6 +13,9 @@ and these durable directories recursively: `.mini-app-control-result-outbox`,
 `task-diff-indexes`, `task-custody`. In a 32-hex custody epoch, `repository` and
 `retained-wip` are retained without descent; intent/snapshot and other metadata
 remain selected. Retained root identity is not Git/history/custody acceptance.
+Mandatory intent/snapshot are regular nonlinked files, not merely matching names.
+The outside-runtime exclusive backup destination may be on a separate Windows
+volume, as with the existing default TEMP scratch; no same-drive policy is added.
 
 All other direct ordinary data directories remain in place and appear in the
 result with path, physical device/inode and an explicit not-backed-up reason.

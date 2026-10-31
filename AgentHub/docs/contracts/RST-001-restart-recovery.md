@@ -426,7 +426,8 @@ foreign or changed evidence refuses without killing or replaying work.
 Backup uses the single `runtime-durable-state-v1` scope policy (ADR-HUB-380):
 config and all top-level regular data files, plus recursive durable outboxes,
 background jobs, failed updates, Claude run state, locks, diff indexes and custody
-metadata. Custody epoch intent/snapshot and other scalar metadata are copied;
+metadata. Custody epoch intent/snapshot must be regular nonlinked files, never
+same-named directories; they and other scalar metadata are copied.
 `repository` and `retained-wip` remain in place. Every direct ordinary directory
 outside that durable scope is explicitly recorded as retained, not backed up,
 with its physical identity. Known Git/WIP/dependency/payload trees are not traversed;
@@ -447,6 +448,9 @@ own guards. A durable one-use launch intent binds the replacement Host, original
 release, instance and control readiness. Ambiguous install/start is reconciling,
 not permission for another launch or automatic rollback. A cold launch cannot
 consume an unresolved original; read-only `--check` cannot consume its admission.
+An exclusive backup destination outside the runtime may be on another Windows
+volume; normal TEMP and runtime roots need not share a drive. Same-root and child
+destinations still refuse, and existing output is never overwritten.
 
 The incoming public package provides the legacy entry when installed public
 2.0.4 lacks this protocol. The user explicitly finishes work and manually stops
