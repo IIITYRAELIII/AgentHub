@@ -134,6 +134,7 @@ export class DeferredInputController {
     maxAgeMs = 7 * 24 * 60 * 60 * 1000,
     providerReconciliationMaxAgeMs = 5 * 60 * 1000,
     now = Date.now,
+    monotonicNow = () => performance.now(),
     retryDelayMs = 2_000,
     maxRetryDelayMs = 30_000,
     retryJitterRatio = 0.2,
@@ -170,6 +171,7 @@ export class DeferredInputController {
       Number(providerReconciliationMaxAgeMs) || 5 * 60 * 1000,
     );
     this.now = now;
+    this.monotonicNow = monotonicNow;
     this.retryDelayMs = retryDelayMs;
     this.maxRetryDelayMs = maxRetryDelayMs;
     this.retryJitterRatio = Math.max(0, Math.min(0.5, Number(retryJitterRatio) || 0));
@@ -195,13 +197,29 @@ export class DeferredInputController {
       if (normalizedDelayMs > 0) return;
       this.cancelSchedule(item.id);
     }
+    const scheduledAtMs = this.now();
+    const scheduledAtMonotonicMs = this.monotonicNow();
+    const wakeTiming = { scheduledAtMs, dueAtMs: scheduledAtMs + normalizedDelayMs, delayMs: normalizedDelayMs };
+    this.traceWake(item, "queued", wakeTiming);
     const timer = this.setTimeoutImpl(() => {
       this.timers.delete(item.id);
+      this.traceWake(item, "started", { ...wakeTiming,
+        timerLagMs: Math.max(0, this.monotonicNow() - scheduledAtMonotonicMs - normalizedDelayMs) });
       return this.process(item.id)
         .catch((error) => this.recoverScheduledProcessFailure(item, error))
         .catch(() => {});
     }, normalizedDelayMs);
     this.timers.set(item.id, timer);
+  }
+
+  traceWake(item, outcome, metadata) {
+    try {
+      this.commandTrace?.recordBestEffort?.({
+        commandId: String(item.clientUserMessageId ?? ""), stage: "deferred-wake", outcome,
+        transport: String(item.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
+        metadata,
+      });
+    } catch { /* A diagnostic sink cannot change scheduling or message ownership. */ }
   }
 
   retryDelay(attempt) {
@@ -337,7 +355,7 @@ export class DeferredInputController {
           ].flatMap((key) => target[key] == null ? [] : [[key, target[key]]]));
           delete item.paused;
           delete item.waitReason;
-          if (await this.isSteerDispatchBlocked(item)) {
+          if (await this.traceAdmissionStep(item, "deferred-steer-barrier", () => this.isSteerDispatchBlocked(item))) {
             this.schedule(item, this.retryDelayMs);
             return;
           }
@@ -596,9 +614,10 @@ export class DeferredInputController {
     try {
       const result = await operation();
       const createdAt = Date.parse(String(item.createdAt ?? ""));
-      finish("succeeded", null, stage === "deferred-eligibility" ? {
+      const waitReason = stage === "deferred-steer-barrier" ? result : item.waitReason;
+      finish("succeeded", null, ["deferred-eligibility", "deferred-steer-barrier"].includes(stage) ? {
         blocked: Boolean(result),
-        waitReason: /^[a-z][a-z0-9-]{0,63}$/u.test(String(item.waitReason)) ? item.waitReason : null,
+        waitReason: /^[a-z][a-z0-9-]{0,63}$/u.test(String(waitReason)) ? waitReason : null,
         queueAgeMs: Number.isFinite(createdAt) ? Math.max(0, this.now() - createdAt) : null,
       } : {});
       return result;

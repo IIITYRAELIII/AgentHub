@@ -12,13 +12,14 @@ import { MessageReceiptRegistry } from "../../src/infrastructure/persistence/mes
 import { DeferredInputPresentationService } from "../../src/interfaces/desktop/deferred-input-presentation-service.mjs";
 import { createDesktopMessageController } from "../../src/interfaces/desktop/desktop-message-controller.mjs";
 import { createRunAdmissionComposition } from "../../src/composition/run-admission-composition.mjs";
+import { createDesktopRunRouterWiring } from "../../src/composition/desktop-run-router-wiring-composition.mjs";
 import { interstreamAuditContentHash, interstreamMessageDetails } from "../../src/domain/interstream-message.mjs";
 import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 
 const noop = async () => {};
 const gate = () => { let release; const promise = new Promise((r) => { release = r; }); return { promise, release }; };
 
-async function fixture(t) {
+async function fixture(t, { desktopWiring = false } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub-stream-routing-"));
   let store = new RuntimeStateStore({ dataDir: directory });
   let controller;
@@ -58,9 +59,10 @@ async function fixture(t) {
     }
     throw new Error(`Unexpected fixture operation ${action}`);
   } };
-  const coordinator = new RunCoordinator({ taskRuns, providers, externalActivity: async () => ({ state: "inactive" }),
+  const coordinatorPorts = { taskRuns, providers, externalActivity: async () => ({ state: "inactive" }),
     repositoryConflict: async () => null, deferInput: (...args) => intake.defer(...args),
-    isMaintenanceActive: () => state.barrier, isManagedMaintenanceActive: () => state.barrier,
+    isMaintenanceActive: () => state.barrier || state.providerCompaction,
+    isManagedMaintenanceActive: () => state.barrier,
     rekeyDeferredOccupancy: async (binding) => {
       await state.beforeBind?.();
       return store.rekeyMessageCommandOccupancy(binding);
@@ -76,13 +78,30 @@ async function fixture(t) {
       effects.push({ operation: "start", id: run.clientUserMessageId, target: run, input });
       run.turnId = "new-turn"; markProviderTurnAccepted(run, { turnId: run.turnId, provider: run.provider });
     }, describeAttachments,
-  });
+  };
+  const unused = new Proxy(() => {}, { get: () => unused });
+  const coordinator = desktopWiring ? createDesktopRunRouterWiring({
+    config: { dataDir: directory }, constants: { taskExecutionOwners: { HUB: "hub" } },
+    state: unused, desktop: unused,
+    services: new Proxy({ ...coordinatorPorts, attachmentDirectory: directory,
+      composerTransfers: unused, taskBoard: unused, workspaceCatalog: unused,
+      deferredInputs: deferred, pendingInputs: deferred.pending, queuedInputs: deferred.queued,
+      saveState: save, receipts, describeAttachments,
+      persistDeferredIntake: (item, destination, receipt) => store.saveDeferredIntake({ item, destination,
+        receipt: receipts.get({ clientUserMessageId: item.clientUserMessageId }) ?? receipt }),
+    }, { get: (ports, key) => key in ports ? ports[key] : unused }),
+  }).runCoordinator : new RunCoordinator(coordinatorPorts);
   const presentation = new DeferredInputPresentationService({ receipts, describeAttachments });
   const compose = () => {
     const c = createRunAdmissionComposition({ config: {}, pendingInputs: deferred.pending, queuedInputs: deferred.queued,
       runCoordinator: coordinator, agentProviders: providers, taskRuns, runConflictPolicy: { check: async () => null },
-      runtimeStateStore: store, saveState: save,
-      commandTrace: { startBestEffortSpan: (span) => ({ finish: (result) => traces.push({ ...span, ...result }) }) },
+      runtimeStateStore: store, saveState: save, taskExecutionOwners: { HUB: "hub" },
+      commandTrace: {
+        recordBestEffort: (span) => { if (state.throwDiagnostics) throw Error("fixture diagnostic sink"); traces.push(span); },
+        startBestEffortSpan: (span) => {
+          return { finish: (result) => traces.push({ ...span, ...result }) };
+        },
+      },
       deferredInputPresentation: presentation, stageLaunchAdmission: () => null, abortLaunchAdmission: () => {},
       workspaceCatalogStore: { stream: (id) => id === target.streamId ? { id } : null,
         mcpOperation: () => state.legacyOperation,
@@ -90,6 +109,8 @@ async function fixture(t) {
     }).deferredInputController;
     c.setTimeoutImpl = (callback) => { timers.set(++nextTimer, callback); return nextTimer; };
     c.clearTimeoutImpl = (id) => timers.delete(id);
+    c.now = () => state.now ?? Date.now();
+    c.monotonicNow = () => state.monotonicNow ?? performance.now();
     return c;
   };
   controller = compose();
@@ -108,6 +129,8 @@ async function fixture(t) {
     process: (item) => controller.process(item.id), command: (id) => store.messageCommand(id), save,
     transition: (value) => store.transitionMessageCommand(value),
     wake: () => controller.wakeAll(),
+    schedule: (item, delay) => controller.schedule(item, delay),
+    async fireTimer() { const [id, callback] = timers.entries().next().value; timers.delete(id); await callback(); },
     pause: (item) => { item.paused = true; item.manualPaused = true; },
     async reopen() {
       controller.stop(); await store.close(); store = new RuntimeStateStore({ dataDir: directory });
@@ -189,6 +212,61 @@ test("compaction barrier, manual pause, concurrent wake and cancellation retain 
   try { await entered.promise; await f.process(paused); assert.equal(calls, 1); }
   finally { held.release(); await processing; }
   assert.equal(f.deferred.size, 0);
+});
+
+for (const desktopWiring of [false, true]) test(`provider-internal compaction does not hold exact active steer: desktop wiring ${desktopWiring}`, async (t) => {
+  const f = await fixture(t, { desktopWiring }); f.active();
+  f.state.providerCompaction = true;
+  const file = path.join(f.directory, "during-compaction.bin");
+  await writeFile(file, Buffer.from([7, 8, 9]));
+  const { item, id } = await f.submit({ attachments: [file] });
+  await f.process(item);
+  assert.equal(f.state.providerCompaction, true);
+  assert.equal(f.effects.length, 1, "existing provider turn receives input before compaction is released");
+  assert.equal(f.effects[0].operation, "steer");
+  assert.equal(f.effects[0].id, id);
+  assert.equal(f.effects[0].target.steerTargetTurnId, "turn-A");
+  assert.deepEqual(f.effects[0].input, item.input);
+  assert.deepEqual(f.receipts.get({ clientUserMessageId: id }).result.attachments.map((a) => a.id), ["during-compaction.bin"]);
+  await f.process(item); assert.equal(f.effects.length, 1);
+});
+
+test("native compaction exception never opens idle, unbound, foreign, managed or stopping admission", async (t) => {
+  for (const scenario of ["idle", "unbound", "foreign", "managed", "stopping", "explicit-queue", "exact-service"]) await t.test(scenario, async (t) => {
+    const f = await fixture(t, { desktopWiring: true });
+    const run = scenario === "idle" ? null : f.active();
+    if (scenario === "unbound") delete run.turnId;
+    if (scenario === "foreign") run.executionOwner = "external";
+    f.state.providerCompaction = true;
+    if (scenario === "managed") f.state.barrier = true;
+    if (scenario === "stopping") f.coordinator.isRuntimeStopping = () => true;
+    const { item, id } = await f.submit({ followUpMode: scenario === "explicit-queue" ? "queue" : "steer" });
+    if (scenario === "exact-service") delete item.streamId;
+    await f.process(item);
+    assert.equal(f.effects.length, 0);
+    if (scenario !== "explicit-queue") assert.equal(f.command(id).state, "queued");
+    else {
+      await f.save(); await f.reopen();
+      assert.equal(f.deferred.get(item.id)?.clientUserMessageId, id);
+      assert.notEqual(f.receipts.get({ clientUserMessageId: id }).result.providerAccepted, true);
+    }
+  });
+});
+
+test("wake timing separates timer delay from the retained managed barrier without leaking payload", async (t) => {
+  const f = await fixture(t, { desktopWiring: true }); f.active(); f.state.barrier = true;
+  const { item, id } = await f.submit(); f.state.now = 1000; f.state.monotonicNow = 1000;
+  f.schedule(item, 2000); f.state.now = 195000; f.state.monotonicNow = 95000; await f.fireTimer();
+  assert.equal(f.effects.length, 0);
+  const wake = f.traces.find((s) => s.stage === "deferred-wake" && s.outcome === "started");
+  assert.equal(wake.commandId, id); assert.equal(wake.metadata.delayMs, 2000);
+  assert.equal(wake.metadata.timerLagMs, 92000);
+  const barrier = f.traces.find((s) => s.stage === "deferred-steer-barrier" && s.outcome === "succeeded");
+  assert.equal(barrier.metadata.blocked, true); assert.equal(barrier.metadata.waitReason, "context-maintenance");
+  assert.equal(JSON.stringify(f.traces).includes("fixture body"), false);
+  f.state.barrier = false; f.state.providerCompaction = true; f.state.throwDiagnostics = true;
+  f.wake(); await f.fireTimer();
+  assert.equal(f.effects.length, 1); assert.equal(f.effects[0].id, id);
 });
 
 test("late accepted receipt beats fallback; cancelled and foreign Stream state never sends", async (t) => {

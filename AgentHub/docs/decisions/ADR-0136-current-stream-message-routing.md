@@ -32,6 +32,22 @@ normal FIFO launch and its existing activity, repository and maintenance fences.
 Admission which already observes an idle Stream retains that routing policy,
 so a new active turn winning before dispatch can still receive the message.
 
+The 2026-10-31 production original exposed a deferred-only gap: its durable
+commit preceded first recorded eligibility by 91.083 seconds while the same
+active provider turn was internally compacting. The persisted automatic,
+non-dedicated compaction completed 1.399 seconds before dispatch eligibility.
+The deferred route incorrectly reused the general launch barrier; desktop
+composition also omitted the existing managed-maintenance port. Both now retain
+the existing distinction: exact active Hub-owned steer may cross provider-internal
+compaction, while explicit Hub maintenance and actual stopping still block.
+Missing/unbound/foreign active identity, idle launch and explicit queue receive
+no relaxation. A provider refusal or unknown result keeps its existing normal
+rejection/readback semantics. No new provider request, writer or retry owner is
+introduced. Payload-free wake scheduled/fired records and the early barrier span
+use the existing trace; monotonic timer lateness distinguishes callback delay
+from guard execution. This correction is not a claim that production compaction
+itself became faster or that a later production AFTER has already occurred.
+
 An initially idle command retains `message-intake` and its existing submitted
 `followUpMode=steer`; an active-turn command uses `message-steer`. This preserves
 the ordinary idle conversation projection while retaining current-or-queue intent

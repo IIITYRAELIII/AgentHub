@@ -11,6 +11,7 @@ import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs"
 import { markProviderTurnAccepted } from "../domain/task-runs.mjs";
 import { messageCommandMatchesRun } from "../domain/message-command-expiry.mjs";
 import { verifiedLegacyInterstreamSteer } from "../domain/interstream-message.mjs";
+import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
 
 function explicitSkillCandidatesFromInput(input) {
   const text = typeof input === "string"
@@ -366,9 +367,16 @@ export function createRunAdmissionComposition({
         clientUserMessageId: item.clientUserMessageId,
       };
     },
-    isSteerDispatchBlocked: (item) => Boolean(
-      runCoordinator.admissionBarrier(deferredTarget(item)),
-    ),
+    isSteerDispatchBlocked: (item) => {
+      const target = deferredTarget(item);
+      const run = runCoordinator.activeRun(target);
+      // Provider-internal compaction owns this existing turn, not a new launch.
+      // Explicit Hub maintenance and actual runtime stopping still fence it.
+      return runCoordinator.admissionBarrier(target, {
+        exactManagedSteer: streamMessageDelivery(item) && Boolean(run?.turnId)
+          && run.executionOwner === TASK_EXECUTION_OWNERS.HUB,
+      });
+    },
     steer: async (item) => {
       const target = deferredTarget(item);
       const existingRun = runCoordinator.activeRun(target);

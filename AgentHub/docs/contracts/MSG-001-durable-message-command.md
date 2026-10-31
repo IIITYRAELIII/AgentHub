@@ -198,6 +198,17 @@ Definite non-delivery on an ended target re-resolves that same Stream without a
 manual retry/after-turn decision. Explicit queue actions remain after-turn
 intake, and direct exact-target service operations retain their original guards.
 
+Provider-internal compaction in an existing exact Hub-owned active turn is not
+an idle-launch reservation. Ordinary steer may reach that same turn without
+waiting for internal compaction to finish. The original expected-turn guard and
+unknown-acceptance readback still apply. Explicit Hub-managed maintenance,
+runtime stopping, missing active turn identity and foreign writer ownership do
+not gain that exception. Both intake and deferred dispatch preserve the existing
+separate managed-maintenance capability through their composition ports.
+Existing per-command diagnostics record scheduled/fired wake times, monotonic
+timer lateness and the early steer barrier outcome/reason, separating waiting
+for a callback from guard evaluation without recording message payloads.
+
 Legacy queued MCP idle intake may restore a lost steer mode only from its exact
 original succeeded operation: stable caller origin, request/item/client/target,
 authenticated content hash and complete canonical arguments hash proving explicit
