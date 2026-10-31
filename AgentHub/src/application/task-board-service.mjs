@@ -368,6 +368,11 @@ export class TaskBoardService {
     return this.store.lifecycleOutcome(operationId);
   }
 
+  committedNativeTestForDev(payload) {
+    requiredMethod(this.store, "committedNativeTestForDev");
+    return this.store.committedNativeTestForDev(payload);
+  }
+
   recordWorkflowAdmissionRefusal(payload) {
     requiredMethod(this.store, "recordWorkflowAdmissionRefusal");
     return this.store.recordWorkflowAdmissionRefusal(payload);

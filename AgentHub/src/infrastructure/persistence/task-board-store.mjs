@@ -3121,6 +3121,20 @@ export class TaskBoardStore {
     });
   }
 
+  committedNativeTestForDev({ workspaceId, devCommit } = {}) {
+    return this.#withDatabase(database => {
+      const rows = database.prepare(`SELECT operation_id FROM hub_task_lifecycle_outcomes
+        WHERE kind = 'workflow'
+          AND json_extract(result_json, '$.task.workspaceId') = ?
+          AND json_extract(result_json, '$.task.workflowStatus') = 'testing'
+          AND json_extract(result_json, '$.evidence.outcome') = 'integrated'
+          AND json_extract(result_json, '$.evidence.devHeadCommit') = ?
+        ORDER BY completed_at_ms DESC, operation_id LIMIT 2`).all(workspaceId, devCommit);
+      if (rows.length !== 1) throw new Error("Native dev successor requires one exact committed Test outcome");
+      return this.lifecycleOutcome(rows[0].operation_id);
+    });
+  }
+
   recordWorkflowAdmissionRefusal({ taskId, receipt, projectRoot, targetWorkflowStatus,
     expectedRevision = null, expectedWorkflowStatus = null } = {}) {
     if (receipt?.replayed !== false || receipt.status !== "pending"

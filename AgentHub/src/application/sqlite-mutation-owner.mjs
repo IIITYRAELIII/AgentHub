@@ -47,6 +47,7 @@ const TASK_READS = new Set([
   "claimBindingForOperation",
   "lifecycleTransition", "lifecycleOutcome", "releaseTasks", "captureEnabled", "mutationDiagnostics", "close",
   "selectedCompositionForRelease",
+  "committedNativeTestForDev",
   "returnedNativeTestPriorResult",
   "assertSelectedAbsorptionState",
   "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
