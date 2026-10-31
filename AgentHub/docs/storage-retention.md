@@ -32,6 +32,14 @@ in the original maintenance intent. Repositories, refs, merge journals, WIP,
 attachments and historical results are preserved. An open, dirty, unpublished,
 unknown, changed, oversized or unsupported artifact is retained with a reason.
 
+The publication preview resolves the exact repository entry in a multi-repository
+publication. If origin/main later advances, the recorded publication must remain
+its ancestor. The later tip does not grant cleanup authority to later Task work:
+the result, branch and worktree are checked against the durable published commit.
+An unmatched repository cannot borrow the record's top-level revision. This
+corrects false retention after repository separation without expanding which
+artifact kinds the owners may delete (ADR-HUB-385).
+
 Each pass has at most three units and a cooperative 20-second admission budget.
 Hashing/deleting one admitted transport may finish later; shutdown drains the
 actual owner and does not pretend a timed-out child stopped. Discovery is a flat

@@ -6036,6 +6036,7 @@ export class TaskGitWorkspaceService {
     }
     const references = [];
     const publication = await this.readPublication();
+    const publishedRepositories = publicationStateRepositories(publication ?? {});
     let squashTransfer = null;
     try {
       const candidate = squashAbsorbedBy
@@ -6050,9 +6051,16 @@ export class TaskGitWorkspaceService {
       const remoteRevision = await gitMaybe([
         "rev-parse", "--verify", "refs/remotes/origin/main^{commit}",
       ], { cwd: repoRoot });
-      const durableRevision = String(publication?.revision ?? "").trim();
+      const repositoryPublication = publishedRepositories.find(entry => samePath(entry.root, repoRoot));
+      // A multi-repository publication's top-level revision belongs to only one
+      // repository. Later origin work does not unpublish the recorded ancestor.
+      const durableRevision = String(repositoryPublication?.revision
+        ?? (publishedRepositories.length ? "" : publication?.revision) ?? "").trim();
       const durableGeneration = String(publication?.generation ?? "").trim();
-      const publishedRevision = durableGeneration && durableRevision === remoteRevision ? remoteRevision : null;
+      const publishedRevision = durableGeneration && durableRevision && remoteRevision
+        && (durableRevision === remoteRevision || await gitMaybe([
+          "merge-base", "--is-ancestor", durableRevision, remoteRevision,
+        ], { cwd: repoRoot }) !== null) ? durableRevision : null;
       if (publishedRevision && resultCommit && await gitMaybe([
         "merge-base", "--is-ancestor", resultCommit, publishedRevision,
       ], { cwd: repoRoot }) !== null) published = true;

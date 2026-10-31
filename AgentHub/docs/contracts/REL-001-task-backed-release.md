@@ -245,6 +245,15 @@ an accepted retirement proof. Current/running/rollback/prepared runtime/source
 roots, release generations, legacy archives and persistent evidence receive no
 new deletion authority from the storage scheduler.
 
+Cleanup publication evidence is repository-specific. For a multi-repository
+record, only the matching canonical repository entry supplies its published
+revision; another repository's top-level revision is not a fallback. A later
+origin/main may descend from that durable published revision, but cleanup still
+checks the Task result and current branch/worktree against the recorded published
+revision, never the later unapproved tip. Missing generation, missing matching
+entry, unavailable or divergent origin, dirty/ignored work and stale preview
+remain refusals. See ADR-HUB-385.
+
 The runtime installation owner separately supplies policy v2 exact retirement
 custody in its existing current.json pointer. Installation preserves unrelated
 prepared bodies and defers deletion. Only known selected custody that leaves

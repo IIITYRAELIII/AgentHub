@@ -87,6 +87,30 @@ test("configured logical root alias retires only the verified physical transport
   assert.equal(await readFile(path.join(f.repository, "text"), "utf8"), "valuable tracked data");
 });
 
+test("repository-bound publication retires redundant transport after unrelated origin advancement", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.source, "later"), "not part of the durable publication");
+  await gitAt(f.source, ["add", "later"]);
+  await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "later origin"]);
+  const advanced = await gitAt(f.source, ["rev-parse", "HEAD"]);
+  await gitAt(f.source, ["update-ref", "refs/remotes/origin/main", advanced]);
+  f.setPublication({ revision: "f".repeat(40), generation: "multi-repository-generation", repositories: [
+    { root: path.join(f.root, "other-repository"), revision: "f".repeat(40) },
+    { root: f.source, revision: f.commit },
+  ] });
+  const refs = await gitAt(f.source, ["show-ref"]), journal = await readFile(f.stateFile);
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  assert.equal(preview.binding.publication.gitReferences[0].publishedRevision, f.commit);
+  const bytes = (await lstat(f.bundle)).size;
+  assert.equal((await f.owner.prune({ candidate: f.candidate, binding: preview.binding })).logicalBytes, bytes);
+  await assert.rejects(readFile(f.bundle), { code: "ENOENT" });
+  assert.equal(await gitAt(f.source, ["show-ref"]), refs);
+  assert.deepEqual(await readFile(f.stateFile), journal);
+  assert.equal(await gitAt(f.repository, ["rev-parse", "HEAD"]), f.commit);
+  assert.equal(await readFile(path.join(f.source, "later"), "utf8"), "not part of the durable publication");
+});
+
 test("active/unpublished/dirty captures and changed admission are retained", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t);
   f.task.status = "started";
