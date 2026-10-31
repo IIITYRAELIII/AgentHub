@@ -13,7 +13,7 @@ import { deleteVerifiedWindowsEntry } from "../../../src/infrastructure/persiste
 const digest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const quiet = { log() {}, warn() {}, error() {} };
 
-async function fixture(t, { states = [] } = {}) {
+async function fixture(t, { states = [], copies = 6 } = {}) {
   const base = await mkdtemp(path.join(os.tmpdir(), "hb383-"));
   t.after(() => rm(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const root = path.join(base, "AgentHub"), data = path.join(root, "data");
@@ -21,7 +21,7 @@ async function fixture(t, { states = [] } = {}) {
   await writeFile(path.join(root, "current.json"), '{"current":"fixture-release","previous":null}');
   await writeFile(path.join(root, "config.json"), '{"cursor":17,"auth":"private-fixture"}');
   const store = new MaintenanceOperationStore({ dataDir: data }), backups = [];
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < copies; i++) {
     const operationId = `update-${i}`, scratchRoot = path.join(base, `transport-${i}`);
     await mkdir(scratchRoot);
     const binding = { operationId, runtimeRoot: root, scratchRoot, target: { releaseId: `new-${i}` } };
@@ -84,6 +84,32 @@ test("active and UNKNOWN recovery backups consume protected slots and are never 
   assert.equal(await f.count(), 6);
   assert.equal(owner.status().limitMet, false); assert.equal(owner.status().protected, 6);
   assert.deepEqual(f.store.getReadonly("update-0"), before);
+});
+
+test("a recreated path after confirmed backup retirement is foreign evidence, never a newly adopted copy", async t => {
+  const f = await fixture(t);
+  const { service } = await f.make(); await service.runOnce();
+  assert.equal(await f.count(), 5);
+  await mkdir(f.backups[0]); await writeFile(path.join(f.backups[0], "foreign"), "new physical directory");
+  const { owner } = await f.make();
+  const proposed = await owner.list({ after: null, limit: 3 });
+  assert.ok(!proposed.items.some(item => item.id === "update-0"));
+  assert.equal(owner.status().unverified, 1);
+  assert.equal(owner.status().limitMet, false);
+  assert.equal(await readFile(path.join(f.backups[0], "foreign"), "utf8"), "new physical directory");
+});
+
+test("more than three excess backups converge in bounded pages without a false cached five", async t => {
+  const f = await fixture(t, { copies: 9 });
+  const { owner, service } = await f.make();
+  await service.runOnce();
+  const remaining = await f.count();
+  assert.ok(remaining > 5 && remaining >= 6, "one scheduler pass has at most three candidate effects");
+  assert.equal(owner.status().knownBackups, remaining);
+  assert.equal(owner.status().limitMet, false);
+  for (let i = 0; i < 6 && await f.count() > 5; i++) await service.runOnce();
+  assert.equal(await f.count(), 5);
+  assert.equal(owner.status().limitMet, true);
 });
 
 test("extra files or empty directories and reparse backups are retained without traversal or false cap success", async t => {

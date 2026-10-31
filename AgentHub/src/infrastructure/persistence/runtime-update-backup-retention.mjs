@@ -122,13 +122,14 @@ export class RuntimeUpdateBackupRetention {
       catch { unverified++; continue; }
       const child = this.store.latestStorageArtifactReadonly(this.id, entry.id);
       const exists = await lstat(entry.snapshot.directory, { bigint: true }).catch(error => { if (missing(error)) return null; throw error; });
-      if (!exists && child?.metadata?.binding?.snapshotDigest === entry.snapshotDigest
+      const retired = child?.metadata?.binding?.snapshotDigest === entry.snapshotDigest
         && (child.metadata?.updateBackupPrune?.complete === true
-          || ["removed", "already-removed"].includes(child.metadata?.result?.status))) continue;
+          || ["removed", "already-removed"].includes(child.metadata?.result?.status));
+      if (!exists && retired) continue;
       entry.missing = !exists;
       entry.protected = operation.status !== "succeeded" || operation.outcome !== "succeeded"
-        || this.#bad.has(entry.snapshotDigest) || !exists || !exists.isDirectory() || exists.isSymbolicLink();
-      if (!exists || exists.isSymbolicLink() || !exists.isDirectory() || this.#bad.has(entry.snapshotDigest)) unverified++;
+        || retired || this.#bad.has(entry.snapshotDigest) || !exists || !exists.isDirectory() || exists.isSymbolicLink();
+      if (retired || !exists || exists.isSymbolicLink() || !exists.isDirectory() || this.#bad.has(entry.snapshotDigest)) unverified++;
       entries.push(entry);
     }
     const duplicate = new Set(entries.filter((entry, i) => entries.some((other, j) => j !== i
