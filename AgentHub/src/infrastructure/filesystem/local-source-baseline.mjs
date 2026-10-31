@@ -393,7 +393,8 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
   const sourceBaseCommit = await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{commit}"]);
   const sourceBaseTree = await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{tree}"]);
   if (await sourceGit(manifest.sourceRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])) reject("retained source checkout changed");
-  if (manifest.publicationRevision !== undefined && manifest.publicationRevision !== sourceBaseCommit) reject("retained installed source identity changed");
+  if (typeof manifest.publicationRevision === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(manifest.publicationRevision)
+      && manifest.publicationRevision !== sourceBaseCommit) reject("retained installed source identity changed");
   if (sourceBaseCommit === publishedRevision) return null;
   await ensureRetainedSourceHistory({ git, sourceGit, sourceRoot: manifest.sourceRoot,
     commit: sourceBaseCommit, tree: sourceBaseTree });

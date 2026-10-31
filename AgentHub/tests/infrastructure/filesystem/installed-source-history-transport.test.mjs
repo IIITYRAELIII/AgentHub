@@ -157,3 +157,15 @@ test("distribution install documentation needs no runtime payload but executable
   await assert.rejects(f.owner.deriveInstalledLocalSourceBaselineForSelection(f.request), /carry path is absent from the installed runtime/u);
   assert.deepEqual(await f.state(), before);
 });
+
+test("legacy local manifest without a publication identity retains the full source proof", async t => {
+  const f = await fixture(t), before = await f.state();
+  for (const publicationRevision of [undefined, null]) {
+    await save(f.runtimeRoot, `releases/${f.releaseId}/runtime-manifest.json`,
+      JSON.stringify({ ...JSON.parse(f.manifest), publicationRevision }));
+    const p = await f.owner.deriveInstalledLocalSourceBaselineForSelection(f.request);
+    assert.equal(p.sourceBaseCommit, f.source);
+    assert.equal((await f.owner.validateLocalSourceBaseline({ ...f.request, provenance: p })).runtimeFiles, 1);
+  }
+  assert.deepEqual(await f.state(), before);
+});
