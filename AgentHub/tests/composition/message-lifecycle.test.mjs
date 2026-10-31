@@ -2446,6 +2446,48 @@ test("server queue overrides stale idle intent with and without the bounded rece
   assert.equal(lifecycle.queueHistoryReceiptProjection(accepted).providerAccepted, true);
 });
 
+test("canonical receipt retires stale intake wait membership before history arrives", () => {
+  const entry = {
+    provider: "codex", threadId: "thread-a", streamId: "stream-a",
+    clientUserMessageId: "original-client", state: "queued",
+    conflictKind: "message-intake", clientProjectionIntent: "conversation",
+    waitReason: "managed-run-activity-unknown",
+  };
+  const accepted = {
+    ...entry, state: undefined, waitReason: undefined,
+    accepted: true, providerAccepted: true, steered: true,
+    runId: "original-run", turnId: "original-turn", queued: false, deferred: false,
+  };
+  for (const outcome of [{}, { completed: true }, { failed: true }, { cancelled: true }, {
+    accepted: false, providerAccepted: false, steered: false, rejected: true,
+  }]) {
+    const receipt = { ...accepted, ...outcome };
+    assert.equal(lifecycle.queuedCommandUsesQueue(entry, [receipt]), false);
+    assert.equal(lifecycle.queuedCommandDeliveryState(entry, [receipt]), null);
+    assert.deepEqual(lifecycle.queuedCommandClientUserMessageIds([entry], [receipt]), []);
+  }
+  // Unresolved intake optimism, foreign identities and unknown acceptance cannot
+  // consume a durable wait. Missing legacy optional identity fields still work.
+  for (const receipt of [null, {
+    ...accepted, providerAccepted: false, steered: false, runId: null,
+    deferred: true, queued: true, reason: "message-intake",
+  }, {
+    ...accepted, accepted: false, providerAccepted: false, steered: false, unknown: true,
+  }, {
+    ...accepted, turnId: null,
+  }, ...["provider", "threadId", "streamId", "clientUserMessageId"].map((key) => ({
+    ...accepted, [key]: `foreign-${key}`,
+  }))]) {
+    assert.equal(lifecycle.queuedCommandUsesQueue(entry, receipt ? [receipt] : []), true);
+  }
+  for (const state of ["paused", "unknown", "attention-required"]) {
+    assert.equal(lifecycle.queuedCommandUsesQueue({ ...entry, state }, [accepted]), true);
+  }
+  assert.equal(lifecycle.queuedCommandUsesQueue(entry, [{
+    clientUserMessageId: entry.clientUserMessageId, providerAccepted: true, turnId: "original-turn",
+  }]), false);
+});
+
 test("known-busy submissions use only the queue surface", () => {
   assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "" }), false);
   assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "queue" }), false);

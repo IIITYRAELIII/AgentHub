@@ -1187,7 +1187,8 @@ function queueHistoryReceiptProjection(receipt) {
     && (receipt?.queued === true || receipt?.deferred === true));
   const requiresQueue = waitingConflict || receipt?.unknown === true
     || receipt?.attentionRequired === true
-    || receipt?.paused === true;
+    || receipt?.paused === true
+    || Boolean(String(receipt?.waitReason ?? "").trim());
   const immediateIntake = !providerAccepted
     && !terminal
     && !requiresQueue
@@ -1242,6 +1243,11 @@ function deferredInputReceipt(deferredInput, messageReceipts) {
   if (!clientUserMessageId) return null;
   return (Array.isArray(messageReceipts) ? messageReceipts : []).find((receipt) => (
     deferredClientMessageId(receipt) === clientUserMessageId
+    && ["provider", "threadId", "streamId"].every((key) => (
+      !String(deferredInput?.[key] ?? "").trim()
+      || !String(receipt?.[key] ?? "").trim()
+      || String(deferredInput[key]).trim() === String(receipt[key]).trim()
+    ))
   )) ?? null;
 }
 
@@ -1273,9 +1279,12 @@ function queuedCommandRequiresAttention(deferredInput) {
 function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
   const state = String(deferredInput?.state ?? "").trim();
   if (queuedCommandRequiresAttention(deferredInput) || ["paused", "unknown"].includes(state)) return true;
-  if (String(deferredInput?.waitReason ?? "").trim() === "provider-start-unconfirmed") return true;
   const receipt = deferredInputReceipt(deferredInput, messageReceipts);
-  if (receipt) return queueHistoryReceiptProjection(receipt).ownsDeferredQueue;
+  const receiptProjection = receipt ? queueHistoryReceiptProjection(receipt) : null;
+  if (receiptProjection?.providerAccepted
+    || ["completed", "failed", "cancelled"].includes(receiptProjection?.projectionState)) return false;
+  if (String(deferredInput?.waitReason ?? "").trim()) return true;
+  if (receiptProjection) return receiptProjection.ownsDeferredQueue;
   const conflictKind = String(deferredInput?.conflictKind ?? "").trim();
   if (conflictKind && conflictKind !== "message-intake"
     && ["pending", "queued", "dispatching", "steering"].includes(state)) return true;
@@ -1331,8 +1340,8 @@ function deferredInputConversationProjection(deferredInput, messageReceipts = []
   };
 }
 
-function optimisticSubmissionUsesQueue({ followUpMode = "", deferWhileRunning = false } = {}) {
-  return String(followUpMode ?? "").trim() === "steer" || deferWhileRunning === true;
+function optimisticSubmissionUsesQueue({ followUpMode = "", deferWhileRunning = false } = {}, { knownIdle = false } = {}) {
+  return (!knownIdle && String(followUpMode ?? "").trim() === "steer") || deferWhileRunning === true;
 }
 
 function messageAwaitsProviderAcceptance(message) {

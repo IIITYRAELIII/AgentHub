@@ -8742,12 +8742,13 @@ composerInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") composerIMEConfirmation = false;
   const chord = window.AgentHubComposerShortcuts.chord(event);
   const applyShortcut = () => {
-    const action = composerShortcuts.preference().mapping[chord];
+    const preference = composerShortcuts.preference();
+    const action = preference.mapping[chord];
     event.preventDefault();
     if (action === "newline") {
       if (!event.repeat || chord !== "ctrlEnter") insertTextAtCaret(composerInput, "\n");
     } else if (!event.repeat) {
-      if (action === "queue") submitComposer();
+      if (action === "queue") submitComposer({ followUpMode: preference.configured ? "queue" : null });
       else submitComposer({ steerWhileRunning: true });
     }
   };
@@ -8801,6 +8802,7 @@ function sendComposerRequest({
   messageOrigin: requestMessageOrigin = null,
   composerTransfer: requestComposerTransfer = null,
   steerWhileRunning = false,
+  followUpMode = null,
   clearComposer = false,
   restoreOnReject = false,
 } = {}) {
@@ -8870,8 +8872,8 @@ function sendComposerRequest({
     taskReferences: payloadTaskReferences,
     messageOrigin: requestMessageOrigin,
     composerTransfer: requestComposerTransfer,
-    followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
-    deferWhileRunning: (task?.running === true || task?.canStop === true) && !steerWhileRunning,
+    followUpMode: followUpMode === "queue" ? "queue" : MessageView.composerFollowUpMode(task, { steerWhileRunning }),
+    deferWhileRunning: false,
     draftStream: task?.draftStream === true,
     streamId: task?.streamId ?? null,
     settings: task?.draftStream ? { ...task.streamSettings } : null,
@@ -8881,7 +8883,7 @@ function sendComposerRequest({
   return true;
 }
 
-function submitComposer({ steerWhileRunning = false } = {}) {
+function submitComposer({ steerWhileRunning = false, followUpMode = null } = {}) {
   return sendComposerRequest({
     rawText: composerInput.value,
     attachments: currentAttachments(),
@@ -8890,6 +8892,7 @@ function submitComposer({ steerWhileRunning = false } = {}) {
     messageOrigin: drafts.get(state.selectedId)?.messageOrigin ?? null,
     composerTransfer: drafts.get(state.selectedId)?.composerTransfer ?? null,
     steerWhileRunning,
+    followUpMode,
     clearComposer: true,
     restoreOnReject: true,
   });

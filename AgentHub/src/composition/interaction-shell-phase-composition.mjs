@@ -337,6 +337,7 @@ export function createInteractionShellPhase({
     },
     admission: {
       config,
+      workspaceCatalogStore: infrastructure.workspaceCatalogStore,
       runtimeStateStore: infrastructure.runtimeStateStore,
       samePath,
       sendRpc: api.sendRpc,

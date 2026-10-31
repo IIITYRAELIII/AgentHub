@@ -3788,8 +3788,14 @@ function sendUserMessage(request, frozenParams = null) {
   const visibleAttachments = [...requestAttachments, ...requestTaskReferences];
   const queuesOptimistically = request.followUpMode === "queue"
     || request.deferWhileRunning === true;
-  const steersOptimistically = request.followUpMode === "steer" && !queuesOptimistically;
-  const usesQueueOptimistically = optimisticSubmissionUsesQueue(request);
+  const snapshotTask = representativeSnapshotTasks(lastSnapshot?.tasks).find((task) => (
+    taskId(task.provider, task.threadId, task.streamId) === request.taskId
+  ));
+  const steersOptimistically = request.followUpMode === "steer" && !queuesOptimistically
+    && snapshotTask?.running === true;
+  const usesQueueOptimistically = optimisticSubmissionUsesQueue(request, {
+    knownIdle: snapshotTask?.running === false && snapshotTask?.canStop !== true,
+  });
   const clientProjectionIntent = usesQueueOptimistically ? "queue" : "conversation";
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length

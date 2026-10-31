@@ -1,5 +1,14 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+`hub_stream_message_send` with ordinary `mode=steer` addresses the destination
+Stream. The common durable message owner resolves its current active managed
+turn or retains that same command in the normal queue. A definitively ended
+attempt does not require a manual retry/after-turn decision. Unknown provider
+acceptance still reconciles the original attempt before any resend; accepted
+messages are never repeated. Explicit `mode=queue`, immutable request/origin/body
+binding and direct exact-target service guards retain their contracts. See
+MSG-001 and ADR-0136. This changes routing policy, not MCP mutation ownership.
+
 ## Explicit Task operation interruption
 
 `hub_task_operation_cancel` is an explicit audited mutation of future execution,
@@ -745,6 +754,10 @@ rejection leaves the durable prepare
 blocked for explicit cancellation and is not silently converted to success.
 
 ## Queue diagnostics
+
+Empty diagnostic attempt timestamps fall back to the original intake createdAt;
+they cannot hide the age of a queued command. A queued wait and its guard reason
+are not an in-flight attempt or provider acceptance.
 
 ## Exact squash transfer
 

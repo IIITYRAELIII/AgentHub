@@ -151,12 +151,15 @@ existing startup coordinator owns that optional work after readiness.
 
 - In the main composer, Ctrl+Enter and Shift+Enter insert a newline at the
   caret or replace selected text. Ctrl+Enter does not submit or execute an open
-  slash-menu command. Desktop Enter keeps normal send/queue behavior, Meta+Enter
-  keeps its steer behavior, and mobile Enter remains a newline. IME composition
+  slash-menu command. Desktop Enter, Meta+Enter and the send button address the
+  current Stream: current active turn, otherwise normal queue (ADR-0136).
+  An explicit after-turn queue action keeps its meaning. Mobile Enter remains a newline. IME composition
   does not submit or select a slash command.
 - An explicit browser/WebView-local mapping may assign queue, steer or newline
   to bare desktop Enter, Ctrl-only Enter and Shift-only Enter. Absent settings
-  preserve the defaults above. Queue/steer reuse the existing submit actions,
+  preserve the defaults above. An explicitly saved queue mapping retains its
+  after-turn meaning; the unconfigured default follows ordinary current-Stream
+  routing. Queue/steer reuse the existing submit actions,
   including existing steer fallback to queue or a new turn when unavailable;
   no exact run/turn protocol is introduced. Meta and unlisted chords stay legacy.
   Ctrl/Shift mappings precede slash selection; bare desktop Enter retains

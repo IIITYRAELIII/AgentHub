@@ -258,14 +258,14 @@ test("shipped composer inserts Ctrl/Shift newlines at the selection and persists
   }
 });
 
-test("shipped composer keeps Enter, Meta+Enter and send-button queue behavior", async () => {
+test("shipped composer sends Enter, Meta+Enter and button to current Stream routing", async () => {
   const browser = await launchBrowser();
   try {
     for (const { running, action, followUpMode, deferWhileRunning } of [
-      { running: false, action: "Enter", followUpMode: "queue", deferWhileRunning: false },
-      { running: true, action: "Enter", followUpMode: "queue", deferWhileRunning: true },
+      { running: false, action: "Enter", followUpMode: "steer", deferWhileRunning: false },
+      { running: true, action: "Enter", followUpMode: "steer", deferWhileRunning: false },
       { running: true, action: "Meta+Enter", followUpMode: "steer", deferWhileRunning: false },
-      { running: true, action: "button", followUpMode: "queue", deferWhileRunning: true },
+      { running: true, action: "button", followUpMode: "steer", deferWhileRunning: false },
     ]) {
       const page = await openKeyboardPage(browser, { running });
       const composer = page.locator("[data-composer-input]");
@@ -321,7 +321,7 @@ test("shipped quote comments insert newlines without sending and preserve Enter/
   const browser = await launchBrowser();
   try {
     for (const { running, action, expectedMode } of [
-      { running: false, action: "Enter", expectedMode: "queue" },
+      { running: false, action: "Enter", expectedMode: "steer" },
       { running: true, action: "Meta+Enter", expectedMode: "steer" },
     ]) {
       const page = await openKeyboardPage(browser, { running });

@@ -179,8 +179,8 @@
     return minutes ? `${hours} ч ${minutes} мин` : `${hours} ч`;
   }
 
-  function composerFollowUpMode(task, { steerWhileRunning = false } = {}) {
-    return steerWhileRunning ? "steer" : "queue";
+  function composerFollowUpMode() {
+    return "steer";
   }
 
   function messageCopyRequest(message) {
@@ -203,7 +203,7 @@
     for (const entry of Array.isArray(entries) ? entries : []) {
       if (entry?.state === "pending") counts.pending += 1;
       else if (entry?.state === "paused") counts.paused += 1;
-      else if (entry?.conflictKind === "message-intake") counts.starting += 1;
+      else if (["dispatching", "steering"].includes(entry?.state)) counts.starting += 1;
       else counts.queued += 1;
     }
     return counts;
