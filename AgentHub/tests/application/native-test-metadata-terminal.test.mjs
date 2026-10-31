@@ -9,7 +9,7 @@ import path from "node:path";
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
-import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { TaskGitWorkspaceService, runTaskGitCommand } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
 import { TaskOperationReconciliationService } from "../../src/application/task-operation-reconciliation-service.mjs";
 import { createNativeMergeReviewVerifier } from "../../src/application/native-merge-review.mjs";
@@ -124,15 +124,34 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-reviewed-terminal-"));
   const primary = path.join(root, "primary"), dataDir = path.join(root, "data");
   await mkdir(primary); await git(primary, "init", "--initial-branch=main");
+  await writeFile(path.join(primary, "CHANGELOG.md"), "older published notes\n");
+  await writeFile(path.join(primary, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0" }) + "\n");
   await writeFile(path.join(primary, "main.txt"), "main\n"); await git(primary, "add", ".");
   await git(primary, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", "main");
+  const agreedMain = await git(primary, "rev-parse", "HEAD");
+  // Release metadata is genuine committed publication history, ahead of the
+  // agreed main. The remote identity/read port is controlled and never online.
+  await git(primary, "checkout", "-b", "fixture-publication");
+  await writeFile(path.join(primary, "CHANGELOG.md"), "already published notes\n");
+  await writeFile(path.join(primary, "package.json"), JSON.stringify({ name: "fixture", version: "2.0.0" }) + "\n");
+  await git(primary, "add", ".");
+  await git(primary, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", "published metadata");
+  const published = await git(primary, "rev-parse", "HEAD");
+  await git(primary, "checkout", "main");
+  await git(primary, "remote", "add", "origin", "https://github.com/IIITYRAELIII/AgentHub.git");
+  await git(primary, "update-ref", "refs/remotes/origin/main", published);
+  let publication = { generation: "fixture-published-generation", repositories: [{ root: primary,
+    revision: published, deploymentProfile: "github-release", planRevision: "fixture-published-plan",
+    manifestHash: "a".repeat(64), preReleaseHead: published, baseCommit: agreedMain }] };
   const databaseFile = path.join(root, "tasks.sqlite");
   let catalog, store, board, taskGit, lifecycle;
   const open = async () => {
     catalog = new WorkspaceCatalogStore({ databaseFile }); await catalog.load();
     store = new TaskBoardStore({ databaseFile });
     board = new TaskBoardService({ store, workspaceCatalog: catalog });
-    taskGit = new TaskGitWorkspaceService({ dataDir, readPublication: async () => null, recordTiming: () => {},
+    taskGit = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication, recordTiming: () => {},
+      runCommand: (args, options) => args[0] === "ls-remote"
+        ? Promise.resolve(`${published}\trefs/heads/main`) : runTaskGitCommand(args, options),
       verifyNativeResolutionReview: createNativeMergeReviewVerifier({ workspaceCatalog: catalog, taskBoard: board }) });
     lifecycle = new TaskLifecycleService({ taskBoard: board, workspaceCatalog: catalog, taskGitWorkspaces: taskGit,
       releasePreflight: { withAwaitTransition: (_id, op) => op() } });
@@ -149,6 +168,7 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
     settings: { model: "gpt-6.1-sol" } }));
   await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: "rm-fixture", streamId: rmStream.id }));
   await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: "review-fixture", streamId: reviewer.id }));
+  assert.equal((await taskGit.synchronizeMainIntoDev({ projectRoot: primary, publishedRevision: published })).integrated, true);
   const create = async (text, content, filename = "main.txt") => {
     const task = store.create({ text, bucket: "workspace", workspaceId: workspace.id });
     await board.claim({ id: task.id, workspaceId: workspace.id, streamId: rmStream.id,
@@ -207,6 +227,7 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
   // original awaits terminal persistence. Its canonical outcome and native
   // intent, not ancestry alone, must justify preserving that descendant.
   const later = await create("Later", "later accepted Test\n", "later.txt");
+  await git(later.source.projectRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "merge", "--no-edit", published);
   const laterId = "test-later", laterArgs = { request_id: laterId, status: "testing", task_id: later.task.id };
   await catalog.runMutation(() => catalog.beginMcpOperation({ requestId: laterId, workspaceId: workspace.id, streamId: rmStream.id,
     provider: "codex", threadId: "rm-fixture", toolName: "hub_task_status_update", argumentsHash: mcpArgumentsHash(laterArgs) }));
@@ -215,6 +236,20 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
   const laterHead = await git(primary, "rev-parse", "dev");
   assert.notEqual(laterHead, devHead);
   assert.equal(await git(primary, "merge-base", "--is-ancestor", devHead, laterHead), "");
+  assert.equal(await git(primary, "show", "dev:CHANGELOG.md"), "already published notes");
+  // Inheriting publication is not permission for Task-authored notes/version.
+  for (const [name, filename, content, message] of [
+    ["UnpublishedNotes", "CHANGELOG.md", "unaccepted Task notes\n", /changes release-owned CHANGELOG/u],
+    ["UnpublishedVersion", "package.json", '{"name":"fixture","version":"3.0.0"}\n', /changes release-owned package-version/u],
+  ]) {
+    const rejected = await create(name, "rejected metadata\n", `${name}.txt`);
+    await git(rejected.source.projectRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "merge", "--no-edit", published);
+    await writeFile(path.join(rejected.source.projectRoot, filename), content);
+    await git(rejected.source.projectRoot, "add", "--sparse", "--force", "--", filename);
+    await git(rejected.source.projectRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", name);
+    await assert.rejects(lifecycle.updateWorkflowStatus({ taskId: rejected.task.id, status: "testing", operationId: name }), message);
+    assert.equal(await git(primary, "rev-parse", "dev"), laterHead);
+  }
   // Reopen the durable stores before recovery; an in-memory success cannot
   // substitute for the original lifecycle/receipt and exact applied Git state.
   store.close(); catalog.close(); await open();
@@ -222,6 +257,10 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
   const reconciliation = new TaskOperationReconciliationService({ workspaceCatalog: catalog, taskBoard: board, taskLifecycle: lifecycle });
   const input = { workspaceId: workspace.id, taskId: task.id, operationRequestId: operationId, projectRoot: primary,
     expectedTaskRevision: originalRevision, expectedWorkflowStatus: "in_progress", nativeResolutionReview: review };
+  const publishedContext = publication;
+  publication = { ...publication, generation: "foreign-publication-generation" };
+  assert.equal((await reconciliation.reconcileUnknownWorkflow(input)).resolved, false);
+  publication = publishedContext;
   for (const delta of [{ expectedTaskRevision: originalRevision + 1 }, { expectedWorkflowStatus: "testing" },
     { nativeResolutionReview: { ...review, text: review.text + "changed" } }]) {
     await assert.rejects(reconciliation.reconcileUnknownWorkflow({ ...input, ...delta }));
@@ -271,4 +310,5 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
   assert.equal(board.lifecycleOutcome(operationId).result.evidence.nativeTerminalRecovery.preservedDevCommit, laterHead);
   assert.deepEqual(await readFile(nativeFile), nativeBytes);
   assert.deepEqual(await readFile(path.join(path.dirname(stage), "merge.json")), captureBytes);
+
 });

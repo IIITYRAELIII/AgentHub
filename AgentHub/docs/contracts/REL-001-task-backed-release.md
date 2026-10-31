@@ -3268,3 +3268,6 @@ rechecked before the current-row terminal CAS. Presentation is preserved; no
 merge or admission is replayed. A later canonical Test descendant is preserved
 only with its committed outcome, successful receipt and original native capture
 chain. This terminal proof never selects that successor for Await/publication.
+Each composition check reuses only its own revalidated captured native history
+authority and origin, including exact inherited published notes/version. No
+legacy capture is enriched and no Task-authored metadata receives that credit.

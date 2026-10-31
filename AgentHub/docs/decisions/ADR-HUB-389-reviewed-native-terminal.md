@@ -31,3 +31,12 @@ Arbitrary descendants, pending receipts, changed captures and divergence refuse.
 The current dev head/tree/index remain unchanged. Terminal evidence distinguishes
 the original applied merge from the preserved current dev head; it does not
 select successor Tasks for release or import their runtime into a repair carrier.
+
+Full composition readback uses each original's own captured native history
+authority. The existing owner revalidates that exact binding and its origin
+before passing it to the unchanged history/metadata verifier, for both the
+reviewed original and every canonical successor. Already published notes/version
+may be inherited only under that sealed publication identity and ancestry;
+Task-authored notes/version, foreign publication and altered bindings still
+refuse. Older captures gain no new context. Omitting the captured context would
+incorrectly reject a later Test that legitimately inherited published metadata.
