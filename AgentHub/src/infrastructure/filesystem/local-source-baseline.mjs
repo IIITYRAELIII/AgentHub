@@ -145,11 +145,12 @@ export async function sourceBlobs(git, entries, paths) {
   return new Map(paths.map(file => [file, requested.get(entries.get(file).oid)]));
 }
 
-async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCommit }) {
+async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCommit, publishedCommit, tasks,
+  inheritedMainMetadata }) {
   const outside = async commit => {
     const raw = Buffer.from(await git(["ls-tree", "-r", "-z", "--full-tree", commit], { rawOutput: true }));
     if (raw.length && raw.at(-1) !== 0) reject("repository inventory is malformed");
-    const paths = new Set(), retained = [];
+    const paths = new Set(), retained = new Map();
     let offset = 0;
     while (offset < raw.length) {
       const end = raw.indexOf(0, offset);
@@ -161,14 +162,41 @@ async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCom
       const key = name.toString("hex");
       if (paths.has(key)) reject("repository inventory has ambiguous paths");
       paths.add(key);
-      if (!name.subarray(0, 9).equals(Buffer.from("AgentHub/"))) retained.push(record.toString("base64"));
+      if (!name.subarray(0, 9).equals(Buffer.from("AgentHub/"))) retained.set(key, record.toString("base64"));
       offset = end + 1;
     }
-    return retained.sort();
+    return retained;
   };
   const source = await outside(sourceCommit);
   const agreed = await outside(agreedMainCommit);
-  if (JSON.stringify(source) !== JSON.stringify(agreed)) reject("repository files differ from agreed main");
+  const differences = [...new Set([...source.keys(), ...agreed.keys()])]
+    .filter(key => source.get(key) !== agreed.get(key));
+  if (!differences.length) return;
+  const published = await outside(publishedCommit);
+  const documentation = ["README.md", "AGENTS.md"].map(name => Buffer.from(name).toString("hex"));
+  const changelog = Buffer.from("CHANGELOG.md").toString("hex");
+  // Publication owns its already-published notes. Selected registered results
+  // own exact root documentation, not arbitrary repository code/configuration.
+  // Only TaskGit's protected Test preview may supply its existing dev metadata;
+  // release callers never inherit rolling dev or a caller-provided public flag.
+  const selected = tasks.filter(task => task.baseCommit === agreedMainCommit).map(task => task.resultCommit);
+  const candidates = [...new Set([...selected, ...inheritedMainMetadata])];
+  if (candidates.some(commit => typeof commit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(commit))) {
+    reject("repository metadata identity is malformed");
+  }
+  const known = [];
+  for (const commit of candidates) {
+    await git(["merge-base", "--is-ancestor", agreedMainCommit, commit]);
+    known.push(await outside(commit));
+  }
+  for (const key of differences) {
+    const entry = source.get(key);
+    const regular = value => value && Buffer.from(value, "base64").subarray(0, 12).equals(Buffer.from("100644 blob "));
+    if (key === changelog && regular(entry) && entry === published.get(key)) continue;
+    if (documentation.includes(key) && regular(entry) && regular(agreed.get(key))
+        && known.some(table => table.get(key) === entry)) continue;
+    reject("repository files differ from agreed main");
+  }
 }
 
 // Read-only verifier inside the existing candidate owner. No base/ref, runtime
@@ -234,6 +262,7 @@ export async function assertInstalledLocalSourceBaseline({
   adoptionGit = git, repositoryRoot = null,
   originalAuthority = null,
   readOwnGitPublication = null,
+  inheritedMainMetadata = [],
 }) {
   const p = normalizedReleaseBaseProvenance(provenance);
   if (p?.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE) reject("missing provenance");
@@ -310,7 +339,7 @@ export async function assertInstalledLocalSourceBaseline({
     if (!file.startsWith("AgentHub/")) {
       if (!repositoryFilesVerified) {
         await assertInheritedRepositoryFiles({ git, sourceCommit: p.sourceBaseCommit,
-          agreedMainCommit: primaryMainCommit });
+          agreedMainCommit: primaryMainCommit, publishedCommit: publishedRevision, tasks, inheritedMainMetadata });
         repositoryFilesVerified = true;
       }
       continue;
@@ -368,7 +397,8 @@ export async function assertInstalledLocalSourceBaseline({
 // retained source checkout supplies a candidate commit; it is not trusted until
 // the complete ordinary baseline verifier above accepts it.
 export async function installedNativeHistoryBaseline({ git, sourceGit, repositoryRoot,
-  primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [], readOwnGitPublication = null }) {
+  primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [], readOwnGitPublication = null,
+  inheritedMainMetadata = [] }) {
   const currentFile = path.join(runtimeRoot, "current.json");
   if (!await lstat(currentFile).catch(error => { if (error.code === "ENOENT") return null; throw error; })) return null;
   const currentBytes = await regular(currentFile);
@@ -415,7 +445,7 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
     } : ownGitPublication ? { approvedOriginMainCommit: ownGitPublication.commit, adoptions: [], ownGitPublication }
       : agreedOrigin ? { approvedOriginMainCommit: primaryMainCommit, adoptions: [] } : {}) };
   const verified = await assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
-    publishedRevision, planRevision, tasks, runtimeRoot, readOwnGitPublication });
+    publishedRevision, planRevision, tasks, runtimeRoot, readOwnGitPublication, inheritedMainMetadata });
   if (!currentBytes.equals(await regular(currentFile))) reject("installed release changed");
   if (!bytes.equals(await regular(path.join(runtimeRoot, "releases", current.current, "runtime-manifest.json")))) reject("installed manifest changed");
   if (await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{commit}"]) !== sourceBaseCommit
