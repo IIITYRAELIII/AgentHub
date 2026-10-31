@@ -350,14 +350,34 @@ python install_release.py --release <same-exact-version> --update-status --opera
 
 This reads only status/phase/outcome. `succeeded` requires the replacement's exact
 ready/original settlement, not merely install exit0. An absent original or
-incomplete pre-admission download is unknown, not success. Existing retained
-transport never launches again automatically; preserve it and diagnose the
-original before further action. A different version with the same ID refuses.
+incomplete pre-admission download is unknown, not success. Transport never
+launches again automatically. New `public-update-preparation-v1` receipts permit
+an explicit repetition of the SAME `--prepare-update` command only before any
+request/dispatch fence, with the same runtime, original ID, exact tag, installer,
+additional checksum and private scratch. The installer must freshly confirm
+canonical original absence; a read failure or any existing original is not
+absence. Exact canonical asset URLs, sizes and digests are pinned before body
+download and cannot change on continuation. Failed bytes remain in their original
+attempt; an exclusive sibling inside that SAME cache performs fresh verification.
+There is no automatic network retry, timeout increase or TLS downgrade.
+
+Historical caches without this receipt remain readback-only, including an empty
+descriptor left by an earlier installer. They cannot be adopted or repaired by
+this command. A saved request or dispatch fence is also readback-only even when
+the canonical original is still absent: a crash/lost reply never grants another
+launch. A different version with the same ID refuses. Preserve the original
+scratch; a different scratch is not a recovery route for an ambiguous dispatch.
 Do not delete receipts/cache/backup to make a retry pass. If install/start failed,
 the current pointer, verified manifests, exact live process evidence and original
 must first be inspected. Any explicit code-only rollback uses the existing
 stopped installer `--rollback`; it does not restore a database or settle UNKNOWN.
 Do not start manually across an unresolved package-original admission fence.
+
+The interrupted-preparation controls are in `update_transport_test.py`. They
+exercise real package/asset verification, filesystem ownership, serialization and
+read-only SQLite; HTTPS and the final subprocess boundary are controlled. They
+do not establish the cause of intermittent public TLS/header/body stalls or prove
+an actual online update. That acceptance still belongs to the release owner.
 
 The focused `package_update_test.py` uses the actual immutable public 2.0.4
 native Host and a literal local application, controlled HTTPS metadata, real

@@ -3662,8 +3662,23 @@ The public installer has an explicit `--prepare-update` with exact stable
 delegates to the incoming manifested package entry; it never rebuilds source,
 publishes a release or invents a second updater/operation ledger. Runtime and
 retained scratch roots are disjoint. `--update-status` reads the same maintenance
-original without dispatch or write. Existing/partial retained transport is
-readback-only; no automatic retry can turn UNKNOWN into another effect.
+original without dispatch or write. Historical unbound retained transport and
+every saved request/dispatch intent remain readback-only; no automatic retry can
+turn UNKNOWN into another effect. ADR-HUB-387 permits only an explicit SAME-command
+continuation of new `public-update-preparation-v1` receipts before either fence.
+Physical runtime/scratch/cache identity, original/tag/additional checksum and
+installer digest are immutable. Canonical stable asset URLs/lengths/digests are
+saved before descriptor/ZIP body reads and revalidated on continuation. Failed
+attempt bytes remain unchanged; only a new exclusive child of that original cache
+receives fresh bytes. Completed assets and the whole package must pass existing
+verification. A real read-only canonical-store absence is required, and rechecked
+at dispatch; a read/schema error or existing original is not absence. SAME-cache
+serialization and a flushed exclusive dispatch intent precede the one subprocess
+call. A crash after intent, including before actual spawn, remains readback-only.
+The native admission/CAS remains authoritative; local transport state neither
+creates a maintenance original nor provides an atomic read-to-native-spawn claim.
+An alternate scratch never reconciles an ambiguous original. This corrects
+interrupted preparation, not the unresolved underlying network stall.
 
 The package entry joins canonical stable GitHub metadata to ZIP, descriptor,
 installer and complete runtime manifest/source/version. A capable installed
