@@ -1,5 +1,23 @@
 # UI-001 — Canonical message projection
 
+A queued command is waiting even when its conflict kind is `message-intake`.
+The queue's starting count requires actual dispatching/steering state. Hub
+admission or a retained intake reason alone cannot present provider launch.
+An authoritative provider-accepted or terminal receipt for the same command
+retires stale queued intake membership even when its wait reason is retained
+and canonical history has not arrived. Explicit identity conflicts cannot
+consume another command's wait. Unresolved intake ACKs, unknown outcomes and
+manual pause retain their existing queue guards, including after reload.
+
+The Task card's operation action exposes explicit interruption of a bound
+claim/workflow attempt, including pending and UNKNOWN. It reaches the same
+authenticated owner while the original UI/control mutation waits. Requested
+stopping and confirmed stopped are distinct; UNKNOWN past effects are never
+presented as undone. Already completed operations retain their completion.
+Refreshing the operation panel reads canonical disposition and does not replay
+the original action. Legacy rows without a Task binding require exact operator
+arguments through the supported owner, never guessed association by timestamp.
+
 The Server page exposes the private sync endpoint through its existing
 configuration save/cancel flow. Only HTTP(S) URLs without embedded credentials,
 query or fragment are admitted. A pending edit does not change the effective
@@ -25,7 +43,14 @@ on live refresh, SSE reconnect and reload. Historical provider acceptance does
 not imply current execution. Known saved/queued/starting/running, structured
 provider retry, terminal error and unknown outcomes remain distinct; durations
 use observed timestamps and never establish an outcome. No failed input is
-automatically resubmitted. Retained unknown occupancy stays visible in the
+automatically resubmitted on an unknown result. A definite ended-target refusal
+for a Stream message explicitly submitted as steer returns that same command to
+current-or-queue routing instead of the red original-turn decision, including
+when its client active-run snapshot is stale. Ordinary Enter, the send button,
+quote send and quick-send default to queue; Meta+Enter and saved steer shortcuts
+select steer separately. Queue waits behind an active turn and launches normally
+when idle. This distinction is recorded in ADR-0136, not a projection-only
+suppression. Retained unknown occupancy stays visible in the
 activity rail with its exact Stop target and queue reason, without a running
 animation or an active claim in Stream history.
 
@@ -54,6 +79,12 @@ visibly rather than guessing offsets. All three hashes remain mandatory on
 navigation. Legacy citations already bound to shortened content are not rewritten.
 
 ## Invariants
+
+A message, live-answer or queue update in one supplementary visible Stream
+refreshes that column without replacing the other current columns. Their scroll,
+expanded disclosures and the selected composer remain intact. A changed layout,
+selection or missing/foreign rendered binding still uses the canonical full-deck
+rebuild; partial rendering never supplies message, read or lifecycle authority.
 
 - Local sending is visible before a transport response. The exact durable Hub
   ACK updates that same command immediately, before snapshot/history refresh;
@@ -267,6 +298,15 @@ text-prefix guessing nor command replay is a migration path.
 
 ## Canonical reducer
 
+Closing/replacing a Stream in the client's existing open-column layout releases
+its disposable canonical history pages and message projection. Other still-open
+columns, including another Workspace's saved open columns, retain their loaded
+pages. Reopening reads current canonical history with the original provider,
+Thread and Stream identity; it never replays a command or infers read state.
+In-flight pages for a closed column are superseded through the existing request
+generation fence. Pending sends, drafts, queue/live authority and exact read
+receipts are independent and are not evicted with history (ADR-HUB-343).
+
 Hidden or zero-sized chat panes do not automatically expand cached history or
 request older pages. Queued frame and scroll callbacks recheck current visibility;
 returning to a visible short chat resumes viewport filling, and explicit older-page
@@ -335,6 +375,17 @@ exact provider acceptance. A new turn requires the exact command identity plus
 history projections reuse the same `clientUserMessageId` and cannot create a
 second card.
 
+Queue status distinguishes the Hub's own current run from an independently
+observed external writer and from uncertain activity. A managed active run is
+ordinary automatic after-turn waiting, never "another Codex" or stopped retry.
+Only a runnable queued item promises automatic after-turn delivery. A manually
+paused card instead states that explicit resume is required, without clearing
+the canonical pause or changing dispatch policy.
+The deferred-message card has no "В новую задачу" action. Edit, reorder,
+pause/resume, explicit steer and cancellation retain their existing applicable
+guards; annotations and attachments remain on the original command. Global
+Task creation and other clients' existing actions are unchanged.
+
 If admission detects that an apparently idle Stream became busy, its canonical
 `task-running` result moves the same logical submission to the queue surface.
 An explicit `accepted=false` queued/deferred receipt overrides the original
@@ -343,12 +394,17 @@ A busy-origin command
 with `clientProjectionIntent=queue` remains queue-only if admission later finds
 the Stream idle. Attention-required and ambiguous commands remain queue-owned.
 Reconciliation never renders both forms and never loses the logical entity.
-After an exact steer is authoritatively known to have had no provider effect,
-its attention-required row exposes both exact retry and explicit after-turn
+For a retained legacy exact-target service steer authoritatively known to have
+had no provider effect, its attention-required row exposes exact retry and after-turn
 queue actions; neither action runs before its own click. The generic current-turn
 action is absent from both definite and unknown exact-steer decisions, and the
 server rejects a forged generic retarget action. An unknown provider effect
 remains fail-closed and does not expose the after-turn conversion.
+Ordinary Stream input instead follows MSG-001's current-or-queue transition;
+that definite old-turn race does not create an attention-required row. Idle
+intake retains its `message-intake` projection and the existing captured
+`followUpMode=steer`, so an idle optimistic conversation is not mislabeled as an
+explicit after-turn queue request.
 Every canonical queue row exposes an explicit cancellation action. The action
 removes a waiting or attention-required command only after durable commit; if
 dispatch already owns it, the UI reports that cancellation was not confirmed.
@@ -582,6 +638,12 @@ A live Stream representative follows its highest durable Thread position before
 historical selection or retained running state. Stream-only Desktop navigation
 uses the catalog owner's current binding, independently of catalog ordering;
 an explicit retained provider/Thread reference selects that exact catalog entry.
+Stream history responses use that same highest attached lineage position for
+their envelope, even when the retained catalog lists an older Thread first.
+Historical items keep their own provider/Thread identities. A missing current
+catalog entry cannot silently substitute an older envelope. The existing history
+trace reports response-binding admission separately from request freshness and
+visible paint, under the original history request ID.
 A historical turn route retains its exact history page while the head evolves.
 Selecting the Stream explicitly resumes head-history navigation. Retained links
 whose Thread no longer has a catalog entry still resolve through their owning
@@ -701,6 +763,21 @@ No new cursor table, timestamp rewrite or background reconciliation is introduce
 (ADR-0112). Existing legacy-revision migration guards remain narrowly scoped.
 Cached history may be returned with the open response, but provider/history
 hydration starts strictly as background work and is never awaited by mark-read.
+The read owner resolves that exact catalog (or still-selected transient) Thread
+and its saved final without building the full conversation/board/telemetry/server
+snapshot. A supplied Stream must match the same identity. Account resolution,
+final revision comparison, cursor serialization and durable receipt remain on
+their existing owners; no cached final or receipt grants read authority.
+
+An unrelated global snapshot advance does not invalidate a first canonical
+latest history page. The client may display that page while refusing its stale
+embedded snapshot only when the runtime, current Stream/provider/Thread and
+latest terminal revision still match exactly, the complete page ends at its
+reported total, and no canonical or focused window exists yet. Navigation and
+history-generation fences still apply. An existing page, explicit older-page
+intent, changed binding or newer final cannot be replaced through this path.
+Read acknowledgement still requires actual rendered final and after-paint
+eligibility; receipt of the page alone never clears unread state.
 
 ## Migration guards
 
@@ -741,3 +818,15 @@ A slow or failed health read after readiness does not reopen the startup overlay
 the connection owner retains its own diagnostic. An authoritative `ready=false`
 response still opens startup, including a replacement runtime with no stage
 metadata yet. A queued restart request alone does not prove replacement began.
+
+## Task operation result projection
+
+A durable Task admission is pending, not a successful status/update/cleanup.
+The shipped client reads the exact original ID/hash through the existing Task
+read control until canonical success, failure, explicit UNKNOWN or stopped
+disposition. Read reconnection never repeats the mutation. Existing Task pending
+controls and the independent cancellation action remain available; success toast
+and final snapshot follow canonical success only. Preview/confirmation keep
+their existing token and separate explicit command identities. A transport ACK
+is recorded once even if later work fails. A lost worker observation does not
+become fabricated failure, NO_EFFECT or permission to replay.
