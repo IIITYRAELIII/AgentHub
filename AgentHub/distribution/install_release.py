@@ -75,7 +75,7 @@ def valid_artifact_version(value: str) -> bool:
 
 def file_hash(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    with windows_filesystem_path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -125,7 +125,7 @@ def download(url: str, target: Path, *, max_bytes=MAX_ARCHIVE_BYTES) -> None:
     validate_source_url(url)
     opener = urllib.request.build_opener(AssetRedirect())
     request = urllib.request.Request(url, headers={"User-Agent": "AgentHub-ReadyPackage-Installer"})
-    with opener.open(request, timeout=30) as response, target.open("xb") as out:
+    with opener.open(request, timeout=30) as response, windows_filesystem_path(target).open("xb") as out:
         size = 0
         deadline = time.monotonic()+10*60
         while chunk := response.read(1024 * 1024):
@@ -190,10 +190,10 @@ def fetch_release(release: str, scratch: Path, *, metadata=None, stage=lambda va
     checksum_file = scratch/"release.json"
     stage("descriptor-body")
     download(checksum_asset["browser_download_url"], checksum_file, max_bytes=MAX_METADATA_BYTES)
-    if (checksum_file.stat().st_size != checksum_asset["size"]
+    if (windows_filesystem_path(checksum_file).stat().st_size != checksum_asset["size"]
             or "sha256:"+file_hash(checksum_file) != checksum_asset["digest"]):
         raise ValueError("Release descriptor SHA-256 or size mismatch")
-    descriptor = json.loads(checksum_file.read_text(encoding="utf-8"))
+    descriptor = json.loads(windows_filesystem_path(checksum_file).read_text(encoding="utf-8"))
     if (not isinstance(descriptor, dict) or descriptor.get("schema") != 1
             or descriptor.get("repository") != REPOSITORY or descriptor.get("platform") != "win32-x64"
             or descriptor.get("asset") != PACKAGE_ASSET or descriptor.get("bytes") != asset["size"]
@@ -210,7 +210,7 @@ def fetch_release(release: str, scratch: Path, *, metadata=None, stage=lambda va
     archive = scratch/"release.zip"
     stage("archive-body")
     download(asset["browser_download_url"], archive, max_bytes=asset["size"])
-    if archive.stat().st_size != asset["size"] or file_hash(archive) != descriptor["sha256"]:
+    if windows_filesystem_path(archive).stat().st_size != asset["size"] or file_hash(archive) != descriptor["sha256"]:
         raise ValueError("Release ZIP SHA-256 or size mismatch")
     return archive, metadata["tag_name"], descriptor
 
@@ -224,6 +224,7 @@ def verify_release_descriptor(package: dict, extracted: Path, release: dict) -> 
 
 
 def extract_verified(archive: Path, expected_sha256: str, destination: Path) -> dict:
+    archive = windows_filesystem_path(archive)
     if not archive.is_file() or archive.stat().st_size > MAX_ARCHIVE_BYTES:
         raise ValueError("Ready archive is missing or exceeds its budget")
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or file_hash(archive) != expected_sha256:
@@ -331,7 +332,7 @@ def update_status(runtime_root: Path, operation_id: str) -> dict:
 
 
 def _plain(path: Path, *, directory=False):
-    value = path.lstat()
+    value = windows_filesystem_path(path).lstat()
     if (stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400
             or not (stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode))
             or (not directory and value.st_nlink != 1)):
@@ -353,7 +354,7 @@ def _read_record(path: Path) -> dict:
     before = _plain(path)
     if before.st_size > MAX_METADATA_BYTES:
         raise ValueError("Oversized update preparation record")
-    body = path.read_bytes()
+    body = windows_filesystem_path(path).read_bytes()
     after = _plain(path)
     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
         raise ValueError("Update preparation record changed during read")
@@ -366,7 +367,7 @@ def _read_record(path: Path) -> dict:
 def _write_record(path: Path, value: dict):
     # Exclusive publication: a process crash can leave a partial record, which
     # refuses rather than being repaired, adopted or interpreted as absence.
-    with path.open("x", encoding="utf-8") as output:
+    with windows_filesystem_path(path).open("x", encoding="utf-8") as output:
         json.dump(value, output, sort_keys=True, separators=(",", ":"))
         output.flush()
         os.fsync(output.fileno())
@@ -374,7 +375,7 @@ def _write_record(path: Path, value: dict):
 
 @contextmanager
 def _preparation_lock(cache: Path):
-    lock = cache/"preparation.lock"
+    lock = windows_filesystem_path(cache/"preparation.lock")
     if not lock.exists():
         with lock.open("xb") as output:
             output.write(b"0")
@@ -424,12 +425,12 @@ def prepare_update(args) -> None:
     identity = hashlib.sha256((str(runtime)+"\0"+args.operation_id).encode()).hexdigest()[:32]
     cache = scratch/("agenthub-update-"+identity)
     preparation = cache/"preparation.json"
-    if cache.exists() and not preparation.exists():
+    if windows_filesystem_path(cache).exists() and not windows_filesystem_path(preparation).exists():
         # Historical unbound caches are immutable/readback-only. In particular,
         # absence of update-request.json never proves pre-dispatch ownership.
         _plain_chain(cache)
         prior_file = cache/"update-request.json"
-        if prior_file.exists():
+        if windows_filesystem_path(prior_file).exists():
             prior = _read_record(prior_file)
             if (prior.get("tag") != args.release or prior.get("operationId") != args.operation_id
                     or Path(prior.get("runtimeRoot", "")).resolve() != runtime):
@@ -441,12 +442,12 @@ def prepare_update(args) -> None:
     binding = dict(schema=1, kind="public-update-preparation-v1", runtime=_directory_identity(runtime),
                    scratch=_directory_identity(scratch), operationId=args.operation_id, release=args.release,
                    archiveSha256=args.sha256, installerSha256=file_hash(installer))
-    if not cache.exists():
+    if not windows_filesystem_path(cache).exists():
         original = read_update_original(runtime, args.operation_id)
         if original is not None:
             print(json.dumps(original_status(args.operation_id, original)))
             return
-        cache.mkdir()
+        windows_filesystem_path(cache).mkdir()
         _write_record(preparation, dict(binding=binding, cache=_directory_identity(cache)))
     _plain_chain(cache)
     with _preparation_lock(cache):
@@ -463,17 +464,18 @@ def prepare_update(args) -> None:
                 raise ValueError("Original update selection or physical preparation identity changed")
         assert_bound()
         original = read_update_original(runtime, args.operation_id)
-        if (original is not None or (cache/"dispatch-intent.json").exists() or (cache/"update-request.json").exists()):
+        if (original is not None or windows_filesystem_path(cache/"dispatch-intent.json").exists()
+                or windows_filesystem_path(cache/"update-request.json").exists()):
             # Neither absent SQL nor a lost subprocess reply can reopen this fence.
             print(json.dumps(original_status(args.operation_id, original)))
             return
         selected = _transport_selection(args.release, binding["installerSha256"])
         selection_file = cache/"selection.json"
-        if selection_file.exists():
+        if windows_filesystem_path(selection_file).exists():
             if _read_record(selection_file) != selected:
                 raise ValueError("Original public asset selection changed")
         else:
-            if {child.name for child in cache.iterdir()} != {"preparation.json", "preparation.lock"}:
+            if {child.name for child in windows_filesystem_path(cache).iterdir()} != {"preparation.json", "preparation.lock"}:
                 raise ValueError("Original public asset selection is missing; retained transport cannot be adopted")
             _write_record(selection_file, selected)
         archive_pin = selected["assets"][0]["digest"].removeprefix("sha256:")

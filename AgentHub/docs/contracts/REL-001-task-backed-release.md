@@ -3508,9 +3508,12 @@ See ADR-HUB-351-release-metadata-amendment.
 ## Explicit GitHub distribution target
 
 Windows package verification and recipient extraction support declared dependency
-paths beyond legacy MAX_PATH inside their owned scratch directories. Extended
-filesystem names apply to extraction and its cleanup only; archive path safety,
-complete hashes, original checkpoint identity and ownership checks still apply.
+paths beyond legacy MAX_PATH inside their owned scratch directories. Owned asset,
+extraction and preparation-record I/O, including identity checks/locks/cleanup,
+use extended filesystem names. Persisted identity and subprocess paths keep their
+ordinary spelling; archive path safety, complete hashes, original checkpoint
+identity and ownership checks still apply. New preparation records must not break
+a previously working ordinary scratch merely by adding a longer filename.
 
 An original `agent-hub-publication` target with environment `github-release`
 selects the existing runner's distribution profile. Normal installed targets are

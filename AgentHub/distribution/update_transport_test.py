@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 import sqlite3
+import shutil
 import tempfile
 import threading
 import unittest
@@ -32,6 +33,19 @@ class PreparationTransportTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="hub-transport-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        root_io = installer.windows_filesystem_path(self.root)
+        root_identity = root_io.lstat()
+        def cleanup_owned_tree():
+            # The same real cleanup precedes TemporaryDirectory's ordinary
+            # cleanup for both parent/candidate long-path controls; neither is
+            # skipped. Identity remains the exclusively created fixture root.
+            if root_io.exists():
+                current = root_io.lstat()
+                if ((current.st_dev, current.st_ino) != (root_identity.st_dev, root_identity.st_ino)
+                        or getattr(current, "st_file_attributes", 0) & 0x400):
+                    raise RuntimeError("Owned fixture root changed; cleanup refused")
+                shutil.rmtree(root_io)
+        self.addCleanup(cleanup_owned_tree)
         self.runtime = self.root/"runtime"
         (self.runtime/"data").mkdir(parents=True)
         self.database = self.runtime/"data/runtime.sqlite"
@@ -120,7 +134,48 @@ class PreparationTransportTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             self.prepare()
         self.assertEqual(self.dispatches, [])
-        return {p: p.read_bytes() for p in self.scratch.rglob("*") if p.is_file()}
+        return {p: p.read_bytes() for p in installer.windows_filesystem_path(self.scratch).rglob("*") if p.is_file()}
+
+    def long_layout(self):
+        # Previously working descriptor/archive names remain below MAX_PATH,
+        # while the NEW transport-result.json is exactly the reported264chars.
+        suffix = Path("scratch")/("agenthub-update-"+"0"*32)/("attempt-"+"0"*8)/"transport-result.json"
+        padding = max(1, 264-len(str(self.root/"ordinary"/suffix)))
+        area = self.root/("ordinary"+"x"*padding)
+        self.runtime, self.scratch = area/"runtime", area/"scratch"
+        self.database = self.runtime/"data/runtime.sqlite"
+        installer.windows_filesystem_path(self.runtime/"data").mkdir(parents=True)
+        installer.windows_filesystem_path(self.scratch).mkdir()
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("CREATE TABLE maintenance_operations(operation_id TEXT PRIMARY KEY,operation_json TEXT)")
+            db.commit()
+        self.args.runtime_root, self.args.scratch_root = self.runtime, self.scratch
+
+    @unittest.skipUnless(os.name == "nt", "actual Windows long path")
+    def test_fresh_working_transport_with_long_new_record_path_dispatches_once(self):
+        self.long_layout()
+        self.fail_once = False
+        self.prepare()
+        self.assertEqual(len(self.dispatches), 1)
+        results = list(installer.windows_filesystem_path(self.scratch).rglob("transport-result.json"))
+        self.assertEqual(len(results), 1)
+        self.assertGreaterEqual(len(str(results[0]).removeprefix("\\\\?\\")), 264)
+        self.assertEqual(json.loads(results[0].read_text(encoding="utf-8"))["outcome"], "succeeded")
+        self.assertEqual(len(self.dispatches), 1)
+        self.prepare()
+        self.assertEqual(len(self.dispatches), 1)
+
+    @unittest.skipUnless(os.name == "nt", "actual Windows long path")
+    def test_interrupted_long_record_path_continues_once_without_overwrite(self):
+        self.long_layout()
+        retained = self.partial()
+        records = [path for path in retained if path.name == "transport-result.json"]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(json.loads(retained[records[0]])["failureCode"], "TimeoutError")
+        self.prepare()
+        self.assertEqual(len(self.dispatches), 1)
+        for path, body in retained.items():
+            self.assertEqual(path.read_bytes(), body)
 
     def test_interrupted_body_manual_same_original_finishes_once_and_keeps_failed_bytes(self):
         retained = self.partial()

@@ -30,6 +30,12 @@ cache. Failed bytes are retained, never resumed as verified input or overwritten
 Actual descriptor, ZIP and complete extraction checks remain mandatory. Bounded
 attempt results contain only stage, allowlisted failure type and verified hashes;
 no credential, signed redirect, exception text or payload enters those records.
+New record reads, writes, lock and path checks use the existing Windows extended
+filesystem namespace at I/O boundaries, as do their affected asset read/write
+callers. Persisted identity and subprocess paths keep their ordinary spelling;
+this does not resolve away descendant links or relax exclusive creation, regular
+file proof, integrity, fsync or one-dispatch guards. A previously working ordinary
+scratch whose new result record exceeds MAX_PATH must remain supported.
 
 After verification and another canonical read, exclusively flush the ordinary
 request and a digest-bound dispatch intent BEFORE calling `bootstrap-start` once.
