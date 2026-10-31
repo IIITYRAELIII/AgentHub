@@ -427,15 +427,34 @@ before observing same-Job ActiveProcesses zero. Every backup/install/launch
 boundary obtains a fresh reply from that holding native parent. Unknown,
 foreign or changed evidence refuses without killing or replaying work.
 
-Backup uses SQLite backup API with all discovered SQLite writer reservations
-held together, integrity checks and before/after hashes for regular config/data.
-WAL/SHM and ephemeral bot.lock are not raw backup copies. Linked/unknown data
-refuses. Original config, auth, cursors and UNKNOWN outcomes remain in place;
+Backup uses the single `runtime-durable-state-v1` scope policy (ADR-HUB-380):
+config and all top-level regular data files, plus recursive durable outboxes,
+background jobs, failed updates, Claude run state, locks, diff indexes and custody
+metadata. Custody epoch intent/snapshot must be regular nonlinked files, never
+same-named directories; they and other scalar metadata are copied.
+`repository` and `retained-wip` remain in place. Every direct ordinary directory
+outside that durable scope is explicitly recorded as retained, not backed up,
+with its physical identity. Known Git/WIP/dependency/payload trees are not traversed;
+unclassified directories are labelled `unclassified-not-backed-up`, never claimed
+as a complete backup. The unchanged installer does not modify those data trees.
+Selected links/special entries and linked retained roots refuse; links inside
+untraversed retained bodies neither grant authority nor enter the snapshot.
+Read-only support inspection precedes modern/legacy admission and is repeated
+before the modern synchronous stopping fence; work admission is rechecked after
+that inspection. A fresh stopped inventory supplies backup, never the old preflight.
+SQLite headers discover databases throughout the selected scope regardless of
+filename suffix. All discovered writer reservations are held together through
+SQLite backup/integrity and regular-file before/after hashes. WAL/SHM companions
+are omitted only with their discovered database; orphan companions refuse.
+Ephemeral bot.lock is not copied. Original config, auth, cursors and UNKNOWN outcomes remain in place;
 backup never restores or replays them. The stopped-only installer retains its
 own guards. A durable one-use launch intent binds the replacement Host, original,
 release, instance and control readiness. Ambiguous install/start is reconciling,
 not permission for another launch or automatic rollback. A cold launch cannot
 consume an unresolved original; read-only `--check` cannot consume its admission.
+An exclusive backup destination outside the runtime may be on another Windows
+volume; normal TEMP and runtime roots need not share a drive. Same-root and child
+destinations still refuse, and existing output is never overwritten.
 
 The incoming public package provides the legacy entry when installed public
 2.0.4 lacks this protocol. The user explicitly finishes work and manually stops

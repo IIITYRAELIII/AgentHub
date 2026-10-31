@@ -819,3 +819,10 @@ preparation, backup, installer and readiness are real independent work, not
 queue/lock wait merely because they take time. Private fixture wall time and
 saved ACL calls do not establish production speedup or fixed downtime. Unobserved
 cross-process stages remain unmeasured; no inferred CPU/disk attribution.
+
+Package backup support inspection uses the same shallow/declared durable scope
+as the stopped snapshot (ADR-HUB-380). It reads selected file headers and directory
+identities without hydrating retained Git/WIP/dependency/payload trees, opening
+SQLite or acquiring writer reservations on the live runtime. The existing
+original-ID `package-backup-preflight` restart span measures that work. It is not
+queue wait or proof of snapshot completion; actual backup and ready remain distinct.

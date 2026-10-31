@@ -83,6 +83,20 @@ export class RuntimeRestartController {
       return { status: "waiting-for-work" };
     }
 
+    if (request.metadata?.packageHandoff && this.packageHandoff?.preflight) {
+      try {
+        await measure("package-backup-preflight", () => this.packageHandoff.preflight(request));
+        // Inspection awaits I/O with admission open; recheck immediately before
+        // the existing synchronous stopping fence, with no new async gap.
+        if (this.isStopping()) return { status: "ignored" };
+        if (this.hasBlockingWork()) {
+          if (await this.setWaiting(true) === false) return { status: "ignored" };
+          return { status: "waiting-for-work" };
+        }
+      } catch (error) {
+        return this.#abort(error, "package-backup-preflight", false);
+      }
+    }
     if (!this.beginStopping()) return { status: "ignored" };
     try {
       if (await this.setWaiting(false) === false) {
