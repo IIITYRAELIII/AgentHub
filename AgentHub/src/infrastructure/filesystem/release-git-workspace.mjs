@@ -1024,11 +1024,11 @@ export class ReleaseGitWorkspaceService {
       const verificationRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
       try {
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
-        const prepared = await this.#preparedGenerationSource({ ...input,
-          verificationRoot: path.join(verificationRoot, "before") });
+        const prepared = await measureTaskOperation("release:prepared-source", async () => this.#preparedGenerationSource({ ...input,
+          verificationRoot: path.join(verificationRoot, "before") }));
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
-        const current = await this.#preparedGenerationSource({ ...input,
-          verificationRoot: path.join(verificationRoot, "after") });
+        const current = await measureTaskOperation("release:prepared-source", async () => this.#preparedGenerationSource({ ...input,
+          verificationRoot: path.join(verificationRoot, "after") }));
         if (stableManifest(current.binding) !== stableManifest(prepared.binding)) {
           throw new Error("Prepared composition changed during validation");
         }
@@ -1198,7 +1198,7 @@ export class ReleaseGitWorkspaceService {
           }
           if (!localCheckpoint?.publicationFreeze) {
             if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
-            preparedSource = await this.#preparedGenerationSource(preparedInput);
+            preparedSource = await measureTaskOperation("release:prepared-source", async () => this.#preparedGenerationSource(preparedInput));
             if (existingPrepared && stableManifest(existingPrepared) !== stableManifest(preparedSource.binding)) {
               throw Object.assign(new Error("Original generation prepared PreRelease changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
             }
@@ -1230,16 +1230,16 @@ export class ReleaseGitWorkspaceService {
         isolated.#publicationDataDir = this.#publicationDataDir;
         if (ephemeral) isolated.#validationReferenceRoot = sourceRoot;
         else isolated.#validationBundle = bundle;
-        const validatePrepared = async () => {
+        const validatePrepared = () => measureTaskOperation("release:validate-prepared", async () => {
           if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
           if (!localCheckpoint?.publicationFreeze) {
-            const current = await this.#preparedGenerationSource(preparedInput);
+            const current = await measureTaskOperation("release:prepared-source", async () => this.#preparedGenerationSource(preparedInput));
             if (stableManifest(current.binding) !== stableManifest(identity.preparedCandidate)) {
               throw Object.assign(new Error("Prepared PreRelease changed during generation capture"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
             }
           }
           if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
-        };
+        });
         let candidate;
         if (!freezePublication) {
           candidate = await isolated.prepareCandidate({ planRevision, projectRoot, workspaceId, frozenTasks,
@@ -1540,14 +1540,14 @@ export class ReleaseGitWorkspaceService {
       const manifestFile = path.join(clone.evidenceRoot, `${manifestHash}.json`);
       const previousRef = before.branch || "0".repeat(40);
       let promoted = await gitMaybe(["rev-parse", `${branchRef}^{commit}`], { cwd: clone.releaseRoot }) === imported;
-      const exactCheckout = async (head) => {
+      const exactCheckout = (head) => measureTaskOperation("release:promotion-checkout", async () => {
         if (await runGit(["rev-parse", "HEAD^{commit}"], { cwd: clone.releaseRoot }) !== head
             || await runGit(["write-tree"], { cwd: clone.releaseRoot }) !== await runGit(["rev-parse", `${head}^{tree}`], { cwd: clone.releaseRoot })
             || await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: clone.releaseRoot })) {
           throw Object.assign(new Error("Generation checkout changed; private bytes retained"), { code: "AWAIT_PREPARATION_UNKNOWN" });
         }
-      };
-      const validate = async () => {
+      });
+      const validate = () => measureTaskOperation("release:promotion-validate", async () => {
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         const current = await primarySnapshot(initial.root);
         if (current.mainCommit !== initial.mainCommit || current.headCommit !== initial.headCommit
@@ -1555,7 +1555,7 @@ export class ReleaseGitWorkspaceService {
             || current.dirty.indexFingerprint !== initial.dirty.indexFingerprint) {
           throw new Error("Registered primary changed during native generation promotion");
         }
-      };
+      });
       if (!pending) {
         journal = { version: 1, policy: NATIVE_RELEASE_POLICY, kind: "native-generation-promotion-v1",
           phase: "prepared", target: imported, targetTree: importedTree, manifestHash, manifest,
@@ -2455,34 +2455,37 @@ export class ReleaseGitWorkspaceService {
   async freezePublicationCandidate({ projectRoot, workspaceId, ...options } = {}) {
     this.#assertAvailable("freezePublicationCandidate");
     if (!String(workspaceId ?? "").trim()) throw new Error("publication freeze requires its Workspace");
-    return this.withAwaitTransition(workspaceId, async () => {
-      const initial = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze" });
+    return measureTaskOperation("release:freeze-admission", () => this.withAwaitTransition(workspaceId, async () => {
+      recordTaskOperationTiming("release:freeze-workspace-acquired");
+      const initial = await measureTaskOperation("release:primary-validation", async () => this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze" }));
       const layout = this.#layout(initial.projectRoot);
       const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
-      return withInterprocessLocks([lock], async () => {
+      return withInterprocessLocks([lock], () => measureTaskOperation("release:freeze-owned", async () => {
         const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
         if (!samePath(marker.primaryRoot, initial.projectRoot)) throw new Error("publication freeze clone belongs to another primary");
-        const baseBinding = await assertFreezeBaseProvenance(layout,
-          await durablePublishedRevision(this.#environment, marker.primaryRoot));
+        const baseBinding = await measureTaskOperation("release:freeze-base", async () => assertFreezeBaseProvenance(layout,
+          await durablePublishedRevision(this.#environment, marker.primaryRoot)));
         if (baseBinding.provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
-          await this.validateLocalSourceBaseline({ projectRoot: marker.primaryRoot, ...baseBinding });
+          await measureTaskOperation("release:freeze-installed-baseline", () =>
+            this.validateLocalSourceBaseline({ projectRoot: marker.primaryRoot, ...baseBinding }));
         }
-        const result = await freezePreparedPublicationCandidate({
+        const result = await measureTaskOperation("release:freeze-candidate", async () => freezePreparedPublicationCandidate({
           runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
           ...options, layout, marker, workspaceId,
-          validateBeforeCommit: async () => {
+          validateBeforeCommit: () => measureTaskOperation("release:freeze-callback", async () => {
             await options.validateBeforeCommit?.();
             if (baseBinding.provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
-              await this.validateLocalSourceBaseline({ projectRoot: marker.primaryRoot, ...baseBinding });
+              await measureTaskOperation("release:freeze-callback-baseline", () =>
+                this.validateLocalSourceBaseline({ projectRoot: marker.primaryRoot, ...baseBinding }));
             }
-          },
-        });
-        const final = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze completion" });
+          }),
+        }));
+        const final = await measureTaskOperation("release:primary-validation", async () => this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze completion" }));
         if (initial.headCommit !== final.headCommit || initial.indexFingerprint !== final.indexFingerprint
           || initial.dirtyFingerprint !== final.dirtyFingerprint) throw new Error("primary Workspace changed during publication freeze");
         return result;
-      });
-    });
+      }));
+    }));
   }
 
   async recoverFreezingPublicationCandidate({
