@@ -80,7 +80,7 @@ async function fixture(t) {
     source: sha(await readFile(path.join(primary, "AgentHub/server.mjs"))) });
   assert.notEqual(await git(primary, ["rev-parse", "--git-common-dir"]), retained);
   assert.equal(await git(primary, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input: `${source}\n` }), `${source} missing`);
-  return { root, primary, retained, main, source, sourceTree, unrelated, runtimeRoot, releaseId,
+  return { root, primary, retained, origin, main, source, sourceTree, unrelated, runtimeRoot, releaseId,
     manifest, physical, input, dataDir, publication, owner, request, state };
 }
 
@@ -168,4 +168,72 @@ test("legacy local manifest without a publication identity retains the full sour
     assert.equal((await f.owner.validateLocalSourceBaseline({ ...f.request, provenance: p })).runtimeFiles, 1);
   }
   assert.deepEqual(await f.state(), before);
+});
+
+test("ordinary Await inherits only exact published notes and selected root documentation", async t => {
+  const f = await fixture(t), docRoot = path.join(f.root, "selected-doc");
+  await git(f.root, ["clone", "--no-local", f.primary, docRoot]);
+  await save(docRoot, "README.md", "accepted selected documentation\n");
+  const resultCommit = await commit(docRoot, "selected documentation");
+  await git(f.primary, ["fetch", "--no-tags", "--no-write-fetch-head", docRoot, resultCommit]);
+  await git(f.retained, ["checkout", "--detach", f.main]);
+  await save(f.retained, "CHANGELOG.md", "published notes\n");
+  const published = await commit(f.retained, "published notes");
+  await git(f.retained, ["push", f.origin, "HEAD:main"]);
+  await save(f.runtimeRoot, "publication-state.json", JSON.stringify({ generation: "own-publication",
+    repositories: [{ root: f.primary, revision: published }] }));
+  await save(f.retained, "AgentHub/server.mjs", f.physical);
+  await save(f.retained, "README.md", "accepted selected documentation\n");
+  const updateManifest = async () => {
+    const source = await git(f.retained, ["rev-parse", "HEAD"]);
+    await save(f.runtimeRoot, `releases/${f.releaseId}/runtime-manifest.json`,
+      JSON.stringify({ ...JSON.parse(f.manifest), publicationRevision: source }));
+    return source;
+  };
+  const source = await commit(f.retained, "installed source with exact accepted metadata");
+  await updateManifest();
+  const request = { ...f.request, publishedRevision: published, tasks: [{ ...f.request.tasks[0], resultCommit }] };
+  const before = await f.state();
+  const p = await f.owner.deriveInstalledLocalSourceBaselineForSelection(request);
+  assert.equal(p.sourceBaseCommit, source);
+  assert.equal((await f.owner.validateLocalSourceBaseline({ ...request, provenance: p })).runtimeFiles, 1);
+  await assert.rejects(f.owner.deriveInstalledLocalSourceBaselineForSelection({ ...request, tasks: f.request.tasks }),
+    /repository files differ from agreed main/u);
+  await save(f.retained, "CHANGELOG.md", "unpublished substituted notes\n");
+  await commit(f.retained, "unpublished notes"); await updateManifest();
+  await assert.rejects(f.owner.deriveInstalledLocalSourceBaselineForSelection(request), /repository files differ from agreed main/u);
+  await save(f.retained, "CHANGELOG.md", "published notes\n");
+  await git(f.retained, ["add", "CHANGELOG.md"]);
+  await git(f.retained, ["update-index", "--chmod=+x", "README.md"]);
+  await git(f.retained, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "foreign documentation mode"]);
+  await updateManifest();
+  await assert.rejects(f.owner.deriveInstalledLocalSourceBaselineForSelection(request), /repository files differ from agreed main/u);
+  assert.deepEqual(await f.state(), before);
+});
+
+test("Task Test documentation preview does not authorize an unselected Await", async t => {
+  const f = await fixture(t), owner = new TaskGitWorkspaceService({ dataDir: f.dataDir,
+    readPublication: async () => f.publication, recordTiming: () => {} });
+  const first = await owner.prepare({ taskId: "11111111-1111-4111-8111-111111111111", taskNumber: "HUB-1", projectRoot: f.primary });
+  await save(first.projectRoot, "README.md", "accepted Test documentation\n");
+  await commit(first.projectRoot, "selected documentation");
+  const firstSnapshot = await owner.snapshot({ taskId: first.taskId, taskNumber: "HUB-1", projectRoot: first.projectRoot });
+  assert.equal((await owner.mergeIntoDev(firstSnapshot)).integrated, true);
+  await save(f.retained, "README.md", "accepted Test documentation\n");
+  const source = await commit(f.retained, "installed source retaining Test documentation");
+  await save(f.runtimeRoot, `releases/${f.releaseId}/runtime-manifest.json`,
+    JSON.stringify({ ...JSON.parse(f.manifest), publicationRevision: source }));
+  const second = await owner.prepare({ taskId: "22222222-2222-4222-8222-222222222222", taskNumber: "HUB-2", projectRoot: f.primary });
+  await save(second.projectRoot, "AgentHub/next.mjs", "export const next = true;\n");
+  await commit(second.projectRoot, "independent main-based Task");
+  const snapshot = await owner.snapshot({ taskId: second.taskId, taskNumber: "HUB-2", projectRoot: second.projectRoot });
+  const integrated = await owner.mergeIntoDev(snapshot);
+  assert.equal(integrated.integrated, true);
+  assert.equal(await git(integrated.dev.projectRoot, ["show", "HEAD:README.md"]), "accepted Test documentation");
+  const selected = [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit }];
+  await assert.rejects(f.owner.deriveInstalledLocalSourceBaselineForSelection({ ...f.request, tasks: selected }),
+    /repository files differ from agreed main/u);
+  assert.equal(await git(f.primary, ["rev-parse", "HEAD"]), f.main);
+  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+  assert.equal(await readFile(path.join(f.primary, "README.md"), "utf8"), "agreed repository metadata\n");
 });

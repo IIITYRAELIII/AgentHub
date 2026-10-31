@@ -676,14 +676,17 @@ and verifies both retained originals and the physical bounded regular Host
 executable against its required manifest record. Other RuntimeHost paths refuse.
 Uninstalled executable changes, absent provenance or compiled artifact, foreign component changes,
 unsupported deletions or missing retained Host inputs refuse this bounded route.
-If the retained source inherits repository files outside `AgentHub/` that differ
-from the older OWN publication, its COMPLETE outside path/mode/object set must
-equal the exact agreed local main. Bounded raw NUL Git inventories compare literal
-bytes, including non-ASCII names; missing, additional, substituted, duplicate or
-malformed entries refuse. Those unchanged repository files are not runtime carry
-and are never read or executed as installed source. This does not grant upstream
-adoption: the existing exact selected adoption/origin checks remain mandatory.
-See ADR-0120.
+The retained source's COMPLETE outside-`AgentHub/` path/mode/object set must equal
+the exact agreed local main, with two bounded metadata origins: root CHANGELOG
+may equal the exact durable OWN publication; existing regular root README/AGENTS
+may equal an exact selected registered result based on that main. Task Test alone
+may use its already protected managed dev HEAD for the same documentation lookup;
+release preparation never inherits dev. Every other outside entry, deletion,
+addition or mode change still refuses. Raw NUL inventories compare literal bytes,
+including non-ASCII names; duplicate or malformed records refuse. These entries
+are non-runtime metadata and grant no executable, merge-side, Task, adoption or
+publication authority. The existing source, selection, origin and terminal guards
+remain mandatory. See ADR-0120 and ADR-HUB-381.
 The bound is 512 changed paths, a 4 MiB binary patch and bounded regular files.
 No installed-file overlay, selected Task expansion or rolling-dev import occurs.
 
