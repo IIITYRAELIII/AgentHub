@@ -1,5 +1,31 @@
 # REL-001 — Task-backed Workspace release
 
+## Unregistered partial generations after explicit amendment
+
+An ordinary addressed amendment may capture the exact terminal failed compose
+receipts after the last registered generation. Its existing positive not-applied
+target readback, original authorization and revision CAS remain required. The
+same release then reserves the first generation after those failed slots; it
+does not change currentGeneration until the new immutable candidate is stored.
+Old partial directories, prepared input, receipts and registered generations are
+preserved. The old prepared-input equality guard is unchanged.
+
+The existing SQLite owner verifies every captured receipt/hash and the current
+amendment/input/owner again when it admits the new compose intent. UNKNOWN,
+intent, applied, missing/foreign or changed proof cannot authorize this move.
+Target readback is repeated before composition; unknown or applied effects stop
+it. A later normal explicit amendment can capture another terminal failed slot.
+No caller generation increment, new release, schema, flag or cleanup is needed.
+Version, consolidated metadata identity and exact accepted selection still flow
+through the existing composition/freeze owners. See ADR-HUB-382-partial-generation.
+
+Amendment admission checks every registered or unresolved future compose slot
+above currentGeneration, including gaps. A stored sparse candidate or original
+intent must first settle through ordinary same-original continuation; a fresh
+amendment cannot drop that lineage and return to an earlier failed slot. Once
+that candidate is settled/current, its historical receipts do not veto later
+ordinary amendments. The check is in the existing amendment transaction.
+
 ## Explicit interruption of an execution attempt
 
 An explicit claim/Test/Await cancellation can stop future execution while its
@@ -238,6 +264,19 @@ runtime pointer, manifest digest and every physical file are still read and
 verified at each boundary; compiled Host inputs and binary/LFS/text comparison
 rules retain their existing owner. No installation result is cached or inferred
 from the source batch.
+
+Installed local-source history can live in a separate retained Git object store.
+Before dependent diff, ancestry or content checks, the existing baseline owner
+transports only the exact clean retained HEAD's reachable graph through the
+selected Git bundle owner and unbundles it without changing refs, configuration,
+FETCH_HEAD, index or worktree. It rechecks retained HEAD/tree/directory custody
+and imported object identities; unrelated refs are not transport inputs. Object
+availability grants no source, metadata, adoption, selection or publication
+authority. The complete ordinary verifier and fresh pointer/manifest checks still
+apply. Failed or ambiguous transport is retained rather than inferred rejected.
+The maintained `distribution/INSTALL.md` instructions are source documentation,
+not an installed runtime artifact; distribution executable changes still require
+the same exact manifest and physical-byte proof.
 
 Forward effect inventory streams the digest of retained native merge journals:
 their complete index/automatic path inventories are not small checkpoint records.
@@ -663,14 +702,17 @@ and verifies both retained originals and the physical bounded regular Host
 executable against its required manifest record. Other RuntimeHost paths refuse.
 Uninstalled executable changes, absent provenance or compiled artifact, foreign component changes,
 unsupported deletions or missing retained Host inputs refuse this bounded route.
-If the retained source inherits repository files outside `AgentHub/` that differ
-from the older OWN publication, its COMPLETE outside path/mode/object set must
-equal the exact agreed local main. Bounded raw NUL Git inventories compare literal
-bytes, including non-ASCII names; missing, additional, substituted, duplicate or
-malformed entries refuse. Those unchanged repository files are not runtime carry
-and are never read or executed as installed source. This does not grant upstream
-adoption: the existing exact selected adoption/origin checks remain mandatory.
-See ADR-0120.
+The retained source's COMPLETE outside-`AgentHub/` path/mode/object set must equal
+the exact agreed local main, with two bounded metadata origins: root CHANGELOG
+may equal the exact durable OWN publication; existing regular root README/AGENTS
+may equal an exact selected registered result based on that main. Task Test alone
+may use its already protected managed dev HEAD for the same documentation lookup;
+release preparation never inherits dev. Every other outside entry, deletion,
+addition or mode change still refuses. Raw NUL inventories compare literal bytes,
+including non-ASCII names; duplicate or malformed records refuse. These entries
+are non-runtime metadata and grant no executable, merge-side, Task, adoption or
+publication authority. The existing source, selection, origin and terminal guards
+remain mandatory. See ADR-0120 and ADR-HUB-381.
 The bound is 512 changed paths, a 4 MiB binary patch and bounded regular files.
 No installed-file overlay, selected Task expansion or rolling-dev import occurs.
 

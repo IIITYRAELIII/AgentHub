@@ -337,7 +337,6 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
     id: "exact-steer-decision",
     provider: "codex",
     threadId: "thread-a",
-    streamId: "stream-a",
     taskTitle: "Agent HUB - Sirius",
     clientUserMessageId: "exact-steer-client",
     clientProjectionIntent: "conversation",
@@ -347,15 +346,18 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
     steerTargetTurnId: "turn-a",
     createdAt: "2026-09-13T22:00:00.000Z",
   };
+  // This retained exact-target decision is Thread-bound. A streamId would
+  // select ordinary current-or-queue delivery instead of this legacy path.
   queuedInputs.set(item.id, item);
   let providerCalls = 0;
+  let startCalls = 0;
   const controller = new DeferredInputController({
     pendingInputs,
     queuedInputs,
     isBlocked: async () => false,
     occupancy: async () => ({ occupied: false, run: null }),
     steer: async () => { providerCalls += 1; return null; },
-    start: async () => {},
+    start: async () => { startCalls += 1; },
     persist: async () => {},
     updateMessage: async () => {},
     pendingKeyboard: () => ({ inline_keyboard: [] }),
@@ -364,7 +366,12 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
   });
   await controller.process(item.id);
   assert.equal(providerCalls, 0);
-  const deferred = deferredPendingInputSnapshot(pendingInputs.get(item.id), {
+  assert.equal(startCalls, 0);
+  assert.equal(queuedInputs.has(item.id), false);
+  const pending = pendingInputs.get(item.id);
+  assert.equal(pending, item);
+  assert.equal(pending.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
+  const deferred = deferredPendingInputSnapshot(pending, {
     editableText: (input) => input,
     inputPreview: (input) => input,
     responseAnnotations: () => [],
@@ -372,6 +379,7 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
   }, { forMessage: () => null });
   assert.equal(deferred.queueAfterTurnAvailable, true);
   assert.equal(deferred.attentionRequired, true);
+  assert.equal(deferred.streamId, null);
 
   for (const [selector, expectedAction] of [
     ["queue-retry", "retry"],
@@ -383,7 +391,7 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
       const fixtureSnapshot = snapshot();
       fixtureSnapshot.version = `exact-steer-${expectedAction}`;
       fixtureSnapshot.deferredInputs = [deferred];
-      await openFixture(page, { fixtureSnapshot });
+      const diagnostics = await openFixture(page, { fixtureSnapshot });
       await page.reload();
       const row = page.locator(".queue-item[data-queue-id='exact-steer-decision']");
       await row.waitFor({ state: "visible" });
@@ -391,6 +399,9 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
       assert.equal(await row.locator("[data-action='queue-accept']").count(), 1);
       assert.equal(await row.locator("[data-action='queue-steer']").count(), 0);
       assert.equal((await bridgeCalls(page, "deferred-input")).length, 0);
+      if (expectedAction === "retry" && process.env.AGENT_HUB_QUEUE_SCREENSHOT) {
+        await page.screenshot({ path: process.env.AGENT_HUB_QUEUE_SCREENSHOT });
+      }
       await row.locator(`[data-action='${selector}']`).click();
       await page.waitForFunction((action) => {
         const log = JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]");
@@ -402,6 +413,7 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
       assert.equal(calls.length, 1);
       assert.equal(calls[0].params.id, "exact-steer-decision");
       assert.equal(calls[0].params.action, expectedAction);
+      assert.deepEqual(diagnostics, []);
     } finally {
       await browser.close();
     }
@@ -2054,6 +2066,60 @@ test("production attachment boundary rejects unsafe names and accepts more than 
   } finally {
     await browser.close();
   }
+});
+
+test("shipped canonical receipt beats stale wait before history across reload and snapshot order", {
+  timeout: 40_000,
+}, async () => {
+  const browser = await launchBrowser();
+  try {
+    for (const width of [1366, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      const initial = snapshot();
+      const original = {
+        id: "stale-original", provider: "codex", threadId: "thread-a", streamId: "stream-a",
+        clientUserMessageId: "original-client", state: "queued", text: "Retained original",
+        conflictKind: "message-intake", clientProjectionIntent: "conversation",
+        waitReason: "managed-run-activity-unknown", createdAt: "2026-10-21T09:00:00.000Z",
+      };
+      initial.deferredInputs = [original];
+      const errors = await openFixture(page, { fixtureSnapshot: initial });
+      if (width === 390) await page.locator("[data-mobile-button='chat']").click();
+      await page.locator(".queue-head:visible").waitFor();
+      const accepted = structuredClone(initial);
+      accepted.version = "receipt-before-history";
+      accepted.messageReceipts = [{
+        provider: "codex", threadId: "thread-a", streamId: "stream-a",
+        clientUserMessageId: original.clientUserMessageId, displayText: original.text,
+        accepted: true, providerAccepted: true, steered: true,
+        runId: "original-run", turnId: "original-turn", queued: false, deferred: false,
+      }];
+      const assertDelivered = async () => {
+        if (width === 390) await page.locator("[data-mobile-button='chat']").click();
+        await page.waitForFunction(() => !document.querySelector(".queue-head"));
+        assert.equal(await page.locator(".queue-head:visible").count(), 0);
+        assert.match(await page.locator("[data-chat-pane]").innerText(), /Retained original/u);
+        assert.equal(await page.locator(".msg-body").filter({ hasText: original.text }).count(), 1);
+        assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+      };
+      await applyFixtureSnapshot(page, accepted);
+      await assertDelivered();
+      await page.reload({ waitUntil: "load" });
+      await assertDelivered();
+      const withoutDeferred = { ...structuredClone(accepted), version: "receipt-first", deferredInputs: [] };
+      await applyFixtureSnapshot(page, withoutDeferred);
+      await assertDelivered();
+      await applyFixtureSnapshot(page, { ...accepted, version: "stale-deferred-after-receipt" });
+      await assertDelivered();
+      assert.deepEqual(errors, []);
+      assert.equal(new URL(page.url()).hostname, "agent-hub.test");
+      assert.equal(await page.title(), "Agent Hub");
+      if (process.env.AGENT_HUB_RECEIPT_QA_DIR) {
+        await page.screenshot({ path: `${process.env.AGENT_HUB_RECEIPT_QA_DIR}/accepted-${width}.png` });
+      }
+      await page.close();
+    }
+  } finally { await browser.close(); }
 });
 
 test("shipped queue explains a real context-maintenance wait without a new toast", {

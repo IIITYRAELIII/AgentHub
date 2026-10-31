@@ -245,6 +245,38 @@ export function failedComposeRecoveryEligible(operation) {
     && operation.currentGeneration > 0 && operation.lastError?.step === "compose";
 }
 
+// Reserve a fresh generation only from positive terminal compose receipts. The
+// amendment captures this proof; old partial directories and receipts stay put.
+export function failedCompositionRecovery({ operation, receipts = [], generations = [] }) {
+  if (!operation || operation.owner != null || !["failed", "waiting"].includes(operation.state)
+      || operation.currentGeneration < 1 || operation.lastError?.step !== "compose") return null;
+  const tail = receipts.filter(item => item.stepId === "compose" && item.generation > operation.currentGeneration)
+    .sort((a, b) => a.generation - b.generation || a.attempt - b.attempt);
+  if (!tail.length || tail.at(-1).error !== operation.lastError.message) return null;
+  const numbers = [...new Set(tail.map(item => item.generation))];
+  if (numbers.some((number, index) => number !== operation.currentGeneration + index + 1)
+      || generations.some(item => item.generation > operation.currentGeneration)) return null;
+  if (tail.some(item => item.operationId !== operation.operationId || item.status !== "failed"
+      || !Number.isSafeInteger(item.attempt) || item.attempt < 1 || !item.error
+      || item.effect != null && item.effect.status !== "not_applied"
+      || item.input?.priorGeneration !== operation.currentGeneration
+      || releaseIdentitySha256(item.input?.authorization) !== releaseIdentitySha256(operation.authorization)
+      || releaseIdentitySha256(item.input) !== item.inputSha256)) return null;
+  return { priorGeneration: operation.currentGeneration, nextGeneration: numbers.at(-1) + 1,
+    receipts: tail.map(item => ({ generation: item.generation, attempt: item.attempt,
+      receiptSha256: releaseIdentitySha256(item) })) };
+}
+
+export function releaseCompositionInput(operation) {
+  return {
+    authorization: operation.authorization,
+    ...(operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
+    priorGeneration: operation.currentGeneration,
+    ...(effectiveTestSelection(operation) ? { testSelection: effectiveTestSelection(operation), amendment: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
+    ...(operation.reviewedMain ? { reviewedMain: operation.reviewedMain.identitySha256 } : {}),
+  };
+}
+
 function normalizedReviewedMain(value, operation) {
   if (value == null) return null;
   const { identitySha256, ...contents } = value;

@@ -1,5 +1,14 @@
 # UI-001 — Canonical message projection
 
+A queued command is waiting even when its conflict kind is `message-intake`.
+The queue's starting count requires actual dispatching/steering state. Hub
+admission or a retained intake reason alone cannot present provider launch.
+An authoritative provider-accepted or terminal receipt for the same command
+retires stale queued intake membership even when its wait reason is retained
+and canonical history has not arrived. Explicit identity conflicts cannot
+consume another command's wait. Unresolved intake ACKs, unknown outcomes and
+manual pause retain their existing queue guards, including after reload.
+
 The Task card's operation action exposes explicit interruption of a bound
 claim/workflow attempt, including pending and UNKNOWN. It reaches the same
 authenticated owner while the original UI/control mutation waits. Requested
@@ -34,7 +43,14 @@ on live refresh, SSE reconnect and reload. Historical provider acceptance does
 not imply current execution. Known saved/queued/starting/running, structured
 provider retry, terminal error and unknown outcomes remain distinct; durations
 use observed timestamps and never establish an outcome. No failed input is
-automatically resubmitted. Retained unknown occupancy stays visible in the
+automatically resubmitted on an unknown result. A definite ended-target refusal
+for a Stream message explicitly submitted as steer returns that same command to
+current-or-queue routing instead of the red original-turn decision, including
+when its client active-run snapshot is stale. Ordinary Enter, the send button,
+quote send and quick-send default to queue; Meta+Enter and saved steer shortcuts
+select steer separately. Queue waits behind an active turn and launches normally
+when idle. This distinction is recorded in ADR-0136, not a projection-only
+suppression. Retained unknown occupancy stays visible in the
 activity rail with its exact Stop target and queue reason, without a running
 animation or an active claim in Stream history.
 
@@ -367,12 +383,17 @@ A busy-origin command
 with `clientProjectionIntent=queue` remains queue-only if admission later finds
 the Stream idle. Attention-required and ambiguous commands remain queue-owned.
 Reconciliation never renders both forms and never loses the logical entity.
-After an exact steer is authoritatively known to have had no provider effect,
-its attention-required row exposes both exact retry and explicit after-turn
+For a retained legacy exact-target service steer authoritatively known to have
+had no provider effect, its attention-required row exposes exact retry and after-turn
 queue actions; neither action runs before its own click. The generic current-turn
 action is absent from both definite and unknown exact-steer decisions, and the
 server rejects a forged generic retarget action. An unknown provider effect
 remains fail-closed and does not expose the after-turn conversion.
+Ordinary Stream input instead follows MSG-001's current-or-queue transition;
+that definite old-turn race does not create an attention-required row. Idle
+intake retains its `message-intake` projection and the existing captured
+`followUpMode=steer`, so an idle optimistic conversation is not mislabeled as an
+explicit after-turn queue request.
 Every canonical queue row exposes an explicit cancellation action. The action
 removes a waiting or attention-required command only after durable commit; if
 dispatch already owns it, the UI reports that cancellation was not confirmed.

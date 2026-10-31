@@ -722,7 +722,7 @@ export class HubMcpService {
           type: "string",
           enum: ["queue", "steer"],
           default: "queue",
-          description: "Queue after the active turn, or request exact steering of the current managed run. An undeliverable exact steer requires an explicit retry or queue decision.",
+          description: "Queue explicitly after the active turn, or deliver an ordinary steer to the Stream's current managed turn; if none is available, retain the same message in its normal queue. A definitively ended target is re-resolved automatically; unknown provider acceptance is reconciled before another attempt.",
         },
         confirm_send: { type: "boolean", description: "Must be true because this starts, queues or steers another agent turn." },
       }, ["stream_id", "text", "confirm_send"]),
@@ -3031,7 +3031,7 @@ export class HubMcpService {
       if (!stream || stream.workspaceId !== workspaceId) return [];
       const state = String(input?.state ?? "queued").trim() || "queued";
       const stateSince = String(
-        input?.dispatchingAt ?? input?.lastAttemptAt ?? input?.createdAt ?? "",
+        input?.dispatchingAt || input?.lastAttemptAt || input?.createdAt || "",
       ).trim();
       const stateSinceMs = Date.parse(stateSince);
       const ageMs = Number.isFinite(stateSinceMs) ? Math.max(0, Date.now() - stateSinceMs) : null;

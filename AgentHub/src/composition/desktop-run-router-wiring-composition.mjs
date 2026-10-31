@@ -108,6 +108,7 @@ export function createDesktopRunRouterWiring({
       describeAttachments: services.describeAttachments,
       hasDeferredBacklog: services.hasDeferredBacklog,
       isMaintenanceActive: services.isMaintenanceActive,
+      isManagedMaintenanceActive: services.isManagedMaintenanceActive,
       isRuntimeStopping: services.isRuntimeStopping,
       scheduleDeferred: services.scheduleDeferred,
       setProgressStage: services.setProgressStage,

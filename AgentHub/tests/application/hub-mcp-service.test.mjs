@@ -20,6 +20,7 @@ import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/work
 import { TASK_TITLE_MAX_LENGTH, TaskDependencyPendingError } from "../../src/domain/task-board-task.mjs";
 import { incomingLedgerRecord } from "../../src/application/work-log-usage-projection.mjs";
 import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
+import { DeferredInputStore } from "../../src/application/deferred-input-store.mjs";
 import { AsyncSqliteMutationQueue } from "../../src/infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 import {
   initializeTaskGitRepository,
@@ -34,7 +35,6 @@ import { taskRepositoryKey } from "../../src/domain/task-git-reference.mjs";
 import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
 import { DeferredInputController } from "../../src/application/deferred-input-controller.mjs";
 import { DeferredInputService } from "../../src/application/deferred-input-service.mjs";
-import { DeferredInputStore } from "../../src/application/deferred-input-store.mjs";
 import { MessageCommandLedgerStore } from "../../src/infrastructure/persistence/message-command-ledger-store.mjs";
 import { messageRequestFingerprint } from "../../src/infrastructure/persistence/message-receipts.mjs";
 import { CommandTraceSpanStore } from "../../src/infrastructure/persistence/command-trace-span-store.mjs";
@@ -42,7 +42,7 @@ import { CommandTraceSpanStore } from "../../src/infrastructure/persistence/comm
 async function releaseDeliveryFixture(t) {
   let deliver;
   const traces = [];
-  const { service } = await fixture(t, {
+  const { service, token } = await fixture(t, {
     releaseOperations: { setEventDelivery(value) { deliver = value; } },
     recordCommandTrace: value => traces.push(value),
   });
@@ -118,7 +118,9 @@ async function releaseDeliveryFixture(t) {
     commandTrace: trace, setTimeoutImpl: () => 0, clearTimeoutImpl: () => {},
   });
   service.setStreamMessenger(async (params, context) => {
-    admissions.push({ params: structuredClone(params), context: structuredClone(context) });
+    const { bindInterstreamAuditContent, ...observedContext } = context;
+    if (context.source === "mcp") assert.equal(typeof bindInterstreamAuditContent, "function");
+    admissions.push({ params: structuredClone(params), context: structuredClone(observedContext) });
     const target = { provider: "codex", streamId: params.streamId, threadId: run?.threadId ?? "thread-1",
       clientSource: context.source, telegramDeliveryRequested: false, messageOrigin: context.messageOrigin };
     return coordinator.acceptClientInput({ input: params.text, target,
@@ -129,7 +131,7 @@ async function releaseDeliveryFixture(t) {
   const event = { operationId: "release-original", revision: 7, eventKind: "operation.progress",
     createdAt: new Date().toISOString(),
     streamId: "stream-1", threadId: "thread-1", payload: { state: "validate", nextAction: "validate candidate" } };
-  return { event, active, store, controller, coordinator, service, providerCalls, providerReceipts, admissions, traces,
+  return { event, active, store, controller, coordinator, service, token, providerCalls, providerReceipts, admissions, traces,
     deliver: (value = event) => deliver(value),
     ledger: () => ledger,
     setRun: value => { run = value; }, setBlocked: value => { blocked = value; },
@@ -143,6 +145,73 @@ async function releaseDeliveryFixture(t) {
     },
   };
 }
+
+for (const destination of ["active", "replacement", "idle"]) {
+  test(`public interstream steer reaches current durable provider route: ${destination}`, async t => {
+    const f = await releaseDeliveryFixture(t);
+    const requestId = `current-stream-${destination}`;
+    const args = { context_token: f.token, request_id: requestId, confirm_send: true,
+      stream_id: "stream-1", mode: "steer", text: "One original Stream input" };
+    const admitted = await f.service.call("hub_stream_message_send", args);
+    const id = `mcp:${requestId}`;
+    assert.equal(f.ledger().get(id).state, "queued");
+    assert.equal(f.providerCalls.length, 0);
+    assert.equal(f.admissions[0].params.followUpMode, "steer");
+    assert.equal(f.admissions[0].context.source, "mcp");
+    if (destination === "replacement") f.setRun({ ...f.active, id: "replacement-run", turnId: "replacement-turn" });
+    if (destination === "idle") f.setRun(null);
+    await f.controller.process(admitted.delivery.id);
+    assert.equal(f.providerCalls.length, 1);
+    assert.equal(f.providerCalls[0].id, id);
+    assert.equal(f.providerCalls[0].method, destination === "idle" ? "startTurn" : "steerTurn");
+    if (destination !== "idle") assert.equal(f.providerCalls[0].turnId,
+      destination === "replacement" ? "replacement-turn" : f.active.turnId);
+    assert.equal(f.providerCalls[0].input, f.admissions[0].params.text);
+    const replay = await f.service.call("hub_stream_message_send", args);
+    assert.equal(replay.delivery.id, admitted.delivery.id);
+    await f.controller.process(admitted.delivery.id);
+    assert.equal(f.admissions.length, 1);
+    assert.equal(f.providerCalls.length, 1);
+    assert.equal(f.store.size, 0);
+  });
+}
+
+test("public interstream unknown acceptance reconciles the original before current replacement", async t => {
+  const f = await releaseDeliveryFixture(t);
+  const args = { context_token: f.token, request_id: "current-stream-unknown", confirm_send: true,
+    stream_id: "stream-1", mode: "steer", text: "One uncertain original" };
+  const admitted = await f.service.call("hub_stream_message_send", args);
+  const id = "mcp:current-stream-unknown";
+  f.setProvider(async () => { throw Object.assign(new Error("transport reply lost"), { deliveryOutcome: "unknown" }); });
+  await f.controller.process(admitted.delivery.id);
+  assert.equal(f.providerCalls.length, 1);
+  assert.equal(f.ledger().get(id).state, "dispatching");
+  f.setRun({ ...f.active, id: "replacement-run", turnId: "replacement-turn" });
+  await f.service.call("hub_stream_message_send", args);
+  await f.controller.process(admitted.delivery.id);
+  assert.equal(f.providerCalls.length, 1);
+  f.providerReceipts.set(id, { accepted: true, providerAccepted: true, steered: true,
+    runId: f.active.id, provider: "codex", threadId: "thread-1", turnId: f.active.turnId });
+  await f.controller.process(admitted.delivery.id);
+  assert.equal(f.providerCalls.length, 1);
+  assert.equal(f.ledger().get(id).state, "completed");
+  assert.equal(f.store.size, 0);
+});
+
+test("public interstream explicit queue retains after-turn meaning", async t => {
+  const f = await releaseDeliveryFixture(t);
+  const admitted = await f.service.call("hub_stream_message_send", {
+    context_token: f.token, request_id: "current-stream-explicit-queue", confirm_send: true,
+    stream_id: "stream-1", mode: "queue", text: "Explicit later input",
+  });
+  await f.controller.process(admitted.delivery.id);
+  assert.equal(f.providerCalls.length, 0);
+  f.setRun(null);
+  await f.controller.process(admitted.delivery.id);
+  assert.equal(f.providerCalls.length, 1);
+  assert.equal(f.providerCalls[0].method, "startTurn");
+  assert.equal(f.providerCalls[0].id, "mcp:current-stream-explicit-queue");
+});
 
 test("release notifications steer the active turn through durable intake before provider acceptance", async t => {
   const f = await releaseDeliveryFixture(t);
@@ -1226,6 +1295,22 @@ test("HubMcpService reports Stream availability from active turns and queued inp
   assert.equal(queued.deferredInputs[0].clientUserMessageId, "client-queued-1");
   assert.equal(active.deferredInputs[0].stalled, true);
   assert.equal(queued.available, false);
+});
+
+test("MCP diagnostics retain queued age when the actual store emits empty attempt timestamps", async (t) => {
+  const { service, token } = await fixture(t);
+  const store = new DeferredInputStore();
+  const createdAt = new Date(Date.now() - 900_000).toISOString();
+  store.put({ id: "old-intake", provider: "codex", threadId: "thread-2", streamId: "stream-2",
+    clientUserMessageId: "old-client", conflictKind: "message-intake", createdAt,
+    waitReason: "managed-run-activity-unknown" }, "queued");
+  service.setDeferredInputs(() => store.diagnostics());
+  const result = await service.call("hub_parallel_streams_list", { context_token: token });
+  const item = result.streams.find((s) => s.id === "stream-2").deferredInputs[0];
+  assert.equal(item.state, "queued"); assert.equal(item.stateSince, createdAt);
+  assert.equal(item.ageMs >= 900_000, true); assert.equal(item.attempts, 0);
+  assert.equal(item.waitReason, "managed-run-activity-unknown");
+  assert.equal(item.stalled, false); // Existing stalled marker describes in-flight effects.
 });
 
 test("HubMcpService reassigns a started Task and preserves assignment context", async (context) => {
@@ -2396,15 +2481,16 @@ test("claim forwards an explicit user dependency exception and complete forwards
   }), /requires a Release Manager Stream/u);
 });
 
-test("HubMcpService describes exact steering and an explicit fallback decision", async (context) => {
+test("HubMcpService describes Stream current-or-queue steering with unknown acceptance reconciliation", async (context) => {
   const { service } = await fixture(context);
   const mode = service.tools()
     .find((tool) => tool.name === "hub_stream_message_send")
     .inputSchema.properties.mode;
 
-  assert.match(mode.description, /exact steering of the current managed run/u);
-  assert.match(mode.description, /explicit retry or queue decision/u);
-  assert.doesNotMatch(mode.description, /queue if steering is no longer possible/u);
+  assert.match(mode.description, /Stream's current managed turn/u);
+  assert.match(mode.description, /same message in its normal queue/u);
+  assert.match(mode.description, /unknown provider acceptance is reconciled/u);
+  assert.deepEqual(mode.enum, ["queue", "steer"]);
 });
 
 test("HubMcpService claims the active turn while an older terminal remains retained", async (context) => {

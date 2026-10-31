@@ -1,6 +1,7 @@
 import {
   CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE,
   RUNTIME_RESTART_PENDING_ERROR_CODE,
+  streamMessageDelivery as streamMessage,
 } from "../domain/deferred-input.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 
@@ -15,6 +16,7 @@ export function isRetryableDeferredLaunchError(error) {
     "ECONNRESET",
     "ECONNREFUSED",
     "ERR_STREAM_DESTROYED",
+    "ERR_STREAM_BINDING_CHANGED",
   ].includes(code)) return true;
   const message = String(error?.message ?? error ?? "");
   return /(?:codex )?app-server (?:stopped|is not running)|write EPIPE|broken pipe|thread\s+\S+\s+already has an active writer/i.test(message);
@@ -28,6 +30,7 @@ export function isUnconfirmedDeferredLaunchError(error) {
 }
 
 export function deferredLaunchWaitReason(error) {
+  if (error?.code === "ERR_STREAM_BINDING_CHANGED") return "stream-binding-changed";
   if (String(error?.code ?? "").trim().toUpperCase() === "ERR_CLAUDE_EXTERNAL_OWNER_ACTIVE") {
     return "provider-thread-active";
   }
@@ -56,6 +59,13 @@ function steerTargetsOccupancy(item, occupancy) {
     && (!expectedTurnId || expectedTurnId === String(occupancy.run.turnId ?? "").trim());
 }
 
+function recoverableStreamMessage(item) {
+  return streamMessage(item) && item.lastErrorCode === "ERR_PROVIDER_STEER_NOT_DELIVERED"
+    && !item.dispatchingAt && !intentionallyPaused(item)
+    && ["desktop", "desktop-control", "trusted-device", "telegram"].includes(item.clientSource)
+    && !item.messageOrigin;
+}
+
 function intentionallyPaused(item) {
   return item?.manualPaused === true || (item?.paused === true && ![
     "provider-thread-active", "provider-temporarily-unavailable",
@@ -78,7 +88,8 @@ const AUTO_RELEASABLE_PENDING_CONFLICTS = new Set([
 ]);
 
 function autoReleasablePendingConflict(item) {
-  return AUTO_RELEASABLE_PENDING_CONFLICTS.has(String(item?.conflictKind ?? ""));
+  return AUTO_RELEASABLE_PENDING_CONFLICTS.has(String(item?.conflictKind ?? ""))
+    || recoverableStreamMessage(item);
 }
 
 const DEFERRED_ERROR_MESSAGES = Object.freeze({
@@ -103,6 +114,8 @@ export class DeferredInputController {
     queuedInputs,
     isBlocked,
     occupancy = async () => ({ occupied: false, waitReason: null }),
+    currentStreamTarget = (item) => item,
+    recoverStreamMessageMode = () => null,
     laneKey = taskRunKey,
     findStarted = async () => null,
     findSteered = async () => null,
@@ -121,6 +134,7 @@ export class DeferredInputController {
     maxAgeMs = 7 * 24 * 60 * 60 * 1000,
     providerReconciliationMaxAgeMs = 5 * 60 * 1000,
     now = Date.now,
+    monotonicNow = () => performance.now(),
     retryDelayMs = 2_000,
     maxRetryDelayMs = 30_000,
     retryJitterRatio = 0.2,
@@ -133,6 +147,8 @@ export class DeferredInputController {
     this.queuedInputs = queuedInputs;
     this.isBlocked = isBlocked;
     this.occupancy = occupancy;
+    this.currentStreamTarget = currentStreamTarget;
+    this.recoverStreamMessageMode = recoverStreamMessageMode;
     this.laneKey = laneKey;
     this.findStarted = findStarted;
     this.findSteered = findSteered;
@@ -155,6 +171,7 @@ export class DeferredInputController {
       Number(providerReconciliationMaxAgeMs) || 5 * 60 * 1000,
     );
     this.now = now;
+    this.monotonicNow = monotonicNow;
     this.retryDelayMs = retryDelayMs;
     this.maxRetryDelayMs = maxRetryDelayMs;
     this.retryJitterRatio = Math.max(0, Math.min(0.5, Number(retryJitterRatio) || 0));
@@ -180,13 +197,29 @@ export class DeferredInputController {
       if (normalizedDelayMs > 0) return;
       this.cancelSchedule(item.id);
     }
+    const scheduledAtMs = this.now();
+    const scheduledAtMonotonicMs = this.monotonicNow();
+    const wakeTiming = { scheduledAtMs, dueAtMs: scheduledAtMs + normalizedDelayMs, delayMs: normalizedDelayMs };
+    this.traceWake(item, "queued", wakeTiming);
     const timer = this.setTimeoutImpl(() => {
       this.timers.delete(item.id);
+      this.traceWake(item, "started", { ...wakeTiming,
+        timerLagMs: Math.max(0, this.monotonicNow() - scheduledAtMonotonicMs - normalizedDelayMs) });
       return this.process(item.id)
         .catch((error) => this.recoverScheduledProcessFailure(item, error))
         .catch(() => {});
     }, normalizedDelayMs);
     this.timers.set(item.id, timer);
+  }
+
+  traceWake(item, outcome, metadata) {
+    try {
+      this.commandTrace?.recordBestEffort?.({
+        commandId: String(item.clientUserMessageId ?? ""), stage: "deferred-wake", outcome,
+        transport: String(item.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
+        metadata,
+      });
+    } catch { /* A diagnostic sink cannot change scheduling or message ownership. */ }
   }
 
   retryDelay(attempt) {
@@ -237,13 +270,61 @@ export class DeferredInputController {
 
   async process(id) {
     this.expireCommands?.();
-    const queuedItem = this.queuedInputs.get(id);
+    let queuedItem = this.queuedInputs.get(id);
     const pendingItem = this.pendingInputs.get(id);
-    const item = queuedItem ?? (autoReleasablePendingConflict(pendingItem) ? pendingItem : null);
+    const item = queuedItem ?? (autoReleasablePendingConflict(pendingItem) || streamMessage(pendingItem) ? pendingItem : null);
     if (!item || this.processing.has(id)) return;
     this.processing.add(id);
     try {
+      if (queuedItem && item.conflictKind === "message-intake" && item.streamId
+        && item.clientSource === "mcp" && !item.followUpMode && !item.dispatchingAt
+        && !item.dispatchingRunId && !item.lastErrorCode && !intentionallyPaused(item)) {
+        const mode = await this.recoverStreamMessageMode(item);
+        if (this.queuedInputs.get(id) !== item || intentionallyPaused(item)) return;
+        if (mode === "steer") {
+          item.followUpMode = mode;
+          try { await this.persist(); }
+          catch (error) { delete item.followUpMode; throw error; }
+        }
+      }
+      if (streamMessage(item)) {
+        // The command receipt can settle after a fallback was queued. Consult
+        // the same owner before choosing a different provider attempt.
+        const recovered = await this.findSteered(item);
+        if (recovered?.cancelled) {
+          this.queuedInputs.delete(id);
+          this.pendingInputs.delete(id);
+          await this.persist();
+          this.scheduleNextForTask(item);
+          return;
+        }
+        if (recovered) {
+          this.pendingInputs.delete(id);
+          await this.finishSteer(item, recovered);
+          return;
+        }
+        const admitted = !item.dispatchingAt ? await this.findStarted(item) : null;
+        if (admitted) {
+          this.queuedInputs.delete(id);
+          this.pendingInputs.delete(id);
+          this.onStateChange(item, "started", admitted);
+          await this.persist();
+          this.scheduleNextForTask(item);
+          return;
+        }
+        if (!queuedItem && recoverableStreamMessage(item)) {
+          await this.queueStreamMessage(item);
+          queuedItem = item;
+        }
+      }
       if (!queuedItem) {
+        if (streamMessage(item)) {
+          if (item.lastErrorCode === "ERR_PROVIDER_STEER_UNCONFIRMED") {
+            item.providerReconciliationChecks = Number(item.providerReconciliationChecks ?? 0) + 1;
+            this.schedule(item, this.retryDelay(item.providerReconciliationChecks));
+          }
+          return;
+        }
         const released = await this.releaseResolvedTaskConflict(item);
         if (released) this.schedule(item, 0);
         else if (this.pendingInputs.has(id)) {
@@ -253,23 +334,53 @@ export class DeferredInputController {
         return;
       }
       if (intentionallyPaused(item) && !item.dispatchingAt) return;
-      if (!intentionallyPaused(item)
+      if (!streamMessage(item) && !intentionallyPaused(item)
         && (item.paused === true || item.waitReason === "provider-thread-active")) {
         const occupied = await this.refreshActiveWriterWait(item);
         if (occupied) return;
       }
-      let activeSteer = item.conflictKind === "message-steer" && Boolean(item.dispatchingAt);
-      if (item.conflictKind === "message-steer" && !item.dispatchingAt) {
+      let activeSteer = (item.conflictKind === "message-steer" || streamMessage(item)) && Boolean(item.dispatchingAt);
+      if ((item.conflictKind === "message-steer" || streamMessage(item)) && !item.dispatchingAt) {
+        if (streamMessage(item)) {
+          const target = await this.currentStreamTarget(item);
+          if (intentionallyPaused(item)) return;
+          if (!target || target.streamId !== item.streamId) {
+            this.schedule(item, this.retryDelayMs);
+            return;
+          }
+          // This bounded target is persisted by the existing dispatch fence.
+          // Intake identity, payload, order and receipt namespace stay intact.
+          item.deliveryTarget = Object.fromEntries([
+            "streamId", "provider", "projectRoot", "threadId", "taskTitle",
+          ].flatMap((key) => target[key] == null ? [] : [[key, target[key]]]));
+          delete item.paused;
+          delete item.waitReason;
+          if (await this.traceAdmissionStep(item, "deferred-steer-barrier", () => this.isSteerDispatchBlocked(item))) {
+            this.schedule(item, this.retryDelayMs);
+            return;
+          }
+          if (intentionallyPaused(item)) return;
+        }
         const occupancy = await this.occupancy(item);
         if (intentionallyPaused(item)) return;
-        activeSteer = steerTargetsOccupancy(item, occupancy);
-        if (!activeSteer) {
+        if (streamMessage(item)) {
+          const run = occupancy?.run;
+          activeSteer = Boolean(occupancy?.occupied && run?.turnId)
+            && !(item.steerRejectedRunId === run.id && item.steerRejectedTurnId === run.turnId);
+          if (activeSteer) {
+            item.steerTargetRunId = run.id;
+            item.steerTargetTurnId = run.turnId;
+          }
+        } else activeSteer = steerTargetsOccupancy(item, occupancy);
+        if (!activeSteer && !streamMessage(item)) {
           await this.requireSteerDecision(item);
           return;
         }
       }
-      if (!activeSteer) {
-        const oldest = this.oldestForTask(item, { includePending: true, runnableOnly: true });
+      if (!activeSteer || (streamMessage(item) && !item.dispatchingAt)) {
+        const oldest = this.oldestForTask(item, {
+          includePending: true, runnableOnly: true, streamMessagesOnly: activeSteer,
+        });
         if (oldest?.id !== id) {
           if (this.pendingInputs.has(oldest?.id)) {
             const released = await this.releaseResolvedTaskConflict(oldest);
@@ -291,8 +402,8 @@ export class DeferredInputController {
         this.scheduleNextForTask(item);
         return;
       }
-      if (item.conflictKind === "message-steer") {
-        await this.processSteer(item);
+      if (activeSteer) {
+        await this.processSteer(item, { readbackChecked: streamMessage(item) });
         return;
       }
       const recoveredRun = await this.findStarted(item);
@@ -346,9 +457,15 @@ export class DeferredInputController {
         this.onStateChange(item, "queued");
         await this.persist();
       }
+      const priorWaitReason = item.waitReason;
       const blocked = await this.traceAdmissionStep(item, "deferred-eligibility", () => this.isBlocked(item));
       if (intentionallyPaused(item)) return;
       if (blocked) {
+        if (priorWaitReason !== item.waitReason) {
+          this.onStateChange(item, "queued");
+          await this.persist();
+          if (intentionallyPaused(item)) return;
+        }
         if (item.waitReason === "provider-thread-active") {
           await this.pauseForActiveWriter(item);
           return;
@@ -445,7 +562,19 @@ export class DeferredInputController {
         this.scheduleNextForTask(item);
         return;
       }
+      if (started?.deferredOutcome?.paused) {
+        delete item.dispatchingAt;
+        this.onStateChange(item, "queued");
+        await this.persist();
+        return;
+      }
       this.queuedInputs.delete(id);
+      if (started?.deferredOutcome) {
+        if (!started.deferredOutcome.cancelled) await this.finishSteer(item, started.deferredOutcome);
+        else await this.persist();
+        this.scheduleNextForTask(item);
+        return;
+      }
       delete item.dispatchingAt;
       delete item.lastError;
       delete item.lastErrorCode;
@@ -476,15 +605,21 @@ export class DeferredInputController {
         stage, recordStarted: true,
       });
     } catch { /* Diagnostics cannot affect eligibility. */ }
-    const finish = (outcome, error) => {
+    const finish = (outcome, error, extra = {}) => {
       try { span?.finish({ outcome, metadata: error
         ? { errorCode: /^[A-Z][A-Z0-9_]{0,63}$/u.test(String(error.code))
-          ? error.code : "ERR_DEFERRED_ADMISSION" } : {} }); }
+          ? error.code : "ERR_DEFERRED_ADMISSION" } : extra }); }
       catch { /* Preserve the owning operation's outcome. */ }
     };
     try {
       const result = await operation();
-      finish("succeeded");
+      const createdAt = Date.parse(String(item.createdAt ?? ""));
+      const waitReason = stage === "deferred-steer-barrier" ? result : item.waitReason;
+      finish("succeeded", null, ["deferred-eligibility", "deferred-steer-barrier"].includes(stage) ? {
+        blocked: Boolean(result),
+        waitReason: /^[a-z][a-z0-9-]{0,63}$/u.test(String(waitReason)) ? waitReason : null,
+        queueAgeMs: Number.isFinite(createdAt) ? Math.max(0, this.now() - createdAt) : null,
+      } : {});
       return result;
     } catch (error) {
       finish("failed", error);
@@ -492,10 +627,10 @@ export class DeferredInputController {
     }
   }
 
-  async processSteer(item) {
+  async processSteer(item, { readbackChecked = false } = {}) {
     const id = item.id;
     if (item.dispatchingAt) {
-      const recovered = await this.findSteered(item);
+      const recovered = readbackChecked ? null : await this.findSteered(item);
       if (recovered) {
         await this.finishSteer(item, recovered);
         return;
@@ -542,9 +677,15 @@ export class DeferredInputController {
       return;
     }
     delete item.blockedChecks;
+    const beforeDispatch = Object.getOwnPropertyDescriptors(item);
     item.dispatchingAt = new Date(this.now()).toISOString();
     this.onStateChange(item, "dispatching");
-    await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persist());
+    try { await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persist()); }
+    catch (error) {
+      restoreWaitState(item, beforeDispatch);
+      this.onStateChange(item, "queued");
+      throw error;
+    }
     if (intentionallyPaused(item)) {
       delete item.dispatchingAt;
       await this.persist();
@@ -558,13 +699,28 @@ export class DeferredInputController {
     });
     try {
       const steered = await this.steer(item);
+      if (steered?.paused) {
+        delete item.dispatchingAt;
+        this.onStateChange(item, "queued");
+        await this.persist();
+        dispatchSpan?.finish({ outcome: "queued", queueDepth: this.queuedInputs.size });
+        return;
+      }
+      if (steered?.cancelled) {
+        this.queuedInputs.delete(id);
+        this.pendingInputs.delete(id);
+        await this.persist();
+        this.scheduleNextForTask(item);
+        return;
+      }
       if (!steered) {
         dispatchSpan?.finish({
           outcome: "failed",
           queueDepth: this.queuedInputs.size,
           metadata: { errorCode: "ERR_PROVIDER_STEER_NOT_DELIVERED" },
         });
-        await this.requireSteerDecision(item);
+        if (streamMessage(item)) await this.queueStreamMessage(item, { rejected: true });
+        else await this.requireSteerDecision(item);
         return;
       }
       dispatchSpan?.finish({
@@ -589,6 +745,35 @@ export class DeferredInputController {
       await this.persist();
       this.schedule(item, this.retryDelayMs);
     }
+  }
+
+  async queueStreamMessage(item, { rejected = false } = {}) {
+    const previous = Object.getOwnPropertyDescriptors(item);
+    const wasPending = this.pendingInputs.has(item.id);
+    if (rejected) {
+      item.steerRejectedRunId = item.steerTargetRunId;
+      item.steerRejectedTurnId = item.steerTargetTurnId;
+    }
+    for (const key of ["dispatchingAt", "lastError", "lastErrorCode", "laneReleased",
+      "waitReason", "blockedChecks", "providerReconciliationStartedAt", "providerReconciliationChecks"]) {
+      delete item[key];
+    }
+    this.pendingInputs.delete(item.id);
+    this.queuedInputs.set(item.id, item);
+    this.onStateChange(item, "queued");
+    try { await this.persist(); }
+    catch (error) {
+      restoreWaitState(item, previous);
+      if (wasPending) {
+        this.queuedInputs.delete(item.id);
+        this.pendingInputs.set(item.id, item);
+      }
+      throw error;
+    }
+    await this.updateMessage(item, "Сообщение сохранено для текущего потока; доставка продолжится штатно.");
+    // Re-resolve once on the next ordinary wake. A rejected still-active turn
+    // waits for its terminal/new-turn event instead of spinning on turn/steer.
+    this.schedule(item, this.retryDelayMs);
   }
 
   async requireSteerDecision(item) {
@@ -730,7 +915,7 @@ export class DeferredInputController {
     return this.laneKey(item);
   }
 
-  oldestForTask(item, { includePending = false, runnableOnly = false } = {}) {
+  oldestForTask(item, { includePending = false, runnableOnly = false, streamMessagesOnly = false } = {}) {
     const key = this.taskKey(item);
     let oldest = null;
     let oldestAt = Number.POSITIVE_INFINITY;
@@ -738,6 +923,7 @@ export class DeferredInputController {
       ? [...this.pendingInputs.values(), ...this.queuedInputs.values()]
       : this.queuedInputs.values();
     for (const candidate of candidates) {
+      if (streamMessagesOnly && !streamMessage(candidate)) continue;
       if (this.pendingInputs.has(candidate.id) && candidate.laneReleased === true) continue;
       if (this.taskKey(candidate) !== key) continue;
       if (runnableOnly && this.queuedInputs.has(candidate.id)
@@ -766,13 +952,18 @@ export class DeferredInputController {
       .filter((candidate) => this.taskKey(candidate) === key);
     const releasablePending = [...this.pendingInputs.values()]
       .filter((candidate) => (
-        this.taskKey(candidate) === key && autoReleasablePendingConflict(candidate)
+        this.taskKey(candidate) === key && (autoReleasablePendingConflict(candidate) || streamMessage(candidate))
       ));
     if (!queued.length && !releasablePending.length) return false;
     for (const candidate of queued) this.cancelSchedule(candidate.id);
     for (const candidate of releasablePending) this.cancelSchedule(candidate.id);
     let scheduled = false;
-    for (const candidate of queued.filter((item) => item.conflictKind === "message-steer")) {
+    for (const candidate of releasablePending.filter(streamMessage)) {
+      if (this.processing.has(candidate.id)) candidate.recheckRequested = true;
+      else this.schedule(candidate, 0);
+      scheduled = true;
+    }
+    for (const candidate of queued.filter((item) => item.conflictKind === "message-steer" || streamMessage(item))) {
       if (this.processing.has(candidate.id)) candidate.recheckRequested = true;
       else this.schedule(candidate, 0);
       scheduled = true;
@@ -794,7 +985,7 @@ export class DeferredInputController {
     const lanes = new Map();
     for (const item of [
       ...this.queuedInputs.values(),
-      ...[...this.pendingInputs.values()].filter(autoReleasablePendingConflict),
+      ...[...this.pendingInputs.values()].filter((item) => autoReleasablePendingConflict(item) || streamMessage(item)),
     ]) {
       const key = this.taskKey(item);
       if (!lanes.has(key)) lanes.set(key, item);
