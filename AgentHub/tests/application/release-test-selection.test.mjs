@@ -580,9 +580,8 @@ test("partial generation amendment does not supersede UNKNOWN, intent or applied
   for (const status of ["unknown", "intent", "applied"]) await t.test(status, async t => {
     const f = await failedPartialReceiptFixture(t, status), before = f.store.snapshot("original");
     const options = { requestId: "cannot-supersede-ambiguous", testSelection: selection("none"), expectedRevision: before.operation.revision, expectedGeneration: 1 };
-    assert.equal((await f.service.continue("original", options)).accepted, true);
-    assert.equal(f.store.get("original").testSelectionAmendments.at(-1).composeRecovery, undefined);
-    await f.scheduled.shift()(); await f.service.drain("original");
+    await assert.rejects(f.service.continue("original", options), /original future compose/u);
+    assert.deepEqual(f.store.get("original"), before.operation);
     assert.equal(f.store.get("original").currentGeneration, 1);
     assert.equal(f.store.generation("original", 3), null);
     assert.deepEqual(f.store.snapshot("original").receipts, before.receipts);
@@ -664,4 +663,65 @@ test("partial generation amendment recovers its exact registered candidate after
   assert.equal(f.store.get("original").currentGeneration, 3);
   assert.deepEqual(f.store.generation("original", 3), original);
   assert.equal(f.store.latestStep("original", 3, "compose").status, "applied");
+});
+
+async function sparseRecoveryWait(t, { registered = true } = {}) {
+  const f = await failedPartialReceiptFixture(t), initial = f.store.get("original");
+  const amended = await f.service.continue("original", { requestId: "sparse-first-recovery", testSelection: selection("none"),
+    expectedRevision: initial.revision, expectedGeneration: 1 });
+  assert.equal(amended.accepted, true);
+  const operation = f.store.get("original");
+  const input = { authorization: operation.authorization, authorizedTaskIds: effectiveReleaseTaskIds(operation), priorGeneration: 1,
+    testSelection: selection("none"), amendment: amended.amendment.identitySha256 };
+  const intent = f.store.beginStep({ operationId: "original", generation: 3, stepId: "compose", input }).receipt;
+  const first = f.store.generation("original", 1);
+  const candidate = registered ? f.store.putGeneration({ ...first, generation: 3, testSelectionAmendmentId: amended.amendment.identitySha256,
+    testPlans: first.candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection("none"), inventory) })) }).generation : null;
+  f.service.readTarget = async () => ({ status: "unknown" });
+  await f.scheduled.shift()();await f.service.drain("original");
+  const waiting = f.store.get("original");
+  assert.equal(waiting.currentGeneration, 1);assert.equal(waiting.state, "waiting");
+  assert.equal(waiting.waitReason.code, "external_effect_readback");
+  assert.deepEqual(f.store.latestStep("original", 3, "compose"), intent);
+  f.service.readTarget = async () => ({ status: "not_applied" });
+  return { ...f, candidate, intent, waiting };
+}
+
+test("sparse recovery amendment cannot bypass a stored candidate after its target readback wait", async t => {
+  const f = await sparseRecoveryWait(t), before = f.store.snapshot("original");
+  let second = null, failure = null;
+  try {
+    second = await f.service.continue("original", { requestId: "sparse-fresh-amendment", testSelection: selection("none"),
+      expectedRevision: f.waiting.revision, expectedGeneration: 1 });
+  } catch (error) { failure = error; }
+  if (second?.accepted) { await f.scheduled.shift()();await f.service.drain("original"); }
+  assert.notEqual(f.store.get("original").currentGeneration, 2, "a fresh amendment must not bypass original candidate3/intent through failed slot2");
+  assert.match(failure?.message ?? "", /immutable next generation/u);
+  assert.deepEqual(f.store.snapshot("original"), before);
+  assert.deepEqual(f.store.generation("original", 3), f.candidate);
+  assert.deepEqual(f.store.latestStep("original", 3, "compose"), f.intent);
+});
+
+test("sparse recovery amendment cannot bypass an unresolved future intent without a candidate", async t => {
+  const f = await sparseRecoveryWait(t, { registered: false }), before = f.store.snapshot("original");
+  await assert.rejects(f.service.continue("original", { requestId: "sparse-unregistered-amendment", testSelection: selection("none"),
+    expectedRevision: f.waiting.revision, expectedGeneration: 1 }), /original future compose/u);
+  assert.deepEqual(f.store.snapshot("original"), before);
+  assert.deepEqual(f.store.latestStep("original", 3, "compose"), f.intent);
+});
+
+test("sparse recovery same-original continuation settles its candidate before an ordinary later amendment", async t => {
+  const f = await sparseRecoveryWait(t);
+  assert.equal(f.service.continue("original").accepted, true);
+  await f.scheduled.shift()();await f.service.drain("original");
+  const settled = f.store.get("original"), receipt = f.store.latestStep("original", 3, "compose");
+  assert.equal(settled.currentGeneration, 3);assert.equal(receipt.status, "applied");
+  assert.deepEqual(f.store.generation("original", 3), f.candidate);
+  const next = await f.service.continue("original", { requestId: "sparse-after-settlement", testSelection: selection("none"),
+    expectedRevision: settled.revision, expectedGeneration: 3 });
+  assert.equal(next.accepted, true);
+  await f.scheduled.shift()();await f.service.drain("original");
+  assert.equal(f.store.get("original").currentGeneration, 4);
+  assert.deepEqual(f.store.generation("original", 3), f.candidate);
+  assert.deepEqual(f.store.latestStep("original", 3, "compose"), receipt);
 });

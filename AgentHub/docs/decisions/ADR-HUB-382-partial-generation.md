@@ -34,6 +34,14 @@ capture. No new public option, ledger, SQL writer, generation edit, directory
 deletion or publication replay is introduced. UNKNOWN and any contradictory
 receipt/readback remain a refusal, never not-applied credit.
 
+Because allocated generations may be sparse, the existing amendment admission
+guard checks all registered generations and unresolved compose receipts above
+currentGeneration, rather than only currentGeneration + 1. A target-readback wait
+cannot let a fresh amendment abandon its original stored candidate/intent and
+fall back to an earlier failed slot. The existing same-original continuation
+settles that candidate first; ordinary amendments then proceed from the settled
+current generation. Older historical receipts are not a global veto.
+
 ## Evidence and limits
 
 Real Git/source-generation storage and durable release SQLite exercise the

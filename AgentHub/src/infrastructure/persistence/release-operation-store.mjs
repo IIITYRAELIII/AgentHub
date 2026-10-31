@@ -650,8 +650,13 @@ export class ReleaseOperationStore {
           }
         }
         if (testSelectionAmendment && expectedRevision === current.revision
-            && database.prepare("SELECT 1 FROM release_candidate_generations WHERE operation_id=? AND generation=?")
-              .get(id, current.currentGeneration + 1)) throw new Error("Test selection cannot replace an immutable next generation");
+            && database.prepare("SELECT 1 FROM release_candidate_generations WHERE operation_id=? AND generation>?")
+              .get(id, current.currentGeneration)) throw new Error("Test selection cannot replace an immutable next generation");
+        if (testSelectionAmendment && expectedRevision === current.revision
+            && database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND generation>? AND step_id='compose'")
+              .all(id, current.currentGeneration).some(row => readJson(row.receipt_json)?.status !== "failed")) {
+          throw new Error("Test selection must settle its original future compose receipt first");
+        }
         const result = transitionReleaseOperation(current, patch, {
           expectedRevision: expectedRevision ?? current.revision,
           updatedAt: this.now(),

@@ -19,6 +19,13 @@ No caller generation increment, new release, schema, flag or cleanup is needed.
 Version, consolidated metadata identity and exact accepted selection still flow
 through the existing composition/freeze owners. See ADR-HUB-382-partial-generation.
 
+Amendment admission checks every registered or unresolved future compose slot
+above currentGeneration, including gaps. A stored sparse candidate or original
+intent must first settle through ordinary same-original continuation; a fresh
+amendment cannot drop that lineage and return to an earlier failed slot. Once
+that candidate is settled/current, its historical receipts do not veto later
+ordinary amendments. The check is in the existing amendment transaction.
+
 ## Explicit interruption of an execution attempt
 
 An explicit claim/Test/Await cancellation can stop future execution while its
