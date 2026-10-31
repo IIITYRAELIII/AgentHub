@@ -85,13 +85,36 @@ export class StorageRetentionService {
     return this.#flight;
   }
 
+  // An explicit operational consumer may confirm only exact owner previews.
+  // This shares the scheduler's original intents/lease; it neither discovers
+  // additional artifacts nor advances the background discovery cursor.
+  runApproved(previews) {
+    if (!Array.isArray(previews) || !previews.length || previews.length > this.maxUnits) {
+      throw new TypeError("Approved retention requires a bounded nonempty preview list");
+    }
+    const approved = previews.map(value => bounded(value));
+    const identities = new Set();
+    for (const item of approved) {
+      const key = `${item.ownerId}:${item.candidate?.id}`;
+      if (!this.owners.some(owner => owner.id === item.ownerId)
+          || typeof item.candidate?.id !== "string" || !item.candidate.id
+          || typeof item.candidate.cursor !== "string" || !item.binding
+          || identities.has(key)) throw new TypeError("Invalid approved retention binding");
+      identities.add(key);
+    }
+    if (this.#flight) throw new Error("Retention owner is already running");
+    this.#flight = Promise.resolve().then(() => this.withLease(lease => this.#run(lease, approved)))
+      .finally(() => { this.#flight = null; });
+    return this.#flight;
+  }
+
   #update(operation, patch) {
     const result = this.store.transition(operation.operationId, patch, { expectedRevision: operation.revision });
     if (!result.applied) throw new Error("retention-owner-fenced");
     return result.operation;
   }
 
-  async #unit(owner, candidate, context, lease, record = null) {
+  async #unit(owner, candidate, context, lease, record = null, approvedBinding = null) {
     const scope = `${owner.id}:${createHash("sha256").update(candidate.id).digest("hex")}`;
     let child = record ? this.store.get(record.operationId) : this.store.activeFor({ kind: KIND, ...SCOPE, threadId: scope });
     if (record && !child) return { result: { status: "unknown", reason: "original-intent-unavailable" } };
@@ -100,6 +123,9 @@ export class StorageRetentionService {
           || child.metadata?.version !== STORAGE_RETENTION_VERSION) throw new Error("retention-owner-binding");
       if (TERMINAL.has(child.status)) return { child, result: child.metadata.result ?? { status: "unknown" } };
       if (child.metadata.admitted) {
+        if (approvedBinding && JSON.stringify(approvedBinding) !== JSON.stringify(child.metadata.binding)) {
+          return { child, result: { status: "unknown", reason: "approved-original-binding-changed" } };
+        }
         await lease.assertOwned();
         let result;
         try {
@@ -112,13 +138,16 @@ export class StorageRetentionService {
     const preview = await owner.preview({ candidate, context });
     if (preview?.status !== "eligible") return { child, result: { status: "retained", reason: reason(preview?.reason) } };
     const binding = bounded(preview.binding);
+    if (approvedBinding && JSON.stringify(approvedBinding) !== JSON.stringify(binding)) {
+      return { child, result: { status: "retained", reason: "approved-preview-changed" } };
+    }
     if (child && JSON.stringify(binding) !== JSON.stringify(child.metadata.binding)) {
       return { child, result: { status: "retained", reason: "preview-changed" } };
     }
     return { child, prepared: { candidate: bounded(candidate, 4096), binding, scope } };
   }
 
-  async #run(lease) {
+  async #run(lease, approved = null) {
     const started = this.clock();
     let used = 0;
     const context = structuredClone(await this.readContext());
@@ -141,7 +170,7 @@ export class StorageRetentionService {
     if (knownUpgrade) Object.assign(state, { ownerIds, ownerIndex: 0, cursor: null });
     state.policyVersion = STORAGE_RETENTION_POLICY_VERSION;
     const cycle = `${context.releaseId}:${Math.floor(this.now().getTime() / this.intervalMs)}`;
-    if (state.cycle !== cycle) Object.assign(state, { cycle, ownerIndex: 0, cursor: null, summary: summary() });
+    if (!approved && state.cycle !== cycle) Object.assign(state, { cycle, ownerIndex: 0, cursor: null, summary: summary() });
     const save = async () => {
       await lease.assertOwned();
       parent = this.#update(parent, { status: running(parent), phase: "background", metadata: bounded(state) });
@@ -163,11 +192,11 @@ export class StorageRetentionService {
         state.summary.reasons[key] = (state.summary.reasons[key] ?? 0) + 1;
       }
     };
-    const settle = async (owner, candidate, record = null) => {
+    const settle = async (owner, candidate, record = null, approvedBinding = null) => {
       used += 1;
       const fresh = await this.readContext();
       if (!fresh?.ready || fresh.isolated || fresh.busy || fresh.releaseId !== context.releaseId || (this.#closed || this.isStopping())) return false;
-      let step = await this.#unit(owner, candidate, fresh, lease, record);
+      let step = await this.#unit(owner, candidate, fresh, lease, record, approvedBinding);
       if (step.prepared) {
         const admission = await this.readContext();
         if (!admission?.ready || admission.isolated || admission.busy || admission.releaseId !== context.releaseId
@@ -205,6 +234,16 @@ export class StorageRetentionService {
       return true;
     };
     await save();
+    if (approved) {
+      for (const item of approved) {
+        if (this.clock() - started >= this.budgetMs || (this.#closed || this.isStopping())) break;
+        const owner = this.owners.find(candidate => candidate.id === item.ownerId);
+        if (!await settle(owner, item.candidate, null, item.binding)) break;
+        await save();
+      }
+      return this.#last = { state: "idle", approved: true, processed: used,
+        pending: state.pending.length, ...state.summary };
+    }
     // One uncertain resource cannot starve all other artifact owners. Its SAME
     // original operation is reconciled; it is never submitted as a fresh effect.
     if (state.pending.length && used < this.maxUnits && !(this.#closed || this.isStopping())) {

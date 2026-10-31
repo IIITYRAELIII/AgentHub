@@ -9,6 +9,7 @@ import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/
 import { StorageRetentionService } from "../../../src/application/storage-retention-service.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { NativeMergeTransportRetention } from "../../../src/infrastructure/filesystem/native-merge-transport-retention.mjs";
+import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
 
 function gitAt(cwd, args, { input = null } = {}) {
   return new Promise((resolve, reject) => {
@@ -103,7 +104,16 @@ test("repository-bound publication retires redundant transport after unrelated o
   assert.equal(preview.status, "eligible", JSON.stringify(preview));
   assert.equal(preview.binding.publication.gitReferences[0].publishedRevision, f.commit);
   const bytes = (await lstat(f.bundle)).size;
-  assert.equal((await f.owner.prune({ candidate: f.candidate, binding: preview.binding })).logicalBytes, bytes);
+  const store = new MaintenanceOperationStore({ dataDir: f.dataDir });
+  const service = new StorageRetentionService({ store, owners: [f.owner],
+    readContext: async () => ({ ready: true, releaseId: "fixed-current" }),
+    withLease: fn => withInterprocessLocks([path.join(f.dataDir, "storage-retention")], fn) });
+  const result = await service.runApproved([
+    { ownerId: f.owner.id, candidate: f.candidate, binding: preview.binding },
+  ]);
+  assert.equal(result.removed, 1);
+  assert.equal(result.logicalBytes, bytes);
+  assert.deepEqual(store.get("storage-retention:v1").metadata.pending, []);
   await assert.rejects(readFile(f.bundle), { code: "ENOENT" });
   assert.equal(await gitAt(f.source, ["show-ref"]), refs);
   assert.deepEqual(await readFile(f.stateFile), journal);

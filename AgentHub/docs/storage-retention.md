@@ -1,5 +1,15 @@
 # Native storage retention
 
+An explicitly authorized operational consumer can call the SAME service's
+`runApproved` with at most three exact previously reviewed owner previews. Each
+binding is checked again by its artifact owner before admission. This path uses
+the existing storage lease, maintenance parent/pending children and owner prune/
+reconcile; it performs no discovery and does not advance the automatic cursor or
+reconcile unrelated pending artifacts. Readiness, busy, isolation, stopping and
+admission budgets remain effective. A changed binding for an admitted UNKNOWN
+cannot replace its original authority or start another effect. No public tool,
+alternate cleanup database or generic pathname-delete API is added.
+
 Normal installed Hub startup schedules policy v3 after readiness and periodically
 every six hours. The installer does not start the application to run cleanup.
 No per-user external scheduled task or Codex automation is required. Test Contour,

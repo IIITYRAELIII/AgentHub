@@ -25,6 +25,13 @@ No recursive directory sweep or generic disk-cleaner authority is introduced.
 
 ## Operational boundary
 
+The existing StorageRetentionService also accepts an explicit bounded list of
+owner previews via runApproved. It reuses the same owner registry and durable
+parent/children, checks the fresh preview before effect, and leaves background
+discovery/cursors and unrelated pending originals alone. Automatic runOnce and
+readiness/busy/isolation/stopping checks are unchanged. An existing admitted
+UNKNOWN can only reconcile its exact original binding, never an altered approval.
+
 The user's cleanup consent applies only to proven obsolete technical artifacts.
 Every real effect needs an exact independently reviewed preview and the same
 artifact owner's fresh admission. Active generations, current/previous/running

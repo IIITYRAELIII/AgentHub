@@ -48,6 +48,70 @@ test("after-ready work is bounded, durable before effect, and has no restart pro
   assert.equal(f.store.activeFor({ kind: "restart", streamId: "agent-hub-runtime", threadId: "agent-hub-runtime" }), null);
 });
 
+test("approved owner previews preserve discovery cursor and unrelated pending originals", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  f.owner.prune = async () => ({ status: "unknown", reason: "original-unknown" });
+  await f.make().runOnce();
+  const before = f.store.get("storage-retention:v1");
+  const pending = before.metadata.pending[0].operationId;
+  const original = f.store.get(pending);
+  f.owner.list = async () => { throw new Error("approved cleanup must not discover more artifacts"); };
+  f.owner.reconcile = async () => { throw new Error("unrelated original must remain untouched"); };
+  f.owner.prune = async input => {
+    assert.equal(input.candidate.id, "chosen");
+    assert.ok(f.store.get("storage-retention:v1").metadata.pending.some(p => p.operationId === input.operationId));
+    assert.equal(f.store.get(input.operationId).metadata.admitted, true);
+    f.calls.push(input);
+    return { status: "removed", logicalBytes: 23 };
+  };
+  await f.make().runApproved([{ ownerId: f.owner.id, candidate: { id: "chosen", cursor: "chosen" }, binding: { id: "chosen" } }]);
+  assert.equal(f.calls.length, 1);
+  const after = f.store.get("storage-retention:v1");
+  assert.equal(after.metadata.cursor, before.metadata.cursor);
+  assert.equal(after.metadata.ownerIndex, before.metadata.ownerIndex);
+  assert.equal(after.metadata.cycle, before.metadata.cycle);
+  assert.deepEqual(after.metadata.pending, before.metadata.pending);
+  assert.deepEqual(f.store.get(pending), original);
+});
+
+test("approved cleanup refuses stale previews and preserves readiness and budget checks", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  const approval = { ownerId: f.owner.id, candidate: { id: "a", cursor: "a" }, binding: { id: "stale" } };
+  const service = f.make();
+  assert.throws(() => service.runApproved([]), /bounded nonempty/u);
+  assert.throws(() => service.runApproved([approval, approval]), /bounded nonempty/u);
+  assert.throws(() => service.runApproved([{ ...approval, ownerId: "foreign-owner" }]), /Invalid approved/u);
+  await service.runApproved([approval]);
+  assert.equal(f.calls.length, 0);
+  assert.equal(service.status().reasons["approved-preview-changed"], 1);
+  for (const blocked of [{ busy: true }, { isolated: true }, { ready: false }]) {
+    const result = await f.make({ readContext: async () => ({ ...f.context, ...blocked }) }).runApproved([
+      { ...approval, binding: { id: "a" } },
+    ]);
+    assert.equal(result.state, "deferred");
+  }
+  assert.equal(f.calls.length, 0);
+});
+
+test("approved lost reply reconciles SAME exact original and refuses a replacement binding", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  let effects = 0, reconciles = 0;
+  f.owner.prune = async () => { effects++; return { status: "unknown", reason: "lost-reply" }; };
+  const approval = { ownerId: f.owner.id, candidate: { id: "a", cursor: "a" }, binding: { id: "a" } };
+  await f.make().runApproved([approval]);
+  const original = f.store.get("storage-retention:v1").metadata.pending[0].operationId;
+  f.owner.reconcile = async input => { reconciles++; assert.equal(input.operationId, original); return { status: "already-removed" }; };
+  await f.make().runApproved([{ ...approval, binding: { id: "replacement" } }]);
+  assert.equal(reconciles, 0);
+  assert.equal(f.store.get(original).status, "reconciling");
+  await f.make().runApproved([approval]);
+  assert.equal(effects, 1);
+  assert.equal(reconciles, 1);
+  assert.equal(f.store.get(original).status, "succeeded");
+  assert.equal(f.store.get(original).metadata.result.status, "already-removed");
+  assert.deepEqual(f.store.get("storage-retention:v1").metadata.pending, []);
+});
+
 test("known partial batches continue SAME admitted child and keep observations distinct from completion", async t => {
   const f = await setup(t, { maxUnits: 1 });
   let original, effects = 0;
