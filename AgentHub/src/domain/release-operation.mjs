@@ -255,7 +255,7 @@ export function failedCompositionRecovery({ operation, receipts = [], generation
   if (!tail.length || tail.at(-1).error !== operation.lastError.message) return null;
   const numbers = [...new Set(tail.map(item => item.generation))];
   if (numbers.some((number, index) => number !== operation.currentGeneration + index + 1)
-      || generations.some(item => numbers.includes(item.generation))) return null;
+      || generations.some(item => item.generation > operation.currentGeneration)) return null;
   if (tail.some(item => item.operationId !== operation.operationId || item.status !== "failed"
       || !Number.isSafeInteger(item.attempt) || item.attempt < 1 || !item.error
       || item.effect != null && item.effect.status !== "not_applied"

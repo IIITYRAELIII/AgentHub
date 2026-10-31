@@ -628,3 +628,40 @@ test("partial generation amendment rechecks target effects before admitting its 
   assert.deepEqual(f.store.snapshot("original").receipts, receipts);
   assert.equal(f.store.generation("original", 3), null);
 });
+
+
+test("partial generation amendment retains an unrelated registered next slot instead of adopting it", async t => {
+  const f = await failedPartialReceiptFixture(t), current = f.store.get("original");
+  assert.equal((await f.service.continue("original", { requestId: "no-foreign-generation", testSelection: selection("none"),
+    expectedRevision: current.revision, expectedGeneration: 1 })).accepted, true);
+  const first = f.store.generation("original", 1);
+  const foreign = f.store.putGeneration({ ...first, generation: 3, testSelectionAmendmentId: "foreign-amendment",
+    testPlans: first.candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection("none"), inventory) })) }).generation;
+  const receipts = f.store.snapshot("original").receipts;
+  await f.scheduled.shift()();await f.service.drain("original");
+  assert.equal(f.store.get("original").currentGeneration, 1);
+  assert.deepEqual(f.store.generation("original", 3), foreign);
+  assert.deepEqual(f.store.snapshot("original").receipts, receipts);
+});
+
+test("partial generation amendment recovers its exact registered candidate after a lost compose reply", async t => {
+  const f = await failedPartialReceiptFixture(t), current = f.store.get("original");
+  const amended = await f.service.continue("original", { requestId: "exact-registered-generation", testSelection: selection("none"),
+    expectedRevision: current.revision, expectedGeneration: 1 });
+  assert.equal(amended.accepted, true);
+  const operation = f.store.get("original");
+  const input = { authorization: operation.authorization, authorizedTaskIds: effectiveReleaseTaskIds(operation), priorGeneration: 1,
+    testSelection: selection("none"), amendment: amended.amendment.identitySha256 };
+  const intent = f.store.beginStep({ operationId: "original", generation: 3, stepId: "compose", input }).receipt;
+  const first = f.store.generation("original", 1);
+  const original = f.store.putGeneration({ ...first, generation: 3, testSelectionAmendmentId: amended.amendment.identitySha256,
+    testPlans: first.candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection("none"), inventory) })) }).generation;
+  assert.equal(original.testSelectionAmendmentId, amended.amendment.identitySha256);
+  f.service.compose = async () => assert.fail("stored exact generation must prevent another composition");
+  const reopened = new ReleaseOperationStore({ dataDir: f.root });
+  assert.deepEqual(reopened.latestStep("original", 3, "compose"), intent);
+  await f.scheduled.shift()();await f.service.drain("original");
+  assert.equal(f.store.get("original").currentGeneration, 3);
+  assert.deepEqual(f.store.generation("original", 3), original);
+  assert.equal(f.store.latestStep("original", 3, "compose").status, "applied");
+});

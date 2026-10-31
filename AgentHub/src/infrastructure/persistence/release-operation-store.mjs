@@ -792,6 +792,14 @@ export class ReleaseOperationStore {
         const amendment = operation?.testSelectionAmendments?.at(-1);
         const recovery = amendment?.priorGeneration === operation?.currentGeneration ? amendment.composeRecovery : null;
         if (recovery) {
+          const registered = readJson(database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=? AND generation=?")
+            .get(id, Number(generation))?.generation_json);
+          const original = readJson(database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND generation=? AND step_id='compose' ORDER BY attempt DESC LIMIT 1")
+            .get(id, Number(generation))?.receipt_json);
+          if (registered && (!original || !["intent", "unknown", "applied"].includes(original.status)
+              || original.inputSha256 !== inputSha256 || registered.testSelectionAmendmentId !== amendment.identitySha256)) {
+            throw new Error("Registered recovery generation has no matching original compose intent");
+          }
           const captured = failedCompositionRecovery({ operation: { ...operation, owner: null,
             state: amendment.priorFailure.state, lastError: amendment.priorFailure.error },
             receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND generation<?")
