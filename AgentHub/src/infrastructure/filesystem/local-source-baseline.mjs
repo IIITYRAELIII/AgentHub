@@ -269,24 +269,12 @@ export async function assertInstalledLocalSourceBaseline({
   if (p?.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE) reject("missing provenance");
   if (p.agreedMainCommit !== primaryMainCommit || p.publishedBaseCommit !== publishedRevision
       || p.planRevision !== planRevision || p.selectionHash !== localSourceSelectionHash(tasks)) reject("base, plan or selection changed");
-  const currentBytes = await regular(path.join(runtimeRoot, "current.json"));
-  const current = JSON.parse(currentBytes);
+  const current = JSON.parse(await regular(path.join(runtimeRoot, "current.json")));
   if (current.current !== p.installedReleaseId) reject("installed release changed");
   const releaseRoot = path.join(runtimeRoot, "releases", p.installedReleaseId);
   const manifestBytes = await regular(path.join(releaseRoot, "runtime-manifest.json"));
   if (sha(manifestBytes) !== p.installedManifestSha256) reject("installed manifest changed");
   const manifest = JSON.parse(manifestBytes);
-  const publishedOnly = p.sourceBaseCommit === p.publishedBaseCommit;
-  if (publishedOnly) {
-    // No installed code is overlaid: the newer durable publication is the base.
-    // Retain the old installation's separate identity and physical verification.
-    if (!/^[a-f0-9]{40}$/u.test(manifest.publicationRevision ?? "")
-        || manifest.publicationRevision === p.sourceBaseCommit
-        || typeof manifest.sourceRoot !== "string" || !path.isAbsolute(manifest.sourceRoot)) {
-      reject("published baseline requires an older retained installed source");
-    }
-    await verifyRuntimeManifest(releaseRoot, p.installedReleaseId);
-  }
   if (typeof manifest.publicationRevision === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(manifest.publicationRevision)
       && typeof manifest.sourceRoot === "string" && path.isAbsolute(manifest.sourceRoot)) {
     const tree = await git(["-C", manifest.sourceRoot, "rev-parse", "HEAD^{tree}"]);
@@ -320,6 +308,18 @@ export async function assertInstalledLocalSourceBaseline({
   if (String(await git(["rev-parse", `${p.sourceBaseCommit}^{tree}`])) !== p.sourceBaseTree) reject("source tree changed");
   const patch = await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, p.sourceBaseCommit], { rawOutput: true });
   if (sha(patch) !== p.sourcePatchSha256) reject("source patch changed");
+  const publishedOnly = p.sourceBaseCommit === p.publishedBaseCommit;
+  const currentBytes = publishedOnly ? await regular(path.join(runtimeRoot, "current.json")) : null;
+  if (publishedOnly) {
+    // No installed code is overlaid: the newer durable publication is the base.
+    // Retain the old installation's separate identity and physical verification.
+    if (!/^[a-f0-9]{40}$/u.test(manifest.publicationRevision ?? "")
+        || manifest.publicationRevision === p.sourceBaseCommit
+        || typeof manifest.sourceRoot !== "string" || !path.isAbsolute(manifest.sourceRoot)) {
+      reject("published baseline requires an older retained installed source");
+    }
+    await verifyRuntimeManifest(releaseRoot, p.installedReleaseId);
+  }
   if (manifest.releaseId !== p.installedReleaseId || !Array.isArray(manifest.files)
       || manifest.files.some(file => typeof file.path !== "string"
         || !/^[a-f0-9]{64}$/u.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0)) reject("installed identity changed");
