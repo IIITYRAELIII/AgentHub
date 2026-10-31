@@ -151,15 +151,16 @@ existing startup coordinator owns that optional work after readiness.
 
 - In the main composer, Ctrl+Enter and Shift+Enter insert a newline at the
   caret or replace selected text. Ctrl+Enter does not submit or execute an open
-  slash-menu command. Desktop Enter, Meta+Enter and the send button address the
-  current Stream: current active turn, otherwise normal queue (ADR-0136).
-  An explicit after-turn queue action keeps its meaning. Mobile Enter remains a newline. IME composition
+  slash-menu command. Desktop Enter and the send button default to queue, waiting
+  behind an active turn or launching normally when idle. Meta+Enter separately
+  selects steer to the current Stream: current active turn, otherwise normal
+  queue (ADR-0136). Mobile Enter remains a newline. IME composition
   does not submit or select a slash command.
 - An explicit browser/WebView-local mapping may assign queue, steer or newline
   to bare desktop Enter, Ctrl-only Enter and Shift-only Enter. Absent settings
-  preserve the defaults above. An explicitly saved queue mapping retains its
-  after-turn meaning; the unconfigured default follows ordinary current-Stream
-  routing. Queue/steer reuse the existing submit actions,
+  preserve the defaults above. Saved mappings select their explicit actions;
+  they do not change the default queue action of the send button, ordinary quote
+  send or quick-send. Queue/steer reuse the existing submit actions,
   including existing steer fallback to queue or a new turn when unavailable;
   no exact run/turn protocol is introduced. Meta and unlisted chords stay legacy.
   Ctrl/Shift mappings precede slash selection; bare desktop Enter retains
@@ -172,8 +173,8 @@ existing startup coordinator owns that optional work after readiness.
   migrate to identical title/text values.
 - Click inserts reply text at the active quote-comment caret, falling back to
   the composer. Ctrl+click sends only reply text and does not mutate the current
-  composition.
-- In quote comments, Enter sends once, Shift+Enter and Ctrl+Enter insert a
+  composition. Quick-send defaults to queue through the same composer owner.
+- In quote comments, Enter queues once, Shift+Enter and Ctrl+Enter insert a
   newline at the caret, and Meta+Enter preserves the main composer steer action.
   IME composition, repeated keydown and a pending send cannot duplicate it.
 

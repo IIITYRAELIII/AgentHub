@@ -8748,7 +8748,7 @@ composerInput.addEventListener("keydown", (event) => {
     if (action === "newline") {
       if (!event.repeat || chord !== "ctrlEnter") insertTextAtCaret(composerInput, "\n");
     } else if (!event.repeat) {
-      if (action === "queue") submitComposer({ followUpMode: preference.configured ? "queue" : null });
+      if (action === "queue") submitComposer({ followUpMode: "queue" });
       else submitComposer({ steerWhileRunning: true });
     }
   };

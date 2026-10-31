@@ -191,12 +191,16 @@ persisted wait reason is not authority: it is recalculated from current exact
 occupancy and self-heals after restart without manual interaction. When terminal
 admission is released, every queued lane head
 preempts polling backoff and is scheduled immediately because repository
-occupancy can couple otherwise independent lanes. An ordinary message addresses
-its Stream, not a permanently pinned Run/Turn. Before an attempt, a suitable
+occupancy can couple otherwise independent lanes. An ordinary message explicitly
+submitted with `followUpMode=steer` addresses its Stream, not a permanently pinned
+Run/Turn. Before an attempt, a suitable
 current active turn receives it; otherwise it follows normal FIFO launch.
 Definite non-delivery on an ended target re-resolves that same Stream without a
-manual retry/after-turn decision. Explicit queue actions remain after-turn
-intake, and direct exact-target service operations retain their original guards.
+manual retry/after-turn decision. Ordinary composer Enter, send button, quote and
+quick-send default to queue, as the user reaffirmed on 2026-10-31; a separate
+steer action or saved shortcut chooses current-or-queue delivery. Queue actions
+remain after-turn intake when active and launch normally when idle. Direct
+exact-target service operations retain their original guards.
 
 Provider-internal compaction in an existing exact Hub-owned active turn is not
 an idle-launch reservation. Ordinary steer may reach that same turn without

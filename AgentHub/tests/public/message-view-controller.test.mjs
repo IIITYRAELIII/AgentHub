@@ -318,14 +318,14 @@ test("selected Stream rerenders when logical chat state and DOM ownership diverg
   );
 });
 
-test("ordinary composer input addresses the current Stream with or without a visible active turn", async () => {
+test("ordinary composer defaults to queue and explicit steer preserves current Stream intent", async () => {
   const api = await messageViewApi();
-  assert.equal(api.composerFollowUpMode({ running: true }), "steer");
+  assert.equal(api.composerFollowUpMode({ running: true }), "queue");
   assert.equal(
     api.composerFollowUpMode({ running: true }, { steerWhileRunning: true }),
     "steer",
   );
-  assert.equal(api.composerFollowUpMode({ running: false }), "steer");
+  assert.equal(api.composerFollowUpMode({ running: false }), "queue");
   assert.equal(
     api.composerFollowUpMode({ running: false }, { steerWhileRunning: true }),
     "steer",

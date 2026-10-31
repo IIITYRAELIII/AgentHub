@@ -7,6 +7,9 @@ import {
   snapshot,
   bridgeCalls,
 } from "./composer-production.fixture.mjs";
+import path from "node:path";
+
+const keyboardDiagnostics = new WeakMap();
 
 async function openMobileConversation(page) {
   await page.locator('[data-mobile-dialogs-tab="chat"]').click();
@@ -25,6 +28,7 @@ async function openKeyboardPage(browser, { running = false, mobile = false, mapp
     turnId: "keyboard-active-turn", operationKind: "user-turn", projectionState: "active", model: "gpt-test",
   } : null;
   const diagnostics = await openFixture(page, { fixtureSnapshot, surface: mobile ? "web" : "vscode" });
+  keyboardDiagnostics.set(page, diagnostics);
   if (mobile) await openMobileConversation(page);
   assert.equal(new URL(page.url()).host, "agent-hub.test");
   assert.equal(await page.title(), "Agent Hub");
@@ -258,14 +262,16 @@ test("shipped composer inserts Ctrl/Shift newlines at the selection and persists
   }
 });
 
-test("shipped composer sends Enter, Meta+Enter and button to current Stream routing", async () => {
+test("shipped composer defaults Enter and button to queue while Meta+Enter explicitly steers", async () => {
   const browser = await launchBrowser();
   try {
     for (const { running, action, followUpMode, deferWhileRunning } of [
-      { running: false, action: "Enter", followUpMode: "steer", deferWhileRunning: false },
-      { running: true, action: "Enter", followUpMode: "steer", deferWhileRunning: false },
+      { running: false, action: "Enter", followUpMode: "queue", deferWhileRunning: false },
+      { running: true, action: "Enter", followUpMode: "queue", deferWhileRunning: false },
+      { running: false, action: "Meta+Enter", followUpMode: "steer", deferWhileRunning: false },
       { running: true, action: "Meta+Enter", followUpMode: "steer", deferWhileRunning: false },
-      { running: true, action: "button", followUpMode: "steer", deferWhileRunning: false },
+      { running: false, action: "button", followUpMode: "queue", deferWhileRunning: false },
+      { running: true, action: "button", followUpMode: "queue", deferWhileRunning: false },
     ]) {
       const page = await openKeyboardPage(browser, { running });
       const composer = page.locator("[data-composer-input]");
@@ -281,6 +287,7 @@ test("shipped composer sends Enter, Meta+Enter and button to current Stream rout
       assert.equal(emitted[0].text, "Send this");
       assert.equal(emitted[0].followUpMode, followUpMode);
       assert.equal(emitted[0].deferWhileRunning, deferWhileRunning);
+      assert.deepEqual(keyboardDiagnostics.get(page), []);
       await page.close();
     }
   } finally {
@@ -321,7 +328,8 @@ test("shipped quote comments insert newlines without sending and preserve Enter/
   const browser = await launchBrowser();
   try {
     for (const { running, action, expectedMode } of [
-      { running: false, action: "Enter", expectedMode: "steer" },
+      { running: false, action: "Enter", expectedMode: "queue" },
+      { running: true, action: "Enter", expectedMode: "queue" },
       { running: true, action: "Meta+Enter", expectedMode: "steer" },
     ]) {
       const page = await openKeyboardPage(browser, { running });
@@ -369,7 +377,44 @@ test("mobile Enter remains a newline and the visible send button still submits",
     assert.deepEqual(await sends(page), []);
     await page.locator("[data-composer-send]").click();
     assert.equal((await sends(page)).length, 1);
+    assert.equal((await sends(page))[0].followUpMode, "queue");
   } finally {
     await browser.close();
   }
+});
+
+test("custom steer shortcuts never change ordinary button, quote or quick-send defaults", async () => {
+  const browser = await launchBrowser();
+  try {
+    for (const mobile of [false, true]) for (const action of ["button", "quote", "quick"]) {
+      const page = await openKeyboardPage(browser, { running: true, mobile,
+        mapping: { enter: "steer", ctrlEnter: "steer", shiftEnter: "queue" } });
+      await page.evaluate(() => localStorage.setItem("fixture:send-mode", "accept"));
+      if (!mobile) await page.setViewportSize({ width: 1366, height: 900 });
+      const input = page.locator("[data-composer-input]");
+      await input.fill("Retained draft");
+      if (action === "quote") { assert.equal(await addQuote(page), true); await page.locator("[data-annotation-comment-index='0']").fill("Quote comment"); }
+      if (action === "quick") {
+        await page.evaluate(() => window.AgentHub.setSelection({ quickMessages: {
+          global: [{ title: "Queue template", text: "Quick body" }], workspaces: {}, streams: {},
+        }, quickMessageActionMode: "send" }));
+        await page.locator("[data-quick-message-index]").first().click();
+      } else if (action === "quote") await page.locator("[data-annotation-comment-index='0']").press("Enter");
+      else await page.locator("[data-composer-send]").click();
+      const emitted = await sends(page);
+      assert.equal(emitted.length, 1, `${mobile}/${action}`);
+      assert.equal(emitted[0].followUpMode, "queue", `${mobile}/${action}`);
+      assert.equal(emitted[0].text, action === "quick" ? "Quick body" : "Retained draft");
+      if (action === "quote") assert.equal(emitted[0].annotations[0].annotation, "Quote comment");
+      if (action === "quick") assert.equal(await input.inputValue(), "Retained draft");
+      const calls = await bridgeCalls(page, "send-message");
+      assert.equal(calls.length, 1); assert.equal(calls[0].params.followUpMode, "queue");
+      assert.ok(calls[0].params.clientUserMessageId);
+      assert.deepEqual(keyboardDiagnostics.get(page), [], `${mobile}/${action}`);
+      if (process.env.AGENT_HUB_DEFAULT_QUEUE_QA_DIR && action === "button") {
+        await page.screenshot({ path: path.join(process.env.AGENT_HUB_DEFAULT_QUEUE_QA_DIR, `queue-${mobile ? 390 : 1366}.png`) });
+      }
+      await page.close();
+    }
+  } finally { await browser.close(); }
 });
