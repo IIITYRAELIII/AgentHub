@@ -615,6 +615,22 @@ original publication pin; foreign origin, non-array or substituted empty
 authority refuses. A sealed envelope never switches modes after drift.
 OWN publication remains an ancestor of the local source base.
 
+When the installed manifest's exact clean retained source is a strict ancestor
+of the durable OWN publication, ordinary selection uses that publication as the
+composition base, not the older installation or an older local main. The same
+`installed-local-source-v1` envelope retains the actual installed release and
+manifest separately; source base equals published base only with the exact empty
+binary patch digest. This grants no installed code overlay or installation credit.
+The verifier requires a distinct older retained installed identity, its clean
+source HEAD and ancestry, complete canonical physical runtime verification,
+unchanged pointer/manifest, and all existing selection/adoption/origin checks.
+The candidate keeps newer published code and exact selected Task changes.
+Equal installed/public identity keeps its existing no-carry route. Ahead local
+repairs still require their original full source/physical carry proof; divergent
+or unrelated unpublished source is not discarded or silently replaced. Fresh
+precommit, terminal, reuse and freeze checks retain these same sealed inputs.
+See ADR-HUB-388-published-baseline-before-update.
+
 A validated OWN generation may already have published its exact Git candidate
 while runtime delivery remains partial or has been rolled back. The existing
 read-only release store can derive `ownGitPublication` from that original

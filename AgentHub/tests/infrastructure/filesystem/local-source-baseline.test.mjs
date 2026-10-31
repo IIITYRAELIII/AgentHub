@@ -8,7 +8,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash,
   normalizedReleaseBaseProvenance } from "../../../src/domain/release-base-provenance.mjs";
-import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
+import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
 import { readAgentHubVersion } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
@@ -97,6 +97,126 @@ async function inheritedRepositoryFixture(t) {
     verifyInherited: async (extra = {}) => f.verify({ primaryMainCommit: main,
       provenance: await provenance(), ...extra }) };
 }
+
+async function publishedAfterInstalledFixture(t, relation = "behind") {
+  const f = await fixture(t);
+  const packageBytes = await readFile(path.join(f.carry, "AgentHub/package.json"));
+  await save(f.release, "package.json", packageBytes);
+  const manifest = { ...JSON.parse(f.manifest), publicationRevision: f.source,
+    sourceRoot: path.join(f.carry, "AgentHub") };
+  manifest.files.push({ path: "package.json", bytes: packageBytes.length, sha256: hash(packageBytes) });
+  await save(f.release, "runtime-manifest.json", JSON.stringify(manifest));
+  let published = f.published;
+  if (relation !== "ahead") {
+    const later = path.join(f.root, "later-public");
+    await git(f.primary, ["worktree", "add", "-b", "later-public", later,
+      relation === "behind" ? f.source : f.published]);
+    if (relation === "unrelated") await git(later, ["checkout", "--orphan", "unrelated-public"]);
+    await save(later, "AgentHub/server.mjs", "export const repair = 3;\n");
+    await save(later, "AgentHub/new-public.mjs", "export const newPublic = true;\n");
+    published = await commit(later, "newer public source");
+    await git(later, ["push", ...(relation === "unrelated" ? ["--force"] : []), "origin", "HEAD:main"]);
+  }
+  await save(f.runtimeRoot, "publication-state.json", JSON.stringify({ repositories: [{ root: f.primary, revision: published }] }));
+  const input = { git: (args, options) => git(f.primary, args, options), sourceGit: git,
+    repositoryRoot: f.primary, primaryMainCommit: f.main, publishedRevision: published,
+    tasks: f.tasks, runtimeRoot: f.runtimeRoot, planRevision: "published-plan", adoptions: [] };
+  const candidate = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "candidate-data"), environment: f.environment });
+  const derive = () => candidate.deriveInstalledLocalSourceBaselineForSelection({
+    projectRoot: f.primary, planRevision: input.planRevision, tasks: f.tasks, publishedRevision: published });
+  return { ...f, input, published, manifest, candidate, derive };
+}
+
+test("newer published ancestor continuation composes from public without installing or reverting it", async t => {
+  const f = await publishedAfterInstalledFixture(t);
+  const pointer = await readFile(path.join(f.runtimeRoot, "current.json"));
+  const manifest = await readFile(path.join(f.release, "runtime-manifest.json"));
+  const p = await f.derive();
+  assert.equal(p.sourceBaseCommit, f.published);
+  assert.equal(p.publishedBaseCommit, f.published);
+  assert.equal(p.sourcePatchSha256, hash(Buffer.alloc(0)));
+  assert.equal(p.installedReleaseId, "installed-repair");
+  assert.equal(p.installedManifestSha256, hash(manifest));
+  assert.equal(p.selectionHash, localSourceSelectionHash(f.tasks));
+  const candidate = await f.candidate.prepareCandidate({ projectRoot: f.primary, workspaceId: "workspace",
+    planRevision: f.input.planRevision, frozenTasks: f.tasks, approvedBaseCommit: p.sourceBaseCommit, baseProvenance: p });
+  assert.equal(await git(candidate.releaseRoot, ["show", candidate.preReleaseHead + ":AgentHub/server.mjs"]), "export const repair = 3;");
+  assert.equal(await git(candidate.releaseRoot, ["show", candidate.preReleaseHead + ":AgentHub/new-public.mjs"]), "export const newPublic = true;");
+  assert.equal(await git(candidate.releaseRoot, ["show", candidate.preReleaseHead + ":AgentHub/feature.mjs"]), "export const selected = true;");
+  assert.equal(candidate.manifest.baseProvenance.sourceBaseCommit, f.published);
+  assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), pointer);
+  assert.deepEqual(await readFile(path.join(f.release, "runtime-manifest.json")), manifest);
+  assert.deepEqual(await readFile(path.join(f.release, "server.mjs")), f.physical);
+  assert.equal(await git(f.carry, ["rev-parse", "HEAD"]), f.source);
+  assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
+  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+});
+
+test("installed ancestor continuation keeps physical, origin and retained-source refusals", async t => {
+  const f = await publishedAfterInstalledFixture(t);
+  const manifest = await readFile(path.join(f.release, "runtime-manifest.json"));
+  await save(f.release, "server.mjs", "tampered\n");
+  await assert.rejects(f.derive(), /runtime file (?:size|hash) mismatch/u);
+  await save(f.release, "server.mjs", f.physical);
+  await save(f.carry, "AgentHub/server.mjs", "dirty source\n");
+  await assert.rejects(f.derive(), /retained source checkout changed/u);
+  await save(f.carry, "AgentHub/server.mjs", "export const repair = 1;\n");
+  await save(f.release, "runtime-manifest.json", JSON.stringify({ ...f.manifest, publicationRevision: f.main }));
+  await assert.rejects(f.derive(), /retained installed source identity changed/u);
+  await save(f.release, "runtime-manifest.json", manifest);
+  const p = await f.derive();
+  assert.throws(() => normalizedReleaseBaseProvenance({ ...p, sourcePatchSha256: "0".repeat(64) }), /provenance pins/u);
+  await git(f.carry, ["push", "--force", "origin", "HEAD:main"]);
+  await assert.rejects(f.derive(), /origin differs/u);
+  assert.equal(await git(f.carry, ["rev-parse", "HEAD"]), f.source);
+  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+});
+
+test("installed ancestor continuation rereads pointer and manifest after verification", async t => {
+  const f = await publishedAfterInstalledFixture(t);
+  const currentFile = path.join(f.runtimeRoot, "current.json"), manifestFile = path.join(f.release, "runtime-manifest.json");
+  const pointer = await readFile(currentFile), manifest = await readFile(manifestFile);
+  for (const which of ["pointer", "manifest"]) {
+    let changed = false;
+    const port = async (args, options) => {
+      const result = await f.input.git(args, options);
+      if (!changed && args[0] === "-C" && args.includes("status")) {
+        // The first sourceGit clean read is separate; this is the verifier's
+        // late retained-source read, after physical manifest verification.
+        changed = true;
+        await save(f.runtimeRoot, which === "pointer" ? "current.json" : "releases/installed-repair/runtime-manifest.json",
+          which === "pointer" ? JSON.stringify({ current: "replacement" }) : Buffer.concat([manifest, Buffer.from(" ")]));
+      }
+      return result;
+    };
+    await assert.rejects(installedNativeHistoryBaseline({ ...f.input, git: port }), /installed (?:release|manifest) changed/u);
+    assert.equal(changed, true);
+    await writeFile(currentFile, pointer); await writeFile(manifestFile, manifest);
+  }
+});
+
+test("private installed repair ahead of publication remains an exact physical carry", async t => {
+  const f = await publishedAfterInstalledFixture(t, "ahead");
+  const p = await f.derive();
+  assert.equal(p.sourceBaseCommit, f.source);
+  assert.notEqual(p.sourceBaseCommit, p.publishedBaseCommit);
+  assert.equal((await assertInstalledLocalSourceBaseline({ ...f.input, provenance: p })).runtimeFiles, 1);
+  await assert.rejects(assertInstalledLocalSourceBaseline({ ...f.input, provenance: {
+    ...p, sourceBaseCommit: f.published, sourceBaseTree: await git(f.primary, ["rev-parse", f.published + "^{tree}"]),
+    sourcePatchSha256: hash(Buffer.alloc(0)),
+  } }));
+  assert.equal(await git(f.carry, ["rev-parse", "HEAD"]), f.source);
+});
+
+for (const relation of ["diverged", "unrelated"]) test(`unpublished ${relation} installed source is retained and refused`, async t => {
+  const f = await publishedAfterInstalledFixture(t, relation);
+  const pointer = await readFile(path.join(f.runtimeRoot, "current.json"));
+  await assert.rejects(f.derive());
+  assert.equal(await git(f.carry, ["rev-parse", "HEAD"]), f.source);
+  assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), pointer);
+  assert.deepEqual(await readFile(path.join(f.release, "server.mjs")), f.physical);
+  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+});
 
 test("valid installed source evidence is verified beyond the former record byte ceiling", async t => {
   const f = await fixture(t);
