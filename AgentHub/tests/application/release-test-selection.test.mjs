@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -497,9 +497,14 @@ test("partial generation amendment freezes a fresh identity and preserves both o
   const scheduled = [];
   const adapter = new WorkspaceReleaseOperationAdapter({
     releasePreflight: {
-      async prepareOperationGeneration({ operationId, generation, changelogContent }) {
-        const candidate = await gitOwner.prepareGeneration({ ...preparedInput, operationId, generation, changelogContent,
-          validateBeforeCommit: async () => { if (failCapture) throw new Error("retained terminal pre-checkpoint compose failure"); } });
+      async prepareOperationGeneration({ operationId, generation, changelogContent, releaseVersion }) {
+        const candidate = await gitOwner.prepareGeneration({ ...preparedInput, operationId, generation, changelogContent, releaseVersion,
+          validateBeforeCommit: async () => {
+            if (!failCapture) return;
+            const key = createHash("sha256").update(`${operationId}:${generation}:${primary}`).digest("hex").slice(0, 24);
+            const identity = JSON.parse(await readFile(path.join(sourceData, "release-gens", key, "identity.json"), "utf8"));
+            if (identity.preparedCandidate) throw new Error("retained terminal pre-checkpoint compose failure");
+          } });
         return { planRevision: preparedInput.planRevision, releaseCandidates: [candidate] };
       },
       validateOperationGeneration() {}, operationSelection() {}, withAwaitTransition() {},
@@ -516,7 +521,7 @@ test("partial generation amendment freezes a fresh identity and preserves both o
   });
   const run = async () => { assert.equal(scheduled.length, 1); await scheduled.shift()(); await service.drain(ack.operationId); };
   const ack = service.start({ requestId: "same-original", workspaceId: "workspace", streamId: "manager", threadId: "thread",
-    authorization: { taskIds: ["task"], testSelection: selection("none"), validationMode: "full", releaseMetadata: oldMetadata,
+    authorization: { taskIds: ["task"], testSelection: selection("none"), validationMode: "full", releaseMetadata: oldMetadata, releaseVersion: "2.1.1",
       approvedTargets: [{ targetId: "origin", kind: "git", repositoryRoot: primary }] } });
   await run();
   assert.equal(store.get(ack.operationId).currentGeneration, 1);
@@ -531,6 +536,7 @@ test("partial generation amendment freezes a fresh identity and preserves both o
   const key = createHash("sha256").update(`${ack.operationId}:3:${primary}`).digest("hex").slice(0, 24);
   const partial = path.join(sourceData, "release-gens", key), identity = await readFile(path.join(partial, "identity.json"));
   assert.ok(JSON.parse(identity).preparedCandidate.inputHash);
+  assert.equal((await readdir(partial, { recursive: true })).some(name => path.basename(name) === "checkpoint.json"), false);
   const oldBundle = await readFile(path.join(partial, "source.bundle"));
   await writeFile(path.join(partial, "retained.keep"), "useful partial evidence\n");
   const options = { requestId: "explicit-corrected-metadata", expectedRevision: failed.operation.revision, expectedGeneration: 2,
@@ -553,6 +559,7 @@ test("partial generation amendment freezes a fresh identity and preserves both o
   const candidate = store.generation(ack.operationId, 4).candidates[0];
   assert.notEqual(candidate.generationRoot, partial);
   assert.equal(await generationGit(candidate.releaseRoot, "show", `${candidate.commit}:CHANGELOG.md`), (await readFile(nextMetadata.sourcePath, "utf8")).trim());
+  assert.equal(JSON.parse(await generationGit(candidate.releaseRoot, "show", `${candidate.commit}:AgentHub/package.json`)).version, "2.1.1");
   assert.equal(await generationGit(primary, "status", "--porcelain"), "");
   assert.equal(await generationGit(primary, "rev-parse", "HEAD"), base);
 });
