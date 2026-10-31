@@ -1616,7 +1616,7 @@ export class ReleaseGitWorkspaceService {
       throw new Error("Ordinary Await selected adoption evidence changed");
     }
     const provenance = await installedNativeHistoryBaseline({ git,
-      sourceGit: (cwd, args) => runGit(args, { cwd, timeoutMs: null }),
+      sourceGit: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
       repositoryRoot: initial.root, primaryMainCommit: initial.mainCommit, publishedRevision,
       runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual,
       readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }) });
