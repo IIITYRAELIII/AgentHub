@@ -59,6 +59,9 @@ test("package continuation backs up original UNKNOWN receipts before its exact i
     backup: async (args) => { events.push("backup"); return backupStoppedRuntime(args); },
     install: async (actual) => {
       assert.deepEqual(actual, f.store.getReadonly(f.binding.operationId).metadata.packageHandoff.binding);
+      const snapshot = f.store.getReadonly(actual.operationId).metadata.packageBackup;
+      assert.ok(snapshot.retentionFiles.length >= snapshot.files.length);
+      assert.ok(snapshot.retentionFiles.some(file => file.path.endsWith("journal.sqlite-shm")));
       const saved = new DatabaseSync(path.join(f.scratchRoot, "backup", "data", "journal.sqlite"), { readOnly: true });
       try { assert.equal(saved.prepare("SELECT outcome FROM receipt WHERE id='unknown-original'").get().outcome, "unknown"); }
       finally { saved.close(); }

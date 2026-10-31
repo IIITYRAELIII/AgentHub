@@ -408,6 +408,36 @@ lock or start any runtime.
 
 ## Exact public-package restart (ADR-HUB-376)
 
+### Update backup retention (ADR-HUB-383)
+
+The existing after-ready StorageRetentionService automatically converges to at
+most five confirmed update backups across their original scratch roots. Discovery
+uses bounded read-only pages of canonical restart originals, never a disk scan.
+Only exact packageHandoff binding and packageBackup inventory authorize a copy;
+update originals themselves remain immutable. Failed, active, UNKNOWN, missing,
+changed, linked or otherwise unproven copies retain their recovery evidence.
+Protected copies consume the five slots; if they prevent convergence, cached
+health reports the actual known count, protected/unverified count and limitMet=false.
+Unregistered legacy/offline directories are outside this inventory and never adopted.
+
+New successful backup checkpoints also bind generated copied-database WAL/SHM
+files for retention; this is not raw copying of the source WAL. Historical
+inventories acquire no new files or digest. Whole file/hash and directory equality
+is required before admission, including rejection of extra empty directories.
+Only the admitted backup tree may be traversed. Runtime data, WIP, packages,
+source checkouts and sibling scratch files are never cleanup candidates.
+
+Policy v4 adds the update-backup owner first while preserving the exact prior
+v1/v2/v3 owner identities and pending children. Existing readiness, busy, stopping,
+lease, timer and cooperative batch limits remain. One canonical retention child
+stores proof, cursor and per-entry intent before each native handle-bound delete.
+Ancestor identities are checked separately from that final-entry primitive.
+Unknown deletion is never repeated: same-child absence readback under unchanged
+parents may advance; an existing/replaced entry remains UNKNOWN. Partial batches
+continue only their not-yet-admitted entries. Errors never imply a successful cap,
+and neither ancestry checks nor hashing claim an atomic filesystem snapshot.
+
+
 `restart-package` is an authenticated local action on the existing restart
 request service and maintenance-operation original. Exact tag, canonical
 publisher asset URLs/digests/lengths, whole runtime manifest, source/version,

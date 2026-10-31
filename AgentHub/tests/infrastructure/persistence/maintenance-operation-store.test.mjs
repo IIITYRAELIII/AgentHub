@@ -8,6 +8,27 @@ import { DatabaseSync } from "node:sqlite";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { restartFailureProjection } from "../../../src/domain/maintenance-operation.mjs";
 
+test("backup original discovery pages are read-only under a live SQLite writer reservation", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub383-originals-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new MaintenanceOperationStore({ dataDir: directory });
+  for (let i = 0; i < 35; i++) store.create({ operationId: `backup-${String(i).padStart(2, "0")}`,
+    kind: "restart", streamId: "agent-hub-runtime", threadId: "agent-hub-runtime",
+    metadata: { packageBackup: { directory: `unexamined-${i}` } } });
+  store.create({ operationId: "ordinary", kind: "restart", streamId: "s", threadId: "t" });
+  const writer = new DatabaseSync(path.join(directory, "runtime.sqlite"));
+  try {
+    writer.exec("BEGIN IMMEDIATE");
+    writer.prepare("DELETE FROM maintenance_operations WHERE operation_id='backup-00'").run();
+    const first = store.listPackageBackupOriginsReadonly({ limit: 1000 });
+    assert.equal(first.items.length, 32); assert.equal(first.done, false);
+    assert.equal(first.items[0].operationId, "backup-00");
+    const last = store.listPackageBackupOriginsReadonly({ after: first.cursor });
+    assert.equal(last.items.length, 3); assert.equal(last.done, true);
+    assert.equal(store.latestStorageArtifactReadonly("runtime-update-backup", "backup-00"), null);
+  } finally { writer.exec("ROLLBACK"); writer.close(); }
+});
+
 test("exact provider-turn reads retain dedicated identity across restart and concurrent WAL writes", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-maintenance-turn-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
