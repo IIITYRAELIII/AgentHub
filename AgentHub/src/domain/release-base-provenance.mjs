@@ -131,6 +131,7 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
         || !/^[A-Za-z0-9._-]{1,200}$/u.test(normalized.installedReleaseId) || normalized.installedReleaseId.includes("..")
         || !normalized.planRevision || normalized.planRevision.length > 128
         || normalized.sourceBaseCommit === normalized.publishedBaseCommit
+          && normalized.sourcePatchSha256 !== createHash("sha256").update("").digest("hex")
         || expectedBaseCommit && normalized.sourceBaseCommit !== expectedBaseCommit) {
       throw new Error("Invalid installed local source provenance pins");
     }
