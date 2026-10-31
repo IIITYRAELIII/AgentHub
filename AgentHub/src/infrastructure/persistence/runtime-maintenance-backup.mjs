@@ -1,46 +1,154 @@
 import { backup, DatabaseSync } from "node:sqlite";
-import { copyFile, lstat, mkdir, readdir } from "node:fs/promises";
+import { copyFile, lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { packageFile } from "../filesystem/runtime-package-target.mjs";
 import { protectRuntimeDirectory } from "../filesystem/runtime-security.mjs";
 
-// Called only after native cohort retirement while the existing Host root gate
-// excludes new launchers. SQLite's backup API includes committed WAL contents;
-// copying an open database or its WAL files is never the backup operation.
-export async function backupStoppedRuntime({ runtimeRoot, destination, assertStopped }) {
-  await assertStopped();
-  await mkdir(destination); // Exclusive destination: never overwrite a prior backup.
-  await protectRuntimeDirectory(destination);
-  const files = [];
-  async function walk(directory, prefix) {
-    for (const name of (await readdir(directory)).sort()) {
-      const source = path.join(directory, name), relative = path.join(prefix, name);
-      const info = await lstat(source);
-      if (info.isSymbolicLink()) throw new Error("Maintenance backup refuses unknown linked data");
-      if (info.isDirectory()) await walk(source, relative);
-      else if (info.isFile()) files.push({ source, relative });
-      else throw new Error("Maintenance backup refuses unknown data type");
+// Declared mutable state, not a full-data/disk backup (ADR-HUB-380).
+const scope = "runtime-durable-state-v1";
+const durableDirectories = new Set([".mini-app-control-result-outbox", "background-jobs",
+  "delivery-outbox", "failed-updates", "claude-runs", "locks", "task-diff-indexes", "task-custody"]);
+const retainedDirectories = new Set(["task-worktrees", "dev-worktrees", "prerelease-worktrees",
+  "integration-worktrees", "release-gens", "release-repositories", "release-operation-executions",
+  "retained-runtime-sources", "runtime-source-captures", "audio", "images", "tts", "models",
+  "backups", "migrations", "WIP"]);
+const sqliteHeader = Buffer.from("SQLite format 3\0");
+const identity = (info) => ({ dev: String(info.dev), ino: String(info.ino) });
+const equal = (a, b) => a.dev === b.dev && a.ino === b.ino;
+
+async function plain(file, type) {
+  const info = await lstat(file, { bigint: true });
+  if (info.isSymbolicLink() || !(type === "directory" ? info.isDirectory() : info.isFile())) {
+    throw new Error("Maintenance backup refuses linked or non-plain state");
+  }
+  return info;
+}
+
+// Read-only support inspection, reused for a fresh stopped inventory.
+// No SQLite open/transaction, data copy or retained-tree descent.
+export async function inspectRuntimeBackupScope({ runtimeRoot }) {
+  const root = path.resolve(runtimeRoot), data = path.join(root, "data");
+  if (await realpath(root) !== root) throw new Error("Maintenance runtime root must be physical");
+  const directories = [], files = [], retained = [];
+  async function directory(file, relative) {
+    directories.push({ relative, ...identity(await plain(file, "directory")) });
+  }
+  await directory(root, "");
+  await directory(data, "data");
+  async function file(source, relative) {
+    const before = await plain(source, "file");
+    if (relative === path.join("data", "bot.lock")) return;
+    const handle = await open(source, "r");
+    let sqlite;
+    try {
+      if (!equal(identity(before), identity(await handle.stat({ bigint: true })))) {
+        throw new Error("Maintenance selected file changed");
+      }
+      const header = Buffer.alloc(16);
+      await handle.read(header, 0, header.length, 0);
+      sqlite = header.equals(sqliteHeader);
+    } finally { await handle.close(); }
+    const after = await plain(source, "file");
+    if (!equal(identity(before), identity(after))) throw new Error("Maintenance selected file changed");
+    if (/\.sqlite$/u.test(relative) && !sqlite) throw new Error("Maintenance SQLite header is unavailable");
+    files.push({ source, relative, sqlite, ...identity(before) });
+  }
+  async function walk(source, relative) {
+    const names = (await readdir(source)).sort();
+    const parts = relative.split(path.sep);
+    if (parts.length === 3 && parts[1] === "task-custody" && /^[a-f0-9]{32}$/u.test(parts[2])
+      && names.some(name => ["repository", "retained-wip"].includes(name))
+      && (!names.includes("intent.json") || !names.includes("snapshot.json"))) {
+      throw new Error("Maintenance custody metadata is incomplete");
+    }
+    for (const name of names) {
+      const child = path.join(source, name), childRelative = path.join(relative, name);
+      const info = await lstat(child, { bigint: true });
+      if (info.isSymbolicLink()) throw new Error("Maintenance backup refuses linked state");
+      if (info.isDirectory()) {
+        const parts = relative.split(path.sep);
+        const custodyBody = parts.length === 3 && parts[1] === "task-custody"
+          && /^[a-f0-9]{32}$/u.test(parts[2]) && ["repository", "retained-wip"].includes(name);
+        if ((relative === "data" && !durableDirectories.has(name)) || custodyBody) {
+          retained.push({ path: childRelative, ...identity(info),
+            reason: custodyBody || retainedDirectories.has(name) ? "source-or-payload-retained" : "unclassified-not-backed-up" });
+        } else {
+          await directory(child, childRelative);
+          await walk(child, childRelative);
+        }
+      } else if (info.isFile()) await file(child, childRelative);
+      else throw new Error("Maintenance backup refuses unknown state type");
     }
   }
-  await walk(path.join(runtimeRoot, "data"), "data");
-  files.push({ source: path.join(runtimeRoot, "config.json"), relative: "config.json" });
-  const reservations = [];
-  const records = [];
+  await walk(data, "data");
+  await file(path.join(root, "config.json"), "config.json");
+  // Omit a companion only when its actual selected database was found.
+  const databases = new Set(files.filter(e => e.sqlite).map(e => e.source));
+  const selected = files.filter(entry => {
+    if (!/-(?:wal|shm)$/u.test(entry.source)) return true;
+    if (!databases.has(entry.source.slice(0, -4))) throw new Error("Maintenance orphan SQLite companion refuses");
+    return false;
+  });
+  const result = { scope, runtimeRoot: root, directories, files: selected, retained };
+  await assertIdentities(result);
+  return result;
+}
+
+async function assertIdentities(inventory) {
+  for (const entry of [...inventory.directories, ...inventory.retained]) {
+    const file = path.join(inventory.runtimeRoot, entry.relative ?? entry.path);
+    if (!equal(entry, identity(await plain(file, "directory")))) throw new Error("Maintenance directory identity changed");
+  }
+  for (const entry of inventory.files) {
+    if (!equal(entry, identity(await plain(entry.source, "file")))) throw new Error("Maintenance selected file changed");
+  }
+}
+
+async function assertSelectedEntry(inventory, entry) {
+  for (let file = path.dirname(entry.source); ; file = path.dirname(file)) {
+    const relative = path.relative(inventory.runtimeRoot, file);
+    const expected = inventory.directories.find(item => item.relative === relative);
+    if (!expected || !equal(expected, identity(await plain(file, "directory")))) {
+      throw new Error("Maintenance selected ancestor changed");
+    }
+    if (!relative) break;
+  }
+  if (!equal(entry, identity(await plain(entry.source, "file")))) throw new Error("Maintenance selected file changed");
+}
+
+export async function assertRuntimeBackupScope(inventory) {
+  await assertIdentities(inventory);
+  const fresh = await inspectRuntimeBackupScope({ runtimeRoot: inventory.runtimeRoot });
+  if (JSON.stringify(fresh) !== JSON.stringify(inventory)) throw new Error("Maintenance backup scope changed");
+}
+
+// The native parent holding original empty Job/root gate supplies assertStopped.
+// Earlier support inspection never supplies this authority.
+export async function backupStoppedRuntime({ runtimeRoot, destination, assertStopped }) {
+  await assertStopped();
+  const inventory = await inspectRuntimeBackupScope({ runtimeRoot });
+  const relative = path.relative(inventory.runtimeRoot, path.resolve(destination));
+  if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== "..") || path.isAbsolute(relative)) {
+    throw new Error("Maintenance backup destination must be outside runtime root");
+  }
+  await mkdir(destination); // Exclusive: never overwrite a prior backup.
+  await protectRuntimeDirectory(destination);
+  const reservations = [], records = [];
   let failure;
   try {
-    // Hold all known SQLite writer reservations together, through the entire
-    // snapshot. A foreign writer refuses; no busy timeout/retry or schema init.
-    for (const entry of files.filter((entry) => /\.sqlite$/u.test(entry.relative))) {
+    await assertRuntimeBackupScope(inventory);
+    for (const entry of inventory.files.filter(entry => entry.sqlite)) {
+      await assertSelectedEntry(inventory, entry);
       const db = new DatabaseSync(entry.source);
       try { db.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE;"); }
       catch (error) { db.close(); throw error; }
       reservations.push(db);
     }
-    for (const entry of files) {
-      if (/\.sqlite-(?:wal|shm)$/u.test(entry.relative) || /(?:^|[/\\])bot\.lock$/u.test(entry.relative)) continue;
+    for (const entry of inventory.files) {
+      await assertSelectedEntry(inventory, entry);
       const target = path.join(destination, entry.relative);
       await mkdir(path.dirname(target), { recursive: true });
-      if (/\.sqlite$/u.test(entry.relative)) {
+      if (entry.sqlite) {
         const source = new DatabaseSync(entry.source, { readOnly: true });
         try { await backup(source, target); } finally { source.close(); }
         const check = new DatabaseSync(target, { readOnly: true });
@@ -57,11 +165,16 @@ export async function backupStoppedRuntime({ runtimeRoot, destination, assertSto
           throw new Error("Maintenance data changed during backup");
         }
       }
-      const file = await packageFile(target);
-      records.push({ path: entry.relative, bytes: file.bytes, sha256: file.sha256 });
+      const saved = await packageFile(target);
+      await assertSelectedEntry(inventory, entry);
+      records.push({ path: entry.relative, bytes: saved.bytes, sha256: saved.sha256,
+        ...(entry.sqlite ? { integrity: "ok" } : {}) });
     }
+    await assertRuntimeBackupScope(inventory);
     await assertStopped();
-    return { directory: destination, files: records };
+    await assertRuntimeBackupScope(inventory);
+    return { directory: destination, scope, files: records, retained: inventory.retained,
+      wholeDataBackup: false, originalsRestoredOrReplayed: false };
   } catch (error) {
     failure = error;
     throw error;

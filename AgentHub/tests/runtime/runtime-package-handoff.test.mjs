@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cp, mkdtemp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,7 +9,7 @@ import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/
 import { RuntimeRestartController } from "../../src/runtime/runtime-restart-controller.mjs";
 import { RuntimeResourceRegistry } from "../../src/runtime/runtime-resource-registry.mjs";
 import { RestartRequestService } from "../../src/application/restart-request-service.mjs";
-import { backupStoppedRuntime } from "../../src/infrastructure/persistence/runtime-maintenance-backup.mjs";
+import { backupStoppedRuntime, inspectRuntimeBackupScope } from "../../src/infrastructure/persistence/runtime-maintenance-backup.mjs";
 import { packageBindingDigest, packageDigest, packageFile, packageDirectory, verifyPublicPackageTarget } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
 import { armPackageRestart, continuePackageRestart, packageCheckpoint, packageHandoffBinding,
   packageHostMain, startPackageBootstrap } from "../../src/runtime/runtime-package-handoff.mjs";
@@ -344,6 +344,48 @@ test("equal original files in a replaced physical runtime root cannot authorize 
     install: () => assert.fail("no install after root replacement") }), /old runtime identity changed/u);
   assert.equal(f.store.getReadonly(f.binding.operationId).outcome, "unknown");
   assert.deepEqual(await readFile(path.join(f.root, "config.json")), await readFile(path.join(oldRoot, "config.json")));
+});
+
+for (const modern of [true, false]) test(`backup scope refuses a selected junction before public update dispatch or legacy stop; modern=${modern}`, async (t) => {
+  const f = await packageEntryFixture(t);
+  const outside = path.join(f.scratchRoot, "outside");
+  await mkdir(outside); await writeFile(path.join(outside, "foreign"), "keep");
+  await mkdir(path.join(f.dataDir, "background-jobs"));
+  await symlink(outside, path.join(f.dataDir, "background-jobs", "link"), process.platform === "win32" ? "junction" : "dir");
+  let dispatches = 0, confirmations = 0, spawns = 0;
+  await assert.rejects(startPackageBootstrap(f.requestFile, { readMetadata: f.readMetadata,
+    control: async (action) => {
+      if (action !== "runtime-health") { dispatches++; assert.fail("no dispatch"); }
+      return { live: true, ready: true, process: { pid: process.pid, releaseId: "old" },
+        ...(modern ? { packageHandoff: { protocol: 1 } } : {}) };
+    }, confirmManualStop: async () => { confirmations++; }, spawnImpl: () => { spawns++; } }), /linked/u);
+  assert.equal(dispatches + confirmations + spawns, 0);
+  assert.equal(f.store.getReadonly(f.input.operationId), null);
+  assert.equal(await readFile(path.join(outside, "foreign"), "utf8"), "keep");
+});
+
+test("package backup preflight refuses before stopping and rechecks newly admitted work without closing resources", async (t) => {
+  const f = await fixture(t), events = [];
+  let blocked = false, unsupported = true;
+  const request = { operationId: "pre-stop", metadata: { packageHandoff: {} } };
+  const controller = new RuntimeRestartController({ getRequest: () => request, updateOffset: () => 0,
+    hasBlockingWork: () => blocked, setWaiting: async () => { events.push("waiting"); },
+    updateMessage: noop, saveState: noop, resources: new RuntimeResourceRegistry({ logger: quiet,
+      close: [{ name: "writer", run: () => events.push("close") }] }),
+    beginStopping: () => { events.push("stop"); return true; }, stopTimers: noop, stopMedia: noop,
+    launchReplacement: () => assert.fail("no launch"), recoverPrevious: noop,
+    abortRestart: async () => { events.push("abort"); }, finishSuccessfulReplacement: noop, logger: quiet,
+    packageHandoff: { preflight: async () => {
+      if (unsupported) throw new Error("selected state linked");
+      await inspectRuntimeBackupScope({ runtimeRoot: f.root }); blocked = true;
+    }, arm: () => events.push("arm") },
+  });
+  const refusal = await controller.perform();
+  assert.equal(refusal.status, "aborted"); assert.equal(refusal.phase, "package-backup-preflight");
+  assert.deepEqual(events, ["abort"]);
+  events.length = 0; unsupported = false;
+  assert.equal((await controller.perform()).status, "waiting-for-work");
+  assert.deepEqual(events, ["waiting"]);
 });
 
 test("overlapping retained scratch refuses before legacy stop or durable admission", async (t) => {
