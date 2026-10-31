@@ -3,9 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { StorageRetentionService } from "../../src/application/storage-retention-service.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { restartRequestProjection } from "../../src/domain/maintenance-operation.mjs";
+import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 
 async function setup(t, options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-retention-test-"));
@@ -46,6 +48,100 @@ test("after-ready work is bounded, durable before effect, and has no restart pro
   assert.deepEqual(f.store.get("storage-retention:v1").metadata.pending, []);
   assert.equal(service.status().removed, 3);
   assert.equal(f.store.activeFor({ kind: "restart", streamId: "agent-hub-runtime", threadId: "agent-hub-runtime" }), null);
+});
+
+test("SQLite contention waits for SAME retention intent without repeating artifact work", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  const writer = new DatabaseSync(runtimeDatabasePath(f.root));
+  let held = false, timer;
+  const attempts = [];
+  const create = f.store.create.bind(f.store);
+  f.store.create = input => {
+    if (input.operationId !== "storage-retention:v1") attempts.push(input.operationId);
+    return create(input);
+  };
+  const preview = f.owner.preview;
+  f.owner.preview = async input => {
+    const result = await preview(input);
+    writer.exec("BEGIN IMMEDIATE"); held = true;
+    timer = setTimeout(() => { writer.exec("COMMIT"); held = false; }, 50);
+    return result;
+  };
+  const service = f.make();
+  try {
+    const result = await service.runApproved([{ ownerId: f.owner.id,
+      candidate: { id: "a", cursor: "a" }, binding: { id: "a" } }]);
+    assert.equal(result.removed, 1);
+    assert.equal(f.calls.length, 1);
+    assert.ok(attempts.length > 1);
+    assert.ok(attempts.every(id => id === f.calls[0].operationId));
+    const original = f.store.get(f.calls[0].operationId);
+    assert.equal(original.status, "succeeded");
+    assert.equal(original.metadata.result.status, "removed");
+    assert.deepEqual(f.store.get("storage-retention:v1").metadata.pending, []);
+  } finally {
+    await service.close(); clearTimeout(timer);
+    if (held) writer.exec("ROLLBACK");
+    writer.close();
+  }
+});
+
+test("SQLite settlement waits never replay effects and delayed admission rechecks release and lease", async t => {
+  for (const mode of ["settlement", "release", "lease"]) {
+    const f = await setup(t, { maxUnits: 1 });
+    const writer = new DatabaseSync(runtimeDatabasePath(f.root));
+    let held = false, timer, fenced = false, settlementAttempts = 0;
+    const hold = () => {
+      writer.exec("BEGIN IMMEDIATE"); held = true;
+      timer = setTimeout(() => {
+        writer.exec("COMMIT"); held = false;
+        if (mode === "release") f.context.releaseId = "replacement";
+        if (mode === "lease") fenced = true;
+      }, 50);
+    };
+    const preview = f.owner.preview, prune = f.owner.prune;
+    f.owner.preview = async input => {
+      const result = await preview(input);
+      if (mode !== "settlement") hold();
+      return result;
+    };
+    f.owner.prune = async input => {
+      const result = await prune(input);
+      if (mode === "settlement") hold();
+      return result;
+    };
+    const settle = f.store.settle.bind(f.store);
+    f.store.settle = (...args) => { settlementAttempts++; return settle(...args); };
+    f.lease.assertOwned = async () => { if (fenced) throw new Error("lost lease after SQL wait"); };
+    const service = f.make();
+    try {
+      const attempt = service.runApproved([{ ownerId: f.owner.id,
+        candidate: { id: "a", cursor: "a" }, binding: { id: "a" } }]);
+      if (mode === "lease") {
+        await assert.rejects(attempt, /lost lease after SQL wait/u);
+        assert.equal(f.calls.length, 0);
+      } else {
+        const result = await attempt;
+        assert.equal(f.calls.length, mode === "settlement" ? 1 : 0);
+        if (mode === "settlement") {
+          assert.equal(result.removed, 1);
+          assert.ok(settlementAttempts > 1);
+          assert.equal(f.store.get(f.calls[0].operationId).status, "succeeded");
+        } else {
+          assert.equal(result.removed, 0);
+          const pending = f.store.get("storage-retention:v1").metadata.pending;
+          assert.equal(pending.length, 1);
+          const original = f.store.get(pending[0].operationId);
+          assert.equal(original.metadata.admitted, true);
+          assert.notEqual(original.status, "succeeded");
+        }
+      }
+    } finally {
+      await service.close().catch(() => {}); clearTimeout(timer);
+      if (held) writer.exec("ROLLBACK");
+      writer.close();
+    }
+  }
 });
 
 test("approved owner previews preserve discovery cursor and unrelated pending originals", async t => {

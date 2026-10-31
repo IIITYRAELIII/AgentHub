@@ -141,3 +141,10 @@ Native API references: [GetFileInformationByHandleEx](https://learn.microsoft.co
 [SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle).
 Git's [rev-list --quiet](https://git-scm.com/docs/git-rev-list) tests object
 connectivity without printing a full object inventory.
+
+Canonical maintenance writes use the existing bounded asynchronous SQLite
+mutation queue. Only one exact SQL create/transition/settlement is retried on
+SQLite contention, with its original ID/CAS and current lease; artifact effects
+are never inside that queue. Ready/release/stop state is rechecked after queued
+admission. A failed write or ambiguous artifact outcome preserves the existing
+original for ordinary reconciliation rather than creating a replacement effect.

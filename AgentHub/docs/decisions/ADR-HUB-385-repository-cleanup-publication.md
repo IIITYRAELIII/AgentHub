@@ -41,3 +41,22 @@ remain protected. Counts of bytes in a directory are not retirement evidence.
 The installed owner may differ from this Task source. Any operational consumer
 must bind a compatible reviewed current afterimage; source approval alone is not
 installation, cleanup completion or publication.
+
+## Canonical intent contention
+
+The actual foreground consumer twice reached SQLITE_BUSY while creating its
+first maintenance child, before artifact admission/effect. The existing
+zero-busy-timeout store cannot synchronously wait for another WAL writer.
+The scheduler now awaits the existing AsyncSqliteMutationQueue only around
+individual canonical SQL mutations. Child identity is allocated once before
+that bounded queue; transition CAS and settlement keep the same original.
+The queue never contains artifact preview, prune or reconciliation, so a SQL
+retry cannot repeat filesystem work. Every write attempt checks the existing
+lease, and actual ready/release/stop state is checked again after queued
+admission before calling the artifact owner. A stopped or drifted admission
+retains its existing pending original for ordinary owner reconciliation.
+
+Real SQLite writer-reservation controls cover admission, settlement after one
+effect, release drift and lost lease. The competing writer in the original
+installation failures is not identified by these controls. No timeout increase,
+SQL fence change, database owner replacement or live runtime restart is implied.
