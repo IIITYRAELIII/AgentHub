@@ -249,3 +249,54 @@ test("ordinary UNKNOWN reconciliation cannot replay an approval-lost prompt or i
   assert.equal(f.current(), f.run);
   assert.deepEqual(f.calls, ["observe"]);
 });
+
+
+test("reviewer canonical accepted-before-first-event original is eligible without inventing a provider-start state", async () => {
+  const { markProviderTurnRequested, markProviderTurnAccepted, providerTurnAcceptance } =
+    await import("../../../src/domain/task-runs.mjs");
+  let f;
+  f = fixture({}, { readThread: async (_id, { applySnapshot }) => applySnapshot(retainedInProgressThread(f.run)) });
+  f.run.executionOwner = "hub";
+  markProviderTurnRequested(f.run);
+  markProviderTurnAccepted(f.run, { turnId: f.run.turnId });
+  assert.equal(f.run.providerStart.state, "accepted-awaiting-first-event");
+  assert.equal(providerTurnAcceptance(f.run).accepted, true);
+  await f.recovery.recover(f.run, { reconcileOnly: true });
+  assert.equal(f.current(), null, "A real accepted original must reach the existing guarded interruption owner");
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+});
+
+test("reviewer same canonical first event gives the existing observed positive control", async () => {
+  const { markProviderTurnRequested, markProviderTurnAccepted, markProviderFirstEvent, providerTurnAcceptance } =
+    await import("../../../src/domain/task-runs.mjs");
+  let f;
+  f = fixture({}, { readThread: async (_id, { applySnapshot }) => applySnapshot(retainedInProgressThread(f.run)) });
+  f.run.executionOwner = "hub";
+  markProviderTurnRequested(f.run);
+  markProviderTurnAccepted(f.run, { turnId: f.run.turnId });
+  markProviderFirstEvent(f.run, { turnId: f.run.turnId, method: "turn/started" });
+  assert.equal(f.run.providerStart.state, "observed");
+  assert.equal(providerTurnAcceptance(f.run).accepted, true);
+  await f.recovery.recover(f.run, { reconcileOnly: true });
+  assert.equal(f.current(), null);
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+});
+
+test("canonical accepted-before-first-event recovery retains original guards", async () => {
+  const { markProviderTurnRequested, markProviderTurnAccepted } = await import("../../../src/domain/task-runs.mjs");
+  for (const variant of ["requesting", "unconfirmed", "missing", "foreign-turn", "active", "unknown", "external"]) {
+    let f;
+    f = fixture({ taskExternalActivity: async () => ({ state: ["active", "unknown"].includes(variant) ? variant : "inactive" }) },
+      { readThread: async (_id, { applySnapshot }) => applySnapshot(retainedInProgressThread(f.run)) });
+    f.run.executionOwner = variant === "external" ? "desktop" : "hub";
+    markProviderTurnRequested(f.run);
+    if (variant !== "requesting") markProviderTurnAccepted(f.run, { turnId: f.run.turnId });
+    if (variant === "unconfirmed") f.run.providerStart.state = "unconfirmed";
+    if (variant === "missing") delete f.run.providerStart;
+    if (variant === "foreign-turn") f.run.providerStart.turnId = "foreign-turn";
+    await f.recovery.recover(f.run, { reconcileOnly: true });
+    assert.equal(f.current(), f.run, variant);
+    assert.equal(f.calls.includes("interrupt-original"), false, variant);
+    assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), false, variant);
+  }
+});

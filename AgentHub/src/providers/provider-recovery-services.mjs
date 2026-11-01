@@ -9,6 +9,7 @@ import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "../domain/task
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { hydrateCodexAgentMessages } from "./codex/codex-agent-message-reducer.mjs";
 import { normalizeTaskExecutionOwner, TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
+import { providerTurnAcceptance } from "../domain/task-runs.mjs";
 
 const INACTIVE_RECOVERY = Symbol("inactive Codex recovery");
 
@@ -134,8 +135,7 @@ export class CodexRecoveryService {
     // interrupt rejection and a second fresh inactivity check.
     const retainedAcceptedTurn = turn?.status === "inProgress"
       && normalizeTaskExecutionOwner(run.executionOwner) === TASK_EXECUTION_OWNERS.HUB
-      && ["accepted", "observed"].includes(run.providerStart?.state)
-      && run.providerStart.turnId === exactTurnId;
+      && providerTurnAcceptance(run).accepted;
     if (!exactTerminal && run.observer !== true && exactTurnId
       && String(run.clientUserMessageId ?? "").trim()
       && run.providerStart?.state !== "unconfirmed"
