@@ -855,3 +855,12 @@ or adding it on replay cannot retarget an existing amendment. Composition verifi
 the full effective artifact bytes before preparing the next generation. Initial
 authorization and old generations remain immutable. See REL-001 and
 ADR-HUB-351-release-metadata-amendment.
+
+When the same original is waiting with `release_inputs_changed` after an
+explicit amendment, ordinary unamended continue remains readback-only with
+`test-selection-required`. The existing amendment must explicitly supply whole
+`task_ids`, `test_selection` and, when prior effective notes exist,
+`release_metadata`; otherwise it returns `release-inputs-required`. Exact captured
+request replay is resolved first and never resumes the stale-input wait. This
+adds no tool, approval, ledger or automatic coverage policy; all existing idle,
+original readback, membership/source and CAS guards still apply.

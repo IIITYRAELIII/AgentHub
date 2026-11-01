@@ -38,6 +38,43 @@ pre-publication selection fencing, lineage `correction_required` recovery and
 already-running publication remain supported. No running or historical release
 is rewritten, stopped or rescaled by applying source.
 
+## Pre-effect changes after an explicit amendment
+
+A second observed path is independent of `validation_failed`: after an RM
+amended a failed original with exact five-Task notes and two selected tests,
+acceptance of a sixth Task fenced the active generation back to compose. The
+all-Await adapter selected six Tasks but inherited the old amendment's notes and
+test scope. Duplicate pre/post acceptance callbacks could both request this
+recomposition before the first publication reservation.
+
+After an explicit amendment, pre-effect acceptance or the existing publication
+selection readback now moves the same original to
+`waiting(release_inputs_changed)`, without composing another generation. The
+selection-change CAS fences progression. The same live owner retains its lease
+while it settles an already-started compose/validation receipt and releases
+normally. A completed in-flight compose joins its original immutable generation
+without leaving the wait; late validation cannot advance it. An unresolved future
+compose receipt or generation refuses amendment rather than being overwritten.
+No replacement lease or cleanup owner is created. The publication boundary
+returns immediately on this waiting result,
+before any target intent or effect. Repeated pre/post callbacks leave this wait
+unchanged; ordinary continue only observes it.
+
+The existing idle amendment owner requires explicit whole `taskIds` and
+`testSelection`, plus fresh `releaseMetadata` when effective notes already exist.
+Otherwise a selection-only amendment could silently inherit old notes through
+the existing effective-metadata lookup. Existing selection capture/recheck,
+not-applied readbacks, source and revision/generation CAS remain mandatory.
+An exact saved amendment replay still returns its original receipt first, without
+clearing the new wait or scheduling work. No freshness or coverage is inferred
+from the request ID or acceptance event.
+
+This correction concerns inputs already bound by an explicit amendment. Initial
+release progression, ordinary unamended result/lineage correction, existing
+failure/UNKNOWN recovery and already-reserved publication keep their current
+owners. Task acceptance remains available; only reuse of stale amended release
+inputs is held for the already authorized RM's existing amendment.
+
 ## Evidence
 
 Existing service tests use actual SQLite operation/step receipts and a controlled
