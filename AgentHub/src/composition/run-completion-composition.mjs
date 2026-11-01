@@ -57,6 +57,7 @@ export function createRunCompletionComposition({
   runtimeStateStore,
   commandTrace = null,
   wakeDeferredInputs = () => {},
+  readSystemBootIdentity = readTrustedSystemBootIdentity,
 }) {
   const runLifecycleTerminals = new ProviderRunTerminalStore({ dataDir: config.dataDir });
   const managedRunLifecycle = new ManagedRunLifecycleService({
@@ -96,7 +97,7 @@ export function createRunCompletionComposition({
     commandTrace,
     recordProviderTerminal: (terminal) => runLifecycleTerminals.record(terminal),
     localRetirementStore: runLifecycleTerminals,
-    readSystemBootIdentity: readTrustedSystemBootIdentity,
+    readSystemBootIdentity,
     afterLocalRetirement: () => wakeDeferredInputs(),
   });
 
