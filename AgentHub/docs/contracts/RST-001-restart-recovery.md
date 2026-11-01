@@ -88,6 +88,12 @@ provider/process completion owner may commit the exact terminal outcome.
 The narrowly scoped ADR-0125 recovery interruption uses that same cancellation
 and terminal owner after fresh provider/native inactivity and exact interrupt
 rejection; a startup/read exception or idle status alone still cannot release.
+ADR-HUB-392 extends its eligibility to an exact retained `inProgress` original
+only when its accepted/observed provider-start and positive Hub ownership agree.
+Ordinary UNKNOWN observation retries that owner's prechecks without a new timer;
+live/unknown evidence does not permanently suppress a later authoritative check.
+An accepted or uncertain interrupt is not repeated, and no ACK releases admission.
+A live external/current turn in the same Thread still blocks recovery.
 
 ## Invariants
 
