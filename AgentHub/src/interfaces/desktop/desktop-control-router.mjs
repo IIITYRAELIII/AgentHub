@@ -143,7 +143,9 @@ export function createDesktopControlRouter({
     if (localOnly.has(action) && !privileged.has(String(context?.source ?? ""))) {
       throw new Error("Команда доступна только локальному Agent Hub на этом компьютере");
     }
-    const resolvedParams = effectiveParams(params, context);
+    // Package admission owns an exact business input. Do not inject response
+    // policy fields, or discard caller fields that its strict owner must reject.
+    const resolvedParams = action === "restart-package" ? { ...params } : effectiveParams(params, context);
     if (action === "send-message" && context?.commandId && !resolvedParams.clientUserMessageId) {
       resolvedParams.clientUserMessageId = String(context.commandId);
     }
