@@ -11,6 +11,7 @@ import { access } from "node:fs/promises";
 import { RUNTIME_RESTART_SCOPE } from "../domain/maintenance-operation.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
 import { backupStoppedRuntime, inspectRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
+import { sealRuntimeUpdateBackup } from "../infrastructure/persistence/runtime-update-backup-retention.mjs";
 import { verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
 import { assertPackageFiles, capturePackageRuntime, packageBindingDigest, packageDigest,
@@ -378,7 +379,7 @@ export async function continuePackageRestart({ store, operationId, assertRetired
   await packageCheckpoint(store, operationId, "package-backup");
   const snapshot = await backup({ runtimeRoot: binding.runtimeRoot,
     destination: path.join(binding.scratchRoot, "backup"), assertStopped: assertRetired });
-  await packageCheckpoint(store, operationId, "package-installing", { packageBackup: snapshot });
+  await packageCheckpoint(store, operationId, "package-installing", { packageBackup: await sealRuntimeUpdateBackup(snapshot) });
   await assertRetired();
   await validateOld(binding);
   await validateFiles(binding.target);

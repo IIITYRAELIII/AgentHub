@@ -805,6 +805,16 @@ merely storing this code in a Task result does not instrument an older runtime.
 
 ## Repeated runtime directory protection (HUB-376)
 
+Update-backup retention (HUB-383) uses the existing deferred after-ready scheduler,
+with cached health only, bounded original-discovery pages and bounded per-entry
+deletion batches. Its scheduler binding contains original/digest/cursor references;
+the same canonical child stores the larger owner proof. Backup content is verified
+at preview/admission, not rehashed before every deleted entry. A large copy may
+require multiple cooperative batches; observed pending excess is not a claim that
+five copies already remain. No production speed or disk saving is inferred from
+private fixture timings, and no periodic whole-disk scan is introduced.
+
+
 The existing directory-security owner may avoid a repeated icacls invocation
 only after fresh exact root DACL and physical identity proof. The requested
 account resolves to the same SID used by the existing grant arguments; exact

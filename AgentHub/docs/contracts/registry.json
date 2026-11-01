@@ -239,7 +239,10 @@
         "tests/fixtures/runtime-host-independent-parent.cs",
         "distribution/install_release.py",
         "distribution/package_update_test.py",
-        "docs/decisions/ADR-HUB-376-public-package-handoff.md"
+        "docs/decisions/ADR-HUB-376-public-package-handoff.md",
+        "src/infrastructure/persistence/runtime-update-backup-retention.mjs",
+        "tests/infrastructure/persistence/runtime-update-backup-retention.test.mjs",
+        "docs/decisions/ADR-HUB-383-update-backup-retention.md"
       ]
     },
     {
@@ -300,7 +303,10 @@
         "docs/decisions/ADR-HUB-368-release-persistence-retry.md",
         "src/infrastructure/filesystem/runtime-security.mjs",
         "tests/infrastructure/filesystem/runtime-directory-protection.test.mjs",
-        "docs/decisions/ADR-HUB-376-public-package-handoff.md"
+        "docs/decisions/ADR-HUB-376-public-package-handoff.md",
+        "src/infrastructure/persistence/runtime-update-backup-retention.mjs",
+        "tests/infrastructure/persistence/runtime-update-backup-retention.test.mjs",
+        "docs/decisions/ADR-HUB-383-update-backup-retention.md"
       ]
     },
     {

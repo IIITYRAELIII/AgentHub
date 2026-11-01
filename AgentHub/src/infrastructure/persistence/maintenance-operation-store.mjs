@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -140,6 +140,31 @@ export class MaintenanceOperationStore {
       return operationFromRow(database.prepare(
         "SELECT operation_json FROM maintenance_operations WHERE operation_id = ?",
       ).get(operationId));
+    } finally { database.close(); }
+  }
+
+  // Bounded original discovery, never a filesystem/scratch-directory sweep.
+  listPackageBackupOriginsReadonly({ after = "", limit = 32 } = {}) {
+    const count = Math.min(32, Math.max(1, Math.trunc(limit) || 32));
+    const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
+    try {
+      const rows = database.prepare(`SELECT operation_id, operation_json FROM maintenance_operations
+        WHERE kind='restart' AND operation_id > ? AND CASE WHEN json_valid(operation_json)
+          THEN json_type(operation_json, '$.metadata.packageBackup') IS NOT NULL ELSE 1 END
+        ORDER BY operation_id LIMIT ?`).all(after, count + 1);
+      const page = rows.slice(0, count);
+      return { items: page.map(row => operationFromRow(row) ?? { operationId: row.operation_id, invalid: true }),
+        cursor: page.at(-1)?.operation_id ?? after, done: rows.length <= count };
+    } finally { database.close(); }
+  }
+
+  latestStorageArtifactReadonly(owner, candidateId) {
+    const thread = `${owner}:${createHash("sha256").update(candidateId).digest("hex")}`;
+    const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
+    try {
+      return operationFromRow(database.prepare(`SELECT operation_json FROM maintenance_operations
+        WHERE kind='storage-retention' AND stream_id='agent-hub-runtime' AND thread_id=?
+        ORDER BY created_at DESC, operation_id DESC LIMIT 1`).get(thread));
     } finally { database.close(); }
   }
 
