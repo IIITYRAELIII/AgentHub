@@ -11,6 +11,7 @@ import argparse
 import base64
 from contextlib import closing, contextmanager
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -121,9 +122,23 @@ class AssetRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class ReleaseHTTPSConnection(http.client.HTTPSConnection):
+    def putheader(self, header, *values):
+        # Read the framed response before closing locally. Requesting early
+        # peer closure stalls/truncates canonical release responses on some paths.
+        if header.lower() == "connection" and values == ("close",):
+            return
+        super().putheader(header, *values)
+
+
+class ReleaseHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(ReleaseHTTPSConnection, request, context=self._context)
+
+
 def download(url: str, target: Path, *, max_bytes=MAX_ARCHIVE_BYTES) -> None:
     validate_source_url(url)
-    opener = urllib.request.build_opener(AssetRedirect())
+    opener = urllib.request.build_opener(ReleaseHTTPSHandler(), AssetRedirect())
     request = urllib.request.Request(url, headers={"User-Agent": "AgentHub-ReadyPackage-Installer"})
     with opener.open(request, timeout=30) as response, windows_filesystem_path(target).open("xb") as out:
         size = 0
@@ -151,7 +166,7 @@ def release_metadata(release: str) -> dict:
         "User-Agent": "AgentHub-ReadyPackage-Installer", "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"})
     # Public anonymous endpoint only: no gh, environment token or credentials.
-    with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
+    with urllib.request.build_opener(ReleaseHTTPSHandler(), NoRedirect()).open(request, timeout=30) as response:
         raw = response.read(MAX_METADATA_BYTES+1)
     if len(raw) > MAX_METADATA_BYTES:
         raise ValueError("Release metadata exceeds budget")

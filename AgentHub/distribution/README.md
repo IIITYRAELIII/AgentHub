@@ -379,6 +379,16 @@ read-only SQLite; HTTPS and the final subprocess boundary are controlled. They
 do not establish the cause of intermittent public TLS/header/body stalls or prove
 an actual online update. That acceptance still belongs to the release owner.
 
+Release HTTPS reads use the same certificate-validating stdlib transport and
+redirect policies without asking the peer for `Connection: close`. Each response
+is still closed locally after its bounded framed read, including failures; there
+is no connection pool, retry or alternate transport. Paired public API controls
+isolated the early-close request header as a reproducible interoperability
+trigger, including stalls with the same header in a separate TLS stack. This
+does not identify the responsible remote/intermediate component or prove a
+public update. `release_https_test.py` checks complete HTTP framing, local closure,
+redirect/size/error refusal and unchanged certificate-failure propagation.
+
 The focused `package_update_test.py` uses the actual immutable public 2.0.4
 native Host and a literal local application, controlled HTTPS metadata, real
 SQLite/control/backup/installer and exact replacement readiness. Its own natural
