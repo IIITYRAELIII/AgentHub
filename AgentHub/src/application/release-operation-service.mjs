@@ -60,6 +60,10 @@ function ownsRelease(operation, owner) {
     && operation?.owner?.epoch === owner?.epoch;
 }
 
+function waitingForValidationAmendment(operation) {
+  return operation.state === "waiting" && operation.waitReason?.code === "validation_failed";
+}
+
 function normalizeReadback(value) {
   const status = String(value?.status ?? "unknown").trim();
   if (!["applied", "already_applied", "partial", "not_applied", "unknown"].includes(status)) {
@@ -99,7 +103,7 @@ function classifiedFailure(error, state, now, retryDelayMs) {
       return {
         state: "waiting", currentStep: "validate", resumeState: "compose",
         waitReason: { code: "validation_failed", message: details.message, details },
-        nextAction: "accept a corrected selected result and compose the next candidate generation",
+        nextAction: "amend this original release with the exact failed and affected test selection and current release metadata",
         lastError: { ...details, step: "validate" },
       };
     case "RELEASE_CORRECTION_REQUIRED":
@@ -285,6 +289,9 @@ export class ReleaseOperationService {
     // external condition. It neither resumes nor publishes that condition.
     this.#observe(current.operationId);
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
+    if (waitingForValidationAmendment(current)) {
+      return { accepted: false, operation: current, reason: "test-selection-required" };
+    }
     let operation = current;
     if (current.state === RELEASE_OPERATION_STATES.WAITING) {
       const resumeState = String(current.resumeState ?? "").trim();
@@ -428,7 +435,7 @@ export class ReleaseOperationService {
     const operations = this.store.forTask(selectedTaskId);
     for (const operation of operations) {
       if (releaseOperationIsTerminal(operation)) continue;
-      if (operation.state === "waiting" && ["validation_failed", "correction_required"].includes(operation.waitReason?.code)) {
+      if (operation.state === "waiting" && operation.waitReason?.code === "correction_required") {
         const resumed = this.continue(operation.operationId);
         if (resumed.accepted && !accepted.includes(operation.operationId)) accepted.push(operation.operationId);
       }
@@ -443,13 +450,16 @@ export class ReleaseOperationService {
       if (releaseOperationIsTerminal(operation)) continue;
       let current = operation;
       for (;;) {
+        // Acceptance proves neither a failed test's correction nor its affected
+        // inputs. Preserve the idle original for its existing RM amendment.
+        if (waitingForValidationAmendment(current)) break;
         if (current.publicationEffects?.publishStarted) {
           prepared.push({ operationId: current.operationId, generation: current.currentGeneration, preserved: true });
           break;
         }
         if (!["validate", "publish", "waiting", "compose"].includes(current.state)) break;
         if (current.state === "waiting"
-            && !["validation_failed", "correction_required"].includes(current.waitReason?.code)) break;
+            && current.waitReason?.code !== "correction_required") break;
         const revokedOwner = current.owner ? {
           ...current.owner,
           epoch: current.owner.epoch + 1,

@@ -3121,6 +3121,26 @@ Affected checks: `tests/interfaces/release-progress-autostart.test.mjs` and the
 
 ## Explicit test selection (ADR-HUB-351)
 
+### Failed validation and Task acceptance (ADR-HUB-391)
+
+An existing `waiting(validation_failed)` operation remains idle through Task
+acceptance, including a new unrelated Task, the same result, descriptive edits
+and a genuinely corrected selected result. Acceptance alone proves neither the
+failed test's correction nor its affected inputs. Neither pre-acceptance
+preparation, post-acceptance wake nor ordinary unamended continue may transition
+that original back to compose. Its wait, error, immutable generations, successful
+file checkpoints and publication evidence remain unchanged.
+
+The already authorized RM uses the existing request-addressed test-selection /
+membership / release-metadata amendment below with exact failed and affected
+coverage and current whole-set notes. No new user approval, API or retry ledger
+is introduced. Existing idle-owner, target not-applied readbacks, current source,
+selection and revision/generation CAS still decide admission. A corrected result
+can enter Await normally; its next release generation follows that explicit
+amendment. Initial release progression, pre-effect active-selection fencing,
+lineage correction and already-started publication keep their existing owners.
+Uncertain effects never acquire retry or successful-cache credit.
+
 An explicit typed selection is `all`, `include`, `exclude`, or `none`, with exact
 inventory IDs. Omission retains prescribed focused/full/quick behavior. Selection
 is separate from immutable initial release authorization. The same RM continue

@@ -453,7 +453,11 @@ state, revision}` before long work. Same-ID replay with identical authorization
 returns the same operation; changed identity fails closed. `hub_release_get`
 returns the operation, immutable generations, receipts and target effects without
 writing. `hub_release_continue` only wakes the same waiting operation; automatic
-Task acceptance and durable retry timers normally perform that wakeup.
+Task acceptance and durable retry timers normally perform that wakeup. A
+`validation_failed` wait is the ADR-HUB-391 exception: Task acceptance and
+unamended continue preserve it without scheduling. The existing RM amendment
+below supplies the exact retry scope/current metadata under its original guards;
+this is not another user approval or public method.
 
 The former public `hub_release_preflight`, `hub_release_preflight_reconcile` and
 `hub_release_complete` writers are removed at cutover rather than retained as a
