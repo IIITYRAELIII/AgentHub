@@ -11,6 +11,7 @@ import argparse
 import base64
 from contextlib import closing, contextmanager
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,7 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -117,15 +119,46 @@ def validate_source_url(url: str, *, redirect=False) -> str:
 
 class AssetRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_source_url(newurl, redirect=True)
+        try:
+            validate_source_url(newurl, redirect=True)
+        except ValueError:
+            if fp is not None:
+                fp.close()
+            raise
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class ReleaseHTTPSConnection(http.client.HTTPSConnection):
+    def putheader(self, header, *values):
+        # Read the framed response before closing locally. Requesting early
+        # peer closure stalls/truncates canonical release responses on some paths.
+        if header.lower() == "connection" and values == ("close",):
+            return
+        super().putheader(header, *values)
+
+
+class ReleaseHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(ReleaseHTTPSConnection, request, context=self._context)
+
+
+@contextmanager
+def release_response(opener, request):
+    try:
+        response = opener.open(request, timeout=30)
+    except urllib.error.HTTPError as error:
+        # An HTTPError owns the response before the with-statement can enter.
+        error.close()
+        raise
+    with response:
+        yield response
 
 
 def download(url: str, target: Path, *, max_bytes=MAX_ARCHIVE_BYTES) -> None:
     validate_source_url(url)
-    opener = urllib.request.build_opener(AssetRedirect())
+    opener = urllib.request.build_opener(ReleaseHTTPSHandler(), AssetRedirect())
     request = urllib.request.Request(url, headers={"User-Agent": "AgentHub-ReadyPackage-Installer"})
-    with opener.open(request, timeout=30) as response, windows_filesystem_path(target).open("xb") as out:
+    with release_response(opener, request) as response, windows_filesystem_path(target).open("xb") as out:
         size = 0
         deadline = time.monotonic()+10*60
         while chunk := response.read(1024 * 1024):
@@ -139,6 +172,8 @@ def download(url: str, target: Path, *, max_bytes=MAX_ARCHIVE_BYTES) -> None:
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if fp is not None:
+            fp.close()
         raise ValueError("Release API redirects refused")
 
 
@@ -151,7 +186,7 @@ def release_metadata(release: str) -> dict:
         "User-Agent": "AgentHub-ReadyPackage-Installer", "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"})
     # Public anonymous endpoint only: no gh, environment token or credentials.
-    with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
+    with release_response(urllib.request.build_opener(ReleaseHTTPSHandler(), NoRedirect()), request) as response:
         raw = response.read(MAX_METADATA_BYTES+1)
     if len(raw) > MAX_METADATA_BYTES:
         raise ValueError("Release metadata exceeds budget")

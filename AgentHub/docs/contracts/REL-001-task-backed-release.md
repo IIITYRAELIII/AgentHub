@@ -3535,6 +3535,14 @@ See ADR-HUB-351-release-metadata-amendment.
 
 ## Explicit GitHub distribution target
 
+Recipient HTTPS transport does not request early peer connection closure. It
+uses the existing stdlib TLS/certificate policy, proxy and redirect owners and
+closes each response locally after the same bounded framed read or failure.
+There is no persistent pool, transport fallback, retry, timeout increase or TLS
+downgrade. Complete metadata/package validation and pre-dispatch identity/fences
+remain mandatory; transport success is not update admission or runtime readiness.
+See ADR-HUB-394-framed-release-response.
+
 Windows package verification and recipient extraction support declared dependency
 paths beyond legacy MAX_PATH inside their owned scratch directories. Owned asset,
 extraction and preparation-record I/O, including identity checks/locks/cleanup,
