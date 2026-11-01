@@ -472,7 +472,7 @@ test("local execution retirement precedes provider reads and current writer stil
   let starts = 0;
   const deferred = [];
   const coordinator = new RunCoordinator({
-    taskRuns: f.taskRuns, providers: { call: noEffect },
+    taskRuns: f.taskRuns, providers: { call: async () => assert.fail("Retirement cannot authorize a steer to the external writer") },
     externalActivity: async () => ({ state: activity, executionOwner: "desktop" }),
     repositoryConflict: async () => null,
     deferInput: async (_input, _files, options) => {
@@ -484,8 +484,15 @@ test("local execution retirement precedes provider reads and current writer stil
   const target = { ...f.run, clientUserMessageId: "next-command" };
   assert.equal((await coordinator.deferredOccupancy(target)).occupied, true);
   await coordinator.start("next original", [], { target });
+  await assert.rejects(coordinator.steer({ input: "explicit current action", target,
+    clientUserMessageId: "next-steer-command" }), /another Codex runtime owns the writer/u);
+  await assert.rejects(coordinator.steer({ input: "old exact action", target: {
+    ...target, steerTargetRunId: f.run.id, steerTargetTurnId: f.run.turnId,
+  }, clientUserMessageId: "old-exact-command" }), /targeted managed turn is no longer active/u);
   activity = "unknown";
   await coordinator.start("next original", [], { target });
+  await assert.rejects(coordinator.steer({ input: "ambiguous external action", target,
+    clientUserMessageId: "unknown-steer-command" }), /another Codex runtime owns the writer/u);
   assert.equal(starts, 0);
   assert.deepEqual(deferred.map(value => value.conflictKind), ["task-running", "activity-unknown"]);
   activity = "inactive";
