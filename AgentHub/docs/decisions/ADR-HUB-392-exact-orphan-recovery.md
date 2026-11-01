@@ -108,6 +108,16 @@ content, including failed writes and worker reopen. This is not a RAM/speed clai
 or proof that the production ghost, queued message or old lifecycle operation
 has been settled; actual delivery and original recovery remain RM-owned.
 
+Late lifecycle callbacks remain separate from local retirement. Generic complete/
+markCompleted without a matching durable provider terminal leaves the retained
+UNKNOWN intact. The existing terminal store must confirm exact provider/Thread/
+turn, original payload runId, supported status and committed revision after the
+read, with unchanged registry/identity. A real late final can then finish its old
+entity without reserving or cancelling post-turn maintenance for the current
+writer, re-acquiring admission or repeating retirement wake. In-flight Promise
+coordination never enters persisted run snapshots; restored inert flags cannot
+become completion authority. No local-retirement record is provider-terminal proof.
+
 ## Mailbox and operational boundary (unchanged)
 
 Authenticated snapshot/history reads and the existing deferred-input cancel

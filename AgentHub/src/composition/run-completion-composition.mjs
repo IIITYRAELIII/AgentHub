@@ -96,6 +96,7 @@ export function createRunCompletionComposition({
     revokeAdmission: revokeRunAdmission,
     commandTrace,
     recordProviderTerminal: (terminal) => runLifecycleTerminals.record(terminal),
+    readProviderTerminal: (identity) => terminalStore.get(identity),
     localRetirementStore: runLifecycleTerminals,
     readSystemBootIdentity,
     afterLocalRetirement: () => wakeDeferredInputs(),

@@ -62,6 +62,8 @@ export function restorePersistedTaskRun(savedRun, restoredChatId, lifecycleStore
     progressUpdatePending: false,
     process: null,
     localAdmissionReleased: false,
+    completionPreparing: null,
+    admissionReleasing: null,
   };
   const identity = localExecutionIdentity(savedRun);
   const retirement = identity && lifecycleStore?.getLocalExecutionRetirement(identity);

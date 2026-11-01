@@ -32,6 +32,7 @@ function harness({
   localRetirementStore = null,
   readSystemBootIdentity = null,
   afterLocalRetirement = null,
+  readProviderTerminal = null,
 } = {}) {
   const events = [];
   const taskRuns = new TaskRunRegistry();
@@ -39,6 +40,7 @@ function harness({
     taskRuns,
     commandTrace,
     localRetirementStore, readSystemBootIdentity, afterLocalRetirement,
+    readProviderTerminal,
     currentTarget: currentTarget ?? (() => ({
       provider, projectRoot: "D:/Work", streamId: "stream-1", threadId: "thread-1", taskTitle: "Task", chatId: 7,
     })),
@@ -376,6 +378,45 @@ test("local execution retirement durable commit survives interrupted snapshot sa
   assert.equal(registry.forEvent({ turnId: restored.turnId }), restored);
   assert.deepEqual(restored.providerStart, f.saved.providerStart);
   assert.equal(store.get(f.saved), null);
+});
+
+test("local execution retirement refuses missing foreign ambiguous and superseded late terminal", async t => {
+  for (const variant of ["missing", "foreign-run", "foreign-turn", "unknown", "missing-revision",
+    "registry-replacement", "changed-command"]) {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const f = await localRetirementFixture(t, { readProviderTerminal: () => held });
+    assert.equal(await f.service.retireLocalExecutionAfterReboot(f.run), true);
+    const terminal = { provider: f.run.provider, threadId: f.run.threadId, turnId: f.run.turnId,
+      status: "completed", terminalRevision: 1, committedAt: new Date().toISOString(),
+      payload: { completion: { runId: f.run.id } } };
+    if (variant === "foreign-run") terminal.payload.completion.runId = "other-run";
+    if (variant === "foreign-turn") terminal.turnId = "other-turn";
+    if (variant === "unknown") terminal.status = "unknown";
+    if (variant === "missing-revision") delete terminal.terminalRevision;
+    const pending = f.service.complete(f.run);
+    const persisted = serializableTaskRun(f.run);
+    assert.equal(Object.hasOwn(persisted, "completionPreparing"), false);
+    assert.equal(Object.hasOwn(persisted, "admissionReleasing"), false);
+    let replacement;
+    if (variant === "registry-replacement") {
+      f.taskRuns.remove(f.run);
+      replacement = { ...f.saved, id: "replacement", turnId: "replacement-turn" };
+      f.taskRuns.add(replacement);
+    }
+    if (variant === "changed-command") f.run.clientUserMessageId = "new-command";
+    release(variant === "missing" ? null : terminal);
+    await pending;
+    assert.equal(f.run.status, "running", variant);
+    assert.deepEqual(f.run.providerStart, f.saved.providerStart, variant);
+    assert.equal(f.run.providerTerminalStatus, undefined, variant);
+    assert.equal(f.events.includes("before"), false, variant);
+    assert.equal(f.events.includes("after"), false, variant);
+    assert.equal(f.events.includes("aborted"), false, variant);
+    assert.equal(f.events.includes("sync-complete"), false, variant);
+    if (replacement) assert.equal(f.taskRuns.forTask(replacement), replacement);
+    else assert.equal(f.taskRuns.forEvent({ turnId: f.saved.turnId }), f.run, variant);
+  }
 });
 
 test("local execution retirement precedes provider reads and current writer still fences new input", async t => {

@@ -8,7 +8,7 @@ import {
   normalizeInterstreamClientUserMessageId,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
-import { providerRunTerminalIdentity } from "../domain/provider-run-terminal.mjs";
+import { providerRunTerminalIdentity, providerRunTerminalStatusSupported } from "../domain/provider-run-terminal.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -85,6 +85,9 @@ export class ManagedRunLifecycleService {
     ]) requiredFunction(dependencies[name], name);
     if (dependencies.recordProviderTerminal != null) {
       requiredFunction(dependencies.recordProviderTerminal, "recordProviderTerminal");
+    }
+    if (dependencies.readProviderTerminal != null) {
+      requiredFunction(dependencies.readProviderTerminal, "readProviderTerminal");
     }
     if (!dependencies.taskRuns?.add || !dependencies.taskRuns?.remove) {
       throw new TypeError("taskRuns registry is required");
@@ -316,14 +319,16 @@ export class ManagedRunLifecycleService {
     if (run.admissionReleasing) return run.admissionReleasing;
     const d = this.#d;
     d.revokeAdmission(run);
+    const locallyRetired = run.localAdmissionReleased === true;
     run.admissionReleasing = (async () => {
       await this.markCompleted(run);
+      if (run.completionPrepared !== true) return;
       d.taskRuns.remove(run);
       if (!d.taskRuns.size) d.stopTyping();
       try {
         await d.saveState();
       } finally {
-        if (run.afterCompletionApplied !== true) {
+        if (!locallyRetired && run.afterCompletionApplied !== true) {
           run.afterCompletionApplied = true;
           await d.afterCompletion(run);
         }
@@ -342,8 +347,30 @@ export class ManagedRunLifecycleService {
     if (run.completionPreparing) return run.completionPreparing;
     const d = this.#d;
     run.completionPreparing = (async () => {
+      const locallyRetired = run.localAdmissionReleased === true;
       try {
-        await d.beforeCompletion(run);
+        if (locallyRetired) {
+          const identity = { provider: run.provider, threadId: run.threadId, turnId: run.turnId };
+          const runId = run.id;
+          const commandId = run.clientUserMessageId;
+          const finish = localRetirementSpan(d, run, "local-retired-terminal-read");
+          let terminal;
+          try { terminal = await d.readProviderTerminal?.(identity); }
+          catch (error) { finish("failed"); throw error; }
+          if (run.localAdmissionReleased !== true || run.id !== runId || run.clientUserMessageId !== commandId
+            || Object.keys(identity).some(key => run[key] !== identity[key])
+            || d.taskRuns.forEvent?.({ ...identity }) !== run
+            || Object.keys(identity).some(key => terminal?.[key] !== identity[key])
+            || terminal?.payload?.completion?.runId !== runId
+            || !Number.isSafeInteger(terminal?.terminalRevision) || terminal.terminalRevision < 1
+            || !Number.isFinite(Date.parse(terminal?.committedAt ?? ""))
+            || !providerRunTerminalStatusSupported(terminal?.status)) {
+            finish("refused");
+            return false;
+          }
+          finish("succeeded");
+          run.providerTerminalStatus = terminal.status;
+        } else await d.beforeCompletion(run);
         const terminal = providerRunTerminalIdentity(run);
         if (terminal) await d.recordProviderTerminal?.(terminal);
         d.clearApprovals(run);
@@ -356,7 +383,7 @@ export class ManagedRunLifecycleService {
         await d.saveState();
         run.completionPrepared = true;
       } catch (error) {
-        await d.completionAborted(run);
+        if (!locallyRetired) await d.completionAborted(run);
         throw error;
       }
     })();

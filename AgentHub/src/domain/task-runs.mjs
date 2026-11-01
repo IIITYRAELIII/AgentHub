@@ -836,6 +836,8 @@ export function shouldAutoObserveTask({
 export function serializableTaskRun(run) {
   const {
     localAdmissionReleased: _localAdmissionReleased,
+    completionPreparing: _completionPreparing,
+    admissionReleasing: _admissionReleasing,
     process: _process,
     progressMessageId: _progressMessageId,
     progressStartTimer: _progressStartTimer,

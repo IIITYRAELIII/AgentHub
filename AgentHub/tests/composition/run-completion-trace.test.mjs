@@ -95,10 +95,11 @@ test("real completion composition persists local retirement before waking normal
   const noop = () => {};
   let wakes = 0;
   let postTurn = 0;
+  const synced = [];
   const composition = createRunCompletionComposition({
     config: { dataDir }, taskRuns: registry,
     currentTarget: noop, findProject: noop, normalizeCodexModel: noop, codexModelLabel: noop,
-    persistTaskDiff: noop, syncTaskRun: () => assert.fail("Do not project provider completion"),
+    persistTaskDiff: noop, syncTaskRun: (value, options) => synced.push({ run: value, options }),
     invalidateTaskCatalog: noop, saveState: async () => {},
     scheduleProgressStart: noop, clearSelectedDiff: noop, clearApprovals: noop,
     pauseObservation: noop, pauseClaude: noop, stopTyping: noop,
@@ -135,4 +136,30 @@ test("real completion composition persists local retirement before waking normal
   assert.equal(registry.forEvent({ turnId: source.turnId }), run);
   assert.equal(composition.runLifecycleTerminals.get(source), null);
   assert.equal((await composition.terminalStore.pending()).length, 0);
+  await composition.managedRunLifecycle.complete(run);
+  assert.equal(run.status, "running", "Generic completion cannot manufacture terminal from local retirement");
+  assert.equal(run.activityUnknown, true);
+  assert.equal(registry.forEvent({ turnId: source.turnId }), run);
+  assert.equal(postTurn, 0);
+  assert.deepEqual(synced, []);
+
+  const newer = createManagedTaskRun({ ...saved, id: "newer-run", turnId: "newer-turn" });
+  registry.add(newer);
+  registry.reindex(run);
+  assert.equal(registry.forTask(newer), newer, "Late old event cannot reacquire admission");
+  await composition.terminalStore.commit({
+    provider: "codex", threadId: run.threadId, turnId: run.turnId, status: "completed",
+    finalAnswer: "Controlled exact late provider final", usageIdentity: "late-original-usage",
+    payload: { completion: { runId: run.id, clientUserMessageId: run.clientUserMessageId } },
+  });
+  await composition.managedRunLifecycle.complete(run);
+  assert.equal(run.status, "completed");
+  assert.equal(registry.forTask(newer), newer);
+  assert.equal(registry.forEvent({ turnId: source.turnId }), null);
+  assert.equal(composition.runLifecycleTerminals.get(source).status, "completed");
+  assert.equal(postTurn, 0, "Old completion never reserves maintenance over the current writer");
+  assert.equal(wakes, 1, "Do not repeat local retirement wake");
+  assert.deepEqual(synced, [{ run, options: { active: false } }]);
+  await composition.managedRunLifecycle.complete(run);
+  assert.equal(synced.length, 1);
 });

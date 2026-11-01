@@ -88,6 +88,11 @@ terminal.
   Missing/ambiguous proof, same boot, foreign/new identity, registry replacement
   and failed persistence retain the fence. PID absence/reuse never authorizes
   retirement or interruption. See ADR-HUB-392.
+  A generic completion call cannot settle a locally retired UNKNOWN. Only an
+  exact durable terminal with the original provider/Thread/turn/run identity
+  and committed terminal revision may finalize it. Late nonterminal events keep
+  their old exact lookup without reacquiring admission. Late true completion
+  never reserves old post-turn maintenance over a newer writer.
 - If a previously committed Codex completion is contradicted by a later exact
   rollout terminal for the same provider/thread/turn, the terminal owner uses
   expected-revision CAS to commit a higher revision and its existing projection
