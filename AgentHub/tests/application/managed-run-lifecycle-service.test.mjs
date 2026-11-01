@@ -12,6 +12,8 @@ import { ProviderRunTerminalStore } from "../../src/infrastructure/persistence/p
 import { restorePersistedTaskRun } from "../../src/composition/runtime-state-restoration-composition.mjs";
 import { CodexRecoveryService } from "../../src/providers/provider-recovery-services.mjs";
 import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
+import { createHubRuntimeSnapshot, restoreHubRuntimeSnapshot } from "../../src/application/hub-runtime-state-coordinator.mjs";
+import { TaskSelectionStore } from "../../src/application/task-selection-store.mjs";
 
 function harness({
   provider = "codex",
@@ -128,6 +130,30 @@ async function localRetirementFixture(t, overrides = {}) {
   return { ...h, run, saved, store, directory, wakes, closers };
 }
 
+function localRetirementRuntimeContext(registry, store) {
+  const empty = { snapshot: () => ({}), restore: () => {} };
+  return {
+    chatId: 7, updateOffset: 0, restartRequest: null, codexHookReceipts: {},
+    getClientTaskSelections: () => [],
+    selectionStore: new TaskSelectionStore({ activeProvider: "codex", activeProjectRoot: "D:/Work" }),
+    findProject: root => ({ path: root }), taskMetadata: empty, preferences: empty,
+    taskRuns: registry, serializableTaskRun,
+    restoreTaskRun: (saved, chatId) => restorePersistedTaskRun(saved, chatId, store),
+    dismissedExternalTasks: { values: () => [], restore: () => {} },
+    cancelledManagedClaudeTasks: new Map(), pendingInputs: new Map(), queuedInputs: new Map(),
+    desktopMessageReceipts: { snapshot: () => [], restore: () => {} },
+    composerTransfers: { snapshot: () => [], restore: () => {} }, forwardBundles: new Map(),
+    runJournal: { lastMessageSnapshot: () => [], restoreLastMessages: () => {} },
+    lastSeenTaskTurnIds: new Map(), contextCompactions: empty, codexUsageTracker: empty,
+    codexTurnStarts: new Map(), codexTerminalAudit: empty,
+    turnEndNotifications: { snapshot: () => ({}), restore: () => ({}) },
+    statusMediaFileIds: new Map(), restoreDeferredInput: value => value, deferredInputOptions: {},
+    isRetryableDeferredLaunchError: () => false, updateDeferredDesktopReceipt: () => {},
+    restoreForwardBundle: value => value, forwardBundleAttachmentPaths: () => [],
+    removeFiles: async () => {}, maximumDeferredInputs: 10, deferredInputTtlMs: 60000,
+  };
+}
+
 test("local execution retirement persists before release and preserves exact UNKNOWN through reopen", async t => {
   const f = await localRetirementFixture(t);
   const original = structuredClone(serializableTaskRun(f.run));
@@ -168,13 +194,16 @@ test("local execution retirement persists before release and preserves exact UNK
   assert.equal(f.events.includes("after"), false);
   assert.equal(f.events.includes("sync-complete"), false);
 
-  const snapshot = JSON.parse(JSON.stringify(f.taskRuns.retainedValues().map(serializableTaskRun)));
+  const snapshot = JSON.parse(JSON.stringify(createHubRuntimeSnapshot(
+    localRetirementRuntimeContext(f.taskRuns, f.store))));
+  assert.equal(snapshot.activeRuns.length, 1, "Actual snapshot owner retains the old original");
+  assert.equal(snapshot.activeRuns[0].localAdmissionReleased, undefined, "No copied flag is authority");
   const reopenedStore = new ProviderRunTerminalStore({ dataDir: f.directory });
   const registry = new TaskRunRegistry();
   const next = createManagedTaskRun({ ...original, id: "new-run", turnId: "new-turn" });
   registry.add(next);
-  const restored = restorePersistedTaskRun(snapshot[0], 7, reopenedStore);
-  registry.addRestored(restored, snapshot[0]);
+  await restoreHubRuntimeSnapshot(snapshot, localRetirementRuntimeContext(registry, reopenedStore));
+  const restored = registry.forEvent({ turnId: original.turnId });
   assert.equal(registry.forTask(next), next, "Retained old UNKNOWN cannot replace current admission");
   assert.equal(registry.forEvent({ turnId: original.turnId }), restored);
   assert.equal(restored.localAdmissionReleased, true);
