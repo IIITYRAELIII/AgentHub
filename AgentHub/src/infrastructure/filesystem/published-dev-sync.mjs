@@ -34,7 +34,8 @@ export async function synchronizePublishedDev({ root, sourceRoot, devRoot, devBr
   await fence();
   await inspect(delivery?.commit);
   const composition = await mergeSelectedResults({ root, sourceRoot, baseCommit: identity.devCommit,
-    tasks: [{ taskId: `published:${identity.operationId}`, baseCommit: identity.mergeBase,
+    tasks: [{ taskId: `published:${identity.operationId}`,
+      ...(Object.hasOwn(identity, "mergeBases") ? { mergeBases: identity.mergeBases } : { baseCommit: identity.mergeBase }),
       resultCommit: identity.publishedRevision }], identity, gitAt, readJson, writeJson,
     requireConflictReview: true, resolutionReview, verifyReview,
     deliveredHead: delivery?.commit ?? null });
