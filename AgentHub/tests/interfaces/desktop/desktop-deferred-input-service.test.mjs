@@ -1,9 +1,60 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DesktopDeferredInputService } from "../../../src/interfaces/desktop/desktop-deferred-input-service.mjs";
+import { DeferredInputController } from "../../../src/application/deferred-input-controller.mjs";
 import { DeferredComposerTransferRegistry } from "../../../src/application/deferred-composer-transfer-registry.mjs";
 import { messageWithTaskReferences } from "../../../src/domain/task-board-task.mjs";
 import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
+
+test("a processing refusal can settle to a normal cancel without dispatching the read original", async () => {
+  const item = { id: "read-original", clientUserMessageId: "release:operation:1351:operation.waiting",
+    provider: "codex", projectRoot: "project", threadId: "thread-original",
+    conflictKind: "message-steer", steerTargetRunId: "same", steerTargetTurnId: "turn-original",
+    input: "already archived", temporaryFiles: ["archived-attachment"], persistentFiles: true };
+  const archived = structuredClone(item);
+  const queuedInputs = new Map([[item.id, item]]);
+  const pendingInputs = new Map();
+  const effects = [];
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
+  const controller = new DeferredInputController({
+    pendingInputs, queuedInputs,
+    occupancy: async () => { entered(); await hold; return { occupied: true, run: { id: "same", turnId: "turn-original" } }; },
+    isSteerDispatchBlocked: async () => true,
+    isBlocked: async () => true,
+    steer: async () => assert.fail("No provider steer for a cancelled read original"),
+    start: async () => assert.fail("No new provider run"),
+    persist: async () => {}, updateMessage: async () => {},
+    pendingKeyboard: () => null, notifyReturned: async () => {},
+    setTimeoutImpl: () => ({}), clearTimeoutImpl: () => {},
+  });
+  const service = createService(item, {
+    pendingInputs, queuedInputs, isProcessing: id => controller.isProcessing(id),
+    cancelSchedule: id => controller.cancelSchedule(id),
+    saveState: async () => effects.push("durable-cancel"),
+    updateReceipt: (value, status) => { assert.equal(value.clientUserMessageId, archived.clientUserMessageId); effects.push(status); },
+    cleanupFiles: async () => effects.push("cleanup-after-archive"),
+  });
+  const processing = controller.process(item.id);
+  await waiting;
+  await assert.rejects(service.handle({ id: item.id, action: "cancel" }), /отмена не подтверждена/u);
+  assert.equal(queuedInputs.get(item.id), item);
+  assert.equal(item.dispatchingAt, undefined);
+  assert.deepEqual(effects, []);
+  release();
+  await processing;
+  assert.equal(controller.isProcessing(item.id), false);
+  assert.equal(item.dispatchingAt, undefined);
+  const cancelled = await service.handle({ id: item.id, action: "cancel" });
+  assert.equal(cancelled.accepted, true);
+  assert.equal(queuedInputs.has(item.id), false);
+  assert.equal(pendingInputs.has(item.id), false);
+  assert.equal(controller.timers.size, 0);
+  assert.deepEqual(effects, ["durable-cancel", "cancelled", "cleanup-after-archive"]);
+  assert.equal(item.input, archived.input);
+  assert.deepEqual(item.temporaryFiles, archived.temporaryFiles);
+});
 
 function createService(item, overrides = {}) {
   const pendingInputs = overrides.pendingInputs ?? new Map([[item.id, item]]);

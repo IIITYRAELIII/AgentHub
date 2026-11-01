@@ -44,6 +44,30 @@ negative decision. They contain no message/attachment content or raw errors;
 trace sink failures cannot change recovery authority. Existing terminal commit,
 queue admission and client projection measurements retain their separate owners.
 
+## Actual installed followthrough: avoid full-history gating
+
+The installed observation path entered recovery but requested up to 200 full
+turns while holding the existing hydration lane. Actual thread/turns/list reads
+timed out before any inactivity checks; concurrent hydration was then refused.
+The exact original's canonical acceptance and rollout snapshot do not require
+that unrelated history. For this positive Hub-owned exact identity only, read
+fresh Thread metadata and the existing exact rollout snapshot. An exact UNKNOWN
+snapshot is eligibility, not terminal authority; retain all cancellation owner's
+fresh inactivity, definite exact interrupt rejection, second-check, registry and
+durable terminal fences. Legacy/unconfirmed/foreign/observer recovery retains
+its existing history route. Never stop a newer live external turn in the Thread.
+
+Record recovery-provider-read start/outcome through the existing bounded
+best-effort command tracer, with original command/run/Thread/turn and a bounded
+metadata-only flag. No content, timeout-to-terminal inference or new timer is
+introduced. A trace sink failure must not alter the decision.
+
+An actual deferred-input cancel can be refused while its controller is
+processing even before provider dispatch. That refusal is not delivery or
+permanent cancellation failure. Existing traces distinguish the retained
+original's later queued/blocked state from dispatch. The existing cancel owner
+remains authoritative; do not replay the refused command or bypass its fence.
+
 ## Mailbox and operational boundary
 
 Authenticated snapshot/history reads and the existing deferred-input cancel

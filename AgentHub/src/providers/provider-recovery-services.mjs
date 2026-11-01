@@ -80,14 +80,36 @@ export class CodexRecoveryService {
       return;
     }
 
+    const metadataOnly = run.observer !== true
+      && normalizeTaskExecutionOwner(run.executionOwner) === TASK_EXECUTION_OWNERS.HUB
+      && Boolean(String(run.turnId ?? "").trim() && String(run.clientUserMessageId ?? "").trim())
+      && providerTurnAcceptance(run).accepted;
+    let readSpan;
+    try {
+      readSpan = d.commandTrace?.startBestEffortSpan?.({
+        commandId: String(run.clientUserMessageId ?? ""), stage: "recovery-provider-read",
+        transport: "codex-app-server", recordStarted: true,
+        metadata: { runId: run.id, threadId: run.threadId, turnId: run.turnId, metadataOnly },
+      });
+    } catch { /* Diagnostics never grant recovery authority. */ }
+    const finishRead = (outcome) => {
+      try { readSpan?.finish({ outcome }); } catch { /* Best effort. */ }
+    };
     let recoveryResult;
-    await d.readThread(run.threadId, {
-      fresh: true,
-      priority: "interactive",
-      applySnapshot: async (snapshot) => {
-        recoveryResult = await this.#recoverFromThread(run, snapshot, { reconcileOnly });
-      },
-    });
+    try {
+      await d.readThread(run.threadId, {
+        fresh: true,
+        includeTurns: !metadataOnly,
+        priority: "interactive",
+        applySnapshot: async (snapshot) => {
+          recoveryResult = await this.#recoverFromThread(run, snapshot, { reconcileOnly });
+        },
+      });
+      finishRead("succeeded");
+    } catch (error) {
+      finishRead("failed");
+      throw error;
+    }
     if (recoveryResult === INACTIVE_RECOVERY) {
       // readThread applies its snapshot under the Thread lane. Cancellation's
       // fresh provider read must run only after that lane has been released.
@@ -133,7 +155,10 @@ export class CodexRecoveryService {
     // provider process is gone. This is only eligibility, never terminal proof:
     // cancellation still requires fresh provider/native inactivity, exact
     // interrupt rejection and a second fresh inactivity check.
-    const retainedAcceptedTurn = turn?.status === "inProgress"
+    const exactUnknownSnapshot = !turn && terminalSnapshot?.turnId === exactTurnId
+      && terminalSnapshot?.activityUnknown === true
+      && terminalSnapshot.active === false && terminalSnapshot.completed === false;
+    const retainedAcceptedTurn = (turn?.status === "inProgress" || exactUnknownSnapshot)
       && normalizeTaskExecutionOwner(run.executionOwner) === TASK_EXECUTION_OWNERS.HUB
       && providerTurnAcceptance(run).accepted;
     if (!exactTerminal && run.observer !== true && exactTurnId

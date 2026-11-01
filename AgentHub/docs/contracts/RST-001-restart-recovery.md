@@ -94,6 +94,11 @@ Ordinary UNKNOWN observation retries that owner's prechecks without a new timer;
 live/unknown evidence does not permanently suppress a later authoritative check.
 An accepted or uncertain interrupt is not repeated, and no ACK releases admission.
 A live external/current turn in the same Thread still blocks recovery.
+For a canonically accepted exact Hub-owned original, recovery reads fresh Thread
+metadata and its exact rollout snapshot without requiring paginated full history.
+An exact UNKNOWN snapshot grants eligibility only; missing/foreign snapshots,
+live/unknown provider or native activity still cannot settle or release the run.
+The existing tracer records the original recovery read start/outcome without payload.
 
 ## Invariants
 
