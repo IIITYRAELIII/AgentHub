@@ -159,9 +159,13 @@ class ReleaseHTTPSTests(unittest.TestCase):
         self.mode = "unavailable"
         with self.assertRaises(urllib.error.HTTPError) as raised:
             installer.release_metadata("2.1.2")
-        raised.exception.close()
         self.assertEqual(len(self.records), before+1)
-        self.assert_connections_closed()
+        try:
+            self.assert_connections_closed()
+        finally:
+            # Parent negatives must also join their fixture after a failed
+            # closure assertion; this does not make that assertion pass.
+            raised.exception.close()
 
 
 class CertificateFailureTests(unittest.TestCase):

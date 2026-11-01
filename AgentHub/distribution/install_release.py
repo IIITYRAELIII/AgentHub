@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -136,11 +137,23 @@ class ReleaseHTTPSHandler(urllib.request.HTTPSHandler):
         return self.do_open(ReleaseHTTPSConnection, request, context=self._context)
 
 
+@contextmanager
+def release_response(opener, request):
+    try:
+        response = opener.open(request, timeout=30)
+    except urllib.error.HTTPError as error:
+        # An HTTPError owns the response before the with-statement can enter.
+        error.close()
+        raise
+    with response:
+        yield response
+
+
 def download(url: str, target: Path, *, max_bytes=MAX_ARCHIVE_BYTES) -> None:
     validate_source_url(url)
     opener = urllib.request.build_opener(ReleaseHTTPSHandler(), AssetRedirect())
     request = urllib.request.Request(url, headers={"User-Agent": "AgentHub-ReadyPackage-Installer"})
-    with opener.open(request, timeout=30) as response, windows_filesystem_path(target).open("xb") as out:
+    with release_response(opener, request) as response, windows_filesystem_path(target).open("xb") as out:
         size = 0
         deadline = time.monotonic()+10*60
         while chunk := response.read(1024 * 1024):
@@ -166,7 +179,7 @@ def release_metadata(release: str) -> dict:
         "User-Agent": "AgentHub-ReadyPackage-Installer", "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"})
     # Public anonymous endpoint only: no gh, environment token or credentials.
-    with urllib.request.build_opener(ReleaseHTTPSHandler(), NoRedirect()).open(request, timeout=30) as response:
+    with release_response(urllib.request.build_opener(ReleaseHTTPSHandler(), NoRedirect()), request) as response:
         raw = response.read(MAX_METADATA_BYTES+1)
     if len(raw) > MAX_METADATA_BYTES:
         raise ValueError("Release metadata exceeds budget")
