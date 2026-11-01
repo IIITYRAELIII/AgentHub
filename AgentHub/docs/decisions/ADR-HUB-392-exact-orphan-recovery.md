@@ -118,7 +118,28 @@ writer, re-acquiring admission or repeating retirement wake. In-flight Promise
 coordination never enters persisted run snapshots; restored inert flags cannot
 become completion authority. No local-retirement record is provider-terminal proof.
 
-## Mailbox and operational boundary (unchanged)
+## Durable future-send cancellation
+
+The actual SQLite cancellation control exposed a separate persistence ordering
+gap: deleting the queue projection and saving a snapshot before changing its
+canonical message command left that command queued. A cold reopen could restore
+it. The existing command ledger now owns the cancellation transition under exact
+deferred ID, allowed state and revision CAS. The service first synchronously
+fences its local queue maps, commits the canonical future-send cancellation,
+then updates the receipt and performs cleanup; failure restores the same maps.
+No new ledger is introduced. A missing canonical legacy row uses only the old
+snapshot owner until migration, whereas a canonical refusal cannot fall back.
+
+Processing or dispatching still refuses: local retirement does not prove that
+the current dispatcher is absent. Once the actual controller has returned, an
+explicit cancellation stops future Hub dispatch only, retaining past provider
+outcome UNKNOWN. Canonical dispatching/unknown/accepted-provider state, changed
+identity and failed persistence retain the item. Actual 417 cancellation remains
+an operator action after genuine installed owner-state change, never a source-test
+claim. An old display start date cannot substitute for preboot canonical request
+and acceptance; late callbacks cannot re-add the retired local execution.
+
+## Mailbox and operational boundary
 
 Authenticated snapshot/history reads and the existing deferred-input cancel
 action remain the supported operator path. Read/cancel is not provider Stop,

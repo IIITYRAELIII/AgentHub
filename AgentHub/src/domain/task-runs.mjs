@@ -535,6 +535,9 @@ export class TaskRunRegistry {
   add(run) {
     if (!run?.id) throw new Error("run id is required");
     if (this.#byId.get(run.id) === run) return run;
+    if (run.localAdmissionReleased === true || this.#byId.has(run.id)) {
+      throw new Error("cannot reacquire a retained local execution identity");
+    }
     run.localAdmissionReleased = false;
     const key = taskRunKey(run);
     const existing = this.#byTask.get(key);

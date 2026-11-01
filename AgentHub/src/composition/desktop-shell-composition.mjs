@@ -574,6 +574,7 @@ export function createDesktopShellComposition({
       noteRunActivity: (...args) => taskProgress.noteActivity(...args),
       scheduleProgressUpdate: (...args) => taskProgress.schedule(...args),
       rekeyDeferredOccupancy: (binding) => runtimeStateStore.rekeyMessageCommandOccupancy(binding),
+      persistDeferredCancellation: (item) => runtimeStateStore.cancelDeferredInput(item),
       telegram,
       attachmentPaths: desktopAttachmentPaths,
       receipts: desktopMessageReceipts,

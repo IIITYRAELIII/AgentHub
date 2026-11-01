@@ -184,6 +184,10 @@ test("local execution retirement persists before release and preserves exact UNK
   assert.deepEqual(f.taskRuns.values(), []);
   assert.equal(f.taskRuns.retainedValues()[0], f.run);
   assert.equal(f.taskRuns.size, 0);
+  assert.equal(f.taskRuns.add(f.run), f.run, "Duplicate late callback keeps the same retained entity");
+  assert.equal(f.taskRuns.forTask(f.run), null);
+  assert.throws(() => f.taskRuns.add({ ...f.run, localAdmissionReleased: false }), /retained local execution/u);
+  assert.equal(f.taskRuns.forTask(f.run), null);
   assert.equal(f.run.status, "running");
   assert.equal(f.run.activityUnknown, true);
   assert.deepEqual(f.run.providerStart, original.providerStart);
@@ -217,6 +221,14 @@ test("local execution retirement persists before release and preserves exact UNK
   assert.deepEqual(f.wakes, [f.run.id], "Same original does not wake twice");
 });
 
+test("local execution retirement cannot be readmitted by a detached late callback", async t => {
+  const f = await localRetirementFixture(t);
+  assert.equal(await f.service.retireLocalExecutionAfterReboot(f.run), true);
+  f.taskRuns.remove(f.run);
+  assert.throws(() => f.taskRuns.add(f.run), /retained local execution/u);
+  assert.equal(f.taskRuns.forTask(f.run), null);
+});
+
 test("local execution retirement refuses missing same-boot ambiguous and foreign provenance", async t => {
   for (const variant of ["same-boot", "future-boot", "missing-boot", "pid-reuse-only",
     "not-restored", "foreign-owner", "missing-acceptance", "changed-original"]) {
@@ -246,6 +258,25 @@ test("local execution retirement refuses missing same-boot ambiguous and foreign
     assert.equal(await f.service.retireLocalExecutionAfterReboot(f.run), false, variant);
     assert.equal(f.taskRuns.forTask(f.run), f.run, variant);
     assert.equal(f.run.localAdmissionReleased, false, variant);
+    assert.deepEqual(f.wakes, [], variant);
+  }
+});
+
+test("local execution retirement refuses an old display timestamp with postboot canonical acceptance", async t => {
+  for (const variant of ["postboot-request", "postboot-acceptance", "missing-canonical-start"]) {
+    const f = await localRetirementFixture(t);
+    f.taskRuns.remove(f.run);
+    const saved = structuredClone(f.saved);
+    // Display/history age alone is not evidence that this local execution predates boot.
+    saved.startedAt = "2013-10-13T00:00:00.000Z";
+    if (variant === "postboot-request") saved.providerStart.requestedAt = "2021-01-01T00:00:01.000Z";
+    if (variant !== "missing-canonical-start") saved.providerStart.acceptedAt = "2021-01-01T00:00:02.000Z";
+    else delete saved.providerStart.requestedAt;
+    const run = restorePersistedTaskRun(saved, 7, f.store);
+    f.taskRuns.addRestored(run, saved);
+    assert.equal(await f.service.retireLocalExecutionAfterReboot(run), false, variant);
+    assert.equal(f.taskRuns.forTask(run), run, variant);
+    assert.equal(run.localAdmissionReleased, false, variant);
     assert.deepEqual(f.wakes, [], variant);
   }
 });

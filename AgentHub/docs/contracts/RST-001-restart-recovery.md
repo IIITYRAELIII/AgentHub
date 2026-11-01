@@ -106,7 +106,9 @@ original restored from the canonical runtime snapshot, with unchanged run/comman
 Thread/turn and consistent admission/request/acceptance provenance before that
 boot, is eligible. Legacy providerStart without process birth is not repaired
 from a TaskGit guard, numeric PID, time proximity or Thread projection: missing
-canonical provenance refuses retirement. The existing Win32 boot identity owner
+canonical provenance refuses retirement. Canonical requested/accepted-start times
+must precede boot independently of display/history `startedAt`; an old display
+date cannot retire postboot ownership. The existing Win32 boot identity owner
 supplies the boot witness; current PID reuse supplies no authority.
 The existing lifecycle store persists exact local retirement before admission is
 released. No provider terminal, command settlement, history rewrite or provider
