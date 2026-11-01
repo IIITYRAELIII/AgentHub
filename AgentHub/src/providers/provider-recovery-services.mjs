@@ -67,6 +67,7 @@ export class CodexRecoveryService {
 
   async recover(run, { observerSnapshot = null, reconcileOnly = false } = {}) {
     const d = this.#d;
+    if (await d.retireLocalExecutionAfterReboot?.(run)) return;
     run.activityUnknown = true;
     const initialAction = resolveTaskRecoveryAction({
       run,

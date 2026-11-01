@@ -18,8 +18,8 @@ accepted/observed provider-start for that exact turn. A fresh idle Thread is
 required before entering the existing cancellation owner outside the Thread
 read lane. That owner still requires uncached provider/native inactivity,
 definite rejection of the original exact interrupt, an exact snapshot, a second
-fresh inactivity check and unchanged registry ownership. Only canonical durable
-interrupted terminal settlement releases admission and wakes queued originals.
+fresh inactivity check and unchanged registry ownership. This provider-settlement
+path releases admission only after canonical durable interrupted terminal settlement.
 
 Use the existing managed observation cadence, not a new timer, provider prompt,
 reconnect loop or state owner. Concurrent recovery shares one attempt. A settled
@@ -32,7 +32,7 @@ never releases the original or authorizes another interrupt. A later exact
 terminal is consumed by the existing observer/finalizer and remains absorbing.
 
 Any live provider turn in the Thread, including a newer turn owned by another
-client, or unavailable native evidence blocks automatic recovery. Retained
+client, or unavailable native evidence blocks automatic provider settlement. Retained
 `inProgress` without exact acceptance/Hub ownership is not eligible. No elapsed
 deadline, network error, empty response, service-event text or missing activity
 establishes a terminal. No old prompt, release operation or user input is replayed.
@@ -68,7 +68,47 @@ permanent cancellation failure. Existing traces distinguish the retained
 original's later queued/blocked state from dispatch. The existing cancel owner
 remains authoritative; do not replay the refused command or bypass its fence.
 
-## Mailbox and operational boundary
+## Explicit post-reboot local-execution disposition
+
+RM decision arch-392-approve-canonical-local-retirement-preserving-providerunknown-20261101-v1
+authorizes a narrow change to the former terminal-only LOCAL admission invariant.
+Real reboot proves loss of the old local runtime, but does not prove provider
+completion; a new desktop writer may legitimately be active in the same Thread.
+Calling markCompleted or deleting a registry row would conflate those facts.
+
+Use ManagedRunLifecycleService and its existing ProviderRunTerminalStore/mutation
+owner. The latter stores an exact administrative local-retirement record, not a
+provider terminal, final payload, outbox, second ledger service or reconciler.
+Before any provider/history read, ordinary Codex recovery asks that lifecycle owner.
+It requires an original restored from the canonical persisted runtime snapshot,
+positive explicit normalized Hub ownership, exact canonical accepted providerStart,
+matching command/run/Stream/Thread/turn and consistent captured admission/request/
+acceptance timestamps before the existing trusted Win32 boot witness. Restoration
+must be after that boot and every identity/current registry check repeats after
+the asynchronous proof and disposition commit. A fresh locally created run has
+no restored provenance. Legacy records missing the exact captured fields refuse;
+no TaskGit guard, timeout, PID absence/reuse or external Thread activity repairs them.
+
+Persist that disposition first. Then release only the old admission index while
+keeping exact run/turn lookup and providerStart/providerUNKNOWN/raw history/
+accepted inputs and annotations/attachments. Runtime snapshots retain these old
+originals independently of active execution listing. Reopen reads the exact
+lifecycle record before deciding whether that saved run owns admission; a lost
+post-disposition snapshot write cannot revive it. An identity conflict fails
+closed. No fake completion, command cancellation, Stop/interrupt or after-turn
+maintenance occurs. A late real provider event still resolves its exact old run.
+
+Concurrent attempts share one original; durable record replay is idempotent.
+Same boot, missing/ambiguous provenance, foreign or changed identity, replacement
+registry and failed write retain the fence. Successful release wakes the existing
+queue owner, whose ordinary fresh external/current checks still block new
+start/steer while a newer desktop writer is active or unknown. The existing
+best-effort command tracer records bounded proof and persistence stages without
+content, including failed writes and worker reopen. This is not a RAM/speed claim
+or proof that the production ghost, queued message or old lifecycle operation
+has been settled; actual delivery and original recovery remain RM-owned.
+
+## Mailbox and operational boundary (unchanged)
 
 Authenticated snapshot/history reads and the existing deferred-input cancel
 action remain the supported operator path. Read/cancel is not provider Stop,

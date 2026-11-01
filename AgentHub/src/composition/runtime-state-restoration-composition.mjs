@@ -4,7 +4,8 @@ import {
   restoreForwardBundle,
 } from "../interfaces/telegram/telegram-forward-bundle.mjs";
 import { restoreDeferredInput } from "../domain/deferred-input.mjs";
-import { serializableTaskRun } from "../domain/task-runs.mjs";
+import { serializableTaskRun, localExecutionIdentity } from "../domain/task-runs.mjs";
+import { ProviderRunTerminalStore } from "../infrastructure/persistence/provider-run-terminal-store.mjs";
 import {
   normalizeTaskExecutionOwner,
   TASK_EXECUTION_OWNERS,
@@ -17,7 +18,7 @@ import {
   restoreHubRuntimeSnapshot,
 } from "../application/hub-runtime-state-coordinator.mjs";
 
-function restorePersistedTaskRun(savedRun, restoredChatId) {
+export function restorePersistedTaskRun(savedRun, restoredChatId, lifecycleStore = null) {
   if (!savedRun || typeof savedRun !== "object"
     || !["running", "finishing"].includes(savedRun.status)) return null;
   const observer = savedRun.observer === true;
@@ -27,7 +28,7 @@ function restorePersistedTaskRun(savedRun, restoredChatId) {
         ? TASK_EXECUTION_OWNERS.EXTERNAL
         : TASK_EXECUTION_OWNERS.HUB
       : null);
-  return {
+  const run = {
     ...savedRun,
     observer,
     executionOwner,
@@ -60,7 +61,15 @@ function restorePersistedTaskRun(savedRun, restoredChatId) {
     progressUpdateInFlight: false,
     progressUpdatePending: false,
     process: null,
+    localAdmissionReleased: false,
   };
+  const identity = localExecutionIdentity(savedRun);
+  const retirement = identity && lifecycleStore?.getLocalExecutionRetirement(identity);
+  if (retirement) {
+    run.localExecutionRetirement = retirement;
+    run.localAdmissionReleased = true;
+  }
+  return run;
 }
 
 export async function createRuntimeStateRestorationComposition({
@@ -74,6 +83,7 @@ export async function createRuntimeStateRestorationComposition({
 }) {
   const removeRuntimeFile = createRuntimeFileRemoval(config);
   const deferredInputTtlMs = config.deferredInputTtlHours * 60 * 60 * 1000;
+  const lifecycleStore = new ProviderRunTerminalStore({ dataDir: config.dataDir });
   const runtimeStateCoordinator = new HubRuntimeStateCoordinator({
     store: runtimeStateStore,
     canonicalize: (value) => canonicalizeProjectRoots(value, projects),
@@ -90,7 +100,7 @@ export async function createRuntimeStateRestorationComposition({
       removeFiles: (files) => Promise.all(files.map((file) => removeRuntimeFile(file))),
       deferredInputTtlMs,
       maximumDeferredInputs,
-      restoreTaskRun: restorePersistedTaskRun,
+      restoreTaskRun: (saved, chatId) => restorePersistedTaskRun(saved, chatId, lifecycleStore),
     }),
     createSnapshot: () => createHubRuntimeSnapshot({
       ...snapshotContext,

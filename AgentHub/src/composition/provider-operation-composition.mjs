@@ -192,6 +192,7 @@ export function createProviderOperationComposition({
   });
   const codexRecoveryService = new CodexRecoveryService({
     commandTrace,
+    retireLocalExecutionAfterReboot: (run) => managedRunLifecycle.retireLocalExecutionAfterReboot(run),
     transportRunning: codexTransportRunning,
     readTaskSnapshot: readCodexTaskSnapshot,
     recoverInactiveRun: (run) => providerCancellationService.recoverCodex(run),
