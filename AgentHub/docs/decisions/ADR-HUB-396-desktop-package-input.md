@@ -18,8 +18,13 @@ caller keys. The existing package owner remains responsible for the exact five
 business fields and rejects every unknown field, including explicitly supplied
 response-budget or tracing fields. Other actions retain their response policies.
 
-Authentication and local privilege run before dispatch. Existing durable command
-fingerprints, same-command replay and package-original binding are unchanged.
+Authentication and local privilege run before dispatch. The existing durable
+package-command fingerprint includes all supplied caller fields, including
+forbidden tracing keys: a changed request cannot return a prior cached success
+before strict owner validation. The ordinary tracing-field exemption remains
+unchanged for every other action. Valid unchanged five-key fingerprints,
+same-command replay and package-original binding retain their existing meaning;
+old fingerprints, rows and UNKNOWN outcomes are never rewritten.
 Package verification/preparation, active work, stopping, persistence and actual
 backup/replacement/readiness remain under their existing owners. No new API,
 allowlist, receipt, retry, timeout or lifecycle authority is introduced.

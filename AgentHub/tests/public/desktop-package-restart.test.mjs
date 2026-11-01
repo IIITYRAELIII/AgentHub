@@ -9,6 +9,7 @@ import { packageBindingDigest } from "../../src/infrastructure/filesystem/runtim
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { callDesktopControl, DesktopControlServer, desktopControlSecretFile } from "../../src/infrastructure/process/desktop-control.mjs";
 import { createDesktopApplicationRouter } from "../../src/interfaces/desktop/desktop-application-router.mjs";
+import { createDesktopControlRouter } from "../../src/interfaces/desktop/desktop-control-router.mjs";
 
 async function fixture(t, { preparationError = null, stopping = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-package-control-"));
@@ -146,4 +147,42 @@ test("package local privilege and ordinary response budgets keep their existing 
     context: { source: "telegram-mini-app" } });
   assert.equal(mini.params.maxResponseBytes, 850_000);
   assert.equal(mini.params.compactSnapshot, true);
+});
+
+for (const [key, value] of [["clientTiming", {}], ["clientTraceId", "forbidden-trace"]]) {
+  test(`same-command package replay rejects an added ${key} before cached success`, async t => {
+    const f = await fixture(t);
+    const accepted = await f.send();
+    const original = f.store.getReadonly(f.input.operationId);
+    const receiptFile = path.join(f.root, "desktop-receipts.json");
+    const receipt = JSON.parse(await readFile(receiptFile, "utf8")).records
+      .find(row => row.id === f.input.operationId);
+    await assert.rejects(f.send({ ...f.input, [key]: value }), /fingerprint conflict|Package restart requires/u);
+    assert.deepEqual(f.store.getReadonly(f.input.operationId), original);
+    assert.deepEqual(f.received, [f.input]);
+    assert.equal(f.schedules(), 0);
+    assert.deepEqual(JSON.parse(await readFile(receiptFile, "utf8")).records
+      .find(row => row.id === f.input.operationId), receipt);
+    assert.deepEqual(await f.send(), accepted);
+    assert.deepEqual(f.store.getReadonly(f.input.operationId), original);
+    assert.equal(f.received.length, 1);
+  });
+}
+
+test("ordinary mutation keeps trace-only replay independent from business input", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-ordinary-trace-replay-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let effects = 0;
+  const router = createDesktopControlRouter({
+    handlers: { mutate: async () => ({ effect: ++effects }) }, mutationActions: ["mutate"],
+    receiptFile: path.join(root, "receipts.json"),
+  });
+  const request = { action: "mutate", params: { value: 7 },
+    context: { source: "desktop-control", commandId: "ordinary-original" } };
+  const original = await router.handleDesktopControl(request);
+  assert.deepEqual(await router.handleDesktopControl({ ...request,
+    params: { value: 7, clientTiming: {}, clientTraceId: "new-observation" } }), original);
+  assert.equal(effects, 1);
+  await assert.rejects(router.handleDesktopControl({ ...request, params: { value: 8 } }), /fingerprint conflict/u);
+  assert.equal(effects, 1);
 });

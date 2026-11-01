@@ -462,6 +462,8 @@ caller-supplied extra fields either: the same strict package-input owner rejects
 every unknown key. Authentication, local privilege, command fingerprint/replay,
 package preparation, persistence-before-scheduling and active-work/stopping
 fences retain their existing owners. Other actions keep their response policies.
+The package command fingerprint includes every supplied field; the ordinary
+tracing-field exemption cannot turn a changed package request into cached success.
 A historical failed or UNKNOWN receipt is not retried or rewritten by this
 correction; retained originals still require supported canonical disposition.
 See ADR-HUB-396-desktop-package-input.

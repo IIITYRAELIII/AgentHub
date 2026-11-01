@@ -210,7 +210,7 @@ export function createDesktopControlRouter({
             id: commandId,
             fingerprint: commandFingerprint({
               action,
-              params: durableFingerprintParams(resolvedParams),
+              params: action === "restart-package" ? resolvedParams : durableFingerprintParams(resolvedParams),
               source: context?.source ?? "",
               userId: context?.userId ?? "",
             }),
