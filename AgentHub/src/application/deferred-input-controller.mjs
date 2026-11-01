@@ -4,6 +4,7 @@ import {
   streamMessageDelivery as streamMessage,
 } from "../domain/deferred-input.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
+import { normalizeTaskExecutionOwner, TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
 
 export function isRetryableDeferredLaunchError(error) {
   const code = String(error?.code ?? "").trim().toUpperCase();
@@ -890,6 +891,23 @@ export class DeferredInputController {
     const current = await this.occupancy(item);
     if (intentionallyPaused(item)) return true;
     if (current?.occupied) {
+      if (normalizeTaskExecutionOwner(current.run?.executionOwner) === TASK_EXECUTION_OWNERS.HUB) {
+        // Old releases also used the external-writer pause for Hub's own run.
+        // Reclassify only this observed automatic pause; manual pause wins.
+        const previous = Object.getOwnPropertyDescriptors(item);
+        delete item.paused;
+        item.waitReason = current.waitReason;
+        try { await this.persist(); }
+        catch (error) {
+          restoreWaitState(item, previous);
+          this.schedule(item, this.retryDelay(Number(item.blockedChecks ?? 0) + 1));
+          throw error;
+        }
+        this.onStateChange(item, "queued");
+        item.blockedChecks = Number(item.blockedChecks ?? 0) + 1;
+        this.schedule(item, this.retryDelay(item.blockedChecks));
+        return true;
+      }
       await this.pauseForActiveWriter(item, {
         waitReason: current.waitReason ?? "provider-thread-active",
       });

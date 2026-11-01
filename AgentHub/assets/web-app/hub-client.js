@@ -4806,16 +4806,6 @@ agentHub.on("queue:steer", ({ id, taskId: taskIdValue }) => runAction(() => runQ
     throw error;
   }
 })));
-agentHub.on("queue:new", ({ id, taskId: taskIdValue }) => runAction(() => runQueueAction(
-  id,
-  taskIdValue,
-  async () => {
-    const result = await control("deferred-input", { id, action: "new" });
-    if (result?.snapshot) applySnapshot(result.snapshot);
-    agentHub.toast(result?.message ?? "Сообщение отправлено в новую задачу");
-    return result;
-  },
-)));
 async function composerAttachmentFromQueue(attachment) {
   const { blob, name, type } = await attachmentBlob(attachment);
   return {

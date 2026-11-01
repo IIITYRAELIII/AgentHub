@@ -534,6 +534,28 @@ test("DeferredInputController self-heals stale provider-thread-active state", as
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["queued", "dispatching", "started"]);
 });
 
+test("managed reclassification rolls back its exact automatic wait on failed persistence", async () => {
+  const state = fixture({ occupancy: async () => ({ occupied: true, run: { id: "managed", executionOwner: "hub" }, waitReason: "task-running" }),
+    persist: async () => { throw Error("disk full"); } });
+  const item = { id: "owned", paused: true, waitReason: "provider-thread-active", attempts: 0 };
+  state.queuedInputs.set(item.id, item);
+  await assert.rejects(state.controller.process(item.id), /disk full/u);
+  assert.deepEqual(item, { id: "owned", paused: true, waitReason: "provider-thread-active", attempts: 0 });
+  assert.deepEqual(state.transitions, []);
+});
+
+test("manual pause arriving during managed occupancy read is never reclassified", async () => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const state = fixture({ occupancy: async () => { await held; return { occupied: true, run: { id: "managed", executionOwner: "hub" }, waitReason: "task-running" }; } });
+  const item = { id: "owned", paused: true, waitReason: "provider-thread-active" };
+  state.queuedInputs.set(item.id, item);
+  const processing = state.controller.process(item.id);
+  item.manualPaused = true; release(); await processing;
+  assert.equal(item.manualPaused, true); assert.equal(item.paused, true);
+  assert.equal(item.waitReason, "provider-thread-active"); assert.deepEqual(state.transitions, []);
+});
+
 test("DeferredInputController restores active-writer pause when durable save fails", async () => {
   const state = fixture({ persist: async () => { throw new Error("disk full"); } });
   const item = {

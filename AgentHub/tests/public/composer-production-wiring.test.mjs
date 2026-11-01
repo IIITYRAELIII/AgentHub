@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DeferredInputController } from "../../src/application/deferred-input-controller.mjs";
 import { deferredPendingInputSnapshot } from "../../src/interfaces/desktop/desktop-snapshot.mjs";
+import { DesktopDeferredInputService } from "../../src/interfaces/desktop/desktop-deferred-input-service.mjs";
 import {
   task,
   snapshot,
@@ -273,6 +274,77 @@ for (const { now, expectedTime } of [
     }
   });
 }
+
+test("manual managed-queue pause requires explicit resume without automatic delivery promise", { timeout: 60_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    for (const width of [1366, 390]) {
+      const current = snapshot(); current.tasks[0].running = true;
+      const item = { id: "manual-wait", provider: "codex", threadId: "thread-a", streamId: "stream-a",
+        clientUserMessageId: "manual-original", waitReason: "task-running", input: "saved message" };
+      const noop = async () => {};
+      const deps = Object.fromEntries(["saveState", "updateReceipt", "cleanupFiles", "updateMessage", "scheduleNext",
+        "scheduleQueued", "selectTask", "clientContext", "startTurn", "startDeferred", "runForTask", "describeAttachments",
+        "selectedTask", "dispatchCommand", "activeTitle", "snapshot"].map(key => [key, noop]));
+      deps.composerTransfers = { remember: noop, has: () => false, forget: noop, ready: noop };
+      deps.pendingInputs = new Map(); deps.queuedInputs = new Map([[item.id, item]]); deps.cancelSchedule = () => true;
+      assert.equal((await new DesktopDeferredInputService(deps).handle({ id: item.id, action: "pause" })).accepted, true);
+      assert.equal(item.manualPaused, true); assert.equal(item.paused, true);
+      current.deferredInputs = [{ ...item, state: item.paused ? "paused" : "queued", text: "Saved message",
+        annotations: Array.from({ length: 6 }, (_, i) => ({ text: `Quote ${i+1}`, annotation: `Comment ${i+1}` })) }];
+      const page = await browser.newPage({ viewport: { width, height: 850 } });
+      const diagnostics = await openFixture(page, { fixtureSnapshot: current });
+      if (width === 390) await page.locator("[data-mobile-button='chat']").click();
+      const row = page.locator(".queue-item[data-queue-id='manual-wait']"); await row.waitFor({ state: "visible" });
+      assert.match(await page.title(), /Agent Hub/u); assert.match(page.url(), /agent-hub\.test/u);
+      assert.match(await row.innerText(), /Сообщение на паузе/u);
+      assert.doesNotMatch(await row.innerText(), /будет отправлено автоматически/u);
+      assert.equal(await row.locator(".queue-annotation").count(), 6);
+      assert.equal(await row.locator("[data-action='queue-new']").count(), 0);
+      if (process.env.AGENT_HUB_QUEUE_SCREENSHOT) await page.screenshot({ path: `${process.env.AGENT_HUB_QUEUE_SCREENSHOT}-paused-${width}.png` });
+      await row.locator("[data-action='queue-resume']").click();
+      assert.equal((await bridgeCalls(page, "deferred-input")).filter(c => c.params?.action === "resume").length, 1);
+      assert.deepEqual(diagnostics, []); await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
+test("managed queue shows ordinary waiting and removes new-task escape with six annotations", { timeout: 60_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    for (const width of [1366, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 850 } });
+      const current = snapshot();
+      current.tasks[0].running = true;
+      current.deferredInputs = [{ id: "owned-wait", provider: "codex", threadId: "thread-a", streamId: "stream-a",
+        clientUserMessageId: "owned-original", state: "queued", conflictKind: "task-running", waitReason: "task-running",
+        text: "Six saved comments", annotations: Array.from({ length: 6 }, (_, i) => ({ text: `Quote ${i+1}`, annotation: `Comment ${i+1}` })) }];
+      const errors = await openFixture(page, { fixtureSnapshot: current });
+      if (width === 390) await page.locator("[data-mobile-button='chat']").click();
+      const row = page.locator(".queue-item[data-queue-id='owned-wait']");
+      await row.waitFor({ state: "visible" });
+      assert.match(await row.innerText(), /Ожидает завершения текущего хода/u);
+      assert.doesNotMatch(await row.innerText(), /другим Codex|Автоповторы остановлены/u);
+      assert.equal(await row.locator(".queue-annotation").count(), 6);
+      assert.equal(await row.locator("[data-action='queue-new']").count(), 0);
+      for (const action of ["queue-edit", "queue-pause", "queue-remove"]) assert.equal(await row.locator(`[data-action='${action}']`).count(), 1);
+      assert.match(page.url(), /agent-hub\.test/u);
+      assert.match(await page.title(), /Agent Hub/u);
+      if (process.env.AGENT_HUB_QUEUE_SCREENSHOT) await page.screenshot({ path: `${process.env.AGENT_HUB_QUEUE_SCREENSHOT}-managed-${width}.png` });
+      current.version = "external-wait";
+      Object.assign(current.deferredInputs[0], { state: "paused", waitReason: "provider-thread-active" });
+      await applyFixtureSnapshot(page, current);
+      assert.equal(await row.locator("[data-action='queue-new']").count(), 0);
+      assert.equal(await row.getByText("В новую задачу", { exact: true }).count(), 0);
+      assert.match(await row.innerText(), /внешним процессом/u);
+      assert.equal(await row.locator(".queue-annotation").count(), 6);
+      if (process.env.AGENT_HUB_QUEUE_SCREENSHOT) await page.screenshot({ path: `${process.env.AGENT_HUB_QUEUE_SCREENSHOT}-external-${width}.png` });
+      await row.locator("[data-action='queue-resume']").click();
+      assert.equal((await bridgeCalls(page, "deferred-input")).filter(c => c.params?.action === "resume").length, 1);
+      assert.deepEqual(errors, []); await page.close();
+    }
+  } finally { await browser.close(); }
+});
 
 test("production queue corrects stale idle placement and survives receipt eviction", {
   timeout: 90_000,

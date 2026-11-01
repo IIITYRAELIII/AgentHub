@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { TaskRunRegistry, markProviderTurnAccepted } from "../../src/domain/task-runs.mjs";
+import { TaskRunRegistry, markProviderTurnAccepted, createObservedTaskRun } from "../../src/domain/task-runs.mjs";
 import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
 import { DeferredInputService } from "../../src/application/deferred-input-service.mjs";
 import { DeferredInputStore } from "../../src/application/deferred-input-store.mjs";
@@ -59,7 +59,7 @@ async function fixture(t, { desktopWiring = false } = {}) {
     }
     throw new Error(`Unexpected fixture operation ${action}`);
   } };
-  const coordinatorPorts = { taskRuns, providers, externalActivity: async () => ({ state: "inactive" }),
+  const coordinatorPorts = { taskRuns, providers, externalActivity: async () => state.external ?? ({ state: "inactive" }),
     repositoryConflict: async () => null, deferInput: (...args) => intake.defer(...args),
     isMaintenanceActive: () => state.barrier || state.providerCompaction,
     isManagedMaintenanceActive: () => state.barrier,
@@ -118,10 +118,10 @@ async function fixture(t, { desktopWiring = false } = {}) {
     describeAttachments, receipts, persistReceipts: save, runCoordinator: coordinator, durableIntake: true });
   const active = (name = "A", threadId = state.threadId) => taskRuns.add({ ...target, threadId,
     id: name, turnId: `turn-${name}`, status: "running", executionOwner: "hub" });
-  const submit = async ({ mcp = false, attachments = [], followUpMode = "steer", clientId = "logical-original" } = {}) => {
+  const submit = async ({ mcp = false, attachments = [], responseAnnotations = [], followUpMode = "steer", clientId = "logical-original" } = {}) => {
     const id = mcp ? "mcp:fixture-request" : clientId;
     if (mcp) target.messageOrigin = { kind: "interstream", workspaceId: "workspace", workspaceName: "Fixture", streamId: "source-stream", streamName: "Source", provider: "codex", sourceThreadId: "source-thread", requestId: "fixture-request" };
-    const result = await desktop.sendMessage({ text: "fixture body", clientUserMessageId: id, followUpMode, attachments },
+    const result = await desktop.sendMessage({ text: "fixture body", clientUserMessageId: id, followUpMode, attachments, responseAnnotations },
       mcp ? { source: "mcp", bindInterstreamAuditContent: noop } : null);
     return { result, item: deferred.get(result.id), id };
   };
@@ -142,6 +142,68 @@ async function fixture(t, { desktopWiring = false } = {}) {
     },
   };
 }
+
+for (const legacy of [false, true]) test(`owned queue waits for managed terminal without a writer pause: legacy=${legacy}`, async (t) => {
+  const f = await fixture(t); const run = f.active();
+  const file = path.join(f.directory, "owned-attachment.bin"); await writeFile(file, Buffer.from([3, 8, 4]));
+  const annotations = Array.from({ length: 6 }, (_, i) => ({ text: `Quote ${i+1}`, annotation: `Comment ${i+1}` }));
+  const { item, id } = await f.submit({ followUpMode: "queue", attachments: [file], responseAnnotations: annotations });
+  if (legacy) { item.paused = true; item.waitReason = "provider-thread-active"; await f.save(); }
+  await f.process(item);
+  assert.equal(item.waitReason, "task-running");
+  assert.notEqual(item.paused, true);
+  assert.equal(f.effects.length, 0); assert.equal(item.attempts ?? 0, 0);
+  await f.reopen();
+  const restored = f.deferred.get(item.id);
+  assert.equal(restored.waitReason, "task-running"); assert.notEqual(restored.paused, true);
+  f.taskRuns.remove(run); f.wake();
+  await f.fireTimer();
+  await Promise.all([f.process(restored), f.process(restored)]);
+  assert.equal(f.effects.length, 1); assert.equal(f.effects[0].operation, "start");
+  assert.equal(f.effects[0].id, id); assert.equal(f.deferred.size, 0);
+  assert.deepEqual(f.effects[0].input, item.input);
+  assert.deepEqual(f.receipts.get({ clientUserMessageId: id }).result.responseAnnotations, annotations);
+  assert.deepEqual(f.receipts.get({ clientUserMessageId: id }).result.attachments.map(a => a.id), ["owned-attachment.bin"]);
+});
+
+for (const owner of ["external", "desktop", undefined, "unrecognized", "hub", "telegram"]) {
+  for (const activityUnknown of [false, true]) test(`registered observer preserves exact owner across queue reopen: ${owner}/${activityUnknown}`, async (t) => {
+    const f = await fixture(t);
+    const run = createObservedTaskRun({ ...f.target, id: "observer", turnId: "observed-turn", executionOwner: owner });
+    run.activityUnknown = activityUnknown; f.taskRuns.add(run);
+    const hubOwned = ["hub", "telegram"].includes(owner);
+    const reason = hubOwned ? activityUnknown ? "managed-run-activity-unknown" : "task-running"
+      : activityUnknown || !["external", "desktop"].includes(owner) ? "provider-temporarily-unavailable" : "provider-thread-active";
+    const occupancy = await f.coordinator.deferredOccupancy(f.target);
+    assert.equal(occupancy.waitReason, reason); assert.equal(occupancy.occupied, true);
+    const { item, id } = await f.submit({ followUpMode: "queue" });
+    item.paused = true; item.waitReason = "provider-thread-active"; await f.save();
+    await f.process(item); await f.reopen();
+    const restored = f.deferred.get(item.id);
+    assert.equal(restored.clientUserMessageId, id); assert.equal(restored.waitReason, reason);
+    assert.equal(restored.paused === true, !hubOwned); assert.equal(f.effects.length, 0);
+    if (hubOwned) {
+      f.taskRuns.remove(run); f.wake(); await f.fireTimer();
+      assert.equal(f.effects.length, 1); assert.equal(f.effects[0].id, id);
+    }
+  });
+}
+
+test("managed UNKNOWN, real external writer and manual queue pause retain distinct fences", async (t) => {
+  const f = await fixture(t); const run = f.active();
+  run.activityUnknown = true;
+  const { item } = await f.submit({ followUpMode: "queue" });
+  await f.process(item);
+  assert.equal(item.waitReason, "managed-run-activity-unknown"); assert.equal(f.effects.length, 0);
+  f.taskRuns.remove(run); f.state.external = { state: "active" };
+  await f.process(item);
+  assert.equal(item.waitReason, "provider-thread-active"); assert.equal(item.paused, true);
+  f.state.external = { state: "unknown" }; await f.process(item);
+  assert.equal(item.waitReason, "provider-temporarily-unavailable"); assert.equal(f.effects.length, 0);
+  f.pause(item); f.state.external = { state: "inactive" };
+  await f.process(item); f.wake();
+  assert.equal(item.manualPaused, true); assert.equal(f.effects.length, 0);
+});
 
 for (const scenario of ["same", "new", "idle", "rotated"]) test(`ordinary UI command routes current-or-queue: ${scenario}`, async (t) => {
   const f = await fixture(t); const a = f.active();

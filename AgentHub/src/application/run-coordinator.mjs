@@ -151,13 +151,19 @@ export class RunCoordinator {
     const identity = taskOccupancyIdentity(target);
     const run = this.activeRun(target);
     if (run) {
+      const owner = normalizeTaskExecutionOwner(run.executionOwner);
+      const hubOwned = owner === TASK_EXECUTION_OWNERS.HUB;
+      const uncertain = run.activityUnknown === true || !Object.values(TASK_EXECUTION_OWNERS).includes(owner);
       return {
         key: this.taskLane(run),
         binding: taskOccupancyIdentity(run)?.binding ?? identity?.binding ?? "provisional",
         occupied: true,
-        state: "active",
-        waitReason: "provider-thread-active",
+        state: uncertain ? "unknown" : "active",
+        waitReason: hubOwned
+          ? run.activityUnknown === true ? "managed-run-activity-unknown" : "task-running"
+          : uncertain ? "provider-temporarily-unavailable" : "provider-thread-active",
         run,
+        executionOwner: owner ?? null,
       };
     }
     if (identity?.binding !== "exact") {

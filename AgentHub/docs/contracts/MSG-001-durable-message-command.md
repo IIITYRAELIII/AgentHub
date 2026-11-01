@@ -284,6 +284,20 @@ lane head. Later accepted commands in that exact lane may dispatch in their
 relative FIFO order. Provider-occupancy pauses remain transient lane heads and
 are rechecked until the exact writer clears.
 
+Positive normalized `executionOwner=hub` evidence (including the existing
+legacy owner alias) identifies a Hub-owned run even during observed recovery;
+registration or `observer` alone does not prove ownership. Registered external
+owners keep external wait semantics; missing/unrecognized ownership or unknown
+external activity remains unavailable rather than acquiring managed authority.
+An exact Hub-managed active run reports `task-running`, or
+`managed-run-activity-unknown` when its activity is uncertain, rather than
+claiming an external writer. Ordinary queue input stays runnable waiting for
+that run's canonical terminal. The existing controller reclassifies a legacy
+automatic `provider-thread-active` pause only after observing that managed run,
+persists the same command as queued and retains normal wake/backoff. Explicit
+manual pause, actual external ownership and unknown provider acceptance retain
+their separate fences; an unsuccessful save restores the prior automatic wait.
+
 The queue action `Изменить` is an ownership transfer, not an in-place text
 rewrite. The server first durably reserves the exact non-dispatching item and
 returns its editable text, persistent attachment descriptors, exact Dashboard

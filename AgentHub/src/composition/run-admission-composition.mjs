@@ -402,8 +402,7 @@ export function createRunAdmissionComposition({
       const barrier = runCoordinator.admissionBarrier(target);
       if (barrier) { item.waitReason = barrier; return true; }
       if (occupancy.occupied) {
-        item.waitReason = occupancy.run?.status === "unknown" || occupancy.run?.activityUnknown === true
-          ? "managed-run-activity-unknown" : occupancy.waitReason ?? "provider-temporarily-unavailable";
+        item.waitReason = occupancy.waitReason ?? "provider-temporarily-unavailable";
         return true;
       }
       if (await runConflictPolicy.check(target)) { item.waitReason = "repository-conflict"; return true; }

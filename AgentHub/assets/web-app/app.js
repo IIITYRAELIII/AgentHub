@@ -8529,16 +8529,6 @@ function renderQueueForTask(taskId, container) {
           disabled: movableIndex < 0 || movableIndex >= movable.length - 1,
           text: "↓",
         }));
-        if (entry.waitReason === "provider-thread-active") {
-          actions.push(el("button", {
-            type: "button",
-            class: "queue-new",
-            "data-action": "queue-new",
-            "data-queue-id": entry.id,
-            title: "Создать новую задачу и отправить сообщение туда",
-            text: "В новую задачу",
-          }));
-        }
         actions.push(el("button", {
           type: "button",
           class: "queue-pause",
@@ -8586,10 +8576,15 @@ function renderQueueForTask(taskId, container) {
     const content = el("div", { class: "queue-content" }, [
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
-      task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running")
+      (entry.waitReason === "managed-run-activity-unknown"
+        || task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running"))
         ? el("div", { class: "queue-status", text: "Поток занят исходным ходом: состояние уточняется после потери связи. Доступен Stop; сообщение повторно не отправляется." }) : null,
+      entry.state === "paused" && entry.waitReason === "task-running"
+        ? el("div", { class: "queue-status", text: 'Сообщение на паузе; нажми "Продолжить", чтобы вернуть его в очередь.' }) : null,
+      entry.state === "queued" && entry.waitReason === "task-running" && !task?.activityUnknown
+        ? el("div", { class: "queue-status", text: "Ожидает завершения текущего хода; сообщение сохранено в очереди и будет отправлено автоматически." }) : null,
       entry.waitReason === "provider-thread-active"
-        ? el("div", { class: "queue-status", text: "Thread удерживается другим Codex. Автоповторы остановлены; проверьте снова после закрытия задачи или отправьте сообщение в новую." })
+        ? el("div", { class: "queue-status", text: "Thread занят внешним процессом; сообщение сохранено. Состояние проверяется автоматически." })
         : entry.waitReason === "provider-temporarily-unavailable"
           ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
           : entry.waitReason === "context-maintenance" || entry.conflictKind === "context-maintenance"
@@ -11490,9 +11485,6 @@ async function handleAction(action, trigger) {
       break;
     case "queue-resume":
       emit("queue:resume", { taskId, id: trigger.dataset.queueId });
-      break;
-    case "queue-new":
-      emit("queue:new", { taskId, id: trigger.dataset.queueId });
       break;
     case "queue-retry":
       emit("queue:retry", { taskId, id: trigger.dataset.queueId });

@@ -375,6 +375,17 @@ exact provider acceptance. A new turn requires the exact command identity plus
 history projections reuse the same `clientUserMessageId` and cannot create a
 second card.
 
+Queue status distinguishes the Hub's own current run from an independently
+observed external writer and from uncertain activity. A managed active run is
+ordinary automatic after-turn waiting, never "another Codex" or stopped retry.
+Only a runnable queued item promises automatic after-turn delivery. A manually
+paused card instead states that explicit resume is required, without clearing
+the canonical pause or changing dispatch policy.
+The deferred-message card has no "В новую задачу" action. Edit, reorder,
+pause/resume, explicit steer and cancellation retain their existing applicable
+guards; annotations and attachments remain on the original command. Global
+Task creation and other clients' existing actions are unchanged.
+
 If admission detects that an apparently idle Stream became busy, its canonical
 `task-running` result moves the same logical submission to the queue surface.
 An explicit `accepted=false` queued/deferred receipt overrides the original
