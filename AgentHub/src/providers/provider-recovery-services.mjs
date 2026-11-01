@@ -155,10 +155,13 @@ export class CodexRecoveryService {
     // provider process is gone. This is only eligibility, never terminal proof:
     // cancellation still requires fresh provider/native inactivity, exact
     // interrupt rejection and a second fresh inactivity check.
-    const exactUnknownSnapshot = !turn && terminalSnapshot?.turnId === exactTurnId
-      && terminalSnapshot?.activityUnknown === true
-      && terminalSnapshot.active === false && terminalSnapshot.completed === false;
-    const retainedAcceptedTurn = (turn?.status === "inProgress" || exactUnknownSnapshot)
+    // A dangling rollout active marker is eligibility just like the previous
+    // exact inProgress page; it is not proof of a currently live process.
+    const exactRetainedSnapshot = !turn && terminalSnapshot?.turnId === exactTurnId
+      && terminalSnapshot.completed === false
+      && (terminalSnapshot.active === true || (terminalSnapshot.activityUnknown === true
+        && terminalSnapshot.active === false));
+    const retainedAcceptedTurn = (turn?.status === "inProgress" || exactRetainedSnapshot)
       && normalizeTaskExecutionOwner(run.executionOwner) === TASK_EXECUTION_OWNERS.HUB
       && providerTurnAcceptance(run).accepted;
     if (!exactTerminal && run.observer !== true && exactTurnId
