@@ -3524,9 +3524,12 @@ See ADR-HUB-351-release-metadata-amendment.
 ## Explicit GitHub distribution target
 
 Windows package verification and recipient extraction support declared dependency
-paths beyond legacy MAX_PATH inside their owned scratch directories. Extended
-filesystem names apply to extraction and its cleanup only; archive path safety,
-complete hashes, original checkpoint identity and ownership checks still apply.
+paths beyond legacy MAX_PATH inside their owned scratch directories. Owned asset,
+extraction and preparation-record I/O, including identity checks/locks/cleanup,
+use extended filesystem names. Persisted identity and subprocess paths keep their
+ordinary spelling; archive path safety, complete hashes, original checkpoint
+identity and ownership checks still apply. New preparation records must not break
+a previously working ordinary scratch merely by adding a longer filename.
 
 An original `agent-hub-publication` target with environment `github-release`
 selects the existing runner's distribution profile. Normal installed targets are
@@ -3678,8 +3681,23 @@ The public installer has an explicit `--prepare-update` with exact stable
 delegates to the incoming manifested package entry; it never rebuilds source,
 publishes a release or invents a second updater/operation ledger. Runtime and
 retained scratch roots are disjoint. `--update-status` reads the same maintenance
-original without dispatch or write. Existing/partial retained transport is
-readback-only; no automatic retry can turn UNKNOWN into another effect.
+original without dispatch or write. Historical unbound retained transport and
+every saved request/dispatch intent remain readback-only; no automatic retry can
+turn UNKNOWN into another effect. ADR-HUB-387 permits only an explicit SAME-command
+continuation of new `public-update-preparation-v1` receipts before either fence.
+Physical runtime/scratch/cache identity, original/tag/additional checksum and
+installer digest are immutable. Canonical stable asset URLs/lengths/digests are
+saved before descriptor/ZIP body reads and revalidated on continuation. Failed
+attempt bytes remain unchanged; only a new exclusive child of that original cache
+receives fresh bytes. Completed assets and the whole package must pass existing
+verification. A real read-only canonical-store absence is required, and rechecked
+at dispatch; a read/schema error or existing original is not absence. SAME-cache
+serialization and a flushed exclusive dispatch intent precede the one subprocess
+call. A crash after intent, including before actual spawn, remains readback-only.
+The native admission/CAS remains authoritative; local transport state neither
+creates a maintenance original nor provides an atomic read-to-native-spawn claim.
+An alternate scratch never reconciles an ambiguous original. This corrects
+interrupted preparation, not the unresolved underlying network stall.
 
 The package entry joins canonical stable GitHub metadata to ZIP, descriptor,
 installer and complete runtime manifest/source/version. A capable installed

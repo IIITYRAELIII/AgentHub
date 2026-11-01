@@ -457,6 +457,15 @@ before observing same-Job ActiveProcesses zero. Every backup/install/launch
 boundary obtains a fresh reply from that holding native parent. Unknown,
 foreign or changed evidence refuses without killing or replaying work.
 
+Recipient transport recovery (ADR-HUB-387) is strictly before lifecycle dispatch.
+A new exact physical/original/public-asset-bound preparation may continue only
+on explicit repetition, with fresh authoritative canonical-row absence and no
+saved request/dispatch intent. Partial historical/unbound transport is never
+adopted. An exclusive flushed dispatch fence precedes the native subprocess;
+absent SQL after that fence is UNKNOWN, not permission to spawn again. Preparation
+is not a second restart ledger and does not relax modern lost-response refusal,
+legacy manual stop, original Job proof or any stopped-data/launch boundary.
+
 Backup uses the single `runtime-durable-state-v1` scope policy (ADR-HUB-380):
 config and all top-level regular data files, plus recursive durable outboxes,
 background jobs, failed updates, Claude run state, locks, diff indexes and custody

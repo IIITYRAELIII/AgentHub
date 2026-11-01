@@ -233,6 +233,8 @@
         "src/infrastructure/persistence/runtime-maintenance-backup.mjs",
         "tests/infrastructure/persistence/runtime-maintenance-backup.test.mjs",
         "docs/decisions/ADR-HUB-380-retained-source-backup.md",
+        "docs/decisions/ADR-HUB-387-interrupted-update-preparation.md",
+        "distribution/update_transport_test.py",
         "src/domain/runtime-package-identity.mjs",
         "tests/runtime/runtime-package-handoff.test.mjs",
         "tests/runtime/runtime-host-independent-parent.test.mjs",
