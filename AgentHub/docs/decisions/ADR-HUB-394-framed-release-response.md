@@ -26,6 +26,11 @@ completion. A timeout or incomplete response remains failure, never verified dat
 The same opening scope closes a raised HTTPError's response before rethrowing the
 unchanged error: opener failures occur before the response context can be entered.
 Otherwise a caller retaining that error could retain a persistent peer connection.
+API and asset redirect-policy refusals close their owned response before raising
+the original ValueError. The opener has not returned at that boundary, so the
+outer response context cannot provide that cleanup. Refusal tests keep the same
+exception and original traceback alive through the peer-closure assertion; only
+their finally cleanup may close a failing parent's retained responses afterward.
 
 There is one transport, no automatic retry, TLS policy change, timeout increase,
 new dependency, alternate launcher or receipt. Exact pre-dispatch selection,

@@ -119,7 +119,12 @@ def validate_source_url(url: str, *, redirect=False) -> str:
 
 class AssetRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_source_url(newurl, redirect=True)
+        try:
+            validate_source_url(newurl, redirect=True)
+        except ValueError:
+            if fp is not None:
+                fp.close()
+            raise
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -167,6 +172,8 @@ def download(url: str, target: Path, *, max_bytes=MAX_ARCHIVE_BYTES) -> None:
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if fp is not None:
+            fp.close()
         raise ValueError("Release API redirects refused")
 
 

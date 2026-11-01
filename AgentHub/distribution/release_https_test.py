@@ -133,16 +133,45 @@ class ReleaseHTTPSTests(unittest.TestCase):
         self.assertTrue(all(r["connection"] != "close" for r in self.records))
         self.assert_connections_closed()
 
-    def test_api_and_foreign_asset_redirects_still_refuse_without_followup(self):
-        self.mode = "api-redirect"
-        with self.assertRaisesRegex(ValueError, "redirects refused"):
-            installer.release_metadata("2.1.2")
-        self.mode = "foreign-redirect"
-        with self.assertRaisesRegex(ValueError, "Untrusted release redirect"):
-            installer.download(self.asset, self.root/"foreign")
-        self.assertEqual([r["host"] for r in self.records], ["api.github.com", "github.com"])
-        self.assertFalse((self.root/"foreign").exists())
-        self.assert_connections_closed()
+    def retained_redirect_refusal(self, mode, message, call):
+        self.mode = mode
+        retained_error = retained_traceback = None
+        try:
+            try:
+                call()
+            except ValueError as error:
+                # assertRaises clears traceback frames before a later assertion.
+                # Keep the original error AND traceback through the peer check.
+                retained_error, retained_traceback = error, error.__traceback__
+            self.assertIsNotNone(retained_error, "redirect must refuse")
+            self.assertIsNotNone(retained_traceback)
+            self.assertIs(retained_error.__traceback__, retained_traceback)
+            self.assertEqual(str(retained_error), message)
+            self.assertEqual(len(self.records), 1, "no followup or retry")
+            self.assertFalse((self.root/"foreign").exists())
+            self.assert_connections_closed()
+        finally:
+            # Close the exact held responses only AFTER the assertion. A failing
+            # parent's peer must still join, without clearing/replacing traceback.
+            frame = retained_traceback
+            responses = {}
+            while frame is not None:
+                for value in list(frame.tb_frame.f_locals.values()):
+                    if isinstance(value, http.client.HTTPResponse):
+                        responses[id(value)] = value
+                frame = frame.tb_next
+            for response in responses.values():
+                response.close()
+
+    def test_api_redirect_closes_with_original_refusal_traceback_retained(self):
+        self.retained_redirect_refusal("api-redirect", "Release API redirects refused",
+                                       lambda: installer.release_metadata("2.1.2"))
+        self.assertEqual(self.records[0]["host"], "api.github.com")
+
+    def test_foreign_asset_redirect_closes_with_original_refusal_traceback_retained(self):
+        self.retained_redirect_refusal("foreign-redirect", "Untrusted release redirect",
+                                       lambda: installer.download(self.asset, self.root/"foreign"))
+        self.assertEqual(self.records[0]["host"], "github.com")
 
     def test_unconditional_truncation_is_failure_and_never_retried(self):
         self.mode = "truncated"
