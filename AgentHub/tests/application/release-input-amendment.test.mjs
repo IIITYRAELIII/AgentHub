@@ -19,7 +19,7 @@ async function fixture(t, phase) {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-input-amendment-"));
   const store = new ReleaseOperationStore({ dataDir: root, idFactory: () => "original" });
   const scheduled = [], composed = [], publications = [];
-  let release, entered;
+  let release, entered, active;
   const gate = new Promise(resolve => { release = resolve; });
   const blocked = new Promise(resolve => { entered = resolve; });
   let selected = taskIds.map(taskId => ({ taskId, resultCommit: `${taskId}-r1`, acceptanceRevision: 1 }));
@@ -67,7 +67,8 @@ async function fixture(t, phase) {
     },
     finalize: async () => ({ closed: selected.map(item => item.taskId) }),
   });
-  t.after(async () => { release(); while (scheduled.length) await scheduled.shift()(); await service.drain("original");
+  t.after(async () => { release(); if (active) await active; while (scheduled.length) await scheduled.shift()();
+    if (store.get("original")) await service.drain("original");
     await rm(root, { recursive: true, force: true }); });
   service.start({ requestId: "original-request", workspaceId: "workspace", streamId: "stream", threadId: "thread",
     authorization: { taskIds, validationMode: "full", testSelection: { mode: "all", ids: [] },
@@ -77,7 +78,7 @@ async function fixture(t, phase) {
   const amendment = { requestId: "first-exact-five-inputs", expectedRevision: first.operation.revision,
     expectedGeneration: 1, taskIds, testSelection: oldSelection, releaseMetadata: notes("five") };
   assert.equal((await service.continue("original", amendment)).accepted, true);
-  const active = scheduled.shift()();
+  active = scheduled.shift()();
   await blocked;
   return { root, store, service, scheduled, composed, publications, active, release, amendment, first,
     changeResult: () => { selected[0] = { ...selected[0], resultCommit: "corrected-r2", acceptanceRevision: 2 }; },
@@ -165,6 +166,7 @@ test("unresolved in-flight composition remains original evidence and cannot be a
   const f = await fixture(t, "compose-unknown");
   f.service.prepareForTaskAcceptance("task-0");
   f.changeResult(); f.release(); await f.active;
+  while (f.scheduled.length) await f.scheduled.shift()();
   await f.service.drain("original");
   const idle = f.store.snapshot("original");
   assert.equal(idle.operation.state, "waiting");
