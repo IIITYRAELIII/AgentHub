@@ -15,6 +15,7 @@ import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/work
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { TaskGitWorkspaceService, runTaskGitCommand } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { executeRelease } from "../../release.mjs";
+import { nativeMergeBaseFields } from "../../src/infrastructure/filesystem/native-release-merge.mjs";
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -26,14 +27,27 @@ async function commit(root, message) {
   return git(root, "rev-parse", "HEAD");
 }
 
-async function fixture(t) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "published-dev-sync-"));
+async function fixture(t, { multipleBases = false } = {}) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pds-"));
   const primary = path.join(root, "primary"), dataDir = path.join(root, "data");
   await mkdir(primary);
   await git(primary, "init", "-b", "main");
   await git(primary, "config", "core.autocrlf", "false");
   await writeFile(path.join(primary, "shared.txt"), "base\n");
+  await writeFile(path.join(primary, "virtual-base.txt"), "original\n");
   const base = await commit(primary, "base");
+  const common = [];
+  if (multipleBases) {
+    // Five independent results integrated in opposite orders. No intermediate
+    // merge is common: Git must recursively combine all five true merge bases.
+    for (let index = 0; index < 5; index++) {
+      await git(primary, "checkout", "-b", `result-${index}`, base);
+      await writeFile(path.join(primary, `selected-${index}.txt`), `result ${index}\n`);
+      if (index === 0) await writeFile(path.join(primary, "virtual-base.txt"), "common selected value\n");
+      common.push(await commit(primary, `selected result ${index}`));
+    }
+    await git(primary, "checkout", "main");
+  }
   let fault = null, nativeEffects = 0, primaryChecks = 0, deliveries = 0;
   const databaseFile = path.join(root, "hub.sqlite");
   const catalog = new WorkspaceCatalogStore({ databaseFile }); await catalog.load();
@@ -61,13 +75,20 @@ async function fixture(t) {
     } });
   let dev;
   dev = await taskGit.prepareDev(primary);
+  for (const result of common) await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@local.invalid",
+    "merge", "--no-ff", "-m", "ordinary Test integration", result);
+  if (multipleBases) await writeFile(path.join(dev.projectRoot, "virtual-base.txt"), "original\n");
   await writeFile(path.join(dev.projectRoot, "shared.txt"), "later Test\n");
   await writeFile(path.join(dev.projectRoot, "unselected.txt"), "preserve all later work\n");
   const before = await commit(dev.projectRoot, "later independent Test");
   await git(primary, "checkout", "-b", "published");
+  for (const result of [...common].reverse()) await git(primary, "-c", "user.name=Test", "-c", "user.email=test@local.invalid",
+    "merge", "--no-ff", "-m", "accepted result integration", result);
   await writeFile(path.join(primary, "shared.txt"), "published\n");
   await writeFile(path.join(primary, "published.txt"), "exact release\n");
   const published = await commit(primary, "published release");
+  assert.deepEqual((await git(primary, "merge-base", "--all", before, published)).split(/\r?\n/u).sort(),
+    multipleBases ? [...common].sort() : [base]);
   await git(primary, "checkout", "main");
   await git(primary, "update-ref", "refs/remotes/origin/main", published);
   await writeFile(path.join(primary, "private.txt"), "preserved primary bytes\n");
@@ -155,12 +176,12 @@ async function fixture(t) {
     assert.equal(composed, 1); assert.equal(validated, 1); assert.equal(publishedCount, 1);
   };
   t.after(async () => { boardStore.close(); catalog.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
-  return { primary, dev, before, published, publication, operations, hub, catalog, token, ack, request, call, review,
+  return { primary, dev, before, published, common, base, publication, operations, hub, catalog, token, ack, request, call, review,
     unchanged, taskGit, counters: () => ({ nativeEffects, primaryChecks, deliveries }), fault: value => { fault = value; }, callbacks };
 }
 
-test("published original native recovery requires exact RM review, preserves later Test and completes only same finalize", { timeout: 120_000 }, async t => {
-  const f = await fixture(t);
+async function reviewedRecovery(t, options) {
+  const f = await fixture(t, options);
   await assert.rejects(f.call(await f.request(null, { expected_revision: 0 })), /CAS/u);
   await assert.rejects(f.call(await f.request(null, { expected_generation: 2 })), /applied original/u);
   await assert.rejects(f.call(await f.request(null, { test_selection: { mode: "none", ids: [] } })), /exclusive/u);
@@ -171,6 +192,40 @@ test("published original native recovery requires exact RM review, preserves lat
   assert.equal(refused.devSynchronization.code, "RELEASE_NATIVE_MERGE_CONFLICT");
   assert.equal(await git(f.primary, "rev-parse", "dev"), f.before);
   const nativeRoot = refused.devSynchronization.nativeConflictRoot;
+  const automaticTree = (await git(nativeRoot, "merge-tree", "--write-tree", "--name-only", "-z", f.before, f.published)
+    .catch(error => String(error.stdout).trim())).split("\0")[0];
+  const outside = async tree => (await git(nativeRoot, "ls-tree", "-r", tree)).split(/\r?\n/u)
+    .filter(row => !row.endsWith("\tshared.txt"));
+  if (options?.multipleBases) {
+    const forced = (await git(nativeRoot, "merge-tree", "--write-tree", "--name-only", "-z",
+      `--merge-base=${f.common[1]}`, f.before, f.published).catch(error => String(error.stdout).trim())).split("\0")[0];
+    assert.equal(await git(nativeRoot, "show", `${automaticTree}:virtual-base.txt`), "original");
+    assert.equal(await git(nativeRoot, "show", `${forced}:virtual-base.txt`), "common selected value",
+      "one true base loses the later dev reversion, unlike Git's virtual base");
+  }
+  const journalFile = path.join(path.dirname(nativeRoot), "merge.json");
+  const capture = JSON.parse(await readFile(journalFile, "utf8"));
+  if (options?.multipleBases) {
+    assert.deepEqual(capture.identity.mergeBases, [...f.common].sort());
+    assert.equal(Object.hasOwn(capture.identity, "mergeBase"), false);
+    // A changed complete set cannot enter even the private native sequencer.
+    // The real Git result is untouched; only this fixture's observed response
+    // drifts after the owning identity capture.
+    const originalCommand = f.taskGit.runCommand;
+    let baseReads = 0;
+    f.taskGit.runCommand = async (args, commandOptions) => {
+      const value = await originalCommand(args, commandOptions);
+      if (args[0] === "merge-base" && args[1] === "--all" && ++baseReads > 1) return f.common.slice(0, 4).join("\n");
+      return value;
+    };
+    await assert.rejects(f.call(await f.request()), /merge-base set changed/u);
+    f.taskGit.runCommand = originalCommand;
+    assert.equal(await git(f.primary, "rev-parse", "dev"), f.before);
+    assert.deepEqual(JSON.parse(await readFile(journalFile, "utf8")), capture, "base-set refusal preserves original journal");
+  } else {
+    assert.equal(capture.identity.mergeBase, f.base);
+    assert.equal(Object.hasOwn(capture.identity, "mergeBases"), false, "legacy scalar identity is unchanged");
+  }
   await writeFile(path.join(nativeRoot, "shared.txt"), "later Test\npublished\n");
   await commit(nativeRoot, "reviewable complete conflict union");
   const pending = await f.call(await f.request());
@@ -200,8 +255,14 @@ test("published original native recovery requires exact RM review, preserves lat
   const result = await f.call(successfulInput);
   assert.equal(result.devSynchronization.integrated, true);
   const target = result.devSynchronization.headCommit;
+  assert.deepEqual(await outside(target), await outside(automaticTree), "all clean mode/type/blob entries stay automatic");
+  assert.equal(await readFile(path.join(f.dev.projectRoot, "virtual-base.txt"), "utf8"), "original\n");
   assert.equal(await git(f.primary, "show", "-s", "--format=%P", target), `${f.before} ${f.published}`);
   assert.equal(await readFile(path.join(f.dev.projectRoot, "shared.txt"), "utf8"), "later Test\npublished\n");
+  for (let index = 0; index < f.common.length; index++) {
+    assert.equal(await readFile(path.join(f.dev.projectRoot, `selected-${index}.txt`), "utf8"), `result ${index}\n`);
+  }
+  assert.equal(await readFile(path.join(f.dev.projectRoot, "published.txt"), "utf8"), "exact release\n");
   const reflog = await git(f.primary, "reflog", "show", "dev");
   assert.deepEqual(await f.call(successfulInput), result, "completed same outer receipt cannot repeat delivery");
   assert.equal((await f.call(await f.request())).devSynchronization.headCommit, target);
@@ -214,11 +275,16 @@ test("published original native recovery requires exact RM review, preserves lat
   assert.equal(done.operation.state, "done");
   assert.equal(done.receipts.filter(item => item.stepId === "finalize").at(-1).effect.tasks.alreadyFinalized, true);
   assert.equal(f.counters().deliveries, 2);
-});
+}
 
-for (const stage of ["checkout", "update-ref", "symbolic-ref"]) {
-  test(`published native original recovers lost ${stage} reply with one dev CAS`, { timeout: 120_000 }, async t => {
-    const f = await fixture(t);
+test("published original native recovery requires exact RM review, preserves later Test and completes only same finalize",
+  { timeout: 120_000 }, t => reviewedRecovery(t));
+test("published five merge bases require native virtual base, exact RM review and original finalize",
+  { timeout: 120_000 }, t => reviewedRecovery(t, { multipleBases: true }));
+
+for (const [stage, multipleBases] of [["checkout", false], ["update-ref", false], ["symbolic-ref", false], ["update-ref", true]]) {
+  test(`published native original recovers lost ${stage} reply with one dev CAS${multipleBases ? " and five bases" : ""}`, { timeout: 120_000 }, async t => {
+    const f = await fixture(t, { multipleBases });
     const refused = await f.call(await f.request());
     const root = refused.devSynchronization.nativeConflictRoot;
     await writeFile(path.join(root, "shared.txt"), "later Test\npublished\n");
@@ -245,3 +311,12 @@ for (const stage of ["checkout", "update-ref", "symbolic-ref"]) {
     await f.unchanged();
   });
 }
+
+test("native merge-base fields preserve scalar identity and reject ambiguous sets", () => {
+  const a = "a".repeat(40), b = "b".repeat(40);
+  assert.deepEqual(nativeMergeBaseFields(a), { mergeBase: a });
+  assert.deepEqual(nativeMergeBaseFields(`${b}\r\n${a}`), { mergeBases: [a, b] });
+  for (const invalid of ["", "not-a-commit", `${a}\n${a}`, `${a}\n`, `${a}\n${b.slice(1)}`]) {
+    assert.throws(() => nativeMergeBaseFields(invalid), /distinct full Git commit ids/u);
+  }
+});

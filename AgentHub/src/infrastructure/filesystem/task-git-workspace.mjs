@@ -21,7 +21,7 @@ import { readSelectedCheckoutAuthority, verifySelectedCompositionFiles, verifySe
 import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
-import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition } from "./native-release-merge.mjs";
+import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, nativeMergeBaseFields } from "./native-release-merge.mjs";
 import { synchronizePublishedDev } from "./published-dev-sync.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
@@ -2691,14 +2691,14 @@ export class TaskGitWorkspaceService {
     const entry = publicationStateRepositories(publication ?? {}).find(item => samePath(item.root, repoRoot));
     if (!publication?.generation || entry?.revision !== expectedMainCommit) throw new Error("Published sync publication changed");
     const publicationIdentity = JSON.stringify({ generation: publication.generation, entry });
-    const mergeBase = await this.#runOwned(["merge-base", "--all", devCommit, expectedMainCommit], { cwd: repoRoot, lease });
-    exactCommitId(mergeBase, "published sync merge base");
+    const mergeBases = nativeMergeBaseFields(await this.#runOwned(
+      ["merge-base", "--all", devCommit, expectedMainCommit], { cwd: repoRoot, lease }));
     const identity = { policy: "published-main-dev-sync-v1", operationId: publishedSync.operationId,
       workspaceId: publishedSync.workspaceId, generation: publishedSync.generation,
       candidateIdentity: publishedSync.candidateIdentity, tasks: publishedSync.tasks,
       repositoryRoot: repoRoot, devRoot, devBranch: this.devBranch, devDirectory, commonDirectory,
       devCommit, localMainCommit: currentLocalMain, publishedRevision: expectedMainCommit,
-      mergeBase, publicationIdentity };
+      ...mergeBases, publicationIdentity };
     const identityHash = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
     const root = path.join(this.dataDir, "task-native-merges", identityHash.slice(0, 24));
     const readJson = file => readFile(file, "utf8").then(JSON.parse, error => {

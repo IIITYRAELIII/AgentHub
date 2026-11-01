@@ -13,6 +13,33 @@ import { measureTaskOperation } from "../process/task-operation-timing.mjs";
 // publication or ref-promotion authority. The application retains those leases.
 export const NATIVE_RELEASE_POLICY = "main-selected-git-merge-v1";
 
+// Preserve the exact scalar field for historical single-base captures. Git's
+// --all order is not authority; a multiple-base capture binds the complete set.
+export function nativeMergeBaseFields(output) {
+  const bases = String(output).split(/\r?\n/u);
+  if (!bases.length || bases.some(base => !/^[a-f0-9]{40}$/u.test(base))
+      || new Set(bases).size !== bases.length) throw failure("Native merge bases must be distinct full Git commit ids");
+  return bases.length === 1 ? { mergeBase: bases[0] } : { mergeBases: bases.sort() };
+}
+
+async function publishedVirtualReplay({ git, identity, baseCommit, tasks }) {
+  if (!Object.hasOwn(identity, "mergeBases") && !tasks.some(task => Object.hasOwn(task, "mergeBases"))) return false;
+  const task = tasks[0];
+  if (identity.policy !== "published-main-dev-sync-v1" || tasks.length !== 1
+      || identity.devCommit !== baseCommit || task.taskId !== `published:${identity.operationId}`
+      || task.resultCommit !== identity.publishedRevision || Object.hasOwn(identity, "mergeBase")
+      || Object.hasOwn(task, "baseCommit") || !Array.isArray(identity.mergeBases)
+      || identity.mergeBases.length < 2 || !Array.isArray(task.mergeBases)
+      || JSON.stringify(task.mergeBases) !== JSON.stringify(identity.mergeBases)) {
+    throw failure("Published native merge-base binding changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  const actual = nativeMergeBaseFields(await git(["merge-base", "--all", baseCommit, task.resultCommit]));
+  if (JSON.stringify(actual.mergeBases) !== JSON.stringify(identity.mergeBases)) {
+    throw failure("Published native merge-base set changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  return true;
+}
+
 async function maybe(git, args) {
   try { return await git(args); } catch { return null; }
 }
@@ -251,6 +278,7 @@ function contentCompatibilityReview(review) {
 }
 
 async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
+  const virtualReplay = await publishedVirtualReplay({ git, identity, baseCommit, tasks });
   const targetTree = String(await git(["rev-parse", `${head}^{tree}`]));
   const target = new Map(await entries(git, ["ls-tree", "-r", "-z", targetTree]));
   const overrides = new Map();
@@ -264,8 +292,14 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
   const obligations = [];
   for (const [index, task] of tasks.entries()) {
     if (String(await git(["rev-parse", `${task.resultCommit}^{tree}`])) === targetTree) continue;
+    // Replaying against head with a forced individual base invents a different
+    // merge for a published criss-cross history. Its one exact parent pair must
+    // use Git's recursive virtual base, as did the native merge/review verifier.
+    // Ordinary selected Tasks retain their existing agreed-base content check.
+    const replayBefore = virtualReplay ? baseCommit : head;
     const replay = String(await git(["merge-tree", "--write-tree", "--name-only", "-z",
-      `--merge-base=${task.baseCommit || baseCommit}`, head, task.resultCommit], { acceptableExitCodes: [1] })).split("\0");
+      ...(virtualReplay ? [] : [`--merge-base=${task.baseCommit || baseCommit}`]),
+      replayBefore, task.resultCommit], { acceptableExitCodes: [1] })).split("\0");
     const replayTree = replay.shift();
     if (!/^[a-f0-9]{40}$/u.test(replayTree)) throw failure("Selected Task content replay is unavailable");
     const conflicts = new Set();
@@ -274,7 +308,7 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     const missing = [];
     for (const file of new Set([...expected.keys(), ...target.keys()])) {
       if (expected.get(file) === target.get(file) || overrides.has(file)) continue;
-      if (!conflicts.has(file) || await changesCleanConflictContext(git, replayTree, head, file, head, task.resultCommit)) missing.push(file);
+      if (!conflicts.has(file) || await changesCleanConflictContext(git, replayTree, head, file, replayBefore, task.resultCommit)) missing.push(file);
     }
     if (!missing.length) continue;
     const prefixCommit = index === 0 ? baseCommit : merges[index - 1].commit;
@@ -440,6 +474,7 @@ export async function mergeSelectedResults({
     }
   };
   assertCurrentInputs();
+  await publishedVirtualReplay({ git: (args, options) => gitAt(sourceRoot, args, options), identity, baseCommit, tasks });
   const candidates = await nativeReuseCandidates({ root, identity, context: reuse, readLegacyBinding: readLegacyReuseBinding });
   let state = await readJson(stateFile);
   if (state && JSON.stringify(state.identity) !== JSON.stringify(identity)) {

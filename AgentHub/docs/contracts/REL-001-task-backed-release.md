@@ -131,6 +131,18 @@ unretired ignored data still refuses. No other UNKNOWN family is settled.
 
 ## Reviewed published main to dev recovery (ADR-HUB-375)
 
+The same owner supports multiple true merge bases. A new multi-base identity
+binds the complete sorted distinct `mergeBases` set, recomputed from the exact
+before-dev/publication pair. It selects no individual base: native Git computes
+its recursive virtual base for both sequencing and content verification. The
+published-only one-result content replay uses that original parent pair, retaining
+all clean automatic entries and exact reviewed conflict changes. It cannot
+replace ordinary selected-Task agreed-base replay. Historical single-base
+identities keep their scalar `mergeBase`, journal and review hashes unchanged.
+Missing, malformed or changed sets refuse before delivery. Existing publication,
+generation, custody, main/origin, authenticated review, process/lease, dev CAS and
+UNKNOWN readback guards remain. See ADR-HUB-393-published-multiple-bases.
+
 An already-applied original waiting at `finalize` may use the existing RM
 continuation with exclusive `published_dev_sync`, exact operation revision and
 generation CAS, repository and before-dev commit. The existing release owner
