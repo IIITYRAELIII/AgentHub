@@ -11,6 +11,7 @@ import {
   updateObservedResponse,
 } from "../domain/task-runs.mjs";
 import {
+  normalizeTaskExecutionOwner,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
 } from "../domain/task-execution-owner.mjs";
@@ -366,6 +367,12 @@ export class TaskObservationService {
       : `Активность ${providerName} неизвестна: новых событий нет.`;
     this.update(run, { ...snapshot, stage });
     if (run.provider === "codex") {
+      if (run.observer !== true
+        && normalizeTaskExecutionOwner(run.executionOwner) === TASK_EXECUTION_OWNERS.HUB) {
+        // Reuse the existing observation cadence and canonical recovery owner.
+        // Unknown snapshots themselves never release a lane or send a prompt.
+        await this.runCoordinator.recoverProviderRun(run, { reconcileOnly: true });
+      }
       return { retained: true };
     }
     await this.finishProgress(run, stage);
