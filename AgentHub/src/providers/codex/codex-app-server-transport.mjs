@@ -10,6 +10,37 @@ const DEFAULT_MAX_THREAD_RESUME_REQUESTS = 1;
 const DEFAULT_THREAD_RESUME_TIMEOUT_MS = 5_000;
 const DEFAULT_THREAD_TURN_LIMIT = 200;
 const DEFAULT_THREAD_TURN_PAGE_SIZE = 50;
+// Diagnostic identities only: fixed classes and a bounded, non-authoritative
+// window for attributing replies after a timeout. Evicted replies stay unknown.
+const TIMEOUT_DIAGNOSTIC_LIMIT = 64;
+const RPC_DIAGNOSTIC_CLASSES = [
+  "thread/read", "thread/turns/list", "thread/list", "thread/resume",
+  "turn/start", "turn/steer", "turn/interrupt", "other", "unknown",
+];
+
+const RPC_DIAGNOSTIC_METHODS = new Set(RPC_DIAGNOSTIC_CLASSES.slice(0, -2));
+
+function rpcDiagnosticClass(method) {
+  return RPC_DIAGNOSTIC_METHODS.has(method) ? method : "other";
+}
+
+function memoryDiagnostics() {
+  return {
+    byteBasis: "decoded-utf8-json-line-without-delimiter",
+    wireBytes: 0, wireMessages: 0, invalidWireBytes: 0,
+    ignoredResponses: 0, lateResponses: 0, unclassifiedResponses: 0,
+    timeoutIdentityEvictions: 0,
+    fullRead: { active: 0, currentPageWireBytes: 0, peakPageWireBytes: 0,
+      currentUnknownPages: 0, unknownPages: 0, completed: 0, failed: 0, last: null },
+    hydration: { currentWireBytes: 0, peakWireBytes: 0, currentMessages: 0,
+      peakMessages: 0, receivedMessages: 0, replayedMessages: 0, coalescedMessages: 0 },
+    rpc: Object.fromEntries(RPC_DIAGNOSTIC_CLASSES.map((key) => [key, {
+      responses: 0, wireBytes: 0, maxWireBytes: 0, timeouts: 0,
+      queuedTimeouts: 0, lateResponses: 0, last: null, lastTimeout: null,
+    }])),
+  };
+}
+
 const REQUEST_PRIORITIES = Object.freeze(["critical", "interactive", "background"]);
 const CRITICAL_METHODS = new Set([
   "initialize",
@@ -157,6 +188,9 @@ export class CodexAppServerTransport {
     this.messageDrainScheduled = false;
     this.initialization = null;
     this.generation = 0;
+    this.memoryDiagnostics = memoryDiagnostics();
+    this.recentTimeoutDiagnostics = Array(TIMEOUT_DIAGNOSTIC_LIMIT).fill(null);
+    this.timeoutDiagnosticCursor = 0;
   }
 
   get running() {
@@ -179,6 +213,8 @@ export class CodexAppServerTransport {
       ),
       inFlightThreadReads: this.threadReadCache.size,
       activeHydrations: this.threadHydrations.size,
+      // Only small fixed-shape numeric/identity records are copied here.
+      memory: structuredClone(this.memoryDiagnostics),
     };
   }
 
@@ -233,7 +269,11 @@ export class CodexAppServerTransport {
     await this.#handleExit(child, null, "owner-stop", new Error("stopped by Hub owner"));
   }
 
-  request(method, params = {}, { timeoutMs = null, priority = null } = {}) {
+  request(method, params = {}, options = {}) {
+    return this.#request(method, params, options);
+  }
+
+  #request(method, params, { timeoutMs = null, priority = null } = {}, wireObservation = null) {
     if (!this.child) return Promise.reject(new Error("Codex App Server is not running"));
     const id = this.requestSequence++;
     const normalizedPriority = requestPriority(method, priority);
@@ -250,6 +290,7 @@ export class CodexAppServerTransport {
         resolve,
         reject,
         timer: null,
+        wireObservation,
       };
       request.timer = setTimeout(() => this.#expireRequest(request), request.timeoutMs);
       this.requestQueues[normalizedPriority].push(request);
@@ -268,6 +309,17 @@ export class CodexAppServerTransport {
       const index = queue.findIndex((queued) => queued.id === request.id);
       if (index < 0) return;
       queue.splice(index, 1);
+    }
+    const stats = this.memoryDiagnostics.rpc[rpcDiagnosticClass(request.method)];
+    stats[dispatched ? "timeouts" : "queuedTimeouts"] += 1;
+    stats.lastTimeout = { requestId: request.id, generation: request.generation, dispatched };
+    if (dispatched) {
+      const slot = this.timeoutDiagnosticCursor;
+      if (this.recentTimeoutDiagnostics[slot]) this.memoryDiagnostics.timeoutIdentityEvictions += 1;
+      this.recentTimeoutDiagnostics[slot] = {
+        id: request.id, generation: request.generation, rpcClass: rpcDiagnosticClass(request.method),
+      };
+      this.timeoutDiagnosticCursor = (slot + 1) % TIMEOUT_DIAGNOSTIC_LIMIT;
     }
     const error = new Error(`Codex RPC ${request.method} timed out after ${request.timeoutMs} ms`);
     error.deliveryOutcome = dispatched ? "unknown" : "not-sent";
@@ -482,22 +534,26 @@ export class CodexAppServerTransport {
     };
   }
 
-  async listThreadTurns(threadId, {
+  async listThreadTurns(threadId, options = {}) {
+    return this.#listThreadTurns(threadId, options);
+  }
+
+  #listThreadTurns(threadId, {
     cursor = null,
     limit = DEFAULT_THREAD_TURN_PAGE_SIZE,
     sortDirection = "desc",
     itemsView = "full",
     priority = "background",
-  } = {}) {
+  } = {}, wireObservation = null) {
     const threadKey = String(threadId ?? "").trim();
     if (!threadKey) throw new Error("Codex thread id is missing");
-    return this.request("thread/turns/list", {
+    return this.#request("thread/turns/list", {
       threadId: threadKey,
       ...(cursor ? { cursor: String(cursor) } : {}),
       limit: positiveInteger(limit, DEFAULT_THREAD_TURN_PAGE_SIZE),
       sortDirection,
       itemsView,
-    }, { priority });
+    }, { priority }, wireObservation);
   }
 
   async readRecentThreadTurns(threadId, {
@@ -514,30 +570,57 @@ export class CodexAppServerTransport {
     let cursor = null;
     let nextCursor = null;
     let backwardsCursor = null;
-    while (turns.length < maximum) {
-      const page = await this.listThreadTurns(threadId, {
-        cursor,
-        limit: Math.min(size, maximum - turns.length),
-        sortDirection: "desc",
-        itemsView,
-        priority,
-      });
-      for (const turn of Array.isArray(page?.data) ? page.data : []) {
-        const id = String(turn?.id ?? "").trim();
-        if (!id || ids.has(id)) continue;
-        ids.add(id);
-        turns.push(turn);
+    const stats = this.memoryDiagnostics.fullRead;
+    const read = { generation: this.generation, firstRequestId: null, lastRequestId: null, lastRequestGeneration: null,
+      pageWireBytes: 0, pages: 0, unknownPages: 0, outcome: "failed" };
+    stats.active += 1;
+    try {
+      while (turns.length < maximum) {
+        const wire = { bytes: null, requestId: null, generation: null };
+        const page = await this.#listThreadTurns(threadId, {
+          cursor,
+          limit: Math.min(size, maximum - turns.length),
+          sortDirection: "desc",
+          itemsView,
+          priority,
+        }, wire);
+        read.pages += 1;
+        read.firstRequestId ??= wire.requestId;
+        read.lastRequestId = wire.requestId;
+        read.lastRequestGeneration = wire.generation;
+        if (wire.bytes === null) {
+          read.unknownPages += 1;
+          stats.unknownPages += 1;
+          stats.currentUnknownPages += 1;
+        } else {
+          read.pageWireBytes += wire.bytes;
+          stats.currentPageWireBytes += wire.bytes;
+          stats.peakPageWireBytes = Math.max(stats.peakPageWireBytes, stats.currentPageWireBytes);
+        }
+        for (const turn of Array.isArray(page?.data) ? page.data : []) {
+          const id = String(turn?.id ?? "").trim();
+          if (!id || ids.has(id)) continue;
+          ids.add(id);
+          turns.push(turn);
+        }
+        nextCursor = String(page?.nextCursor ?? "").trim() || null;
+        backwardsCursor ||= String(page?.backwardsCursor ?? "").trim() || null;
+        if (!nextCursor || turns.length >= maximum) break;
+        if (cursors.has(nextCursor)) {
+          throw new Error(`Codex thread/turns/list repeated cursor ${nextCursor}`);
+        }
+        cursors.add(nextCursor);
+        cursor = nextCursor;
       }
-      nextCursor = String(page?.nextCursor ?? "").trim() || null;
-      backwardsCursor ||= String(page?.backwardsCursor ?? "").trim() || null;
-      if (!nextCursor || turns.length >= maximum) break;
-      if (cursors.has(nextCursor)) {
-        throw new Error(`Codex thread/turns/list repeated cursor ${nextCursor}`);
-      }
-      cursors.add(nextCursor);
-      cursor = nextCursor;
+      read.outcome = "succeeded";
+      return { turns: turns.reverse(), nextCursor, backwardsCursor };
+    } finally {
+      stats.active -= 1;
+      stats.currentPageWireBytes -= read.pageWireBytes;
+      stats.currentUnknownPages -= read.unknownPages;
+      stats[read.outcome === "succeeded" ? "completed" : "failed"] += 1;
+      stats.last = read;
     }
-    return { turns: turns.reverse(), nextCursor, backwardsCursor };
   }
 
   async #readThreadHydrated(threadId, options) {
@@ -545,7 +628,7 @@ export class CodexAppServerTransport {
     if (this.threadHydrations.has(threadId)) {
       throw new Error(`Codex thread ${threadId} is already being hydrated`);
     }
-    const hydration = { messages: [] };
+    const hydration = { messages: [], wireBytes: 0 };
     this.threadHydrations.set(threadId, hydration);
     try {
       const result = await this.readThread(threadId, readOptions);
@@ -553,7 +636,16 @@ export class CodexAppServerTransport {
       return result;
     } finally {
       if (this.threadHydrations.get(threadId) === hydration) this.threadHydrations.delete(threadId);
-      for (const message of coalesceHydrationMessages(hydration.messages)) this.#dispatchMessage(message);
+      const stats = this.memoryDiagnostics.hydration;
+      try {
+        const replay = coalesceHydrationMessages(hydration.messages);
+        stats.replayedMessages += replay.length;
+        stats.coalescedMessages += hydration.messages.length - replay.length;
+        for (const message of replay) this.#dispatchMessage(message);
+      } finally {
+        stats.currentWireBytes -= hydration.wireBytes;
+        stats.currentMessages -= hydration.messages.length;
+      }
     }
   }
 
@@ -567,16 +659,42 @@ export class CodexAppServerTransport {
   }
 
   #handleLine(line) {
+    // Count UTF-8 bytes of the existing line, excluding its framing delimiter;
+    // never serialize or clone a provider payload for diagnostics.
+    const wireBytes = Buffer.byteLength(line, "utf8");
+    this.memoryDiagnostics.wireBytes += wireBytes;
+    this.memoryDiagnostics.wireMessages += 1;
     let message;
     try {
       message = JSON.parse(line);
     } catch (error) {
+      this.memoryDiagnostics.invalidWireBytes += wireBytes;
       this.onInvalidMessage(error);
       return;
     }
     if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
       const pending = this.pending.get(message.id);
-      if (!pending) return;
+      const expired = pending ? null : this.recentTimeoutDiagnostics.find((entry) => entry?.id === message.id);
+      const rpcClass = pending ? rpcDiagnosticClass(pending.method) : expired?.rpcClass ?? "unknown";
+      const stats = this.memoryDiagnostics.rpc[rpcClass];
+      stats.responses += 1;
+      stats.wireBytes += wireBytes;
+      stats.maxWireBytes = Math.max(stats.maxWireBytes, wireBytes);
+      stats.last = {
+        requestId: pending?.id ?? expired?.id ?? null,
+        generation: pending?.generation ?? expired?.generation ?? null,
+        observedGeneration: this.generation, wireBytes,
+        disposition: pending ? (message.error ? "rejected" : "succeeded") : expired ? "late" : "unclassified",
+      };
+      if (!pending) {
+        this.memoryDiagnostics.ignoredResponses += 1;
+        this.memoryDiagnostics[expired ? "lateResponses" : "unclassifiedResponses"] += 1;
+        if (expired) stats.lateResponses += 1;
+        return;
+      }
+      if (pending.wireObservation) Object.assign(pending.wireObservation, {
+        bytes: wireBytes, requestId: pending.id, generation: pending.generation,
+      });
       this.pending.delete(message.id);
       this.#releaseRequest(pending);
       if (message.error) {
@@ -594,6 +712,13 @@ export class CodexAppServerTransport {
     const hydration = threadId ? this.threadHydrations.get(threadId) : null;
     if (hydration) {
       hydration.messages.push(message);
+      hydration.wireBytes += wireBytes;
+      const stats = this.memoryDiagnostics.hydration;
+      stats.currentWireBytes += wireBytes;
+      stats.currentMessages += 1;
+      stats.receivedMessages += 1;
+      stats.peakWireBytes = Math.max(stats.peakWireBytes, stats.currentWireBytes);
+      stats.peakMessages = Math.max(stats.peakMessages, stats.currentMessages);
       return;
     }
     this.#dispatchMessage(message);
