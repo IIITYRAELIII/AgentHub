@@ -163,7 +163,7 @@ try {
   await fs.copyFile(path.join(here, "whole-update-preload.mjs"), preload);
   const control = { root, metadataUrl: `https://api.github.com/repos/IIITYRAELIII/AgentHub/releases/tags/${tag}`,
     temporaryRoot: path.join(output, "temp"), telegramApiBaseUrl: telegram.baseUrl, transport: `http://127.0.0.1:${server.address().port}`, assetBase, assetNames: Object.keys(assets),
-    churn: mode === "whole" ? "replacement" : null,
+    churn: mode === "downgrade" ? null : "replacement",
     ...(mode === "poststop-recovery" ? { installFailurePath: path.join(root, "releases", target.value.releaseId) } : {}) };
   await fs.writeFile(controlFile, JSON.stringify(control));
   await fs.writeFile(path.join(root, ".agent-hub-release-acceptance.json"), JSON.stringify({ schemaVersion: 1, id, root,
@@ -222,9 +222,28 @@ try {
   await fs.writeFile(path.join(fixtures, "work-complete"), "complete normally");
   }
   if (mode === "poststop-recovery") {
+    // Preserve a genuine preceding failed attempt too: the real controller's
+    // replacement fixture fails before stop, then the same original continues.
+    const first = await wait(() => operation()?.status === "failed" && operation(), "first pre-stop failed attempt");
+    assert.equal(first.metadata.packagePreStopFailure?.phase, "package-backup-preflight");
+    assert.equal((await json(path.join(root, "data/bot.lock"))).pid, before.pid);
+    const replacement = await json(path.join(fixtures, "replacement.json"));
+    assert.equal(path.dirname(replacement.ready), path.join(root, "data"));
+    assert.equal(await fs.readFile(path.join(replacement.ready, "foreign-state.json"), "utf8"), "owned negative fixture");
+    await fs.rm(replacement.ready, { recursive: true }); // Exact owned fixture only.
+    control.churn = "retirement"; await fs.writeFile(controlFile, JSON.stringify(control));
+    const cache = (await fs.readdir(path.join(output, "cache"))).find(name => name.startsWith("agenthub-update-"));
+    const requestFile = path.join(output, "cache", cache, "update-request.json");
+    const entry = path.join(previousRoot, "src/runtime/runtime-package-handoff.mjs");
+    const continuation = await run("fresh-continuation-input", process.execPath, [entry, "resume-input", requestFile,
+      String(first.revision), first.metadata.packageHandoff.sha256]);
+    const continuationFile = path.join(output, "same-continuation.json"); await fs.writeFile(continuationFile, continuation);
+    await run("same-original-continuation", process.execPath, [entry, "resume", requestFile, continuationFile]);
+    report.failedAttempt = first; await event("same-original-fresh-attempt-before-failed-install");
     const completed = await wait(() => operation()?.status === "failed" && operation(), "failed installer and restored original", 180_000);
     assert.equal(completed.metadata.packageCurrentRecoveryReady, true);
     assert.equal(completed.metadata.packageFailurePhase, "package-installing");
+    assert.deepEqual(completed.metadata.packageAttemptHistory, [first]);
     assert.notEqual(completed.metadata.packageCurrentRecovery.installerExitCode, 0);
     const lock = await wait(async () => { const value = await json(path.join(root, "data/bot.lock")).catch(() => null);
       return value?.ready && value.releaseId === before.releaseId && value.pid !== before.pid && value; }, "verified previous current Ready");
@@ -239,9 +258,7 @@ try {
       assert.equal(await fs.readFile(path.join(data, "whole-update-cursor.keep"), "utf8"), "owned cursor 19");
     }
     assert.equal(await fs.readFile(path.join(root, "config.json"), "utf8"), await fs.readFile(path.join(backup, "config.json"), "utf8"));
-    const cache = (await fs.readdir(path.join(output, "cache"))).find(name => name.startsWith("agenthub-update-"));
-    const requestFile = path.join(output, "cache", cache, "update-request.json");
-    const entry = path.join(previousRoot, "src/runtime/runtime-package-handoff.mjs"), completedBytes = JSON.stringify(completed);
+    const completedBytes = JSON.stringify(completed);
     await run("terminal-original-readback", process.execPath, [entry, "bootstrap-start", requestFile]);
     assert.equal(JSON.stringify(operation()), completedBytes);
     assert.equal((await json(path.join(root, "data/bot.lock"))).pid, lock.pid);
