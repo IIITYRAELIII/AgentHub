@@ -726,3 +726,24 @@ resource-accounting owner or starting a child. `none` has no dependency/accounti
 work. Selected files retain current isolation, shared-resource admission and the
 40% cooperative CPU/RAM policy. Selection is not cacheability and not a resource
 waiver. Inventory listing/plan resolution is read-only; it runs no test.
+
+## Worker memory observations
+
+The existing health sampler may read getHeapStatistics from already-owned Node
+workers, without spawning/refing/stopping them or posting business requests.
+Seven fixed owner classes retain weak references to at most 16 diagnostic
+records each; additional active workers remain explicitly unobserved. This is
+an observation bound, not worker admission or a limit on history/work. Exit
+removes the exact observation. Samples carry numeric thread/generation and
+request/completion times; missing/failed values are unknown, not zero. At most
+one observation per tracked worker is pending, with no added timer or wait on
+the business path. Native sampling failure cannot change an owner's result.
+
+Existing runtime-health trace frames retain the original metric selection and
+cap; separate small frames persist each worker owner's numeric summary through
+the same trace. Heap/physical/external values belong to worker isolates, may be
+stale and overlap native allocator accounting; they are not per-worker RSS.
+Summed latest samples are not a simultaneous exclusive decomposition of process
+RSS. Payload, paths, arbitrary names, stacks and provider data are not sampled.
+These observations do not authorize GC, heap dumps, inspector operations, cache
+clearing, retries, provider calls, restarts or a claim that a memory cause is fixed.

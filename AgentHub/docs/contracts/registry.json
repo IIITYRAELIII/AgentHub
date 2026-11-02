@@ -271,7 +271,9 @@
         "tests/infrastructure/persistence/task-board-journal-scalars.test.mjs",
         "tests/interfaces/web/journal-publication.test.mjs",
         "src/infrastructure/persistence/task-turn-projection.mjs",
-        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs",
+        "src/application/runtime-worker-memory.mjs",
+        "tests/application/runtime-worker-memory.test.mjs"
       ]
     },
     {

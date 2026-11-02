@@ -1,3 +1,4 @@
+import { runtimeWorkerMemorySnapshot } from "./runtime-worker-memory.mjs";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 
 const CAPABILITY_STATES = new Set(["pending", "ready", "degraded", "failed", "disabled"]);
@@ -219,7 +220,8 @@ export class RuntimeHealth {
         diagnostics[name] = { error: String(error?.message ?? error) };
       }
     }
-    if (this.#diagnosticSources.size) {
+    const workerMemory = runtimeWorkerMemorySnapshot();
+    if (this.#diagnosticSources.size || Object.keys(workerMemory).length) {
       const memory = process.memoryUsage();
       diagnostics.process = {
         rssBytes: memory.rss,
@@ -230,13 +232,14 @@ export class RuntimeHealth {
         eventLoopDelayMaxMs: Number(this.#eventLoopDelay.max) / 1e6,
       };
     }
+    if (Object.keys(workerMemory).length) diagnostics.workerMemory = workerMemory;
     return {
       live: true,
       ready,
       degraded,
       status: ready ? (degraded ? "degraded" : "ready") : (degraded ? "unready" : "starting"),
       capabilities,
-      ...(this.#diagnosticSources.size ? { diagnostics } : {}),
+      ...(this.#diagnosticSources.size || Object.keys(workerMemory).length ? { diagnostics } : {}),
       ...(this.#startup ? {
         startup: {
           startedAtMs: this.#startup.startedAtMs,

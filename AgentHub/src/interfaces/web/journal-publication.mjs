@@ -1,3 +1,4 @@
+import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
 import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { gzip } from "node:zlib";
@@ -33,6 +34,7 @@ export class JournalPublicationWorker {
       const worker = new Worker(new URL("./journal-publication-worker.mjs", import.meta.url), {
         workerData: { databaseFile: this.databaseFile },
       });
+      observeRuntimeWorkerMemory("journalPublication", worker);
       this.#worker = worker;
       worker.on("message", (message) => {
         if (message.id !== this.#pending?.id) return;

@@ -1,3 +1,4 @@
+import { observeRuntimeWorkerMemory } from "../application/runtime-worker-memory.mjs";
 import { Worker } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
 
@@ -52,6 +53,7 @@ export class WorkLogUsageSyncWorkerStore {
     this.#worker = new WorkerImpl(workerUrl, {
       workerData: { databaseFile, legacyFile, deviceId, defaultRuntimeHomeIds },
     });
+    observeRuntimeWorkerMemory("usageSync", this.#worker);
     this.#worker.unref?.();
     this.#worker.on("message", (message) => this.#settle(message));
     this.#worker.on("error", (error) => {
