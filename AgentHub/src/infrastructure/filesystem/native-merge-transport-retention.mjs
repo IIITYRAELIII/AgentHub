@@ -157,7 +157,7 @@ export class NativeMergeTransportRetention {
     // New wide-list admission cannot depend on ambient/rewritten/borrowed
     // history. Legacy array bindings retain their original identity and route.
     if (["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE",
-      "GIT_REPLACE_REF_BASE", "GIT_COMMON_DIR", "GIT_DIR", "GIT_WORK_TREE"].some(key => process.env[key])) return false;
+      "GIT_REPLACE_REF_BASE", "GIT_GRAFT_FILE", "GIT_COMMON_DIR", "GIT_DIR", "GIT_WORK_TREE"].some(key => process.env[key])) return false;
     const git = (args, options) => owned.git(["--no-lazy-fetch", "--no-replace-objects", ...args], options);
     if (/^(extensions\.partialclone|remote\..*\.promisor)=/imu.test(await git(["config", "--local", "--list"]))
         || await lstat(path.join(path.dirname(owned.bundle), "repository", ".git", "info", "grafts")).catch(absent)) return false;

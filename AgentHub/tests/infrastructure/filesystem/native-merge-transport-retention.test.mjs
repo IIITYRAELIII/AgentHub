@@ -210,3 +210,57 @@ test("wide heads do not retire present but unanchored history", { skip: process.
   assert.equal((await f.owner.preview({ candidate: f.candidate })).reason, "bundle-roots-unanchored");
   assert.ok((await lstat(f.bundle)).size > 0);
 });
+
+test("ambient graft cannot authorize wide unanchored roots or delete their transport", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, true), journal = await readFile(f.stateFile);
+  const tree = await gitAt(f.source, ["rev-parse", "HEAD^{tree}"]);
+  const extra = await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit-tree", tree], { input: "parentless original proof\n" });
+  await gitAt(f.source, ["update-ref", "refs/agent-hub/graft-proof", extra]);
+  await gitAt(f.repository, ["fetch", "--no-write-fetch-head", f.source, extra]);
+  await rm(f.bundle); await gitAt(f.source, ["bundle", "create", f.bundle, "--all"]);
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).reason, "bundle-roots-unanchored");
+  const graft = path.join(f.root, "external-grafts");
+  await writeFile(graft, `${f.commit} ${extra}\n`);
+  const prior = process.env.GIT_GRAFT_FILE;
+  try {
+    process.env.GIT_GRAFT_FILE = graft;
+    assert.equal(await gitAt(f.repository, ["--no-replace-objects", "rev-list", "--max-count=1", "--stdin", "--not", "--all"], { input: extra + "\n" }), "",
+      "actual Git consumes external graft even with --no-replace-objects");
+    const preview = await f.owner.preview({ candidate: f.candidate });
+    assert.equal(preview.reason, "bundle-roots-unanchored", JSON.stringify(preview));
+    assert.equal((await f.owner.prune({ candidate: f.candidate, binding: preview.binding })).status, "retained");
+    assert.ok((await lstat(f.bundle)).size > 0);
+  } finally {
+    if (prior === undefined) delete process.env.GIT_GRAFT_FILE; else process.env.GIT_GRAFT_FILE = prior;
+  }
+  assert.equal(await gitAt(f.repository, ["rev-list", "--max-count=1", "--stdin", "--not", "--all"], { input: extra + "\n" }), extra);
+  assert.deepEqual(await readFile(f.stateFile), journal);
+});
+
+test("before-effect graft environment drift refuses an already approved wide preview", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, true);
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  const graft = path.join(f.root, "external-grafts"); await writeFile(graft, "");
+  const prior = process.env.GIT_GRAFT_FILE, actualGit = f.owner.gitAt, actualDelete = f.owner.deleteTransport;
+  let rootsRead = false, armedAtFinalFence = false, effects = 0;
+  f.owner.gitAt = async (root, args, options) => {
+    const result = await actualGit(root, args, options);
+    if (args.includes("rev-list")) rootsRead = true;
+    return result;
+  };
+  f.owner.isStopping = () => {
+    if (rootsRead) { process.env.GIT_GRAFT_FILE = graft; armedAtFinalFence = true; }
+    return false;
+  };
+  f.owner.deleteTransport = async (...args) => { effects++; return actualDelete(...args); };
+  try {
+    const result = await f.owner.prune({ candidate: f.candidate, binding: preview.binding });
+    assert.equal(armedAtFinalFence, true);
+    assert.equal(result.reason, "bundle-roots-unanchored", JSON.stringify(result));
+    assert.equal(effects, 0);
+    assert.ok((await lstat(f.bundle)).size > 0);
+  } finally {
+    if (prior === undefined) delete process.env.GIT_GRAFT_FILE; else process.env.GIT_GRAFT_FILE = prior;
+  }
+});
