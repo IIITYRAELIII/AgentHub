@@ -75,7 +75,16 @@ function operation() {
       observedAt: new Date().toISOString(), revision: value.revision, status: value.status, phase: value.phase,
       updatedAt: value.updatedAt, blockers: value.blockers });
     return value;
-  } catch (error) { if (/no such table|unable to open/u.test(error.message)) return null; throw error; }
+  } catch (error) {
+    if ([5, 6].includes(error.errcode)) {
+      // Backup's real writer reservations may temporarily prevent this readonly
+      // observer. Keep waiting on the same original; never infer its outcome.
+      report.busyReadObservations = (report.busyReadObservations ?? 0) + 1;
+      return null;
+    }
+    if (/no such table|unable to open/u.test(error.message)) return null;
+    throw error;
+  }
   finally { db?.close(); }
 }
 try {
@@ -251,6 +260,11 @@ finally {
   if (monitor) await monitor.close();
   if (samplingError) report.status = "failed";
   report.resources = { samples, samplingError: samplingError?.message, peakWorkingSetBytes: Math.max(0, ...samples.map(s => s.rssBytes)), peakProcesses: Math.max(0, ...samples.map(s => s.processes)) };
+  // A failed observation/assertion cannot race teardown against an already
+  // admitted native installer. Join that same owned continuation first.
+  if (lastOperation?.metadata?.packageNative?.hostPid) {
+    await wait(() => !processIsAlive(lastOperation.metadata.packageNative.hostPid), "owned admitted continuation drain", 300_000);
+  }
   try { if (host) await execute(path.join(root, "AgentHub.RuntimeHost.exe"), ["--close-release-acceptance"], { env: { ...cleanEnvironment, AGENT_HUB_RUNTIME_ROOT: root }, windowsHide: true, timeout: 15_000 }); }
   catch (error) { report.cleanupError = error.message; report.status = "failed"; }
   if (host && host.exitCode === null) await Promise.race([once(host, "close"), new Promise((_, reject) => setTimeout(() => reject(Error("Owned Host did not join")), 15_000))]);
