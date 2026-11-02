@@ -4,6 +4,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import childProcess from "node:child_process";
+import { promisify } from "node:util";
+import { appendFileSync } from "node:fs";
 
 const main = process.argv[1]?.endsWith("agent-hub-main.mjs");
 if (main || process.argv[1]?.endsWith("runtime-package-handoff.mjs")) {
@@ -12,6 +15,33 @@ if (main || process.argv[1]?.endsWith("runtime-package-handoff.mjs")) {
   const control = JSON.parse(await fs.readFile(controlFile, "utf8"));
   if ((main || process.env.AGENT_HUB_RUNTIME_ROOT) && path.resolve(process.env.AGENT_HUB_RUNTIME_ROOT) !== path.resolve(control.root)) throw Error("Foreign acceptance runtime");
   const originalFetch = globalThis.fetch;
+  const providerExecutable = value => /^(?:claude|codex)(?:\.exe|\.cmd)?$/iu.test(path.basename(String(value)));
+  const providerModule = value => /[\\/]@(?:anthropic-ai|openai)[\\/](?:claude-code|codex)[\\/]/iu.test(String(value));
+  for (const method of ["spawn", "spawnSync", "execFile", "execFileSync"]) {
+    const original = childProcess[method];
+    const wrapped = function (command, ...args) {
+      const argv = Array.isArray(args[0]) ? args[0] : [], name = path.basename(String(command)).toLowerCase();
+      const shellCommand = name === "cmd.exe" ? argv.slice(argv.findIndex(value => String(value).toLowerCase() === "/c") + 1).join(" ") : "";
+      if (providerExecutable(command) || (/^node(?:\.exe)?$/u.test(name) && argv.some(providerModule))
+        || /(?:^|[\\/"\s])(?:claude|codex)(?:\.exe|\.cmd)?(?:$|["\s])/iu.test(shellCommand)) {
+        const flags = (Array.isArray(args[0]) ? args[0] : []).map(value => /^[a-zA-Z_-]+$/u.test(String(value)) ? value : "[value]");
+        // The external provider boundary is fail-closed. Never return a fake
+        // product result or silently fall back to the installed account CLI.
+        appendFileSync(path.join(directory, "provider-refusals.jsonl"), JSON.stringify({ pid: process.pid,
+          method, command: path.basename(String(command)), flags, caller: new Error().stack.split("\n").slice(2, 8), at: Date.now() }) + "\n");
+        throw Object.assign(Error("Isolated acceptance forbids real provider executable"), { code: "EACCES" });
+      }
+      return original.call(this, command, ...args);
+    };
+    if (method === "execFile") wrapped[promisify.custom] = (...args) => {
+      let child;
+      const promise = new Promise((resolve, reject) => { child = wrapped(...args,
+        (error, stdout, stderr) => error ? reject(Object.assign(error, { stdout, stderr })) : resolve({ stdout, stderr })); });
+      promise.child = child; return promise;
+    };
+    childProcess[method] = wrapped;
+  }
+  syncBuiltinESMExports();
   globalThis.fetch = async (url, options) => {
     if (String(url).startsWith(`${control.telegramApiBaseUrl}/`)) return originalFetch(url, options);
     if (String(url) !== control.metadataUrl) throw Error(`Unexpected acceptance network URL: ${url}`);

@@ -29,14 +29,28 @@ while ($null -ne ($line = [Console]::ReadLine())) {
         foreach ($row in $rows) { if ($owned.Contains([int]$row.ParentProcessId)) { [void]$owned.Add([int]$row.ProcessId) } }
     } while ($prior -ne $owned.Count)
     $observed = @()
+    $baselineObserved = @()
+    $unavailable = 0
+    foreach ($processId in $baseline) {
+        try {
+            $process = Get-Process -Id $processId -ErrorAction Stop
+            $processName = $process.ProcessName
+            if ([string]::IsNullOrEmpty($processName)) { $unavailable++; continue }
+            $baselineObserved += @{ pid=$processId; name=$processName }
+        } catch { $unavailable++ }
+    }
     foreach ($processId in $owned) {
         if ($baseline.Contains($processId)) { continue }
         try {
             $process = Get-Process -Id $processId -ErrorAction Stop
             $row = $rows | Where-Object { [int]$_.ProcessId -eq $processId } | Select-Object -First 1
             if ($null -eq $row -or [Math]::Abs(($process.StartTime.ToUniversalTime() - $row.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1) { continue }
-            $observed += @{ pid=$processId; parentPid=[int]$row.ParentProcessId; name=$process.ProcessName; workingSetBytes=$process.WorkingSet64; peakWorkingSetBytes=$process.PeakWorkingSet64 }
-        } catch { } # Exited between the two readonly observations, not zero usage.
+            $processName = $process.ProcessName
+            $workingSet = $process.WorkingSet64
+            $peakWorkingSet = $process.PeakWorkingSet64
+            if ([string]::IsNullOrEmpty($processName) -or $null -eq $workingSet) { $unavailable++; continue }
+            $observed += @{ pid=$processId; parentPid=[int]$row.ParentProcessId; name=$processName; workingSetBytes=$workingSet; peakWorkingSetBytes=$peakWorkingSet }
+        } catch { $unavailable++ } # Exited between observations, not zero usage.
     }
-    [Console]::WriteLine((@{ processes=$observed; missingRoots=$missing } | ConvertTo-Json -Compress -Depth 4))
+    [Console]::WriteLine((@{ processes=$observed; baselineProcesses=$baselineObserved; missingRoots=$missing; unavailableObservations=$unavailable } | ConvertTo-Json -Compress -Depth 4))
 }

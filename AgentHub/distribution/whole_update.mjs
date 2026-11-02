@@ -164,6 +164,8 @@ try {
   await fs.writeFile(controlFile, JSON.stringify(control));
   await fs.writeFile(path.join(root, ".agent-hub-release-acceptance.json"), JSON.stringify({ schemaVersion: 1, id, root,
     nodeImport: { file: preload, sha256: hash(await fs.readFile(preload)) } }));
+  await run("external-provider-port-control", process.execPath, [path.join(here, "whole-update-provider-guard-test.mjs"),
+    preload, root, path.join(previousRoot, "agent-hub-main.mjs")]);
   // A distinct test-owned maintenance scope is inert; its canonical UNKNOWN
   // receipt is preserved, never reconciled or used to bypass active work.
   const unknownRelative = path.join("locks", "retained-unknown");
@@ -259,6 +261,10 @@ finally {
   if (externalSampler) { externalSampler.stdin.end("close\n"); const exit = await externalExit; if (exit[0] !== 0) samplingError ??= Error(`External accounting failed ${exit[0]}`); externalLines.close(); }
   if (monitor) await monitor.close();
   if (samplingError) report.status = "failed";
+  const forbiddenProcesses = samples.flatMap(sample => [...sample.external.processes, ...(sample.external.baselineProcesses ?? [])])
+    .filter(value => /^(?:claude|codex)$/iu.test(String(value.name ?? "")));
+  report.unexpectedProviderProcesses = forbiddenProcesses;
+  if (forbiddenProcesses.length) report.status = "failed";
   report.resources = { samples, samplingError: samplingError?.message, peakWorkingSetBytes: Math.max(0, ...samples.map(s => s.rssBytes)), peakProcesses: Math.max(0, ...samples.map(s => s.processes)) };
   // A failed observation/assertion cannot race teardown against an already
   // admitted native installer. Join that same owned continuation first.
@@ -271,4 +277,5 @@ finally {
   if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   await telegram?.stop(); report.ownedChildren = [...children].map(child => ({ pid: child.pid, code: child.exitCode }));
   report.finishedAt = new Date().toISOString(); await save();
+  if (report.status !== "passed") process.exitCode = 1;
 }

@@ -81,6 +81,15 @@ This does not change package source/digest/certificate policy. Teardown closes
 only that exact acceptance cohort. Raw original receipts, timings, manifests
 and resource observations remain separate from state/effect authority.
 
+The controlled external port also refuses actual Claude/Codex executable requests
+before Node child-process creation, including the observed optional post-ready
+probe. It does not manufacture a provider result. Legitimate owned Node capture
+and its standard stdout/stderr contract remain executable controls. A maintained
+small port control exercises all four refusal methods before the full Hub starts;
+the whole run records refusal call sites and both in-Job/detached process names.
+An earlier functional run's unexpected real Claude child remains disclosed; it
+is not relabelled as zero external-provider activity.
+
 The acceptance cohort's actual root-named Job is selected before package
 membership checks instead of searching for a different ordinary PID-named Job.
 There is no open-failure fallback. Both original handles, birth identities,
