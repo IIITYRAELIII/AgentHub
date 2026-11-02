@@ -46,6 +46,25 @@ import { mergeTaskCatalog } from "../../../src/application/task-catalog-projecti
 import { messageWithTaskReferences, taskReferenceDescriptor } from "../../../src/domain/task-board-task.mjs";
 import { createInterstreamMessage, interstreamOriginAuthor } from "../../../src/domain/interstream-message.mjs";
 import { restoreDeferredInput } from "../../../src/domain/deferred-input.mjs";
+import { ClaudeEventService } from "../../../src/providers/claude/claude-event-service.mjs";
+import { RunProgressPresentation } from "../../../src/application/run-progress-presentation.mjs";
+
+test("generic annotation live Claude deltas remain raw while desktop and progress project both aliases",()=>{
+  const setup=fixture(); const run=setup.run; run.provider='claude'; run.responseText='';
+  const names=['isSelectedRun','reindexRun','setSelectedThread','runTitle','bindRunMessage','retargetClientSelection','saveState','noteActivity','scheduleProgress','appendReasoning','setStage','appendActivity','invalidateCatalog','trackContextUsage'];
+  const service=new ClaudeEventService(Object.fromEntries(names.map(name=>[name,()=>false])));
+  const progress=new RunProgressPresentation({telegramLimit:10000,formatProgressHeartbeat:()=>'',claudeModelLabels:{},codexReasoningLabels:{},currentClaudeModel:()=>'',currentClaudeReasoning:()=>'',taskExecutionOwners:{HUB:'hub'},taskExecutionRuntimeLabel:()=>'',formatProgressHeading:()=>'',taskTitle:()=>'',showProject:()=>false});
+  run.userMessages[0].text='User :agent-annotation{index="1"}';
+  service.handle(run,{event:{type:'stream_event',event:{type:'content_block_delta'}},textDelta:':agent-annotation{index="'});
+  assert.equal(run.responseText,':agent-annotation{index="');
+  assert.equal(setup.desktopRunSnapshot(run).response,'');
+  assert.doesNotMatch(progress.render(run),/:agent/u);
+  service.handle(run,{event:{type:'stream_event',event:{type:'content_block_delta'}},textDelta:'1"} Answer :codex-annotation{index="1"} continued'});
+  const snapshot=setup.desktopRunSnapshot(run);
+  assert.match(snapshot.response,/Цитата 1/u); assert.deepEqual(snapshot.responseAnnotationReferences,[{index:1}]);
+  assert.equal(snapshot.userMessages[0].text,'User :agent-annotation{index="1"}');
+  assert.ok(run.responseText.startsWith(':agent-annotation')); assert.doesNotMatch(progress.render(run),/:agent|:codex/u);
+});
 import {
   createMaintenanceOperation,
   MAINTENANCE_OPERATION_KINDS,

@@ -278,6 +278,21 @@ test("Codex terminal reconciliation removes only provider annotation markers", (
   assert.match(result.prompt, /Проверь/u);
 });
 
+test("generic annotation terminal JSONL reconciles mixed aliases without parsing user literals",()=>{
+  const raw=':agent-annotation{index="1"} Checked :codex-annotation{index="1"} once';
+  const prompt='User literal :agent-annotation{index="2"}';
+  const text=[
+    line({type:'event_msg',payload:{type:'task_started',turn_id:'generic-turn'}}),
+    line(response('generic-turn','message',{role:'user',content:[{type:'input_text',text:prompt}]})),
+    line(response('generic-turn','message',{role:'assistant',phase:'final_answer',content:[{type:'output_text',text:raw}]})),
+    line({type:'event_msg',payload:{type:'task_complete',turn_id:'generic-turn',last_agent_message:raw}})
+  ].join('\n');
+  const result=codexTurnUsageFromJsonl(text,'generic-turn');
+  assert.deepEqual(result.responseAnnotationReferences,[{index:1}]);
+  assert.equal((result.finalAnswer.match(/Цитата 1/gu)??[]).length,1);
+  assert.doesNotMatch(result.finalAnswer,/:agent|:codex/u); assert.equal(result.prompt,prompt);
+});
+
 test("historical rollout scan extracts all turns in one streaming pass", async () => {
   const first = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
   const second = "019f1ec9-8de7-7aa3-92b6-045036561c8e";

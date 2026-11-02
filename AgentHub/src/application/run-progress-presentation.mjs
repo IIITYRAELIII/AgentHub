@@ -1,3 +1,5 @@
+import { visibleCodexAssistantText } from "../domain/codex-response-annotation.mjs";
+
 export class RunProgressPresentation {
   constructor({
     telegramLimit,
@@ -78,7 +80,7 @@ export class RunProgressPresentation {
       parts.push(`💭 ${reasoning.length > 900 ? `…${reasoning.slice(-900)}` : reasoning}`);
     }
     if (run?.responseText?.trim()) {
-      const answer = run.responseText.trim();
+      const answer = visibleCodexAssistantText(run.responseText).trim();
       parts.push(`✍️ Ответ формируется:\n${answer.length > 2400 ? `…${answer.slice(-2400)}` : answer}`);
     }
     return parts.join("\n\n").slice(0, this.telegramLimit);

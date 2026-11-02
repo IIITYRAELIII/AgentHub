@@ -5,6 +5,10 @@ import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sy
 import { readCodexTracePageInWorker } from "../../src/providers/codex/codex-rollout-activity-worker-client.mjs";
 import path from "node:path";
 import test from "node:test";
+import { codexAssistantResponseProjection } from "../../src/domain/codex-response-annotation.mjs";
+import { claudeTranscriptHistory } from "../../src/application/task-history.mjs";
+import { PreTurnInstructionStore } from "../../src/infrastructure/persistence/pre-turn-instruction-store.mjs";
+import { fileURLToPath } from "node:url";
 
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
 const TEST_THEME_CATALOG = JSON.stringify([{
@@ -106,6 +110,81 @@ test.before(async () => {
 test.after(async () => {
   await browser?.close();
 });
+
+test("generic annotation aliases render one exact source link for each provider on desktop and mobile", {timeout:30000}, async()=>{
+  for(const width of [1366,390]) for(const provider of ['codex','claude']) {
+    const page=await browser.newPage({viewport:{width,height:850}}); const diagnostics=[];
+    page.setDefaultTimeout(3000);
+    page.on('pageerror',e=>diagnostics.push(e.message));
+    page.on('console',m=>{
+      // This existing routed harness has no runtime health/SSE server.
+      if(m.type()==='error' && m.text().includes('404 (Not Found)')
+        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(['error','warning'].includes(m.type())) diagnostics.push({text:m.text(),location:m.location()});
+    });
+    try {
+      await openWebApp(page);
+      const raw=':agent-annotation{index="1"} Checked :codex-annotation{index="1"} once.\n`literal :agent-annotation{index="2"}`';
+      const projected=provider==='codex'?codexAssistantResponseProjection(raw):(()=>{
+        const history=claudeTranscriptHistory([
+          {type:'user',uuid:'u',message:{role:'user',content:'Check'}},
+          {type:'assistant',uuid:'a',message:{role:'assistant',content:[{type:'text',text:raw}]}}
+        ].map(JSON.stringify).join('\n'));
+        return {text:history[0].answer,responseAnnotationReferences:history[0].messages[1].responseAnnotationReferences};
+      })();
+      const source={id:'generic-source',provider,threadId:'thread-1',turnId:'original-turn',itemId:'original-item',role:'agent',text:'Original **exact** selection 🦊.'};
+      await seedMessages(page,[source],{provider,agentLabel:provider});
+      const locator=await page.evaluate(async(source)=>{
+        const api=window.AgentHubMessageDisclosure;
+        const surface=document.querySelector('[data-message-id="generic-source"] .msg-body');
+        const text=surface.textContent; const start=text.indexOf('exact'); const end=start+'exact selection 🦊.'.length;
+        return {version:1,...api.responseAnnotationSourceIdentity(source),surfaceKind:'message-body',surfaceIndex:0,start,end,
+          contentHash:await api.responseAnnotationSha256(api.responseAnnotationSourceContent(source)),surfaceHash:await api.responseAnnotationSha256(text),selectionHash:await api.responseAnnotationSha256(text.slice(start,end))};
+      },source);
+      const user={id:'generic-user',provider,threadId:'thread-1',turnId:'reply-turn',itemId:'user-item',role:'user',text:'Literal :agent-annotation{index="2"}',responseAnnotationRequest:'Literal :agent-annotation{index="2"}',responseAnnotations:[{text:'exact selection 🦊.',annotation:'Check this comment',source:locator}]};
+      const answer={id:'generic-answer',provider,threadId:'thread-1',turnId:'reply-turn',itemId:'answer-item',role:'agent',...projected};
+      await seedMessages(page,[source,user,answer],{provider,agentLabel:provider});
+      if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      const article=page.locator('[data-message-id="generic-answer"]');
+      assert.equal(await article.locator('[data-response-citation-index="1"]').count(),1);
+      assert.equal(await article.locator('[data-response-citation-index="2"]').count(),0);
+      assert.ok((await article.textContent()).includes('literal :agent-annotation{index="2"}'));
+      assert.ok((await page.locator('[data-message-id="generic-user"]').textContent()).includes(user.text));
+      await article.locator('[data-response-citation-index="1"]').click();
+      await page.locator('[data-message-id="generic-user"] .msg-annotation-content.is-citation-target').waitFor();
+      assert.equal(await page.locator('[data-message-id="generic-user"] .msg-annotation-content').evaluate(n=>n.classList.contains('is-citation-target')),true);
+      await page.locator('[data-message-id="generic-user"] [data-response-annotation-source]').click();
+      assert.equal((await page.locator('[data-message-id="generic-source"] .msg-source-citation-highlight').allTextContents()).join(''),'exact selection 🦊.');
+      assert.match(await page.title(),/Agent Hub/iu); assert.equal(new URL(page.url()).hostname,'127.0.0.1');
+      if(process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({path:`${process.env.AGENT_HUB_QA_SCREENSHOT}-generic-${provider}-${width}.png`});
+      assert.deepEqual(diagnostics,[]);
+    } finally {await page.close();}
+  }
+});
+
+test("generic annotation canonical Guide reaches the read-only rendered editor and neutral prompt roundtrip",{timeout:15000},async()=>{
+  const page=await browser.newPage();
+  const temp=await mkdtemp(path.join(os.tmpdir(),'guide-editor-'));
+  try {
+    const store=new PreTurnInstructionStore({guideFile:fileURLToPath(new URL('../../AGENT_HUB_GUIDE.md',import.meta.url)),globalFile:path.join(temp,'global.md')});
+    await store.loadGuide(); const snapshot=await store.snapshot();
+    await openWebApp(page);
+    const observed=await page.evaluate(snapshot=>{
+      window.AgentHubPreTurnInstructionsEditor.setSnapshot(snapshot);
+      const input=document.querySelector('[data-agent-hub-guide-input]');
+      const api=window.AgentHubMessageLifecycle;
+      const prompt=api.responseAnnotationPrompt('Check',[{text:'Exact quote',annotation:'Exact comment'}]);
+      return {guide:input.value,readOnly:input.readOnly,prompt,
+        modern:api.embeddedResponseAnnotations(prompt),legacy:api.embeddedResponseAnnotations(prompt.replace('## My request:','## My request for Codex:'))};
+    },snapshot);
+    assert.equal(observed.guide,snapshot.guide.content); assert.equal(observed.readOnly,true);
+    assert.ok(observed.prompt.includes('earlier assistant response')); assert.ok(observed.prompt.includes('## My request:\nCheck'));
+    assert.deepEqual(observed.modern,observed.legacy); assert.equal(observed.modern.request,'Check');
+    assert.deepEqual(observed.modern.annotations,[{text:'Exact quote',annotation:'Exact comment'}]);
+  } finally {await page.close();await rm(temp,{recursive:true,force:true});}
+});
+
+
 
 test("bounded trace archive loads only on demand and citations recover an evicted exact group", { timeout: 20_000 }, async () => {
   const page = await browser.newPage();

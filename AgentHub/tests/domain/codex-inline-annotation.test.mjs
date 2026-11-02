@@ -2,6 +2,26 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {codexAssistantResponseProjection as project} from '../../src/domain/codex-response-annotation.mjs';
 
+test('generic annotation aliases share indices and streamed boundaries with legacy markers',()=>{
+  for(const alias of ['agent','codex']) {
+    const marker=`:${alias}-annotation{index="2"}`;
+    for(const prefix of [':'+alias, ':'+alias+'-annotation{', ':'+alias+'-annotation{index="2']) {
+      assert.deepEqual(project('Answer '+prefix),{text:'Answer ',responseAnnotationReferences:[]});
+    }
+    for(const text of ['`'+marker+'`','```text\n'+marker+'\n```','\\'+marker,'``multi\n'+marker+'\nline``']) {
+      assert.deepEqual(project(text),{text,responseAnnotationReferences:[]});
+    }
+    for(const index of ['0','21','-1','1.5','9007199254740993','abc']) {
+      assert.deepEqual(project(`:${alias}-annotation{index="${index}"}`),{text:'Цитата',responseAnnotationReferences:[]});
+    }
+  }
+  const result=project(':agent-annotation{index="1"} First :codex-annotation{index="1"} same\n:codex-annotation{index="2"} Second :agent-annotation{index="2"} same');
+  assert.deepEqual(result.responseAnnotationReferences,[{index:1},{index:2}]);
+  assert.equal((result.text.match(/Цитата /gu)??[]).length,2);
+  assert.doesNotMatch(result.text,/:agent|:codex/u);
+  assert.match(result.text,/First.*same/u);
+});
+
 test('inline provider annotation becomes a reference without losing surrounding prose',()=>{
   const result=project('Зафиксировал: **историю перенести**. :codex-annotation{index="1"}\nСледующий абзац.');
   assert.deepEqual(result.responseAnnotationReferences,[{index:1}]);
