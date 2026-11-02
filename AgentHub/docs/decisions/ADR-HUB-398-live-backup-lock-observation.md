@@ -16,6 +16,15 @@ still refuse. The observer performs no mutation, lock acquisition, retry,
 timer, cleanup or durable bookkeeping. Records live only while their actual
 producer or an inspection holds them. Other-process lock churn is not inferred.
 
+The observer re-reads the exact path after joining a pending producer reply.
+Only fresh absence plus confirmed original removal permits exclusion. A new
+directory, regular file or link refuses even if created before that reply
+settles. Removal bookkeeping shares the exact promise awaited by the release
+owner, so an unexpected I/O rejection retains its original diagnostic without
+creating a detached rejection or confirming removal. Maintained tests hold the
+actual native reply across replacement and exercise the existing EIO effect
+port without an unhandled-rejection suppression listener.
+
 All live intake/pre-stop callers use this support entry point. It does not
 grant snapshot/stop authority. The stopped inventory, identity equality,
 custody/reparse/config/SQLite checks and exclusive output/copy/hash/integrity

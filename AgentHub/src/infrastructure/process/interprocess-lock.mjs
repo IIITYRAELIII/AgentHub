@@ -51,7 +51,16 @@ export async function observeInterprocessLockDirectories(operation) {
           // Join only the exact producer mutation already underway, not a
           // retry or a competing filesystem effect. Unknown remains refusal.
           await record.pending;
-          if (record.removed) return true;
+          if (record.removed) {
+            // Removal evidence belongs to the old object. The awaited native
+            // reply cannot classify a new object now occupying its pathname.
+            try { await lstat(file, { bigint: true }); }
+            catch (freshError) {
+              if (freshError?.code === "ENOENT") return true;
+              throw freshError;
+            }
+            throw new Error("Maintenance observed lock directory identity changed");
+          }
           throw error;
         }
       }
@@ -227,11 +236,13 @@ async function removeOwnedEntry(lockPath, owner, {
     () => removeLockDirectory(lockPath),
     { retryDelaysMs, wait },
   );
-  if (directoryObservation) directoryObservation.record.pending = directoryRemoval.then(removed => {
-    if (removed.completed && !removed.missing) directoryObservation.record.removed = true;
+  const observedRemoval = directoryRemoval.then(removed => {
+    if (directoryObservation && removed.completed && !removed.missing) directoryObservation.record.removed = true;
   });
-  await directoryRemoval;
-  await directoryObservation?.record.pending;
+  if (directoryObservation) directoryObservation.record.pending = observedRemoval;
+  // The same derived promise is both observed and joined on every path,
+  // including an unexpected rejection reported by the existing release owner.
+  await observedRemoval;
   return true;
 }
 

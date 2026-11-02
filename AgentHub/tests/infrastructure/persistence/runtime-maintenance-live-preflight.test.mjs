@@ -140,3 +140,77 @@ test("strict stopped inventory still binds a live canonical lock and refuses its
     await assert.rejects(backupOwner.assertRuntimeBackupScope(inventory), { code: "ENOENT" });
   } finally { release.resolve(); await work; }
 });
+
+for (const replacement of ["directory", "file", "link"]) test(`live preflight refuses ${replacement} replacement during pending native reply`,
+  { skip: process.platform !== "win32" }, async t => {
+    const f = await fixture(t), publisher = await prepareWindowsLockDirectoryPublisher();
+    const originalPublish = publisher.publish.bind(publisher), originalLstat = fs.lstat;
+    const arrived = deferred(), publishNow = deferred(), nativeDone = deferred(), replyNow = deferred();
+    const release = deferred();
+    let readyPath, absentObserved = false;
+    const outside = path.join(f.base, "outside");
+    await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, "foreign-state.json"), "retained");
+    t.mock.method(publisher, "publish", async (ready, canonical) => {
+      if (canonical !== `${f.target}.lock`) return originalPublish(ready, canonical);
+      readyPath = ready; arrived.resolve();
+      await publishNow.promise;
+      await originalPublish(ready, canonical); // Real native publication, no replacement port.
+      nativeDone.resolve();
+      await replyNow.promise;
+    });
+    const operation = withInterprocessLocks([f.target], () => release.promise);
+    const joined = operation.then(() => null, error => error);
+    await Promise.race([arrived.promise, joined.then(error => { throw error; })]);
+    const used = interceptRead(t, f.data, async names => {
+      assert.ok(names.includes(path.basename(readyPath)));
+      publishNow.resolve(); await nativeDone.promise;
+      await assert.rejects(originalLstat(readyPath), { code: "ENOENT" });
+    });
+    t.mock.method(fs, "lstat", async (...args) => {
+      try { return await originalLstat(...args); }
+      catch (error) {
+        if (!absentObserved && args[0] === readyPath && error?.code === "ENOENT") {
+          absentObserved = true;
+          if (replacement === "directory") {
+            await fs.mkdir(readyPath);
+            await fs.writeFile(path.join(readyPath, "foreign-state.json"), "retained");
+          } else if (replacement === "file") await fs.writeFile(readyPath, "retained");
+          else await fs.symlink(outside, readyPath, "junction");
+          replyNow.resolve();
+        }
+        throw error; // Preserve actual ENOENT completion while native reply joins.
+      }
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(preflight({ runtimeRoot: f.root }), /identity changed/u);
+      assert.equal(absentObserved, true); used();
+      const actual = await originalLstat(readyPath);
+      assert.equal(actual.isSymbolicLink(), replacement === "link");
+      assert.equal(await fs.readFile(replacement === "file" ? readyPath : path.join(readyPath, "foreign-state.json"), "utf8"), "retained");
+      assert.equal(await fs.readFile(path.join(outside, "foreign-state.json"), "utf8"), "retained");
+    } finally {
+      publishNow.resolve(); replyNow.resolve(); release.resolve();
+      assert.equal(await joined, null);
+      t.mock.restoreAll(); syncBuiltinESMExports();
+    }
+  });
+
+test("lock release joins EIO observation bookkeeping and retains original release diagnostics", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), errors = [], failure = Object.assign(new Error("fixture directory I/O failure"), { code: "EIO" });
+  let removals = 0;
+  const result = await withInterprocessLocks([f.target], async () => "protected-complete", {
+    removeLockDirectory: async () => { removals++; throw failure; },
+    onReleaseError: values => errors.push(...values),
+  });
+  await new Promise(resolve => setImmediate(resolve)); // No unhandledRejection listener or suppression.
+  assert.equal(result, "protected-complete");
+  assert.equal(removals, 1);
+  assert.equal(errors.length, 1); assert.equal(errors[0].error, failure);
+  assert.equal(errors[0].lockPath, `${f.target}.lock`);
+  assert.deepEqual(await fs.readdir(`${f.target}.lock`), []);
+  // An unsuccessful removal does not leave a local exclusion capability.
+  const inventory = await preflight({ runtimeRoot: f.root });
+  assert.ok(inventory.retained.some(entry => entry.path === path.join("data", "journal.sqlite.lock")));
+});

@@ -495,6 +495,10 @@ drift. This read-only call-scoped observation does not acquire a lock or mutate
 state. Stopped inventory never consumes it and retains strict equality. See
 ADR-HUB-398-live-backup-lock-observation. A terminal failed package original is
 still readback-only; this correction does not reset it or recapture its binding.
+An awaited producer transition requires a fresh path read before excluding
+confirmed absence; a replacement cannot inherit its predecessor's removal proof.
+Observation promise rejection stays joined to the existing release error owner;
+an I/O failure is neither confirmed removal nor an uncaught bookkeeping failure.
 SQLite headers discover databases throughout the selected scope regardless of
 filename suffix. All discovered writer reservations are held together through
 SQLite backup/integrity and regular-file before/after hashes. WAL/SHM companions
