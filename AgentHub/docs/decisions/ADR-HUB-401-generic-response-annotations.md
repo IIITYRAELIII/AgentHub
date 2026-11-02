@@ -15,6 +15,15 @@ split across events can be completed without losing its bytes. Reprojection
 preserves normalized supplied references without parsing user prompts, titles
 or user-authored content. Markdown code and escaping retain their literal text.
 
+The canonical observed-run owner carries the reader's structured references
+through creation, observer refresh and managed active snapshot application;
+already projected answer text cannot reconstruct that mapping. A present new
+answer replaces its normalized mapping, an explicit empty answer clears it,
+and a metadata-only observation preserves it. A conflicting explicit turn
+cannot adopt the mapping or retain stale references on the current run. Raw
+stream accumulation and existing run/provider/registry identity fences remain
+unchanged. Provider-specific no-op snapshot adapters are not metadata owners.
+
 The canonical Guide contains the user's short English agent-marker rule and
 the independently approved short archive paragraph. No effective Workspace,
 global or Stream rules are written back. Intake source-locator creation is a

@@ -506,3 +506,69 @@ test("TaskObservationService retains unconfirmed Codex activity without deliveri
   assert.equal(state.currentRun(), run);
   assert.equal(state.events.some(([kind]) => kind === "complete" || kind === "finish-progress"), false);
 });
+
+import { parseClaudeTranscript as reviewerClaudeTranscript } from '../../src/providers/claude/claude-session-reader.mjs';
+import { createAgentProviderRegistry as reviewerProviders } from '../../src/providers/provider-adapters.mjs';
+import { TaskRunRegistry as ReviewerRuns, taskRunIsActive as reviewerIsActive } from '../../src/domain/task-runs.mjs';
+
+function reviewerRealProviderRegistry() {
+  const codex = {};
+  for (const name of ['listAllCodexThreads','buildCodexTaskCatalogEntries','createCodexTask',
+    'launchCodexTurn','steerCodexTurn','findCodexTurnByClientMessage','cancelCodexProviderRun',
+    'readCodexTaskActivity','readCodexTaskSnapshot','completeObservedCodexRun','completeManagedCodexRun',
+    'recoverCodexRun','readCodexRecoverySnapshot','prepareCodexRecovery',
+    'applyCodexObservedSnapshot','applyCodexActiveSnapshot']) codex[name] = () => {};
+  const claude = {};
+  for (const name of ['listClaudeSessionSnapshots','buildClaudeTaskCatalogEntries','createClaudeTask',
+    'launchClaudeTurn','steerClaudeTurn','cancelClaudeProviderRun','readClaudeTaskActivity',
+    'completeObservedClaudeRun','completeManagedClaudeRun','recoverClaudeRun','readClaudeTaskSnapshot']) claude[name] = () => {};
+  // The production factory installs the real Claude no-op snapshot adapters.
+  return reviewerProviders({ codex, claude, taskRunIsActive: reviewerIsActive });
+}
+
+for (const phase of ['create', 'update', 'active']) {
+  test(`reviewer Claude observed ${phase} retains parsed assistant annotation references`, async () => {
+    const raw = ':agent-annotation{index="1"} Answer :codex-annotation{index="1"} continued';
+    const transcript = [
+      { type: 'user', uuid: 'user-original', message: { role: 'user', content: 'User literal :agent-annotation{index="2"}' } },
+      { type: 'assistant', uuid: 'assistant-original', message: { role: 'assistant', content: [{ type: 'text', text: raw }] } },
+    ].map(JSON.stringify).join('\n');
+    const snapshot = reviewerClaudeTranscript(transcript);
+    assert.deepEqual(snapshot.responseAnnotationReferences, [{ index: 1 }]);
+    assert.match(snapshot.answer, /Цитата 1/u);
+    const state = fixture();
+    state.service.providers = reviewerRealProviderRegistry();
+    state.service.taskRuns = new ReviewerRuns();
+    const run = await state.service.create({ provider: 'claude', streamId: 'stream-original',
+      projectRoot: 'D:/controlled', threadId: 'thread-original', taskTitle: 'Literal title' }, 7,
+      phase === 'create' ? snapshot : { answer: 'Previous plain answer' }, 'turn-original');
+    if (phase === 'update') state.service.update(run, snapshot);
+    if (phase === 'active') { run.observer = false; await state.service.applyActive(run, snapshot); }
+    assert.equal(run.responseText, snapshot.answer);
+    assert.deepEqual(run.responseAnnotationReferences, [{ index: 1 }],
+      'The observed consumer must retain the mapping after the reader has already removed raw markers');
+  });
+}
+
+for (const phase of ['update','active']) {
+  test(`generic observed ${phase} replaces empty and changed-turn reference mappings without changing identity`,async()=>{
+    const state=fixture();state.service.providers=reviewerRealProviderRegistry();state.service.taskRuns=new ReviewerRuns();
+    const run=await state.service.create({provider:'claude',streamId:'stream-original',projectRoot:'D:/controlled',threadId:'thread-original'},7,
+      {answer:'Цитата 1\nFirst',responseAnnotationReferences:[{index:1},{index:1},{index:21},{index:0}]},'turn-original');
+    assert.deepEqual(run.responseAnnotationReferences,[{index:1}]);
+    const identity={id:run.id,turnId:run.turnId,threadId:run.threadId,streamId:run.streamId};
+    if(phase==='active')run.observer=false;
+    const apply=async(snapshot)=>phase==='update'?state.service.update(run,snapshot):state.service.applyActive(run,snapshot);
+    await apply({stage:'Metadata only'});assert.deepEqual(run.responseAnnotationReferences,[{index:1}]);
+    await apply({answer:'Цитата 2\nSecond',responseAnnotationReferences:[{index:2},{index:2},{index:99}]});
+    assert.deepEqual(run.responseAnnotationReferences,[{index:2}]);
+    await apply({answer:'',responseAnnotationReferences:[{index:2}]});assert.deepEqual(run.responseAnnotationReferences,[]);
+    await apply({answer:'Plain answer'});assert.deepEqual(run.responseAnnotationReferences,[]);
+    await apply({answer:'Цитата 3\nThird',responseAnnotationReferences:[{index:3}]});
+    assert.deepEqual(run.responseAnnotationReferences,[{index:3}]);
+    await apply({turnId:'foreign-turn',answer:'Foreign answer',responseAnnotationReferences:[{index:4}]});
+    assert.deepEqual(run.responseAnnotationReferences,[]);
+    assert.deepEqual({id:run.id,turnId:run.turnId,threadId:run.threadId,streamId:run.streamId},identity);
+    assert.equal(state.service.taskRuns.forTask(run),run);
+  });
+}
