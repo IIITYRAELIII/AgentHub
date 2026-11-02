@@ -289,8 +289,8 @@ export async function createHubInfrastructure({
     mirror: process.stdout.isTTY || process.stderr.isTTY,
   });
   const startupRecords = [];
-  const startupStep = async (stage, operation) => {
-    const measured = await measureStartupBeforeTrace(stage, operation);
+  const startupStep = async (stage, operation, options) => {
+    const measured = await measureStartupBeforeTrace(stage, operation, options);
     startupRecords.push(measured.record);
     return measured.value;
   };
@@ -308,7 +308,8 @@ export async function createHubInfrastructure({
   let sqliteRecovery;
   let commandTrace;
   try {
-    sqliteRecovery = await startupStep("sqlite-recovery", () => sqliteRecoveryCoordinator.prepare());
+    sqliteRecovery = await startupStep("sqlite-recovery",
+      (recordPhase) => sqliteRecoveryCoordinator.prepare({ recordPhase }), { providePhaseRecorder: true });
   const localTrustedDeviceStore = new TrustedDeviceStore({
     filePath: path.join(config.dataDir, "trusted-devices.json"),
     // Signatures without the verifier origin are rejected unless an operator
@@ -511,6 +512,7 @@ export async function createHubInfrastructure({
     reportDiagnostic: diagnostic => console.warn("Historical release entry unavailable", diagnostic),
   }));
   const { operations: releaseOperations, commands: releaseOperationCommands } = createReleaseOperationServices({
+    recordCommandTrace: span => commandTrace?.service?.recordBestEffort?.(span) ?? false,
     store: releaseOperationStore,
     dataDir: config.dataDir,
     runtimeRoot: runtimeCommandRoot,

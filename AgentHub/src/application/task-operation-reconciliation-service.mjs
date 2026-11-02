@@ -366,8 +366,17 @@ export class TaskOperationReconciliationService {
     }
     if (!root) throw new Error("Unknown workflow operation identity requires a project root");
 
-    const metadataRecovery = !squash && !selected && !initial && !cutover && !workflowCas
-      && options.nativeResolutionReview == null && !exactGuardId && nativeTestMetadataDrift(task, transition);
+    const nativeResolutionReview = options.nativeResolutionReview ?? null;
+    const originalReview = transition?.evidence?.nativeResolutionReview
+      ?? outcome?.result?.evidence?.nativeResolutionReview ?? null;
+    const reviewReceipt = originalReview ? this.workspaceCatalog.mcpOperation(originalReview.requestId) : null;
+    const reviewMatches = JSON.stringify(canonicalValue(originalReview)) === JSON.stringify(canonicalValue(nativeResolutionReview))
+      && (!originalReview || (reviewReceipt?.toolName === "hub_stream_message_send"
+        && reviewReceipt.status === "succeeded" && reviewReceipt.receiptState === "succeeded"
+        && reviewReceipt.workspaceId === receipt?.workspaceId && reviewReceipt.provider === receipt?.provider
+        && reviewReceipt.result?.target?.streamId === receipt?.streamId));
+    const metadataRecovery = !squash && !selected && !initial && !cutover && !exactGuardId
+      && reviewMatches && nativeTestMetadataDrift(task, transition);
     const receiptSettled = !transition && (outcome?.result?.evidence?.nativeTerminalRecovery
       || outcome?.result?.evidence?.nativeAwaitRecovery)
       && receipt?.operationStatus === "succeeded" && receipt?.receiptState === "succeeded";
@@ -541,6 +550,7 @@ export class TaskOperationReconciliationService {
       projectRoot: root,
       guardId: exactGuardId,
       metadataRecovery,
+      nativeResolutionReview,
       receiptSettled,
       squash,
       selected,
@@ -687,6 +697,7 @@ export class TaskOperationReconciliationService {
           lease,
           verifyInitialNativeTest: options.verifyInitialNativeTest,
           allowMetadataRecovery: identity.metadataRecovery,
+          nativeResolutionReview: identity.nativeResolutionReview,
         });
       } catch (error) {
         try {

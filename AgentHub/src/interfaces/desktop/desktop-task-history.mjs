@@ -525,8 +525,17 @@ export function createDesktopTaskHistoryFactory({
       ? catalog.entries()
       : await catalog.refresh();
     scheduleCatalogRefresh();
+    const hasStreamLineage = selectedStreamId && typeof catalog.threadsForStream === "function";
+    const selectedStreamThreads = hasStreamLineage
+      ? catalog.threadsForStream(selectedStreamId)
+      : [];
+    // The retained catalog contains several Threads per Stream. Its first row
+    // is not head authority; the lineage owner returns them in position order.
+    const head = selectedStreamThreads.findLast((thread) => thread.detachedAtMs == null);
     const entry = entries.find((item) => (
-      (selectedStreamId && item.streamId === selectedStreamId)
+      (selectedStreamId && item.streamId === selectedStreamId
+        && (!hasStreamLineage || (head
+          && item.provider === head.provider && item.threadId === head.threadId)))
       || (!selectedStreamId && item.provider === provider && item.threadId === selectedThreadId)
     ));
     if (!entry) throw new Error("Поток не найден в локальном каталоге");
@@ -539,7 +548,8 @@ export function createDesktopTaskHistoryFactory({
       taskTitle: taskDisplayTitle(entry),
       chatId: selection.chatId(),
     };
-    const streamThreads = binding.streamId && typeof catalog.threadsForStream === "function"
+    const streamThreads = selectedStreamId ? selectedStreamThreads
+      : binding.streamId && typeof catalog.threadsForStream === "function"
       ? catalog.threadsForStream(binding.streamId)
       : [];
     const threadBindings = streamThreads.length ? streamThreads.map((thread) => ({

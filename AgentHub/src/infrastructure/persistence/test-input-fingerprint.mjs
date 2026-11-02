@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, lstat } from "node:fs/promises";
+import { readFile, readdir, lstat, realpath, stat } from "node:fs/promises";
 import { isBuiltin } from "node:module";
+import os from "node:os";
 import path from "node:path";
 
 const SAFE_BUILTINS = new Set([
@@ -19,6 +20,12 @@ const EXECUTION_ISOLATION_FIELDS = new Map([
 ]);
 const INPUT_LIMIT = 128 * 1024 * 1024;
 const FILE_LIMIT = 10_000;
+
+// The allocator consumes this parent before replacing the child's environment.
+// Its location/identity is an input; only the random child suffix is abstract.
+export function testAllocationParent() {
+  return path.resolve(os.tmpdir());
+}
 
 function validDeclaration(declaration) {
   if (!declaration || typeof declaration !== "object" || Array.isArray(declaration)) return false;
@@ -92,6 +99,18 @@ export async function explainTestInputFingerprint(file, {
     cacheable = false;
     missReasons.add(reason);
   };
+  const allocationParent = testAllocationParent();
+  try {
+    const [physical, info] = await Promise.all([
+      realpath(allocationParent), stat(allocationParent, { bigint: true }),
+    ]);
+    if (!info.isDirectory()) reject("unavailable-allocation-parent");
+    hash.update(JSON.stringify(["allocation-parent", allocationParent, physical,
+      String(info.dev), String(info.ino)])).update("\0");
+  } catch {
+    // Missing proof prevents reuse; it does not forbid actual test execution.
+    reject("unavailable-allocation-parent");
+  }
   const within = (absolute) => {
     const relative = path.relative(root, absolute);
     return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
@@ -147,7 +166,9 @@ export async function explainTestInputFingerprint(file, {
           continue;
         }
         if (declaration?.packages?.includes(specifier)) continue;
-        reject(`undeclared-package:${specifier}`);
+        // The conservative scanner can encounter embedded fixture source.
+        // Never echo an arbitrary captured string into durable test output.
+        reject("undeclared-package");
       }
     }
   }

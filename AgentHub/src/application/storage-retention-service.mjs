@@ -3,7 +3,7 @@ import { MAINTENANCE_OPERATION_KINDS } from "../domain/maintenance-operation.mjs
 import { AsyncSqliteMutationQueue } from "../infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 
 export const STORAGE_RETENTION_VERSION = 1;
-export const STORAGE_RETENTION_POLICY_VERSION = 3;
+export const STORAGE_RETENTION_POLICY_VERSION = 4;
 const KIND = MAINTENANCE_OPERATION_KINDS.STORAGE_RETENTION;
 const ROOT_ID = `storage-retention:v${STORAGE_RETENTION_VERSION}`;
 const SCOPE = Object.freeze({ streamId: "agent-hub-runtime", threadId: "storage-retention" });
@@ -59,7 +59,10 @@ export class StorageRetentionService {
     this.maxUnits = Math.min(3, Math.max(1, Math.trunc(Number(maxUnits) || 3)));
   }
 
-  status() { return structuredClone(this.#last); }
+  status() {
+    return { ...structuredClone(this.#last), owners: Object.fromEntries(this.owners
+      .filter(owner => typeof owner.status === "function").map(owner => [owner.id, owner.status()])) };
+  }
 
   scheduleInitial() {
     this.#stopped = false;
@@ -176,10 +179,14 @@ export class StorageRetentionService {
       metadata: { version: STORAGE_RETENTION_VERSION, ownerIds: this.owners.map(o => o.id), pending: [], summary: summary() } });
     const ownerIds = this.owners.map(o => o.id);
     const ownerListChanged = JSON.stringify(parent.metadata.ownerIds) !== JSON.stringify(ownerIds);
-    const knownUpgrade = ['["native-merge-transport"]', '["native-merge-transport","runtime-release"]'].includes(JSON.stringify(parent.metadata.ownerIds))
-      && JSON.stringify(ownerIds) === '["native-merge-transport","runtime-release","release-generation-transport"]';
+    const oldOwners = ["native-merge-transport", "runtime-release", "release-generation-transport"];
+    const prior = parent.metadata.ownerIds;
+    const knownUpgrade = Array.isArray(prior) && prior.length >= 1 && prior.length <= 3
+      && JSON.stringify(prior) === JSON.stringify(oldOwners.slice(0, prior.length))
+      && (JSON.stringify(ownerIds) === JSON.stringify(oldOwners)
+        || JSON.stringify(ownerIds) === JSON.stringify(["runtime-update-backup", ...oldOwners]));
     if (TERMINAL.has(parent.status) || parent.metadata.version !== STORAGE_RETENTION_VERSION
-        || ![undefined, 1, 2, STORAGE_RETENTION_POLICY_VERSION].includes(parent.metadata.policyVersion)
+        || ![undefined, 1, 2, 3, STORAGE_RETENTION_POLICY_VERSION].includes(parent.metadata.policyVersion)
         || (ownerListChanged && !knownUpgrade)) {
       return this.#last = { state: "deferred", reason: "retention-policy-incompatible" };
     }
@@ -243,6 +250,17 @@ export class StorageRetentionService {
       const result = OUTCOMES.has(step.result?.status) ? step.result : { status: "unknown", reason: "owner-outcome-unknown" };
       if (step.child) {
         await lease.assertOwned();
+        // An owner persists per-entry progress on this SAME child before effects.
+        // Refresh its CAS only after checking the immutable admission binding.
+        const latest = this.store.get(step.child.operationId);
+        if (!latest || TERMINAL.has(latest.status) || latest.metadata.owner !== step.child.metadata.owner
+          || latest.metadata.version !== step.child.metadata.version
+          || latest.metadata.admitted !== step.child.metadata.admitted
+          || JSON.stringify(latest.metadata.candidate) !== JSON.stringify(step.child.metadata.candidate)
+          || JSON.stringify(latest.metadata.binding) !== JSON.stringify(step.child.metadata.binding)) {
+          throw new Error("retention-owner-fenced");
+        }
+        step.child = latest;
         if (result.status === "unknown" || result.status === "partial") {
           if (!TERMINAL.has(step.child.status)) await this.#update(step.child, { status: "reconciling",
             phase: result.status === "partial" ? "partial" : "reconciling", outcome: "unknown", metadata: { lastObservation: bounded(result) } }, lease);

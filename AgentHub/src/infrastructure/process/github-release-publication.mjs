@@ -1,7 +1,8 @@
+import { ownedGitArguments } from "../filesystem/preparation-git-isolation.mjs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -81,7 +82,7 @@ export function githubReleaseTransport({ run = execute, request = fetch } = {}) 
 // another operation store. The runner selects it ONLY for its approved target.
 export function createGitHubDistributionSteps({
   sourceRoot, repositoryRoot, executionRoot, runtimePublication, artifacts, journal,
-  capture = async (command, args) => (await execute(command, args, {
+  capture = async (command, args) => (await execute(command, ownedGitArguments(args, { executable: command }), {
     cwd: sourceRoot, encoding: "utf8", windowsHide: true, maxBuffer: Infinity,
     env: { ...process.env, PYTHONUTF8: "1" },
   })).stdout,
@@ -93,8 +94,17 @@ export function createGitHubDistributionSteps({
   if (!/^\d+\.\d+\.\d+$/u.test(publicVersion)) throw new Error("Stable distribution requires a stable public version");
   const root = `/repos/${REPOSITORY}`;
   const tagRoute = `${root}/git/ref/tags/${encodeURIComponent(publicVersion)}`;
-  const outputRoot = path.join(executionRoot, "distribution");
-  const namespace = path.join(outputRoot, frozen.version);
+  let executionBinding;
+  async function packageNamespace() {
+    const physical = await realpath(executionRoot);
+    const info = await lstat(physical, { bigint: true });
+    if (!info.isDirectory() || info.isSymbolicLink() || await realpath(executionRoot) !== physical
+      || executionBinding && (executionBinding.physical !== physical || executionBinding.dev !== info.dev || executionBinding.ino !== info.ino)) {
+      throw new Error("Distribution execution root changed");
+    }
+    executionBinding ??= { physical, dev: info.dev, ino: info.ino };
+    return path.join(physical, "distribution", frozen.version);
+  }
   const progress = async () => (await journal.read())?.progress?.githubDistribution ?? null;
   const save = async value => journal.updateProgress({ githubDistribution: value });
 
@@ -116,6 +126,8 @@ export function createGitHubDistributionSteps({
     if (Object.entries(frozen).some(([key, value]) => prepared.receipt[key] !== value)) {
       throw new Error("Distribution PREPARED receipt changed original owner identity");
     }
+    const namespace = await packageNamespace();
+    const outputRoot = path.dirname(namespace);
     const stdout = await capture(process.platform === "win32" ? "python.exe" : "python3", [
       "-X", "utf8", path.join(sourceRoot, "distribution", "build_release.py"),
       "--prepared-receipt", prepared.receiptFile, "--receipt-sha256", prepared.receiptSha256,
@@ -124,6 +136,7 @@ export function createGitHubDistributionSteps({
       "--notices", path.join(sourceRoot, "..", "THIRD_PARTY_NOTICES.md"), "--output-root", outputRoot,
     ]);
     const packaged = JSON.parse(stdout);
+    await packageNamespace();
     if (packaged.phase !== "PACKAGED" || !/^[a-f0-9]{64}$/u.test(packaged.inputIdentity ?? "")
       || packaged.inputs?.repository !== REPOSITORY
       || Object.entries(frozen).some(([key, value]) => packaged.inputs?.[key] !== value)
@@ -187,6 +200,7 @@ export function createGitHubDistributionSteps({
 
   async function publish(identity) {
     const packaged = await packageInput(identity);
+    const namespace = await packageNamespace();
     let saved = await progress();
     if (saved && saved.inputIdentity !== packaged.inputIdentity) throw new Error("Original distribution input changed");
     saved ??= { inputIdentity: packaged.inputIdentity, createStarted: false, uploads: {} };

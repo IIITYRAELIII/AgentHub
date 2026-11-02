@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import * as fsPromises from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -399,25 +400,49 @@ export class SharedSqliteRecoveryCoordinator {
     };
   }
 
-  async prepare() {
+  async prepare({ recordPhase = null } = {}) {
+    const emit = (phase, outcome, started) => {
+      try {
+        const observed = recordPhase?.({ phase, outcome, durationMs: Math.max(0, performance.now() - started) });
+        observed?.catch?.(() => {});
+      } catch {}
+    };
+    const measure = async (phase, operation) => {
+      const started = performance.now();
+      emit(phase, "started", started);
+      try {
+        const value = await operation();
+        emit(phase, "succeeded", started);
+        return value;
+      } catch (error) {
+        emit(phase, "failed", started);
+        throw error;
+      }
+    };
+    const admissionStarted = performance.now();
+    let admitted = false;
+    emit("database-lock", "started", admissionStarted);
     try {
       return await this.#withDatabaseLock(async () => {
-        const lock = await this.#acquireLock();
+        admitted = true;
+        emit("database-lock", "succeeded", admissionStarted);
+        const lock = await measure("recovery-lock-acquire", () => this.#acquireLock());
         try {
-          const marker = await optionalJson(this.#markerFile, this.#fileSystem);
-          if (marker) return await this.#resume(marker);
-          const intent = await optionalJson(this.#intentFile, this.#fileSystem);
-          if (intent) await this.#rollbackIntent(intent);
-          const databaseInfo = await optionalStat(this.#databaseFile, this.#fileSystem);
+          const marker = await measure("marker-read", () => optionalJson(this.#markerFile, this.#fileSystem));
+          if (marker) return await measure("resume", () => this.#resume(marker));
+          const intent = await measure("intent-read", () => optionalJson(this.#intentFile, this.#fileSystem));
+          if (intent) await measure("intent-rollback", () => this.#rollbackIntent(intent));
+          const databaseInfo = await measure("database-stat", () => optionalStat(this.#databaseFile, this.#fileSystem));
           if (!databaseInfo) return { degraded: false };
-          const inspection = await this.#inspectDatabase();
+          const inspection = await measure("database-check", () => this.#inspectDatabase());
           if (inspection.healthy) return { degraded: false };
-          return await this.#quarantine(inspection.error);
+          return await measure("quarantine", () => this.#quarantine(inspection.error));
         } finally {
-          await this.#releaseLock(lock);
+          await measure("recovery-lock-release", () => this.#releaseLock(lock));
         }
       });
     } catch (error) {
+      if (!admitted) emit("database-lock", "failed", admissionStarted);
       this.#capture(error, "prepare");
       throw error;
     }

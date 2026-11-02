@@ -318,7 +318,7 @@ test("selected Stream rerenders when logical chat state and DOM ownership diverg
   );
 });
 
-test("explicit active-turn steer remains distinct from queued input", async () => {
+test("ordinary composer defaults to queue and explicit steer preserves current Stream intent", async () => {
   const api = await messageViewApi();
   assert.equal(api.composerFollowUpMode({ running: true }), "queue");
   assert.equal(
@@ -363,16 +363,17 @@ test("fenced blocks expose their exact text for clipboard copy", async () => {
   assert.equal(api.codeBlockCopyRequest(""), null);
 });
 
-test("durable intake staging stays in the command queue as starting", async () => {
+test("queued intake is waiting and only actual dispatch counts as starting", async () => {
   const api = await messageViewApi();
   assert.deepEqual(
     { ...api.deferredQueueCounts([
       { state: "queued", conflictKind: "message-intake" },
       { state: "queued", conflictKind: "task-running" },
+      { state: "dispatching", conflictKind: "message-intake" },
       { state: "pending", conflictKind: "active-run" },
       { state: "paused", conflictKind: "message-intake" },
     ]) },
-    { pending: 1, starting: 1, queued: 1, paused: 1 },
+    { pending: 1, starting: 1, queued: 2, paused: 1 },
   );
 });
 

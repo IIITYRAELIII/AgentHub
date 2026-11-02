@@ -13,12 +13,30 @@ import { usageTurnFactId } from "../../domain/usage-facts.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
 import { configureTaskTurnProjection } from "./task-turn-projection.mjs";
+import { claimCustodyNamespaces, withClaimCustodySqlPermit } from "./claim-custody-fence.mjs";
 
 const SCHEMA_VERSION = 3;
 const LEDGER_VERSION = 9;
 const LEGACY_IMPORT_KEY = "work-log-usage-v1";
 const ACCOUNT_USAGE_PROJECTION_VERSION_KEY = "account_usage_projection_version";
 const JOURNAL_DAY_ORDER = "substr(date, 7, 4), substr(date, 4, 2), substr(date, 1, 2)";
+
+// Only the canonical journal_records INSERT/UPDATE statements use this join.
+// Their existing triggers derive Task history from exact bindings, never from
+// record JSON. Reuse the transaction-local permit for that derived index; no
+// Task mutation, arbitrary SQL, DDL or external callback receives authority.
+function journalRecordStatement(database, sql) {
+  const statement = database.prepare(sql);
+  return { run(...args) {
+    const states = claimCustodyNamespaces(database);
+    const visit = i => i === states.length ? statement.run(...args)
+      : withClaimCustodySqlPermit(database, {
+        taskId: states[i].taskId, epoch: states[i].namespace.epoch,
+        fenceRequestId: states[i].requestId, operationId: "journal-task-turn-projection",
+      }, () => visit(i + 1));
+    return visit(0);
+  } };
+}
 
 function configure(database) {
   database.exec(`
@@ -125,14 +143,16 @@ function configure(database) {
       const migrationRevision = Math.max(1, Number(database.prepare(
         "SELECT value FROM journal_store_meta WHERE key = 'revision'",
       ).get()?.value) || 0);
-      database.prepare("UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
+      journalRecordStatement(database, "UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
       database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'revision'")
         .run(String(migrationRevision));
     }
-    database.exec(`
+    journalRecordStatement(database, `
       UPDATE journal_records
       SET observed_at_ms = completed_at_ms
-      WHERE observed_at_ms IS NULL;
+      WHERE observed_at_ms IS NULL
+    `).run();
+    database.exec(`
       CREATE INDEX IF NOT EXISTS journal_records_observed_idx
         ON journal_records(observed_at_ms, provider, thread_id, turn_id);
       CREATE INDEX IF NOT EXISTS journal_records_changed_idx
@@ -485,7 +505,7 @@ function writeProjection(database, payload, {
 }
 
 function insertRecordStatement(database) {
-  return database.prepare(`
+  return journalRecordStatement(database, `
     INSERT INTO journal_records
       (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, observed_at_ms,
        changed_revision, record_json)

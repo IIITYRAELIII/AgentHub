@@ -178,17 +178,17 @@ test("Await refuses a missing native runtime import before promotion and accepts
   assert.deepEqual(await readFile(path.join(capture.folder, "merge.json")), oldJournal);
   assert.deepEqual(await readFile(checkpointFile), checkpointBefore);
   assert.deepEqual(f.taskBoard.task(task.id), taskBefore);
+  const independentReview = { requestId: "review-exact-amendment",
+    text: `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding: expectedBinding })}</native-merge-review>` };
   let checks = 0;
   f.releaseGitWorkspaces.verifyNativeResolutionReview = async (review, binding) => {
-    assert.deepEqual(review, { requestId: "review-exact-amendment", text: "synthetic independent review port" });
+    assert.deepEqual(review, independentReview);
     assert.deepEqual(binding, expectedBinding);
     checks += 1;
   };
   const accepted = await f.lifecycle.updateWorkflowStatus({ taskId: task.id,
     status: "awaiting_implementation", operationId: "reviewed-runtime-amendment",
-    operationEvidence: { nativeResolutionReview: {
-      requestId: "review-exact-amendment", text: "synthetic independent review port",
-    } },
+    operationEvidence: { nativeResolutionReview: independentReview },
   });
   assert.equal(accepted.task.workflowStatus, "awaiting_implementation");
   assert.ok(checks > 0);
@@ -206,9 +206,7 @@ test("Await refuses a missing native runtime import before promotion and accepts
   // This lower-level public lifecycle service refuses a terminal mutation;
   // the existing command/receipt owner supplies original-request readback.
   await assert.rejects(f.lifecycle.updateWorkflowStatus({ taskId: task.id, status: "awaiting_implementation",
-    operationId: "reviewed-runtime-amendment", operationEvidence: { nativeResolutionReview: {
-      requestId: "review-exact-amendment", text: "synthetic independent review port",
-    } } }), { code: "TASK_LIFECYCLE_BEGIN_REJECTED" });
+    operationId: "reviewed-runtime-amendment", operationEvidence: { nativeResolutionReview: independentReview } }), { code: "TASK_LIFECYCLE_BEGIN_REJECTED" });
   assert.deepEqual(f.taskBoard.lifecycleOutcome("reviewed-runtime-amendment"), terminal);
   assert.deepEqual(await readFile(checkpointFile), checkpointAfter);
   assert.deepEqual(await readFile(path.join(capture.folder, "merge.json")), journalAfter);

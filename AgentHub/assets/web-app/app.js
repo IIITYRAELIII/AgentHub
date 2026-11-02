@@ -431,13 +431,14 @@ syncComposerInputMode();
 function readThemeCatalog() {
   const source = document.querySelector("[data-theme-catalog]")?.textContent ?? "";
   const catalog = JSON.parse(source);
-  if (!Array.isArray(catalog) || !catalog.some((theme) => theme?.id === "orbit")) {
+  if (!Array.isArray(catalog) || !catalog[0]?.id) {
     throw new Error("Каталог тем Agent Hub повреждён");
   }
   return catalog;
 }
 
 const themeCatalog = readThemeCatalog();
+const defaultTheme = themeCatalog[0].id;
 const themes = Object.freeze(Object.fromEntries(themeCatalog.map((theme) => [theme.id, theme.color])));
 const backgroundNames = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
   theme.backgrounds.map((background) => [background.id, background.name])
@@ -617,16 +618,6 @@ const RANGE_LABELS = {
   all: "Всё время",
 };
 
-function savedTheme() {
-  try {
-    const value = localStorage.getItem("agent-hub-theme");
-    const selected = themeAliases[value] ?? value;
-    return Object.hasOwn(themes, selected) ? selected : "orbit";
-  } catch {
-    return "orbit";
-  }
-}
-
 /* Живые частицы тем.
  *
  * Плиткой это сделать нельзя: `background-repeat` повторяет один рисунок, и
@@ -736,7 +727,7 @@ function applyBackgroundMotion(value, { persist = false } = {}) {
 
 function applyTheme(theme, { persist = false } = {}) {
   const candidate = themeAliases[theme] ?? theme;
-  const selected = Object.hasOwn(themes, candidate) ? candidate : "orbit";
+  const selected = Object.hasOwn(themes, candidate) ? candidate : defaultTheme;
   document.documentElement.dataset.theme = selected;
   if (selected === "gothic") {
     for (const background of Object.keys(deferredBackgroundAssets)) {
@@ -749,7 +740,7 @@ function applyTheme(theme, { persist = false } = {}) {
   themeColor.content = themes[selected];
   if (persist) {
     try {
-      localStorage.setItem("agent-hub-theme", selected);
+      localStorage.setItem(window.AgentHubThemePreference.STORAGE_KEY, selected);
     } catch {
       // Тема останется активной до закрытия WebView.
     }
@@ -971,7 +962,12 @@ telegramFullscreenButton?.addEventListener("click", () => {
   else telegram?.requestFullscreen?.();
 });
 applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
-applyTheme(savedTheme());
+const themeStartup = window.AgentHubThemePreference.initialize({
+  storage: () => localStorage, catalog: themeCatalog, aliases: themeAliases, apply: applyTheme,
+});
+if (themeStartup.migration === "storage-unavailable") {
+  console.warn("Выбор темы не удалось сохранить; однократный переход на Nexus будет повторён при доступности хранилища.");
+}
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyActivityRailVisibility(activityRailPreference.stored(localStorage));
 const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
@@ -3725,7 +3721,7 @@ function applyBackground(background, { persist = false } = {}) {
 }
 
 function backgroundsForTheme(theme) {
-  return themeBackgrounds[theme] ?? ["orbit"];
+  return themeBackgrounds[theme] ?? themeBackgrounds[defaultTheme];
 }
 
 function normalizeBackground(theme, candidate) {
@@ -4521,11 +4517,18 @@ function renderStreamTabs() {
   scheduleStreamTabsOverflow();
 }
 
+let publishedRetainedHistoryTaskIds = [];
+
 function publishVisibleStreamTasks(tasks) {
   const ids = tasks.map((task) => task.id);
-  if (sameData(ids, state.visibleStreamTaskIds)) return;
+  const retainedTaskIds = state.tasks.filter((task) => (
+    state.openStreamsByWorkspace.get(workspaceKey(task))?.includes(streamKey(task))
+  )).map((task) => task.id);
+  if (sameData(ids, state.visibleStreamTaskIds)
+    && sameData(retainedTaskIds, publishedRetainedHistoryTaskIds)) return;
   state.visibleStreamTaskIds = ids;
-  emit("workspace:visible-streams", { taskIds: ids });
+  publishedRetainedHistoryTaskIds = retainedTaskIds;
+  emit("workspace:visible-streams", { taskIds: ids, retainedTaskIds });
 }
 
 const { ChatScrollController, shouldLoadOlderPage } = window.AgentHubChatScroll;
@@ -4581,6 +4584,8 @@ function renderStreamChatPreview(task) {
   const preview = el("article", {
     class: "stream-chat-preview",
     "data-stream-chat-task-id": task.id,
+    "data-stream-chat-provider": String(task.provider ?? ""),
+    "data-stream-chat-thread-id": String(task.threadId ?? ""),
   });
   preview.addEventListener("click", (event) => {
     if (event.target.closest("a, button, input, textarea, select, summary")) return;
@@ -4669,7 +4674,7 @@ function renderStreamChatPreview(task) {
 let renderedStreamChatDeckKey = "";
 
 function renderStreamChatDeck() {
-  const { force = false } = arguments[0] ?? {};
+  const { force = false, refreshTaskId = "" } = arguments[0] ?? {};
   if (!streamChatColumns) return;
   const selected = currentTask();
   const visible = visibleWorkspaceStreamTasks();
@@ -4680,6 +4685,28 @@ function renderStreamChatDeck() {
     && streamChatColumns.querySelectorAll(".stream-chat-preview").length
       === shown.filter((task) => task.id !== selected?.id).length;
   if (!force && deckStructureIntact && deckKey === renderedStreamChatDeckKey) return;
+  // A payload update belongs to one preview. Rebuild the full deck only when
+  // its structure or exact current bindings no longer match the rendered DOM.
+  // Unrelated columns retain their scroll, disclosures and event ownership.
+  if (force && refreshTaskId && deckStructureIntact && deckKey === renderedStreamChatDeckKey) {
+    const columns = Array.from(streamChatColumns.querySelectorAll(".stream-chat-preview"));
+    const exactColumns = shown.filter((task) => task.id !== selected?.id).every((task) => {
+      const matches = columns.filter((node) => node.dataset.streamChatTaskId === task.id);
+      return matches.length === 1
+        && matches[0].dataset.streamChatProvider === String(task.provider ?? "")
+        && matches[0].dataset.streamChatThreadId === String(task.threadId ?? "")
+        && matches[0].style.order === String(shown.indexOf(task));
+    });
+    const index = shown.findIndex((task) => task.id === refreshTaskId && task.id !== selected?.id);
+    const existing = columns.find((node) => node.dataset.streamChatTaskId === refreshTaskId);
+    if (index >= 0 && existing && exactColumns
+      && chatPane.dataset.streamChatTaskId === String(selected?.id ?? "")) {
+      const preview = renderStreamChatPreview(shown[index]);
+      preview.style.order = String(index);
+      existing.replaceWith(preview);
+      return;
+    }
+  }
   const selectedIndex = shown.findIndex((task) => task.id === selected?.id);
   for (const preview of streamChatColumns.querySelectorAll(".stream-chat-preview")) preview.remove();
   chatPane.hidden = selectedIndex < 0;
@@ -4703,7 +4730,7 @@ function renderStreamChatDeck() {
 
 function refreshSupplementaryStreamChat(taskId) {
   if (taskId === state.selectedId || !state.visibleStreamTaskIds.includes(taskId)) return;
-  renderStreamChatDeck({ force: true });
+  renderStreamChatDeck({ force: true, refreshTaskId: taskId });
 }
 
 function renderTaskItem(task, { workspaceGrouped = false } = {}) {
@@ -8502,16 +8529,6 @@ function renderQueueForTask(taskId, container) {
           disabled: movableIndex < 0 || movableIndex >= movable.length - 1,
           text: "↓",
         }));
-        if (entry.waitReason === "provider-thread-active") {
-          actions.push(el("button", {
-            type: "button",
-            class: "queue-new",
-            "data-action": "queue-new",
-            "data-queue-id": entry.id,
-            title: "Создать новую задачу и отправить сообщение туда",
-            text: "В новую задачу",
-          }));
-        }
         actions.push(el("button", {
           type: "button",
           class: "queue-pause",
@@ -8559,10 +8576,15 @@ function renderQueueForTask(taskId, container) {
     const content = el("div", { class: "queue-content" }, [
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
-      task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running")
+      (entry.waitReason === "managed-run-activity-unknown"
+        || task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running"))
         ? el("div", { class: "queue-status", text: "Поток занят исходным ходом: состояние уточняется после потери связи. Доступен Stop; сообщение повторно не отправляется." }) : null,
+      entry.state === "paused" && entry.waitReason === "task-running"
+        ? el("div", { class: "queue-status", text: 'Сообщение на паузе; нажми "Продолжить", чтобы вернуть его в очередь.' }) : null,
+      entry.state === "queued" && entry.waitReason === "task-running" && !task?.activityUnknown
+        ? el("div", { class: "queue-status", text: "Ожидает завершения текущего хода; сообщение сохранено в очереди и будет отправлено автоматически." }) : null,
       entry.waitReason === "provider-thread-active"
-        ? el("div", { class: "queue-status", text: "Thread удерживается другим Codex. Автоповторы остановлены; проверьте снова после закрытия задачи или отправьте сообщение в новую." })
+        ? el("div", { class: "queue-status", text: "Thread занят внешним процессом; сообщение сохранено. Состояние проверяется автоматически." })
         : entry.waitReason === "provider-temporarily-unavailable"
           ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
           : entry.waitReason === "context-maintenance" || entry.conflictKind === "context-maintenance"
@@ -8715,12 +8737,13 @@ composerInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") composerIMEConfirmation = false;
   const chord = window.AgentHubComposerShortcuts.chord(event);
   const applyShortcut = () => {
-    const action = composerShortcuts.preference().mapping[chord];
+    const preference = composerShortcuts.preference();
+    const action = preference.mapping[chord];
     event.preventDefault();
     if (action === "newline") {
       if (!event.repeat || chord !== "ctrlEnter") insertTextAtCaret(composerInput, "\n");
     } else if (!event.repeat) {
-      if (action === "queue") submitComposer();
+      if (action === "queue") submitComposer({ followUpMode: "queue" });
       else submitComposer({ steerWhileRunning: true });
     }
   };
@@ -8774,6 +8797,7 @@ function sendComposerRequest({
   messageOrigin: requestMessageOrigin = null,
   composerTransfer: requestComposerTransfer = null,
   steerWhileRunning = false,
+  followUpMode = null,
   clearComposer = false,
   restoreOnReject = false,
 } = {}) {
@@ -8843,8 +8867,8 @@ function sendComposerRequest({
     taskReferences: payloadTaskReferences,
     messageOrigin: requestMessageOrigin,
     composerTransfer: requestComposerTransfer,
-    followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
-    deferWhileRunning: (task?.running === true || task?.canStop === true) && !steerWhileRunning,
+    followUpMode: followUpMode === "queue" ? "queue" : MessageView.composerFollowUpMode(task, { steerWhileRunning }),
+    deferWhileRunning: false,
     draftStream: task?.draftStream === true,
     streamId: task?.streamId ?? null,
     settings: task?.draftStream ? { ...task.streamSettings } : null,
@@ -8854,7 +8878,7 @@ function sendComposerRequest({
   return true;
 }
 
-function submitComposer({ steerWhileRunning = false } = {}) {
+function submitComposer({ steerWhileRunning = false, followUpMode = null } = {}) {
   return sendComposerRequest({
     rawText: composerInput.value,
     attachments: currentAttachments(),
@@ -8863,6 +8887,7 @@ function submitComposer({ steerWhileRunning = false } = {}) {
     messageOrigin: drafts.get(state.selectedId)?.messageOrigin ?? null,
     composerTransfer: drafts.get(state.selectedId)?.composerTransfer ?? null,
     steerWhileRunning,
+    followUpMode,
     clearComposer: true,
     restoreOnReject: true,
   });
@@ -11461,9 +11486,6 @@ async function handleAction(action, trigger) {
     case "queue-resume":
       emit("queue:resume", { taskId, id: trigger.dataset.queueId });
       break;
-    case "queue-new":
-      emit("queue:new", { taskId, id: trigger.dataset.queueId });
-      break;
     case "queue-retry":
       emit("queue:retry", { taskId, id: trigger.dataset.queueId });
       break;
@@ -11719,6 +11741,13 @@ const AgentHub = {
       renderLive();
       renderStreamChatHeader(currentTask());
     } else refreshSupplementaryStreamChat(taskId);
+  },
+  releaseTaskHistory(taskId) {
+    if (taskId === state.selectedId || state.visibleStreamTaskIds.includes(taskId)) return false;
+    state.messages.delete(taskId);
+    state.historyPagination.delete(taskId);
+    state.messageRenderLimits.delete(taskId);
+    return true;
   },
   setMessagesForExactNavigation(taskId, messages, exactNavigation) {
     const next = Array.isArray(messages) ? messages.slice() : [];

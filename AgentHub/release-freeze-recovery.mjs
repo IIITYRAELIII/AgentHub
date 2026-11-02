@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "./src/infrastructure/filesystem/preparation-git-isolation.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -162,7 +163,7 @@ export async function inspectReleaseFreezeRecoverySource(input, {
   exec = execute,
   read = readFile,
 } = {}) {
-  const git = async (...args) => String((await exec("git", args, {
+  const git = async (...args) => String((await exec("git", ownedGitArguments(args), {
     cwd: sourceRoot, windowsHide: true, encoding: "utf8",
   })).stdout).trim();
   const [head, dirty, ownerBytes] = await Promise.all([

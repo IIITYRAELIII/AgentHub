@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { StorageRetentionService } from "../../src/application/storage-retention-service.mjs";
+import { StorageRetentionService, STORAGE_RETENTION_POLICY_VERSION } from "../../src/application/storage-retention-service.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { restartRequestProjection } from "../../src/domain/maintenance-operation.mjs";
 import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
@@ -248,7 +248,7 @@ test("only explicit v1/v2 registry upgrades to v3 preserve pending original inte
   assert.equal((await upgraded.runOnce()).removed, 1);
   const after = f.store.get("storage-retention:v1");
   assert.deepEqual(after.metadata.ownerIds, ["native-merge-transport", "runtime-release", "release-generation-transport"]);
-  assert.equal(after.metadata.policyVersion, 3);
+  assert.equal(after.metadata.policyVersion, STORAGE_RETENTION_POLICY_VERSION);
   assert.equal(after.metadata.pending[0].operationId, original);
   assert.equal(f.store.get(original).status, "reconciling");
   const rollback = await f.make().runOnce();
@@ -270,7 +270,7 @@ test("a v2 runtime retirement in flight keeps its exact original child after the
   const original = parent.metadata.pending[0].operationId;
   const release = { ...native, id: "release-generation-transport" };
   await f.make({ owners: [native, f.owner, release] }).runOnce();
-  assert.equal(f.store.get("storage-retention:v1").metadata.policyVersion, 3);
+  assert.equal(f.store.get("storage-retention:v1").metadata.policyVersion, STORAGE_RETENTION_POLICY_VERSION);
   assert.ok(f.store.get("storage-retention:v1").metadata.pending.some(item => item.operationId === original));
   assert.equal(f.store.get(original).status, "reconciling");
 });
@@ -284,6 +284,33 @@ test("unready, isolated and stopping contexts never initialize retention state",
   await f.make({ isStopping: () => true }).runOnce();
   assert.equal(f.store.get("storage-retention:v1"), null);
   assert.equal(f.calls.length, 0);
+});
+
+test("v4 backup priority upgrade preserves the exact admitted v3 pending original", async t => {
+  const f = await setup(t);
+  f.owner.id = "native-merge-transport";
+  f.owner.prune = async () => ({ status: "unknown", reason: "original-pending" });
+  f.owner.reconcile = async () => ({ status: "unknown", reason: "original-pending" });
+  const empty = id => ({ ...f.owner, id, list: async () => ({ items: [], done: true }) });
+  const old = [f.owner, empty("runtime-release"), empty("release-generation-transport")];
+  await f.make({ owners: old, maxUnits: 1 }).runOnce();
+  let parent = f.store.get("storage-retention:v1");
+  f.store.transition(parent.operationId, { metadata: { policyVersion: 3 } }, { expectedRevision: parent.revision });
+  parent = f.store.get(parent.operationId);
+  const pending = parent.metadata.pending[0];
+  f.owner.list = async () => ({ items: [], done: true });
+  let effects = 0;
+  const backup = { ...empty("runtime-update-backup"),
+    list: async () => ({ items: [{ id: "backup", cursor: "backup" }], done: true }),
+    prune: async () => { effects++; return { status: "removed" }; } };
+  const upgraded = f.make({ owners: [backup, ...old] });
+  await upgraded.runOnce();
+  const after = f.store.get(parent.operationId);
+  assert.equal(after.metadata.policyVersion, 4);
+  assert.deepEqual(after.metadata.pending, [pending]);
+  assert.equal(f.store.get(pending.operationId).status, "reconciling");
+  assert.equal(effects, 1);
+  assert.equal((await f.make({ owners: old }).runOnce()).reason, "retention-policy-incompatible");
 });
 
 test("crash after artifact effect reconciles SAME operation while other owners progress", async t => {
