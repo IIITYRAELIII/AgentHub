@@ -125,7 +125,7 @@ test("positioned annotations interleave four nonsorted answers through stream hi
     try {
       await openWebApp(page);
       const source={id:'placement-source',provider,threadId:'thread-1',turnId:'original',itemId:'original-item',role:'agent',text:'Dependencies; Git; Cleanup; Media.'};
-      await seedMessages(page,[source],{provider});
+      await seedMessages(page,[source],{provider,agentLabel:provider});
       const annotations=await page.evaluate(async(source)=>{
         const api=window.AgentHubMessageDisclosure, surface=document.querySelector('[data-message-id="placement-source"] .msg-body');
         const text=surface.textContent;
@@ -145,7 +145,7 @@ test("positioned annotations interleave four nonsorted answers through stream hi
       const expected=['Зачем нужна история Git','История Git сохраняет изменения. 🦊','quote2','Зависимости можно переиспользовать.','quote1','Временные копии удаляются после проверки.','quote3','Медиа принадлежит открытой задаче.','quote4'];
       // Stream a complete first card, then an incomplete next marker: no all-top relocation or raw prefix.
       const boundary=raw.indexOf(':codex-annotation');
-      await seedMessages(page,[source,user],{provider,running:true});
+      await seedMessages(page,[source,user],{provider,agentLabel:provider,running:true});
       if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
       for(const partial of [raw.slice(0,boundary),raw.slice(0,boundary+':codex-annotation{index="'.length),raw]) {
         await page.evaluate(value=>window.AgentHub.setLive('task-1',value),answer(partial));
@@ -155,12 +155,13 @@ test("positioned annotations interleave four nonsorted answers through stream hi
       }
       assert.deepEqual(await sequence('[data-live-body]'),expected);
       await page.evaluate(()=>window.AgentHub.setLive('task-1',null));
-      await seedMessages(page,[source,user,answer(raw)],{provider});
+      await seedMessages(page,[source,user,answer(raw)],{provider,agentLabel:provider});
       assert.deepEqual(await sequence(),expected);
+      assert.equal(await page.locator('[data-message-id="placement-answer"] .msg-body').evaluate(n=>Array.from(n.childNodes).filter(c=>c.nodeType===Node.TEXT_NODE).map(c=>c.textContent).join('').trim()),'');
       const retained=JSON.parse(JSON.stringify([source,user,answer(raw)]));
       // Reload/reconnect from retained structured message metadata, with no original marker parser in the browser.
       await page.reload({waitUntil:'load'}); await page.waitForFunction(()=>typeof window.AgentHub==='object');
-      await seedMessages(page,retained,{provider});
+      await seedMessages(page,retained,{provider,agentLabel:provider});
       if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
       assert.deepEqual(await sequence(),expected);
       assert.ok((await page.locator('[data-message-id="placement-user"]').textContent()).includes(user.text));

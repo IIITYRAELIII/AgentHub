@@ -8025,7 +8025,7 @@ function renderAgentResponseBody(body, message, text, fileContext) {
     // explicit list instead of inventing paragraph associations from labels.
     renderMarkdown(content, MessageView.withoutResponseCitationFallbacks(text, legacyReferences), fileContext, "agent");
   }
-  body.replaceChildren(renderResponseCitations({ responseCitationPresentations: unpositioned }), content);
+  body.replaceChildren(...[renderResponseCitations({ responseCitationPresentations: unpositioned }), content].filter(Boolean));
 }
 
 function focusResponseAnnotationCard(button) {
