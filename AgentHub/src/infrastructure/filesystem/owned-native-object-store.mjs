@@ -363,7 +363,36 @@ export class OwnedNativeObjectStore {
     const manifest = JSON.parse(bytes);
     if (digest(JSON.stringify(manifest.inventory)) !== archive.inventorySha256
         || !equal(row.metadata.objectStorage.binding, manifest.binding)) throw fail("Archive inventory or original binding changed");
+    if (!Array.isArray(manifest.objects) || !manifest.objects.length || !Array.isArray(manifest.files)) throw fail("Archive original roots malformed");
+    const required = new Map();
+    for (const original of manifest.objects) {
+      if (!oid(original.oid) || !["commit", "tag", "tree", "blob"].includes(original.type)
+          || required.has(original.oid)) throw fail("Archive original roots malformed");
+      required.set(original.oid, original.type);
+    }
+    for (const file of manifest.files) {
+      if (!oid(file.blob) || required.has(file.blob) && required.get(file.blob) !== "blob") throw fail("Archive raw file root malformed");
+      required.set(file.blob, "blob");
+    }
+    const tags = manifest.objects.filter(o => o.type === "tag");
+    const expectedRefs = tags.map(o => archive.ref + "-tag/" + o.oid + " " + o.oid).sort();
+    const actualRefs = String(await this.#git(this.repository, ["for-each-ref", "--format=%(refname) %(objectname)", archive.ref + "-tag/"]))
+      .split(/\r?\n/u).filter(Boolean).sort();
+    if (!equal(actualRefs, expectedRefs)) throw fail("Archive original tag roots changed");
+    const entries = [...required], checked = String(await this.#git(this.repository,
+      ["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input: entries.map(([id]) => id).join("\n") + "\n" })).split(/\r?\n/u);
+    if (checked.length !== entries.length || checked.some((line, i) => line !== entries[i][0] + " " + entries[i][1])) throw fail("Archive original object unavailable");
+    const reachable = new Set(String(await this.#git(this.repository,
+      ["rev-list", "--objects", "--no-object-names", "--missing=error", "--stdin"],
+      { input: [archive.commit, ...tags.map(o => o.oid)].join("\n") + "\n" })).split(/\r?\n/u).filter(Boolean));
+    if (entries.some(([id]) => !reachable.has(id))) throw fail("Archive original roots no longer retain all objects");
     return { archive, manifest, repository: this.repository };
+  }
+
+  // Fresh complete preservation and the destructive consumer share the SAME
+  // object-store lease, excluding owned GC/import/ref updates until it returns.
+  withArchiveLease(archive, consume) {
+    return this.withLease(async () => consume(await this.readArchive(archive)));
   }
 
   async withArchiveMath(archive, verify) {

@@ -186,3 +186,72 @@ test("unresolved original, current source pin and dirty private data remain reta
   assert.match(rejected.reason, /unresolved/u);
   assert.ok(await lstat(repository));
 });
+
+test("archive tag-anchor loss and GC preserve the SAME unknown original and source at the final deletion boundary", { skip: process.platform !== "win32" }, async t => {
+  let nativeCalls = 0;
+  const f = await fixture(t, { retire: async (...args) => {
+    nativeCalls++;
+    if (nativeCalls === 1) throw Error("controlled stop before first native deletion");
+    return retireSealedNativeCapture(...args);
+  } });
+  const repository = path.join(f.capture, "repository");
+  const tag = await git(repository, ["mktag"], { input: "object " + f.state.head
+    + "\ntype commit\ntag original-proof\ntagger Test <test@example.invalid> 1700000000 +0000\n\nretained annotated proof\n" });
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  const approved = [{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }];
+  await f.service.runApproved(approved);
+  const original = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
+  assert.equal(original.outcome, "unknown"); assert.equal(nativeCalls, 1);
+  const objects = new OwnedNativeObjectStore({ dataDir: f.dataDir, gitAt: git });
+  const archive = original.metadata.captureArchive;
+  const tagRef = archive.ref + "-tag/" + tag;
+  await objects.readArchive(archive);
+  await git(objects.repository, ["update-ref", "-d", tagRef, tag]);
+  await git(objects.repository, ["cat-file", "-e", tag]);
+  await assert.rejects(objects.readArchive(archive), /[Aa]rchive.*(?:root|anchor)/u);
+  await git(objects.repository, ["update-ref", tagRef, tag, "0".repeat(40)]);
+  await objects.readArchive(archive);
+  const before = await inventoryNativeCapture(repository, { allowSharedObjects: true });
+  const journalBefore = await readFile(path.join(f.capture, "merge.json"));
+  const actualReadArchive = OwnedNativeObjectStore.prototype.readArchive;
+  let drifted = false;
+  OwnedNativeObjectStore.prototype.readArchive = async function (...args) {
+    const value = await actualReadArchive.apply(this, args);
+    if (!drifted && args[0].operationId === archive.operationId) {
+      drifted = true;
+      // Actual private drift AFTER a successful read. The final leased read
+      // must notice it before admitting even the first native file deletion.
+      await git(objects.repository, ["update-ref", "-d", tagRef, tag]);
+      await git(objects.repository, ["gc", "--prune=now"]);
+      await assert.rejects(git(objects.repository, ["cat-file", "-e", tag]));
+    }
+    return value;
+  };
+  try { await f.service.runApproved(approved); }
+  finally { OwnedNativeObjectStore.prototype.readArchive = actualReadArchive; }
+  assert.equal(drifted, true);
+  assert.equal(nativeCalls, 1, "No native deletion after an archive root was lost");
+  assert.equal(f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id).operationId, original.operationId);
+  assert.equal(f.store.getReadonly(original.operationId).outcome, "unknown");
+  const after = await inventoryNativeCapture(repository, { allowSharedObjects: true });
+  // Pool GC legitimately removes its links to old pack encodings. Every
+  // original physical file/byte still has to survive in the private consumer.
+  const content = value => ({ ...value, files: value.files.map(file => file.objectFile ? { ...file, sharedObject: false } : file) });
+  assert.deepEqual(content(after), content(before));
+  assert.deepEqual(await readFile(path.join(f.capture, "merge.json")), journalBefore);
+  await git(repository, ["cat-file", "-e", tag]);
+  await assert.rejects(objects.readArchive(archive), /[Aa]rchive.*(?:root|anchor)/u);
+});
+
+test("ordinary native archive entries still require their exact owning lease", async () => {
+  const owner = new TaskGitWorkspaceService({ dataDir: os.tmpdir(), runCommand: () => assert.fail("No Git before lease") });
+  for (const method of ["nativeCaptureRetirementRecordOwned", "verifyNativeCaptureArchiveOwned"]) {
+    await assert.rejects(owner[method]({}), /owned process-tree guard lease/u);
+    let calls = 0;
+    const lease = { beginProcessTreeGuard() { assert.fail("No process before lease ownership"); },
+      async assertOwned() { calls++; throw Error("exact original lease rejected"); } };
+    await assert.rejects(owner[method]({ lease }), /exact original lease rejected/u);
+    assert.equal(calls, 1);
+  }
+});

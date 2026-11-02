@@ -4112,7 +4112,9 @@ export class TaskGitWorkspaceService {
     return { root, identity };
   }
 
-  async nativeCaptureRetirementRecordOwned({ taskId, root, state, lease }) {
+  async nativeCaptureRetirementRecordOwned(params) {
+    this.#assertAvailable("nativeCaptureRetirementRecordOwned");
+    const { taskId, root, state, lease } = params;
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(taskId);
     await this.#assertRepositoryProcessTreeClear(path.join(root, "repository"));
@@ -4137,7 +4139,9 @@ export class TaskGitWorkspaceService {
     return matches[0];
   }
 
-  async verifyNativeCaptureArchiveOwned({ state, record, archive, lease }) {
+  async verifyNativeCaptureArchiveOwned(params) {
+    this.#assertAvailable("verifyNativeCaptureArchiveOwned");
+    const { state, record, archive, lease } = params;
     await requiredGuardLease(lease).assertOwned();
     const objects = new OwnedNativeObjectStore({ dataDir: this.dataDir,
       gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease, guardRepositoryRoot: cwd, timeoutMs: 60_000 }),

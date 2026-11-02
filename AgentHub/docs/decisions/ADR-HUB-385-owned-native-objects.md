@@ -73,6 +73,14 @@ and joins each bounded child. Intentional immutable object links use handle
 disposition without changing attributes shared by another consumer. There is
 no rm/recursive-delete fallback.
 
+Every archive reuse checks the complete original object/type set and its actual
+reachability, including the exact separate original-tag anchors. The final
+destructive read and its native batch hold the same object-store lease; owned
+GC/import/ref updates cannot intervene. A lost/changed anchor or missing object
+keeps the SAME retirement child unknown and retains the source. Both public
+TaskGit archive/record entries apply their existing recording exclusion before
+reading arguments or lease ports.
+
 ## Historical reads and limits
 
 The historical Task reader locates the exact archived child, rechecks its Git

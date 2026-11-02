@@ -139,29 +139,32 @@ export class NativeCaptureRetirement {
         row = await this.#patch(row, { metadata: { captureArchive: archived.archive }, phase: "archive-confirmed" });
       }
       await owned.current();
-      const plan = archived.manifest.inventory, bytes = Buffer.from(JSON.stringify(plan)), planSha = sha(bytes);
-      const proofRoot = path.join(this.dataDir, "native-git-objects", "proofs"); await mkdir(proofRoot, { recursive: true });
-      const proofRootInfo = await lstat(proofRoot);
-      if (!proofRootInfo.isDirectory() || proofRootInfo.isSymbolicLink()) throw new Error("Archive derivative proof directory redirected");
-      const planFile = path.join(proofRoot, planSha + ".json");
-      const h = await open(planFile, "wx").catch(async e => { if (e.code !== "EEXIST") throw e; if (sha(await readFile(planFile)) !== planSha) throw new Error("Archive derivative proof changed"); return null; });
-      if (h) { try { await h.writeFile(bytes); await h.sync(); } finally { await h.close(); } }
-      const proofInfo = await lstat(planFile);
-      if (!proofInfo.isFile() || proofInfo.isSymbolicLink() || proofInfo.nlink !== 1) throw new Error("Archive derivative proof file redirected");
-      const hadPruningIntent = row.metadata.planSha256 === planSha;
-      if (row.phase !== "capture-pruning") row = await this.#patch(row, { phase: "capture-pruning", metadata: { captureArchive: archived.archive, planSha256: planSha } });
-      await owned.current();
-      const exists = await lstat(owned.repository).catch(absent);
-      if (!exists) {
-        if (!hadPruningIntent) throw new Error("Native capture absence without original pruning");
-        return { status: "already-removed", logicalBytes: 0, files: 0 };
-      }
-      const result = await this.retire(owned.repository, planFile, planSha, { allowPartial: hadPruningIntent });
-      if (result.status === "complete") {
-        if (await lstat(owned.repository).catch(absent)) throw new Error("Native capture retirement is not absent");
-        return { ...result, status: "removed" };
-      }
-      return { ...result, status: "partial" };
+      return owned.objects.withArchiveLease(archived.archive, async fresh => {
+        if (!same(fresh.manifest.binding.retirement, input.binding) || fresh.manifest.binding.stateHash !== owned.stateHash) throw new Error("Original archive context changed before deletion");
+        const plan = fresh.manifest.inventory, bytes = Buffer.from(JSON.stringify(plan)), planSha = sha(bytes);
+        const proofRoot = path.join(this.dataDir, "native-git-objects", "proofs"); await mkdir(proofRoot, { recursive: true });
+        const proofRootInfo = await lstat(proofRoot);
+        if (!proofRootInfo.isDirectory() || proofRootInfo.isSymbolicLink()) throw new Error("Archive derivative proof directory redirected");
+        const planFile = path.join(proofRoot, planSha + ".json");
+        const h = await open(planFile, "wx").catch(async e => { if (e.code !== "EEXIST") throw e; if (sha(await readFile(planFile)) !== planSha) throw new Error("Archive derivative proof changed"); return null; });
+        if (h) { try { await h.writeFile(bytes); await h.sync(); } finally { await h.close(); } }
+        const proofInfo = await lstat(planFile);
+        if (!proofInfo.isFile() || proofInfo.isSymbolicLink() || proofInfo.nlink !== 1) throw new Error("Archive derivative proof file redirected");
+        const hadPruningIntent = row.metadata.planSha256 === planSha;
+        if (row.phase !== "capture-pruning") row = await this.#patch(row, { phase: "capture-pruning", metadata: { captureArchive: archived.archive, planSha256: planSha } });
+        await owned.current();
+        const exists = await lstat(owned.repository).catch(absent);
+        if (!exists) {
+          if (!hadPruningIntent) throw new Error("Native capture absence without original pruning");
+          return { status: "already-removed", logicalBytes: 0, files: 0 };
+        }
+        const result = await this.retire(owned.repository, planFile, planSha, { allowPartial: hadPruningIntent });
+        if (result.status === "complete") {
+          if (await lstat(owned.repository).catch(absent)) throw new Error("Native capture retirement is not absent");
+          return { ...result, status: "removed" };
+        }
+        return { ...result, status: "partial" };
+      });
     });
   }
   prune(input) { return this.#effect(input, false); }
