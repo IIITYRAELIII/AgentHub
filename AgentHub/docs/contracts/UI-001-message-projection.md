@@ -209,6 +209,21 @@ navigation. Legacy citations already bound to shortened content are not rewritte
   without a locator keep the annotation-card jump and are never backfilled by
   text, time or display order.
 
+  Active trace groups carry their actual provider `sourceItemId` independently
+  of the current answer item. Native event, rollout, history and persisted
+  projections retain that metadata; a display group label or sequence cannot
+  invent an item identity. Commentary group IDs agree across those owners.
+  A source read may outlive a streaming DOM replacement: the same unique
+  provider/Thread/turn/item and exact group may be rebound only to an unchanged
+  rendered surface, followed by the existing full-source prefix/range/hash
+  checks and a final current-source check. Changed, missing or ambiguous source
+  still refuses. Refusal diagnostics contain only bounded stage codes through
+  the existing client trace, never quote content or dependency errors.
+  Retained trace locators and legacy groups without native item metadata keep
+  their existing parent-item/group identity and hash interpretation. This
+  compatibility is removable only after authoritative retained projections
+  supply actual native group-item provenance; no local text-based backfill.
+
 User-selected quote text has no independent length cap. Selection, composer
 draft persistence, submission and history retain the complete selected text;
 they cannot reject a valid source range or truncate its quote at 400 or 4,000

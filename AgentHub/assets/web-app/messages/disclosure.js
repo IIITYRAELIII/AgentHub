@@ -42,7 +42,14 @@
     const clientUserMessageId = useClientIdentity ? cleanSourceIdentity(message?.clientUserMessageId) : "";
     if (useClientIdentity && !clientUserMessageId) return null;
     const turnId = useClientIdentity ? "" : cleanSourceIdentity(message?.turnId);
-    const itemId = useClientIdentity ? "" : cleanSourceIdentity(message?.itemId);
+    let itemId = useClientIdentity ? "" : cleanSourceIdentity(message?.itemId);
+    if (role === "agent" && source?.traceGroupId) {
+      const groups = (message?.activityGroups ?? []).filter((group) => group.id === source.traceGroupId);
+      const nativeItemId = groups.length === 1 ? cleanSourceIdentity(groups[0].sourceItemId) : "";
+      // New locators bind the selected surface's actual provider item. Retained
+      // parent-item locators retain their existing identity/hash interpretation.
+      if (nativeItemId && (!source.itemId || source.itemId === nativeItemId)) itemId = nativeItemId;
+    }
     const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role, clientUserMessageId });
     return messageKey ? {
       provider, threadId, turnId, itemId, role, messageKey,
@@ -132,9 +139,11 @@
   function responseAnnotationSourceMessages(messages, liveMessage = null) {
     const values = Array.isArray(messages) ? messages.slice() : [];
     const liveIdentity = responseAnnotationSourceIdentity(liveMessage);
-    if (!liveIdentity) return values;
+    if (!liveIdentity && !(liveMessage?.activityGroups ?? []).some((group) => (
+      responseAnnotationSourceIdentity(liveMessage, { traceGroupId: group.id })
+    ))) return values;
     const hasCanonicalProjection = values.some((message) => (
-      responseAnnotationSourceIdentity(message)?.messageKey === liveIdentity.messageKey
+      liveIdentity && responseAnnotationSourceIdentity(message)?.messageKey === liveIdentity.messageKey
     ));
     if (!hasCanonicalProjection) values.push(liveMessage);
     return values;
