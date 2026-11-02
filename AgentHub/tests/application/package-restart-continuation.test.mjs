@@ -3,6 +3,14 @@ import test from "node:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { DatabaseSync } from "node:sqlite";
+import { RuntimeRestartController as LegacyRuntimeRestartController } from "../fixtures/runtime-restart-controller-v1.mjs";
+import { restartRequestProjection } from "../../src/domain/maintenance-operation.mjs";
+import { inspectRuntimeBackupScope } from "../../src/infrastructure/persistence/runtime-maintenance-backup.mjs";
+import { withInterprocessLocks } from "../../src/infrastructure/process/interprocess-lock.mjs";
+import { prepareWindowsLockDirectoryPublisher } from "../../src/infrastructure/process/windows-lock-directory-publication.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { RestartRequestService } from "../../src/application/restart-request-service.mjs";
 import { packageBindingDigest, packageDigest, packageDirectory, packageFile } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
@@ -49,7 +57,7 @@ async function fixture(t, mutate = () => {}, options = {}) {
   const { releaseId, pid, currentSha256, instanceSha256, manifestSha256 } = prepared.binding.old;
   const resume = { input, expectedRevision: prior.revision, expectedBindingSha256: old.sha256,
     expectedCurrent: { releaseId, pid, currentSha256, instanceSha256, manifestSha256 } };
-  return { input, old, prior, store, service, resume, get counts() { return { preparations, saves, schedules }; },
+  return { input, old, prior, store, service, resume, captureCurrent: capture, get counts() { return { preparations, saves, schedules }; },
     changePrepared: action => { action(prepared.binding); prepared = envelope(prepared.binding); } };
 }
 
@@ -70,6 +78,101 @@ test("explicit package continuation preserves failed attempt and binding, fresh 
   assert.equal((await reopened.resumePackage(f.resume)).accepted, false);
   assert.deepEqual(f.store.getReadonly(f.input.operationId), next);
 });
+
+test("legacy v1 actual preflight failure continues the same original without inventing a historical typed proof", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, row => {
+    row.status = "blocked"; row.phase = "waiting-for-work"; row.outcome = null;
+    delete row.metadata.packagePreStopFailure; delete row.metadata.error;
+  });
+  await f.captureCurrent("old");
+  f.service.setRequest(restartRequestProjection(f.prior));
+  const root = f.old.binding.runtimeRoot, data = f.old.binding.dataDir;
+  await writeFile(path.join(root, "config.json"), '{"retained":true}');
+  const target = path.join(data, "journal.sqlite"), db = new DatabaseSync(target);
+  db.exec("CREATE TABLE receipts(outcome); INSERT INTO receipts VALUES('unknown')"); db.close();
+  const publisher = await prepareWindowsLockDirectoryPublisher(), publish = publisher.publish.bind(publisher);
+  const arrived = Promise.withResolvers(), allowPublish = Promise.withResolvers(), acquired = Promise.withResolvers(), release = Promise.withResolvers();
+  let ready, enumerated = false;
+  t.mock.method(publisher, "publish", async (from, to) => {
+    if (to === `${target}.lock`) { ready = from; arrived.resolve(); await allowPublish.promise; }
+    return publish(from, to);
+  });
+  const lock = withInterprocessLocks([target], async () => { acquired.resolve(); await release.promise; });
+  const joined = lock.then(() => null, error => error);
+  await Promise.race([arrived.promise, joined.then(error => { throw error; })]);
+  const readdir = fs.readdir;
+  t.mock.method(fs, "readdir", async (...args) => {
+    const names = await readdir(...args);
+    if (!enumerated && args[0] === data) {
+      enumerated = true; assert.ok(names.includes(path.basename(ready)));
+      allowPublish.resolve(); await acquired.promise; release.resolve(); assert.equal(await joined, null);
+    }
+    return names;
+  });
+  syncBuiltinESMExports();
+  const noop = async () => {};
+  try {
+    // Exact published213/C423 controller fixture; generic fail without evidence
+    // produces its real old revision1 -> revision2 terminal representation.
+    const controller = new LegacyRuntimeRestartController({
+      getRequest: f.service.getRequest, updateOffset: () => 99, hasBlockingWork: () => false,
+      setWaiting: value => f.service.setWaiting(value), updateMessage: noop, saveState: noop,
+      resources: { recover: noop }, beginStopping: () => assert.fail("old preflight must fail before stopping"),
+      stopTimers: noop, stopMedia: noop, launchReplacement: noop, recoverPrevious: noop,
+      abortRestart: error => f.service.fail(f.input.operationId, error), finishSuccessfulReplacement: noop,
+      packageHandoff: { preflight: () => inspectRuntimeBackupScope({ runtimeRoot: root }) }, logger: { log() {}, error() {} },
+    });
+    const result = await controller.perform();
+    assert.equal(result.phase, "package-backup-preflight"); assert.equal(result.error.code, "ENOENT");
+    assert.equal(enumerated, true);
+  } finally {
+    allowPublish.resolve(); release.resolve(); assert.equal(await joined, null);
+    t.mock.restoreAll(); syncBuiltinESMExports();
+  }
+  const failed = f.store.getReadonly(f.input.operationId);
+  assert.equal(failed.status, "failed"); assert.equal(failed.revision, 2);
+  assert.equal(failed.metadata.packagePreStopFailure, undefined);
+  assert.deepEqual(failed.metadata.packageHandoff, f.old);
+  await f.captureCurrent("fresh");
+  const request = { ...f.resume, expectedRevision: failed.revision };
+  for (const changed of [
+    { ...request, expectedRevision: 3 },
+    { ...request, input: { ...request.input, archive: request.input.descriptor } },
+    { ...request, expectedCurrent: { ...request.expectedCurrent, pid: process.pid + 1 } },
+  ]) { await assert.rejects(f.service.resumePackage(changed)); assert.deepEqual(f.store.getReadonly(f.input.operationId), failed); }
+  const resumed = await f.service.resumePackage(request);
+  assert.equal(resumed.attempt, 2); assert.equal(resumed.operationId, failed.operationId);
+  const next = f.store.getReadonly(f.input.operationId);
+  assert.deepEqual(next.metadata.packageAttemptHistory, [failed]);
+  assert.equal(next.metadata.packageRecovery.authority.kind, "legacy-v1-before-intent");
+  assert.equal(next.metadata.packagePreStopFailure, undefined);
+  const counts = f.counts;
+  assert.equal((await f.service.resumePackage(request)).accepted, false);
+  assert.deepEqual(f.counts, counts); assert.deepEqual(f.store.getReadonly(f.input.operationId), next);
+  const reopened = new RestartRequestService({ operationStore: new MaintenanceOperationStore({ dataDir: data }), currentTarget: () => ({}),
+    preparePackage: () => assert.fail("same legacy continuation replay must not prepare") });
+  assert.equal((await reopened.resumePackage(request)).accepted, false);
+  assert.deepEqual(f.store.getReadonly(f.input.operationId), next);
+  const saved = new DatabaseSync(target, { readOnly: true });
+  try { assert.equal(saved.prepare("SELECT outcome FROM receipts").get().outcome, "unknown"); } finally { saved.close(); }
+});
+
+for (const stage of ["package-arming", "cutover", "UNKNOWN", "native-admission", "unknown-schema"]) {
+  test(`legacy v1 continuation refuses ${stage} evidence without changing the failed row`, async t => {
+    const f = await fixture(t, row => {
+      row.status = "requested"; row.phase = "requested"; row.outcome = null;
+      delete row.metadata.packagePreStopFailure;
+      if (stage === "native-admission") row.metadata.packageNative = { hostPid: 17 };
+      if (stage === "unknown-schema") row.metadata.packageHandoff.schema = 99;
+    });
+    if (["package-arming", "cutover"].includes(stage)) f.store.transition(f.input.operationId, { status: "running", phase: stage });
+    if (stage === "UNKNOWN") f.store.transition(f.input.operationId, { status: "reconciling", phase: "reconciling", outcome: "unknown" });
+    else f.store.settle(f.input.operationId, { succeeded: false, phase: "failed" });
+    const prior = f.store.getReadonly(f.input.operationId), request = { ...f.resume, expectedRevision: prior.revision };
+    await assert.rejects(f.service.resumePackage(request), /continuation authority/u);
+    assert.deepEqual(f.store.getReadonly(f.input.operationId), prior); assert.equal(f.counts.preparations, 0);
+  });
+}
 
 for (const [label, mutate] of [
   ["UNKNOWN", row => { row.status = "reconciling"; row.outcome = "unknown"; }],
@@ -126,4 +229,38 @@ test("failed pre-stop receipt cannot start a new attempt until its owning contro
   assert.deepEqual(f.store.getReadonly(f.input.operationId), failed);
   finish.resolve(); await active;
   assert.equal((await f.service.resumePackage(next)).attempt, 3);
+});
+
+import { createRuntimeRestartWiring } from "../../src/composition/runtime-restart-wiring-composition.mjs";
+test("reviewer direct restart wiring pre-stop invocation must drain before same-original continuation", async t => {
+  const f=await fixture(t,()=>{}, {blockingWorkCount:()=>0});
+  await f.service.resumePackage(f.resume);
+  const entered=Promise.withResolvers(), finish=Promise.withResolvers(), noop=async()=>{};
+  const wiring=createRuntimeRestartWiring({
+    taskRuns:{values:()=>[]},agentProviders:{},runCoordinator:{hasPendingAdmission:()=>false},
+    backgroundJobs:{activeSize:0},streamMaintenance:{activeCount:()=>0},
+    getRestartRequest:f.service.getRequest,isStopping:()=>false,restartRequestService:f.service,
+    runtimeRestart:{
+      getRestartRequest:f.service.getRequest,setRestartRequest:f.service.setRequest,
+      updateOffset:()=>99,isStopping:()=>false,setStopping:()=>{},
+      beginStopping:()=>assert.fail("pre-stop"),setWaiting:v=>f.service.setWaiting(v),
+      updateRestartMessage:noop,saveState:noop,stopRuntimeTimers:noop,stopCodexAppServerTree:noop,
+      failRestartOperation:(error,evidence)=>f.service.fail(f.input.operationId,error,evidence),
+      maintenanceOperations:f.store,
+      fileTransferService:{resume:async()=>{entered.resolve();await finish.promise;}}
+    }
+  });
+  // Same direct entry exported to Telegram afterUpdate; real preflight refuses
+  // this owned unit runtime's absent config before the stopping fence.
+  const active=wiring.performRestart();
+  try {
+    await entered.promise;
+    const failed=f.store.getReadonly(f.input.operationId);
+    assert.equal(failed.status,"failed");
+    assert.equal(failed.metadata.packagePreStopFailure.attempt,2);
+    await assert.rejects(f.service.resumePackage({...f.resume,
+      expectedRevision:failed.revision,expectedBindingSha256:failed.metadata.packageHandoff.sha256}),
+      /has not drained/u);
+    assert.deepEqual(f.store.getReadonly(f.input.operationId),failed);
+  } finally {finish.resolve(); await active;}
 });

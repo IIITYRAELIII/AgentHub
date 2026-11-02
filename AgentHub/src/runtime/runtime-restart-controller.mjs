@@ -22,6 +22,8 @@ function timedOut(error) {
 export class RuntimeRestartController {
   #inFlight = null;
 
+  get performing() { return this.#inFlight !== null; }
+
   constructor({
     getRequest,
     updateOffset,
@@ -62,7 +64,15 @@ export class RuntimeRestartController {
 
   perform() {
     if (!this.#inFlight) {
-      this.#inFlight = this.#perform().finally(() => { this.#inFlight = null; });
+      // Publish the actual controller's join before entering its synchronous
+      // work too. Direct polling and service callers share this same owner.
+      const completion = Promise.withResolvers();
+      this.#inFlight = completion.promise;
+      this.#perform().then(
+        result => { this.#inFlight = null; completion.resolve(result); },
+        error => { this.#inFlight = null; completion.reject(error); },
+      );
+      return completion.promise;
     }
     return this.#inFlight;
   }

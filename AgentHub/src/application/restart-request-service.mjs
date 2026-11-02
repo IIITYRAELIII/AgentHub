@@ -34,6 +34,7 @@ export class RestartRequestService {
     announceDesktop,
     sendTelegram,
     performRestart,
+    controllerIsPerforming = () => false,
     isStopping = () => false,
     scheduleRestart = (callback) => setTimeout(callback, 0).unref(),
     nowIso = () => new Date().toISOString(),
@@ -56,6 +57,7 @@ export class RestartRequestService {
       announceDesktop,
       sendTelegram,
       performRestart,
+      controllerIsPerforming,
       isStopping,
       scheduleRestart,
       nowIso,
@@ -341,7 +343,7 @@ export class RestartRequestService {
     if (previous.metadata?.packageRecovery?.requestSha256 === requestSha256) {
       return { accepted: false, operationId, status: previous.status, phase: previous.phase, effectsReplayed: false };
     }
-    if (this.#performing.has(operationId) || this.isStopping()) throw new Error("Original package attempt has not drained");
+    if (this.#performing.has(operationId) || this.controllerIsPerforming() || this.isStopping()) throw new Error("Original package attempt has not drained");
     this.operationStore.assertPackageContinuation(previous, request);
     const packageHandoff = await this.preparePackage(input);
     const binding = packageHandoffBinding({ operationId, kind: "restart", metadata: { packageHandoff } });
@@ -353,7 +355,7 @@ export class RestartRequestService {
     const notification = this.#notification({ messageId: null, minimumUpdateOffset: this.updateOffset(),
       notifyTelegram: false, blockingCount });
     const resumed = await mutateRestartOperation(this.operationStore, () => {
-      if (this.#performing.has(operationId) || this.isStopping()) throw new Error("Original package attempt has not drained");
+      if (this.#performing.has(operationId) || this.controllerIsPerforming() || this.isStopping()) throw new Error("Original package attempt has not drained");
       return this.operationStore.continuePackage(operationId, { ...request, requestSha256,
         packageHandoff, notification });
     }, operationId);

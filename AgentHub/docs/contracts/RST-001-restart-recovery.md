@@ -8,7 +8,8 @@ maintenance-owner `resume-package` may admit its next attempt: exact immutable
 business input, failed revision/binding, fresh current release/PID/pointer/
 manifest/instance, identical public assets/selection and physical roots are
 required. Positive controller-owned pre-stopping backup-preflight failure
-evidence is required; historical error text or absent effects is insufficient.
+evidence, or the bounded protocol-v1 revision proof below, is required;
+historical error text or absent effects is insufficient.
 UNKNOWN, prior native/backup/launch admission, an undrained old invocation,
 stopping and a competing active restart refuse. No old receipt is rewritten.
 
@@ -19,6 +20,24 @@ The retained exact continuation request is idempotent before preparation and
 after process reopen; a lost response never grants a second install/spawn.
 Changed input/CAS/current/assets/ownership refuses. No new update identity,
 terminal reset, effect replay, separate ledger or inferred pre-stop authority.
+
+Protocol-v1 compatibility admits only a first untyped failed terminal at revision
+2, with schema1 exact package binding and no earlier attempt/recovery/history or
+native/bootstrap/backup/launch admission. Creation is revision1; every native
+package dispatch first awaits a committed nonterminal package intent, and a later
+failure consumes another revision. This positive topology cannot describe a
+failed revision2 after such dispatch. It establishes eligibility before package
+intent, never retroactive global NO_EFFECT or a fabricated typed pre-stop proof.
+Unknown schema, later revisions or partial/UNKNOWN outcomes retain readback-only
+history. The complete old row and its binding are copied unchanged to attempt
+history; new recovery metadata records the distinct compatibility authority.
+Remove this compatibility route once untyped first-attempt records have received
+their addressed disposition. It has no automatic scheduling or adoption path.
+
+All production entry points, including direct Telegram polling, consult the
+actual controller's in-flight join before continuation preparation and again
+at the existing mutation/CAS boundary. Recovery must finish before that join
+clears. Readback of an already admitted identical request stays idempotent.
 
 An isolated whole-update check uses actual application and native owners with
 separate data, secrets, IPC, ports, current/releases and owned processes. A
@@ -534,8 +553,8 @@ authorize exclusion. Replaced, foreign/unobserved and durable entries still refu
 drift. This read-only call-scoped observation does not acquire a lock or mutate
 state. Stopped inventory never consumes it and retains strict equality. See
 ADR-HUB-398-live-backup-lock-observation. Ordinary intake/bootstrap keeps terminal
-failed originals readback-only. Only the explicit typed next-attempt boundary
-above can admit a fresh attempt; historical/untyped failures remain immutable.
+failed originals readback-only. Only the explicit next-attempt boundary above
+can admit a fresh attempt; historical failed rows remain unchanged in history.
 An awaited producer transition requires a fresh path read before excluding
 confirmed absence; a replacement cannot inherit its predecessor's removal proof.
 Observation promise rejection stays joined to the existing release error owner;

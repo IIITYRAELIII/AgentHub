@@ -82,6 +82,9 @@ export function createRuntimeRestartWiring({
     hasBlockingWork: restartHasBlockingWork,
   });
   runtimeRestartController = composition.runtimeRestart;
+  // Bind to the controller, not only the scheduled service entry: Telegram
+  // polling invokes this wiring directly and recovery may still be draining.
+  restartRequestService.controllerIsPerforming = () => runtimeRestartController.performing;
 
   return {
     ...composition,

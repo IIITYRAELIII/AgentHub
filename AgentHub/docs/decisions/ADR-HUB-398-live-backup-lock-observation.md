@@ -43,8 +43,8 @@ maintenance row, under its runtime restart mutation queue and SQLite CAS. It
 requires the same five-key business input, exact failed revision/binding and
 fresh current release/PID/pointer/manifest/instance hashes. The controller must
 have positively recorded that this attempt failed in package backup preflight
-before entering stopping. Error text, an absent native receipt or a historical
-failed row cannot supply that evidence. UNKNOWN and admitted native/backup/
+before entering stopping, or the protocol-v1 compatibility proof below must
+hold. Error text or an absent native receipt cannot supply authority. UNKNOWN and admitted native/backup/
 launch effects refuse. The original controller invocation must drain first.
 
 The same original preserves each complete failed attempt and binding in
@@ -61,8 +61,44 @@ saved duplicate readback precedes preparation and returns the original without
 another launch, including after a lost reply or process reopen. A changed CAS,
 input, assets, physical root or current refuses. No terminal row, receipt or
 historical cache is deleted/reset, and no second operation ID or ledger exists.
-The historical production original lacks typed pre-stop evidence and remains
-readback-only. Adoption of this correction does not authorize its revival.
+The historical production original lacks typed pre-stop evidence. It is not
+retroactively assigned such a proof. Its retained first revision1 admission,
+exact bound controller/store/domain/Host source, and unchanged failed revision2
+provide a separate positive protocol-v1 boundary: creation consumes revision1;
+native dispatch awaits a nonterminal package-arming commit; any following failed
+terminal necessarily has revision at least3. A first failed revision2 therefore
+precedes durable package intent under this protocol. Absence of native fields is
+an additional refusal check, not the proof itself. Generic terminal transitions
+remain forbidden and ordinary bootstrap still only reads this old result.
+
+The explicit continuation accepts that exact schema1/revision2 first-attempt
+format only without typed proof, previous attempts/recovery/history, bootstrap,
+native, backup or launch admission. It retains the entire failed row/binding and
+records `legacy-v1-before-intent` on the new attempt. It does not assert that all
+historical preparation had no effects, fabricate an old pre-stop proof, reset a
+receipt, recapture its old binding or change public business input. Later legacy
+revisions cannot distinguish pre-intent failure and remain ineligible. Fresh
+current/roots/public/launcher checks, native ownership and normal stopping gates
+still supply the new attempt's effect authority. Remove compatibility after the
+remaining untyped first-attempt originals receive their addressed disposition.
+
+The maintained legacy controller fixture is the complete unchanged published
+2.1.3 controller, also byte-identical to the captured C423 controller. The test
+drives actual native ready-directory retirement after enumeration through its
+real strict preflight, persists the real untyped failed revision2 using SQLite,
+then changes current and exercises the existing new owner. CAS/business/current
+drift, later cutover/arming revisions, UNKNOWN, native admission and unknown
+schema refuse. Saved repeat/reopen does not prepare or mutate again. This focused
+compatibility test supplements the immutable full new-format run; it is not a
+claim that a changed build repeated that full installation or updated production.
+
+R3 uses the actual controller's read-only in-flight join across both service
+scheduling and direct polling. That join is published before synchronous entry
+without moving the existing stopping fence. Wiring binds the continuation check
+to that owner; recovery must finish before it clears. A real wiring/SQLite test
+holds recovery after preflight failure and verifies refusal without changing the
+failed row. No recursive service routing, global busy lock or second join owner
+is introduced.
 
 ## Full isolated application acceptance
 

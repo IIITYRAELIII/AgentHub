@@ -248,17 +248,28 @@ export class MaintenanceOperationStore {
 
   assertPackageContinuation(current, request) {
     const metadata = current?.metadata, proof = metadata?.packagePreStopFailure;
+    const typed = proof?.schema === 1 && proof.phase === "package-backup-preflight"
+      && proof.bindingSha256 === request.expectedBindingSha256 && proof.attempt === (metadata?.packageAttempt ?? 1);
+    // Protocol-v1 creation is revision1. Every package native dispatch awaits
+    // a committed package-arming revision; subsequent failure consumes another
+    // revision. A first failed terminal at revision2 therefore precedes any
+    // durable package intent. This is positive revision topology, not an error
+    // string or absence-of-process inference, and never a global NO_EFFECT.
+    const legacy = proof == null && current?.revision === 2 && current.phase === "failed"
+      && current.completedAt === current.updatedAt && metadata?.packageHandoff?.schema === 1
+      && metadata.packageAttempt == null && metadata.packageAttemptHistory == null && metadata.packageRecovery == null;
     if (!current || current.kind !== "restart" || current.streamId !== "agent-hub-runtime"
       || current.threadId !== "agent-hub-runtime" || current.status !== "failed" || current.outcome !== "failed"
       || current.revision !== request.expectedRevision || metadata.packageHandoff?.sha256 !== request.expectedBindingSha256
       || metadata.packageInputSha256 !== packageBindingDigest(request.input)
-      || proof?.schema !== 1 || proof.phase !== "package-backup-preflight"
-      || proof.bindingSha256 !== request.expectedBindingSha256 || proof.attempt !== (metadata.packageAttempt ?? 1)
+      || !(typed || legacy)
       || ["packageNative", "packageBootstrap", "packageBackup", "packageLaunchAdmission", "packageLaunchSha256", "expectedReleaseId"]
         .some(key => metadata[key] != null)) throw new Error("Original package has no exact failed pre-stop continuation authority");
     if (packageBindingDigest(metadata.packageHandoff.binding) !== metadata.packageHandoff.sha256) {
       throw new Error("Original package binding changed");
     }
+    return { kind: typed ? "controller-pre-stop-v1" : "legacy-v1-before-intent", fromRevision: current.revision,
+      fromBindingSha256: request.expectedBindingSha256 };
   }
 
   // A new attempt projection, not a generic terminal reset. Every prior failed
@@ -271,7 +282,7 @@ export class MaintenanceOperationStore {
         if (current?.metadata?.packageRecovery?.requestSha256 === request.requestSha256) {
           database.exec("COMMIT"); return { operation: current, applied: false };
         }
-        this.assertPackageContinuation(current, request);
+        const authority = this.assertPackageContinuation(current, request);
         const conflict = database.prepare("SELECT operation_id FROM maintenance_operations WHERE kind='restart' AND stream_id='agent-hub-runtime' AND thread_id='agent-hub-runtime' AND operation_id<>? AND status NOT IN ('succeeded','failed') LIMIT 1").get(operationId);
         if (conflict) throw new Error("Another original restart owns this runtime");
         const old = current.metadata.packageHandoff.binding, fresh = request.packageHandoff?.binding;
@@ -293,7 +304,7 @@ export class MaintenanceOperationStore {
             packageHandoff: request.packageHandoff, packageAttempt: (current.metadata.packageAttempt ?? 1) + 1,
             packageAttemptHistory: [...(current.metadata.packageAttemptHistory ?? []), prior],
             packageRecovery: { requestSha256: request.requestSha256, fromRevision: current.revision,
-              fromBindingSha256: request.expectedBindingSha256 } }, updatedAt: this.now() });
+              fromBindingSha256: request.expectedBindingSha256, authority } }, updatedAt: this.now() });
         next.revision = current.revision + 1;
         const changed = database.prepare("UPDATE maintenance_operations SET status=?,revision=?,operation_json=?,updated_at=? WHERE operation_id=? AND revision=?").run(
           next.status, next.revision, JSON.stringify(next), next.updatedAt, operationId, current.revision);

@@ -411,13 +411,17 @@ production root or reads its config/secrets. External provider/Telegram and
 canonical-shaped metadata/assets use controlled local peers; no public TLS or
 real account reliability is inferred.
 
-New typed pre-stopping failures can be continued explicitly through the existing
+Eligible pre-intent failures can be continued explicitly through the existing
 installed owner: `node <installed-handoff-entry> resume-input <retained-request>
 <failed-revision> <binding-sha>` prints a fresh exact input document. Retain that
 document and submit `node <installed-handoff-entry> resume <retained-request>
 <continuation-document>`. An identical repeated document reads back the original;
 it does not prepare/install/start again. Ordinary installer repetition remains
-readback-only. Historical failures without positive typed authority, UNKNOWN,
+readback-only. In addition to typed pre-stop evidence, protocol-v1 first failed
+revision2 can use its positive create/intent/terminal revision topology, with
+the exact old row/binding retained and fresh current/public/native guards. It
+does not create a historical typed proof or claim global NO_EFFECT. Later or
+unproven historical failures, UNKNOWN,
 changed public bytes/current/CAS/roots and prior native effects refuse. Never
 edit a receipt, cache or terminal row to manufacture eligibility.
 
