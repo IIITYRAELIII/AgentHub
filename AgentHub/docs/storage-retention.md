@@ -148,3 +148,12 @@ SQLite contention, with its original ID/CAS and current lease; artifact effects
 are never inside that queue. Ready/release/stop state is rechecked after queued
 admission. A failed write or ambiguous artifact outcome preserves the existing
 original for ordinary reconciliation rather than creating a replacement effect.
+# Native object reuse and whole-capture retirement
+
+ADR-HUB-385-owned-native-objects adds an explicitly bound new Task-native storage
+mode and a separate :repository resource on the existing native retention owner.
+Legacy bundle approvals/children stay bundle-only. A complete verified object/raw
+archive and original pruning intent precede any repository-file deletion; unique
+WIP/UNKNOWN/current/prepared and borrowed-source ODBs remain pinned. Source/Task
+acceptance, production installation and actual reclaimed bytes are separate
+outcomes. Dependency/release/audit categories are not implicitly disposable.

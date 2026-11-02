@@ -162,6 +162,9 @@ export class MaintenanceOperationStore {
     const thread = `${owner}:${createHash("sha256").update(candidateId).digest("hex")}`;
     const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
     try {
+      // A cold legacy Task has no archive owner before maintenance first
+      // initializes. Observation must not migrate/create that optional state.
+      if (!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='maintenance_operations'").get()) return null;
       return operationFromRow(database.prepare(`SELECT operation_json FROM maintenance_operations
         WHERE kind='storage-retention' AND stream_id='agent-hub-runtime' AND thread_id=?
         ORDER BY created_at DESC, operation_id DESC LIMIT 1`).get(thread));

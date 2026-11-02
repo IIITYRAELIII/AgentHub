@@ -1,0 +1,103 @@
+# ADR-HUB-385: owned native objects and archive-first retirement
+
+Status: proposed implementation; independent exact source/current and operational
+review remains required before applying the new policy to accumulated data.
+
+## Problem and ownership
+
+Task-native composition previously streamed a complete selected-history bundle
+and cloned it into each independent capture. Bundle-only retention deliberately
+left every repository and expanded working file. Closing a Task did not retire
+those retained bodies, and ignored WIP/dependencies were correctly excluded from
+ordinary Task cleanup. These boundaries explain the accumulated copies; a size
+report or a small bundle cleanup is not completion of the broader cleanup.
+
+The existing TaskGit native intent and native-merge-transport retention owner
+remain authoritative. No new database, capture registry, release publisher or
+parallel reconciliation lane is added. The existing maintenance-operation store
+holds the object-store resource, exact imports, consumers, archive receipts and
+same retirement child. SQL retry queues wrap bookkeeping only, never Git/native
+artifact effects.
+
+## New native provisioning
+
+Only new Task-native records bind owned-immutable-git-objects-v1. Old records and
+identity serialization remain unchanged. Generic release composition and the
+published-main/dev synchronization policy do not enable this provisioning port.
+
+One bare owned store contains immutable Git objects and private internal refs.
+The producer enumerates exact source closure and imports only missing OIDs using
+the existing owned Git streaming output descriptor. Incremental strict indexing
+runs against that owned store, so existing parent/tree objects are available.
+Complete import/ref custody precedes the consumer. Physical resource replacement,
+foreign output, ambient Git history/storage inputs or an unproved partial output
+refuse; no silent clone/copy fallback or source ref/config mutation is allowed.
+
+Every capture has a real separate .git, config, HEAD, refs, index and working
+directory. Only immutable pack/index/reverse-index/loose object files hardlink to
+the owned store. This requires same-filesystem hardlink support; failure is an
+explicit refused provisioning, not acceptance with a different storage policy.
+Unlinking/repacking the store cannot break a consumer: its own links retain data.
+Mutable dependency trees are not implicitly made hardlinks by this policy.
+
+## Complete archive before retirement
+
+The new :repository resource is distinct from the legacy bundle candidate and
+cannot reuse its approval/maintenance ID. Admission requires a unique original
+integration record, exact known terminal canonical Task/MCP evidence, completed
+published Task/result, completed native journal, clean independent repository
+and no ignored/untracked or unexpected work. The existing Task/process guard
+and runtime installation lease protect source/consumer lifetime. Current,
+rollback and every unretired/prepared manifest's source and recursively declared
+read-only alternate object stores remain pins.
+
+The archive preserves ALL local object identities, including unreferenced proof
+objects, not only HEAD ancestry. Storage commits anchor every original commit
+DAG; original tags get owned refs, and every blob/tree is retained in a storage
+tree. Raw working files and Git administrative files are Git blobs with exact
+paths/physical identities/SHA-256 in the archive manifest. Pack/index encoding
+is reconstructible from the retained complete object set; it is not kept as a
+second full opaque history copy. These storage commits/refs never become Task
+results, agreed bases, publications or native review capabilities.
+
+Archive intent precedes transfer; confirmed archive and original pruning intent
+precede the first destructive batch. The same canonical child supports positive
+partial progress and a lost native reply. An unknown or changed binding remains
+unknown; late user data stops before another deletion. Repository deletion
+preserves merge.json, integration records, source branches/refs, original
+receipts and reviews. Legacy source.bundle must be retired independently first.
+
+The native Windows boundary holds no-follow ancestors/root, checks every
+allowlisted file identity/hash and ADS, rejects foreign links and late entries,
+and joins each bounded child. Intentional immutable object links use handle
+disposition without changing attributes shared by another consumer. There is
+no rm/recursive-delete fallback.
+
+## Historical reads and limits
+
+The historical Task reader locates the exact archived child, rechecks its Git
+objects/raw capture and uses the same pure graph/content core. Its existing
+separate source-history checks remain. Live original execution refuses an
+already retired capture instead of recreating or retargeting it.
+
+Proof math uses an invocation-owned bare scratch with an alternate to the archive
+only while the object-store lease is held. No proof objects, index or mutable
+refs are written into the archive. The scratch is removed through the same
+handle-bound boundary after verification, preserving failures and foreign data.
+
+Allocation evidence includes the selected old roots and new pool using unique
+physical file IDs/FileStandardInfo.AllocationSize. Scheduler cumulative logical
+counters and unrelated volume writers do not establish reclaimed allocation.
+Earlier bundle removals retain their original attribution and are not counted
+again. Release copies, ignored dependency trees, moved audit originals and
+independent open/UNKNOWN Tasks still require their own exact owners/evidence;
+this policy is not a generic disk cleaner or a claim that all measured bytes
+are disposable.
+
+## Focused validation
+
+Real Git/SQLite tests cover two native checks sharing history once, separate
+indexes/refs, later missing-only input, pool removal/consumer GC, original
+consumer lost reply, full repository archival/deletion, dangling proof retention
+after GC, partial/lost native deletion and late useful-WIP refusal. Physical
+checks use the Windows sealed helper, not free-volume changes.

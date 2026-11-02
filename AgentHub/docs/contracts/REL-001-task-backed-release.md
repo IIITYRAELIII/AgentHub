@@ -451,13 +451,51 @@ digest: an old alias-bearing receipt can require a corrected later generation.
 
 ## Native transport retirement (ADR-0126)
 
-New native merge transport contains exact selected base/result ancestry through
+Legacy native merge transport contains exact selected base/result ancestry through
 private advertised bundle tips, including dangling accepted inputs, without
 copying all unrelated source refs or mutating source configuration/refs. Git
 streams its complete pack into an already-owned output descriptor; no bare pool
 or recursive temporary-directory deletion is used. A failed/partial output and
 any plain/reparse replacement are preserved. The consuming clone has no
 alternates and remains independent.
+
+New Task-native integration intents use ADR-HUB-385-owned-native-objects. They
+bind an explicit owned-immutable-git-objects-v1 descriptor without rewriting the
+shape/hash of a legacy intent. One maintenance-owned bare object store imports
+only missing exact objects. Independent captures hardlink immutable object files;
+HEAD/index/config/refs/workfiles stay private, with no alternates or source ref
+mutation. Pool GC/unlink cannot remove another consumer's physical object link.
+Available cached objects confer no selection, history, review or dev-CAS authority.
+Release candidates and published-dev-sync retain their existing standalone
+provisioning; this is not permission to use linked release worktrees.
+
+The same native-merge-transport owner also exposes a distinct :repository
+resource. Only a completed, durably published Task, known terminal original,
+completed native capture and fresh Task/process/installation custody can admit
+it. All local Git objects, including dangling commits/tags/trees/blobs, plus raw
+Git metadata and exact clean working bytes are verified and anchored in the
+owned store BEFORE the first deletion. The original merge journal, integration
+intent, Task results/branches, receipts and reviews stay at their original
+identities. A raw pack's encoding may retire only after preserving its complete
+object identities/content; it is not substituted for publication authority.
+Ignored/untracked/dirty data, missing/UNKNOWN originals, ambiguous or changed
+source custody and active/current/rollback/prepared source/alternate ODB pins
+remain retained. Legacy source.bundle must retire through its existing owner
+first; this repository resource does not silently broaden a bundle grant.
+
+Archive intake and pruning intent live in the existing maintenance original.
+Partial deletion and lost reply reconcile only that child and exact archive;
+there is no replacement ID, guessed no-effect, forced process stop or SQL/ref
+repair. The handle-bound allowlist refuses changed files, foreign links,
+reparse/ADS and late data. Intentional immutable object hardlinks are unlinked
+without clearing shared attributes. Historical evidence uses the SAME pure
+native graph/content verifier and existing separate history authority; a retired
+capture cannot resume a live Test effect. Invocation-only mathematical scratch
+may borrow the archive ODB while its pool lease is held and is cleaned through
+the sealed boundary; it never writes proof objects into the immutable archive.
+Exact selected-root allocation is measured with FileStandardInfo and file-ID
+deduplication, including newly allocated pool data; volume free-space deltas and
+cumulative scheduler counters are not reclaimed-byte proof.
 
 New permanent release-generation transport likewise streams only exact local
 main, approved base and selected result ancestry. Its advertised main alias is

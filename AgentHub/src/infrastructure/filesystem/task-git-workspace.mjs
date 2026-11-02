@@ -21,9 +21,11 @@ import { readSelectedCheckoutAuthority, verifySelectedCompositionFiles, verifySe
 import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
-import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, nativeMergeBaseFields } from "./native-release-merge.mjs";
+import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, assertNativeMergedResults, nativeMergeBaseFields } from "./native-release-merge.mjs";
 import { synchronizePublishedDev } from "./published-dev-sync.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
+import { OwnedNativeObjectStore, nativeObjectStorageDescriptor } from "./owned-native-object-store.mjs";
+import { MaintenanceOperationStore } from "../persistence/maintenance-operation-store.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
   assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, publishedMetadataContext } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
@@ -4084,7 +4086,7 @@ export class TaskGitWorkspaceService {
     }
     // Historical evidence is Git objects plus the original capture, never the
     // later rolling dev/source checkout or its current config/physical bytes.
-    await this.#nativeIntegrationComposition(record, lease);
+    await this.#nativeIntegrationComposition(record, lease, { historicalOnly: true });
     if (descriptor.absorptionHistory) await this.#nativeSelectedCompositionForResult(descriptor.absorptionHistory, lease);
     await assertNativeTaskHistories({
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: descriptor.repositoryRoot, lease }),
@@ -4099,6 +4101,7 @@ export class TaskGitWorkspaceService {
     const snapshot = record.snapshot;
     const identity = { policy: "native-dev-merge-v1", taskId: snapshot.taskId,
       resultCommit: snapshot.headCommit, before: record.before, mainCommit: record.mainCommit,
+      ...(record.objectStorage ? { objectStorage: record.objectStorage } : {}),
       ...(record.nativeHistoryAuthority ? { nativeHistoryAuthority: record.nativeHistoryAuthority } : {}),
       ...(record.nativeAbsorptionInput || record.nativeAbsorptionHistory ? {
         ...(record.nativeAbsorptionInput ? { nativeAbsorptionInput: record.nativeAbsorptionInput } : {}),
@@ -4109,9 +4112,73 @@ export class TaskGitWorkspaceService {
     return { root, identity };
   }
 
-  async #nativeIntegrationComposition(record, lease) {
+  async nativeCaptureRetirementRecordOwned({ taskId, root, state, lease }) {
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(taskId);
+    await this.#assertRepositoryProcessTreeClear(path.join(root, "repository"));
+    const directory = path.join(this.dataDir, "task-native-integrations", normalizedTaskId(taskId));
+    const matches = [];
+    for (const key of await readdir(directory, { withFileTypes: true })) {
+      if (!key.isDirectory() || key.isSymbolicLink()) throw new Error("Native integration custody directory changed");
+      for (const file of await readdir(path.join(directory, key.name), { withFileTypes: true })) {
+        if (!file.isFile() || file.isSymbolicLink() || !/^[a-f0-9]{64}\.json$/u.test(file.name)) throw new Error("Native integration custody entry changed");
+        const pathname = path.join(directory, key.name, file.name), bytes = await readFile(pathname);
+        const record = JSON.parse(bytes);
+        if (!samePath(this.#nativeIntegrationStaging(record).root, root)) continue;
+        if (record.kind !== "native-task-integration-v1" || record.snapshot.taskId !== taskId
+            || file.name !== createHash("sha256").update(record.operationId).digest("hex") + ".json"
+            || record.target !== state.head || !samePath(record.stageRoot, path.join(root, "repository"))
+            || JSON.stringify(this.#nativeIntegrationStaging(record).identity) !== JSON.stringify(state.identity)) throw new Error("Original native capture binding changed");
+        matches.push({ operationId: record.operationId, path: pathname,
+          sha256: createHash("sha256").update(bytes).digest("hex"), tree: record.targetTree, taskBaseCommit: record.snapshot.baseCommit });
+      }
+    }
+    if (matches.length !== 1) throw new Error("Native capture original is absent or ambiguous");
+    return matches[0];
+  }
+
+  async verifyNativeCaptureArchiveOwned({ state, record, archive, lease }) {
+    await requiredGuardLease(lease).assertOwned();
+    const objects = new OwnedNativeObjectStore({ dataDir: this.dataDir,
+      gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease, guardRepositoryRoot: cwd, timeoutMs: 60_000 }),
+      assertCurrent: () => lease.assertOwned() });
+    return objects.withArchiveMath(archive.archive, async math => {
+      const git = (args, options = {}) => this.#runOwned(args, { ...options, cwd: math.repository, lease,
+        guardRepositoryRoot: math.repository, timeoutMs: 60_000 });
+      await assertNativeMergedResults({ git, baseCommit: state.identity.before,
+        tasks: [{ taskId: state.identity.taskId, baseCommit: record.taskBaseCommit, resultCommit: state.identity.resultCommit }],
+        merges: state.merges, head: state.head, tree: record.tree, identity: state.identity,
+        verifyReview: this.verifyNativeResolutionReview });
+    });
+  }
+
+  async #nativeIntegrationComposition(record, lease, { historicalOnly = false } = {}) {
     const snapshot = record.snapshot;
     const { root, identity } = this.#nativeIntegrationStaging(record);
+    if (record.objectStorage && JSON.stringify(record.objectStorage) !== JSON.stringify(nativeObjectStorageDescriptor())) {
+      throw new Error("Native Test object storage identity changed");
+    }
+    const ownedGitAt = (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
+      guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });
+    const objectStore = record.objectStorage ? new OwnedNativeObjectStore({ dataDir: this.dataDir, gitAt: ownedGitAt,
+      assertCurrent: () => lease.assertOwned() }) : null;
+    const retirementDatabase = record.target && await lstat(path.join(this.dataDir, "runtime.sqlite")).catch(error => {
+      if (error.code === "ENOENT") return null; throw error;
+    });
+    const retirement = retirementDatabase ? new MaintenanceOperationStore({ dataDir: this.dataDir })
+      .latestStorageArtifactReadonly("native-merge-transport", path.basename(root) + ":repository") : null;
+    if (retirement?.metadata?.captureArchive) {
+      if (!historicalOnly) throw new Error("Native capture retired; only historical evidence may consume its archive");
+      const objects = objectStore ?? new OwnedNativeObjectStore({ dataDir: this.dataDir, gitAt: ownedGitAt,
+        assertCurrent: () => lease.assertOwned() });
+      const archived = await objects.readArchive(retirement.metadata.captureArchive);
+      const state = JSON.parse(await readFile(path.join(root, "merge.json"), "utf8"));
+      if (archived.manifest.binding.stateHash !== createHash("sha256").update(await readFile(path.join(root, "merge.json"))).digest("hex")
+          || JSON.stringify(archived.manifest.binding.state) !== JSON.stringify(state)
+          || state.head !== record.target) throw new Error("Historical native archive context changed");
+      await this.verifyNativeCaptureArchiveOwned({ state, record: { tree: record.targetTree, taskBaseCommit: record.snapshot.baseCommit }, archive: archived, lease });
+      return { root, head: record.target, tree: record.targetTree, merges: state.merges };
+    }
     if (record.target) {
       if (!samePath(record.stageRoot, path.join(root, "repository"))) {
         throw new Error("Native Test staging root binding changed");
@@ -4124,8 +4191,8 @@ export class TaskGitWorkspaceService {
       resolutionReview: record.nativeResolutionReview ?? null,
       verifyReview: this.verifyNativeResolutionReview,
       deliveredHead: record.target ?? null,
-      gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
-        guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 }),
+      provisionNativeObjects: objectStore ? input => objectStore.provision(input) : null,
+      gitAt: ownedGitAt,
       readJson: pathname => readFile(pathname, "utf8").then(JSON.parse, error => {
         if (error.code === "ENOENT") return null;
         throw error;
@@ -4283,6 +4350,7 @@ export class TaskGitWorkspaceService {
         });
         record = { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
           snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
+          objectStorage: nativeObjectStorageDescriptor(),
           nativeHistoryAuthority: historyAuthority.binding,
           ...(nativeResolutionReview ? { nativeResolutionReview } : {}),
           ...(initialNativeTest ? { initialNativeTest } : {}),

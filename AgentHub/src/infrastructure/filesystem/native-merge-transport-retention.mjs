@@ -3,6 +3,7 @@ import { lstat, open, readFile, readdir, realpath, statfs } from "node:fs/promis
 import path from "node:path";
 import { deleteSealedTransport } from "./sealed-transport-delete.mjs";
 import { bindBundleHeads, readBundleHeads, bundleHeadsAnchored } from "./retained-bundle-heads.mjs";
+import { NativeCaptureRetirement, nativeCaptureCandidate } from "./native-capture-retirement.mjs";
 
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 const absent = error => { if (error?.code === "ENOENT") return null; throw error; };
@@ -46,9 +47,9 @@ async function freeBytes(root) {
   catch { return null; }
 }
 
-// This is the native merge owner's *transport* cleanup. It never retires a
-// repository, Task branch, merge journal, resolution evidence or user files.
-// A completed/published Task and the existing Task Git lease are mandatory.
+// Legacy transport bindings keep their exact bundle-only effect. The distinct
+// :repository resource delegates archive-first retirement under the SAME owner.
+// Task branches/journals/results are never removed by either resource.
 export class NativeMergeTransportRetention {
   id = "native-merge-transport";
 
@@ -56,6 +57,7 @@ export class NativeMergeTransportRetention {
     isStopping = () => false, platform = process.platform } = {}) {
     Object.assign(this, { root: path.join(dataDir, "task-native-merges"), taskBoard, taskGitWorkspaces,
       gitAt, deleteTransport, isStopping, platform });
+    this.captureRetirement = new NativeCaptureRetirement({ dataDir, taskBoard, taskGitWorkspaces, gitAt, isStopping });
   }
 
   async list({ after, limit }) {
@@ -63,8 +65,10 @@ export class NativeMergeTransportRetention {
     if (!root) return { items: [], done: true };
     if (!root.isDirectory() || root.isSymbolicLink()) throw new Error("transport-root-not-plain");
     // Only this owner's flat capture names; no recursive walk or Task/history scan.
-    const names = (await readdir(this.root)).filter(n => /^[a-f0-9]{24}$/u.test(n) && (!after || n > after)).sort();
-    return { items: names.slice(0, limit).map(id => ({ id, cursor: id })), done: names.length <= limit };
+    const names = (await readdir(this.root)).filter(n => /^[a-f0-9]{24}$/u.test(n));
+    const items = names.flatMap(id => [{ id, cursor: id }, nativeCaptureCandidate(id)])
+      .filter(item => !after || item.cursor > after).sort((a, b) => a.cursor.localeCompare(b.cursor));
+    return { items: items.slice(0, limit), done: items.length <= limit };
   }
 
   async #owned(candidate, action) {
@@ -149,6 +153,7 @@ export class NativeMergeTransportRetention {
   }
 
   async preview({ candidate }) {
+    if (candidate?.kind === "native-capture-retirement-v1") return this.captureRetirement.preview({ candidate });
     try { return await this.#owned(candidate, owned => this.#preview(owned)); }
     catch { return retained("owner-verification-unavailable"); }
   }
@@ -164,7 +169,8 @@ export class NativeMergeTransportRetention {
     return bundleHeadsAnchored(git, heads);
   }
 
-  async prune({ candidate, binding }) {
+  async prune({ candidate, binding, operationId }) {
+    if (candidate?.kind === "native-capture-retirement-v1") return this.captureRetirement.prune({ candidate, binding, operationId });
     return this.#owned(candidate, async owned => {
       const current = await this.#preview(owned);
       if (current.status !== "eligible") return current;
@@ -180,7 +186,8 @@ export class NativeMergeTransportRetention {
     });
   }
 
-  async reconcile({ candidate, binding }) {
+  async reconcile({ candidate, binding, operationId }) {
+    if (candidate?.kind === "native-capture-retirement-v1") return this.captureRetirement.reconcile({ candidate, binding, operationId });
     const result = await this.#owned(candidate, async owned => {
       if (owned.stateHash !== binding.stateHash) return { status: "unknown", reason: "original-capture-changed" };
       if (!owned.file) return { status: "already-removed", logicalBytes: 0 };

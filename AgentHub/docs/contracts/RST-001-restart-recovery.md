@@ -46,6 +46,19 @@ Other persistent artifacts
 remain under their existing cleanup contracts and are preserved until those
 owners supply their own verified eligibility/effect adapters.
 
+ADR-HUB-385 extends the existing native-merge-transport owner with a distinct
+native-capture-retirement-v1 :repository resource. Its legacy bundle IDs and
+pending originals retain their meaning. The new resource archives every local
+Git object and raw non-object file in the owned immutable object store before
+admitting handle-bound repository retirement. Exact terminal Task/MCP evidence,
+publication, source/alternate pins and original native composition verification
+remain required. Archive intent and pruning intent precede their effects; partial
+or lost replies retain the SAME child. Historical readers consume its verified
+archive, while live integration refuses to reconstruct a retired capture. New
+native provisioning shares only immutable object files with independent metadata;
+existing release holders remain standalone. No new database, maintenance registry,
+Task closure, UNKNOWN settlement or generic directory scavenger is introduced.
+
 An allocation evidence read may open the existing maintenance store read-only,
 without schema initialization, migration or a writer reservation. It verifies
 the original admitted partial retirement, but cannot settle, replay or continue

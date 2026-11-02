@@ -211,6 +211,8 @@
         "agent-hub-main.mjs",
         "src/composition/contour-selection-recovery.mjs",
         "src/infrastructure/persistence/maintenance-operation-store.mjs",
+        "src/infrastructure/persistence/native-capture-retirement-evidence.mjs",
+        "docs/decisions/ADR-HUB-385-owned-native-objects.md",
         "assets/web-app/startup-screen-model.js",
         "assets/web-app/connection-banner.js",
         "src/application/restart-failure-notice.mjs",
@@ -320,7 +322,14 @@
         "tests/infrastructure/filesystem/retained-bundle-heads.test.mjs",
         "tests/infrastructure/filesystem/native-merge-transport-retention.test.mjs",
         "tests/infrastructure/filesystem/release-generation-transport-retention.test.mjs",
-        "docs/decisions/ADR-HUB-385-wide-transport-proof.md"
+        "docs/decisions/ADR-HUB-385-wide-transport-proof.md",
+        "src/infrastructure/filesystem/owned-native-object-store.mjs",
+        "src/infrastructure/filesystem/native-capture-*.mjs",
+        "src/infrastructure/filesystem/sealed-native-capture.*",
+        "src/infrastructure/persistence/native-capture-retirement-evidence.mjs",
+        "tests/infrastructure/filesystem/owned-native-object-store.test.mjs",
+        "tests/infrastructure/filesystem/native-capture-*.test.mjs",
+        "docs/decisions/ADR-HUB-385-owned-native-objects.md"
       ]
     },
     {
@@ -498,7 +507,14 @@
         "tests/infrastructure/filesystem/retained-bundle-heads.test.mjs",
         "tests/infrastructure/filesystem/native-merge-transport-retention.test.mjs",
         "tests/infrastructure/filesystem/release-generation-transport-retention.test.mjs",
-        "docs/decisions/ADR-HUB-385-wide-transport-proof.md"
+        "docs/decisions/ADR-HUB-385-wide-transport-proof.md",
+        "src/infrastructure/filesystem/owned-native-object-store.mjs",
+        "src/infrastructure/filesystem/native-capture-*.mjs",
+        "src/infrastructure/filesystem/sealed-native-capture.*",
+        "src/infrastructure/persistence/native-capture-retirement-evidence.mjs",
+        "tests/infrastructure/filesystem/owned-native-object-store.test.mjs",
+        "tests/infrastructure/filesystem/native-capture-*.test.mjs",
+        "docs/decisions/ADR-HUB-385-owned-native-objects.md"
       ]
     },
     {
