@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { prepareRuntime } from "../src/runtime/runtime-manager.mjs";
 import { verifyRuntimeManifest } from "../src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
 const [sourceRoot, dependencies, output, revision] = process.argv.slice(2).map((value, i) => i === 3 ? value : path.resolve(value));
+const builds = process.argv[6] ? process.argv[6].split(",").map(Number) : [40000001, 40000002];
+assert.ok(builds.length === 2 && builds.every(value => Number.isSafeInteger(value) && value > 0));
 if (!/^[a-f0-9]{40}$/u.test(revision ?? "")) throw Error("Exact private candidate revision required");
 assert.equal((await promisify(execFile)("git", ["rev-parse", "HEAD"], { cwd: sourceRoot, windowsHide: true })).stdout.trim(), revision);
 assert.equal((await promisify(execFile)("git", ["status", "--porcelain"], { cwd: sourceRoot, windowsHide: true })).stdout, "");
@@ -28,7 +30,7 @@ for (const [index, name] of [[1, "previous"], [2, "candidate"]]) {
   catch (error) {
     if (error.code !== "ENOENT") throw error;
     result = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId, publicationRevision: revision,
-      expectedReleaseVersion: `${version}+build.${40000000 + index}`,
+      expectedReleaseVersion: `${version}+build.${builds[index - 1]}`,
       installProductionDependencies: staging => cp(path.join(dependencies, "node_modules"), path.join(staging, "node_modules"), { recursive: true, errorOnExist: true, force: false }) });
   }
   artifacts.push({ ...result, releaseId });

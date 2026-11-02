@@ -19,6 +19,7 @@ import { assertPackageFiles, capturePackageRuntime, packageBindingDigest, packag
 import { waitForReplacementLock, directWindowsLauncherInvocation } from "./runtime-restart.mjs";
 import { waitForRuntimeReplacement } from "./publication-readiness.mjs";
 import { runtimeManifestMatchesPackage } from "../domain/runtime-package-identity.mjs";
+import { assertAgentHubUpgrade } from "../domain/agent-hub-version.mjs";
 import { callDesktopControl } from "../infrastructure/process/desktop-control.mjs";
 import { runtimeStatus } from "./runtime-manager.mjs";
 
@@ -98,6 +99,7 @@ export async function preparePackageRestart(input, { dataDir, environment = proc
   const manifestFile = path.join(scratchRoot, "runtime-manifest.public.json");
   await writeFile(manifestFile, publicManifest, { flag: "wx" });
   target.runtimeManifest = await packageFile(manifestFile);
+  await assertPackageUpgrade({ ...current, target });
   const hostCopy = path.join(scratchRoot, "AgentHub.RuntimeHost.exe");
   await copyFile(current.old.launcher.file, hostCopy, constants.COPYFILE_EXCL);
   if ((await packageFile(hostCopy)).sha256 !== current.old.launcher.sha256) {
@@ -132,6 +134,36 @@ export async function assertOldPackageCurrent(binding, { requireInstance = false
       || packageDigest(lock.instanceToken ?? "") !== binding.old.instanceSha256) {
       throw new Error("Admitted old instance changed");
     }
+  }
+}
+
+// Use the installer's existing domain policy on its exact inspected manifest.
+// This is repeated while admission is open, before the stopping fence. The
+// stopped installer still rechecks; early eligibility never grants cutover.
+export async function assertPackageUpgrade(binding) {
+  await assertOldPackageCurrent(binding);
+  const oldRaw = await readFile(path.join(binding.runtimeRoot, "releases", binding.old.releaseId, "runtime-manifest.json"));
+  const nextRaw = await readFile(binding.target.runtimeManifest.file);
+  if (packageDigest(nextRaw) !== binding.target.runtimeManifest.sha256) throw new Error("Admitted target manifest changed");
+  const next = JSON.parse(nextRaw);
+  if (next.releaseId !== binding.target.releaseId || next.releaseVersion !== binding.target.version
+    || next.publicationRevision !== binding.target.sourceCommit) throw new Error("Target version/source binding changed");
+  assertAgentHubUpgrade(JSON.parse(oldRaw), next, { sameArtifact: runtimeManifestMatchesPackage(oldRaw, nextRaw) });
+}
+
+export async function preflightPackageRestart(request) {
+  const binding = packageHandoffBinding(request);
+  await assertPackageFiles(binding.target);
+  await assertPackageUpgrade(binding);
+  await preflightRuntimeBackupScope({ runtimeRoot: binding.runtimeRoot });
+}
+
+async function verifyRecoverableCurrent(binding) {
+  await assertOldPackageCurrent(binding);
+  await verifyRuntimeManifest(path.join(binding.runtimeRoot, "releases", binding.old.releaseId), binding.old.releaseId);
+  const host = await packageFile(path.join(binding.runtimeRoot, "AgentHub.RuntimeHost.exe"));
+  if (host.sha256 !== binding.old.launcher.sha256 || host.bytes !== binding.old.launcher.bytes) {
+    throw new Error("Stable Host no longer matches the admitted previous current");
   }
 }
 
@@ -188,6 +220,10 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
   }
   await protectRuntimeDirectory(path.dirname(await realpath(input.packageRoot)));
   const pointerRaw = await readFile(path.join(root, "current.json")), pointer = JSON.parse(pointerRaw);
+  await assertPackageUpgrade({ runtimeRoot: root, dataDir: path.join(root, "data"),
+    roots: { runtime: await packageDirectory(root), data: await packageDirectory(path.join(root, "data")) },
+    old: { releaseId: pointer.current, currentSha256: packageDigest(pointerRaw),
+      manifestSha256: packageDigest(await readFile(path.join(root, "releases", pointer.current, "runtime-manifest.json"))) }, target });
   const instance = JSON.parse(await readFile(path.join(root, "data", "bot.lock"), "utf8"));
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(pointer.current ?? "")
     || instance.releaseId !== pointer.current || instance.ready !== true || !Number.isSafeInteger(instance.pid)
@@ -439,6 +475,7 @@ export async function continuePackageRestart({ store, operationId, assertRetired
     // A lost install/start reply is read back, never submitted again here.
     return { status: "reconciliation-required", operationId, phase: current.phase };
   }
+  let installerFailed = false;
   try {
   await assertRetired();
   await validateOld(binding);
@@ -450,7 +487,14 @@ export async function continuePackageRestart({ store, operationId, assertRetired
   await assertRetired();
   await validateOld(binding);
   await validateFiles(binding.target);
-  await install(binding); // Unchanged public installer repeats stopped/upgrade checks.
+  try {
+    await install(binding); // Unchanged public installer repeats stopped/upgrade checks.
+  } catch (error) {
+    // execFile joins the exact Python process. Signal/timeout/transport/buffer
+    // errors do not establish its outcome and cannot authorize another launch.
+    installerFailed = Number.isInteger(error.code) && error.code !== 0 && !error.signal && !error.killed;
+    throw error;
+  }
   await verifyInstalled(binding);
   await packageCheckpoint(store, operationId, "package-launching", {
     expectedReleaseId: binding.target.releaseId, oldPid: binding.old.pid,
@@ -463,13 +507,43 @@ export async function continuePackageRestart({ store, operationId, assertRetired
     !== packageBindingDigest(binding)) throw new Error("Replacement did not settle the original restart");
   return { status: "replaced", operationId, releaseId: binding.target.releaseId, ...observed };
   } catch (error) {
+    const failed = store.getReadonly(operationId);
+    if (installerFailed && failed.phase === "package-installing" && !terminal(failed)
+      && !failed.metadata.packageLaunchSha256 && !failed.metadata.packageLaunchAdmission) {
+      try {
+        await assertRetired();
+        await verifyRecoverableCurrent(binding);
+        await packageCheckpoint(store, operationId, "package-recovery-launching", {
+          expectedReleaseId: binding.old.releaseId, oldPid: binding.old.pid,
+          packageFailurePhase: failed.phase, packageFailureCode: String(error.code),
+          packageFailureMessage: String(error.message).slice(0, 1_000),
+          packageCurrentRecovery: { schema: 1, bindingSha256: packageBindingDigest(binding),
+            releaseId: binding.old.releaseId, installerExitCode: error.code },
+        });
+        await assertRetired();
+        await verifyRecoverableCurrent(binding);
+        // Keep the immutable handoff/target untouched. Only this local launch
+        // view addresses the positively verified previous current.
+        const previous = { ...binding, target: { ...binding.target, releaseId: binding.old.releaseId } };
+        const replacement = await launch(previous);
+        const observed = await ready(previous, replacement);
+        const completed = store.getReadonly(operationId);
+        if (completed.status !== "failed" || completed.metadata.packageCurrentRecoveryReady !== true) {
+          throw new Error("Restored runtime did not retain the failed update outcome");
+        }
+        return { status: "restored", operationId, releaseId: binding.old.releaseId, originalOutcome: "failed", ...observed };
+      } catch (recoveryError) {
+        error.recoveryError = recoveryError;
+      }
+    }
     await store.runRestartMutation(() => {
       const latest = store.getReadonly(operationId);
       if (!terminal(latest)) store.transition(operationId, {
         status: "reconciling", phase: "package-reconciling", outcome: "unknown",
-        metadata: { packageFailurePhase: latest.phase,
+        metadata: { packageFailurePhase: latest.metadata.packageFailurePhase ?? latest.phase,
           packageFailureCode: String(error?.code ?? "").slice(0, 100) || null,
-          packageFailureMessage: String(error?.message ?? error).slice(0, 1_000) },
+          packageFailureMessage: String(error?.message ?? error).slice(0, 1_000),
+          ...(error.recoveryError ? { packageRecoveryFailureMessage: String(error.recoveryError.message).slice(0, 1_000) } : {}) },
       }, { expectedRevision: latest.revision });
     }, { requestId: operationId });
     throw error;
@@ -505,14 +579,21 @@ export async function packageHostMain(args, environment = process.env) {
     }
     if (!current?.metadata?.packageHandoff) return { status: "no-package-original" };
     const binding = packageHandoffBinding(current);
-    if (current.phase !== "package-launching" || current.metadata.packageLaunchAdmission
+    const restoring = current.phase === "package-recovery-launching";
+    if ((!restoring && current.phase !== "package-launching") || current.metadata.packageLaunchAdmission
       || environment.AGENT_HUB_RESTART_OPERATION_ID !== current.operationId
       || packageDigest(environment.AGENT_HUB_PACKAGE_LAUNCH_TOKEN ?? "") !== current.metadata.packageLaunchSha256
       || Number(environment.AGENT_HUB_PACKAGE_BOOTSTRAP_HOST_PID) !== process.ppid) {
       throw new Error("An unresolved package original fences runtime admission");
     }
-    await verifyInstalledPackage(binding);
-    await packageCheckpoint(store, current.operationId, "package-launching", {
+    if (restoring) {
+      const recovery = current.metadata.packageCurrentRecovery;
+      if (recovery?.schema !== 1 || recovery.bindingSha256 !== packageBindingDigest(binding)
+        || recovery.releaseId !== binding.old.releaseId || !Number.isInteger(recovery.installerExitCode)
+        || recovery.installerExitCode === 0) throw new Error("Previous current recovery authority changed");
+      await verifyRecoverableCurrent(binding);
+    } else await verifyInstalledPackage(binding);
+    await packageCheckpoint(store, current.operationId, current.phase, {
       packageLaunchAdmission: { hostPid: process.ppid,
         hostStarted: environment.AGENT_HUB_PACKAGE_BOOTSTRAP_HOST_STARTED },
     });
@@ -564,11 +645,13 @@ export async function packageHostMain(args, environment = process.env) {
     // The native parent releases its root gate only after the installer and the
     // durable ONE launch intent. No old process signal/console injection occurs.
     const launchToken = randomBytes(32).toString("hex");
-    await packageCheckpoint(store, operationId, "package-launching", {
+    const restoring = store.getReadonly(operationId).phase === "package-recovery-launching";
+    await packageCheckpoint(store, operationId, restoring ? "package-recovery-launching" : "package-launching", {
       packageLaunchSha256: packageDigest(launchToken),
     });
     await nativeReply("AGENT_HUB_PACKAGE_LAUNCH", "AGENT_HUB_PACKAGE_GATE_RELEASED");
-    await verifyInstalledPackage(actual);
+    if (restoring) await verifyRecoverableCurrent(binding);
+    else await verifyInstalledPackage(actual);
     const invocation = directWindowsLauncherInvocation({ launcher: path.join(actual.runtimeRoot,
       "AgentHub.RuntimeHost.exe"), environment: { ...process.env,
       AGENT_HUB_RESTART_OPERATION_ID: operationId, AGENT_HUB_PACKAGE_LAUNCH_TOKEN: launchToken } });

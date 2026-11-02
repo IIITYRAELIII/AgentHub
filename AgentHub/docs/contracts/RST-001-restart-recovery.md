@@ -2,6 +2,21 @@
 
 ## Explicit package next attempt (ADR-HUB-398)
 
+Package preparation and the actual controller preflight apply the existing
+installer version/build eligibility to the inspected, digest-bound public
+manifest and exact current manifest before stopping. The installer keeps its
+own stopped checks; early acceptance does not permit a downgrade or cutover.
+
+After a positively joined nonzero installer exit, the same native owner may
+restore only the unchanged admitted current: physical roots, current pointer,
+manifest bytes, complete payload, stable Host and native retirement must still
+verify. It persists one recovery launch intent and uses the existing one-use
+Host admission and exact original/release/PID Ready proof. The update settles
+FAILED, retaining installer error, backup, native and attempt history even when
+the previous runtime is Ready again. No install or launch is replayed. Signal,
+timeout, lost reply, changed/partial current or unknown ownership remains
+reconciling; this is not permission to roll back or reset an original.
+
 A definitively failed package original remains readback-only under ordinary
 intake/bootstrap and generic terminal transitions. Only an explicit existing
 maintenance-owner `resume-package` may admit its next attempt: exact immutable

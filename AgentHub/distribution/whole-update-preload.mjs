@@ -6,7 +6,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import childProcess from "node:child_process";
 import { promisify } from "node:util";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 
 const main = process.argv[1]?.endsWith("agent-hub-main.mjs");
 if (main || process.argv[1]?.endsWith("runtime-package-handoff.mjs")) {
@@ -21,6 +21,15 @@ if (main || process.argv[1]?.endsWith("runtime-package-handoff.mjs")) {
     const original = childProcess[method];
     const wrapped = function (command, ...args) {
       const argv = Array.isArray(args[0]) ? args[0] : [], name = path.basename(String(command)).toLowerCase();
+      if (control.installFailurePath && method === "execFile" && /^python(?:\.exe)?$/u.test(name)
+        && argv.includes("--archive") && !argv.includes("--inspect-package")) {
+        if (path.dirname(control.installFailurePath) !== path.join(control.root, "releases")) throw Error("Foreign failure fixture");
+        // Real filesystem refusal inside the unmodified, hash-bound installer.
+        // No fabricated exit/result; the old current and its files stay intact.
+        writeFileSync(control.installFailurePath, "owned obstructing target path", { flag: "wx" });
+        appendFileSync(path.join(directory, "installer-fault.jsonl"), JSON.stringify({ pid: process.pid,
+          path: control.installFailurePath, at: Date.now() }) + "\n");
+      }
       const shellCommand = name === "cmd.exe" ? argv.slice(argv.findIndex(value => String(value).toLowerCase() === "/c") + 1).join(" ") : "";
       if (providerExecutable(command) || (/^node(?:\.exe)?$/u.test(name) && argv.some(providerModule))
         || /(?:^|[\\/"\s])(?:claude|codex)(?:\.exe|\.cmd)?(?:$|["\s])/iu.test(shellCommand)) {

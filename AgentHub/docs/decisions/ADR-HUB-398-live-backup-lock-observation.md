@@ -102,6 +102,34 @@ is introduced.
 
 ## Full isolated application acceptance
 
+### Before-stop eligibility and failed-installer recovery
+
+A real continuation from private build29893517 to immutable public build29892686
+reached stopped backup before the unchanged installer rejected the downgrade,
+leaving no runtime. Inspection previously verified package content only. The
+existing handoff owner now applies the same domain upgrade policy to exact old
+and inspected target manifests during preparation and again in controller
+preflight before the synchronous stopping fence. The installer repeats its
+existing guard. No version, published asset or downgrade exception is changed.
+
+A confirmed nonzero installer exit is distinct from an unknown child outcome.
+Only after native retirement and full unchanged-current/manifest/stable-Host
+verification can the same owner persist a recovery launch. Its original native
+gate and existing token/Host admission fence that single launch. The replacement
+Ready proof addresses the old release and same maintenance original, which is
+settled failed with its installer diagnostic and all prior evidence retained.
+Partial current changes, unknown child outcomes or a lost launch reply retain
+reconciliation without another start. No second recovery API or ledger exists.
+
+The existing isolated full-application harness has two affected modes. Downgrade
+uses the actual build ordering and asserts refusal before any original/stop.
+Poststop recovery introduces a real owned filesystem obstacle at the admitted
+target directory only when the real Python installer is about to execute.
+The unmodified installer returns a real failure; the native/Hub/store/startup
+chain must restore the verified same current, retain config/cursor/UNKNOWN data,
+and preserve failed-original readback with one replacement. Local transport and
+fake external providers remain explicit; historical run13 keeps its own pins.
+
 `distribution/whole_update.mjs` uses complete verified runtime artifacts and the
 actual Hub composition, authenticated per-root Desktop IPC, existing restart
 admission/drain, SQLite, stopped backup, native RuntimeHost, installer and startup.

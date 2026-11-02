@@ -1,5 +1,12 @@
 # Source and distribution boundary
 
+Affected isolated recovery checks reuse `whole_update.mjs <artifacts.json>
+<new-output> downgrade|poststop-recovery`. The first requires a lower target
+build and verifies rejection before stopping; the second requires a legitimate
+newer target and observes a real installer filesystem refusal followed by the
+same verified current becoming Ready. The original update remains FAILED.
+Neither mode is production update/retry authority or public TLS acceptance.
+
 This is preparation for a repository cutover, not permission to retarget an
 existing release operation. The registered release owner still composes,
 validates, prepares and publishes the exact accepted source. The package builder

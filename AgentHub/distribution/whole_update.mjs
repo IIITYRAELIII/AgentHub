@@ -26,6 +26,8 @@ import { createInterface } from "node:readline";
 
 const execute = promisify(execFile), here = import.meta.dirname, source = path.resolve(here, "..");
 const [artifactFile, outputArgument] = process.argv.slice(2);
+const mode = process.argv[4] ?? "whole";
+if (!["whole", "downgrade", "poststop-recovery"].includes(mode)) throw Error("Unknown isolated scenario");
 if (process.platform !== "win32" || !artifactFile || !outputArgument) throw Error("Windows artifacts.json and new isolated output required");
 const input = JSON.parse(await fs.readFile(artifactFile, "utf8")), output = path.resolve(outputArgument);
 await fs.mkdir(output); // Exclusive: never adopt an existing instance/data/cache.
@@ -160,7 +162,9 @@ try {
   const controlFile = path.join(fixtures, "control.json"), preload = path.join(fixtures, "whole-update-preload.mjs");
   await fs.copyFile(path.join(here, "whole-update-preload.mjs"), preload);
   const control = { root, metadataUrl: `https://api.github.com/repos/IIITYRAELIII/AgentHub/releases/tags/${tag}`,
-    temporaryRoot: path.join(output, "temp"), telegramApiBaseUrl: telegram.baseUrl, transport: `http://127.0.0.1:${server.address().port}`, assetBase, assetNames: Object.keys(assets), churn: "replacement" };
+    temporaryRoot: path.join(output, "temp"), telegramApiBaseUrl: telegram.baseUrl, transport: `http://127.0.0.1:${server.address().port}`, assetBase, assetNames: Object.keys(assets),
+    churn: mode === "whole" ? "replacement" : null,
+    ...(mode === "poststop-recovery" ? { installFailurePath: path.join(root, "releases", target.value.releaseId) } : {}) };
   await fs.writeFile(controlFile, JSON.stringify(control));
   await fs.writeFile(path.join(root, ".agent-hub-release-acceptance.json"), JSON.stringify({ schemaVersion: 1, id, root,
     nodeImport: { file: preload, sha256: hash(await fs.readFile(preload)) } }));
@@ -187,11 +191,56 @@ try {
     return (await fs.readFile(path.join(root, "data/fake-codex-state.json"), "utf8")).includes("[whole-update-wait]"); }, "real owned turn active");
   const cli = ["-X", "utf8", "-B", path.join(here, "whole-update-transport.py"), controlFile, installer, "--release", tag,
     "--prepare-update", "--operation-id", id, "--runtime-root", root, "--scratch-root", path.join(output, "cache")];
-  await run("public-installer-admission", "python", cli, { input: "\n", env: { ...cleanEnvironment, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } });
+  let admissionError;
+  try { await run("public-installer-admission", "python", cli, { input: "\n", env: { ...cleanEnvironment, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } }); }
+  catch (error) { admissionError = error; }
+  if (mode === "downgrade") {
+    assert.match(admissionError?.message ?? "", /Version\/build downgrade or reuse refused/u);
+    assert.equal(operation(), null);
+    assert.deepEqual(await json(path.join(root, "data/bot.lock")), before);
+    assert.ok(processIsAlive(before.pid));
+    assert.equal((await json(path.join(root, "current.json"))).current, before.releaseId);
+    await fs.writeFile(path.join(fixtures, "work-complete"), "complete normally");
+    report.after = before; report.status = "passed";
+    await event("downgrade-refused-before-any-original-or-stop", { previousVersion: previousManifest.releaseVersion, targetVersion: target.value.version });
+  } else {
+  if (admissionError) throw admissionError;
   const blocked = await wait(() => operation()?.status === "blocked" && operation(), "canonical blocked request");
   report.blocked = blocked; assert.equal((await json(path.join(root, "data/bot.lock"))).pid, before.pid);
   await event("real-owner-waits-for-owned-work", { operationId: id });
   await fs.writeFile(path.join(fixtures, "work-complete"), "complete normally");
+  if (mode === "poststop-recovery") {
+    const completed = await wait(() => operation()?.status === "failed" && operation(), "failed installer and restored original", 180_000);
+    assert.equal(completed.metadata.packageCurrentRecoveryReady, true);
+    assert.equal(completed.metadata.packageFailurePhase, "package-installing");
+    assert.notEqual(completed.metadata.packageCurrentRecovery.installerExitCode, 0);
+    const lock = await wait(async () => { const value = await json(path.join(root, "data/bot.lock")).catch(() => null);
+      return value?.ready && value.releaseId === before.releaseId && value.pid !== before.pid && value; }, "verified previous current Ready");
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot: root });
+    assert.equal(snapshot.server.process.pid, lock.pid); assert.equal(snapshot.server.process.releaseId, before.releaseId);
+    assert.equal((await json(path.join(root, "current.json"))).current, before.releaseId);
+    await inspectAcceptanceArtifact(path.join(root, "releases", before.releaseId));
+    assert.equal(hash(await fs.readFile(launcher)), hash(await fs.readFile(path.join(previousRoot, "AgentHub.RuntimeHost.exe"))));
+    const backup = completed.metadata.packageBackup.directory;
+    for (const data of [path.join(root, "data"), path.join(backup, "data")]) {
+      assert.deepEqual(new MaintenanceOperationStore({ dataDir: path.join(data, unknownRelative) }).getReadonly(unknownOriginal.operationId), unknownOriginal);
+      assert.equal(await fs.readFile(path.join(data, "whole-update-cursor.keep"), "utf8"), "owned cursor 19");
+    }
+    assert.equal(await fs.readFile(path.join(root, "config.json"), "utf8"), await fs.readFile(path.join(backup, "config.json"), "utf8"));
+    const cache = (await fs.readdir(path.join(output, "cache"))).find(name => name.startsWith("agenthub-update-"));
+    const requestFile = path.join(output, "cache", cache, "update-request.json");
+    const entry = path.join(previousRoot, "src/runtime/runtime-package-handoff.mjs"), completedBytes = JSON.stringify(completed);
+    await run("terminal-original-readback", process.execPath, [entry, "bootstrap-start", requestFile]);
+    assert.equal(JSON.stringify(operation()), completedBytes);
+    assert.equal((await json(path.join(root, "data/bot.lock"))).pid, lock.pid);
+    await wait(() => !processIsAlive(completed.metadata.packageNative.hostPid), "native recovery owner joined");
+    const lifetime = (await fs.readFile(path.join(root, "data/runtime-host-lifetime.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+    const starts = lifetime.filter(value => value.stage === "node-start" && value.hostPid === completed.metadata.packageLaunchAdmission.hostPid);
+    assert.equal(starts.length, 1); assert.equal(starts[0].childPid, lock.pid);
+    assert.equal(await fs.readFile(control.installFailurePath, "utf8"), "owned obstructing target path");
+    report.completed = completed; report.after = lock; report.snapshot = snapshot; report.effectObservations = { replacementStarts: starts };
+    await event("failed-installer-restored-same-current-ready", { originalOutcome: completed.outcome }); report.status = "passed";
+  } else {
   const failed = await wait(() => operation()?.status === "failed" && operation(), "typed pre-stop failure");
   assert.equal(failed.metadata.packagePreStopFailure?.phase, "package-backup-preflight");
   assert.equal((await json(path.join(root, "current.json"))).current, before.releaseId);
@@ -270,6 +319,8 @@ try {
   report.completed = completed; report.after = lock; report.snapshot = snapshot;
   await fs.writeFile(path.join(output, "telegram-calls.json"), JSON.stringify(telegram.calls, null, 2));
   await event("whole-update-ready-and-same-request-readback"); report.status = "passed";
+  }
+  }
 } catch (error) { report.status = "failed"; report.error = { message: error.message, stack: error.stack }; throw error; }
 finally {
   report.stopSampling?.(); delete report.stopSampling;

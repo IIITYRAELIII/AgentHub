@@ -223,7 +223,12 @@ export class RestartRequestService {
       if (expected && expected !== process.env.AGENT_HUB_RELEASE_ID) {
         throw new Error("Replacement release does not match the persisted restart intent");
       }
-      return this.operationStore.settle(operationId, { succeeded: true, phase: "completed" });
+      const restored = current?.phase === "package-recovery-launching"
+        && current.metadata?.packageCurrentRecovery?.releaseId === expected
+        && current.metadata.packageCurrentRecovery.bindingSha256 === current.metadata.packageHandoff?.sha256
+        && current.metadata.packageLaunchAdmission;
+      return this.operationStore.settle(operationId, { succeeded: !restored, phase: restored ? "failed" : "completed",
+        ...(restored ? { metadata: { packageCurrentRecoveryReady: true } } : {}) });
     }, operationId);
   }
 

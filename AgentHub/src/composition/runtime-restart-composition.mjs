@@ -13,8 +13,7 @@ import {
 } from "../runtime/restart-recovery.mjs";
 import { readFile } from "node:fs/promises";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
-import { armPackageRestart, packageCheckpoint } from "../runtime/runtime-package-handoff.mjs";
-import { preflightRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
+import { armPackageRestart, packageCheckpoint, preflightPackageRestart } from "../runtime/runtime-package-handoff.mjs";
 
 export function createRuntimeRestartComposition({
   getRestartRequest,
@@ -162,7 +161,7 @@ export function createRuntimeRestartComposition({
     stopMedia: () => mediaController.stop(),
     resumeAfterAbort: () => startRuntimeTimers(),
     packageHandoff: maintenanceOperations ? {
-      preflight: (request) => preflightRuntimeBackupScope({ runtimeRoot: request.metadata.packageHandoff.binding.runtimeRoot }),
+      preflight: preflightPackageRestart,
       arm: (request) => armPackageRestart({ request, store: maintenanceOperations }),
       writersClosed: (request) => packageCheckpoint(maintenanceOperations,
         request.operationId, "package-writers-closed"),
