@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, open, readFile, readdir, realpath, statfs } from "node:fs/promises";
 import path from "node:path";
 import { deleteSealedTransport } from "./sealed-transport-delete.mjs";
+import { bindBundleHeads, readBundleHeads, bundleHeadsAnchored } from "./retained-bundle-heads.mjs";
 
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 const absent = error => { if (error?.code === "ENOENT") return null; throw error; };
@@ -128,8 +129,9 @@ export class NativeMergeTransportRetention {
     if (!owned.file) return retained("transport-absent");
     if (this.platform !== "win32") return retained("sealed-delete-unavailable");
     const heads = String(await owned.git(["bundle", "list-heads", owned.bundle])).split(/\r?\n/u).filter(Boolean);
-    if (!heads.length || heads.length > 4096 || Buffer.byteLength(JSON.stringify(heads)) > 32 * 1024
-        || heads.some(h => !/^[a-f0-9]{40,64} \S+$/u.test(h))) return retained("bundle-head-budget");
+    const headBinding = bindBundleHeads(heads);
+    if (!headBinding) return retained("bundle-head-budget");
+    if (headBinding.headsProof && !await this.#wideAnchored(owned, heads)) return retained("bundle-roots-unanchored");
     await owned.git(["bundle", "verify", owned.bundle]);
     const input = `${heads.map(h => h.split(" ")[0]).join("\n")}\n`;
     const objects = String(await owned.git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input })).split(/\r?\n/u);
@@ -143,12 +145,23 @@ export class NativeMergeTransportRetention {
     const checked = await bundleAt(owned.bundle);
     if (JSON.stringify(checked) !== JSON.stringify(owned.file)) return retained("transport-changed");
     return { status: "eligible", binding: { file: checked, stateHash: owned.stateHash,
-      taskRevision: owned.taskRevision, publication: owned.publication, heads } };
+      taskRevision: owned.taskRevision, publication: owned.publication, ...headBinding } };
   }
 
   async preview({ candidate }) {
     try { return await this.#owned(candidate, owned => this.#preview(owned)); }
     catch { return retained("owner-verification-unavailable"); }
+  }
+
+  async #wideAnchored(owned, heads) {
+    // New wide-list admission cannot depend on ambient/rewritten/borrowed
+    // history. Legacy array bindings retain their original identity and route.
+    if (["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE",
+      "GIT_REPLACE_REF_BASE", "GIT_COMMON_DIR", "GIT_DIR", "GIT_WORK_TREE"].some(key => process.env[key])) return false;
+    const git = (args, options) => owned.git(["--no-lazy-fetch", "--no-replace-objects", ...args], options);
+    if (/^(extensions\.partialclone|remote\..*\.promisor)=/imu.test(await git(["config", "--local", "--list"]))
+        || await lstat(path.join(path.dirname(owned.bundle), "repository", ".git", "info", "grafts")).catch(absent)) return false;
+    return bundleHeadsAnchored(git, heads);
   }
 
   async prune({ candidate, binding }) {
@@ -157,6 +170,7 @@ export class NativeMergeTransportRetention {
       if (current.status !== "eligible") return current;
       if (JSON.stringify(current.binding) !== JSON.stringify(binding)) return retained("preview-changed");
       await owned.assertCurrent();
+      if (binding.headsProof && !await this.#wideAnchored(owned, readBundleHeads(binding))) return retained("bundle-roots-unanchored");
       const before = await freeBytes(this.root);
       await this.deleteTransport(await realpath(owned.bundle), binding.file);
       const after = await freeBytes(this.root);

@@ -9,6 +9,7 @@ import test from "node:test";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
+import { readBundleHeads } from "../../../src/infrastructure/filesystem/retained-bundle-heads.mjs";
 
 const exec = promisify(execFile);
 const sha = value => createHash("sha256").update(value).digest("hex");
@@ -291,4 +292,22 @@ test("a hardlinked transport and substituted generation junction retain every fo
     await rename(saved, f.generationRoot);
   }
   assert.equal(sha(await readFile(f.bundle)), before);
+});
+
+test("wide completed generation transport preserves every advertised head in its existing proof", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t);
+  await git(f.source, ["update-ref", "--stdin"], { input: Array.from({ length: 700 }, (_, i) =>
+    `update refs/agent-hub/retained/${String(i).padStart(5, "0")}/${"x".repeat(60)} ${f.commit}\n`).join("") });
+  await rm(f.bundle); await git(f.source, ["bundle", "create", f.bundle, "--all"]);
+  const heads = (await git(f.repository, ["bundle", "list-heads", f.bundle])).split(/\r?\n/u);
+  assert.ok(Buffer.byteLength(JSON.stringify(heads)) > 32 * 1024);
+  const refs = await git(f.repository, ["show-ref"]), checkpoint = await readFile(path.join(f.ownerRoot, "checkpoint.json"));
+  const preview = await f.retention.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  assert.deepEqual(readBundleHeads(preview.binding), heads);
+  assert.equal((await f.retention.prune({ candidate: f.candidate, binding: preview.binding })).status, "removed");
+  assert.equal((await f.retention.reconcile({ candidate: f.candidate, binding: preview.binding })).status, "already-removed");
+  assert.equal(await git(f.repository, ["show-ref"]), refs);
+  assert.deepEqual(await readFile(path.join(f.ownerRoot, "checkpoint.json")), checkpoint);
+  assert.equal(await git(f.repository, ["rev-parse", "HEAD"]), f.commit);
 });

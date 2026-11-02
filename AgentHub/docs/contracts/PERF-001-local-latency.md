@@ -31,6 +31,11 @@ archives, history or user work is introduced. Runtime health exposes cached
 status only. Filesystem free-space observations remain distinct from logical
 byte counts and can include concurrent allocations. See ADR-0126.
 
+Wide transport-head proofs retain the complete list within the same 32 KiB
+encoded metadata budget, with at most 4096 roots and a 4 MiB decompression
+ceiling. They do not widen discovery, artifact-size, pass-unit or cooperative
+time budgets, and do not promise a hard deadline for an already admitted hash.
+
 Policy v2 runtime-body batches remove at most 64 files/256 MiB and check a
 cooperative ten-second deletion budget after bounded metadata preflight. Asset
 bytes are hashed only for the admitted batch, through retained deletion handles;

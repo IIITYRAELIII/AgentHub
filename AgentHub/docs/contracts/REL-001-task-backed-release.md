@@ -497,6 +497,16 @@ an accepted retirement proof. Current/running/rollback/prepared runtime/source
 roots, release generations, legacy archives and persistent evidence receive no
 new deletion authority from the storage scheduler.
 
+For a wide advertised-root list, the same transport maintenance child may hold
+the complete canonical JSON list as gzip-json-v1 plus its count and SHA-256.
+The 4096-root count, 32 KiB encoded proof and 4 MiB decoded ceiling are bounded;
+no root is truncated. Legacy small-array bindings keep their exact shape. Fresh
+preview equality, full object verification and the existing sealed-file custody
+still precede deletion. Newly admitted wide native lists additionally require
+original commit/tag roots anchored in retained refs/HEAD without borrowed,
+rewritten or ambient object history, rechecked before effect. This is not
+repository/WIP/dependency retirement. See ADR-HUB-385-wide-transport-proof.
+
 Cleanup publication evidence is repository-specific. For a multi-repository
 record, only the matching canonical repository entry supplies its published
 revision; another repository's top-level revision is not a fallback. A later

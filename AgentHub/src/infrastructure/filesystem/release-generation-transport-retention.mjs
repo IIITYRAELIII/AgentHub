@@ -3,6 +3,7 @@ import { lstat, open, opendir, realpath, statfs } from "node:fs/promises";
 import path from "node:path";
 import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { deleteSealedTransport } from "./sealed-transport-delete.mjs";
+import { bindBundleHeads, readBundleHeads, bundleHeadsAnchored } from "./retained-bundle-heads.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const retained = reason => ({ status: "retained", reason });
@@ -167,42 +168,17 @@ export class ReleaseGenerationTransportRetention {
     if (!owned.file) return retained("release-transport-absent");
     if (this.platform !== "win32") return retained("sealed-delete-unavailable");
     const heads = String(await owned.git(["bundle", "list-heads", owned.bundle])).split(/\r?\n/u).filter(Boolean);
-    if (!heads.length || heads.length > 4096 || Buffer.byteLength(JSON.stringify(heads)) > 32 * 1024
-        || heads.some(item => !/^[a-f0-9]{40,64} \S+$/u.test(item))) return retained("release-bundle-head-budget");
+    const headBinding = bindBundleHeads(heads);
+    if (!headBinding) return retained("release-bundle-head-budget");
     await owned.git(["bundle", "verify", owned.bundle]);
     const input = `${heads.map(item => item.split(" ")[0]).join("\n")}\n`;
     const objects = String(await owned.git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input })).split(/\r?\n/u);
     if (objects.length !== heads.length || objects.some((item, i) => !new RegExp(`^${heads[i].split(" ")[0]} (commit|tag|tree|blob)$`, "u").test(item))) return retained("release-bundle-objects-unavailable");
     await owned.git(["rev-list", "--objects", "--quiet", "--missing=error", "--stdin"], { input });
-    if (!await this.#anchored(owned, heads)) return retained("release-bundle-roots-unanchored");
+    if (!await bundleHeadsAnchored(owned.git, heads)) return retained("release-bundle-roots-unanchored");
     if (JSON.stringify(await transport(owned.bundle)) !== JSON.stringify(owned.file)) return retained("release-transport-changed");
     return { status: "eligible", binding: { file: owned.file, stateHash: owned.stateHash,
-      operationId: owned.proof.operationId, generation: owned.proof.generation, generationIdentitySha256: owned.proof.identitySha256, heads } };
-  }
-
-  async #anchored(owned, heads) {
-    // Present dangling objects can be discarded by a later ordinary Git GC.
-    // Check ORIGINAL objects: peeling a tag proves nothing about its metadata.
-    const objects = String(await owned.git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
-      input: heads.map(item => item.split(" ")[0]).join("\n") + "\n",
-    })).split(/\r?\n/u);
-    if (objects.length !== heads.length || objects.some((item, i) => !new RegExp(`^${heads[i].split(" ")[0]} (commit|tag)$`, "u").test(item))) return false;
-    const commits = objects.filter(item => item.endsWith(" commit")).map(item => item.split(" ")[0]);
-    if (commits.length && await owned.git(["rev-list", "--max-count=1", "--stdin", "--not", "--all"], {
-      input: commits.join("\n") + "\n",
-    })) return false;
-    const tags = heads.filter((item, i) => objects[i].endsWith(" tag"));
-    if (tags.length) {
-      // Conservatively require each advertised tag's exact retained ref and OID.
-      // --verify accepts exact ref paths, not revision expressions; no peeling,
-      // keeper refs or unbounded inventory of every reachable object is needed.
-      if (tags.some(item => !item.split(" ")[1].startsWith("refs/"))) return false;
-      let refs;
-      try { refs = String(await owned.git(["show-ref", "--verify", "--", ...tags.map(item => item.split(" ")[1])])).split(/\r?\n/u); }
-      catch { return false; }
-      if (refs.length !== tags.length || refs.some((item, i) => item !== tags[i])) return false;
-    }
-    return true;
+      operationId: owned.proof.operationId, generation: owned.proof.generation, generationIdentitySha256: owned.proof.identitySha256, ...headBinding } };
   }
 
   async preview({ candidate }) {
@@ -216,7 +192,7 @@ export class ReleaseGenerationTransportRetention {
       if (preview.status !== "eligible") return preview;
       if (JSON.stringify(preview.binding) !== JSON.stringify(binding)) return retained("release-preview-changed");
       await owned.assertCurrent();
-      if (!await this.#anchored(owned, binding.heads)) return retained("release-bundle-roots-unanchored");
+      if (!await bundleHeadsAnchored(owned.git, readBundleHeads(binding))) return retained("release-bundle-roots-unanchored");
       const before = await freeBytes(this.root);
       await this.deleteTransport(await realpath(owned.bundle), binding.file);
       const after = await freeBytes(this.root);
