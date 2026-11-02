@@ -405,6 +405,7 @@
         "tests/infrastructure/filesystem/runtime-release-version.test.mjs",
         "tests/public/runtime-manager.test.mjs",
         "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
+        "docs/decisions/ADR-HUB-400-published-test-content-boundary.md",
         "src/infrastructure/persistence/task-turn-projection.mjs",
         "tests/infrastructure/persistence/task-turn-projection.test.mjs"
       ]

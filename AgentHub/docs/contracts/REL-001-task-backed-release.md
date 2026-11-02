@@ -3257,3 +3257,17 @@ The existing task-await-cutover CLI's explicit ordinary-test mode only calls
 normal public Test with the original CAS and optional authenticated native
 review, after pinned clean source and canonical repository checks. It grants no
 initial-native, returned, squash or cross-Task cutover authority.
+
+For an ordinary native Test whose source already fast-forwarded to its sealed
+repository publication, selected-content replay consumes that exact published
+delta boundary when it is the unique native merge base of the captured dev and
+Task result. The original `publishedMetadata` entry/generation/hash/commit/tree,
+Task/result/before identity and agreed-base ancestry remain bound; the existing
+Git owner rereads publication, origin, source, lease and CAS before effects and
+terminal persistence. Replay excludes inherited published changes rather than
+requiring them a second time over later Test context. It still verifies every
+own addition, edit, deletion and mode, with no path exceptions or automatic
+compatibility approval. Task base, native identity/journal, history/metadata
+admission, ordinary release/Await and published multi-base sync rules do not
+change. Missing publication context and any other merge-base shape retain the
+existing replay policy. See ADR-HUB-400-published-test-content-boundary.

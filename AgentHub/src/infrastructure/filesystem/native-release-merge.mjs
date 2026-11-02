@@ -248,7 +248,35 @@ function contentCompatibilityReview(review) {
   return Object.hasOwn(envelope, "selectedContentCompatibility") ? review : null;
 }
 
+async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
+  // TaskGit seals this repository publication in the original Test intent and
+  // revalidates it through its existing source/origin/CAS fences. It is not a
+  // new Task base or authority inferred from dev, a remote ref or merge output.
+  const publication = identity.policy === "native-dev-merge-v1"
+    ? identity.nativeHistoryAuthority?.publishedMetadata : null;
+  if (!publication) return null;
+  const task = tasks[0];
+  if (tasks.length !== 1 || identity.taskId !== task.taskId || identity.resultCommit !== task.resultCommit
+      || identity.before !== baseCommit || !publication.generation || !publication.repositoryRoot
+      || !/^[a-f0-9]{64}$/u.test(publication.recordHash)
+      || !/^[a-f0-9]{40}$/u.test(publication.commit) || !/^[a-f0-9]{40}$/u.test(publication.tree)
+      || identity.nativeHistoryAuthority.baseline
+      || identity.nativeHistoryAuthority.sourcePublication
+        && identity.nativeHistoryAuthority.sourcePublication.revision !== publication.commit
+      || String(await git(["rev-parse", `${publication.commit}^{tree}`])) !== publication.tree) {
+    throw failure("Native Test published content authority changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  // Credit only this exact, single published parent boundary. Other histories,
+  // including virtual multiple bases, retain their existing replay policy.
+  if (String(await git(["merge-base", "--all", baseCommit, task.resultCommit])) !== publication.commit) return null;
+  if (await maybe(git, ["merge-base", "--is-ancestor", task.baseCommit || baseCommit, publication.commit]) === null) {
+    throw failure("Native Test published content base is outside its agreed history", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  return publication.commit;
+}
+
 async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
+  const publishedBase = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
   const targetTree = String(await git(["rev-parse", `${head}^{tree}`]));
   const target = new Map(await entries(git, ["ls-tree", "-r", "-z", targetTree]));
   const overrides = new Map();
@@ -263,7 +291,7 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
   for (const [index, task] of tasks.entries()) {
     if (String(await git(["rev-parse", `${task.resultCommit}^{tree}`])) === targetTree) continue;
     const replay = String(await git(["merge-tree", "--write-tree", "--name-only", "-z",
-      `--merge-base=${task.baseCommit || baseCommit}`, head, task.resultCommit], { acceptableExitCodes: [1] })).split("\0");
+      `--merge-base=${publishedBase || task.baseCommit || baseCommit}`, head, task.resultCommit], { acceptableExitCodes: [1] })).split("\0");
     const replayTree = replay.shift();
     if (!/^[a-f0-9]{40}$/u.test(replayTree)) throw failure("Selected Task content replay is unavailable");
     const conflicts = new Set();
