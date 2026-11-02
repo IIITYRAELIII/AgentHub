@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { access } from "node:fs/promises";
 import { RUNTIME_RESTART_SCOPE } from "../domain/maintenance-operation.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
-import { backupStoppedRuntime, inspectRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
+import { backupStoppedRuntime, preflightRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
 import { sealRuntimeUpdateBackup } from "../infrastructure/persistence/runtime-update-backup-retention.mjs";
 import { verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
@@ -57,7 +57,7 @@ export async function preparePackageRestart(input, { dataDir, environment = proc
   const current = await capturePackageRuntime(environment.AGENT_HUB_RUNTIME_ROOT, dataDir,
     { hostPid: Number(environment.AGENT_HUB_HOST_PID) });
   if (current.old.releaseId === target.releaseId) throw new Error("Target is already the running release");
-  await inspectRuntimeBackupScope({ runtimeRoot: current.runtimeRoot });
+  await preflightRuntimeBackupScope({ runtimeRoot: current.runtimeRoot });
   const scratchRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-package-"));
   await protectRuntimeDirectory(scratchRoot);
   const inspection = await execute("python", [target.installer.file, "--archive", target.archive.file,
@@ -174,7 +174,7 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
   const health = await control("runtime-health", {}, { runtimeRoot: root, timeoutMs: 10000 });
   if (health?.live !== true || health?.ready !== true || health?.process?.pid !== instance.pid
     || health?.process?.releaseId !== pointer.current) throw new Error("Old runtime health does not match its exact instance");
-  await inspectRuntimeBackupScope({ runtimeRoot: root });
+  await preflightRuntimeBackupScope({ runtimeRoot: root });
   if (health.packageHandoff?.protocol === 1) {
     const business = packageRestartInput({ operationId: input.operationId, tag: input.tag,
       archive: input.archive, descriptor: input.descriptor, installer: input.installer });

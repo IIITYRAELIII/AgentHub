@@ -3,6 +3,7 @@ import { copyFile, lstat, mkdir, open, readdir, realpath } from "node:fs/promise
 import path from "node:path";
 import { packageFile } from "../filesystem/runtime-package-target.mjs";
 import { protectRuntimeDirectory } from "../filesystem/runtime-security.mjs";
+import { observeInterprocessLockDirectories } from "../process/interprocess-lock.mjs";
 
 // Declared mutable state, not a full-data/disk backup (ADR-HUB-380).
 const scope = "runtime-durable-state-v1";
@@ -27,6 +28,16 @@ async function plain(file, type) {
 // Read-only support inspection, reused for a fresh stopped inventory.
 // No SQLite open/transaction, data copy or retained-tree descent.
 export async function inspectRuntimeBackupScope({ runtimeRoot }) {
+  return inspectScope({ runtimeRoot });
+}
+
+// Admission is open here. Only the actual in-process lock producer can identify
+// its ephemeral directories; no ENOENT/name filter applies to durable state.
+export async function preflightRuntimeBackupScope({ runtimeRoot }) {
+  return observeInterprocessLockDirectories(isOwnedLockDirectory => inspectScope({ runtimeRoot, isOwnedLockDirectory }));
+}
+
+async function inspectScope({ runtimeRoot, isOwnedLockDirectory = async () => false }) {
   const root = path.resolve(runtimeRoot), data = path.join(root, "data");
   if (await realpath(root) !== root) throw new Error("Maintenance runtime root must be physical");
   const directories = [], files = [], retained = [];
@@ -68,6 +79,7 @@ export async function inspectRuntimeBackupScope({ runtimeRoot }) {
         await file(child, childRelative);
         continue;
       }
+      if (await isOwnedLockDirectory(child)) continue;
       const info = await lstat(child, { bigint: true });
       if (info.isSymbolicLink()) throw new Error("Maintenance backup refuses linked state");
       if (info.isDirectory()) {

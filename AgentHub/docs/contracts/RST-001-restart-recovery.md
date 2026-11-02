@@ -487,6 +487,14 @@ untraversed retained bodies neither grant authority nor enter the snapshot.
 Read-only support inspection precedes modern/legacy admission and is repeated
 before the modern synchronous stopping fence; work admission is rechecked after
 that inspection. A fresh stopped inventory supplies backup, never the old preflight.
+Live support inspection may exclude only exact ephemeral directories observed
+from this process's existing interprocess lock producer. Physical identity and
+confirmed same-producer publication/removal, not a filename or generic ENOENT,
+authorize exclusion. Replaced, foreign/unobserved and durable entries still refuse
+drift. This read-only call-scoped observation does not acquire a lock or mutate
+state. Stopped inventory never consumes it and retains strict equality. See
+ADR-HUB-398-live-backup-lock-observation. A terminal failed package original is
+still readback-only; this correction does not reset it or recapture its binding.
 SQLite headers discover databases throughout the selected scope regardless of
 filename suffix. All discovered writer reservations are held together through
 SQLite backup/integrity and regular-file before/after hashes. WAL/SHM companions
