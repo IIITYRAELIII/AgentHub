@@ -235,7 +235,13 @@ try {
   try {
     report.originalCommandSpans = traceDatabase.prepare("SELECT * FROM command_trace_spans WHERE command_id=? ORDER BY observed_at_ms,rowid").all(id);
   } finally { traceDatabase.close(); }
-  assert.ok(report.originalCommandSpans.some(span => span.stage === "restart-readiness" && span.outcome === "waiting"));
+  // Intake measures blockers before projecting the original. Its initial wait
+  // is the canonical blocked receipt; a readiness callback need not run again
+  // while that same work remains active.
+  assert.equal(blocked.phase, "waiting-for-work");
+  assert.ok(blocked.metadata.blockingCount > 0);
+  assert.ok(Date.parse(failed.updatedAt) > Date.parse(blocked.createdAt));
+  assert.ok(report.originalCommandSpans.some(span => span.stage === "restart-readiness" && span.outcome === "ready"));
   assert.ok(report.originalCommandSpans.some(span => span.stage === "restart-package-backup-preflight" && span.outcome === "failed"));
   for (const stage of ["package-backup-preflight", "quiesce", "save-state", "drain", "package-arm", "package-close"]) {
     assert.ok(report.originalCommandSpans.some(span => span.stage === `restart-${stage}` && span.outcome === "succeeded"), `Missing original measured stage ${stage}`);
