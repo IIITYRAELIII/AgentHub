@@ -220,14 +220,14 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
   }
   await protectRuntimeDirectory(path.dirname(await realpath(input.packageRoot)));
   const pointerRaw = await readFile(path.join(root, "current.json")), pointer = JSON.parse(pointerRaw);
-  await assertPackageUpgrade({ runtimeRoot: root, dataDir: path.join(root, "data"),
-    roots: { runtime: await packageDirectory(root), data: await packageDirectory(path.join(root, "data")) },
-    old: { releaseId: pointer.current, currentSha256: packageDigest(pointerRaw),
-      manifestSha256: packageDigest(await readFile(path.join(root, "releases", pointer.current, "runtime-manifest.json"))) }, target });
   const instance = JSON.parse(await readFile(path.join(root, "data", "bot.lock"), "utf8"));
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(pointer.current ?? "")
     || instance.releaseId !== pointer.current || instance.ready !== true || !Number.isSafeInteger(instance.pid)
     || instance.pid <= 0 || typeof instance.instanceToken !== "string") throw new Error("Old ready instance is unavailable");
+  await assertPackageUpgrade({ runtimeRoot: root, dataDir: path.join(root, "data"),
+    roots: { runtime: await packageDirectory(root), data: await packageDirectory(path.join(root, "data")) },
+    old: { releaseId: pointer.current, currentSha256: packageDigest(pointerRaw),
+      manifestSha256: packageDigest(await readFile(path.join(root, "releases", pointer.current, "runtime-manifest.json"))) }, target });
   const health = await control("runtime-health", {}, { runtimeRoot: root, timeoutMs: 10000 });
   if (health?.live !== true || health?.ready !== true || health?.process?.pid !== instance.pid
     || health?.process?.releaseId !== pointer.current) throw new Error("Old runtime health does not match its exact instance");
@@ -492,7 +492,7 @@ export async function continuePackageRestart({ store, operationId, assertRetired
   } catch (error) {
     // execFile joins the exact Python process. Signal/timeout/transport/buffer
     // errors do not establish its outcome and cannot authorize another launch.
-    installerFailed = Number.isInteger(error.code) && error.code !== 0 && !error.signal && !error.killed;
+    installerFailed = [1, 2].includes(error.code) && !error.signal && !error.killed;
     throw error;
   }
   await verifyInstalled(binding);
@@ -589,8 +589,7 @@ export async function packageHostMain(args, environment = process.env) {
     if (restoring) {
       const recovery = current.metadata.packageCurrentRecovery;
       if (recovery?.schema !== 1 || recovery.bindingSha256 !== packageBindingDigest(binding)
-        || recovery.releaseId !== binding.old.releaseId || !Number.isInteger(recovery.installerExitCode)
-        || recovery.installerExitCode === 0) throw new Error("Previous current recovery authority changed");
+        || recovery.releaseId !== binding.old.releaseId || ![1, 2].includes(recovery.installerExitCode)) throw new Error("Previous current recovery authority changed");
       await verifyRecoverableCurrent(binding);
     } else await verifyInstalledPackage(binding);
     await packageCheckpoint(store, current.operationId, current.phase, {

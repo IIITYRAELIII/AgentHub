@@ -69,6 +69,7 @@ test("definitive poststop installer failure restores verified same current and r
       return { pid: 900 }; },
     ready: async binding => {
       assert.equal(binding.target.releaseId, "old");
+      f.store.recoverInterrupted({ operationIds: [f.binding.operationId] });
       const service = new RestartRequestService({ operationStore: f.store, currentTarget: () => ({}) });
       const saved = process.env.AGENT_HUB_RELEASE_ID;
       try { process.env.AGENT_HUB_RELEASE_ID = "old"; await service.complete(f.binding.operationId); }
@@ -87,7 +88,7 @@ test("definitive poststop installer failure restores verified same current and r
     assertRetired: () => assert.fail("no replay"), install: () => assert.fail("no second install") })).status, "reconciliation-required");
 });
 
-for (const fault of ["pointer", "stable-host", "release-file", "unknown-installer"]) {
+for (const fault of ["pointer", "stable-host", "release-file", "unknown-installer", "installer-crash"]) {
   test(`poststop failure cannot recover changed or unknown current: ${fault}`, async t => {
     const f = await versionedFixture(t);
     await assert.rejects(continuePackageRestart({ store: f.store, operationId: f.binding.operationId,
@@ -96,7 +97,7 @@ for (const fault of ["pointer", "stable-host", "release-file", "unknown-installe
         if (fault === "pointer") await writeFile(path.join(f.root, "current.json"), '{"current":"foreign"}');
         if (fault === "stable-host") await writeFile(path.join(f.root, "AgentHub.RuntimeHost.exe"), "foreign");
         if (fault === "release-file") await writeFile(path.join(f.root, "releases/old/AgentHub.RuntimeHost.exe"), "foreign");
-        throw Object.assign(Error("installer failed"), { code: fault === "unknown-installer" ? "ETIMEDOUT" : 1 });
+        throw Object.assign(Error("installer failed"), { code: fault === "unknown-installer" ? "ETIMEDOUT" : fault === "installer-crash" ? 3221225794 : 1 });
       },
     }), /installer failed/u);
     const unknown = f.store.getReadonly(f.binding.operationId);

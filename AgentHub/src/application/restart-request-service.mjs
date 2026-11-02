@@ -223,10 +223,17 @@ export class RestartRequestService {
       if (expected && expected !== process.env.AGENT_HUB_RELEASE_ID) {
         throw new Error("Replacement release does not match the persisted restart intent");
       }
-      const restored = current?.phase === "package-recovery-launching"
-        && current.metadata?.packageCurrentRecovery?.releaseId === expected
-        && current.metadata.packageCurrentRecovery.bindingSha256 === current.metadata.packageHandoff?.sha256
-        && current.metadata.packageLaunchAdmission;
+      // Startup's existing recoverInterrupted legitimately replaces the active
+      // phase with reconciling. The durable exact recovery intent, not that
+      // transient phase, determines the update's failed result.
+      const recovery = current.metadata?.packageCurrentRecovery;
+      const restored = recovery !== undefined;
+      if (restored && (recovery?.schema !== 1 || recovery.releaseId !== expected
+        || recovery.releaseId !== current.metadata.packageHandoff?.binding?.old?.releaseId
+        || recovery.bindingSha256 !== current.metadata.packageHandoff?.sha256
+        || ![1, 2].includes(recovery.installerExitCode) || !current.metadata.packageLaunchAdmission)) {
+        throw new Error("Previous current recovery completion has no exact launch authority");
+      }
       return this.operationStore.settle(operationId, { succeeded: !restored, phase: restored ? "failed" : "completed",
         ...(restored ? { metadata: { packageCurrentRecoveryReady: true } } : {}) });
     }, operationId);

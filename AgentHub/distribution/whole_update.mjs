@@ -184,11 +184,20 @@ try {
   host.stdout.pipe(createWriteStream(path.join(output, "host.stdout"))); host.stderr.pipe(createWriteStream(path.join(output, "host.stderr")));
   await waitForAcceptanceHost(host, { runtimeRoot: root, expectedReleaseId: input.artifacts[0].releaseId, timeoutMs: 120_000 });
   const before = await json(path.join(root, "data/bot.lock")); report.before = before;
+  if (mode === "whole") {
   await prepareAcceptanceRestartTarget({ root, telegram });
   telegram.pushMessage("[whole-update-wait] finish only after package admission");
   await wait(async () => { const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot: root });
     await fs.writeFile(path.join(output, "active-work-snapshot.json"), JSON.stringify(snapshot));
     return (await fs.readFile(path.join(root, "data/fake-codex-state.json"), "utf8")).includes("[whole-update-wait]"); }, "real owned turn active");
+  } else {
+    // These affected cases do not repeat run13's owned-provider-work scenario.
+    // Join observable startup enrichment rather than racing its config writes.
+    await wait(async () => {
+      const health = await callDesktopControl("runtime-health", {}, { runtimeRoot: root });
+      return health.ready && !health.startup?.operations?.some(value => value.state === "running");
+    }, "initial startup owners settled");
+  }
   const cli = ["-X", "utf8", "-B", path.join(here, "whole-update-transport.py"), controlFile, installer, "--release", tag,
     "--prepare-update", "--operation-id", id, "--runtime-root", root, "--scratch-root", path.join(output, "cache")];
   let admissionError;
@@ -205,10 +214,13 @@ try {
     await event("downgrade-refused-before-any-original-or-stop", { previousVersion: previousManifest.releaseVersion, targetVersion: target.value.version });
   } else {
   if (admissionError) throw admissionError;
-  const blocked = await wait(() => operation()?.status === "blocked" && operation(), "canonical blocked request");
+  let blocked;
+  if (mode === "whole") {
+  blocked = await wait(() => operation()?.status === "blocked" && operation(), "canonical blocked request");
   report.blocked = blocked; assert.equal((await json(path.join(root, "data/bot.lock"))).pid, before.pid);
   await event("real-owner-waits-for-owned-work", { operationId: id });
   await fs.writeFile(path.join(fixtures, "work-complete"), "complete normally");
+  }
   if (mode === "poststop-recovery") {
     const completed = await wait(() => operation()?.status === "failed" && operation(), "failed installer and restored original", 180_000);
     assert.equal(completed.metadata.packageCurrentRecoveryReady, true);

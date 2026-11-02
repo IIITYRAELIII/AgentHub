@@ -112,12 +112,18 @@ and inspected target manifests during preparation and again in controller
 preflight before the synchronous stopping fence. The installer repeats its
 existing guard. No version, published asset or downgrade exception is changed.
 
-A confirmed nonzero installer exit is distinct from an unknown child outcome.
+A joined ordinary Python failure exit (1 or 2) is distinct from an unknown child
+outcome; signals, timeout/transport errors and Windows crash statuses refuse.
 Only after native retirement and full unchanged-current/manifest/stable-Host
 verification can the same owner persist a recovery launch. Its original native
 gate and existing token/Host admission fence that single launch. The replacement
 Ready proof addresses the old release and same maintenance original, which is
 settled failed with its installer diagnostic and all prior evidence retained.
+Startup's normal interrupted-operation projection may change the phase to
+reconciling. Completion therefore classifies the exact persisted recovery intent
+and native admission, not a transient phase; restored Ready cannot become a
+successful package update. A real initial isolated recovery exposed that phase
+projection and is retained as non-green evidence.
 Partial current changes, unknown child outcomes or a lost launch reply retain
 reconciliation without another start. No second recovery API or ledger exists.
 
