@@ -94,7 +94,7 @@ export class RuntimeRestartController {
           return { status: "waiting-for-work" };
         }
       } catch (error) {
-        return this.#abort(error, "package-backup-preflight", false);
+        return this.#abort(error, "package-backup-preflight", false, request);
       }
     }
     if (!this.beginStopping()) return { status: "ignored" };
@@ -186,13 +186,17 @@ export class RuntimeRestartController {
     return { status: "replaced" };
   }
 
-  async #abort(error, phase, resumeRuntime) {
+  async #abort(error, phase, resumeRuntime, packageRequest = null) {
     this.#capture(error, phase);
     this.logger.error("Cannot prepare runtime restart:", error.message);
     let abortError = null;
     let restartStateSettled = false;
     try {
-      await this.abortRestart(error);
+      await this.abortRestart(error, packageRequest ? {
+        packagePreStopFailure: { schema: 1, phase,
+          bindingSha256: packageRequest.metadata.packageHandoff.sha256,
+          attempt: packageRequest.metadata.packageAttempt ?? 1 },
+      } : undefined);
       restartStateSettled = true;
     } catch (recoveryError) {
       this.#capture(recoveryError, "abort-state");

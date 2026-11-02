@@ -1,5 +1,32 @@
 # RST-001 — Restart and maintenance recovery
 
+## Explicit package next attempt (ADR-HUB-398)
+
+A definitively failed package original remains readback-only under ordinary
+intake/bootstrap and generic terminal transitions. Only an explicit existing
+maintenance-owner `resume-package` may admit its next attempt: exact immutable
+business input, failed revision/binding, fresh current release/PID/pointer/
+manifest/instance, identical public assets/selection and physical roots are
+required. Positive controller-owned pre-stopping backup-preflight failure
+evidence is required; historical error text or absent effects is insufficient.
+UNKNOWN, prior native/backup/launch admission, an undrained old invocation,
+stopping and a competing active restart refuse. No old receipt is rewritten.
+
+Every prior failed attempt/result/binding is retained in the same original's
+history. A fresh attempt still uses ordinary work waiting, stopping, native
+retirement, strict stopped backup, installer and one-launch/Ready guards.
+The retained exact continuation request is idempotent before preparation and
+after process reopen; a lost response never grants a second install/spawn.
+Changed input/CAS/current/assets/ownership refuses. No new update identity,
+terminal reset, effect replay, separate ledger or inferred pre-stop authority.
+
+An isolated whole-update check uses actual application and native owners with
+separate data, secrets, IPC, ports, current/releases and owned processes. A
+hash-bound root-contained acceptance import may control only external peers
+and deterministic I/O scheduling. Ordinary production and recording startup
+do not inherit that import or ambient NODE_OPTIONS. Local transport and fake
+external providers do not establish public TLS or account acceptance.
+
 Installed sync-endpoint migration (ADR-0329) belongs to the existing runtime
 installation owner before stable-file/pointer publication. It does not launch
 or restart Hub, enroll a device or write journal/credential/cursor files. A
@@ -506,8 +533,9 @@ confirmed same-producer publication/removal, not a filename or generic ENOENT,
 authorize exclusion. Replaced, foreign/unobserved and durable entries still refuse
 drift. This read-only call-scoped observation does not acquire a lock or mutate
 state. Stopped inventory never consumes it and retains strict equality. See
-ADR-HUB-398-live-backup-lock-observation. A terminal failed package original is
-still readback-only; this correction does not reset it or recapture its binding.
+ADR-HUB-398-live-backup-lock-observation. Ordinary intake/bootstrap keeps terminal
+failed originals readback-only. Only the explicit typed next-attempt boundary
+above can admit a fresh attempt; historical/untyped failures remain immutable.
 An awaited producer transition requires a fresh path read before excluding
 confirmed absence; a replacement cannot inherit its predecessor's removal proof.
 Observation promise rejection stays joined to the existing release error owner;

@@ -398,6 +398,29 @@ acceptance remains separate from this bounded fixture.
 
 ## Existing identities and cutover
 
+### Private whole-application update check
+
+Prepare immutable full artifacts with `prepare-whole-update.mjs`, supplying an
+exact clean private source commit and an already verified dependency runtime.
+Lock equality and the entire dependency manifest are checked before reuse.
+Then run `node distribution/whole_update.mjs <artifacts.json> <new-output-root>`.
+The new root is exclusive. The check exercises real Hub composition, authenticated
+Desktop IPC, owned active work, restart/drain, backup, native Host, installer,
+startup and exact Ready, with retained raw results. It never launches the real
+production root or reads its config/secrets. External provider/Telegram and
+canonical-shaped metadata/assets use controlled local peers; no public TLS or
+real account reliability is inferred.
+
+New typed pre-stopping failures can be continued explicitly through the existing
+installed owner: `node <installed-handoff-entry> resume-input <retained-request>
+<failed-revision> <binding-sha>` prints a fresh exact input document. Retain that
+document and submit `node <installed-handoff-entry> resume <retained-request>
+<continuation-document>`. An identical repeated document reads back the original;
+it does not prepare/install/start again. Ordinary installer repetition remains
+readback-only. Historical failures without positive typed authority, UNKNOWN,
+changed public bytes/current/CAS/roots and prior native effects refuse. Never
+edit a receipt, cache or terminal row to manufacture eligibility.
+
 - Existing Task refs/worktrees, audit receipts and frozen generations stay in the
   old repository identity. A new Git OID is a mapping, never an old publication.
 - Original frozen operations retain their original Utilities source, generation,

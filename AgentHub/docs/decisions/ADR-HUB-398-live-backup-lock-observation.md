@@ -38,11 +38,64 @@ the saved result; the domain transition rejects terminal regression. Runtime
 adoption alone cannot recapture the old original's binding, and a failed row
 with an ENOENT message does not prove native admission never happened.
 
-A product continuation would require an explicit existing-owner transition
-that preserves the prior terminal attempt and binding, accepts the same business
-identity, revalidates fresh roots/current/instance/public files, and admits an
-addressed next attempt with a CAS and no unresolved native/launch effect. The
-current row model has no such attempt transition or authenticated input. This
-change does not invent one, reset terminal state, replace a binding, create a
-second update ID or grant installer/Host execution. That representational
-boundary is reported to the RM separately from the corrected live scan.
+An explicit `resume-package` command now admits a next attempt in the existing
+maintenance row, under its runtime restart mutation queue and SQLite CAS. It
+requires the same five-key business input, exact failed revision/binding and
+fresh current release/PID/pointer/manifest/instance hashes. The controller must
+have positively recorded that this attempt failed in package backup preflight
+before entering stopping. Error text, an absent native receipt or a historical
+failed row cannot supply that evidence. UNKNOWN and admitted native/backup/
+launch effects refuse. The original controller invocation must drain first.
+
+The same original preserves each complete failed attempt and binding in
+`packageAttemptHistory`; only its active attempt projection advances. The
+generic terminal transition remains forbidden. Fresh preparation validates
+public bytes/selection, physical roots, actual current instance and launcher.
+A competing active restart refuses. Existing notification, blocking work,
+stopping, native retirement, stopped backup and one-launch owners remain intact.
+
+The retained bootstrap can produce an explicit `resume-input` document from a
+fresh readonly original/current observation. The caller retains that exact
+document for `resume`. Its normalized hash is the addressed request identity;
+saved duplicate readback precedes preparation and returns the original without
+another launch, including after a lost reply or process reopen. A changed CAS,
+input, assets, physical root or current refuses. No terminal row, receipt or
+historical cache is deleted/reset, and no second operation ID or ledger exists.
+The historical production original lacks typed pre-stop evidence and remains
+readback-only. Adoption of this correction does not authorize its revival.
+
+## Full isolated application acceptance
+
+`distribution/whole_update.mjs` uses complete verified runtime artifacts and the
+actual Hub composition, authenticated per-root Desktop IPC, existing restart
+admission/drain, SQLite, stopped backup, native RuntimeHost, installer and startup.
+Only external metadata/assets and provider/Telegram peers are controlled. Local
+HTTP mapping is explicitly not a real GitHub/TLS acceptance claim. Data, homes,
+secret, IPC, ports, current/releases and cache belong to a newly created root.
+
+The existing native acceptance marker may explicitly pin one root-contained,
+regular no-reparse import file by SHA-256 for controlled transport/interleaving
+across independent Host generations. Ambient NODE_OPTIONS stays removed;
+recording and ordinary production startup do not inherit this fixture import.
+This does not change package source/digest/certificate policy. Teardown closes
+only that exact acceptance cohort. Raw original receipts, timings, manifests
+and resource observations remain separate from state/effect authority.
+
+The acceptance cohort's actual root-named Job is selected before package
+membership checks instead of searching for a different ordinary PID-named Job.
+There is no open-failure fallback. Both original handles, birth identities,
+membership and old Job zero remain mandatory. The existing admitted restart
+original ID survives environment isolation for replacement instance/Ready
+settlement; secret/override stripping stays intact. The fixture sets its own
+physical sibling scratch outside runtimeRoot, as the unchanged backup requires.
+
+The harness uses an essential OS/tool-path environment allowlist, per-root
+authentication, and existing cooperative test Job accounting. A bounded readonly
+sampler supplements that accounting only for exact birth-bound detached native
+roots and observed descendants; it cannot grant effects. Observed peak working
+set/process count and missing/dead-root samples are retained, not advertised as
+universal CPU/disk attribution. Config/cursors and a real maintenance-store
+UNKNOWN receipt in a distinct inert test-owned scope must survive startup,
+backup and replacement unchanged. Foreign original, CAS, assets, current and
+extra-field requests must refuse through the same authenticated router before
+the lawful continuation. Historical production originals remain untouched.

@@ -727,7 +727,7 @@ namespace AgentHub.RuntimeHost
             IntPtr job = IntPtr.Zero;
             try
             {
-                job = OpenJobObject(4, false, "Local\\IIITYRAELIII.AgentHub." + hostPid.ToString(CultureInfo.InvariantCulture));
+                job = OpenJobObject(4, false, PackageCohortJobName(root, hostPid));
                 if (job == IntPtr.Zero) throw new InvalidOperationException("Original Host job identity is unknown");
                 bool continuationInJob;
                 if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out continuationInJob) || continuationInJob)
@@ -854,7 +854,7 @@ namespace AgentHub.RuntimeHost
         {
             int nodePid = Convert.ToInt32(ReadSharedInstance(Path.Combine(root, "data", "bot.lock"))["pid"], CultureInfo.InvariantCulture);
             int hostPid = ProcessParentId(nodePid);
-            IntPtr job = OpenJobObject(4, false, "Local\\IIITYRAELIII.AgentHub." + hostPid.ToString(CultureInfo.InvariantCulture));
+            IntPtr job = OpenJobObject(4, false, PackageCohortJobName(root, hostPid));
             if (job == IntPtr.Zero) throw new InvalidOperationException("Original job is unavailable");
             try
             {
@@ -1016,6 +1016,32 @@ namespace AgentHub.RuntimeHost
                 throw new InvalidOperationException("Release acceptance is closed; no later runtime may start");
             bool recording = Convert.ToInt32(acceptance["schemaVersion"]) == 2;
             string recordingRoot = recording ? VerifyRecordingAcceptance(runtimeRoot, acceptance) : null;
+            // The existing admission probe has already checked this lifecycle
+            // identity. Isolation removes secrets/overrides, not the original
+            // needed by replacement instance/Ready settlement.
+            string restartOperationId = start.EnvironmentVariables["AGENT_HUB_RESTART_OPERATION_ID"];
+            if (!String.IsNullOrEmpty(restartOperationId)
+                && !Regex.IsMatch(restartOperationId, "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.CultureInvariant))
+                throw new InvalidOperationException("Invalid acceptance restart original identity");
+            string nodeImport = null;
+            object rawImport;
+            if (acceptance.TryGetValue("nodeImport", out rawImport))
+            {
+                // A controlled transport/interleaving belongs to the persistent
+                // private acceptance root, never to inherited NODE_OPTIONS.
+                if (recording) throw new InvalidOperationException("Recording acceptance does not allow nodeImport");
+                Dictionary<string, object> import = rawImport as Dictionary<string, object>;
+                if (import == null || import.Count != 2) throw new InvalidOperationException("Invalid acceptance nodeImport");
+                string file = RequiredString(import, "file");
+                string expectedHash = RequiredString(import, "sha256");
+                if (!Path.IsPathRooted(file) || !Regex.IsMatch(expectedHash, "^[a-f0-9]{64}$", RegexOptions.CultureInvariant))
+                    throw new InvalidOperationException("Invalid acceptance nodeImport identity");
+                EnsureAcceptanceFile(runtimeRoot, file);
+                using (SHA256 sha = SHA256.Create())
+                    if (BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(file))).Replace("-", "").ToLowerInvariant() != expectedHash)
+                        throw new InvalidOperationException("Acceptance nodeImport hash mismatch");
+                nodeImport = new Uri(Path.GetFullPath(file)).AbsoluteUri;
+            }
             Dictionary<string, string> system = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (string key in new[] { "SystemRoot", "WINDIR", "SystemDrive", "PATH", "PATHEXT", "COMSPEC", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE" })
             {
@@ -1072,6 +1098,8 @@ namespace AgentHub.RuntimeHost
             start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR"] = "1";
             start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR_PROFILE"] = recording ? "recording" : "fake-codex";
             if (recording) start.EnvironmentVariables["AGENT_HUB_RECORDING_PROVIDER_ROOT"] = recordingRoot;
+            if (nodeImport != null) start.EnvironmentVariables["NODE_OPTIONS"] = "--import=" + nodeImport;
+            if (!String.IsNullOrEmpty(restartOperationId)) start.EnvironmentVariables["AGENT_HUB_RESTART_OPERATION_ID"] = restartOperationId;
         }
 
         private static string AcceptanceObjectName(string root)
@@ -1081,6 +1109,15 @@ namespace AgentHub.RuntimeHost
                 byte[] digest = sha.ComputeHash(Encoding.UTF8.GetBytes(Path.GetFullPath(root).ToUpperInvariant()));
                 return "Local\\IIITYRAELIII.AgentHub.Acceptance." + BitConverter.ToString(digest).Replace("-", "");
             }
+        }
+
+        private static string PackageCohortJobName(string root, int hostPid)
+        {
+            // Acceptance owns a root-named cohort across generations. Select
+            // that exact owner, not an open-failure fallback. Package admission
+            // still holds both original handles and proves their membership.
+            return ReadAcceptanceMarker(root) != null ? AcceptanceObjectName(root)
+                : "Local\\IIITYRAELIII.AgentHub." + hostPid.ToString(CultureInfo.InvariantCulture);
         }
 
         private static Mutex EnterAcceptanceGate(string root)

@@ -256,7 +256,15 @@
         "docs/decisions/ADR-HUB-376-public-package-handoff.md",
         "src/infrastructure/persistence/runtime-update-backup-retention.mjs",
         "tests/infrastructure/persistence/runtime-update-backup-retention.test.mjs",
-        "docs/decisions/ADR-HUB-383-update-backup-retention.md"
+        "docs/decisions/ADR-HUB-383-update-backup-retention.md",
+        "tests/application/package-restart-continuation.test.mjs",
+        "tests/runtime/runtime-host-acceptance-environment.test.mjs",
+        "tests/fixtures/runtime-host-acceptance-environment.cs",
+        "distribution/whole_update.mjs",
+        "distribution/whole-update-*.mjs",
+        "distribution/whole-update-transport.py",
+        "distribution/prepare-whole-update.mjs",
+        "distribution/whole-update-resources.ps1"
       ]
     },
     {
@@ -380,7 +388,7 @@
         "src/infrastructure/process/github-release-publication.mjs",
         "tests/infrastructure/process/github-release-publication.test.mjs",
         "docs/decisions/ADR-HUB-329-github-distribution-target.md",
-    "docs/decisions/ADR-HUB-394-framed-release-response.md",
+        "docs/decisions/ADR-HUB-394-framed-release-response.md",
         "src/infrastructure/persistence/github-publication-baseline.mjs",
         "src/interfaces/cli/release-policy.mjs",
         "tests/infrastructure/persistence/github-source-bootstrap.test.mjs",

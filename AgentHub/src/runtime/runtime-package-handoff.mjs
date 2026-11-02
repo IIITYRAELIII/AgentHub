@@ -26,6 +26,15 @@ const execute = promisify(execFile);
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const terminal = (operation) => ["succeeded", "failed"].includes(operation?.status);
 
+function assertRetainedPackageRequest(input, evidence, root, existing) {
+  if (!existing) throw new Error("Original package is missing");
+  const modern = packageRestartInput({ operationId: input.operationId, tag: input.tag,
+    archive: input.archive, descriptor: input.descriptor, installer: input.installer });
+  if (existing.metadata?.packageBootstrap?.inputSha256 !== evidence.sha256
+    && !(existing.metadata?.packageInputSha256 === packageBindingDigest(modern)
+      && existing.metadata?.packageHandoff?.binding?.runtimeRoot === root)) throw new Error("Original package update input changed");
+}
+
 export function packageHandoffBinding(operation) {
   const envelope = operation?.metadata?.packageHandoff;
   if (!envelope || envelope.schema !== 1 || !envelope.binding
@@ -44,6 +53,22 @@ export function packageRestartInput(input) {
   }
   return { operationId: input.operationId, tag: input.tag,
     archive: path.resolve(input.archive), descriptor: path.resolve(input.descriptor), installer: path.resolve(input.installer) };
+}
+
+export function packageResumeInput(value) {
+  if (!value || Object.keys(value).sort().join(",") !== "expectedBindingSha256,expectedCurrent,expectedRevision,input"
+    || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1
+    || !/^[a-f0-9]{64}$/u.test(value.expectedBindingSha256 ?? "")) throw new Error("Package continuation requires its exact failed revision and binding");
+  const old = value.expectedCurrent;
+  if (!old || Object.keys(old).sort().join(",") !== "currentSha256,instanceSha256,manifestSha256,pid,releaseId"
+    || !Number.isSafeInteger(old.pid) || old.pid < 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(old.releaseId ?? "")
+    || ["currentSha256", "instanceSha256", "manifestSha256"].some(key => !/^[a-f0-9]{64}$/u.test(old[key] ?? ""))) {
+    throw new Error("Package continuation requires exact fresh current identity");
+  }
+  return { input: packageRestartInput(value.input), expectedRevision: value.expectedRevision,
+    expectedBindingSha256: value.expectedBindingSha256,
+    expectedCurrent: { releaseId: old.releaseId, pid: old.pid, currentSha256: old.currentSha256,
+      instanceSha256: old.instanceSha256, manifestSha256: old.manifestSha256 } };
 }
 
 export async function preparePackageRestart(input, { dataDir, environment = process.env } = {}) {
@@ -134,11 +159,7 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
   const store = new MaintenanceOperationStore({ dataDir: path.join(root, "data") });
   const existing = store.getReadonly(input.operationId);
   if (existing) {
-    const modernInput = packageRestartInput({ operationId: input.operationId, tag: input.tag,
-      archive: input.archive, descriptor: input.descriptor, installer: input.installer });
-    if (existing.metadata?.packageBootstrap?.inputSha256 !== inputEvidence.sha256
-      && !(existing.metadata?.packageInputSha256 === packageBindingDigest(modernInput)
-        && existing.metadata?.packageHandoff?.binding?.runtimeRoot === root)) throw new Error("Original package update input changed");
+    assertRetainedPackageRequest(input, inputEvidence, root, existing);
     return { operationId: existing.operationId, status: existing.status, phase: existing.phase, effectsReplayed: false };
   }
   const scratchRoot = path.dirname(inputEvidence.file);
@@ -221,6 +242,52 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
     await wait(100);
   }
   throw new Error("Package bootstrap admission is unknown; do not replay the original");
+}
+
+// Read-only creation of an explicit continuation request. The caller retains
+// this document unchanged across a lost reply/current change; it is not a ledger.
+export async function packageContinuationRequest(requestFile, expectedRevision, expectedBindingSha256) {
+  const evidence = await packageFile(requestFile);
+  if (evidence.bytes > 65536) throw new Error("Package update request exceeds budget");
+  const retained = JSON.parse(await readFile(evidence.file, "utf8"));
+  const root = await realpath(retained.runtimeRoot), store = new MaintenanceOperationStore({ dataDir: path.join(root, "data") });
+  const original = store.getReadonly(retained.operationId);
+  if (!original) throw new Error("Original package is missing");
+  // Existing bootstrap performs its ordinary exact retained-request join and
+  // returns this existing row before any transport/dispatch/legacy branch.
+  assertRetainedPackageRequest(retained, evidence, root, original);
+  const pointerRaw = await readFile(path.join(root, "current.json")), pointer = JSON.parse(pointerRaw);
+  const lock = JSON.parse(await readFile(path.join(root, "data", "bot.lock"), "utf8"));
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(pointer.current ?? "") || lock.ready !== true
+    || lock.releaseId !== pointer.current) throw new Error("Package continuation current is not ready");
+  const request = packageResumeInput({ input: { operationId: retained.operationId, tag: retained.tag,
+    archive: retained.archive, descriptor: retained.descriptor, installer: retained.installer },
+    expectedRevision: Number(expectedRevision), expectedBindingSha256,
+    expectedCurrent: { releaseId: pointer.current, pid: lock.pid, currentSha256: packageDigest(pointerRaw),
+      instanceSha256: packageDigest(lock.instanceToken),
+      manifestSha256: packageDigest(await readFile(path.join(root, "releases", pointer.current, "runtime-manifest.json"))) } });
+  store.assertPackageContinuation(original, request);
+  return request;
+}
+
+export async function resumePackageBootstrap(requestFile, continuationFile, { control = callDesktopControl } = {}) {
+  const continuation = await packageFile(continuationFile);
+  if (continuation.bytes > 65536) throw new Error("Package continuation request exceeds budget");
+  const request = packageResumeInput(JSON.parse(await readFile(continuation.file, "utf8")));
+  const evidence = await packageFile(requestFile);
+  if (evidence.bytes > 65536) throw new Error("Package update request exceeds budget");
+  const retained = JSON.parse(await readFile(evidence.file, "utf8"));
+  const root = await realpath(retained.runtimeRoot), store = new MaintenanceOperationStore({ dataDir: path.join(root, "data") });
+  const current = store.getReadonly(request.input.operationId);
+  if (!current || retained.operationId !== request.input.operationId
+    || packageBindingDigest(request.input) !== packageBindingDigest(packageRestartInput({
+      operationId: retained.operationId, tag: retained.tag, archive: retained.archive,
+      descriptor: retained.descriptor, installer: retained.installer }))) throw new Error("Retained package continuation input changed");
+  assertRetainedPackageRequest(retained, evidence, root, current);
+  if (current.metadata?.packageRecovery?.requestSha256 === packageBindingDigest(request)) {
+    return { operationId: current.operationId, status: current.status, phase: current.phase, effectsReplayed: false };
+  }
+  return control("resume-package", request, { runtimeRoot: root, timeoutMs: 120_000 });
 }
 
 export async function armPackageRestart({ request, store, spawnImpl = spawn,
@@ -400,7 +467,9 @@ export async function continuePackageRestart({ store, operationId, assertRetired
       const latest = store.getReadonly(operationId);
       if (!terminal(latest)) store.transition(operationId, {
         status: "reconciling", phase: "package-reconciling", outcome: "unknown",
-        metadata: { packageFailurePhase: latest.phase },
+        metadata: { packageFailurePhase: latest.phase,
+          packageFailureCode: String(error?.code ?? "").slice(0, 100) || null,
+          packageFailureMessage: String(error?.message ?? error).slice(0, 1_000) },
       }, { expectedRevision: latest.revision });
     }, { requestId: operationId });
     throw error;
@@ -409,6 +478,8 @@ export async function continuePackageRestart({ store, operationId, assertRetired
 
 export async function packageHostMain(args, environment = process.env) {
   if (args.length === 2 && args[0] === "bootstrap-start") return startPackageBootstrap(args[1]);
+  if (args.length === 4 && args[0] === "resume-input") return packageContinuationRequest(args[1], args[2], args[3]);
+  if (args.length === 3 && args[0] === "resume") return resumePackageBootstrap(args[1], args[2]);
   if (args.length === 3 && args[0] === "read") {
     const root = await realpath(args[1]);
     const store = new MaintenanceOperationStore({ dataDir: path.join(root, "data") });

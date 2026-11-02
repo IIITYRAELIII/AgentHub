@@ -207,9 +207,9 @@ export function createRuntimeRestartComposition({
       startTimers: startRuntimeTimers,
       markReady: () => instanceGuard.markReady(),
     }),
-    abortRestart: async (error) => {
+    abortRestart: async (error, evidence) => {
       setStopping(false);
-      await failRestartOperation(error);
+      await failRestartOperation(error, evidence);
       setRestartRequest(null);
       let saveError = null;
       try {
