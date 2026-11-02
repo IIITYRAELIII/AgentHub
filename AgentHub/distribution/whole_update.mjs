@@ -231,6 +231,16 @@ try {
   assert.equal(snapshot.server.process.pid, lock.pid); assert.equal(snapshot.server.process.releaseId, lock.releaseId);
   assert.equal((await json(path.join(root, "current.json"))).current, lock.releaseId); assert.notEqual(lock.pid, before.pid);
   await inspectAcceptanceArtifact(path.join(root, "releases", lock.releaseId));
+  const traceDatabase = new DatabaseSync(path.join(root, "data/command-traces.sqlite"), { readOnly: true });
+  try {
+    report.originalCommandSpans = traceDatabase.prepare("SELECT * FROM command_trace_spans WHERE command_id=? ORDER BY observed_at_ms,rowid").all(id);
+  } finally { traceDatabase.close(); }
+  assert.ok(report.originalCommandSpans.some(span => span.stage === "restart-readiness" && span.outcome === "waiting"));
+  assert.ok(report.originalCommandSpans.some(span => span.stage === "restart-package-backup-preflight" && span.outcome === "failed"));
+  for (const stage of ["package-backup-preflight", "quiesce", "save-state", "drain", "package-arm", "package-close"]) {
+    assert.ok(report.originalCommandSpans.some(span => span.stage === `restart-${stage}` && span.outcome === "succeeded"), `Missing original measured stage ${stage}`);
+  }
+  await fs.writeFile(path.join(output, "original-command-spans.json"), JSON.stringify(report.originalCommandSpans, null, 2));
   assert.deepEqual(completed.metadata.packageAttemptHistory, [failed]);
   const backup = completed.metadata.packageBackup.directory;
   for (const data of [path.join(root, "data"), path.join(backup, "data")]) {

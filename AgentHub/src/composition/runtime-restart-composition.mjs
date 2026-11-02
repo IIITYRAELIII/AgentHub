@@ -73,6 +73,9 @@ export function createRuntimeRestartComposition({
   delay,
   maintenanceOperations = null,
 }) {
+  // Infrastructure owns the composition (including shutdown); measurement is
+  // provided by its service. Direct service callers retain the same interface.
+  const traceService = commandTrace?.service ?? commandTrace;
   const restartNotifications = new RestartNotificationService({
     getRequest: getRestartRequest,
     setRequest: setRestartRequest,
@@ -143,8 +146,8 @@ export function createRuntimeRestartComposition({
 
   const runtimeRestart = new RuntimeRestartController({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
-    measure: (id, stage, action) => commandTrace?.measureBestEffort
-      ? commandTrace.measureBestEffort({ commandId: id, stage: `restart-${stage}`, transport: "runtime" }, action)
+    measure: (id, stage, action) => traceService?.measureBestEffort
+      ? traceService.measureBestEffort({ commandId: id, stage: `restart-${stage}`, transport: "runtime" }, action)
       : action(),
     getRequest: getRestartRequest,
     updateOffset,
@@ -177,8 +180,8 @@ export function createRuntimeRestartComposition({
       });
       return launchReplacementAndWait({ invocation, lockFile: instanceLockFile,
         expectedReleaseId, expectedOperationId: operationId ?? "",
-        measure: (stage, action) => commandTrace?.measureBestEffort
-          ? commandTrace.measureBestEffort({ commandId: operationId, stage: `restart-${stage}`,
+        measure: (stage, action) => traceService?.measureBestEffort
+          ? traceService.measureBestEffort({ commandId: operationId, stage: `restart-${stage}`,
             transport: "runtime", metadata: { expectedReleaseId, oldPid: process.pid } }, action)
           : action(),
       });

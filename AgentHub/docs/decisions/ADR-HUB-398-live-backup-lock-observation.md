@@ -108,3 +108,10 @@ UNKNOWN receipt in a distinct inert test-owned scope must survive startup,
 backup and replacement unchanged. Foreign original, CAS, assets, current and
 extra-field requests must refuse through the same authenticated router before
 the lawful continuation. Historical production originals remain untouched.
+
+Restart measurements use the existing trace composition's service while its
+composition retains worker shutdown. Readiness and preflight/drain spans keep
+the maintenance original as command identity. The whole acceptance requires
+those persisted spans after replacement, rather than presenting phase wall
+timestamps as missing monotonic work measurements. This adds no trace owner,
+database or authority; diagnostic failure cannot admit a restart.

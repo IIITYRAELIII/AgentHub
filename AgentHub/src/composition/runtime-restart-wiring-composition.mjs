@@ -17,6 +17,7 @@ export function createRuntimeRestartWiring({
     throw new TypeError("restart wiring requires the pending-admission owner");
   }
   let runtimeRestartController;
+  const traceService = runtimeRestart.commandTrace?.service ?? runtimeRestart.commandTrace;
   let restartScheduled = false;
   let lastReadinessTrace = "";
 
@@ -42,7 +43,7 @@ export function createRuntimeRestartWiring({
       backgroundCount, maintenanceCount, admissionPending, isStopping()]);
     if (request?.operationId && key !== lastReadinessTrace) {
       try {
-        const recorded = runtimeRestart.commandTrace?.recordBestEffort?.({
+        const recorded = traceService?.recordBestEffort?.({
           commandId: request.operationId, stage: "restart-readiness", transport: "runtime",
           outcome: count ? "waiting" : isStopping() ? "stopping" : "ready",
           metadata: { blockingRunIds, blockersTruncated: runs.length > 20,
