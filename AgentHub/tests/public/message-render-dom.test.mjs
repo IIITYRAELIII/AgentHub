@@ -111,6 +111,76 @@ test.after(async () => {
   await browser?.close();
 });
 
+test("positioned annotations interleave four nonsorted answers through stream history and reload", {timeout:45000}, async()=>{
+  const raw='# Зачем нужна история Git\n\nИстория Git сохраняет изменения. 🦊 :agent-annotation{index="2"}\n\nЗависимости можно переиспользовать. :codex-annotation{index="1"}\n\nВременные копии удаляются после проверки. :agent-annotation{index="3"}\n\nМедиа принадлежит открытой задаче. :codex-annotation{index="4"}';
+  for(const width of [1366,390]) for(const provider of ['codex','claude']) {
+    const page=await browser.newPage({viewport:{width,height:1000}}); const diagnostics=[];
+    page.setDefaultTimeout(3000);
+    page.on('pageerror',e=>diagnostics.push(e.message));
+    page.on('console',m=>{
+      if(m.type()==='error' && m.text().includes('404 (Not Found)')
+        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(['error','warning'].includes(m.type())) diagnostics.push(m.text());
+    });
+    try {
+      await openWebApp(page);
+      const source={id:'placement-source',provider,threadId:'thread-1',turnId:'original',itemId:'original-item',role:'agent',text:'Dependencies; Git; Cleanup; Media.'};
+      await seedMessages(page,[source],{provider});
+      const annotations=await page.evaluate(async(source)=>{
+        const api=window.AgentHubMessageDisclosure, surface=document.querySelector('[data-message-id="placement-source"] .msg-body');
+        const text=surface.textContent;
+        return Promise.all(['Dependencies','Git','Cleanup','Media'].map(async(word)=>{
+          const start=text.indexOf(word),end=start+word.length;
+          return {text:word,annotation:'Question '+word,source:{version:1,...api.responseAnnotationSourceIdentity(source),surfaceKind:'message-body',surfaceIndex:0,start,end,
+            contentHash:await api.responseAnnotationSha256(api.responseAnnotationSourceContent(source)),surfaceHash:await api.responseAnnotationSha256(text),selectionHash:await api.responseAnnotationSha256(word)}};
+        }));
+      },source);
+      const user={id:'placement-user',provider,threadId:'thread-1',turnId:'reply',itemId:'user',role:'user',text:'User :agent-annotation{index="4"}',responseAnnotationRequest:'User :agent-annotation{index="4"}',responseAnnotations:annotations};
+      const project=(answer)=>provider==='codex'?codexAssistantResponseProjection(answer):(()=>{
+        const h=claudeTranscriptHistory([{type:'user',uuid:'u',message:{role:'user',content:'Check'}},{type:'assistant',uuid:'a',message:{role:'assistant',content:[{type:'text',text:answer}]}}].map(JSON.stringify).join('\n'))[0];
+        return {text:h.answer,responseAnnotationReferences:h.messages[1].responseAnnotationReferences};
+      })();
+      const answer=(value)=>({id:'placement-answer',provider,threadId:'thread-1',turnId:'reply',itemId:'answer',role:'agent',...project(value)});
+      const sequence=(selector='[data-message-id="placement-answer"] .msg-body')=>page.locator(selector).evaluate(body=>Array.from(body.querySelectorAll('h1,p,[data-response-citation-index]')).map(n=>n.dataset.responseCitationIndex?'quote'+n.dataset.responseCitationIndex:n.textContent.trim()));
+      const expected=['Зачем нужна история Git','История Git сохраняет изменения. 🦊','quote2','Зависимости можно переиспользовать.','quote1','Временные копии удаляются после проверки.','quote3','Медиа принадлежит открытой задаче.','quote4'];
+      // Stream a complete first card, then an incomplete next marker: no all-top relocation or raw prefix.
+      const boundary=raw.indexOf(':codex-annotation');
+      await seedMessages(page,[source,user],{provider,running:true});
+      if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      for(const partial of [raw.slice(0,boundary),raw.slice(0,boundary+':codex-annotation{index="'.length),raw]) {
+        await page.evaluate(value=>window.AgentHub.setLive('task-1',value),answer(partial));
+        const values=await sequence('[data-live-body]');
+        assert.deepEqual(values.slice(0,3),expected.slice(0,3));
+        assert.doesNotMatch(await page.locator('[data-live-body]').textContent(),/:agent-annotation|:codex-annotation/u);
+      }
+      assert.deepEqual(await sequence('[data-live-body]'),expected);
+      await page.evaluate(()=>window.AgentHub.setLive('task-1',null));
+      await seedMessages(page,[source,user,answer(raw)],{provider});
+      assert.deepEqual(await sequence(),expected);
+      const retained=JSON.parse(JSON.stringify([source,user,answer(raw)]));
+      // Reload/reconnect from retained structured message metadata, with no original marker parser in the browser.
+      await page.reload({waitUntil:'load'}); await page.waitForFunction(()=>typeof window.AgentHub==='object');
+      await seedMessages(page,retained,{provider});
+      if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      assert.deepEqual(await sequence(),expected);
+      assert.ok((await page.locator('[data-message-id="placement-user"]').textContent()).includes(user.text));
+      for(const index of [2,1,3,4]) {
+        await page.locator(`[data-message-id="placement-answer"] [data-response-citation-index="${index}"]`).click();
+        const target=page.locator('[data-message-id="placement-user"] .msg-annotation-content').nth(index-1);
+        assert.equal(await target.getAttribute('data-response-annotation-source')!==null,true);
+        await target.click();
+        assert.equal((await page.locator('[data-message-id="placement-source"] .msg-source-citation-highlight').allTextContents()).join(''),annotations[index-1].text);
+      }
+      assert.match(await page.title(),/Agent Hub/iu); assert.equal(page.url(),'http://127.0.0.1/');
+      if(process.env.AGENT_HUB_QA_SCREENSHOT) {
+        await page.locator('[data-message-id="placement-answer"]').scrollIntoViewIfNeeded();
+        await page.screenshot({path:`${process.env.AGENT_HUB_QA_SCREENSHOT}-placement-${provider}-${width}.png`});
+      }
+      assert.deepEqual(diagnostics,[]);
+    } finally {await page.close();}
+  }
+});
+
 test("generic annotation aliases render one exact source link for each provider on desktop and mobile", {timeout:30000}, async()=>{
   for(const width of [1366,390]) for(const provider of ['codex','claude']) {
     const page=await browser.newPage({viewport:{width,height:850}}); const diagnostics=[];
@@ -178,6 +248,7 @@ test("generic annotation canonical Guide reaches the read-only rendered editor a
         modern:api.embeddedResponseAnnotations(prompt),legacy:api.embeddedResponseAnnotations(prompt.replace('## My request:','## My request for Codex:'))};
     },snapshot);
     assert.equal(observed.guide,snapshot.guide.content); assert.equal(observed.readOnly,true);
+    assert.equal(observed.guide.split('Reuse installed dependencies when the lockfile, runtime and platform requirements match; do not create a copy per Task. After successful transfer and verification, remove temporary Git bundles and copies through their owning cleanup mechanism; preserve unique work and required evidence.').length,2);
     assert.ok(observed.prompt.includes('earlier assistant response')); assert.ok(observed.prompt.includes('## My request:\nCheck'));
     assert.deepEqual(observed.modern,observed.legacy); assert.equal(observed.modern.request,'Check');
     assert.deepEqual(observed.modern.annotations,[{text:'Exact quote',annotation:'Exact comment'}]);

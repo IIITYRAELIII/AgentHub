@@ -274,7 +274,7 @@ test("Codex terminal reconciliation removes only provider annotation markers", (
 
   const result = codexTurnUsageFromJsonl(text, "turn-annotation");
   assert.equal(result.finalAnswer, "Цитата 1\nПроверено");
-  assert.deepEqual(result.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(result.responseAnnotationReferences, [{ index: 1, position: { start: 0, end: 8 } }]);
   assert.match(result.prompt, /Проверь/u);
 });
 
@@ -288,7 +288,7 @@ test("generic annotation terminal JSONL reconciles mixed aliases without parsing
     line({type:'event_msg',payload:{type:'task_complete',turn_id:'generic-turn',last_agent_message:raw}})
   ].join('\n');
   const result=codexTurnUsageFromJsonl(text,'generic-turn');
-  assert.deepEqual(result.responseAnnotationReferences,[{index:1}]);
+  assert.deepEqual(result.responseAnnotationReferences,[{index:1,position:{start:0,end:8}}]);
   assert.equal((result.finalAnswer.match(/Цитата 1/gu)??[]).length,1);
   assert.doesNotMatch(result.finalAnswer,/:agent|:codex/u); assert.equal(result.prompt,prompt);
 });

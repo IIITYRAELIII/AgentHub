@@ -61,7 +61,7 @@ test("generic annotation live Claude deltas remain raw while desktop and progres
   assert.doesNotMatch(progress.render(run),/:agent/u);
   service.handle(run,{event:{type:'stream_event',event:{type:'content_block_delta'}},textDelta:'1"} Answer :codex-annotation{index="1"} continued'});
   const snapshot=setup.desktopRunSnapshot(run);
-  assert.match(snapshot.response,/Цитата 1/u); assert.deepEqual(snapshot.responseAnnotationReferences,[{index:1}]);
+  assert.match(snapshot.response,/Цитата 1/u); assert.deepEqual(snapshot.responseAnnotationReferences,[{index:1,position:{start:0,end:8}}]);
   assert.equal(snapshot.userMessages[0].text,'User :agent-annotation{index="1"}');
   assert.ok(run.responseText.startsWith(':agent-annotation')); assert.doesNotMatch(progress.render(run),/:agent|:codex/u);
 });

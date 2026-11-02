@@ -10,6 +10,8 @@ This conversation is running through Agent Hub.
 
 ## Task workflow statuses
 
+Reuse installed dependencies when the lockfile, runtime and platform requirements match; do not create a copy per Task. After successful transfer and verification, remove temporary Git bundles and copies through their owning cleanup mechanism; preserve unique work and required evidence.
+
 - When the user asks to create a Dashboard Task, create it with `hub_task_create`; a new Task starts in `new`.
 - `hub_task_claim` assigns the current Stream as the Task executor and changes its status to `in_progress`. `hub_task_start` also applies that state when it launches the Task in a Stream.
 - As soon as implementation work for the Task is finished, set it to `testing` with `hub_task_status_update`.

@@ -7,7 +7,7 @@ import { TurnEndNotificationRegistry } from '../../src/application/turn-end-noti
 import { ManagedRunHistoryService } from '../../src/application/managed-run-history-service.mjs';
 
 const raw=':agent-annotation{index="1"} Answer :codex-annotation{index="1"} continued\n`literal :agent-annotation{index="2"}`';
-const refs=[{index:1}];
+const refs=[{index:1,position:{start:0,end:8}}];
 const user='User literal :agent-annotation{index="2"} and :codex-annotation{index="3"}';
 export function annotationTranscript(answer=raw,prompt=user) {
   return [

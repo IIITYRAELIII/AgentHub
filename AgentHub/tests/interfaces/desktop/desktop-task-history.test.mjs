@@ -2068,6 +2068,16 @@ test("desktop task history exposes structured response annotations", async () =>
   assert.deepEqual(result.items[0].messages[1].responseAnnotationReferences, [{ index: 1 }]);
 });
 
+test("desktop task history retains positioned references and explicit legacy absence", async () => {
+  for(const references of [[{index:2,position:{start:5,end:13}},{index:1,position:{start:28,end:36}}],[{index:1}]]) {
+    const { desktopTaskHistory,state }=fixture({run:null});
+    state.history[3].messages[1].text='Git\n\nЦитата 2\n\nDependencies\nЦитата 1';
+    state.history[3].messages[1].responseAnnotationReferences=references;
+    const result=await desktopTaskHistory({limit:1});
+    assert.deepEqual(result.items[0].messages[1].responseAnnotationReferences,references);
+  }
+});
+
 test("desktop task history preserves pagination, field limits and response budget", async () => {
   const longAnswer = "я".repeat(2_000);
   const { desktopTaskHistory, state, calls } = fixture({ run: null });

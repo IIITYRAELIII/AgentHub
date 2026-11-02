@@ -192,6 +192,15 @@ navigation. Legacy citations already bound to shortened content are not rewritte
   Missing mappings render non-interactive
   `Цитата N`. User-authored marker-like literals and code remain ordinary user
   content.
+- The same trusted assistant parser retains each first valid marker's UTF-16
+  range in its LF-normalized, boundary-trimmed projected text. Live, observed,
+  terminal and persisted history retain those coordinates on the existing
+  reference; the renderer replaces only a validated exact range with its
+  citation card, preserving the original answer order. It never guesses an
+  association from label text or annotation index order. Historical references
+  without coordinates retain an explicit compatibility list until their trusted
+  original is reprojected through the existing history owner; no stored source
+  or user text is rewritten. See ADR-HUB-401.
 - A new user-created annotation records its exact source user command or agent
   provider item, including an active non-final agent item. A user with a durable
   `clientUserMessageId` uses the client namespace scoped by provider and Thread,

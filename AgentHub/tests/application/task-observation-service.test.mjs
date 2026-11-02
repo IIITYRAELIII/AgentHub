@@ -534,7 +534,7 @@ for (const phase of ['create', 'update', 'active']) {
       { type: 'assistant', uuid: 'assistant-original', message: { role: 'assistant', content: [{ type: 'text', text: raw }] } },
     ].map(JSON.stringify).join('\n');
     const snapshot = reviewerClaudeTranscript(transcript);
-    assert.deepEqual(snapshot.responseAnnotationReferences, [{ index: 1 }]);
+    assert.deepEqual(snapshot.responseAnnotationReferences, [{ index: 1, position: { start: 0, end: 8 } }]);
     assert.match(snapshot.answer, /Цитата 1/u);
     const state = fixture();
     state.service.providers = reviewerRealProviderRegistry();
@@ -545,7 +545,7 @@ for (const phase of ['create', 'update', 'active']) {
     if (phase === 'update') state.service.update(run, snapshot);
     if (phase === 'active') { run.observer = false; await state.service.applyActive(run, snapshot); }
     assert.equal(run.responseText, snapshot.answer);
-    assert.deepEqual(run.responseAnnotationReferences, [{ index: 1 }],
+    assert.deepEqual(run.responseAnnotationReferences, [{ index: 1, position: { start: 0, end: 8 } }],
       'The observed consumer must retain the mapping after the reader has already removed raw markers');
   });
 }

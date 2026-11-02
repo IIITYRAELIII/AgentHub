@@ -8008,10 +8008,24 @@ function renderResponseCitations(message) {
 
 function renderAgentResponseBody(body, message, text, fileContext) {
   const references = message.responseAnnotationReferences ?? [];
-  const visibleText = MessageView.withoutResponseCitationFallbacks(text, references);
+  const legacyReferences = references.filter((reference) => !reference.position);
+  const { segments, unpositioned } = MessageView.responseCitationSegments(text, message.responseCitationPresentations);
   const content = el("div", { class: "msg-response-content" });
-  renderMarkdown(content, visibleText, fileContext, "agent");
-  body.replaceChildren(renderResponseCitations(message), content);
+  if (segments.some((segment) => segment.citation)) {
+    for (const segment of segments) {
+      if (segment.citation) content.append(renderResponseCitations({ responseCitationPresentations: [segment.citation] }));
+      else if (segment.text.trim()) {
+        const part = el("div", { class: "msg-response-part" });
+        renderMarkdown(part, MessageView.withoutResponseCitationFallbacks(segment.text, legacyReferences), fileContext, "agent");
+        content.append(...part.childNodes);
+      }
+    }
+  } else {
+    // Legacy retained projections have no marker coordinates. Preserve their
+    // explicit list instead of inventing paragraph associations from labels.
+    renderMarkdown(content, MessageView.withoutResponseCitationFallbacks(text, legacyReferences), fileContext, "agent");
+  }
+  body.replaceChildren(renderResponseCitations({ responseCitationPresentations: unpositioned }), content);
 }
 
 function focusResponseAnnotationCard(button) {

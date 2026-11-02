@@ -10,6 +10,7 @@ import {
   withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
+import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 import {
   canonicalizeUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -1022,9 +1023,9 @@ export function createDesktopTaskHistoryFactory({
                 ...(role === "agent" && Array.isArray(message.responseAnnotationReferences)
                   && message.responseAnnotationReferences.length
                   ? {
-                    responseAnnotationReferences: message.responseAnnotationReferences.map(
-                      (reference) => ({ index: Number(reference?.index) }),
-                    ).filter((reference) => Number.isSafeInteger(reference.index) && reference.index > 0),
+                    responseAnnotationReferences: normalizedCodexResponseAnnotationReferences(
+                      message.responseAnnotationReferences,
+                    ),
                   }
                   : {}),
                 ...(message.phase ? { phase: String(message.phase) } : {}),
