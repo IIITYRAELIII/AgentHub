@@ -158,6 +158,7 @@ try {
   // A distinct test-owned maintenance scope is inert; its canonical UNKNOWN
   // receipt is preserved, never reconciled or used to bypass active work.
   const unknownRelative = path.join("locks", "retained-unknown");
+  await fs.mkdir(path.join(root, "data", unknownRelative), { recursive: true });
   const unknownStore = new MaintenanceOperationStore({ dataDir: path.join(root, "data", unknownRelative) });
   const unknownOriginal = unknownStore.create({ operationId: "unrelated-owned-unknown", kind: MAINTENANCE_OPERATION_KINDS.CONTEXT_COMPACTION,
     streamId: "retained-test-scope", threadId: "retained-test-thread", status: "reconciling", outcome: "unknown", phase: "reconciling" });
