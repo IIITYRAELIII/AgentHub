@@ -231,3 +231,33 @@ test("an unknown execution extension cannot inherit ordinary malformed-input aut
   assert.deepEqual(f.catalog.mcpOperation(f.args.request_id),before);
   assert.deepEqual(f.tasks.task(f.task.id),f.task);assert.equal(f.prepares(),0);
 });
+
+test("reviewer case-insensitive valid enum UNKNOWN cannot be settled as malformed input",async t=>{
+  const f=await fixture(t);
+  const args={...f.args,status:"BLOCKED"};
+  const update=f.hub.taskLifecycle.updateWorkflowStatus;
+  const originalFailure=new Error("temporary owner read failed before lifecycle admission");
+  // Actual synchronous input validator accepts this enum; a subsequent owner
+  // failure is deliberately unresolved, with no synthetic validation error.
+  f.hub.taskLifecycle.updateWorkflowStatus=async()=>{throw originalFailure;};
+  try {
+    await assert.rejects(f.hub.call("hub_task_status_update",{...args,context_token:f.token}),/temporary owner read failed/);
+  } finally {f.hub.taskLifecycle.updateWorkflowStatus=update;}
+  const before=f.catalog.mcpOperation(args.request_id);
+  assert.equal(before.status,"unknown");
+  assert.ok(f.spans.some(s=>s.commandId===args.request_id&&s.stage==="task-workflow-input-validation"&&s.outcome==="succeeded"));
+  let observed;
+  const attempt=f.hub.call("hub_task_operation_reconcile",{...f.reconcile,
+    expected_arguments_hash:mcpArgumentsHash(args)}).then(value=>{observed=value;return value;});
+  try {
+    await assert.rejects(attempt,"a valid enum is not deterministic malformed-input authority");
+  } finally {
+    if(observed)t.diagnostic(JSON.stringify({validationSucceeded:true,originalStatusBefore:before.status,
+      originalStatusAfter:f.catalog.mcpOperation(args.request_id).status,reconcileOutcome:observed.outcome,
+      durableState:observed.reconciliation?.durableState}));
+  }
+  assert.deepEqual(f.catalog.mcpOperation(args.request_id),before);
+  assert.deepEqual(f.tasks.task(f.task.id),f.task);
+  assert.equal(f.tasks.lifecycleTransition(args.request_id),null);
+  assert.equal(f.tasks.lifecycleOutcome(args.request_id),null);
+});

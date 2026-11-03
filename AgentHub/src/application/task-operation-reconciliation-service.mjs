@@ -6,7 +6,7 @@ import { normalizedTaskGitReferences, normalizedInitialNativeTest } from "../dom
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
-import { TaskLifecycleNoEffectError, TaskOperationReconciliationRefusedError,
+import { normalizedTaskWorkflowStatus, TaskLifecycleNoEffectError, TaskOperationReconciliationRefusedError,
   workflowAdmissionNoEffectEvidence } from "../domain/task-board-task.mjs";
 
 import { normalizePublishedResolution } from "../domain/published-resolution.mjs";
@@ -51,11 +51,15 @@ function malformedWorkflowArguments(receipt) {
       || !args || Object.keys(args).length !== keys.length || Object.keys(args).some(key => !keys.includes(key))
       || args.request_id !== receipt.requestId || args.task_id !== execution.taskId
       || typeof args.status !== "string" || !args.status.trim() || args.status.length > 40 || args.status.includes("\0")
-      || WORKFLOW_STATUSES.has(args.status.trim())
       || !Number.isSafeInteger(args.expected_task_revision) || args.expected_task_revision < 1
       || !WORKFLOW_STATUSES.has(args.expected_workflow_status)
       || mcpArgumentsHash(args) !== receipt.argumentsHash) return null;
-  return args;
+  try {
+    normalizedTaskWorkflowStatus(args.status);
+    return null;
+  } catch {
+    return args;
+  }
 }
 
 function validationReceiptIdentity(receipt) {

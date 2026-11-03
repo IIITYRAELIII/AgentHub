@@ -23,7 +23,10 @@ RM reconciliation owner and existing receipt transaction. Eligibility requires
 the exact five-key ordinary argument family, both original CAS fields, immutable
 actor/request/hash/execution identity, invalid enum, matching current Task and
 configured repository, and no lifecycle/effect record or alternate operation
-family. The existing Task/repository/Await leases and process guard check apply.
+family. Invalidity uses the same canonical enum normalizer as ordinary intake,
+including whitespace trimming and case folding. A valid case-insensitive status
+with an unresolved downstream failure stays UNKNOWN, never validation authority.
+The existing Task/repository/Await leases and process guard check apply.
 The execution owner must prove a joined local worker; a previous runtime instead
 requires the existing trusted native retirement witness and fresh exact job-zero
 proof. No Stop/cancel, caller-supplied retired boolean, new queue or ledger exists.
