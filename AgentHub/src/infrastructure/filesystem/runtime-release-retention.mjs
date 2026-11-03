@@ -6,6 +6,7 @@ import { captureRuntimeReleaseBinding, readRuntimeManifest, readRuntimePointer, 
   withRuntimeInstallationLease, writeRuntimePointer } from "./runtime-installation-custody.mjs";
 import { runtimeRetirementCandidates } from "./runtime-release-retention-policy.mjs";
 import { retireSealedRuntimeRelease } from "./sealed-runtime-release.mjs";
+import { verifyRuntimeGeneratedCache } from "./runtime-generated-cache.mjs";
 
 const key = binding => createHash("sha256").update(JSON.stringify({ releaseId: binding.releaseId,
   manifestSha256: binding.manifestSha256, root: binding.root })).digest("hex");
@@ -21,9 +22,9 @@ const inside = (root, child) => {
 export class RuntimeReleaseRetention {
   id = "runtime-release";
 
-  constructor({ runtimeRoot, isStopping = () => false, retire = retireSealedRuntimeRelease } = {}) {
+  constructor({ runtimeRoot, pythonExe = "", isStopping = () => false, retire = retireSealedRuntimeRelease } = {}) {
     if (!runtimeRoot) throw new TypeError("Runtime root required");
-    Object.assign(this, { runtimeRoot, isStopping, retire });
+    Object.assign(this, { runtimeRoot, pythonExe, isStopping, retire });
   }
 
   async list({ after, limit, context }) {
@@ -132,7 +133,9 @@ export class RuntimeReleaseRetention {
         await lease.assertOwned();
         const free = async () => { const info = await statfs(root, { bigint: true }); return info.bavail * info.bsize; };
         const before = await free();
-        const result = await this.retire(root, binding, { allowPartial: reconcile });
+        const verifiedCache = await verifyRuntimeGeneratedCache(root, binding, this.pythonExe);
+        await lease.assertOwned();
+        const result = await this.retire(root, binding, { allowPartial: reconcile, verifiedCache });
         const info = await statfs(this.runtimeRoot, { bigint: true });
         const after = info.bavail * info.bsize;
         if (!["complete", "partial"].includes(result?.status) || !Number.isSafeInteger(result.files) || result.files < 0

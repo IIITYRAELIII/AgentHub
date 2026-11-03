@@ -37,7 +37,13 @@ current/rollback custody. Explicit invalid sourceRoot values, changed bindings
 and unselected/prepared source-free bodies remain unknown and block retirement.
 No whole-body rehash is added before each batch; installed custody, bounded
 manifest reads and the existing native per-batch content guards remain owners.
-See ADR-HUB-363-source-free-runtime-pins. The reviewed owner-list append
+See ADR-HUB-363-source-free-runtime-pins. The same owner also permits only
+the exact compile-proven historical Whisper cache described
+by REL-001/ADR-HUB-385-generated-runtime-cache. It retires before its manifest
+source in the SAME original batch, so recovery needs no persistent cache waiver.
+The manifest, pointer custody, UNKNOWN interpretation and native batch bounds
+remain unchanged. Unknown or foreign generated data still refuses.
+The reviewed owner-list append
 preserves v1 pending intents. Partial batches remain
 attached to the same admitted child; unknown outcomes are not replayed as new
 deletion. An older or unknown registry/version defers without clearing state.

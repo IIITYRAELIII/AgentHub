@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { trustedWindowsPowerShellPath } from "../process/system-boot-identity.mjs";
+import { runtimeGeneratedCacheProof } from "./runtime-generated-cache.mjs";
 
 const source = fileURLToPath(new URL("./sealed-runtime-release.cs", import.meta.url));
 const script = [
@@ -11,7 +12,7 @@ const script = [
   "$net=[System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()",
   "Add-Type -Path $env:AGENT_HUB_RUNTIME_RETIRE_SOURCE -ReferencedAssemblies @((Join-Path $net 'System.Web.Extensions.dll'),(Join-Path $net 'System.dll'))",
   "$b=ConvertFrom-Json $env:AGENT_HUB_RUNTIME_RETIRE_BINDING",
-  "[AgentHubSealedRuntimeRelease]::Retire($env:AGENT_HUB_RUNTIME_RETIRE_ROOT,[string]$b.root.dev,[string]$b.root.ino,[string]$b.root.birthFileTime,[string]$b.manifestSha256,[string]$b.releaseId,[bool]::Parse($env:AGENT_HUB_RUNTIME_RETIRE_PARTIAL))",
+  "[AgentHubSealedRuntimeRelease]::Retire($env:AGENT_HUB_RUNTIME_RETIRE_ROOT,[string]$b.root.dev,[string]$b.root.ino,[string]$b.root.birthFileTime,[string]$b.manifestSha256,[string]$b.releaseId,[bool]::Parse($env:AGENT_HUB_RUNTIME_RETIRE_PARTIAL),$env:AGENT_HUB_RUNTIME_RETIRE_CACHE)",
 ].join("\n");
 
 function decimal(value, maximum, minimum = 0n) {
@@ -20,7 +21,7 @@ function decimal(value, maximum, minimum = 0n) {
 }
 
 /** Caller owns fresh runtime pins, the lease and original pruning admission. */
-export function retireSealedRuntimeRelease(target, binding, { allowPartial = false } = {}) {
+export function retireSealedRuntimeRelease(target, binding, { allowPartial = false, verifiedCache = null } = {}) {
   if (typeof target !== "string" || target.includes("\0") || !path.win32.isAbsolute(target)
       || /^[\\/]{2}[?.][\\/]/u.test(target)
       || path.win32.dirname(path.win32.normalize(target)) === path.win32.normalize(target)
@@ -34,6 +35,7 @@ export function retireSealedRuntimeRelease(target, binding, { allowPartial = fal
     throw new TypeError("Exact retired runtime root/manifest/release binding required");
   }
   if (process.platform !== "win32") return Promise.reject(new Error("sealed-runtime-platform-unavailable"));
+  const cache = runtimeGeneratedCacheProof(target, binding, verifiedCache);
   const environment = Object.fromEntries(Object.entries({
     SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP,
     AGENT_HUB_RUNTIME_RETIRE_SOURCE: source,
@@ -43,6 +45,7 @@ export function retireSealedRuntimeRelease(target, binding, { allowPartial = fal
       root: { dev: binding.root.dev, ino: binding.root.ino, birthFileTime: binding.root.birthFileTime },
     }),
     AGENT_HUB_RUNTIME_RETIRE_PARTIAL: String(allowPartial),
+    AGENT_HUB_RUNTIME_RETIRE_CACHE: JSON.stringify(cache),
   }).filter(([, value]) => value !== undefined));
   const executable = trustedWindowsPowerShellPath(process.env);
   return new Promise((resolve, reject) => {

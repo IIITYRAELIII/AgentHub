@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -13,6 +15,25 @@ import { StorageRetentionService } from "../../../src/application/storage-retent
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
+const execute = promisify(execFile);
+async function generatedCache(f) {
+  const python = (await execute("python", ["-I", "-S", "-B", "-c", "import sys; print(sys.executable)"])).stdout.trim();
+  const source = Buffer.from("def transcribe():\n    return 'fixture only'\n");
+  const file = path.join(f.body, "whisper_runtime.py"), manifestFile = path.join(f.body, "runtime-manifest.json");
+  await writeFile(file, source);
+  const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+  manifest.files.push({ path: "whisper_runtime.py", bytes: source.length, sha256: hash(source) });
+  await writeFile(manifestFile, JSON.stringify(manifest));
+  const binding = await captureRuntimeReleaseBinding(f.body, "runtime-1");
+  const pointer = await readRuntimePointer(f.runtimeRoot);
+  pointer.runtimeRetention.retired = [{ ...pointer.runtimeRetention.retired[0], ...binding }];
+  await writeRuntimePointer(f.runtimeRoot, pointer);
+  f.candidate = (await f.owner.list({ limit: 3, context: f.context })).items[0];
+  f.owner.pythonExe = python;
+  const cache = (await execute(python, ["-I", "-S", "-B", "-c",
+    "import py_compile,sys; print(py_compile.compile(sys.argv[1], doraise=True))", file])).stdout.trim();
+  return { file, cache, manifest: await readFile(manifestFile) };
+}
 async function fixture(t, count = 2) {
   const parent = await realpath(os.tmpdir());
   const root = await mkdtemp(path.join(parent, "runtime-retirement-"));
@@ -156,4 +177,79 @@ test("logical alias and native path share one installation lease", async t => {
   release();
   await Promise.all([first, second]);
   assert.equal(secondEntered, true);
+});
+
+test("verified generated Python cache retires first within SAME bounded original", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t, 65), generated = await generatedCache(f);
+  const first = await f.service.runOnce();
+  assert.equal(first.partialBatches, 1);
+  await assert.rejects(lstat(generated.cache), { code: "ENOENT" });
+  assert.ok(await readFile(generated.file), "cache retires while its proven source still exists");
+  assert.deepEqual(await readFile(path.join(f.body, "runtime-manifest.json")), generated.manifest);
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0];
+  assert.equal(f.store.get(record.operationId).metadata.lastObservation.files, 64);
+  assert.equal((await f.service.runOnce()).removed, 1);
+  assert.equal(f.store.get(record.operationId).status, "succeeded");
+  await assert.rejects(lstat(f.body), { code: "ENOENT" });
+  assert.equal((await readRuntimePointer(f.runtimeRoot)).current, "runtime-3");
+});
+
+test("foreign bytecode and late source drift preserve SAME UNKNOWN runtime original", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f);
+  const correct = await readFile(generated.cache);
+  await writeFile(generated.cache, Buffer.concat([correct, Buffer.from("foreign")]));
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0], id = record.operationId;
+  assert.equal(f.store.get(id).status, "reconciling");
+  assert.ok(await readFile(path.join(f.body, "assets/000.txt")));
+  await writeFile(generated.cache, correct);
+  f.owner.retire = async (...args) => {
+    await writeFile(generated.file, "foreign source after proof");
+    return retireSealedRuntimeRelease(...args);
+  };
+  await f.service.runOnce();
+  assert.equal(f.store.get(id).status, "reconciling");
+  assert.equal((await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0].operationId, id);
+  assert.deepEqual(await readFile(generated.cache), correct);
+  assert.ok(await readFile(path.join(f.body, "assets/000.txt")));
+});
+
+test("lost cache-first batch reply resumes SAME original without a persistent cache waiver", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t, 65), generated = await generatedCache(f);
+  let calls = 0;
+  f.owner.retire = async (...args) => {
+    const result = await retireSealedRuntimeRelease(...args);
+    if (++calls === 1) throw new Error("lost cache-first batch reply");
+    return result;
+  };
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0];
+  await assert.rejects(lstat(generated.cache), { code: "ENOENT" });
+  assert.equal(f.store.get(record.operationId).status, "reconciling");
+  await f.service.runOnce();
+  assert.equal(f.store.get(record.operationId).status, "succeeded");
+  assert.equal(calls, 2);
+});
+
+test("generated cache requires configured compiler and refuses extra useful data or forged proof", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f);
+  const python = f.owner.pythonExe;
+  f.owner.pythonExe = "";
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0], id = record.operationId;
+  assert.equal(f.store.get(id).status, "reconciling");
+  const bytes = await readFile(generated.cache);
+  f.owner.pythonExe = python;
+  await writeFile(path.join(f.body, "useful-WIP.txt"), "retained unique bytes");
+  await f.service.runOnce();
+  assert.equal(f.store.get(id).status, "reconciling");
+  assert.deepEqual(await readFile(generated.cache), bytes);
+  assert.equal(await readFile(path.join(f.body, "useful-WIP.txt"), "utf8"), "retained unique bytes");
+  assert.throws(() => retireSealedRuntimeRelease(f.body, record, { allowPartial: true,
+    verifiedCache: { path: path.relative(f.body, generated.cache), bytes: bytes.length, sha256: hash(bytes) } }),
+  /runtime-generated-cache-proof-required/u);
 });

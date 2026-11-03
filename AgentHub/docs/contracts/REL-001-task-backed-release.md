@@ -593,6 +593,18 @@ that retired binding before effects, and known partial work resumes only that
 original operation/root/manifest. Unknown data or custody stays retained; no
 recursive directory-removal fallback or Task-publication effect is granted.
 
+For historical Whisper runtimes only, the same owner may retire one undeclared
+`__pycache__/whisper_runtime.cpython-<version>.pyc` after the configured existing
+Python compiler reproduces its ENTIRE bytes from manifest-bound
+`whisper_runtime.py`, without importing/executing that source. The proof binds
+the original physical cache and root/manifest, is rechecked by the native sink,
+and grants no directory-wide exclusion. Cache retires first while a verified
+source handle is held, within the existing batch bounds. Lost reply resumes the
+SAME original; changed cache/source, unknown interpreter, extra WIP/links/streams
+or missing source refuses. Immutable manifests are never amended. New voice
+transcription invokes Python with `-B` to avoid generating further bytecode.
+See ADR-HUB-385-generated-runtime-cache.
+
 Policy v3 may retire only a redundant generation source.bundle after the original
 ReleaseOperation proves its exact current generation done, applied validate/finalize
 inputs and published outcomes for every approved target. The marked full independent
