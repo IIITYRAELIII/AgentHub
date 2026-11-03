@@ -497,6 +497,18 @@ Exact selected-root allocation is measured with FileStandardInfo and file-ID
 deduplication, including newly allocated pool data; volume free-space deltas and
 cumulative scheduler counters are not reclaimed-byte proof.
 
+For transport retention only, an exact immutable superseded generation may use
+its SAME original's completed successor proof. Every canonical generation on
+the strictly decreasing supersedes chain must verify its original identity,
+and the current final generation still needs its full validated/published/
+finalization evidence. The retention receipt keeps the OLD candidate, tree,
+manifest and generation pins, with a separate completed-successor identity;
+it does not claim that the old generation published or substitute latest bytes.
+Missing/changed/foreign/skipped chain, nonterminal/UNKNOWN finalization or a
+changed clone remains retained. Repository/worktree/evidence retirement is not
+broadened by this redundant-transport proof. See
+ADR-HUB-385-superseded-generation-transport.
+
 New permanent release-generation transport likewise streams only exact local
 main, approved base and selected result ancestry. Its advertised main alias is
 bound to an included exact input so the existing main clone contract survives.
