@@ -2778,6 +2778,39 @@ test("a deployment without Telegram never serves the Telegram runtime", async ()
 });
 
 
+test("compaction estimate paint batch uses the authenticated existing trace owner", async () => {
+  const spans = []; const secret = "c".repeat(43);
+  const server = new MiniAppServer({ host: "127.0.0.1", port: 0,
+    journalDatabase: memoryJournal(), localAccessSecret: secret,
+    recordCommandTrace: span => spans.push(span) });
+  try {
+    const { url } = await server.start();
+    const post = (cookie, events) => fetch(`${url}api/command-trace/client-events`, { method: "POST",
+      headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
+      body: JSON.stringify({ events }) });
+    const now = Date.now();
+    const event = { commandId: "original-compaction", stage: "context-estimate-paint", outcome: "succeeded",
+      observedAtMs: now, monotonicDurationMs: 16,
+      metadata: { action: "compaction", threadId: "exact-thread", turnId: "exact-turn", text: "PRIVATE" } };
+    assert.equal((await post(null, [event])).status, 401);
+    const auth = await fetch(`${url}api/local-session`, { method: "POST",
+      headers: { Authorization: `local ${secret}`, "Content-Type": "application/json" }, body: "{}" });
+    const cookie = auth.headers.get("set-cookie").split(";", 1)[0];
+    const response = await post(cookie, [event, { ...event, commandId: "neighbour", stage: "ui-render" }]);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, accepted: 2 });
+    assert.equal(spans.length, 2);
+    assert.equal(spans[0].stage, event.stage);
+    assert.equal(spans[0].commandId, event.commandId);
+    assert.deepEqual(spans[0].metadata, { action: "compaction", threadId: "exact-thread", turnId: "exact-turn" });
+    for (const changed of [{ stage: "context-estimate-paint-unknown" }, { outcome: "unknown" },
+      { observedAtMs: now + 120_000 }, { monotonicDurationMs: -1 }]) {
+      assert.equal((await post(cookie, [{ ...event, ...changed }])).status, 400);
+    }
+    assert.equal(spans.length, 2);
+  } finally { await server.close(); }
+});
+
 test("client performance batch uses authenticated bounded common trace ingestion", async () => {
   const spans = []; const secret = "t".repeat(43);
   const server = new MiniAppServer({ host: "127.0.0.1", port: 0,
