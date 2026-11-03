@@ -129,6 +129,11 @@ A live external/current turn in the same Thread still blocks recovery.
   required companion refuses preparation before current-pointer publication;
   older sources without the owning module do not require it. This does not grant
   authority to rewrite an already installed immutable runtime manifest.
+  The sealed native capture module likewise requires its exact declared C#
+  companion in normal preparation, source selection and import-closure checks.
+  Its producer hashes it into the immutable manifest; missing companion refuses
+  before dependency work. Unrelated C# sources remain excluded. A rejected old
+  artifact stays immutable; the corrected producer creates a new target.
 
 - Native candidate membership and immutable module reads include the same six
   declared release-progress viewer assets as runtime preparation. Their shared
