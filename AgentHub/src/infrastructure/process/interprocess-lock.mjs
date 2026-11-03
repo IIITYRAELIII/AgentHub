@@ -10,6 +10,64 @@ const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 const RELEASE_RETRY_DELAYS_MS = [0, 10, 25, 50, 100, 200];
 const TRANSIENT_LOCK_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
 const inProcessLocks = new Map();
+// Read-only, call-scoped observations of this producer's actual directories.
+// No names, ages or foreign on-disk owner claims grant this capability.
+const ownedDirectories = new Set();
+const directoryObservers = new Set();
+
+function observeOwnedDirectory(file) {
+  let resolveIdentity;
+  const record = { file, removed: false, pending: null,
+    identity: new Promise(resolve => { resolveIdentity = resolve; }) };
+  ownedDirectories.add(record);
+  for (const observer of directoryObservers) observer(record);
+  return { record, identify: resolveIdentity,
+    forget: () => ownedDirectories.delete(record) };
+}
+
+// Only live support inspection uses this. The stopped inventory does not.
+export async function observeInterprocessLockDirectories(operation) {
+  const observed = new Map();
+  const remember = record => {
+    const records = observed.get(record.file) ?? [];
+    records.push(record);
+    observed.set(record.file, records);
+  };
+  for (const record of ownedDirectories) remember(record);
+  directoryObservers.add(remember);
+  try {
+    return await operation(async file => {
+      const records = observed.get(file) ?? [];
+      if (!records.length) return false;
+      for (const record of records) {
+        const expected = await record.identity;
+        if (!expected) continue;
+        try {
+          const actual = await lstat(file, { bigint: true });
+          if (actual.isDirectory() && !actual.isSymbolicLink()
+              && sameFileIdentity(expected, actual)) return true;
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+          // Join only the exact producer mutation already underway, not a
+          // retry or a competing filesystem effect. Unknown remains refusal.
+          await record.pending;
+          if (record.removed) {
+            // Removal evidence belongs to the old object. The awaited native
+            // reply cannot classify a new object now occupying its pathname.
+            try { await lstat(file, { bigint: true }); }
+            catch (freshError) {
+              if (freshError?.code === "ENOENT") return true;
+              throw freshError;
+            }
+            throw new Error("Maintenance observed lock directory identity changed");
+          }
+          throw error;
+        }
+      }
+      throw new Error("Maintenance observed lock directory identity changed");
+    });
+  } finally { directoryObservers.delete(remember); }
+}
 async function abortable(promise, signal) {
   if (!signal) return promise;
   signal.throwIfAborted();
@@ -162,6 +220,7 @@ async function removeOwnedEntry(lockPath, owner, {
   retryDelaysMs = RELEASE_RETRY_DELAYS_MS,
   wait = delay,
   throwOnFailure = false,
+  directoryObservation = null,
 } = {}) {
   if (owner?.format !== "token" || !owner.ownerPath) return false;
   const removal = await retryTransientLockOperation(
@@ -173,10 +232,17 @@ async function removeOwnedEntry(lockPath, owner, {
     return false;
   }
   if (removal.missing) return false;
-  await retryTransientLockOperation(
+  const directoryRemoval = retryTransientLockOperation(
     () => removeLockDirectory(lockPath),
     { retryDelaysMs, wait },
   );
+  const observedRemoval = directoryRemoval.then(removed => {
+    if (directoryObservation && removed.completed && !removed.missing) directoryObservation.record.removed = true;
+  });
+  if (directoryObservation) directoryObservation.record.pending = observedRemoval;
+  // The same derived promise is both observed and joined on every path,
+  // including an unexpected rejection reported by the existing release owner.
+  await observedRemoval;
   return true;
 }
 
@@ -236,12 +302,17 @@ async function createOwnership(lockPath, token, staleMs, processInstanceId, publ
   };
   const windows = process.platform === "win32";
   const readyPath = windows ? `${lockPath}.ready-${randomUUID()}` : lockPath;
-  if (windows) await mkdir(readyPath);
+  const staged = windows ? observeOwnedDirectory(readyPath) : null;
+  let published = null;
   const readyOwnerPath = path.join(readyPath, fileName);
   let handle, preparedDirectory, preparedFile;
   let createdOwner = false;
   try {
-    if (windows) preparedDirectory = await lstat(readyPath, { bigint: true });
+    if (windows) {
+      await mkdir(readyPath);
+      preparedDirectory = await lstat(readyPath, { bigint: true });
+      staged.identify(preparedDirectory.isDirectory() && !preparedDirectory.isSymbolicLink() ? preparedDirectory : null);
+    }
     handle = await open(readyOwnerPath, "wx", 0o600);
     createdOwner = true;
     if (windows) preparedFile = await handle.stat({ bigint: true });
@@ -260,40 +331,49 @@ async function createOwnership(lockPath, token, staleMs, processInstanceId, publ
         throw new Error("Interprocess lock staging identity changed before publication");
       }
       let publicationError = null;
+      published = observeOwnedDirectory(lockPath);
+      published.identify(preparedDirectory);
+      let settlePublication;
+      staged.record.pending = new Promise(resolve => { settlePublication = resolve; });
       try {
-        await measureTaskOperation("lock-native-publish", () => publisher.publish(readyPath, lockPath), { detail: true });
-      }
-      catch (error) {
-        if (error?.code === "EEXIST") throw error;
-        // A lost native reply is not a no-effect receipt. Read this exact
-        // prepared object's effect; never invoke the native mutation again.
-        publicationError = error;
-      }
-      try {
-        if (publicationError) {
-          const remainingReady = await lstat(readyPath).catch(error => {
-            if (error?.code === "ENOENT") return null;
-            throw error;
-          });
-          if (remainingReady) throw publicationError;
+        try {
+          await measureTaskOperation("lock-native-publish", () => publisher.publish(readyPath, lockPath), { detail: true });
         }
-        handle = await open(ownerPath, "r+");
-        const [file, directory, entry] = await Promise.all([
-          handle.stat({ bigint: true }), lstat(lockPath, { bigint: true }), lstat(ownerPath, { bigint: true }),
-        ]);
-        if (!file.isFile() || !directory.isDirectory() || !entry.isFile()
-            || !sameFileIdentity(preparedFile, file) || !sameFileIdentity(preparedDirectory, directory)
-            || !sameFileIdentity(file, entry)
-            || await handle.readFile("utf8") !== ownerPayload(owner)
-            || !sameOwner(owner, await readOwner(lockPath))) {
-          throw new Error("Interprocess lock publication identity changed before ownership");
+        catch (error) {
+          if (error?.code === "EEXIST") throw error;
+          // A lost native reply is not a no-effect receipt. Read this exact
+          // prepared object's effect; never invoke the native mutation again.
+          publicationError = error;
         }
-      } catch (error) {
-        throw publicationError ?? error;
-      }
+        try {
+          if (publicationError) {
+            const remainingReady = await lstat(readyPath).catch(error => {
+              if (error?.code === "ENOENT") return null;
+              throw error;
+            });
+            if (remainingReady) throw publicationError;
+          }
+          handle = await open(ownerPath, "r+");
+          const [file, directory, entry] = await Promise.all([
+            handle.stat({ bigint: true }), lstat(lockPath, { bigint: true }), lstat(ownerPath, { bigint: true }),
+          ]);
+          if (!file.isFile() || !directory.isDirectory() || !entry.isFile()
+              || !sameFileIdentity(preparedFile, file) || !sameFileIdentity(preparedDirectory, directory)
+              || !sameFileIdentity(file, entry)
+              || await handle.readFile("utf8") !== ownerPayload(owner)
+              || !sameOwner(owner, await readOwner(lockPath))) {
+            throw new Error("Interprocess lock publication identity changed before ownership");
+          }
+          staged.record.removed = true;
+        } catch (error) {
+          throw publicationError ?? error;
+        }
+      } finally { settlePublication(); }
     }
-    return { lockPath, token, owner, handle };
+    return { lockPath, token, owner, handle, directoryObservation: published };
   } catch (error) {
+    staged?.identify(null);
+    published?.forget();
     await handle?.close().catch(() => {});
     if (!windows) {
       if (createdOwner) await rm(ownerPath, { force: true }).catch(() => {});
@@ -308,11 +388,15 @@ async function createOwnership(lockPath, token, staleMs, processInstanceId, publ
         }
         const current = await lstat(readyPath, { bigint: true }).catch(() => null);
         if (current?.isDirectory() && sameFileIdentity(preparedDirectory, current)) {
-          await rmdir(readyPath).catch(() => {});
+          const removal = rmdir(readyPath);
+          staged.record.pending = removal.catch(() => {});
+          await removal.then(() => { staged.record.removed = true; }, () => {});
         }
       }
     }
     throw error;
+  } finally {
+    staged?.forget();
   }
 }
 
@@ -398,25 +482,28 @@ export async function releaseInterprocessLock(lockPath, token, {
   wait = delay,
 } = {}) {
   const held = ownership?.token === token ? ownership : null;
-  const owner = await readOwner(lockPath);
-  const expected = held?.owner ?? owner;
-  if (!expected || expected.unresolved || expected.token !== token || !sameOwner(expected, owner)) {
-    await closeOwnership(held).catch(() => {});
-    return false;
-  }
   try {
-    await markReleased(held);
-  } finally {
-    await closeOwnership(held);
-  }
-  await beforeOwnerRemove?.({ lockPath, owner: expected });
-  return removeOwnedEntry(lockPath, expected, {
-    removeOwnerPath,
-    removeLockDirectory,
-    retryDelaysMs,
-    wait,
-    throwOnFailure: true,
-  });
+    const owner = await readOwner(lockPath);
+    const expected = held?.owner ?? owner;
+    if (!expected || expected.unresolved || expected.token !== token || !sameOwner(expected, owner)) {
+      await closeOwnership(held).catch(() => {});
+      return false;
+    }
+    try {
+      await markReleased(held);
+    } finally {
+      await closeOwnership(held);
+    }
+    await beforeOwnerRemove?.({ lockPath, owner: expected });
+    return await removeOwnedEntry(lockPath, expected, {
+      removeOwnerPath,
+      removeLockDirectory,
+      retryDelaysMs,
+      wait,
+      throwOnFailure: true,
+      directoryObservation: held?.directoryObservation,
+    });
+  } finally { held?.directoryObservation?.forget(); }
 }
 
 async function acquire(lockPath, {

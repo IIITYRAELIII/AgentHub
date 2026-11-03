@@ -3,11 +3,93 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { measureStartupBeforeTrace } from "../../src/composition/command-trace-composition.mjs";
 import { SharedSqliteRecoveryCoordinator } from "../../src/infrastructure/persistence/shared-sqlite-recovery.mjs";
 import { CommandTraceService } from "../../src/application/command-trace-service.mjs";
 import { CommandTraceWorkerStore } from "../../src/infrastructure/persistence/command-trace-worker-store.mjs";
 import { withInterprocessLocks, readInterprocessLockStatus } from "../../src/infrastructure/process/interprocess-lock.mjs";
+
+test("existing startup trace persists copy bytes, worker work and cleanup under one original identity", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "startup-inspection-phases-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const db = new DatabaseSync(databaseFile);
+  db.exec("CREATE TABLE sample(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO sample VALUES(1,'preserved')");
+  db.close();
+  const original = await fs.readFile(databaseFile);
+  const logs = [];
+  const coordinator = new SharedSqliteRecoveryCoordinator({ databaseFile });
+  const measured = await measureStartupBeforeTrace("sqlite-recovery",
+    recordPhase => coordinator.prepare({ recordPhase }), {
+      providePhaseRecorder: true,
+      logger: { info: (_prefix, body) => logs.push(JSON.parse(body)) },
+    });
+  assert.deepEqual(measured.value, { degraded: false });
+  const phases = logs.filter(x => x.phase);
+  assert.equal(new Set(logs.map(x => x.operationSpanId)).size, 1);
+  const copy = phases.find(x => x.phase === "copy-database" && x.outcome === "succeeded");
+  const query = phases.find(x => x.phase === "inspection-query" && x.outcome === "succeeded");
+  assert.equal(copy.bytes, original.length);
+  assert.ok(query.workerThreadId > 0);
+  for (const field of ["openMs", "checkMs", "closeMs"]) assert.ok(query[field] >= 0);
+  assert.ok(phases.findIndex(x => x.phase === "inspection-cleanup" && x.outcome === "succeeded")
+    > phases.indexOf(query));
+  for (const phase of phases) {
+    assert.equal(JSON.stringify(phase).includes(root), false);
+    for (const [key, value] of Object.entries(phase)) {
+      assert.ok(["phase", "outcome", "durationMs", "observedAtMs", "pid", "releaseId",
+        "operationSpanId", "stage", "bytes", "openMs", "checkMs", "closeMs", "workerThreadId"].includes(key));
+      if (["bytes", "openMs", "checkMs", "closeMs", "workerThreadId"].includes(key)) assert.ok(Number.isFinite(value));
+    }
+  }
+  const traceFile = path.join(root, "traces.sqlite");
+  const commandId = `startup:${logs[0].operationSpanId}`;
+  const store = new CommandTraceWorkerStore({ databaseFile: traceFile });
+  try {
+    await store.initialize();
+    measured.record(new CommandTraceService({ store }));
+    const timeline = await store.readCommandTimeline(commandId);
+    assert.deepEqual(timeline.find(s => s.outcome === "succeeded").metadata.phaseMarkers,
+      phases.map(({ phase, outcome, durationMs, observedAtMs, bytes, openMs, checkMs, closeMs, workerThreadId }) =>
+        Object.fromEntries(Object.entries({ phase, outcome, durationMs, observedAtMs, bytes, openMs,
+          checkMs, closeMs, workerThreadId }).filter(([, value]) => value !== undefined))));
+  } finally { await store.close(); }
+  const reopened = new CommandTraceWorkerStore({ databaseFile: traceFile });
+  try {
+    await reopened.initialize();
+    const terminal = (await reopened.readCommandTimeline(commandId)).find(s => s.outcome === "succeeded");
+    assert.equal(terminal.metadata.operationSpanId, logs[0].operationSpanId);
+    assert.equal(terminal.metadata.phaseMarkers.find(p => p.phase === "copy-database" && p.outcome === "succeeded").bytes,
+      original.length);
+  } finally { await reopened.close(); }
+  assert.deepEqual(await fs.readFile(databaseFile), original);
+});
+
+test("copy failure retains its original error and content-free same-startup phase", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "startup-inspection-error-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const db = new DatabaseSync(databaseFile);
+  db.exec("CREATE TABLE sample(id INTEGER PRIMARY KEY)");
+  db.close();
+  const logs = [];
+  const failure = Object.assign(new Error("fixture copy unavailable"), { code: "EIO" });
+  const coordinator = new SharedSqliteRecoveryCoordinator({ databaseFile,
+    fileSystem: { ...fs, copyFile: () => Promise.reject(failure) } });
+  await assert.rejects(measureStartupBeforeTrace("sqlite-recovery",
+    recordPhase => coordinator.prepare({ recordPhase }), {
+      providePhaseRecorder: true,
+      logger: { info: (_prefix, body) => logs.push(JSON.parse(body)) },
+    }), error => error === failure);
+  const phases = logs.filter(x => x.phase);
+  assert.deepEqual(phases.filter(x => x.phase === "copy-database").map(x => x.outcome), ["started", "failed"]);
+  assert.equal(phases.find(x => x.phase === "copy-database" && x.outcome === "failed").errorCode, "EIO");
+  assert.equal(phases.some(x => x.phase === "inspection-query"), false);
+  assert.ok(phases.some(x => x.phase === "inspection-cleanup" && x.outcome === "succeeded"));
+  assert.equal(new Set(logs.map(x => x.operationSpanId)).size, 1);
+  assert.equal(logs.at(-1).outcome, "failed");
+});
 
 test("existing startup owner distinguishes admission from recovery without changing outcomes", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "startup-recovery-trace-"));

@@ -1,5 +1,12 @@
 # Source and distribution boundary
 
+Affected isolated recovery checks reuse `whole_update.mjs <artifacts.json>
+<new-output> downgrade|poststop-recovery`. The first requires a lower target
+build and verifies rejection before stopping; the second requires a legitimate
+newer target and observes a real installer filesystem refusal followed by the
+same verified current becoming Ready. The original update remains FAILED.
+Neither mode is production update/retry authority or public TLS acceptance.
+
 This is preparation for a repository cutover, not permission to retarget an
 existing release operation. The registered release owner still composes,
 validates, prepares and publishes the exact accepted source. The package builder
@@ -397,6 +404,33 @@ callback. It never stops the real App or Hub. Product/provider/public-download
 acceptance remains separate from this bounded fixture.
 
 ## Existing identities and cutover
+
+### Private whole-application update check
+
+Prepare immutable full artifacts with `prepare-whole-update.mjs`, supplying an
+exact clean private source commit and an already verified dependency runtime.
+Lock equality and the entire dependency manifest are checked before reuse.
+Then run `node distribution/whole_update.mjs <artifacts.json> <new-output-root>`.
+The new root is exclusive. The check exercises real Hub composition, authenticated
+Desktop IPC, owned active work, restart/drain, backup, native Host, installer,
+startup and exact Ready, with retained raw results. It never launches the real
+production root or reads its config/secrets. External provider/Telegram and
+canonical-shaped metadata/assets use controlled local peers; no public TLS or
+real account reliability is inferred.
+
+Eligible pre-intent failures can be continued explicitly through the existing
+installed owner: `node <installed-handoff-entry> resume-input <retained-request>
+<failed-revision> <binding-sha>` prints a fresh exact input document. Retain that
+document and submit `node <installed-handoff-entry> resume <retained-request>
+<continuation-document>`. An identical repeated document reads back the original;
+it does not prepare/install/start again. Ordinary installer repetition remains
+readback-only. In addition to typed pre-stop evidence, protocol-v1 first failed
+revision2 can use its positive create/intent/terminal revision topology, with
+the exact old row/binding retained and fresh current/public/native guards. It
+does not create a historical typed proof or claim global NO_EFFECT. Later or
+unproven historical failures, UNKNOWN,
+changed public bytes/current/CAS/roots and prior native effects refuse. Never
+edit a receipt, cache or terminal row to manufacture eligibility.
 
 - Existing Task refs/worktrees, audit receipts and frozen generations stay in the
   old repository identity. A new Git OID is a mapping, never an old publication.

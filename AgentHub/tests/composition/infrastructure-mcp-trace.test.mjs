@@ -50,7 +50,9 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
     "../infrastructure/persistence/usage-sync-remote-config-store.mjs": { UsageSyncRemoteConfigStore: Inert },
     "../infrastructure/process/instance-lock.mjs": { SingleInstanceGuard: Inert },
     "../infrastructure/process/repository-production-validation.mjs": { createRepositoryProductionValidationAdapter: () => ({}) },
-    "../application/runtime-health.mjs": { agentHubRuntimeHealth: { setDiagnosticSource: noop } },
+    "../application/runtime-health.mjs": { agentHubRuntimeHealth: {
+      setDiagnosticSource: noop, begin: noop, startOperation: noop, completeOperation: noop, failOperation: noop,
+    } },
     "../interfaces/web/local-web-auth.mjs": { ensureLocalWebSecret: async () => "synthetic" },
     "../interfaces/web/trusted-device-access.mjs": { TrustedDeviceRegistry: Inert },
     "../providers/codex/codex-rollout-context.mjs": { CodexRolloutContextSanitizer: Inert },
@@ -87,6 +89,9 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
   } };
   modules["../interfaces/web/mini-app-server.mjs"] = { MiniAppServer: class {
     constructor(options) { miniAppOptions = options; }
+    async start() {}
+    configureRuntime(options) { miniAppOptions = options; }
+    async close() {}
   } };
   modules["./command-trace-composition.mjs"] = {
     measureStartupBeforeTrace: async (_stage, fn) => ({ value: await fn(), record: noop }),

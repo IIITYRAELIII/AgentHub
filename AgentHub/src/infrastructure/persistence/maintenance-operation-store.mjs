@@ -13,6 +13,7 @@ import {
 } from "../../domain/maintenance-operation.mjs";
 import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { packageBindingDigest } from "../filesystem/runtime-package-target.mjs";
 
 const LEGACY_RESTART_MIGRATION_KEY = "maintenance-operations:legacy-restart:v1";
 
@@ -245,6 +246,74 @@ export class MaintenanceOperationStore {
         try { database.exec("ROLLBACK"); } catch {}
         throw error;
       }
+    });
+  }
+
+  assertPackageContinuation(current, request) {
+    const metadata = current?.metadata, proof = metadata?.packagePreStopFailure;
+    const typed = proof?.schema === 1 && proof.phase === "package-backup-preflight"
+      && proof.bindingSha256 === request.expectedBindingSha256 && proof.attempt === (metadata?.packageAttempt ?? 1);
+    // Protocol-v1 creation is revision1. Every package native dispatch awaits
+    // a committed package-arming revision; subsequent failure consumes another
+    // revision. A first failed terminal at revision2 therefore precedes any
+    // durable package intent. This is positive revision topology, not an error
+    // string or absence-of-process inference, and never a global NO_EFFECT.
+    const legacy = proof == null && current?.revision === 2 && current.phase === "failed"
+      && current.completedAt === current.updatedAt && metadata?.packageHandoff?.schema === 1
+      && metadata.packageAttempt == null && metadata.packageAttemptHistory == null && metadata.packageRecovery == null;
+    if (!current || current.kind !== "restart" || current.streamId !== "agent-hub-runtime"
+      || current.threadId !== "agent-hub-runtime" || current.status !== "failed" || current.outcome !== "failed"
+      || current.revision !== request.expectedRevision || metadata.packageHandoff?.sha256 !== request.expectedBindingSha256
+      || metadata.packageInputSha256 !== packageBindingDigest(request.input)
+      || !(typed || legacy)
+      || ["packageNative", "packageBootstrap", "packageBackup", "packageLaunchAdmission", "packageLaunchSha256", "expectedReleaseId"]
+        .some(key => metadata[key] != null)) throw new Error("Original package has no exact failed pre-stop continuation authority");
+    if (packageBindingDigest(metadata.packageHandoff.binding) !== metadata.packageHandoff.sha256) {
+      throw new Error("Original package binding changed");
+    }
+    return { kind: typed ? "controller-pre-stop-v1" : "legacy-v1-before-intent", fromRevision: current.revision,
+      fromBindingSha256: request.expectedBindingSha256 };
+  }
+
+  // A new attempt projection, not a generic terminal reset. Every prior failed
+  // attempt and admitted binding remains in this same original's existing row.
+  continuePackage(operationId, request) {
+    return this.#withDatabase(database => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = operationFromRow(database.prepare("SELECT operation_json FROM maintenance_operations WHERE operation_id=?").get(operationId));
+        if (current?.metadata?.packageRecovery?.requestSha256 === request.requestSha256) {
+          database.exec("COMMIT"); return { operation: current, applied: false };
+        }
+        const authority = this.assertPackageContinuation(current, request);
+        const conflict = database.prepare("SELECT operation_id FROM maintenance_operations WHERE kind='restart' AND stream_id='agent-hub-runtime' AND thread_id='agent-hub-runtime' AND operation_id<>? AND status NOT IN ('succeeded','failed') LIMIT 1").get(operationId);
+        if (conflict) throw new Error("Another original restart owns this runtime");
+        const old = current.metadata.packageHandoff.binding, fresh = request.packageHandoff?.binding;
+        if (!fresh || fresh.operationId !== operationId || packageBindingDigest(fresh) !== request.packageHandoff.sha256
+          || fresh.runtimeRoot !== old.runtimeRoot || fresh.dataDir !== old.dataDir
+          || packageBindingDigest(fresh.roots) !== packageBindingDigest(old.roots)) throw new Error("Package continuation physical roots changed");
+        const publicIdentity = target => ({ ...target, runtimeManifest: target.runtimeManifest
+          ? { bytes: target.runtimeManifest.bytes, sha256: target.runtimeManifest.sha256 } : undefined });
+        if (packageBindingDigest(publicIdentity(fresh.target)) !== packageBindingDigest(publicIdentity(old.target))) {
+          throw new Error("Package continuation public selection changed");
+        }
+        const prior = structuredClone(current);
+        delete prior.metadata.packageAttemptHistory;
+        const next = createMaintenanceOperation({ ...current,
+          status: request.notification.blockingCount ? "blocked" : "requested",
+          phase: request.notification.blockingCount ? "waiting-for-work" : "requested",
+          blockers: request.notification.blockingCount ? ["active-work"] : [], outcome: null,
+          metadata: { ...request.notification, packageInputSha256: current.metadata.packageInputSha256,
+            packageHandoff: request.packageHandoff, packageAttempt: (current.metadata.packageAttempt ?? 1) + 1,
+            packageAttemptHistory: [...(current.metadata.packageAttemptHistory ?? []), prior],
+            packageRecovery: { requestSha256: request.requestSha256, fromRevision: current.revision,
+              fromBindingSha256: request.expectedBindingSha256, authority } }, updatedAt: this.now() });
+        next.revision = current.revision + 1;
+        const changed = database.prepare("UPDATE maintenance_operations SET status=?,revision=?,operation_json=?,updated_at=? WHERE operation_id=? AND revision=?").run(
+          next.status, next.revision, JSON.stringify(next), next.updatedAt, operationId, current.revision);
+        if (changed.changes !== 1) throw new Error("Package continuation revision changed");
+        database.exec("COMMIT"); return { operation: next, applied: true };
+      } catch (error) { database.exec("ROLLBACK"); throw error; }
     });
   }
 

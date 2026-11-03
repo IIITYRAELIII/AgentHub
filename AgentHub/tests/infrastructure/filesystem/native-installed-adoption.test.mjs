@@ -113,8 +113,9 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
     primaryMainCommit: main, publishedRevision: published, tasks, runtimeRoot, planRevision: "exact", adoptions,
     readOwnGitPublication: ownPublication?.read });
   await save(runtimeRoot, "publication-state.json", JSON.stringify(publication));
+  const publicProvenance = { ...p, compositionBaseCommit: p.ownGitPublication?.commit ?? published };
   const request = { projectRoot: primary, workspaceId: "fixture", planRevision: "exact", frozenTasks: tasks,
-    approvedBaseCommit: source, baseProvenance: p };
+    approvedBaseCommit: publicProvenance.compositionBaseCommit, baseProvenance: publicProvenance };
   return { root, primary, own, carry, external, origin, runtimeRoot, dataDir, main, published, source, adopted,
     task, tasks, result, receipt, service, candidate, port, adoptions, p, request, release, ownPublication };
 }
@@ -300,7 +301,7 @@ test("already agreed main origin survives Test and candidate reuse but refuses d
   assert.equal((await f.service.mergeIntoDev(snapshot)).integrated, true);
   const derived = await f.candidate.deriveInstalledLocalSourceBaselineForSelection({ projectRoot: f.primary,
     planRevision: "exact", tasks: f.tasks, publishedRevision: f.published, adoptions: [] });
-  assert.deepEqual(derived, f.p);
+  assert.deepEqual(derived, { ...f.p, compositionBaseCommit: f.published });
   const first = await f.candidate.prepareCandidate(f.request);
   assert.equal((await f.candidate.prepareCandidate(f.request)).manifestHash, first.manifestHash);
   assert.equal(await git(first.releaseRoot, ["show", "HEAD:AgentHub/server.mjs"]), "export const repair = 1;");
@@ -324,7 +325,8 @@ test("ordinary Await derives exact selected adoption and installed source throug
   assert.deepEqual(base.adoptions, f.p.adoptions);
   const request = { projectRoot: f.primary, planRevision: "exact", tasks: f.tasks,
     publishedRevision: base.publishedBaseCommit, adoptions: base.adoptions };
-  assert.deepEqual(await f.candidate.deriveInstalledLocalSourceBaselineForSelection(request), f.p);
+  assert.deepEqual(await f.candidate.deriveInstalledLocalSourceBaselineForSelection(request),
+    { ...f.p, compositionBaseCommit: f.published });
   await assert.rejects(f.candidate.deriveInstalledLocalSourceBaselineForSelection({ ...request,
     adoptions: [{ ...base.adoptions[0], recordHash: "0".repeat(40) }] }), /evidence changed/);
   await assert.rejects(f.service.releaseBaseEvidence({ projectRoot: f.primary, publishedBaseCommit: f.published,

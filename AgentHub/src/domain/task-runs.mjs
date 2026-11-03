@@ -1,4 +1,5 @@
 import path from "node:path";
+import { normalizedCodexResponseAnnotationReferences } from "./codex-response-annotation.mjs";
 
 function normalizedProjectRoot(projectRoot) {
   const resolved = path.resolve(String(projectRoot ?? ""));
@@ -463,6 +464,7 @@ export function createObservedTaskRun(value, snapshot = {}) {
     observerTimer: null,
     observer: true,
   };
+  applyObservedResponseAnnotationReferences(run, snapshot);
   const snapshotStartedAt = Date.parse(String(snapshot.startedAt ?? ""));
   if (Number.isFinite(snapshotStartedAt)) {
     run.startedAt = new Date(snapshotStartedAt).toISOString();
@@ -656,6 +658,20 @@ export class TaskDismissalRegistry {
   values() {
     return [...this.#keys];
   }
+}
+
+export function applyObservedResponseAnnotationReferences(run, snapshot) {
+  const snapshotTurnId = String(snapshot?.turnId ?? "").trim();
+  if (snapshotTurnId && snapshotTurnId !== String(run?.turnId ?? "").trim()) {
+    run.responseAnnotationReferences = [];
+    return;
+  }
+  // A metadata-only observation does not replace the retained answer. A new
+  // answer (including an explicit empty one) replaces its reference mapping.
+  if (typeof snapshot?.answer !== "string") return;
+  run.responseAnnotationReferences = snapshot.answer.trim()
+    ? normalizedCodexResponseAnnotationReferences(snapshot.responseAnnotationReferences)
+    : [];
 }
 
 export function updateObservedResponse(run, answer) {

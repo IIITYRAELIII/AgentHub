@@ -180,6 +180,10 @@
       "title": "Restart and maintenance recovery",
       "document": "RST-001-restart-recovery.md",
       "paths": [
+        "src/interfaces/desktop/desktop-control-router.mjs",
+        "tests/public/desktop-package-restart.test.mjs",
+        "docs/decisions/ADR-HUB-396-desktop-package-input.md",
+        "docs/decisions/ADR-HUB-297-startup-inspection-phases.md",
         "docs/decisions/ADR-HUB-392-exact-orphan-recovery.md",
         "src/providers/provider-recovery-services.mjs",
         "src/application/task-observation-service.mjs",
@@ -240,6 +244,9 @@
         "src/infrastructure/filesystem/runtime-package-target.mjs",
         "src/infrastructure/persistence/runtime-maintenance-backup.mjs",
         "tests/infrastructure/persistence/runtime-maintenance-backup.test.mjs",
+        "tests/infrastructure/persistence/runtime-maintenance-live-preflight.test.mjs",
+        "tests/application/package-terminal-readback.test.mjs",
+        "docs/decisions/ADR-HUB-398-live-backup-lock-observation.md",
         "docs/decisions/ADR-HUB-380-retained-source-backup.md",
         "docs/decisions/ADR-HUB-387-interrupted-update-preparation.md",
         "distribution/update_transport_test.py",
@@ -252,7 +259,15 @@
         "docs/decisions/ADR-HUB-376-public-package-handoff.md",
         "src/infrastructure/persistence/runtime-update-backup-retention.mjs",
         "tests/infrastructure/persistence/runtime-update-backup-retention.test.mjs",
-        "docs/decisions/ADR-HUB-383-update-backup-retention.md"
+        "docs/decisions/ADR-HUB-383-update-backup-retention.md",
+        "tests/application/package-restart-continuation.test.mjs",
+        "tests/runtime/runtime-host-acceptance-environment.test.mjs",
+        "tests/fixtures/runtime-host-acceptance-environment.cs",
+        "distribution/whole_update.mjs",
+        "distribution/whole-update-*.mjs",
+        "distribution/whole-update-transport.py",
+        "distribution/prepare-whole-update.mjs",
+        "distribution/whole-update-resources.ps1"
       ]
     },
     {
@@ -260,6 +275,7 @@
       "title": "Local command latency",
       "document": "PERF-001-local-latency.md",
       "paths": [
+        "docs/decisions/ADR-HUB-297-startup-inspection-phases.md",
         "claude-session-processes.ps1",
         "assets/web-app/connection-quality.js",
         "assets/web-app/hub-client.js",
@@ -468,6 +484,7 @@
         "release.mjs",
         "docs/decisions/ADR-0132-normal-release-continuation.md",
         "docs/decisions/ADR-HUB-329-partial-git-publication-origin.md",
+        "docs/decisions/ADR-HUB-403-public-selected-release-base.md",
         "tests/fixtures/own-git-publication-fixture.mjs",
         "tests/infrastructure/persistence/own-git-publication.test.mjs",
         "src/composition/publication-freeze.mjs",
@@ -477,6 +494,7 @@
         "docs/decisions/ADR-HUB-363-partial-retirement-allocation.md",
         "tests/public/runtime-manager.test.mjs",
         "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
+        "docs/decisions/ADR-HUB-400-published-test-content-boundary.md",
         "src/infrastructure/persistence/task-turn-projection.mjs",
         "tests/infrastructure/persistence/task-turn-projection.test.mjs",
         "src/application/task-operation-interruption.mjs",

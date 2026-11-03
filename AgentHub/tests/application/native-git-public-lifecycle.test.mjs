@@ -283,6 +283,67 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
   };
 }
 
+test("public Test replays only the authenticated published delta after Task fast-forward", async t => {
+  const f = await fixture(t, { compatibilityFiles: true }), task = await f.create("Own correction");
+  const publishedRoot = path.join(f.root, "publisher");
+  await git(f.primary, "worktree", "add", "-b", "publication", publishedRoot, f.base);
+  const publishedBody = "// header\n\n// middle\nfunction publishedOnce() {}\n// footer\n";
+  const currentBody = "// header\nfunction publishedOnce() {}\n// middle\n\n// footer\n";
+  await writeFile(path.join(publishedRoot, "test-one.js"), publishedBody);
+  await commit(publishedRoot, "published inherited context");
+  const published = await git(publishedRoot, "rev-parse", "HEAD");
+  await git(publishedRoot, "push", "origin", "HEAD:main");
+  await git(task.root, "merge", "--ff-only", published);
+  const sourceContext = await readFile(path.join(task.root, "test-one.js"));
+  await writeFile(path.join(task.root, "own.txt"), "exact own correction\n");
+  await commit(task.root, "own delta after published main");
+  const result = await git(task.root, "rev-parse", "HEAD"), sourceTree = await git(task.root, "write-tree");
+  const dev = await f.taskGit.prepareDev(f.primary);
+  await git(dev.projectRoot, "merge", "--ff-only", published);
+  await writeFile(path.join(dev.projectRoot, "test-one.js"), currentBody);
+  await writeFile(path.join(dev.projectRoot, "later-test.txt"), "preserve current Test\n");
+  await commit(dev.projectRoot, "current Test moves the already published block");
+  const before = await git(f.primary, "rev-parse", "dev");
+  const original = structuredClone(f.publication);
+  for (const invalid of [
+    { repositories: [{ root: f.primary, revision: published }] },
+    { generation: "foreign", repositories: [{ root: path.join(f.root, "foreign"), revision: published }] },
+    original,
+  ]) {
+    for (const key of Object.keys(f.publication)) delete f.publication[key];
+    Object.assign(f.publication, invalid);
+    const snapshot = await f.taskGit.snapshot({ taskId: task.id, projectRoot: task.root });
+    await assert.rejects(f.taskGit.mergeIntoDev(snapshot), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
+    assert.equal(await git(f.primary, "rev-parse", "dev"), before);
+    assert.equal(await git(task.root, "rev-parse", "HEAD"), result);
+  }
+  Object.assign(f.publication, { generation: "published-original", repositories: [{ root: f.primary, revision: published }] });
+  const snapshot = await f.taskGit.snapshot({ taskId: task.id, projectRoot: task.root });
+  await writeFile(path.join(task.root, "own.txt"), "uncommitted foreign source\n");
+  await assert.rejects(f.taskGit.mergeIntoDev(snapshot), /source|snapshot|worktree|dirty|changed/iu);
+  assert.equal(await git(f.primary, "rev-parse", "dev"), before);
+  await git(task.root, "restore", "own.txt");
+  const response = await f.status(task, "testing", "published-delta-original-test");
+  assert.equal(response.workflowStatus, "testing");
+  assert.equal(f.board.task(task.id).gitReferences[0].resultCommit, result);
+  const head = await git(f.primary, "rev-parse", "dev");
+  assert.deepEqual((await git(f.primary, "show", "-s", "--format=%P", head)).split(" "), [before, result]);
+  assert.equal(await readFile(path.join(dev.projectRoot, "test-one.js"), "utf8"), currentBody);
+  assert.equal((await exec("git", ["show", "HEAD:own.txt"], { cwd: dev.projectRoot, windowsHide: true })).stdout,
+    "exact own correction\n");
+  assert.equal((await exec("git", ["show", "HEAD:later-test.txt"], { cwd: dev.projectRoot, windowsHide: true })).stdout,
+    "preserve current Test\n");
+  assert.deepEqual(await readFile(path.join(task.root, "test-one.js")), sourceContext);
+  assert.equal((await exec("git", ["show", "HEAD:test-one.js"], { cwd: task.root, windowsHide: true })).stdout, publishedBody);
+  assert.equal(await git(task.root, "write-tree"), sourceTree);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
+  const outcome = f.board.lifecycleOutcome("published-delta-original-test");
+  await f.reopen();
+  assert.deepEqual(f.board.lifecycleOutcome("published-delta-original-test"), outcome);
+  assert.equal(f.board.task(task.id).workflowStatus, "testing");
+  assert.equal(await git(f.primary, "rev-parse", "dev"), head);
+});
+
 test("fixture joins its admitted original release before closing stores on reopen", async t => {
   const f = await fixture(t);
   const operationId = "fixture-controlled-original-release";

@@ -309,7 +309,7 @@ test("manual managed-queue pause requires explicit resume without automatic deli
   } finally { await browser.close(); }
 });
 
-test("managed queue shows ordinary waiting and removes new-task escape with six annotations", { timeout: 60_000 }, async () => {
+test("managed queue omits unsolicited caption and preserves user content and actionable states", { timeout: 60_000 }, async () => {
   const browser = await launchBrowser();
   try {
     for (const width of [1366, 390]) {
@@ -319,11 +319,17 @@ test("managed queue shows ordinary waiting and removes new-task escape with six 
       current.deferredInputs = [{ id: "owned-wait", provider: "codex", threadId: "thread-a", streamId: "stream-a",
         clientUserMessageId: "owned-original", state: "queued", conflictKind: "task-running", waitReason: "task-running",
         text: "Six saved comments", annotations: Array.from({ length: 6 }, (_, i) => ({ text: `Quote ${i+1}`, annotation: `Comment ${i+1}` })) }];
+      const warnings = [];
+      page.on("console", message => { if (message.type() === "warning") warnings.push(message.text()); });
       const errors = await openFixture(page, { fixtureSnapshot: current });
       if (width === 390) await page.locator("[data-mobile-button='chat']").click();
       const row = page.locator(".queue-item[data-queue-id='owned-wait']");
       await row.waitFor({ state: "visible" });
-      assert.match(await row.innerText(), /Ожидает завершения текущего хода/u);
+      const caption = "Ожидает завершения текущего хода; сообщение сохранено в очереди и будет отправлено автоматически.";
+      if (process.env.AGENT_HUB_QUEUE_SCREENSHOT) await page.screenshot({ path: `${process.env.AGENT_HUB_QUEUE_SCREENSHOT}-ordinary-${width}.png` });
+      assert.equal(await row.locator(".queue-status").count(), 0);
+      assert.equal(await row.locator(".queue-text").textContent(), "Six saved comments");
+      assert.equal((await row.innerText()).includes(caption), false);
       assert.doesNotMatch(await row.innerText(), /другим Codex|Автоповторы остановлены/u);
       assert.equal(await row.locator(".queue-annotation").count(), 6);
       assert.equal(await row.locator("[data-action='queue-new']").count(), 0);
@@ -331,6 +337,35 @@ test("managed queue shows ordinary waiting and removes new-task escape with six 
       assert.match(page.url(), /agent-hub\.test/u);
       assert.match(await page.title(), /Agent Hub/u);
       if (process.env.AGENT_HUB_QUEUE_SCREENSHOT) await page.screenshot({ path: `${process.env.AGENT_HUB_QUEUE_SCREENSHOT}-managed-${width}.png` });
+      const user = "Ожидает завершения текущего хода; сообщение сохранено в очереди и будет отправлено автоматически.";
+      const originalAnnotations = structuredClone(current.deferredInputs[0].annotations);
+      current.version = "literal-user-text";
+      current.deferredInputs[0].text = user;
+      await applyFixtureSnapshot(page, current);
+      assert.equal(await row.locator(".queue-text").textContent(), user, "Removal must not filter identical user-authored content");
+      assert.equal(await row.locator(".queue-status").count(), 0);
+      assert.equal(await row.locator(".queue-annotation").count(), 6);
+      for (let i = 0; i < 6; i++) {
+        assert.equal(await row.locator(".queue-annotation-quote").nth(i).textContent(), originalAnnotations[i].text);
+        assert.equal(await row.locator(".queue-annotation-comment").nth(i).textContent(), originalAnnotations[i].annotation);
+      }
+      current.version = "actual-error";
+      current.deferredInputs[0].lastError = "Controlled exact intake error";
+      await applyFixtureSnapshot(page, current);
+      assert.equal(await row.locator(".queue-error").textContent(), "Controlled exact intake error");
+      assert.equal(await row.locator(".queue-text").textContent(), user);
+      current.version = "manual-paused";
+      Object.assign(current.deferredInputs[0], { state: "paused", lastError: "" });
+      await applyFixtureSnapshot(page, current);
+      assert.match(await row.locator(".queue-status").textContent(), /Сообщение на паузе/u);
+      assert.equal(await row.locator("[data-action='queue-resume']").count(), 1);
+      current.version = "unknown-owner";
+      current.tasks[0].activityUnknown = true;
+      Object.assign(current.deferredInputs[0], { state: "queued", waitReason: "managed-run-activity-unknown" });
+      await applyFixtureSnapshot(page, current);
+      assert.match(await row.locator(".queue-status").textContent(), /состояние уточняется/u);
+      assert.equal(await row.locator(".queue-text").textContent(), user);
+      current.tasks[0].activityUnknown = false;
       current.version = "external-wait";
       Object.assign(current.deferredInputs[0], { state: "paused", waitReason: "provider-thread-active" });
       await applyFixtureSnapshot(page, current);
@@ -341,7 +376,7 @@ test("managed queue shows ordinary waiting and removes new-task escape with six 
       if (process.env.AGENT_HUB_QUEUE_SCREENSHOT) await page.screenshot({ path: `${process.env.AGENT_HUB_QUEUE_SCREENSHOT}-external-${width}.png` });
       await row.locator("[data-action='queue-resume']").click();
       assert.equal((await bridgeCalls(page, "deferred-input")).filter(c => c.params?.action === "resume").length, 1);
-      assert.deepEqual(errors, []); await page.close();
+      assert.deepEqual(errors, []); assert.deepEqual(warnings, []); await page.close();
     }
   } finally { await browser.close(); }
 });

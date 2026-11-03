@@ -1,5 +1,18 @@
 # PERF-001 — Local command latency
 
+The startup shell can listen after instance ownership while SQLite integrity is
+pending, using the existing MiniAppServer and browser health polling. The same
+server's later activation keeps its address and auth. Time to listener, first
+HTTP response and actual startup-screen display are distinct from completed
+integrity, business availability and Ready; none substitutes for another.
+
+Startup SQLite inspection keeps its full detached DB/WAL integrity check while
+executing synchronous inspection outside the caller event loop. Existing
+original-startup phases distinguish DB/WAL copy bytes, query round trip, worker
+open/check/close and cleanup. These bounded numeric phases contain no paths or
+content; logging failure cannot alter recovery. Full required work still gates
+readiness, and event-loop isolation alone does not prove earlier web availability.
+
 ## SQLite capture deadline coverage
 
 The process-owned capture deadline begins before child launch and includes
@@ -107,6 +120,13 @@ Oversized projections use uncached reads. Pricing, attribution, projection CAS,
 terminal/outbox durability and full scalar aggregation retain their owners.
 
 ## Trace contract
+
+The existing client `context-estimate-paint` stage uses the authenticated common
+trace batch owner, retaining its original compaction ID, Thread/turn identity,
+paired start/completion and monotonic paint duration. Its presence must not
+reject neighbouring valid measurements. The explicit stage allowlist, outcomes,
+identity/time limits, metadata filtering, 32-event and 32-KiB bounds remain in
+force; telemetry grants no command, provider or lifecycle authority.
 
 Task-card Git previews run only on explicit request and retain at most 64 KiB of
 diff text per response, with visible truncation. Board snapshots never run Git

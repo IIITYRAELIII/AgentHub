@@ -639,6 +639,7 @@ export function createDesktopShellComposition({
       speakLastAnswer: desktopReadSystem.desktopSpeakLastAnswer,
       restartServer: desktopActions.restartServer,
       restartPackage: desktopActions.restartPackage,
+      resumePackage: desktopActions.resumePackage,
       openAttachment: desktopOpenAttachment,
       uploadAttachment: desktopUploadAttachment,
       browseDirectory: (params, context) => desktopDirectoryPicker.browse(params, context),
