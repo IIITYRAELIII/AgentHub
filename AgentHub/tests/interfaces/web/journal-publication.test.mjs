@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
@@ -141,4 +141,53 @@ test("publication reads the committed WAL generation while another owner has an 
     writer.exec("ROLLBACK");
   }
   assert.deepEqual(await journal.snapshot(), expected);
+});
+
+test("publication compression avoids a full UTF8 input Buffer and preserves exact gzip identity", async (t) => {
+  const block = 1024 * 1024;
+  // The first astral character straddles the encoder's ordinary string block.
+  const payload = {
+    html: "x".repeat(block - '{"html":"'.length - 1) + "\u{1f642}" + "abc".repeat(2 * block),
+    days: { day: "\u0416\u4e2d\u{1f642}\ud800\udc00\ud800".repeat(4096) },
+    turns: { exact: "answer\n\"\\\u0000" },
+  };
+  const json = JSON.stringify(payload);
+  const bytes = Buffer.byteLength(json, "utf8");
+  const originalFrom = Buffer.from;
+  for (const level of [1, 9]) {
+    const reference = gzipSync(originalFrom(json, "utf8"), { level });
+    let maxInputBufferBytes = 0, totalInputBufferBytes = 0, inputBuffers = 0;
+    const from = t.mock.method(Buffer, "from", function (value, ...options) {
+      const result = Reflect.apply(originalFrom, Buffer, [value, ...options]);
+      if (typeof value === "string" && options[0] === "utf8") {
+        maxInputBufferBytes = Math.max(maxInputBufferBytes, result.length);
+        totalInputBufferBytes += result.length;
+        inputBuffers += 1;
+      }
+      return result;
+    });
+    let result;
+    try { result = await compressedJournalChunks(payload, { level, chunkBytes: 127 }); }
+    finally { from.mock.restore(); }
+    t.diagnostic(JSON.stringify({ level, bytes, maxInputBufferBytes, totalInputBufferBytes, inputBuffers }));
+    assert.equal(totalInputBufferBytes, bytes, "every original UTF8 byte is encoded exactly once");
+    assert.ok(maxInputBufferBytes <= 3 * block, "no complete uncompressed UTF8 allocation");
+    assert.ok(inputBuffers > 1);
+    assert.deepEqual(Buffer.concat(result.chunks), reference, "chunked encoding keeps the original gzip bytes");
+    assert.deepEqual(JSON.parse(gunzipSync(reference)), payload);
+    assert.ok(result.chunks.every(chunk => chunk.length <= 127));
+    const explicit = await compressedJournalChunks(payload, { level, syncId: result.syncId });
+    assert.equal(explicit.syncId, result.syncId);
+    assert.deepEqual(Buffer.concat(explicit.chunks), reference);
+  }
+});
+
+test("publication encoding preserves serialization failures and rejects invalid compression without a partial result", async () => {
+  const original = new Error("synthetic serialization failure");
+  await assert.rejects(compressedJournalChunks({ toJSON() { throw original; } }), error => error === original);
+  const cyclic = {}; cyclic.self = cyclic;
+  await assert.rejects(compressedJournalChunks(cyclic), TypeError);
+  await assert.rejects(compressedJournalChunks({ html: "unchanged" }, { level: 100 }), { code: "ERR_OUT_OF_RANGE" });
+  const result = await compressedJournalChunks({ html: "unchanged" });
+  assert.deepEqual(JSON.parse(gunzipSync(Buffer.concat(result.chunks))), { html: "unchanged" });
 });

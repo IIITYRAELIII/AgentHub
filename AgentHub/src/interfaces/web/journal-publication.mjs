@@ -1,14 +1,31 @@
 import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
 import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
-import { gzip } from "node:zlib";
-import { promisify } from "node:util";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createGzip } from "node:zlib";
 
-const gzipAsync = promisify(gzip);
 const CHUNK_BYTES = 1024 * 1024;
 
+function* encodedJsonChunks(json) {
+  for (let offset = 0; offset < json.length;) {
+    let end = Math.min(offset + CHUNK_BYTES, json.length);
+    // Encoding each half separately would replace a split astral character.
+    const before = json.charCodeAt(end - 1), after = json.charCodeAt(end);
+    if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end -= 1;
+    yield Buffer.from(json.slice(offset, end), "utf8");
+    offset = end;
+  }
+}
+
 export async function compressedJournalChunks(payload, { chunkBytes = CHUNK_BYTES, syncId = null, level = 9 } = {}) {
-  const compressed = await gzipAsync(Buffer.from(JSON.stringify(payload), "utf8"), { level });
+  const json = JSON.stringify(payload);
+  const output = [];
+  // Keep canonical serialization, but do not allocate a second full uncompressed
+  // UTF8 body. Stream backpressure bounds encoding buffers, not journal content.
+  await pipeline(Readable.from(encodedJsonChunks(json), { objectMode: false }), createGzip({ level }),
+    async (source) => { for await (const chunk of source) output.push(chunk); });
+  const compressed = Buffer.concat(output);
   const resolvedSyncId = syncId ?? `sync-${createHash("sha256").update(compressed).digest("hex")}`;
   const chunks = [];
   for (let offset = 0; offset < compressed.length; offset += chunkBytes) {

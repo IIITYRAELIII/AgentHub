@@ -729,6 +729,16 @@ waiver. Inventory listing/plan resolution is read-only; it runs no test.
 
 ## Worker memory observations
 
+Journal publication retains its canonical JSON serialization and complete gzip
+payload, but feeds UTF8 encoding blocks into gzip with stream backpressure rather
+than allocating another full uncompressed UTF8 Buffer. Block boundaries preserve
+surrogate pairs. This is an internal encoding granularity, not a history/content
+limit. Compression level, exact compressed bytes and sync ID, chunk protocol,
+read-snapshot generation, worker ownership and failure-before-publication remain
+unchanged. Full JSON strings, SQLite materialization and compressed output still
+consume memory; eliminating this copy is not an exclusive process-RSS bound or a
+claim that all retained-memory causes have been fixed.
+
 Usage-sync snapshot export removes message bodies, prompts, diffs and auxiliary
 file/tool lists from its SQLite record projection before materializing journal
 rows in JavaScript. These fields are not inputs to the canonical usage-fact
