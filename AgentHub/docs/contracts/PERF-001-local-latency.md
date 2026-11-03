@@ -729,6 +729,13 @@ waiver. Inventory listing/plan resolution is read-only; it runs no test.
 
 ## Worker memory observations
 
+Usage-sync snapshot export removes message bodies, prompts, diffs and auxiliary
+file/tool lists from its SQLite record projection before materializing journal
+rows in JavaScript. These fields are not inputs to the canonical usage-fact
+projector. Full journal reads and stored records retain their original content;
+all usage fields, cursor selection, ordering and legacy handling are unchanged.
+This avoids copying unused content, not a new history limit or cache policy.
+
 The existing health sampler may read getHeapStatistics from already-owned Node
 workers, without spawning/refing/stopping them or posting business requests.
 Seven fixed owner classes retain weak references to at most 16 diagnostic

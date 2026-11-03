@@ -8,6 +8,104 @@ import { DatabaseSync } from "node:sqlite";
 import { detectIdentityCollisions } from "../../../src/domain/usage-facts.mjs";
 import { WorkLogUsageSyncStore } from "../../../src/infrastructure/persistence/work-log-usage-sync-store.mjs";
 
+async function observeJournalMaterialization(operation, { fail = null } = {}) {
+  const prepare = DatabaseSync.prototype.prepare;
+  const observations = [];
+  DatabaseSync.prototype.prepare = function (...args) {
+    const statement = Reflect.apply(prepare, this, args);
+    return new Proxy(statement, { get(target, property) {
+      if (property === "all") return (...parameters) => {
+        const rows = Reflect.apply(target.all, target, parameters);
+        for (const row of rows) if (typeof row.record_json === "string") {
+          if (fail) throw fail;
+          observations.push({ bytes: Buffer.byteLength(row.record_json), keys: Object.keys(JSON.parse(row.record_json)) });
+        }
+        return rows;
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+  };
+  try { return { value: await operation(), observations }; }
+  finally { DatabaseSync.prototype.prepare = prepare; }
+}
+
+test("usage snapshots materialize only accounting input while retaining full journal content", async () => {
+  const { JournalDatabase } = await import("../../../src/infrastructure/persistence/journal-database.mjs");
+  const { usageSyncSnapshotFromLedger } = await import("../../../src/domain/work-log-usage-sync.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-materialization-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const store = new WorkLogUsageSyncStore({ databaseFile, deviceId: "device-local",
+    defaultRuntimeHomeIds: { codex: "1".repeat(64) } });
+  try {
+    const large = "Retained answer 😀\n".repeat(4000);
+    const record = (turnId, legacy = false) => ({ provider: "codex", threadId: "thread", taskThreadId: "task", turnId,
+      projectRoot: root, ...(legacy ? {} : { startedAt: "2026-10-31T09:59:00.000Z" }),
+      completedAt: "2026-10-31T10:00:00.000Z", observedAt: "2026-10-31T10:01:00.000Z",
+      usageReported: true, usage: { inputTokens: 21, cacheWriteInputTokens: 3, outputTokens: 5 },
+      model: "gpt-6.1-sol", serviceTier: "fast", estimatedCredits: 2, imageGenerationCount: 1,
+      estimateKind: "imagegen-default", body: large, text: large, prompt: large, diff: large,
+      changedFiles: [large], skillsUsed: [large], mcpCalls: [large],
+      limitSamples: [{ observedAt: "2026-10-31T10:00:00.000Z", limitId: "codex", window: "primary", usedPercent: 42 }],
+    });
+    const initial = await journal.upsertRecords([record("modern"), record("legacy", true)]);
+    const original = await journal.loadLedger();
+    const expected = usageSyncSnapshotFromLedger(original.turns, {
+      deviceId: "device-local", deviceLabel: "local", defaultRuntimeHomeIds: { codex: "1".repeat(64) },
+    });
+    const fullBytes = Buffer.byteLength(JSON.stringify(original.turns));
+    const result = await observeJournalMaterialization(() => store.usageSyncSnapshot({ deviceLabel: "local" }));
+    assert.deepEqual(result.value.events, expected.events);
+    assert.equal(result.value.journalRevision, initial.revision);
+    assert.equal(result.observations.length, 2);
+    const inputBytes = result.observations.reduce((total, row) => total + row.bytes, 0);
+    assert.ok(inputBytes < fullBytes / 8, `unused journal content was materialized: ${inputBytes}/${fullBytes}`);
+    for (const row of result.observations) {
+      for (const key of ["body", "text", "prompt", "diff", "changedFiles", "skillsUsed", "mcpCalls"]) assert.ok(!row.keys.includes(key));
+    }
+    const complete = await store.journalTurns();
+    assert.deepEqual(complete, original.turns, "full accounting/history caller retains original source records");
+    assert.deepEqual(await journal.loadLedger(), original);
+    assert.equal((await store.usageSyncSnapshot({ afterJournalRevision: initial.revision })).events.length, 0);
+    await journal.upsertRecords([record("late")]);
+    const delta = await observeJournalMaterialization(() => store.usageSyncSnapshot({ afterJournalRevision: initial.revision }));
+    assert.equal(delta.value.events.length, 1);
+    assert.equal(delta.observations.length, 1);
+    assert.deepEqual(delta.value.events[0], expected.events.find(event => event.schemaVersion === 2)
+      ? usageSyncSnapshotFromLedger({ late: (await journal.loadLedger()).turns["codex\0thread\0late"] }, {
+        deviceId: "device-local", defaultRuntimeHomeIds: { codex: "1".repeat(64) },
+      }).events[0] : null);
+  } finally {
+    await store.close(); await journal.close();
+    assert.equal(path.dirname(root), os.tmpdir());
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("usage snapshot source read failures preserve the original error and leave journal bytes unchanged", async () => {
+  const { JournalDatabase } = await import("../../../src/infrastructure/persistence/journal-database.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-materialization-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const store = new WorkLogUsageSyncStore({ databaseFile, deviceId: "device-local" });
+  try {
+    await journal.upsertRecords([{ provider: "codex", threadId: "thread", turnId: "turn",
+      projectRoot: root, completedAt: "2026-10-31T10:00:00.000Z", body: "preserve full answer", diff: "preserve diff" }]);
+    const before = await journal.loadLedger();
+    const revision = await journal.currentRevision();
+    const failure = new Error("owned fixture source-read failure");
+    await assert.rejects(observeJournalMaterialization(() => store.usageSyncSnapshot(), { fail: failure }), error => error === failure);
+    assert.deepEqual(await journal.loadLedger(), before);
+    assert.equal(await journal.currentRevision(), revision);
+    assert.equal((await store.usageSyncSnapshot()).events.length, 1);
+  } finally {
+    await store.close(); await journal.close();
+    assert.equal(path.dirname(root), os.tmpdir());
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("usage sync SQLite store clears legacy inferred account fields on open", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-sync-"));
   const databaseFile = path.join(root, "sync.sqlite");

@@ -412,6 +412,7 @@ export class WorkLogUsageSyncStore {
     projectRoots = [],
     afterObservedAt = "",
     afterJournalRevision = 0,
+    usageOnly = false,
   } = {}) {
     const exists = database.prepare(`
       SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'journal_records'
@@ -441,7 +442,10 @@ export class WorkLogUsageSyncStore {
       parameters.push(...roots);
     }
     const rows = database.prepare(`
-      SELECT provider, thread_id, turn_id, record_json
+      SELECT provider, thread_id, turn_id,
+        ${usageOnly ? `CASE WHEN json_valid(record_json) THEN json_remove(record_json,
+          '$.body', '$.text', '$.prompt', '$.diff', '$.changedFiles', '$.skillsUsed', '$.mcpCalls')
+          ELSE record_json END` : "record_json"} AS record_json
       FROM journal_records
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY ${revisionCursor ? "changed_revision" : "observed_at_ms"}, provider, thread_id, turn_id
@@ -792,7 +796,9 @@ export class WorkLogUsageSyncStore {
     ownFactsOnly = false,
   } = {}) {
     return this.#enqueue((database) => {
-      const delta = this.#journalDelta(database, { afterObservedAt, afterJournalRevision });
+      // Usage facts never consume message/diff/tool content. Keep that content
+      // in SQLite instead of materializing it for every full export/recovery.
+      const delta = this.#journalDelta(database, { afterObservedAt, afterJournalRevision, usageOnly: true });
       const snapshot = usageSyncSnapshotFromLedger(delta.turns, {
         deviceId: this.#deviceId,
         deviceLabel,
