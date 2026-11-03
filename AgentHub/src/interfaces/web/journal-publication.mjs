@@ -20,6 +20,9 @@ function* encodedJsonChunks(json) {
 
 export async function compressedJournalChunks(payload, { chunkBytes = CHUNK_BYTES, syncId = null, level = 9 } = {}) {
   const json = JSON.stringify(payload);
+  // Keep the existing native input error (and its precedence over gzip options)
+  // when JSON serialization produces no string.
+  if (typeof json !== "string") Buffer.from(json, "utf8");
   const output = [];
   // Keep canonical serialization, but do not allocate a second full uncompressed
   // UTF8 body. Stream backpressure bounds encoding buffers, not journal content.

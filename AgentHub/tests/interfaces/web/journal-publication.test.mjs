@@ -187,6 +187,9 @@ test("publication encoding preserves serialization failures and rejects invalid 
   await assert.rejects(compressedJournalChunks({ toJSON() { throw original; } }), error => error === original);
   const cyclic = {}; cyclic.self = cyclic;
   await assert.rejects(compressedJournalChunks(cyclic), TypeError);
+  for (const value of [undefined, () => {}, { toJSON: () => undefined }]) {
+    await assert.rejects(compressedJournalChunks(value, { level: 100 }), { code: "ERR_INVALID_ARG_TYPE" });
+  }
   await assert.rejects(compressedJournalChunks({ html: "unchanged" }, { level: 100 }), { code: "ERR_OUT_OF_RANGE" });
   const result = await compressedJournalChunks({ html: "unchanged" });
   assert.deepEqual(JSON.parse(gunzipSync(Buffer.concat(result.chunks))), { html: "unchanged" });
