@@ -145,7 +145,7 @@ export function createDesktopControlRouter({
     }
     // Package admission owns an exact business input. Do not inject response
     // policy fields, or discard caller fields that its strict owner must reject.
-    const resolvedParams = action === "restart-package" ? { ...params } : effectiveParams(params, context);
+    const resolvedParams = ["restart-package", "resume-package"].includes(action) ? { ...params } : effectiveParams(params, context);
     if (action === "send-message" && context?.commandId && !resolvedParams.clientUserMessageId) {
       resolvedParams.clientUserMessageId = String(context.commandId);
     }
@@ -210,7 +210,7 @@ export function createDesktopControlRouter({
             id: commandId,
             fingerprint: commandFingerprint({
               action,
-              params: action === "restart-package" ? resolvedParams : durableFingerprintParams(resolvedParams),
+              params: ["restart-package", "resume-package"].includes(action) ? resolvedParams : durableFingerprintParams(resolvedParams),
               source: context?.source ?? "",
               userId: context?.userId ?? "",
             }),

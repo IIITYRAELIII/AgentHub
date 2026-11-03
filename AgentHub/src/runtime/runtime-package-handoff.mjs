@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { access } from "node:fs/promises";
 import { RUNTIME_RESTART_SCOPE } from "../domain/maintenance-operation.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
-import { backupStoppedRuntime, inspectRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
+import { backupStoppedRuntime, preflightRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
 import { sealRuntimeUpdateBackup } from "../infrastructure/persistence/runtime-update-backup-retention.mjs";
 import { verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
@@ -19,12 +19,22 @@ import { assertPackageFiles, capturePackageRuntime, packageBindingDigest, packag
 import { waitForReplacementLock, directWindowsLauncherInvocation } from "./runtime-restart.mjs";
 import { waitForRuntimeReplacement } from "./publication-readiness.mjs";
 import { runtimeManifestMatchesPackage } from "../domain/runtime-package-identity.mjs";
+import { assertAgentHubUpgrade } from "../domain/agent-hub-version.mjs";
 import { callDesktopControl } from "../infrastructure/process/desktop-control.mjs";
 import { runtimeStatus } from "./runtime-manager.mjs";
 
 const execute = promisify(execFile);
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const terminal = (operation) => ["succeeded", "failed"].includes(operation?.status);
+
+function assertRetainedPackageRequest(input, evidence, root, existing) {
+  if (!existing) throw new Error("Original package is missing");
+  const modern = packageRestartInput({ operationId: input.operationId, tag: input.tag,
+    archive: input.archive, descriptor: input.descriptor, installer: input.installer });
+  if (existing.metadata?.packageBootstrap?.inputSha256 !== evidence.sha256
+    && !(existing.metadata?.packageInputSha256 === packageBindingDigest(modern)
+      && existing.metadata?.packageHandoff?.binding?.runtimeRoot === root)) throw new Error("Original package update input changed");
+}
 
 export function packageHandoffBinding(operation) {
   const envelope = operation?.metadata?.packageHandoff;
@@ -46,6 +56,22 @@ export function packageRestartInput(input) {
     archive: path.resolve(input.archive), descriptor: path.resolve(input.descriptor), installer: path.resolve(input.installer) };
 }
 
+export function packageResumeInput(value) {
+  if (!value || Object.keys(value).sort().join(",") !== "expectedBindingSha256,expectedCurrent,expectedRevision,input"
+    || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1
+    || !/^[a-f0-9]{64}$/u.test(value.expectedBindingSha256 ?? "")) throw new Error("Package continuation requires its exact failed revision and binding");
+  const old = value.expectedCurrent;
+  if (!old || Object.keys(old).sort().join(",") !== "currentSha256,instanceSha256,manifestSha256,pid,releaseId"
+    || !Number.isSafeInteger(old.pid) || old.pid < 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(old.releaseId ?? "")
+    || ["currentSha256", "instanceSha256", "manifestSha256"].some(key => !/^[a-f0-9]{64}$/u.test(old[key] ?? ""))) {
+    throw new Error("Package continuation requires exact fresh current identity");
+  }
+  return { input: packageRestartInput(value.input), expectedRevision: value.expectedRevision,
+    expectedBindingSha256: value.expectedBindingSha256,
+    expectedCurrent: { releaseId: old.releaseId, pid: old.pid, currentSha256: old.currentSha256,
+      instanceSha256: old.instanceSha256, manifestSha256: old.manifestSha256 } };
+}
+
 export async function preparePackageRestart(input, { dataDir, environment = process.env } = {}) {
   input = packageRestartInput(input);
   if (process.platform !== "win32" || !environment.AGENT_HUB_RUNTIME_ROOT
@@ -57,7 +83,7 @@ export async function preparePackageRestart(input, { dataDir, environment = proc
   const current = await capturePackageRuntime(environment.AGENT_HUB_RUNTIME_ROOT, dataDir,
     { hostPid: Number(environment.AGENT_HUB_HOST_PID) });
   if (current.old.releaseId === target.releaseId) throw new Error("Target is already the running release");
-  await inspectRuntimeBackupScope({ runtimeRoot: current.runtimeRoot });
+  await preflightRuntimeBackupScope({ runtimeRoot: current.runtimeRoot });
   const scratchRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-package-"));
   await protectRuntimeDirectory(scratchRoot);
   const inspection = await execute("python", [target.installer.file, "--archive", target.archive.file,
@@ -73,6 +99,7 @@ export async function preparePackageRestart(input, { dataDir, environment = proc
   const manifestFile = path.join(scratchRoot, "runtime-manifest.public.json");
   await writeFile(manifestFile, publicManifest, { flag: "wx" });
   target.runtimeManifest = await packageFile(manifestFile);
+  await assertPackageUpgrade({ ...current, target });
   const hostCopy = path.join(scratchRoot, "AgentHub.RuntimeHost.exe");
   await copyFile(current.old.launcher.file, hostCopy, constants.COPYFILE_EXCL);
   if ((await packageFile(hostCopy)).sha256 !== current.old.launcher.sha256) {
@@ -110,6 +137,36 @@ export async function assertOldPackageCurrent(binding, { requireInstance = false
   }
 }
 
+// Use the installer's existing domain policy on its exact inspected manifest.
+// This is repeated while admission is open, before the stopping fence. The
+// stopped installer still rechecks; early eligibility never grants cutover.
+export async function assertPackageUpgrade(binding) {
+  await assertOldPackageCurrent(binding);
+  const oldRaw = await readFile(path.join(binding.runtimeRoot, "releases", binding.old.releaseId, "runtime-manifest.json"));
+  const nextRaw = await readFile(binding.target.runtimeManifest.file);
+  if (packageDigest(nextRaw) !== binding.target.runtimeManifest.sha256) throw new Error("Admitted target manifest changed");
+  const next = JSON.parse(nextRaw);
+  if (next.releaseId !== binding.target.releaseId || next.releaseVersion !== binding.target.version
+    || next.publicationRevision !== binding.target.sourceCommit) throw new Error("Target version/source binding changed");
+  assertAgentHubUpgrade(JSON.parse(oldRaw), next, { sameArtifact: runtimeManifestMatchesPackage(oldRaw, nextRaw) });
+}
+
+export async function preflightPackageRestart(request) {
+  const binding = packageHandoffBinding(request);
+  await assertPackageFiles(binding.target);
+  await assertPackageUpgrade(binding);
+  await preflightRuntimeBackupScope({ runtimeRoot: binding.runtimeRoot });
+}
+
+async function verifyRecoverableCurrent(binding) {
+  await assertOldPackageCurrent(binding);
+  await verifyRuntimeManifest(path.join(binding.runtimeRoot, "releases", binding.old.releaseId), binding.old.releaseId);
+  const host = await packageFile(path.join(binding.runtimeRoot, "AgentHub.RuntimeHost.exe"));
+  if (host.sha256 !== binding.old.launcher.sha256 || host.bytes !== binding.old.launcher.bytes) {
+    throw new Error("Stable Host no longer matches the admitted previous current");
+  }
+}
+
 async function confirmLegacyStop() {
   const lines = createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -134,11 +191,7 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
   const store = new MaintenanceOperationStore({ dataDir: path.join(root, "data") });
   const existing = store.getReadonly(input.operationId);
   if (existing) {
-    const modernInput = packageRestartInput({ operationId: input.operationId, tag: input.tag,
-      archive: input.archive, descriptor: input.descriptor, installer: input.installer });
-    if (existing.metadata?.packageBootstrap?.inputSha256 !== inputEvidence.sha256
-      && !(existing.metadata?.packageInputSha256 === packageBindingDigest(modernInput)
-        && existing.metadata?.packageHandoff?.binding?.runtimeRoot === root)) throw new Error("Original package update input changed");
+    assertRetainedPackageRequest(input, inputEvidence, root, existing);
     return { operationId: existing.operationId, status: existing.status, phase: existing.phase, effectsReplayed: false };
   }
   const scratchRoot = path.dirname(inputEvidence.file);
@@ -171,10 +224,14 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(pointer.current ?? "")
     || instance.releaseId !== pointer.current || instance.ready !== true || !Number.isSafeInteger(instance.pid)
     || instance.pid <= 0 || typeof instance.instanceToken !== "string") throw new Error("Old ready instance is unavailable");
+  await assertPackageUpgrade({ runtimeRoot: root, dataDir: path.join(root, "data"),
+    roots: { runtime: await packageDirectory(root), data: await packageDirectory(path.join(root, "data")) },
+    old: { releaseId: pointer.current, currentSha256: packageDigest(pointerRaw),
+      manifestSha256: packageDigest(await readFile(path.join(root, "releases", pointer.current, "runtime-manifest.json"))) }, target });
   const health = await control("runtime-health", {}, { runtimeRoot: root, timeoutMs: 10000 });
   if (health?.live !== true || health?.ready !== true || health?.process?.pid !== instance.pid
     || health?.process?.releaseId !== pointer.current) throw new Error("Old runtime health does not match its exact instance");
-  await inspectRuntimeBackupScope({ runtimeRoot: root });
+  await preflightRuntimeBackupScope({ runtimeRoot: root });
   if (health.packageHandoff?.protocol === 1) {
     const business = packageRestartInput({ operationId: input.operationId, tag: input.tag,
       archive: input.archive, descriptor: input.descriptor, installer: input.installer });
@@ -221,6 +278,52 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
     await wait(100);
   }
   throw new Error("Package bootstrap admission is unknown; do not replay the original");
+}
+
+// Read-only creation of an explicit continuation request. The caller retains
+// this document unchanged across a lost reply/current change; it is not a ledger.
+export async function packageContinuationRequest(requestFile, expectedRevision, expectedBindingSha256) {
+  const evidence = await packageFile(requestFile);
+  if (evidence.bytes > 65536) throw new Error("Package update request exceeds budget");
+  const retained = JSON.parse(await readFile(evidence.file, "utf8"));
+  const root = await realpath(retained.runtimeRoot), store = new MaintenanceOperationStore({ dataDir: path.join(root, "data") });
+  const original = store.getReadonly(retained.operationId);
+  if (!original) throw new Error("Original package is missing");
+  // Existing bootstrap performs its ordinary exact retained-request join and
+  // returns this existing row before any transport/dispatch/legacy branch.
+  assertRetainedPackageRequest(retained, evidence, root, original);
+  const pointerRaw = await readFile(path.join(root, "current.json")), pointer = JSON.parse(pointerRaw);
+  const lock = JSON.parse(await readFile(path.join(root, "data", "bot.lock"), "utf8"));
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(pointer.current ?? "") || lock.ready !== true
+    || lock.releaseId !== pointer.current) throw new Error("Package continuation current is not ready");
+  const request = packageResumeInput({ input: { operationId: retained.operationId, tag: retained.tag,
+    archive: retained.archive, descriptor: retained.descriptor, installer: retained.installer },
+    expectedRevision: Number(expectedRevision), expectedBindingSha256,
+    expectedCurrent: { releaseId: pointer.current, pid: lock.pid, currentSha256: packageDigest(pointerRaw),
+      instanceSha256: packageDigest(lock.instanceToken),
+      manifestSha256: packageDigest(await readFile(path.join(root, "releases", pointer.current, "runtime-manifest.json"))) } });
+  store.assertPackageContinuation(original, request);
+  return request;
+}
+
+export async function resumePackageBootstrap(requestFile, continuationFile, { control = callDesktopControl } = {}) {
+  const continuation = await packageFile(continuationFile);
+  if (continuation.bytes > 65536) throw new Error("Package continuation request exceeds budget");
+  const request = packageResumeInput(JSON.parse(await readFile(continuation.file, "utf8")));
+  const evidence = await packageFile(requestFile);
+  if (evidence.bytes > 65536) throw new Error("Package update request exceeds budget");
+  const retained = JSON.parse(await readFile(evidence.file, "utf8"));
+  const root = await realpath(retained.runtimeRoot), store = new MaintenanceOperationStore({ dataDir: path.join(root, "data") });
+  const current = store.getReadonly(request.input.operationId);
+  if (!current || retained.operationId !== request.input.operationId
+    || packageBindingDigest(request.input) !== packageBindingDigest(packageRestartInput({
+      operationId: retained.operationId, tag: retained.tag, archive: retained.archive,
+      descriptor: retained.descriptor, installer: retained.installer }))) throw new Error("Retained package continuation input changed");
+  assertRetainedPackageRequest(retained, evidence, root, current);
+  if (current.metadata?.packageRecovery?.requestSha256 === packageBindingDigest(request)) {
+    return { operationId: current.operationId, status: current.status, phase: current.phase, effectsReplayed: false };
+  }
+  return control("resume-package", request, { runtimeRoot: root, timeoutMs: 120_000 });
 }
 
 export async function armPackageRestart({ request, store, spawnImpl = spawn,
@@ -372,6 +475,7 @@ export async function continuePackageRestart({ store, operationId, assertRetired
     // A lost install/start reply is read back, never submitted again here.
     return { status: "reconciliation-required", operationId, phase: current.phase };
   }
+  let installerFailed = false;
   try {
   await assertRetired();
   await validateOld(binding);
@@ -383,7 +487,14 @@ export async function continuePackageRestart({ store, operationId, assertRetired
   await assertRetired();
   await validateOld(binding);
   await validateFiles(binding.target);
-  await install(binding); // Unchanged public installer repeats stopped/upgrade checks.
+  try {
+    await install(binding); // Unchanged public installer repeats stopped/upgrade checks.
+  } catch (error) {
+    // execFile joins the exact Python process. Signal/timeout/transport/buffer
+    // errors do not establish its outcome and cannot authorize another launch.
+    installerFailed = [1, 2].includes(error.code) && !error.signal && !error.killed;
+    throw error;
+  }
   await verifyInstalled(binding);
   await packageCheckpoint(store, operationId, "package-launching", {
     expectedReleaseId: binding.target.releaseId, oldPid: binding.old.pid,
@@ -396,11 +507,43 @@ export async function continuePackageRestart({ store, operationId, assertRetired
     !== packageBindingDigest(binding)) throw new Error("Replacement did not settle the original restart");
   return { status: "replaced", operationId, releaseId: binding.target.releaseId, ...observed };
   } catch (error) {
+    const failed = store.getReadonly(operationId);
+    if (installerFailed && failed.phase === "package-installing" && !terminal(failed)
+      && !failed.metadata.packageLaunchSha256 && !failed.metadata.packageLaunchAdmission) {
+      try {
+        await assertRetired();
+        await verifyRecoverableCurrent(binding);
+        await packageCheckpoint(store, operationId, "package-recovery-launching", {
+          expectedReleaseId: binding.old.releaseId, oldPid: binding.old.pid,
+          packageFailurePhase: failed.phase, packageFailureCode: String(error.code),
+          packageFailureMessage: String(error.message).slice(0, 1_000),
+          packageCurrentRecovery: { schema: 1, bindingSha256: packageBindingDigest(binding),
+            releaseId: binding.old.releaseId, installerExitCode: error.code },
+        });
+        await assertRetired();
+        await verifyRecoverableCurrent(binding);
+        // Keep the immutable handoff/target untouched. Only this local launch
+        // view addresses the positively verified previous current.
+        const previous = { ...binding, target: { ...binding.target, releaseId: binding.old.releaseId } };
+        const replacement = await launch(previous);
+        const observed = await ready(previous, replacement);
+        const completed = store.getReadonly(operationId);
+        if (completed.status !== "failed" || completed.metadata.packageCurrentRecoveryReady !== true) {
+          throw new Error("Restored runtime did not retain the failed update outcome");
+        }
+        return { status: "restored", operationId, releaseId: binding.old.releaseId, originalOutcome: "failed", ...observed };
+      } catch (recoveryError) {
+        error.recoveryError = recoveryError;
+      }
+    }
     await store.runRestartMutation(() => {
       const latest = store.getReadonly(operationId);
       if (!terminal(latest)) store.transition(operationId, {
         status: "reconciling", phase: "package-reconciling", outcome: "unknown",
-        metadata: { packageFailurePhase: latest.phase },
+        metadata: { packageFailurePhase: latest.metadata.packageFailurePhase ?? latest.phase,
+          packageFailureCode: String(error?.code ?? "").slice(0, 100) || null,
+          packageFailureMessage: String(error?.message ?? error).slice(0, 1_000),
+          ...(error.recoveryError ? { packageRecoveryFailureMessage: String(error.recoveryError.message).slice(0, 1_000) } : {}) },
       }, { expectedRevision: latest.revision });
     }, { requestId: operationId });
     throw error;
@@ -409,6 +552,8 @@ export async function continuePackageRestart({ store, operationId, assertRetired
 
 export async function packageHostMain(args, environment = process.env) {
   if (args.length === 2 && args[0] === "bootstrap-start") return startPackageBootstrap(args[1]);
+  if (args.length === 4 && args[0] === "resume-input") return packageContinuationRequest(args[1], args[2], args[3]);
+  if (args.length === 3 && args[0] === "resume") return resumePackageBootstrap(args[1], args[2]);
   if (args.length === 3 && args[0] === "read") {
     const root = await realpath(args[1]);
     const store = new MaintenanceOperationStore({ dataDir: path.join(root, "data") });
@@ -434,14 +579,20 @@ export async function packageHostMain(args, environment = process.env) {
     }
     if (!current?.metadata?.packageHandoff) return { status: "no-package-original" };
     const binding = packageHandoffBinding(current);
-    if (current.phase !== "package-launching" || current.metadata.packageLaunchAdmission
+    const restoring = current.phase === "package-recovery-launching";
+    if ((!restoring && current.phase !== "package-launching") || current.metadata.packageLaunchAdmission
       || environment.AGENT_HUB_RESTART_OPERATION_ID !== current.operationId
       || packageDigest(environment.AGENT_HUB_PACKAGE_LAUNCH_TOKEN ?? "") !== current.metadata.packageLaunchSha256
       || Number(environment.AGENT_HUB_PACKAGE_BOOTSTRAP_HOST_PID) !== process.ppid) {
       throw new Error("An unresolved package original fences runtime admission");
     }
-    await verifyInstalledPackage(binding);
-    await packageCheckpoint(store, current.operationId, "package-launching", {
+    if (restoring) {
+      const recovery = current.metadata.packageCurrentRecovery;
+      if (recovery?.schema !== 1 || recovery.bindingSha256 !== packageBindingDigest(binding)
+        || recovery.releaseId !== binding.old.releaseId || ![1, 2].includes(recovery.installerExitCode)) throw new Error("Previous current recovery authority changed");
+      await verifyRecoverableCurrent(binding);
+    } else await verifyInstalledPackage(binding);
+    await packageCheckpoint(store, current.operationId, current.phase, {
       packageLaunchAdmission: { hostPid: process.ppid,
         hostStarted: environment.AGENT_HUB_PACKAGE_BOOTSTRAP_HOST_STARTED },
     });
@@ -493,11 +644,13 @@ export async function packageHostMain(args, environment = process.env) {
     // The native parent releases its root gate only after the installer and the
     // durable ONE launch intent. No old process signal/console injection occurs.
     const launchToken = randomBytes(32).toString("hex");
-    await packageCheckpoint(store, operationId, "package-launching", {
+    const restoring = store.getReadonly(operationId).phase === "package-recovery-launching";
+    await packageCheckpoint(store, operationId, restoring ? "package-recovery-launching" : "package-launching", {
       packageLaunchSha256: packageDigest(launchToken),
     });
     await nativeReply("AGENT_HUB_PACKAGE_LAUNCH", "AGENT_HUB_PACKAGE_GATE_RELEASED");
-    await verifyInstalledPackage(actual);
+    if (restoring) await verifyRecoverableCurrent(binding);
+    else await verifyInstalledPackage(actual);
     const invocation = directWindowsLauncherInvocation({ launcher: path.join(actual.runtimeRoot,
       "AgentHub.RuntimeHost.exe"), environment: { ...process.env,
       AGENT_HUB_RESTART_OPERATION_ID: operationId, AGENT_HUB_PACKAGE_LAUNCH_TOKEN: launchToken } });

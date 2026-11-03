@@ -1,5 +1,66 @@
 # RST-001 — Restart and maintenance recovery
 
+## Explicit package next attempt (ADR-HUB-398)
+
+Package preparation and the actual controller preflight apply the existing
+installer version/build eligibility to the inspected, digest-bound public
+manifest and exact current manifest before stopping. The installer keeps its
+own stopped checks; early acceptance does not permit a downgrade or cutover.
+
+After a positively joined nonzero installer exit, the same native owner may
+restore only the unchanged admitted current: physical roots, current pointer,
+manifest bytes, complete payload, stable Host and native retirement must still
+verify. It persists one recovery launch intent and uses the existing one-use
+Host admission and exact original/release/PID Ready proof. The update settles
+FAILED, retaining installer error, backup, native and attempt history even when
+the previous runtime is Ready again. No install or launch is replayed. Signal,
+timeout, lost reply, changed/partial current or unknown ownership remains
+reconciling; this is not permission to roll back or reset an original.
+
+A definitively failed package original remains readback-only under ordinary
+intake/bootstrap and generic terminal transitions. Only an explicit existing
+maintenance-owner `resume-package` may admit its next attempt: exact immutable
+business input, failed revision/binding, fresh current release/PID/pointer/
+manifest/instance, identical public assets/selection and physical roots are
+required. Positive controller-owned pre-stopping backup-preflight failure
+evidence, or the bounded protocol-v1 revision proof below, is required;
+historical error text or absent effects is insufficient.
+UNKNOWN, prior native/backup/launch admission, an undrained old invocation,
+stopping and a competing active restart refuse. No old receipt is rewritten.
+
+Every prior failed attempt/result/binding is retained in the same original's
+history. A fresh attempt still uses ordinary work waiting, stopping, native
+retirement, strict stopped backup, installer and one-launch/Ready guards.
+The retained exact continuation request is idempotent before preparation and
+after process reopen; a lost response never grants a second install/spawn.
+Changed input/CAS/current/assets/ownership refuses. No new update identity,
+terminal reset, effect replay, separate ledger or inferred pre-stop authority.
+
+Protocol-v1 compatibility admits only a first untyped failed terminal at revision
+2, with schema1 exact package binding and no earlier attempt/recovery/history or
+native/bootstrap/backup/launch admission. Creation is revision1; every native
+package dispatch first awaits a committed nonterminal package intent, and a later
+failure consumes another revision. This positive topology cannot describe a
+failed revision2 after such dispatch. It establishes eligibility before package
+intent, never retroactive global NO_EFFECT or a fabricated typed pre-stop proof.
+Unknown schema, later revisions or partial/UNKNOWN outcomes retain readback-only
+history. The complete old row and its binding are copied unchanged to attempt
+history; new recovery metadata records the distinct compatibility authority.
+Remove this compatibility route once untyped first-attempt records have received
+their addressed disposition. It has no automatic scheduling or adoption path.
+
+All production entry points, including direct Telegram polling, consult the
+actual controller's in-flight join before continuation preparation and again
+at the existing mutation/CAS boundary. Recovery must finish before that join
+clears. Readback of an already admitted identical request stays idempotent.
+
+An isolated whole-update check uses actual application and native owners with
+separate data, secrets, IPC, ports, current/releases and owned processes. A
+hash-bound root-contained acceptance import may control only external peers
+and deterministic I/O scheduling. Ordinary production and recording startup
+do not inherit that import or ambient NODE_OPTIONS. Local transport and fake
+external providers do not establish public TLS or account acceptance.
+
 Installed sync-endpoint migration (ADR-0329) belongs to the existing runtime
 installation owner before stable-file/pointer publication. It does not launch
 or restart Hub, enroll a device or write journal/credential/cursor files. A
@@ -500,6 +561,19 @@ untraversed retained bodies neither grant authority nor enter the snapshot.
 Read-only support inspection precedes modern/legacy admission and is repeated
 before the modern synchronous stopping fence; work admission is rechecked after
 that inspection. A fresh stopped inventory supplies backup, never the old preflight.
+Live support inspection may exclude only exact ephemeral directories observed
+from this process's existing interprocess lock producer. Physical identity and
+confirmed same-producer publication/removal, not a filename or generic ENOENT,
+authorize exclusion. Replaced, foreign/unobserved and durable entries still refuse
+drift. This read-only call-scoped observation does not acquire a lock or mutate
+state. Stopped inventory never consumes it and retains strict equality. See
+ADR-HUB-398-live-backup-lock-observation. Ordinary intake/bootstrap keeps terminal
+failed originals readback-only. Only the explicit next-attempt boundary above
+can admit a fresh attempt; historical failed rows remain unchanged in history.
+An awaited producer transition requires a fresh path read before excluding
+confirmed absence; a replacement cannot inherit its predecessor's removal proof.
+Observation promise rejection stays joined to the existing release error owner;
+an I/O failure is neither confirmed removal nor an uncaught bookkeeping failure.
 SQLite headers discover databases throughout the selected scope regardless of
 filename suffix. All discovered writer reservations are held together through
 SQLite backup/integrity and regular-file before/after hashes. WAL/SHM companions

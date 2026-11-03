@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
+import { createRuntimeRestartComposition } from "../../src/composition/runtime-restart-composition.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { RuntimeRestartController } from "../../src/runtime/runtime-restart-controller.mjs";
 import { RuntimeResourceRegistry } from "../../src/runtime/runtime-resource-registry.mjs";
@@ -16,6 +17,97 @@ import { armPackageRestart, continuePackageRestart, packageCheckpoint, packageHa
 
 const noop = async () => {};
 const quiet = { log() {}, error() {}, warn() {} };
+
+async function versionedFixture(t, phase = "package-writers-closed") {
+  const f = await fixture(t, phase);
+  const host = await readFile(f.binding.hostCopy);
+  await writeFile(path.join(f.root, "AgentHub.RuntimeHost.exe"), host);
+  const manifest = build => ({ releaseId: "old", version: "2.1.3", publicVersion: "2.1.3",
+    versionScheme: "semver-build-v1", releaseVersion: `2.1.3+build.${build}`, buildNumber: build,
+    files: [{ path: "AgentHub.RuntimeHost.exe", bytes: host.length, sha256: packageDigest(host) }] });
+  const oldRaw = JSON.stringify(manifest(29893517));
+  await writeFile(path.join(f.root, "releases/old/AgentHub.RuntimeHost.exe"), host);
+  await writeFile(path.join(f.root, "releases/old/package.json"), '{"name":"agent-hub","version":"2.1.3"}');
+  await writeFile(path.join(f.root, "releases/old/runtime-manifest.json"), oldRaw);
+  const publicFile = path.join(f.scratchRoot, "runtime-manifest.public.json");
+  await writeFile(publicFile, JSON.stringify({ ...manifest(29892686), releaseId: "new", publicationRevision: "a".repeat(40) }));
+  f.binding.old.manifestSha256 = packageDigest(oldRaw);
+  f.binding.target.version = "2.1.3+build.29892686";
+  f.binding.target.runtimeManifest = await packageFile(publicFile);
+  f.envelope = { schema: 1, binding: f.binding, sha256: packageBindingDigest(f.binding) };
+  f.store.transition(f.binding.operationId, { metadata: { packageHandoff: f.envelope } });
+  return f;
+}
+
+test("actual 506/public213 build ordering refuses in controller preflight before stopping", async t => {
+  const f = await versionedFixture(t, "running");
+  let stops = 0, failure;
+  const composition = createRuntimeRestartComposition({
+    getRestartRequest: () => f.store.getReadonly(f.binding.operationId), setRestartRequest: noop,
+    updateOffset: () => 99, hasBlockingWork: () => false, setWaiting: noop,
+    beginStopping: () => { stops++; return false; },
+    isStopping: () => false, setStopping: noop, saveState: noop, updateRestartMessage: noop,
+    failRestartOperation: async error => { failure = error; }, startRuntimeTimers: noop,
+    stopCodexAppServerTree: noop, stopRuntimeTimers: noop,
+    maintenanceOperations: f.store,
+  });
+  const result = await composition.runtimeRestart.perform();
+  assert.equal(result.status, "aborted");
+  assert.match(failure?.message ?? "", /Version\/build downgrade or reuse refused/u);
+  assert.equal(stops, 0);
+  assert.equal(f.store.getReadonly(f.binding.operationId).metadata.packageNative, undefined);
+});
+
+test("definitive poststop installer failure restores verified same current and retains failed original", async t => {
+  const f = await versionedFixture(t), prior = f.store.getReadonly(f.binding.operationId);
+  let installs = 0, launches = 0;
+  const config = await readFile(path.join(f.root, "config.json"));
+  const result = await continuePackageRestart({ store: f.store, operationId: f.binding.operationId,
+    assertRetired: noop, install: async () => { installs++; throw Object.assign(Error("installer refused"), { code: 1 }); },
+    launch: async binding => { launches++; assert.equal(binding.target.releaseId, "old");
+      await packageCheckpoint(f.store, f.binding.operationId, "package-recovery-launching", { packageLaunchAdmission: { hostPid: 900 } });
+      return { pid: 900 }; },
+    ready: async binding => {
+      assert.equal(binding.target.releaseId, "old");
+      f.store.recoverInterrupted({ operationIds: [f.binding.operationId] });
+      const service = new RestartRequestService({ operationStore: f.store, currentTarget: () => ({}) });
+      const saved = process.env.AGENT_HUB_RELEASE_ID;
+      try { process.env.AGENT_HUB_RELEASE_ID = "old"; await service.complete(f.binding.operationId); }
+      finally { if (saved === undefined) delete process.env.AGENT_HUB_RELEASE_ID; else process.env.AGENT_HUB_RELEASE_ID = saved; }
+      return { pid: 901 };
+    },
+  });
+  assert.equal(result.status, "restored");
+  assert.deepEqual([installs, launches], [1, 1]);
+  const completed = f.store.getReadonly(f.binding.operationId);
+  assert.equal(completed.status, "failed"); assert.equal(completed.outcome, "failed");
+  assert.deepEqual(completed.metadata.packageHandoff, prior.metadata.packageHandoff);
+  assert.match(completed.metadata.packageFailureMessage, /installer refused/u);
+  assert.deepEqual(await readFile(path.join(f.root, "config.json")), config);
+  assert.equal((await continuePackageRestart({ store: f.store, operationId: f.binding.operationId,
+    assertRetired: () => assert.fail("no replay"), install: () => assert.fail("no second install") })).status, "reconciliation-required");
+});
+
+for (const fault of ["pointer", "stable-host", "release-file", "unknown-installer", "installer-crash"]) {
+  test(`poststop failure cannot recover changed or unknown current: ${fault}`, async t => {
+    const f = await versionedFixture(t);
+    await assert.rejects(continuePackageRestart({ store: f.store, operationId: f.binding.operationId,
+      assertRetired: noop, launch: () => assert.fail("no unsafe recovery launch"),
+      install: async () => {
+        if (fault === "pointer") await writeFile(path.join(f.root, "current.json"), '{"current":"foreign"}');
+        if (fault === "stable-host") await writeFile(path.join(f.root, "AgentHub.RuntimeHost.exe"), "foreign");
+        if (fault === "release-file") await writeFile(path.join(f.root, "releases/old/AgentHub.RuntimeHost.exe"), "foreign");
+        throw Object.assign(Error("installer failed"), { code: fault === "unknown-installer" ? "ETIMEDOUT" : fault === "installer-crash" ? 3221225794 : 1 });
+      },
+    }), /installer failed/u);
+    const unknown = f.store.getReadonly(f.binding.operationId);
+    assert.equal(unknown.outcome, "unknown"); assert.equal(unknown.status, "reconciling");
+    assert.equal(unknown.metadata.packageLaunchAdmission, undefined);
+    const again = await continuePackageRestart({ store: f.store, operationId: f.binding.operationId,
+      assertRetired: () => assert.fail("no ambiguous replay") });
+    assert.equal(again.status, "reconciliation-required");
+  });
+}
 async function fixture(t, phase = "package-writers-closed") {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub376-"));
   t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
@@ -25,7 +117,8 @@ async function fixture(t, phase = "package-writers-closed") {
   await mkdir(dataDir); await mkdir(scratchRoot);
   await writeFile(path.join(root, "config.json"), '{"auth":"fixture-private","cursor":17}');
   const pointer = '{"current":"old","previous":"older"}';
-  const manifest = '{"releaseId":"old"}';
+  const manifest = JSON.stringify({ releaseId: "old", version: "2.0.4", publicVersion: "2.0.4",
+    releaseVersion: "2.0.4+build.17", versionScheme: "semver-build-v1", buildNumber: 17 });
   await writeFile(path.join(root, "current.json"), pointer);
   await writeFile(path.join(root, "releases", "old", "runtime-manifest.json"), manifest);
   const target = { releaseId: "new", sourceCommit: "a".repeat(40), version: "2.0.5+build.18" };
