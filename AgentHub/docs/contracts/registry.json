@@ -462,6 +462,7 @@
         "docs/decisions/ADR-HUB-363-partial-retirement-allocation.md",
         "tests/public/runtime-manager.test.mjs",
         "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
+        "docs/decisions/ADR-HUB-400-published-test-content-boundary.md",
         "src/infrastructure/persistence/task-turn-projection.mjs",
         "tests/infrastructure/persistence/task-turn-projection.test.mjs",
         "src/application/task-operation-interruption.mjs",
