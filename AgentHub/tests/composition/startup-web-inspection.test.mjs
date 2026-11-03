@@ -160,7 +160,7 @@ test("a failed listener drain joins its sibling and cannot release the instance 
   const closed = [];
   const { createHubInfrastructure } = await importCompositionWithPorts(
     new URL("../../src/composition/infrastructure-composition.mjs", import.meta.url), {
-      "node:fs/promises": { mkdir: async () => {} },
+      "node:fs/promises": { access: async () => {}, mkdir: async () => {}, readFile: fs.readFile },
       "../infrastructure/persistence/rotating-log.mjs": { installRotatingConsole() {} },
       "../infrastructure/diagnostics/sentry-diagnostics.mjs": { sentryDiagnostics: {
         configure() {}, captureException() {},
