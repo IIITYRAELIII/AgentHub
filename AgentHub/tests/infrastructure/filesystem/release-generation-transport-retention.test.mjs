@@ -357,3 +357,23 @@ test("real SQLite completed successor retires only predecessor bundle through th
   assert.deepEqual(store.snapshot(ack.operationId), before);
   assert.equal((await f.retention.reconcile({ candidate: f.candidate, binding: preview.binding })).status, "already-removed");
 });
+
+test("external graft input refuses generation preview and a previously eligible transport effect", async t => {
+  const f = await fixture(t), before = await readFile(f.bundle);
+  const preview = await f.retention.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  const graft = path.join(f.root, "external-graft"); await writeFile(graft, f.commit + "\n");
+  const previous = process.env.GIT_GRAFT_FILE;
+  let deletes = 0; const remove = f.retention.deleteTransport;
+  f.retention.deleteTransport = async (...args) => { deletes++; return remove(...args); };
+  try {
+    process.env.GIT_GRAFT_FILE = graft;
+    assert.equal((await f.retention.preview({ candidate: f.candidate })).status, "retained");
+    await assert.rejects(f.retention.prune({ candidate: f.candidate, binding: preview.binding }), /ordinary local Git/u);
+    assert.equal(deletes, 0);
+    assert.deepEqual(await readFile(f.bundle), before);
+  } finally {
+    if (previous === undefined) delete process.env.GIT_GRAFT_FILE; else process.env.GIT_GRAFT_FILE = previous;
+  }
+  assert.equal((await f.retention.preview({ candidate: f.candidate })).status, "eligible");
+});

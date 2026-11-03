@@ -22,3 +22,11 @@ A missing/foreign/changed generation or chain, ambiguous/nonterminal original,
 UNKNOWN validation/finalization, target drift, active lease or unanchored original
 object refuses. Same maintenance children and partial/UNKNOWN recovery remain.
 No new API, database, retention ledger, publication or runtime effect is added.
+# Generation local-history input
+
+The consuming release Git retention adapter also refuses external
+`GIT_GRAFT_FILE`, including a graft introduced after an eligible preview.
+Git's no-replace-objects flag does not remove this external history input.
+The existing ordinary-local-context guard runs before every Git call; a real
+owner regression first reproduces eligible admission, then confirms refusal
+and zero deletion without changing ordinary local generation behavior.
