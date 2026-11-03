@@ -4137,7 +4137,7 @@ export class TaskGitWorkspaceService {
         nativeCaptureRetirementEvidence(this.dataDir, taskId, record.operationId);
         const binding = { operationId: record.operationId, path: pathname,
           sha256: createHash("sha256").update(bytes).digest("hex") };
-        if (["prepared", "failed"].includes(record.phase) && !record.target && !record.targetTree && !record.stageRoot) {
+        if (["prepared", "failed"].includes(record.phase) && record.target == null && record.targetTree == null && record.stageRoot == null) {
           priorPreparedRecords.push(binding); continue;
         }
         if (record.target !== state.head || !samePath(record.stageRoot, path.join(root, "repository"))) throw new Error("Original native capture binding changed");

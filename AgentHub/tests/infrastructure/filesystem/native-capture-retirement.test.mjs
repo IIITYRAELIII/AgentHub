@@ -314,6 +314,8 @@ test("terminal prepared-only originals preserve their records while one exact co
   // Two positive originals are still ambiguous, even if their head matches.
   await writeFile(previousFile, JSON.stringify({ ...record, operationId: previousId }));
   assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained");
+  await writeFile(previousFile, JSON.stringify({ ...previous, target: 0 }));
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained", "malformed falsy target is not an absent intake target");
   await writeFile(previousFile, Buffer.concat([previousBytes, Buffer.from("\n")]));
   const refused = await f.service.runApproved([{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }]);
   assert.equal(nativeCalls, 0); assert.equal(refused.reasons["approved-preview-changed"], 1);
