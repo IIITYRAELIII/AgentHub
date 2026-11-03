@@ -417,7 +417,8 @@ export class WorkLogUsageSyncStore {
     const exists = database.prepare(`
       SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'journal_records'
     `).get();
-    if (!exists) return { turns: {}, journalRevision: 0, revisionCursor: false };
+    if (!exists) return { turns: {}, journalRevision: 0, revisionCursor: false,
+      ...(usageOnly ? { selectedJournalRecords: 0, materializedRecordJsonBytes: 0, journalSelectionMode: 3 } : {}) };
     const roots = [...new Set((Array.isArray(projectRoots) ? projectRoots : [])
       .map((value) => path.resolve(String(value ?? "").trim()))
       .filter(Boolean))];
@@ -451,7 +452,13 @@ export class WorkLogUsageSyncStore {
       ORDER BY ${revisionCursor ? "changed_revision" : "observed_at_ms"}, provider, thread_id, turn_id
     `).all(...parameters);
     const turns = {};
+    let materializedRecordJsonBytes = 0;
     for (const row of rows) {
+      if (usageOnly) {
+        // Count existing returned UTF8 strings without creating an encoded copy.
+        materializedRecordJsonBytes = materializedRecordJsonBytes !== null && typeof row.record_json === "string"
+          ? materializedRecordJsonBytes + Buffer.byteLength(row.record_json, "utf8") : null;
+      }
       try {
         const record = JSON.parse(row.record_json);
         turns[`${row.provider}\0${row.thread_id}\0${row.turn_id}`] = record;
@@ -459,7 +466,10 @@ export class WorkLogUsageSyncStore {
         // Corrupt journal rows stay available for the Journal repair path.
       }
     }
-    return { turns, journalRevision, revisionCursor };
+    return { turns, journalRevision, revisionCursor,
+      ...(usageOnly ? { selectedJournalRecords: rows.length, materializedRecordJsonBytes,
+        journalSelectionMode: revisionCursor
+          ? (Math.max(0, Number(afterJournalRevision) || 0) > 0 ? 1 : 0) : (afterObservedMs > 0 ? 2 : 0) } : {}) };
   }
 
   #existing(database, eventIds) {
@@ -821,6 +831,9 @@ export class WorkLogUsageSyncStore {
           ...limitObservations,
         ],
         journalRevision: delta.journalRevision,
+        selectedJournalRecords: delta.selectedJournalRecords,
+        materializedRecordJsonBytes: delta.materializedRecordJsonBytes,
+        journalSelectionMode: delta.journalSelectionMode,
       };
     });
   }

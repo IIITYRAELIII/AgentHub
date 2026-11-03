@@ -736,6 +736,18 @@ projector. Full journal reads and stored records retain their original content;
 all usage fields, cursor selection, ordering and legacy handling are unchanged.
 This avoids copying unused content, not a new history limit or cache policy.
 
+The existing usage snapshot result and original worker-request trace report
+selectedJournalRecords and materializedRecordJsonBytes from the already returned
+SQLite JSON strings, before parsing. Invalid selected JSON still contributes to
+input volume; these counts are not output fact count or retained heap. A non-text
+legacy value leaves byte volume unknown. journalSelectionMode is numeric:0 full
+(including revision0),1 positive revision cursor,2 legacy observed-time cursor,
+3 no journal table. The existing revision-backed query takes precedence over
+the legacy timestamp argument. No raw cursor/identity/content is logged, no
+additional query/export/stringification is performed, and metrics do not change
+selection, fact normalization, original errors or operation identity. Existing
+health exposes only the latest bounded snapshot scalars through the same owner.
+
 The existing health sampler may read getHeapStatistics from already-owned Node
 workers, without spawning/refing/stopping them or posting business requests.
 Seven fixed owner classes retain weak references to at most 16 diagnostic

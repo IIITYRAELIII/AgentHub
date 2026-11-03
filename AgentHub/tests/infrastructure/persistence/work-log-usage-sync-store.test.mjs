@@ -18,7 +18,9 @@ async function observeJournalMaterialization(operation, { fail = null } = {}) {
         const rows = Reflect.apply(target.all, target, parameters);
         for (const row of rows) if (typeof row.record_json === "string") {
           if (fail) throw fail;
-          observations.push({ bytes: Buffer.byteLength(row.record_json), keys: Object.keys(JSON.parse(row.record_json)) });
+          let keys = [];
+          try { keys = Object.keys(JSON.parse(row.record_json)); } catch { /* Count malformed selected input too. */ }
+          observations.push({ bytes: Buffer.byteLength(row.record_json), keys });
         }
         return rows;
       };
@@ -29,6 +31,90 @@ async function observeJournalMaterialization(operation, { fail = null } = {}) {
   try { return { value: await operation(), observations }; }
   finally { DatabaseSync.prototype.prepare = prepare; }
 }
+
+test("usage input metrics count selected UTF8 strings without changing cursor or journal reads", async () => {
+  const { JournalDatabase } = await import("../../../src/infrastructure/persistence/journal-database.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-input-metrics-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const store = new WorkLogUsageSyncStore({ databaseFile, deviceId: "device-local" });
+  try {
+    const record = turnId => ({ provider: "codex", threadId: "thread", turnId, projectRoot: root,
+      completedAt: "2026-11-03T09:00:00.000Z", observedAt: "2026-11-03T09:01:00.000Z",
+      model: "модель😀", body: "Private retained answer", diff: "Private retained diff", estimatedCredits: 2 });
+    const initial = await journal.upsertRecords([record("a"), record("b")]);
+    const before = await journal.loadLedger();
+    const measure = async (payload, mode, count) => {
+      const { value, observations } = await observeJournalMaterialization(() => store.usageSyncSnapshot(payload));
+      assert.equal(value.selectedJournalRecords, count);
+      assert.equal(value.materializedRecordJsonBytes, observations.reduce((sum, row) => sum + row.bytes, 0));
+      assert.equal(value.journalSelectionMode, mode);
+      return value;
+    };
+    const full = await measure({}, 0, 2);
+    assert.equal(full.events.length, 2);
+    const empty = await measure({ afterJournalRevision: initial.revision }, 1, 0);
+    assert.equal(empty.events.length, 0);
+    // Existing revision-backed selection ignores the legacy observed-at cursor.
+    assert.deepEqual((await measure({ afterObservedAt: "2026-11-03T10:00:00.000Z", afterJournalRevision: -1 }, 0, 2)).events, full.events);
+    await journal.upsertRecords([record("late")]);
+    assert.equal((await measure({ afterJournalRevision: initial.revision }, 1, 1)).events.length, 1);
+    assert.deepEqual((await store.journalTurns())["codex\0thread\0a"], before.turns["codex\0thread\0a"]);
+    const failure = new Error("original metrics-source failure");
+    await assert.rejects(observeJournalMaterialization(() => store.usageSyncSnapshot(), { fail: failure }), error => error === failure);
+    assert.equal((await measure({}, 0, 3)).events.length, 3);
+  } finally {
+    await store.close(); await journal.close();
+    assert.equal(path.dirname(root), os.tmpdir());
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("usage input metrics classify legacy observed selection and unavailable journal without private cursors", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-input-metrics-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const store = new WorkLogUsageSyncStore({ databaseFile, deviceId: "device-local" });
+  try {
+    const absent = await store.usageSyncSnapshot();
+    assert.equal(absent.selectedJournalRecords, 0);
+    assert.equal(absent.materializedRecordJsonBytes, 0);
+    assert.equal(absent.journalSelectionMode, 3);
+    const database = new DatabaseSync(databaseFile);
+    try {
+      database.exec(`CREATE TABLE journal_records(provider TEXT,thread_id TEXT,turn_id TEXT,project_root TEXT,observed_at_ms INTEGER,record_json TEXT);
+        CREATE TABLE journal_store_meta(key TEXT PRIMARY KEY,value TEXT);
+        INSERT INTO journal_store_meta VALUES('revision','7')`);
+      const insert = database.prepare("INSERT INTO journal_records VALUES(?,?,?,?,?,?)");
+      for (const [turn, minute] of [["a", 0], ["b", 1]]) insert.run("codex", "thread", turn, root,
+        Date.parse(`2026-11-03T09:0${minute}:00.000Z`), JSON.stringify({ provider: "codex", threadId: "thread", turnId: turn,
+          completedAt: `2026-11-03T09:0${minute}:00.000Z`, observedAt: `2026-11-03T09:0${minute}:00.000Z`, model: "модель😀", body: "PRIVATE" }));
+      insert.run("codex", "thread", "invalid", root, Date.parse("2026-11-03T09:02:00.000Z"), "not valid JSON");
+    } finally { database.close(); }
+    const full = await store.usageSyncSnapshot({ afterObservedAt: "private-invalid-cursor" });
+    assert.equal(full.journalSelectionMode, 0);
+    assert.equal(full.selectedJournalRecords, 3, "selected rows include invalid JSON that the existing converter skips");
+    const { value, observations } = await observeJournalMaterialization(() => store.usageSyncSnapshot({ afterObservedAt: "2026-11-03T09:01:00.000Z" }));
+    assert.equal(value.journalSelectionMode, 2);
+    assert.equal(value.selectedJournalRecords, 2);
+    assert.equal(value.materializedRecordJsonBytes, observations.reduce((sum, row) => sum + row.bytes, 0));
+    assert.equal(value.events.length, 1);
+    assert.equal(value.journalRevision, 7);
+    assert.doesNotMatch(JSON.stringify({ selectedJournalRecords: value.selectedJournalRecords,
+      materializedRecordJsonBytes: value.materializedRecordJsonBytes, journalSelectionMode: value.journalSelectionMode }), /PRIVATE|cursor|thread/);
+    const nonText = new DatabaseSync(databaseFile);
+    try { nonText.prepare("INSERT INTO journal_records VALUES(?,?,?,?,?,?)").run("codex", "thread", "blob", root, 0,
+      new Uint8Array([255, 0])); }
+    finally { nonText.close(); }
+    const unknown = await store.usageSyncSnapshot();
+    assert.equal(unknown.selectedJournalRecords, 4);
+    assert.equal(unknown.materializedRecordJsonBytes, null, "non-text legacy input has unknown UTF8 string volume");
+    assert.equal(unknown.events.length, full.events.length);
+  } finally {
+    await store.close();
+    assert.equal(path.dirname(root), os.tmpdir());
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("usage snapshots materialize only accounting input while retaining full journal content", async () => {
   const { JournalDatabase } = await import("../../../src/infrastructure/persistence/journal-database.mjs");
