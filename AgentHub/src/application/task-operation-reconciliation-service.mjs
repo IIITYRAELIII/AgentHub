@@ -46,6 +46,7 @@ function malformedWorkflowArguments(receipt) {
   const execution = receipt?.taskExecution, args = execution?.arguments;
   const keys = ["request_id", "task_id", "status", "expected_task_revision", "expected_workflow_status"];
   if (execution?.version !== 1 || execution.protocol !== "task-operation-interruption-v1"
+      || Object.keys(execution).some(key => !["version", "protocol", "taskId", "taskWorkspaceId", "ownerId", "arguments"].includes(key))
       || typeof execution.ownerId !== "string" || !execution.ownerId || execution.cancellation
       || !args || Object.keys(args).length !== keys.length || Object.keys(args).some(key => !keys.includes(key))
       || args.request_id !== receipt.requestId || args.task_id !== execution.taskId
