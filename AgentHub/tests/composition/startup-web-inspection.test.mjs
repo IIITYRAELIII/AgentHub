@@ -37,12 +37,14 @@ test("actual infrastructure serves the existing web shell while its database cop
   const copyStarted = new Promise(resolve => { entered = resolve; });
   const sentinel = new Error("owned post-inspection boundary");
   let listener, address;
+  let boundAtMs;
   let browser;
   const logs = [];
   class ObservedServer extends MiniAppServer {
     async start() {
       const result = await super.start();
       listener = this; address = result;
+      boundAtMs = performance.now();
       return result;
     }
   }
@@ -70,6 +72,7 @@ test("actual infrastructure serves the existing web shell while its database cop
         async load() { throw sentinel; }
       } },
     });
+  const initializationStarted = performance.now();
   const initialization = createHubInfrastructure({
     config: { dataDir: root, projectRoot: root, diagnostics: { sentry: {} },
       components: {}, miniApp: { enabled: true, host: "127.0.0.1", port: 0,
@@ -84,7 +87,9 @@ test("actual infrastructure serves the existing web shell while its database cop
     await Promise.race([copyStarted, settled.then(result => { throw result.error ?? new Error("copy never entered"); })]);
     assert.ok(address?.url, "the startup web listener must already be bound before SQLite inspection");
     const first = address.url;
+    const healthStarted = performance.now();
     const health = await (await fetch(first + "health")).json();
+    const healthResponseMs = performance.now() - healthStarted;
     assert.equal(health.ready, false);
     assert.equal(health.startup.operations.find(x => x.id === "database").state, "running");
     assert.equal((await fetch(first)).status, 200);
@@ -97,16 +102,26 @@ test("actual infrastructure serves the existing web shell while its database cop
     const page = await browser.newPage();
     await page.route("**/*", route => new URL(route.request().url()).hostname === "127.0.0.1"
       ? route.continue() : route.abort());
+    const navigationStarted = performance.now();
     await page.goto(first, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => {
       const screen = document.querySelector(".hub-startup-screen");
       return screen && getComputedStyle(screen).display !== "none"
         && screen.textContent.includes("Проверка базы данных");
     });
+    const startupScreenMs = performance.now() - navigationStarted;
     assert.equal((await (await fetch(first + "health")).json()).ready, false);
     await browser.close(); browser = null;
     release();
     assert.equal((await settled).error, sentinel);
+    t.diagnostic(JSON.stringify({
+      operationSpanId: logs.find(x => x.stage === "sqlite-recovery").operationSpanId,
+      listenerFromInitializationMs: boundAtMs - initializationStarted,
+      healthResponseMs, startupScreenFromNavigationMs: startupScreenMs,
+      readyWhileCopyHeld: false,
+      query: logs.find(x => x.phase === "inspection-query" && x.outcome === "succeeded"),
+      qualification: "isolated actual composition; copy deliberately held; not production timing",
+    }));
     assert.equal(listener.address(), null, "failed startup joins its listener before releasing the instance");
     await assert.rejects(fetch(first + "health"));
     assert.deepEqual(await fs.readFile(databaseFile), original);
