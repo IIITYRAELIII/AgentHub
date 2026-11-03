@@ -219,3 +219,15 @@ test("actual local reconciliation CLI reaches the RM malformed owner and refuses
   assert.equal(f.catalog.mcpOperation(args.request_id).status,"failed");
   assert.deepEqual(f.tasks.task(f.task.id),f.task);
 });
+
+test("an unknown execution extension cannot inherit ordinary malformed-input authority",async t=>{
+  const f=await fixture(t);
+  await f.catalog.beginMcpOperation({requestId:f.args.request_id,workspaceId:f.task.workspaceId,
+    streamId:f.manager.id,provider:"codex",threadId:f.manager.id+"-thread",toolName:"hub_task_status_update",
+    argumentsHash:mcpArgumentsHash(f.args),taskExecution:{...f.hub.taskOperationInterruption.binding(f.args),unclassifiedEffect:{observed:true}}});
+  await f.catalog.markMcpOperationUnknown(f.args.request_id,new Error("Неизвестный статус Task"));
+  const before=f.catalog.mcpOperation(f.args.request_id);
+  await assert.rejects(f.hub.call("hub_task_operation_reconcile",f.reconcile));
+  assert.deepEqual(f.catalog.mcpOperation(f.args.request_id),before);
+  assert.deepEqual(f.tasks.task(f.task.id),f.task);assert.equal(f.prepares(),0);
+});
