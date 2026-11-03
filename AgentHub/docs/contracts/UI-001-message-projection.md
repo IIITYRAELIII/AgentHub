@@ -205,9 +205,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   visible error, and late work cannot replace or dispose a newer generation.
 - Current Codex limits expose every available provider window separately. A
   healthy short window cannot hide an exhausted longer window for the same model.
-- Codex response-annotation locators cross the provider boundary as unique
+- Agent response-annotation locators cross either provider boundary as unique
   positive safe-integer indices in the provider annotation range `1..20`,
-  never as service markup. The trusted Codex parser consumes every complete
+  never as service markup. One trusted assistant parser consumes both
+  `:agent-annotation{index="N"}` and legacy `:codex-annotation{index="N"}`
+  with the same index identity, including mixed aliases without duplicate
+  references. Codex and Claude live, replay, history, terminal and notification
+  projections share this parser. It consumes every complete
   marker outside Markdown code with a quoted index payload, including after
   ordinary prose, before validating the payload (ADR-0036);
   invalid payloads retain only a readable generic fallback and do not enter
@@ -219,6 +223,15 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   Missing mappings render non-interactive
   `Цитата N`. User-authored marker-like literals and code remain ordinary user
   content.
+- The same trusted assistant parser retains each first valid marker's UTF-16
+  range in its LF-normalized, boundary-trimmed projected text. Live, observed,
+  terminal and persisted history retain those coordinates on the existing
+  reference; the renderer replaces only a validated exact range with its
+  citation card, preserving the original answer order. It never guesses an
+  association from label text or annotation index order. Historical references
+  without coordinates retain an explicit compatibility list until their trusted
+  original is reprojected through the existing history owner; no stored source
+  or user text is rewritten. See ADR-HUB-401.
 - A new user-created annotation records its exact source user command or agent
   provider item, including an active non-final agent item. A user with a durable
   `clientUserMessageId` uses the client namespace scoped by provider and Thread,

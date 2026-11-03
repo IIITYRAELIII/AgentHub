@@ -21,6 +21,20 @@ async function messageViewApi() {
   return context.AgentHubMessageView;
 }
 
+test("citation segments use exact coordinates and keep legacy or invalid positions explicit",async()=>{
+  const api=await messageViewApi();
+  const text='Literal Цитата 1\n\nAnswer\nЦитата 1\nTail';
+  const start='Literal Цитата 1\n\nAnswer\n'.length;
+  const citation={index:1,position:{start,end:start+8}};
+  const split=JSON.parse(JSON.stringify(api.responseCitationSegments(text,[citation])));
+  assert.deepEqual(split,{segments:[{text:text.slice(0,start)},{citation},{text:'\nTail'}],unpositioned:[]});
+  for(const reference of [{index:1},{index:1,position:{start:-1,end:7}},{index:1,position:{start:0,end:8}},{index:1,position:{start:NaN,end:8}}]) {
+    const result=api.responseCitationSegments(text,[reference]);
+    assert.equal(result.segments.length,1); assert.equal(result.segments[0].text,text);
+    assert.equal(result.unpositioned.length,1);
+  }
+});
+
 class FakeNode {
   constructor(name) {
     this.name = name;

@@ -1,3 +1,4 @@
+import { codexAssistantResponseProjection } from "../../domain/codex-response-annotation.mjs";
 import { receiptUserDisplay, receiptUserOrigin, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import {
@@ -392,6 +393,9 @@ export function createDesktopSnapshotFactory({
     });
     const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
       .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
+    const responseProjection = codexAssistantResponseProjection(
+      run.responseText, run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences,
+    );
     const compactActivity = (activity) => {
       const cloned = structuredClone(activity);
       if (!compactSnapshot || typeof cloned?.detail !== "string") return cloned;
@@ -545,15 +549,13 @@ export function createDesktopSnapshotFactory({
         }];
       }),
       progress: String(run.progressReasoning ?? ""),
-      response: String(run.responseText ?? ""),
+      response: responseProjection.text,
       responseAttachments: Array.isArray(run.responseAttachments)
         ? run.responseAttachments.map((attachment) => ({ ...attachment }))
         : [],
-      ...((run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences)?.length
+      ...(responseProjection.responseAnnotationReferences.length
         ? {
-          responseAnnotationReferences: structuredClone(
-            run.responseAnnotationReferences ?? responseItem.responseAnnotationReferences,
-          ),
+          responseAnnotationReferences: responseProjection.responseAnnotationReferences,
         }
         : {}),
       ...(responseItem?.phase ? { responsePhase: String(responseItem.phase) } : {}),

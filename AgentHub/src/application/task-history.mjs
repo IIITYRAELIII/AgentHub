@@ -659,6 +659,7 @@ function claudeUserPromptDetails(entry) {
   if (isClaudeSyntheticUserEntry(entry)) return null;
   const rawText = textContent(entry.message?.content);
   const transport = claudeTransportPromptDetails(rawText);
+  const annotations = responseAnnotationDetails(transport.text);
   const clientUserMessageId = String(
     entry.clientUserMessageId ?? entry.message?.clientUserMessageId ?? "",
   ).trim();
@@ -667,6 +668,7 @@ function claudeUserPromptDetails(entry) {
     clientUserMessageId,
     taskReferences: userTaskReferencePromptDetails(transport.text)?.references ?? [],
     attachmentSources: transport.attachmentSources,
+    ...(annotations?.items.length ? { responseAnnotations: annotations.items, responseAnnotationRequest: annotations.request } : {}),
   };
 }
 
@@ -700,6 +702,7 @@ function claudeUserHistoryMessage(entry, index) {
       : {}),
     role: "user",
     text: userPrompt?.text ?? "",
+    ...(userPrompt?.responseAnnotations ? { responseAnnotations: userPrompt.responseAnnotations, responseAnnotationRequest: userPrompt.responseAnnotationRequest } : {}),
     ...(userPrompt?.taskReferences.length
       ? { attachments: userPrompt.taskReferences.map((reference) => ({ ...reference })) }
       : {}),
@@ -735,11 +738,13 @@ export function claudeTranscriptHistory(text) {
         status: "completed",
       }] : []);
     });
+    const answer = codexAssistantResponseProjection(claudeAssistantText(turnEntries));
     return {
       id: String(entries[entryIndex]?.uuid ?? entryIndex),
       userMessageSnapshotAuthority: "complete",
       prompt: userPrompt?.text ?? "",
-      answer: claudeAssistantText(turnEntries),
+      answer: answer.text,
+      ...(answer.responseAnnotationReferences.length ? { responseAnnotationReferences: answer.responseAnnotationReferences } : {}),
       status: completed ? "completed" : "inProgress",
       active: !completed,
       completed,
@@ -761,11 +766,13 @@ export function claudeTranscriptHistory(text) {
             return [{ ...claudeUserHistoryMessage(entry, entryIndex + 1 + index), turnUserSlot: "steer" }];
           }
           if (entry?.type !== "assistant" || entry.message?.role !== "assistant") return [];
-          const assistantText = textContent(entry.message?.content);
+          const assistant = codexAssistantResponseProjection(textContent(entry.message?.content));
+          const assistantText = assistant.text;
           return assistantText ? [{
             itemId: String(entry.uuid ?? `${entryIndex}:agent:${index}`),
             role: "agent",
             text: assistantText,
+            ...(assistant.responseAnnotationReferences.length ? { responseAnnotationReferences: assistant.responseAnnotationReferences } : {}),
             ...(normalizedTimestamp(entry.timestamp)
               ? { time: normalizedTimestamp(entry.timestamp) }
               : {}),
@@ -794,7 +801,8 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}, {
 } = {}) {
   const values = Array.isArray(history) ? history : [];
   const turnId = String(completedTurn.turnId ?? completedTurn.id ?? "").trim();
-  const answer = String(completedTurn.answer ?? completedTurn.text ?? "").trim();
+  const projection = codexAssistantResponseProjection(completedTurn.answer ?? completedTurn.text, completedTurn.responseAnnotationReferences);
+  const answer = projection.text.trim();
   if (!turnId || !answer) return values;
 
   let current = values.findLast((item) => String(item?.id ?? "") === turnId);
@@ -823,9 +831,7 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}, {
   if (!Array.isArray(current.activities)) current.activities = [];
   if (!Array.isArray(current.activityGroups)) current.activityGroups = [];
   const completedAt = normalizedTimestamp(completedTurn.completedAt ?? completedTurn.updatedAt);
-  const responseAnnotationReferences = Array.isArray(completedTurn.responseAnnotationReferences)
-    ? structuredClone(completedTurn.responseAnnotationReferences)
-    : [];
+  const responseAnnotationReferences = projection.responseAnnotationReferences;
   if (completedAt && !normalizedTimestamp(current.completedAt)) current.completedAt = completedAt;
   const messages = Array.isArray(current.messages) ? current.messages : [];
   const parentAgents = messages.filter((message) => (
@@ -1102,7 +1108,8 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   if (Array.isArray(activeTurn.activityGroups)) {
     current.activityGroups = structuredClone(activeTurn.activityGroups);
   }
-  const answer = String(activeTurn.answer ?? "").trim();
+  const projection = codexAssistantResponseProjection(activeTurn.answer, activeTurn.responseAnnotationReferences);
+  const answer = projection.text.trim();
   if (answer) {
     current.answer = answer;
     const messages = Array.isArray(current.messages) ? current.messages : [];
@@ -1111,9 +1118,7 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
     const existing = messages.find((item) => (
       item.role === "agent" && String(item.itemId ?? "") === itemId
     ));
-    const responseAnnotationReferences = structuredClone(
-      activeTurn.responseAnnotationReferences ?? [],
-    );
+    const responseAnnotationReferences = projection.responseAnnotationReferences;
     if (existing) {
       existing.text = answer;
       if (responseAnnotationReferences.length) {
