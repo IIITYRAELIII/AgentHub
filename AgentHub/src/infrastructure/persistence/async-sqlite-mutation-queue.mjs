@@ -18,7 +18,7 @@ export class AsyncSqliteMutationQueue {
     lastQueueWaitMs: 0, maxQueueWaitMs: 0, lastExecutionMs: 0, lastTotalMs: 0,
   };
 
-  async run(operation, { timeoutMs = 2_000, requestId = null } = {}) {
+  async run(operation, { timeoutMs = 2_000, requestId = null, onTiming = null } = {}) {
     if (typeof operation !== "function") throw new TypeError("SQLite mutation operation is required");
     const entry = { enqueuedAt: performance.now() };
     this.#pending.add(entry);
@@ -26,6 +26,7 @@ export class AsyncSqliteMutationQueue {
     this.#diagnostics.maxDepth = Math.max(this.#diagnostics.maxDepth, this.#diagnostics.queued);
     const execute = async () => {
       const startedAt = performance.now();
+      let attempts = 0, persistenceMs = 0, contentionWaitMs = 0, outcome = "ok";
       this.#diagnostics.lastQueueWaitMs = startedAt - entry.enqueuedAt;
       this.#diagnostics.maxQueueWaitMs = Math.max(this.#diagnostics.maxQueueWaitMs, this.#diagnostics.lastQueueWaitMs);
       // timeoutMs bounds contention after dequeue. It never cancels a queued
@@ -35,7 +36,10 @@ export class AsyncSqliteMutationQueue {
       try {
         for (;;) {
           try {
-            return await operation();
+            const attemptAt = performance.now();
+            attempts += 1;
+            try { return await operation(); }
+            finally { persistenceMs += performance.now() - attemptAt; }
           } catch (error) {
             if (!sqliteContention(error)) throw error;
             if (performance.now() >= deadline) {
@@ -48,12 +52,20 @@ export class AsyncSqliteMutationQueue {
             this.#diagnostics.retries += 1;
             this.#diagnostics.lastWaitMs = performance.now() - startedAt;
             this.#diagnostics.lastAt = new Date().toISOString();
+            const waitAt = performance.now();
             await wait(Math.min(delayMs, Math.max(1, deadline - performance.now())));
+            contentionWaitMs += performance.now() - waitAt;
             delayMs = Math.min(200, delayMs * 2);
           }
         }
-      } finally {
+      } catch (error) { outcome = "error"; throw error; }
+      finally {
         this.#diagnostics.lastExecutionMs = performance.now() - startedAt;
+        try {
+          const recorded = onTiming?.({ queueWaitMs: startedAt - entry.enqueuedAt,
+            executionMs: performance.now() - startedAt, persistenceMs, contentionWaitMs, attempts, outcome });
+          recorded?.catch?.(() => {});
+        } catch { /* Timing never owns persistence or its outcome. */ }
       }
     };
     const queued = this.#tail.catch(() => {}).then(execute);

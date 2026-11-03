@@ -112,6 +112,16 @@ terminal/outbox durability and full scalar aggregation retain their owners.
 
 ## Trace contract
 
+Task MCP receipt admission emits one bounded SQLite summary per invocation on
+the existing original command-ID trace. It separates queue wait, total execution,
+synchronous persistence-attempt duration, contention sleep and attempt count;
+these are elapsed intervals, not CPU attribution or competing-writer identity.
+The existing admitted/result spans and the explicit pre-BEGIN refusal reply
+retain the same command identity. Arguments, context tokens, message/file bodies
+and SQL text are excluded. Timing callbacks cannot alter queue ordering, SQL
+outcomes or the unchanged contention bound. Historical generic errors without
+these fields do not establish the missing writer/statement attribution.
+
 The existing client `context-estimate-paint` stage uses the authenticated common
 trace batch owner, retaining its original compaction ID, Thread/turn identity,
 paired start/completion and monotonic paint duration. Its presence must not
