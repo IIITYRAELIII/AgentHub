@@ -171,6 +171,11 @@ test("publication compression avoids a full UTF8 input Buffer and preserves exac
     finally { from.mock.restore(); }
     t.diagnostic(JSON.stringify({ level, bytes, maxInputBufferBytes, totalInputBufferBytes, inputBuffers }));
     assert.equal(totalInputBufferBytes, bytes, "every original UTF8 byte is encoded exactly once");
+    assert.deepEqual(result.measurements, {
+      encodedInputBytes: bytes,
+      encodingBufferCount: inputBuffers,
+      maxEncodingBufferBytes: maxInputBufferBytes,
+    });
     assert.ok(maxInputBufferBytes <= 3 * block, "no complete uncompressed UTF8 allocation");
     assert.ok(inputBuffers > 1);
     assert.deepEqual(Buffer.concat(result.chunks), reference, "chunked encoding keeps the original gzip bytes");

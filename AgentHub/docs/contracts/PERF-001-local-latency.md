@@ -729,6 +729,17 @@ waiver. Inventory listing/plan resolution is read-only; it runs no test.
 
 ## Worker memory observations
 
+The composition root forwards its existing commandTraceService to the client
+runtime. Journal preparation's existing started/terminal pair therefore reaches
+the same bounded best-effort worker/SQLite sink, under the original publication
+command and operation span with instance/release identity. Diagnostic failure or
+backpressure cannot change preparation, upload or retry results. Existing gzip
+encoding counts the actual buffers already produced: encodedInputBytes,
+encodingBufferCount and maxEncodingBufferBytes are fixed numeric terminal
+measurements, not another serialization, retained payload or process-memory
+bound. Failed preparation leaves unavailable input volume unknown. Missing older
+spans do not prove no operation and cannot be retrospectively reconstructed.
+
 Journal publication retains its canonical JSON serialization and complete gzip
 payload, but feeds UTF8 encoding blocks into gzip with stream backpressure rather
 than allocating another full uncompressed UTF8 Buffer. Block boundaries preserve

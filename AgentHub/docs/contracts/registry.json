@@ -259,6 +259,8 @@
         "src/application/runtime-performance-sampler.mjs",
         "src/application/runtime-cpu-sample.mjs",
         "src/composition/command-trace-composition.mjs",
+      "src/composition/agent-hub-composition.mjs",
+      "tests/composition/journal-publication-trace.test.mjs",
         "src/interfaces/web/http-read-timing.mjs",
         "tests/application/runtime-cpu-sample.test.mjs",
         "tests/interfaces/web/http-read-timing.test.mjs",

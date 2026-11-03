@@ -7,13 +7,17 @@ import { createGzip } from "node:zlib";
 
 const CHUNK_BYTES = 1024 * 1024;
 
-function* encodedJsonChunks(json) {
+function* encodedJsonChunks(json, measurements) {
   for (let offset = 0; offset < json.length;) {
     let end = Math.min(offset + CHUNK_BYTES, json.length);
     // Encoding each half separately would replace a split astral character.
     const before = json.charCodeAt(end - 1), after = json.charCodeAt(end);
     if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end -= 1;
-    yield Buffer.from(json.slice(offset, end), "utf8");
+    const encoded = Buffer.from(json.slice(offset, end), "utf8");
+    measurements.encodedInputBytes += encoded.length;
+    measurements.encodingBufferCount += 1;
+    measurements.maxEncodingBufferBytes = Math.max(measurements.maxEncodingBufferBytes, encoded.length);
+    yield encoded;
     offset = end;
   }
 }
@@ -23,10 +27,11 @@ export async function compressedJournalChunks(payload, { chunkBytes = CHUNK_BYTE
   // Keep the existing native input error (and its precedence over gzip options)
   // when JSON serialization produces no string.
   if (typeof json !== "string") Buffer.from(json, "utf8");
+  const measurements = { encodedInputBytes: 0, encodingBufferCount: 0, maxEncodingBufferBytes: 0 };
   const output = [];
   // Keep canonical serialization, but do not allocate a second full uncompressed
   // UTF8 body. Stream backpressure bounds encoding buffers, not journal content.
-  await pipeline(Readable.from(encodedJsonChunks(json), { objectMode: false }), createGzip({ level }),
+  await pipeline(Readable.from(encodedJsonChunks(json, measurements), { objectMode: false }), createGzip({ level }),
     async (source) => { for await (const chunk of source) output.push(chunk); });
   const compressed = Buffer.concat(output);
   const resolvedSyncId = syncId ?? `sync-${createHash("sha256").update(compressed).digest("hex")}`;
@@ -34,7 +39,7 @@ export async function compressedJournalChunks(payload, { chunkBytes = CHUNK_BYTE
   for (let offset = 0; offset < compressed.length; offset += chunkBytes) {
     chunks.push(compressed.subarray(offset, Math.min(offset + chunkBytes, compressed.length)));
   }
-  return { syncId: resolvedSyncId, chunks };
+  return { syncId: resolvedSyncId, chunks, measurements };
 }
 
 // The publisher already serializes sync passes. This worker owns no writer,
