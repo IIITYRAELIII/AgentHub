@@ -31,6 +31,19 @@ The execution owner must prove a joined local worker; a previous runtime instead
 requires the existing trusted native retirement witness and fresh exact job-zero
 proof. No Stop/cancel, caller-supplied retired boolean, new queue or ledger exists.
 
+The retained witness reads an actively held primary lock through the existing
+native owner with read access and Read/Write/Delete sharing. Windows requires
+write sharing even for a reader when the instance already holds write access;
+sharing grants no write access to this observer. The bounded 16 KiB read pins
+the JS snapshot's volume/file index/creation/size/write identity, opens the final
+component without following reparse points, rechecks the same handle and named
+path, and compares the complete SHA-256. All handles are disposed on refusal.
+Changed/replaced/reparse/oversized locks refuse before manifest publication.
+Native Host/Node/job continuity, nonce and current-user pipe authority remain
+unchanged. Because the collector source hash includes this reader, a new capture
+must use the corrected helper; old collector identity is never retargeted.
+See [CreateFileW sharing rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).
+
 The receipt transaction repeats identity/CAS/lifecycle checks while holding its
 SQLite write reservation. It terminalizes only that original as failed, retains
 the prior diagnostic and arguments, and records workflow_input_validation.

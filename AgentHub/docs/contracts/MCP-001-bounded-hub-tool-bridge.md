@@ -28,6 +28,15 @@ The existing local operation-reconcile CLI accepts --reconcile-arguments for
 the same authenticated RM tool; it grants no separate writer authority.
 See ADR-HUB-408-malformed-workflow-status.md.
 
+The existing retained native witness may read a primary lock while the instance
+keeps its write handle. This observer has read access only and permits existing
+read/write/delete sharing; it does not unlock or replace the owner's file. The
+bounded complete hash and stable volume/file/creation/size/write identity must
+match the original snapshot, with same-handle and fresh named-path checks and
+no reparse following. Drift, oversized or nonregular input refuses before the
+witness manifest is published; every read handle closes. Existing exact native
+Host/Node/job continuity, current-user pipe, nonce and source hash checks remain.
+
 `hub_stream_message_send` with ordinary `mode=steer` addresses the destination
 Stream. The common durable message owner resolves its current active managed
 turn or retains that same command in the normal queue. A definitively ended

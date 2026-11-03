@@ -23,7 +23,15 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
 public static class ClaimCustodyNative {
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern SafeFileHandle CreateFile(string name,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandle(SafeFileHandle file,out FileIdentity info);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern uint GetFileType(SafeFileHandle file);
+ [StructLayout(LayoutKind.Sequential)] struct FileTime { public uint Low,High; }
+ [StructLayout(LayoutKind.Sequential)] struct FileIdentity {
+  public uint Attributes;public FileTime Created,Accessed,Modified;public uint Volume,SizeHigh,SizeLow,Links,IndexHigh,IndexLow;
+ }
  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr OpenJobObject(uint access, bool inherit, string name);
  [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job, int cls, IntPtr info, uint size, IntPtr returned);
  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
@@ -39,6 +47,47 @@ public static class ClaimCustodyNative {
  [StructLayout(LayoutKind.Sequential)] struct Extended { public Limits Basic; public Io Io; public UIntPtr ProcessMemory, JobMemory, PeakProcess, PeakJob; }
  static Exception Failure(string step) { return new Exception(step + ": win32=" + Marshal.GetLastWin32Error()); }
  static string Digest(byte[] bytes) { using(var sha=SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant(); }
+ static ulong Wide(uint high,uint low) {return ((ulong)high<<32)|low;}
+ static string UnixNs(FileTime time) {return checked((checked((long)Wide(time.High,time.Low))-116444736000000000L)*100L).ToString();}
+ static SafeFileHandle OpenPrimaryLock(string name) {
+  // GENERIC_READ only; permit the existing owner to keep its write/delete share.
+  // Open the final component itself, never follow a replacement reparse point.
+  var file=CreateFile(name,0x80000000,7,IntPtr.Zero,3,0x00200000|0x02000000,IntPtr.Zero);
+  if(file.IsInvalid){file.Dispose();throw Failure("primary-lock-open");}
+  return file;
+ }
+ static FileIdentity PrimaryIdentity(SafeFileHandle file) {
+  FileIdentity info;if(!GetFileInformationByHandle(file,out info))throw Failure("primary-lock-information");
+  if(GetFileType(file)!=1||(info.Attributes&0x410)!=0)throw new Exception("primary-lock-not-regular");
+  if(Wide(info.SizeHigh,info.SizeLow)>16384)throw new Exception("primary-lock-budget");
+  return info;
+ }
+ static bool SamePrimary(FileIdentity a,FileIdentity b) {
+  return a.Volume==b.Volume&&a.IndexHigh==b.IndexHigh&&a.IndexLow==b.IndexLow
+   &&a.Created.High==b.Created.High&&a.Created.Low==b.Created.Low
+   &&a.Modified.High==b.Modified.High&&a.Modified.Low==b.Modified.Low
+   &&a.SizeHigh==b.SizeHigh&&a.SizeLow==b.SizeLow;
+ }
+ public static void AssertPrimaryLock(string name,string volume,string index,string created,string size,string modified,string expectedHash) {
+  using(var file=OpenPrimaryLock(name)) {
+   var before=PrimaryIdentity(file);
+   if(before.Volume.ToString()!=volume||Wide(before.IndexHigh,before.IndexLow).ToString()!=index
+     ||UnixNs(before.Created)!=created||Wide(before.SizeHigh,before.SizeLow).ToString()!=size
+     ||UnixNs(before.Modified)!=modified)throw new Exception("primary-lock-identity-drift");
+   using(var stream=new FileStream(file,FileAccess.Read)) {
+    var buffer=new byte[16385];int count=0,read;
+    while(count<buffer.Length&&(read=stream.Read(buffer,count,buffer.Length-count))>0)count+=read;
+    if(count>16384)throw new Exception("primary-lock-budget");
+    var after=PrimaryIdentity(file);
+    if(!SamePrimary(before,after)||(ulong)count!=Wide(before.SizeHigh,before.SizeLow))throw new Exception("primary-lock-changed-during-read");
+    using(var named=OpenPrimaryLock(name)) {
+     if(!SamePrimary(before,PrimaryIdentity(named)))throw new Exception("primary-lock-path-drift");
+    }
+    var bytes=new byte[count];Array.Copy(buffer,bytes,count);
+    if(!String.Equals(Digest(bytes),expectedHash,StringComparison.Ordinal))throw new Exception("primary-lock-hash-drift");
+   }
+  }
+ }
  static long Birth(IntPtr process) { long born, exit, kernel, user; if(!GetProcessTimes(process,out born,out exit,out kernel,out user)) throw Failure("process-times"); return born; }
  static bool Alive(IntPtr process) { uint state=WaitForSingleObject(process,0); if(state==0) return false; if(state==258) return true; throw Failure("process-wait"); }
  static IntPtr ProcessHandle(int pid) {
@@ -225,7 +274,8 @@ async function lockSnapshot(dataDir) {
     try { lock = JSON.parse(raw.toString("utf8")); } catch { refuse("primary bot.lock is malformed"); }
     if (!Number.isSafeInteger(lock.pid) || lock.pid <= 0 || typeof lock.instanceToken !== "string" || !lock.instanceToken
         || !Number.isFinite(Date.parse(lock.startedAt))) refuse("primary bot.lock lacks exact instance identity");
-    return { pid: lock.pid, startedAtMs: Date.parse(lock.startedAt), instanceTokenSha256: hash(lock.instanceToken), sha256: hash(raw) };
+    return { pid: lock.pid, startedAtMs: Date.parse(lock.startedAt), instanceTokenSha256: hash(lock.instanceToken), sha256: hash(raw),
+      fileIdentity: { volume: String(before.dev), index: String(before.ino), createdNs: String(before.birthtimeNs), size: String(before.size), modifiedNs: String(before.mtimeNs) } };
   } finally { await file.close(); }
 }
 
@@ -298,7 +348,8 @@ try {
  Add-Type -TypeDefinition $env:AGENT_HUB_CUSTODY_NATIVE
  $p=$env:AGENT_HUB_CUSTODY_QUERY|ConvertFrom-Json
  $capture=[ClaimCustodyNative]::BeginWitness([int]$p.hostPid,[string]$p.hostBirth,[int]$p.nodePid,[string]$p.nodeBirth,[long]$p.originalMs)
- if((Get-FileHash -LiteralPath $p.lockFile -Algorithm SHA256).Hash.ToLowerInvariant() -cne $p.primaryLock.sha256){throw 'primary-lock-changed-during-witness-capture'}
+ $file=$p.primaryLock.fileIdentity
+ [ClaimCustodyNative]::AssertPrimaryLock([string]$p.lockFile,[string]$file.volume,[string]$file.index,[string]$file.createdNs,[string]$file.size,[string]$file.modifiedNs,[string]$p.primaryLock.sha256)
  $manifest=@{version=1;kind='claim-custody-native-witness-v1';pipeName=$p.pipe;nonceHash=$p.nonceHash;sourceSha256=$p.sourceHash;capture=$capture;dataRoot=$p.dataRoot;primaryLock=$p.primaryLock}
  [IO.File]::WriteAllText($p.manifest,($manifest|ConvertTo-Json -Compress -Depth 12),[Text.UTF8Encoding]::new($false))
  $done=$false
