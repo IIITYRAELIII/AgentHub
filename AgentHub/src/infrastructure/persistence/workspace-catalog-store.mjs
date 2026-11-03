@@ -1349,7 +1349,7 @@ export class WorkspaceCatalogStore {
   }
 
   failUnknownMcpOperation(requestId, {
-    workspaceId, toolName, error, reconciliation,
+    workspaceId, toolName, error, reconciliation, beforeSettle = null,
   } = {}) {
     const id = safeIdentifier(requestId, "MCP request id");
     if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
@@ -1368,6 +1368,10 @@ export class WorkspaceCatalogStore {
         || operation.receiptState !== "unknown"
       ) {
         throw new Error("Unknown MCP operation identity or receipt state does not match");
+      }
+      if (beforeSettle) {
+        const checked = beforeSettle(operation);
+        if (checked?.then) throw new TypeError("Receipt settlement validation must be synchronous");
       }
       const errorText = String(error?.message ?? error ?? "authoritative reconciliation failed").slice(0, 2_000);
       const resultJson = compactMcpOperationResult(

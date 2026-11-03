@@ -1369,6 +1369,16 @@ export class TaskLifecycleService {
     return this.releasePreflight.withAwaitTransition(workspace.id, locked);
   }
 
+  async assertMalformedWorkflowIdleOwned({ taskId, operationId, lease } = {}) {
+    await this.#assertOwned(lease);
+    if (this.taskBoard.lifecycleTransition(operationId) || this.taskBoard.lifecycleOutcome(operationId)) {
+      throw new Error("Malformed workflow original has lifecycle evidence");
+    }
+    requiredMethod(this.taskGitWorkspaces, "assertNoProcessTreeGuardOwned");
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(taskId, { lease });
+    await this.#assertOwned(lease);
+  }
+
   async reconcileUnknownWorkflowStatusOwned({
     taskId, operationId, projectRoot, guardId, proof, lease, finalizeCommittedWithdrawal = false,
     verifyInitialNativeTest = null,

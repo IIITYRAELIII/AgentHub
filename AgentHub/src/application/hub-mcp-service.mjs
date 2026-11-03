@@ -26,6 +26,7 @@ import {
   normalizedTaskDescription,
   normalizedTaskText,
   normalizedTaskTitle,
+  normalizedTaskWorkflowStatus,
   TASK_TITLE_MAX_LENGTH,
   TaskDependencyPendingError,
   TaskLifecycleBeginRejectedError,
@@ -529,6 +530,9 @@ export class HubMcpService {
     this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
       taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces, releasePreflight,
     });
+    this.taskOperationInterruption = typeof this.workspaceCatalog.bindTaskOperationExecution === "function"
+      ? new TaskOperationInterruption({ catalog: this.workspaceCatalog, tasks: this.taskBoard,
+        taskGit: this.taskGitWorkspaces, runtime: this.claimCustodyRuntime, record: this.recordCommandTrace }) : null;
     this.taskOperationReconciliation = taskOperationReconciliation
       ?? (["mcpOperation", "completeUnknownMcpOperation", "failUnknownMcpOperation"]
         .every((name) => typeof this.workspaceCatalog?.[name] === "function")
@@ -539,11 +543,10 @@ export class HubMcpService {
           workspaceCatalog: this.workspaceCatalog,
           taskBoard,
           taskLifecycle: this.taskLifecycle,
+          taskExecution: this.taskOperationInterruption,
+          record: span => this.recordCommandTrace(span),
         })
         : null);
-    this.taskOperationInterruption = typeof this.workspaceCatalog.bindTaskOperationExecution === "function"
-      ? new TaskOperationInterruption({ catalog: this.workspaceCatalog, tasks: this.taskBoard,
-        taskGit: this.taskGitWorkspaces, runtime: this.claimCustodyRuntime, record: this.recordCommandTrace }) : null;
     this.#startupReconciliation = reconcilePendingOnStartup === false
       ? Promise.resolve({ reconciled: 0, skipped: true })
       : this.reconcilePendingMcpOperations();
@@ -845,6 +848,8 @@ export class HubMcpService {
       tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A real unresolved process guard requires trusted proof; exact pending withdrawal or squash state can reconcile without inventing one. An already terminal lifecycle settles its original receipt without Git replay.", {
         task_id: { type: "string" },
         operation_request_id: { type: "string" },
+        expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$", description: "Required for deterministic malformed-status settlement; binds the unchanged stored original arguments." },
+        runtime_witness: { type: "object", description: "Existing trusted exact native retirement witness for a malformed original owned by a previous runtime." },
         claim_custody: { type: "object", description: "Explicit RM forward ownership recovery, not historical NO_EFFECT. The default requires exact positive legacy retirement. Separately authorized isolated-source-v1 instead stages an independent full-object source/ref authority and fences legacy SQL writers. Two distinct exact request IDs.",
           properties: { action: { type: "string", enum: ["prepare", "fence"] },
             admission: { type: "string", enum: ["isolated-source-v1"] },
@@ -1527,6 +1532,8 @@ export class HubMcpService {
           workspaceId: context.workspaceId,
           taskId: args.task_id,
           operationRequestId: args.operation_request_id,
+          expectedArgumentsHash: args.expected_arguments_hash,
+          runtimeWitness: args.runtime_witness,
           projectRoot: args.project_root,
           guardId: args.guard_id,
           proofKind: args.proof_kind,
@@ -2176,6 +2183,19 @@ export class HubMcpService {
     initial_native_test: initialNativeTest = null,
     native_resolution_review: nativeResolutionReview = null,
   } = {}, { source = null } = {}) {
+    const validationStarted = performance.now();
+    let workflowStatus;
+    try {
+      workflowStatus = normalizedTaskWorkflowStatus(requiredText(status, "task workflow status", 40));
+    } catch (error) {
+      try { const pending = this.recordCommandTrace({ commandId: operationId, transport: "task-operation",
+        stage: "task-workflow-input-validation", outcome: "failed", monotonicDurationMs: performance.now() - validationStarted,
+        metadata: { valid: 0 } }); pending?.catch?.(() => {}); } catch {}
+      throw new TaskInputValidationError(error.message);
+    }
+    try { const pending = this.recordCommandTrace({ commandId: operationId, transport: "task-operation",
+      stage: "task-workflow-input-validation", outcome: "succeeded", monotonicDurationMs: performance.now() - validationStarted,
+      metadata: { valid: 1 } }); pending?.catch?.(() => {}); } catch {}
     if (initialNativeTest != null && source?.kind !== "initial-native-test") {
       throw new TaskInputValidationError("Initial native Test requires the supported local cutover entrypoint");
     }
@@ -2196,7 +2216,6 @@ export class HubMcpService {
         }
       } catch (error) { throw new TaskInputValidationError(error.message); }
     }
-    const workflowStatus = requiredText(status, "task workflow status", 40);
     const squashValues = [
       squashSourceTaskId, squashSourceTaskRevision, squashBaselineResultCommit,
       squashNewResultCommit, squashDevAfterTree,

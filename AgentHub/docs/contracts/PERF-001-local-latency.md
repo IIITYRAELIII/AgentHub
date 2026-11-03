@@ -1,5 +1,13 @@
 # PERF-001 — Local command latency
 
+Workflow enum validation records a bounded original-ID input phase before the
+lifecycle owner. Deterministic historical malformed-original reconciliation
+separates validation, execution-retirement checks and receipt settlement through
+the existing CommandTrace sink. Only fixed phase/outcome/scalar metadata is
+recorded; arguments, status text and native witness contents are excluded.
+Admission/reply and Git/lease timings retain their existing owners. Nested work
+is not additive wall time and a validation fix is not a database speedup claim.
+
 The startup shell can listen after instance ownership while SQLite integrity is
 pending, using the existing MiniAppServer and browser health polling. The same
 server's later activation keeps its address and auth. Time to listener, first

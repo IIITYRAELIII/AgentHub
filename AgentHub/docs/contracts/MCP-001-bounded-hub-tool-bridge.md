@@ -1,5 +1,33 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Workflow enum validation and original settlement
+
+The MCP status owner validates the workflow enum synchronously before calling
+the lifecycle owner. Its private input error terminalizes the existing admitted
+receipt as failed; identical replay returns that failure without dispatch.
+A downstream error with similar text/name remains potentially partial/unknown.
+
+The existing RM reconciliation owner has a finite protocol-v1 compatibility
+boundary for an ordinary malformed status original: exactly request/Task/status
+and both original CAS fields, with an invalid nonempty enum and no special
+cutover, selected, squash or review arguments. The stored execution binding and
+arguments hash, original actor, configured root and unchanged Task CAS must all
+match. Missing transition/outcome rows are necessary but never sufficient.
+Under existing Task/repository/Await leases the owner also requires no process
+guard and either a joined local execution or the existing trusted exact native
+retirement witness for a previous runtime. It never stops a worker itself.
+
+The existing receipt failure transaction rechecks exact identity, Task CAS and
+lifecycle absence before settlement. This records workflow_input_validation,
+preserves original arguments/execution binding and previous diagnostic, and
+creates no lifecycle outcome, cancellation, global NO_EFFECT proof or replay
+permission. Changed/missing/foreign/undrained evidence stays unknown. Receipt
+persistence failure stays ambiguous. Remove this historical branch only after
+all addressed protocol-v1 malformed originals are terminal and migrated.
+The existing local operation-reconcile CLI accepts --reconcile-arguments for
+the same authenticated RM tool; it grants no separate writer authority.
+See ADR-HUB-408-malformed-workflow-status.md.
+
 `hub_stream_message_send` with ordinary `mode=steer` addresses the destination
 Stream. The common durable message owner resolves its current active managed
 turn or retains that same command in the normal queue. A definitively ended
