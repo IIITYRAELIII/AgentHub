@@ -483,6 +483,15 @@ source custody and active/current/rollback/prepared source/alternate ODB pins
 remain retained. Legacy source.bundle must retire through its existing owner
 first; this repository resource does not silently broaden a bundle grant.
 
+Several original intake records may name the same immutable native capture.
+Retirement still requires exactly one completed record bound to the capture's
+head/tree/staging identity. Earlier prepared/failed records without any target,
+tree or stage root are retained with their exact raw hashes, only after each
+has genuine canonical terminal Task custody. A missing/UNKNOWN original, changed
+prior record, incomplete target tuple or multiple completed records refuses.
+No earlier failure is rewritten or interpreted as no effect; all original
+records remain outside the retired repository (ADR-HUB-385-prior-native-intakes).
+
 Archive intake and pruning intent live in the existing maintenance original.
 Partial deletion and lost reply reconcile only that child and exact archive;
 there is no replacement ID, guessed no-effect, forced process stop or SQL/ref

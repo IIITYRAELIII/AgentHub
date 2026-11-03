@@ -26,6 +26,7 @@ import { synchronizePublishedDev } from "./published-dev-sync.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { OwnedNativeObjectStore, nativeObjectStorageDescriptor } from "./owned-native-object-store.mjs";
 import { MaintenanceOperationStore } from "../persistence/maintenance-operation-store.mjs";
+import { nativeCaptureRetirementEvidence } from "../persistence/native-capture-retirement-evidence.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
   assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, publishedMetadataContext } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
@@ -4119,7 +4120,7 @@ export class TaskGitWorkspaceService {
     await this.#assertNoProcessTreeGuard(taskId);
     await this.#assertRepositoryProcessTreeClear(path.join(root, "repository"));
     const directory = path.join(this.dataDir, "task-native-integrations", normalizedTaskId(taskId));
-    const matches = [];
+    const matches = [], priorPreparedRecords = [];
     for (const key of await readdir(directory, { withFileTypes: true })) {
       if (!key.isDirectory() || key.isSymbolicLink()) throw new Error("Native integration custody directory changed");
       for (const file of await readdir(path.join(directory, key.name), { withFileTypes: true })) {
@@ -4129,14 +4130,23 @@ export class TaskGitWorkspaceService {
         if (!samePath(this.#nativeIntegrationStaging(record).root, root)) continue;
         if (record.kind !== "native-task-integration-v1" || record.snapshot.taskId !== taskId
             || file.name !== createHash("sha256").update(record.operationId).digest("hex") + ".json"
-            || record.target !== state.head || !samePath(record.stageRoot, path.join(root, "repository"))
             || JSON.stringify(this.#nativeIntegrationStaging(record).identity) !== JSON.stringify(state.identity)) throw new Error("Original native capture binding changed");
-        matches.push({ operationId: record.operationId, path: pathname,
-          sha256: createHash("sha256").update(bytes).digest("hex"), tree: record.targetTree, taskBaseCommit: record.snapshot.baseCommit });
+        // A prior intake for this same immutable capture is not its completed
+        // result. Require its genuine terminal Task custody before retaining it
+        // separately; never infer no effect or skip an UNKNOWN/orphan original.
+        nativeCaptureRetirementEvidence(this.dataDir, taskId, record.operationId);
+        const binding = { operationId: record.operationId, path: pathname,
+          sha256: createHash("sha256").update(bytes).digest("hex") };
+        if (["prepared", "failed"].includes(record.phase) && !record.target && !record.targetTree && !record.stageRoot) {
+          priorPreparedRecords.push(binding); continue;
+        }
+        if (record.target !== state.head || !samePath(record.stageRoot, path.join(root, "repository"))) throw new Error("Original native capture binding changed");
+        matches.push({ ...binding, tree: record.targetTree, taskBaseCommit: record.snapshot.baseCommit });
       }
     }
     if (matches.length !== 1) throw new Error("Native capture original is absent or ambiguous");
-    return matches[0];
+    return { ...matches[0], ...(priorPreparedRecords.length ? { priorPreparedRecords:
+      priorPreparedRecords.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) } : {}) };
   }
 
   async verifyNativeCaptureArchiveOwned(params) {

@@ -286,3 +286,43 @@ test("ordinary native archive entries still require their exact owning lease", a
     assert.equal(calls, 1);
   }
 });
+
+test("terminal prepared-only originals preserve their records while one exact completed capture retires", { skip: process.platform !== "win32" }, async t => {
+  let nativeCalls = 0;
+  const f = await fixture(t, { retire: async (...args) => { nativeCalls++; return retireSealedNativeCapture(...args); } });
+  const identity = await f.taskGit.withTaskLock(f.task.id, lease => f.taskGit.nativeCaptureRetirementRecordOwned({ taskId: f.task.id, root: f.capture, state: f.state, lease }));
+  const record = JSON.parse(await readFile(identity.path, "utf8")), previousId = "fixture-earlier-prepared-" + f.task.id;
+  const previous = { ...record, operationId: previousId, phase: "prepared" };
+  delete previous.target; delete previous.targetTree; delete previous.stageRoot;
+  const previousFile = path.join(path.dirname(identity.path), hash(previousId) + ".json");
+  const previousBytes = Buffer.from(JSON.stringify(previous) + "\n"); await writeFile(previousFile, previousBytes);
+  f.catalog.beginMcpOperation({ requestId: previousId, workspaceId: f.workspace.id, actorKind: "authenticated-user",
+    toolName: "hub_task_status_update", argumentsHash: "b".repeat(64),
+    taskExecution: { protocol: "task-operation-interruption-v1", taskId: f.task.id, taskWorkspaceId: f.workspace.id,
+      arguments: { task_id: f.task.id, status: "testing" } } });
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained", "pending original still blocks");
+  f.catalog.failMcpOperation(previousId, Error("retained original failure"));
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  assert.equal(preview.binding.record.operationId, f.originalId);
+  assert.deepEqual(preview.binding.record.priorPreparedRecords, [{ operationId: previousId, path: previousFile, sha256: hash(previousBytes) }]);
+  // A foreign original is not certified merely because a later positive exists.
+  const foreignId = "missing-canonical-prepared", foreignFile = path.join(path.dirname(identity.path), hash(foreignId) + ".json");
+  await writeFile(foreignFile, JSON.stringify({ ...previous, operationId: foreignId }));
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained");
+  await rm(foreignFile);
+  // Two positive originals are still ambiguous, even if their head matches.
+  await writeFile(previousFile, JSON.stringify({ ...record, operationId: previousId }));
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained");
+  await writeFile(previousFile, Buffer.concat([previousBytes, Buffer.from("\n")]));
+  const refused = await f.service.runApproved([{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }]);
+  assert.equal(nativeCalls, 0); assert.equal(refused.reasons["approved-preview-changed"], 1);
+  await writeFile(previousFile, previousBytes);
+  await f.service.runApproved([{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }]);
+  const child = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
+  assert.ok(["partial", "removed"].includes(child.phase), JSON.stringify(child));
+  assert.equal(nativeCalls, 1);
+  assert.deepEqual(await readFile(previousFile), previousBytes);
+  assert.equal(f.catalog.mcpOperation(previousId).status, "failed");
+  assert.equal(f.catalog.mcpOperation(previousId).error, "retained original failure");
+});
