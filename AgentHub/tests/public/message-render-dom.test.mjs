@@ -9,6 +9,8 @@ import { codexAssistantResponseProjection } from "../../src/domain/codex-respons
 import { claudeTranscriptHistory } from "../../src/application/task-history.mjs";
 import { PreTurnInstructionStore } from "../../src/infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { fileURLToPath } from "node:url";
+import { codexTraceEntry } from "../../src/providers/codex/codex-rollout-activity.mjs";
+import { clientPerformanceTraceSpans } from "../../src/application/client-performance-trace.mjs";
 
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
 const TEST_THEME_CATALOG = JSON.stringify([{
@@ -1018,4 +1020,130 @@ test("citation navigation materializes a deferred source before range lookup", a
   } finally {
     await page.close();
   }
+});
+
+test("active commentary quote survives an exact group rerender while full source read is pending",{timeout:25000},async()=>{
+  const page=await browser.newPage({viewport:{width:1366,height:850}});
+  try {
+    await openWebApp(page); await seedMessages(page,[],{running:true,status:'running'});
+    const live={provider:'codex',threadId:'thread-1',turnId:'active-turn',itemId:'active-item',author:'Agent',text:'',
+      activityGroups:[{id:'commentary:1',reasoning:'Сервисные карточки релизов остались открыты с устаревшими записями.',activities:[]}]};
+    await page.evaluate(live=>{
+      window.__activeQuoteLive=live;
+      window.AgentHub.on('history:trace-page',({resolve})=>{window.__resolveActiveQuote=resolve;});
+      window.AgentHub.setLive('task-1',live);
+    },live);
+    await page.locator('[data-live-trace] .turn-trace-reasoning').waitFor();
+    await page.evaluate(()=>{
+      const surface=document.querySelector('[data-live-trace] .turn-trace-reasoning');
+      const message=surface.closest('[data-role]');
+      window.__activeQuoteResult=responseAnnotationFromSelection({message,surface,quote:surface.textContent.trim(),offsets:{start:0,end:surface.textContent.trim().length}});
+    });
+    assert.equal(await page.evaluate(()=>typeof window.__resolveActiveQuote),'function');
+    await page.evaluate(()=>{
+      window.AgentHub.setLive('task-1',{...window.__activeQuoteLive,activityGroups:[...window.__activeQuoteLive.activityGroups,{id:'commentary:2',reasoning:'Next stage',activities:[]}]});
+      window.__resolveActiveQuote({groups:window.__activeQuoteLive.activityGroups});
+    });
+    const result=await page.evaluate(()=>window.__activeQuoteResult);
+    assert.ok(result?.source,'unchanged exact commentary must remain quotable after a neighboring group rerender');
+    assert.equal(result.source.traceGroupId,'commentary:1'); assert.equal(result.source.itemId,'active-item');
+    assert.equal(result.quote,live.activityGroups[0].reasoning);
+  } finally {await page.close();}
+});
+
+test("active quote binds native reasoning before response item and survives draft send completed history and reload",{timeout:25000},async()=>{
+  const group=codexTraceEntry({type:'response_item',payload:{type:'reasoning',id:'native-reasoning-source',summary:[{type:'summary_text',text:'Current **exact** commentary 🦊.'}]}});
+  for(const width of [1366,390]) {
+    const page=await browser.newPage({viewport:{width,height:850}}); page.setDefaultTimeout(4000);
+    try {
+      await openWebApp(page);await seedMessages(page,[],{running:true,status:'running'});
+      if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      const live={provider:'codex',threadId:'thread-1',turnId:'quote-turn',itemId:null,author:'Agent',text:'',activityGroups:[group]};
+      await page.evaluate(live=>{
+        window.__quoteLive=live;window.__quoteSends=[];
+        window.AgentHub.on('message:send',detail=>window.__quoteSends.push(detail));
+        window.AgentHub.on('history:trace-page',({identity,tracePage,resolve})=>{window.__nativeQuoteRequest={identity,tracePage};window.__nativeQuoteResolve=resolve;});
+        window.AgentHub.setLive('task-1',live);
+      },live);
+      await page.locator('[data-live-trace] .turn-trace-reasoning').waitFor();
+      await page.evaluate(()=>{
+        const surface=document.querySelector('[data-live-trace] .turn-trace-reasoning');
+        const api=window.AgentHubMessageDisclosure;const range=api.domRangeFromOffsets(surface,0,surface.textContent.length);
+        getSelection().removeAllRanges();getSelection().addRange(range);
+        window.__nativeQuotePending=addAnnotation(selectedQuotableSelection());
+      });
+      assert.equal(await page.evaluate(()=>typeof window.__nativeQuoteResolve),'function');
+      await page.evaluate(()=>{
+        window.AgentHub.setLive('task-1',{...window.__quoteLive,itemId:'later-answer-item',text:'Later answer',activityGroups:[...window.__quoteLive.activityGroups,{id:'reasoning:next',sourceItemId:'next',reasoning:'Next stage',activities:[]}]});
+        window.__nativeQuoteResolve({groups:window.__quoteLive.activityGroups});
+      });
+      assert.equal(await page.evaluate(()=>window.__nativeQuotePending),true);
+      assert.equal(await page.locator('[data-annotations] .annotation-quote').textContent(),'Current exact commentary 🦊.');
+      await page.locator('[data-annotation-comment-index="0"]').fill('Verify this exact source');
+      await page.locator('[data-composer-input]').fill('Check'); await page.locator('[data-composer-input]').press('Enter');
+      await page.waitForFunction(()=>window.__quoteSends.length===1);
+      const sent=await page.evaluate(()=>window.__quoteSends[0]);const annotation=sent.annotations[0];
+      assert.equal(annotation.source.itemId,'native-reasoning-source');assert.equal(annotation.source.traceGroupId,group.id);
+      assert.equal(annotation.source.turnId,'quote-turn');assert.equal(annotation.source.provider,'codex');
+      const verified=await page.evaluate(async({group,annotation})=>{
+        const api=window.AgentHubMessageDisclosure;const message={provider:'codex',threadId:'thread-1',turnId:'quote-turn',itemId:'later-answer-item',role:'agent',activityGroups:[group]};
+        const surface=document.querySelector('[data-live-trace] .turn-trace-reasoning');
+        return api.responseAnnotationSourceHashesMatch(annotation.source,{contentHash:await api.responseAnnotationSha256(api.responseAnnotationSourceContent(message,annotation.source)),surfaceHash:await api.responseAnnotationSha256(surface.textContent),selectionHash:await api.responseAnnotationSha256(annotation.quote)});
+      },{group,annotation});assert.equal(verified,true);
+      const source={id:'completed-source',provider:'codex',threadId:'thread-1',turnId:'quote-turn',itemId:'later-answer-item',role:'agent',text:'Completed',activityGroups:[group]};
+      const user={id:'quoted-user',role:'user',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'user-item',text:'Check',responseAnnotations:[{text:annotation.quote,annotation:annotation.annotation,source:annotation.source}]};
+      const projection=codexAssistantResponseProjection(':codex-annotation{index="1"} Verified');
+      const answer={id:'linked-answer',role:'agent',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'answer-item',...projection};
+      await page.reload();await page.waitForFunction(()=>window.AgentHub);
+      await seedMessages(page,[source,user,answer]);if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      await page.evaluate(group=>window.AgentHub.on('history:trace-page',({resolve})=>resolve({groups:[group]})),group);
+      await page.locator('[data-message-id="linked-answer"] [data-response-citation-index="1"]').click();
+      await page.locator('[data-message-id="quoted-user"] .is-citation-target').waitFor();
+      await page.locator('[data-message-id="quoted-user"] [data-response-annotation-source]').click();
+      await page.locator('[data-message-id="completed-source"] .msg-source-citation-highlight').first().waitFor();
+      assert.equal((await page.locator('[data-message-id="completed-source"] .msg-source-citation-highlight').allTextContents()).join(''),annotation.quote);
+      if(process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({path:`${process.env.AGENT_HUB_QA_SCREENSHOT}-active-quote-${width}.png`});
+    } finally {await page.close();}
+  }
+});
+
+test("active quote refuses missing foreign changed and mismatched sources with bounded payload-free reasons",{timeout:20000},async()=>{
+  const page=await browser.newPage();
+  try {
+    await openWebApp(page);await seedMessages(page,[],{running:true,status:'running'});
+    const results=await page.evaluate(async()=>{
+      const events=[];window.AgentHubCommandTrace.bindReporter(async({events:batch})=>events.push(...batch));
+      const group={id:'reasoning:native',sourceItemId:'native',reasoning:'Private selected content',activities:[]};
+      const original={provider:'codex',threadId:'thread-1',turnId:'active-turn',itemId:null,text:'',activityGroups:[group]};
+      let resolve,reject;window.AgentHub.on('history:trace-page',p=>{resolve=p.resolve;reject=p.reject;});
+      const refusals=[];
+      for(const kind of ['missing','foreign','changed-surface','new-native-item','wrong-page-item','wrong-group','wrong-range','read-failed']) {
+        resolve=reject=null;
+        const live=kind==='missing'?{...original,activityGroups:[{id:group.id,reasoning:group.reasoning,activities:[]}]}:original;
+        window.AgentHub.setLive('task-1',live);
+        const surface=document.querySelector('[data-live-trace] .turn-trace-reasoning');
+        const promise=responseAnnotationFromSelection({message:surface.closest('[data-role]'),surface,quote:group.reasoning,offsets:{start:0,end:group.reasoning.length-(kind==='wrong-range'?1:0)}});
+        if(resolve) {
+          if(kind==='foreign')window.AgentHub.setLive('task-1',{...live,turnId:'foreign-turn'});
+          if(kind==='changed-surface')window.AgentHub.setLive('task-1',{...live,activityGroups:[{...group,reasoning:'Changed private content'}]});
+          if(kind==='new-native-item')window.AgentHub.setLive('task-1',{...live,activityGroups:[{...group,sourceItemId:'replacement'}]});
+          if(kind==='read-failed')reject(new Error('private dependency details'));
+          else resolve({groups:[{...group,...(kind==='wrong-page-item'?{sourceItemId:'foreign'}:{}),...(kind==='wrong-group'?{id:'foreign-group'}:{})}]});
+        }
+        refusals.push({kind,result:await promise});
+      }
+      for(let batch=0;batch<16;batch++) {
+        await window.AgentHubCommandTrace.flush();
+        const state=window.AgentHubCommandTrace.diagnostics();
+        if(!state.pending&&!state.flushing)break;
+      }
+      return {refusals,events:events.filter(e=>e.metadata?.action==='annotation-source'),draftCount:document.querySelectorAll('[data-annotations] .annotation-quote').length};
+    });
+    assert.equal(results.draftCount,0);assert.ok(results.refusals.every(x=>x.result===null));
+    assert.equal(results.events.length,8);
+    const spans=clientPerformanceTraceSpans({events:results.events});
+    assert.deepEqual(spans.map(x=>x.metadata.decision),['source-unavailable','source-replaced','source-replaced','source-replaced','source-item-mismatch','source-group-mismatch','selected-range-mismatch','source-read-failed']);
+    assert.ok(spans.every(x=>x.outcome==='failed'));
+    assert.doesNotMatch(JSON.stringify(results.events),/Private selected|Changed private|dependency details/u);
+  } finally {await page.close();}
 });

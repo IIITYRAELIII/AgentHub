@@ -9653,7 +9653,18 @@ function sourceMessageForSelection(selection) {
   ));
   if (index < 0) return null;
   const group = traceDetailSources.get(selection.surface);
-  return { message: group ? { ...messages[index], activityGroups: [group] } : messages[index], root: renderedRoot };
+  const groupIdentity = group
+    ? responseAnnotationSourceIdentity({ ...messages[index], activityGroups: [group] }, { traceGroupId: group.id })
+    : null;
+  return { message: group ? { ...messages[index], ...(groupIdentity ? { itemId: groupIdentity.itemId } : {}), activityGroups: [group] } : messages[index], root: renderedRoot };
+}
+
+function responseAnnotationRefusal(decision) {
+  try {
+    window.AgentHubCommandTrace?.record("ui-interaction", "annotation-source", 0, undefined,
+      { decision }, Date.now(), "failed");
+  } catch { /* A bounded content-free diagnostic cannot affect the refusal. */ }
+  return null;
 }
 
 async function responseAnnotationFromSelection(selection) {
@@ -9663,27 +9674,54 @@ async function responseAnnotationFromSelection(selection) {
   const locator = responseAnnotationSurfaceLocator(selection?.message, selection?.surface);
   const start = Number(selection?.offsets?.start);
   const end = Number(selection?.offsets?.end);
-  if (!quote || !projection || !identity || !locator
-    || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+  if (!quote) return responseAnnotationRefusal("empty-selection");
+  if (!projection) return responseAnnotationRefusal("source-unavailable");
+  if (!identity) return responseAnnotationRefusal("item-identity-unavailable");
+  if (!locator) return responseAnnotationRefusal("surface-unavailable");
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return responseAnnotationRefusal("invalid-range");
   let sourceMessage = projection.message;
   let sourceSurface = selection.surface;
+  const selectedTaskId = state.selectedId;
+  const selectedSurfaceText = String(sourceSurface.textContent ?? "");
+  // Streaming may replace the trace DOM while the exact source page is read.
+  // Rebind only the same unique provider item and unchanged rendered group.
+  const currentTraceSelection = () => {
+    if (state.selectedId !== selectedTaskId) return null;
+    const messages = selectedResponseAnnotationSourceMessages().flatMap((message, index) => (
+      responseAnnotationSourceIdentity(message, { traceGroupId: locator.traceGroupId, itemId: identity.itemId })?.messageKey === identity.messageKey
+        ? [{ message, index }] : []
+    ));
+    if (messages.length !== 1) return null;
+    const root = renderedResponseAnnotationSourceRoot(MessageView.messageKey(messages[0].message, messages[0].index));
+    if (!root?.isConnected) return null;
+    const surfaces = Array.from(root.querySelectorAll(".turn-trace-reasoning"))
+      .filter((node) => node.dataset.traceGroupId === locator.traceGroupId);
+    if (!surfaces.length || surfaces.some((node) => node.textContent !== selectedSurfaceText)) return null;
+    return messages[0].message;
+  };
   if (locator.traceGroupId && identity.provider === "codex") {
     // Durable history is a bounded preview, including legacy rows with no
     // truncation marker. Bind new exact-group quotes to the source, not that copy.
-    const page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId });
-    if (!selection.surface.isConnected || !projection.root.isConnected
-      || page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return null;
-    sourceMessage = { ...sourceMessage, activityGroups: page.groups };
+    let page;
+    try { page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId }); }
+    catch { return responseAnnotationRefusal("source-read-failed"); }
+    const current = currentTraceSelection();
+    if (!current) return responseAnnotationRefusal("source-replaced");
+    if (page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return responseAnnotationRefusal("source-group-mismatch");
+    const selectedNativeItemId = traceDetailSources.get(selection.surface)?.sourceItemId;
+    if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return responseAnnotationRefusal("source-item-mismatch");
+    sourceMessage = { ...current, activityGroups: page.groups };
     sourceSurface = traceReasoningNode(page.groups[0]);
     // A cut Markdown construct may render differently. Do not guess a new range.
-    if (!sourceSurface.textContent.startsWith(selection.surface.textContent.trimEnd())
-      || domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return null;
+    if (!sourceSurface.textContent.startsWith(selectedSurfaceText.trimEnd())) return responseAnnotationRefusal("rendered-prefix-mismatch");
+    if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return responseAnnotationRefusal("selected-range-mismatch");
   }
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
-    responseAnnotationSha256(responseAnnotationSourceContent(sourceMessage, locator)),
+    responseAnnotationSha256(responseAnnotationSourceContent(sourceMessage, { ...locator, itemId: identity.itemId })),
     responseAnnotationSha256(sourceSurface.textContent),
     responseAnnotationSha256(quote),
   ]);
+  if (locator.traceGroupId && identity.provider === "codex" && !currentTraceSelection()) return responseAnnotationRefusal("source-replaced");
   const source = normalizedResponseAnnotationSource({
     version: 1,
     ...identity,
@@ -9694,7 +9732,7 @@ async function responseAnnotationFromSelection(selection) {
     surfaceHash,
     selectionHash,
   });
-  return source ? { quote, annotation: "", source } : null;
+  return source ? { quote, annotation: "", source } : responseAnnotationRefusal("hash-or-locator-unavailable");
 }
 
 function duplicateResponseAnnotation(left, right) {
@@ -9718,7 +9756,7 @@ async function addAnnotation(selection) {
   try {
     next = await responseAnnotationFromSelection(selection);
   } catch {
-    next = null;
+    next = responseAnnotationRefusal("source-error");
   }
   if (!next) {
     showToast("Не удалось подтвердить источник выделенного фрагмента.");

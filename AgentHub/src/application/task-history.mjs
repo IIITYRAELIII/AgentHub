@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { boundedTraceId } from "../domain/codex-trace-budget.mjs";
 import { normalizeProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
 import { codexSubagentActivity } from "../domain/run-activity.mjs";
 import {
@@ -14,7 +15,7 @@ import {
 } from "../domain/claude-transcript.mjs";
 import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
 import { codexAssistantResponseProjection } from "../domain/codex-response-annotation.mjs";
-import { normalizedResponseAnnotations } from "../domain/response-annotation-source.mjs";
+import { normalizedResponseAnnotations, normalizedResponseAnnotationItemId } from "../domain/response-annotation-source.mjs";
 import {
   hasCanonicalUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -364,7 +365,8 @@ export function codexTurnActivityGroups(turn) {
     const reasoning = codexVisibleReasoning(item);
     if (reasoning) {
       current = {
-        id: `${item?.type === "agentMessage" ? "commentary" : "reasoning"}:${String(item.id ?? index)}`,
+        id: `${item?.type === "agentMessage" ? "commentary" : "reasoning"}:${boundedTraceId(item.id ?? index)}`,
+        ...(normalizedResponseAnnotationItemId(item.id) ? { sourceItemId: normalizedResponseAnnotationItemId(item.id) } : {}),
         reasoning,
         activities: [],
       };
