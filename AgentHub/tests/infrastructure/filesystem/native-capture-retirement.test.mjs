@@ -244,6 +244,37 @@ test("archive tag-anchor loss and GC preserve the SAME unknown original and sour
   await assert.rejects(objects.readArchive(archive), /[Aa]rchive.*(?:root|anchor)/u);
 });
 
+test("slow native preview persists unadmitted intake then performs fresh real owner retirement on SAME original", { skip: process.platform !== "win32" }, async t => {
+  let nativeCalls = 0, clock = 0, previews = 0;
+  const f = await fixture(t, { retire: async (...args) => { nativeCalls++; return retireSealedNativeCapture(...args); } });
+  const journal = await readFile(path.join(f.capture, "merge.json"));
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  const ownerPreview = f.nativeOwner.preview.bind(f.nativeOwner);
+  f.nativeOwner.preview = async input => { previews++; const p = await ownerPreview(input); clock += 20_001; return p; };
+  const make = store => new StorageRetentionService({ store, owners: [f.nativeOwner], clock: () => clock,
+    readContext: async () => ({ ready: true, releaseId: "fixture", isolated: false, busy: false }),
+    withLease: fn => withInterprocessLocks([path.join(f.dataDir, "storage-retention")], fn) });
+  const input = [{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }];
+  const first = make(f.store); await first.runApproved(input); await first.close();
+  const original = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
+  assert.equal(original.metadata.admitted, false); assert.equal(original.metadata.previewCompleted, true);
+  assert.equal(nativeCalls, 0);
+  const restarted = new MaintenanceOperationStore({ dataDir: f.dataDir });
+  const second = make(restarted);
+  try { await second.runApproved(input); } finally { await second.close(); }
+  const row = restarted.get(original.operationId);
+  assert.equal(previews, 1); assert.equal(nativeCalls, 1);
+  assert.equal(row.metadata.admitted, true);
+  assert.ok(["partial", "removed"].includes(row.phase), JSON.stringify(row));
+  assert.deepEqual(row.metadata.binding, original.metadata.binding);
+  assert.ok(row.metadata.captureArchive);
+  const objects = new OwnedNativeObjectStore({ dataDir: f.dataDir, gitAt: git });
+  const archived = await objects.readArchive(row.metadata.captureArchive);
+  assert.equal(archived.manifest.binding.state.head, f.state.head);
+  assert.deepEqual(await readFile(path.join(f.capture, "merge.json")), journal);
+});
+
 test("ordinary native archive entries still require their exact owning lease", async () => {
   const owner = new TaskGitWorkspaceService({ dataDir: os.tmpdir(), runCommand: () => assert.fail("No Git before lease") });
   for (const method of ["nativeCaptureRetirementRecordOwned", "verifyNativeCaptureArchiveOwned"]) {

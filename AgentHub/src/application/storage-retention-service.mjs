@@ -154,6 +154,15 @@ export class StorageRetentionService {
         } catch { result = { status: "unknown", reason: "owner-outcome-unknown" }; }
         return { child, result: bounded(result) };
       }
+      // This is an intake checkpoint, not deletion authority. Every owner's
+      // prune still revalidates its exact binding under its own resource lease.
+      if (child.metadata.previewCompleted === true && child.metadata.previewReleaseId === context.releaseId
+          && JSON.stringify(candidate) === JSON.stringify(child.metadata.candidate)) {
+        if (approvedBinding && JSON.stringify(approvedBinding) !== JSON.stringify(child.metadata.binding)) {
+          return { child, result: { status: "unknown", reason: "approved-original-binding-changed" } };
+        }
+        return { child, prepared: { candidate: child.metadata.candidate, binding: child.metadata.binding, scope } };
+      }
     }
     const preview = await owner.preview({ candidate, context });
     if (preview?.status !== "eligible") return { child, result: { status: "retained", reason: reason(preview?.reason) } };
@@ -224,16 +233,24 @@ export class StorageRetentionService {
       if (step.prepared) {
         const admission = await this.readContext();
         if (!admission?.ready || admission.isolated || admission.busy || admission.releaseId !== context.releaseId
-            || (this.#closed || this.isStopping()) || this.clock() - started >= this.budgetMs) return false;
+            || (this.#closed || this.isStopping())) return false;
         if (state.pending.length >= 8 && !state.pending.some(p => p.operationId === step.child?.operationId)) {
           account({ status: "retained", reason: "pending-owner-budget" }); return true;
         }
         let child = step.child ?? await this.#create(lease, { kind: KIND, ...SCOPE, threadId: step.prepared.scope,
-          metadata: { version: STORAGE_RETENTION_VERSION, owner: owner.id, ...step.prepared, admitted: false } });
+          metadata: { version: STORAGE_RETENTION_VERSION, owner: owner.id, ...step.prepared, admitted: false,
+            previewCompleted: true, previewReleaseId: context.releaseId } });
+        if (!child.metadata.previewCompleted || child.metadata.previewReleaseId !== context.releaseId) {
+          child = await this.#update(child, { status: running(child), phase: "previewed",
+            metadata: { previewCompleted: true, previewReleaseId: context.releaseId } }, lease);
+        }
         if (!state.pending.some(p => p.operationId === child.operationId)) {
           state.pending.push({ operationId: child.operationId, owner: owner.id, candidate: step.prepared.candidate });
           await save(); // The discoverable original intent precedes every effect.
         }
+        // Persist completed work even when preview consumed this pass. No new
+        // artifact effect is admitted after the existing cooperative budget.
+        if (this.clock() - started >= this.budgetMs) return false;
         await lease.assertOwned();
         child = await this.#update(child, { status: running(child), phase: "pruning", metadata: { admitted: true } }, lease);
         const effectContext = await this.readContext();

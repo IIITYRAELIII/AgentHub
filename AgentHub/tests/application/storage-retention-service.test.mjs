@@ -398,3 +398,81 @@ test("coalesced run and shutdown wait for in-flight owner; stop admits no next a
   release(); await close; await first;
   assert.equal(f.calls.length, 1);
 });
+
+test("slow approved preview keeps a SAME durable unadmitted intent for the next bounded pass", async t => {
+  let clock = 0, previews = 0;
+  const f = await setup(t, { clock: () => clock, maxUnits: 1 });
+  f.owner.preview = async ({ candidate }) => { previews++; clock += 20_001; return { status: "eligible", binding: { id: candidate.id } }; };
+  const input = [{ ownerId: f.owner.id, candidate: { id: "slow", cursor: "slow" }, binding: { id: "slow" } }];
+  const first = f.make(); await first.runApproved(input); await first.close();
+  assert.equal(f.calls.length, 0, "elapsed admission budget still forbids an effect in the first pass");
+  const pending = f.store.get("storage-retention:v1").metadata.pending;
+  assert.equal(pending.length, 1, "completed preview must survive its spent budget instead of restarting forever");
+  const original = f.store.get(pending[0].operationId);
+  assert.equal(original.metadata.admitted, false); assert.equal(original.metadata.previewCompleted, true);
+  const restarted = new MaintenanceOperationStore({ dataDir: f.root });
+  const second = f.make({ store: restarted }); await second.runApproved(input); await second.close();
+  assert.equal(previews, 1, "only the owning prune performs its fresh final validation after durable preview");
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].operationId, original.operationId);
+  assert.equal(f.store.get(original.operationId).status, "succeeded");
+});
+
+test("prepared retention intent still refuses lost readiness, changed approval and fresh owner drift", async t => {
+  for (const mode of ["unready", "approval", "owner"]) {
+    let clock = 0;
+    const f = await setup(t, { clock: () => clock, maxUnits: 1 });
+    f.owner.preview = async ({ candidate }) => { clock += 20_001; return { status: "eligible", binding: { id: candidate.id } }; };
+    const input = [{ ownerId: f.owner.id, candidate: { id: "slow", cursor: "slow" }, binding: { id: "slow" } }];
+    await f.make().runApproved(input);
+    const originalId = f.store.get("storage-retention:v1").metadata.pending[0].operationId;
+    if (mode === "unready") f.context.ready = false;
+    if (mode === "approval") input[0].binding = { id: "foreign" };
+    if (mode === "owner") f.owner.prune = async () => ({ status: "retained", reason: "fresh-owner-source-changed" });
+    await f.make().runApproved(input);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.store.latestStorageArtifactReadonly(f.owner.id, "slow").operationId, originalId);
+  }
+});
+
+test("preview intake recovers child-before-parent reply loss and re-previews release drift on SAME identity", async t => {
+  for (const mode of ["reply", "release", "background"]) {
+    let clock = 0, previews = 0, creates = 0;
+    const f = await setup(t, { clock: () => clock, maxUnits: 1 });
+    f.owner.preview = async ({ candidate }) => {
+      previews++; clock += 20_001;
+      return { status: "eligible", binding: { id: candidate.id } };
+    };
+    const input = [{ ownerId: f.owner.id, candidate: { id: "a", cursor: "a" }, binding: { id: "a" } }];
+    const create = f.store.create.bind(f.store);
+    f.store.create = value => { if (value.operationId !== "storage-retention:v1") creates++; return create(value); };
+    const transition = f.store.transition.bind(f.store);
+    let lost = false;
+    f.store.transition = (id, patch, options) => {
+      if (mode === "reply" && !lost && id === "storage-retention:v1" && patch.metadata?.pending?.length) {
+        lost = true; throw Error("lost before parent checkpoint");
+      }
+      return transition(id, patch, options);
+    };
+    const first = f.make();
+    const run = service => mode === "background" ? service.runOnce() : service.runApproved(input);
+    if (mode === "reply") await assert.rejects(run(first), /lost before parent/u);
+    else await run(first);
+    await first.close();
+    assert.equal(f.calls.length, 0);
+    const original = f.store.latestStorageArtifactReadonly(f.owner.id, "a");
+    assert.equal(original.metadata.admitted, false);
+    if (mode === "release") f.context.releaseId = "replacement";
+    const restored = new MaintenanceOperationStore({ dataDir: f.root });
+    const second = f.make({ store: restored });
+    await run(second); await second.close();
+    if (mode === "release") {
+      assert.equal(f.calls.length, 0, "fresh preview spent the new release's pass budget");
+      const third = f.make({ store: restored }); await run(third); await third.close();
+    }
+    assert.equal(previews, mode === "release" ? 2 : 1);
+    assert.equal(creates, 1);
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].operationId, original.operationId);
+    assert.equal(restored.get(original.operationId).status, "succeeded");
+  }
+});

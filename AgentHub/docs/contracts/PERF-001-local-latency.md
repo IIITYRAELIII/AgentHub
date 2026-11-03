@@ -24,7 +24,11 @@ This is not a claim that any historical BITS/Edge holder has been identified.
 
 Policy v1 admits at most three artifact units per pass and checks a cooperative
 20-second budget between units, with bounded metadata/head lists/file size and
-persisted discovery progress. It does not abandon an in-flight destructive child
+persisted discovery progress. It does not discard a completed eligible preview merely because admission's pass budget
+expired. The existing canonical child may retain that preview as unadmitted
+intake progress for the next bounded pass; the artifact owner still performs
+fresh exact validation before its effect. No deadline is increased or bypassed.
+It does not abandon an in-flight destructive child
 or claim that hashing a large admitted transport has a hard 20-second deadline.
 Owner discovery reads a flat artifact directory; no per-turn recursive scan of
 archives, history or user work is introduced. Runtime health exposes cached

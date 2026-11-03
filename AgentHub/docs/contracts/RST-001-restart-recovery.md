@@ -16,8 +16,15 @@ cleanup owners. Active user work defers admission. Storage maintenance reuses th
 existing maintenance-operation store in its own runtime scope; it is neither a
 user turn, a dispatch reservation nor a restart UI marker.
 
-Bounded owner discovery and previews precede durable artifact admission. A lost
-reply remains with the SAME original child and is reconciled, never replayed as a
+Bounded owner discovery and previews precede durable artifact admission. An
+eligible preview whose pass budget is spent may persist on the SAME canonical
+unadmitted child and bounded parent pending list. It is reusable only for the
+same runtime release, exact candidate and approved binding. It never replaces
+the artifact owner's fresh prune validation or grants authority after the
+cooperative admission budget. Restart recovers that child through the existing
+store; release drift requires a new preview on that SAME unadmitted identity.
+An admitted or uncertain effect still follows original-owner reconciliation.
+A lost reply remains with the SAME original child and is reconciled, never replayed as a
 new delete. Unknown resources do not starve every other owner. Shutdown stops new
 admission and drains the actual effect before closing stores or releasing the
 instance lock; a timeout does not prove the child stopped. Policy v1 owns
