@@ -152,3 +152,49 @@ test("the same listener activates guarded runtime routes only at ordinary start"
   assert.equal((await (await fetch(address.url + "health")).json()).ready, false);
   assert.throws(() => server.configureRuntime({ journalDatabase: journal }), /already configured/);
 });
+
+test("a failed listener drain joins its sibling and cannot release the instance owner", async () => {
+  const databaseFailure = Object.assign(new Error("inspection unavailable"), { code: "EIO" });
+  const closeFailure = new Error("listener drain unknown");
+  let released = false;
+  const closed = [];
+  const { createHubInfrastructure } = await importCompositionWithPorts(
+    new URL("../../src/composition/infrastructure-composition.mjs", import.meta.url), {
+      "node:fs/promises": { mkdir: async () => {} },
+      "../infrastructure/persistence/rotating-log.mjs": { installRotatingConsole() {} },
+      "../infrastructure/diagnostics/sentry-diagnostics.mjs": { sentryDiagnostics: {
+        configure() {}, captureException() {},
+      } },
+      "./command-trace-composition.mjs": { ...startupTrace,
+        measureStartupBeforeTrace: (stage, operation, options) => startupTrace.measureStartupBeforeTrace(
+          stage, operation, { ...options, logger: { info() {} } }),
+      },
+      "../infrastructure/process/instance-lock.mjs": { SingleInstanceGuard: class {
+        instanceToken = "fixture";
+        async acquire() {}
+        async release() { released = true; }
+      } },
+      "../infrastructure/persistence/shared-sqlite-recovery.mjs": { SharedSqliteRecoveryCoordinator: class {
+        async prepare() { throw databaseFailure; }
+      } },
+      "../interfaces/web/mini-app-server.mjs": { MiniAppServer: class {
+        constructor(options) { this.public = options.requireTelegramAuth === true; }
+        async start() {}
+        async close() { closed.push(this.public); if (!this.public) throw closeFailure; }
+      } },
+    });
+  await assert.rejects(createHubInfrastructure({
+    config: { dataDir: "owned-fixture", projectRoot: "owned-fixture", diagnostics: { sentry: {} },
+      components: {}, miniApp: { enabled: true, host: "127.0.0.1", port: 0,
+        quickTunnel: { enabled: true, publicPort: 0 } }, projects: [] },
+    agentHubRoot: "owned-fixture", runtimeCommandRoot: "owned-fixture",
+    journalDatabaseFile: "owned-fixture/journal.sqlite", instanceLockFile: "owned-fixture/instance.lock",
+  }), error => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.cause, databaseFailure);
+    assert.deepEqual(error.errors, [databaseFailure, closeFailure]);
+    return true;
+  });
+  assert.deepEqual(closed.sort(), [false, true]);
+  assert.equal(released, false);
+});
