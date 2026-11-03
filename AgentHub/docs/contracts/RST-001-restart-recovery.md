@@ -40,7 +40,9 @@ manifest reads and the existing native per-batch content guards remain owners.
 See ADR-HUB-363-source-free-runtime-pins. The same owner also permits only
 the exact compile-proven historical Whisper cache described
 by REL-001/ADR-HUB-385-generated-runtime-cache. It retires before its manifest
-source in the SAME original batch, so recovery needs no persistent cache waiver.
+source in the SAME original batch. The existing pruning record retains exact
+pre-unlink directory custody to reconcile cache/directory reply loss; it grants
+no name-based empty-directory waiver or separate ledger.
 The manifest, pointer custody, UNKNOWN interpretation and native batch bounds
 remain unchanged. Unknown or foreign generated data still refuses.
 The reviewed owner-list append

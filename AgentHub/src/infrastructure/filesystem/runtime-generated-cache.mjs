@@ -73,26 +73,45 @@ async function compileMatches(pythonExe, source, cache, sourceName, cacheName) {
 }
 
 /** Exact historical Whisper cache only; unknown data remains a native refusal. */
-export async function verifyRuntimeGeneratedCache(root, binding, pythonExe = "") {
+export async function verifyRuntimeGeneratedCache(root, binding, pythonExe = "", custody = null) {
   const directory = path.join(root, "__pycache__");
-  const dir = await lstat(directory).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+  const dir = await lstat(directory, { bigint: true }).catch(error => { if (error.code === "ENOENT") return null; throw error; });
   if (!dir) return null;
   if (!dir.isDirectory() || dir.isSymbolicLink()) throw Error("runtime-generated-cache-directory-refused");
   const { manifest, sha256 } = await readRuntimeManifest(root);
   if (sha256 !== binding.manifestSha256) throw Error("runtime-generated-cache-manifest-changed");
   const entries = await readdir(directory);
+  const directoryIdentity = { directoryDev: String(dir.dev), directoryIno: String(dir.ino),
+    directoryBirthFileTime: String(dir.birthtimeNs / 100n + 116444736000000000n) };
+  const sourceEntry = manifest.files.filter(entry => entry.path === "whisper_runtime.py");
+  const checkSource = async () => {
+    if (sourceEntry.length !== 1) throw Error("runtime-generated-cache-source-unproven");
+    const source = await plain(path.join(root, "whisper_runtime.py"));
+    if (hash(source.bytes) !== sourceEntry[0].sha256 || source.bytes.length !== sourceEntry[0].bytes) {
+      throw Error("runtime-generated-cache-source-changed");
+    }
+    return source;
+  };
+  if (entries.length === 0) {
+    // Only an admitted original's persisted, exact pre-unlink directory proof
+    // can recover this gap. An arbitrary empty directory is never adopted.
+    if (custody?.version !== 1 || custody.empty !== false || custody.source !== "whisper_runtime.py"
+        || !/^__pycache__\/whisper_runtime\.cpython-\d+\.pyc$/u.test(custody.path ?? "")
+        || Object.keys(directoryIdentity).some(key => directoryIdentity[key] !== custody[key])) {
+      throw Error("runtime-generated-cache-empty-custody-required");
+    }
+    await checkSource();
+    const proof = Object.freeze({ ...custody, empty: true });
+    proofs.set(proof, bindingKey(root, binding));
+    return proof;
+  }
   if (entries.length !== 1 || !/^whisper_runtime\.cpython-\d+\.pyc$/u.test(entries[0])) {
     throw Error("runtime-generated-cache-directory-refused");
   }
   const relative = "__pycache__/" + entries[0];
   if (manifest.files.some(entry => entry.path.toLowerCase() === relative.toLowerCase())) return null;
-  const sourceEntry = manifest.files.filter(entry => entry.path === "whisper_runtime.py");
-  if (sourceEntry.length !== 1) throw Error("runtime-generated-cache-source-unproven");
   const source = path.join(root, "whisper_runtime.py"), cache = path.join(directory, entries[0]);
-  const beforeSource = await plain(source), beforeCache = await plain(cache);
-  if (hash(beforeSource.bytes) !== sourceEntry[0].sha256 || beforeSource.bytes.length !== sourceEntry[0].bytes) {
-    throw Error("runtime-generated-cache-source-changed");
-  }
+  const beforeSource = await checkSource(), beforeCache = await plain(cache);
   await compileMatches(pythonExe, beforeSource, beforeCache, source, entries[0]);
   const afterSource = await plain(source), afterCache = await plain(cache);
   if (beforeSource.identity !== afterSource.identity || beforeCache.identity !== afterCache.identity
@@ -100,8 +119,10 @@ export async function verifyRuntimeGeneratedCache(root, binding, pythonExe = "")
     throw Error("runtime-generated-cache-proof-changed");
   }
   const info = beforeCache.info;
-  const proof = Object.freeze({ path: relative, source: "whisper_runtime.py", sha256: hash(beforeCache.bytes), bytes: beforeCache.bytes.length,
+  const proof = Object.freeze({ version: 1, ...directoryIdentity, empty: false,
+    path: relative, source: "whisper_runtime.py", sha256: hash(beforeCache.bytes), bytes: beforeCache.bytes.length,
     dev: String(info.dev), ino: String(info.ino), birthFileTime: String(info.birthtimeNs / 100n + 116444736000000000n) });
+  if (custody && Object.keys(proof).some(key => custody[key] !== proof[key])) throw Error("runtime-generated-cache-custody-changed");
   proofs.set(proof, bindingKey(root, binding));
   return proof;
 }

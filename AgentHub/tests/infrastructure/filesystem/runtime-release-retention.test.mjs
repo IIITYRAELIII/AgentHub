@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -252,4 +252,70 @@ test("generated cache requires configured compiler and refuses extra useful data
   assert.throws(() => retireSealedRuntimeRelease(f.body, record, { allowPartial: true,
     verifiedCache: { path: path.relative(f.body, generated.cache), bytes: bytes.length, sha256: hash(bytes) } }),
   /runtime-generated-cache-proof-required/u);
+});
+
+test("native asset failure after cache unlink recovers SAME original after exact asset restore", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f);
+  const asset = path.join(f.body, "assets/000.txt"), bytes = await readFile(asset);
+  await writeFile(asset, Buffer.alloc(bytes.length, 120));
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0], id = record.operationId;
+  assert.equal(f.store.get(id).status, "reconciling");
+  await assert.rejects(lstat(generated.cache), { code: "ENOENT" });
+  assert.ok(await readFile(generated.file));
+  await writeFile(asset, bytes);
+  await f.service.runOnce();
+  assert.equal(f.store.get(id).status, "succeeded");
+  await assert.rejects(lstat(f.body), { code: "ENOENT" });
+});
+
+test("lost reply between cache and directory unlink resumes exact persisted directory custody", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f);
+  f.owner.retire = async () => {
+    const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0];
+    assert.equal(record.generatedCache.empty, false);
+    assert.equal(record.generatedCache.directoryIno, String((await lstat(path.dirname(generated.cache), { bigint: true })).ino));
+    await unlink(generated.cache); // Fixture's precise crash boundary after the owned cache unlink.
+    throw Error("lost reply before directory unlink");
+  };
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0], id = record.operationId;
+  assert.deepEqual(await readdir(path.dirname(generated.cache)), []);
+  assert.equal(f.store.get(id).status, "reconciling");
+  f.owner.retire = retireSealedRuntimeRelease;
+  await f.service.runOnce();
+  assert.equal(f.store.get(id).status, "succeeded");
+  await assert.rejects(lstat(f.body), { code: "ENOENT" });
+});
+
+test("empty cache directory requires original custody and refuses a same-path replacement", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f), directory = path.dirname(generated.cache);
+  const cacheBytes = await readFile(generated.cache);
+  await unlink(generated.cache);
+  let calls = 0;
+  f.owner.retire = async () => { calls++; throw Error("must never reach native without custody"); };
+  await f.service.runOnce();
+  const id = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0].operationId;
+  assert.equal(calls, 0);
+  assert.equal(f.store.get(id).status, "reconciling");
+  await writeFile(generated.cache, cacheBytes);
+  f.owner.retire = async () => {
+    calls++;
+    await unlink(generated.cache);
+    await rename(directory, path.join(f.root, "retained-original-cache-directory"));
+    await mkdir(directory);
+    throw Error("foreign directory after lost reply");
+  };
+  await f.service.runOnce();
+  assert.equal(calls, 1);
+  f.owner.retire = async () => { calls++; throw Error("replacement must refuse before native"); };
+  await f.service.runOnce();
+  assert.equal(calls, 1);
+  assert.equal(f.store.get(id).status, "reconciling");
+  assert.deepEqual(await readdir(directory), []);
+  assert.ok(await readFile(generated.file));
+  assert.ok(await readFile(path.join(f.body, "assets/000.txt")));
 });

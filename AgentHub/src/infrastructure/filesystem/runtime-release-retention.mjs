@@ -133,7 +133,12 @@ export class RuntimeReleaseRetention {
         await lease.assertOwned();
         const free = async () => { const info = await statfs(root, { bigint: true }); return info.bavail * info.bsize; };
         const before = await free();
-        const verifiedCache = await verifyRuntimeGeneratedCache(root, binding, this.pythonExe);
+        const verifiedCache = await verifyRuntimeGeneratedCache(root, binding, this.pythonExe, record.generatedCache ?? null);
+        if (verifiedCache && !record.generatedCache) {
+          record.generatedCache = { ...verifiedCache };
+          await lease.assertOwned();
+          await writeRuntimePointer(this.runtimeRoot, pointer); // Exact directory custody BEFORE cache unlink.
+        }
         await lease.assertOwned();
         const result = await this.retire(root, binding, { allowPartial: reconcile, verifiedCache });
         const info = await statfs(this.runtimeRoot, { bigint: true });

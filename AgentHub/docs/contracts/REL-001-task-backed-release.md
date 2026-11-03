@@ -599,8 +599,13 @@ Python compiler reproduces its ENTIRE bytes from manifest-bound
 `whisper_runtime.py`, without importing/executing that source. The proof binds
 the original physical cache and root/manifest, is rechecked by the native sink,
 and grants no directory-wide exclusion. Cache retires first while a verified
-source handle is held, within the existing batch bounds. Lost reply resumes the
-SAME original; changed cache/source, unknown interpreter, extra WIP/links/streams
+source handle is held, within the existing batch bounds. Before that unlink,
+the existing original pruning record persists the exact cache-directory and
+compile proof. Native deletion removes that directory before other assets.
+A lost reply between cache/directory unlink may consume only that original
+directory identity with the exact manifest/source rechecked, never a new empty
+directory by name. Lost reply resumes the SAME original; changed cache/source,
+unknown interpreter, extra WIP/links/streams
 or missing source refuses. Immutable manifests are never amended. New voice
 transcription invokes Python with `-B` to avoid generating further bytecode.
 See ADR-HUB-385-generated-runtime-cache.

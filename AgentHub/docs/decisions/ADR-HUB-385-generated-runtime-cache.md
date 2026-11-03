@@ -20,13 +20,17 @@ across this probe. The returned in-process proof is branded to the original
 root/manifest binding. No imported source, new durable state or replacement
 maintenance identity is involved.
 
-The existing native sink retains its whole metadata/foreign-data preflight.
+The original pruning record persists the exact pre-unlink cache and directory
+physical proof before effects. The existing native sink retains its whole metadata/foreign-data preflight.
 It accepts only that exact additional cache identity/hash and retires it first,
 holding a hash-verified source handle until its deletion completes. Cache counts
 against the existing 64-file/256-MiB/cooperative ten-second deletion limits.
-A lost reply therefore leaves either the cache untouched or a normal admitted
-partial runtime with no cache. The next attempt uses the same original without
-a persistent exception or a second cleanup ledger.
+It removes the empty derived directory immediately, before any other payload
+asset. If an error/crash loses the reply between those two unlinks, the next
+attempt accepts only the SAME recorded directory identity plus exact fresh
+manifest/source proof. A same-path replacement or an empty directory with no
+prior proof refuses. The next attempt uses the same original pruning record,
+without a name-based exception or a second cleanup ledger.
 
 Changed/foreign cache, unavailable/mismatched Python, missing/mutated source,
 links, streams, reparse paths or additional WIP remain UNKNOWN with data kept.
