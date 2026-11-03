@@ -2,7 +2,7 @@ import { clientCommandAckTraceSpan } from "./client-command-trace.mjs";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
 const TOKEN = /^[a-z][a-z0-9.-]{0,63}$/u;
-const STAGES = new Set(["ui-interaction", "ui-navigation", "ui-render", "ui-long-task", "ui-snapshot", "ui-control", "attachment-upload"]);
+const STAGES = new Set(["ui-interaction", "ui-navigation", "ui-render", "ui-long-task", "ui-snapshot", "ui-control", "attachment-upload", "context-estimate-paint"]);
 const LABELS = new Set(["action", "surface", "view", "trigger", "render", "decision",
   "beforeRun", "afterRun", "beforeProviderStart", "afterProviderStart", "providerLink",
   "clientAssetRevision"]);

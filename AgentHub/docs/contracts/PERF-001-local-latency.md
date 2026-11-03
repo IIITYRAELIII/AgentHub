@@ -99,6 +99,13 @@ terminal/outbox durability and full scalar aggregation retain their owners.
 
 ## Trace contract
 
+The existing client `context-estimate-paint` stage uses the authenticated common
+trace batch owner, retaining its original compaction ID, Thread/turn identity,
+paired start/completion and monotonic paint duration. Its presence must not
+reject neighbouring valid measurements. The explicit stage allowlist, outcomes,
+identity/time limits, metadata filtering, 32-event and 32-KiB bounds remain in
+force; telemetry grants no command, provider or lifecycle authority.
+
 Task-card Git previews run only on explicit request and retain at most 64 KiB of
 diff text per response, with visible truncation. Board snapshots never run Git
 for previews. Task journal projection joins exact bindings to indexed journal
