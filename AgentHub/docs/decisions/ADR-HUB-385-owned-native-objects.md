@@ -76,6 +76,16 @@ unknown; late user data stops before another deletion. Repository deletion
 preserves merge.json, integration records, source branches/refs, original
 receipts and reviews. Legacy source.bundle must be retired independently first.
 
+An admitted child can lose installation admission before archive intake begins.
+Its missing intent is neither proof of no effect nor a permanent recovery veto.
+The SAME owner repeats the complete independent-source/publication/inventory
+preflight and requires exact equality with the original binding before deriving
+and persisting that child's deterministic archive intent. Incomplete or changed
+source cannot enter this path. Lost intent replies use the committed row and
+the same archive operation; all archive verification, final object lease and
+pruning-intent/deletion checks remain in place. No pending slot is cleared by
+interpretation, no cap/deadline changes and no replacement original are needed.
+
 The native Windows boundary holds no-follow ancestors/root, checks every
 allowlisted file identity/hash and ADS, rejects foreign links and late entries,
 and joins each bounded child. Intentional immutable object links use handle

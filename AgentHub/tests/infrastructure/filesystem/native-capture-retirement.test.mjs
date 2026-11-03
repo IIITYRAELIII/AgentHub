@@ -78,6 +78,101 @@ async function fixture(t, { legacyOriginal = false, ...options } = {}) {
   return { root, dataDir, source, board, catalog, workspace, taskGit, store, owner, nativeOwner, service, candidate, capture, state, task, originalId };
 }
 
+async function admitBeforeArchiveFailure(f) {
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  const installationLease = f.owner.installationLease, prune = f.nativeOwner.prune.bind(f.nativeOwner);
+  let refuse = false;
+  f.owner.installationLease = (...args) => {
+    if (refuse) { refuse = false; throw Error("controlled installation admission failure before archive"); }
+    return installationLease(...args);
+  };
+  f.nativeOwner.prune = async input => {
+    refuse = true;
+    f.nativeOwner.prune = prune;
+    return prune(input);
+  };
+  const approved = [{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }];
+  await f.service.runApproved(approved);
+  const original = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
+  assert.equal(original.metadata.admitted, true);
+  assert.equal(original.outcome, "unknown");
+  assert.equal(original.metadata.captureArchiveIntent, undefined);
+  assert.equal(original.metadata.captureArchive, undefined);
+  return { approved, original };
+}
+
+test("admitted native intake recovers SAME child from full source and retains a lost durable archive-intent reply", { skip: process.platform !== "win32" }, async t => {
+  let nativeCalls = 0;
+  const f = await fixture(t, { retire: async (...args) => { nativeCalls++; return retireSealedNativeCapture(...args); } });
+  const repository = path.join(f.capture, "repository"), journal = await readFile(path.join(f.capture, "merge.json"));
+  const { approved, original } = await admitBeforeArchiveFailure(f);
+  assert.equal(nativeCalls, 0);
+  const foreign = path.join(repository, "useful-late-wip.txt");
+  await writeFile(foreign, "keep useful data before archive recovery");
+  await f.service.runApproved(approved);
+  assert.equal(nativeCalls, 0);
+  assert.equal(f.store.getReadonly(original.operationId).metadata.captureArchiveIntent, undefined);
+  assert.equal(await readFile(foreign, "utf8"), "keep useful data before archive recovery");
+  const wrong = await f.owner.reconcile({ candidate: f.candidate, operationId: original.operationId,
+    binding: { ...original.metadata.binding, inventorySha256: "0".repeat(64) } });
+  assert.equal(wrong.status, "unknown"); assert.match(wrong.reason, /binding changed/u);
+  await rm(foreign); // Only the disposable fixture's injected WIP.
+  const transition = f.owner.store.transition.bind(f.owner.store);
+  let lostReply = false;
+  f.owner.store.transition = (...args) => {
+    const result = transition(...args);
+    if (!lostReply && args[0] === original.operationId && args[1].metadata?.captureArchiveIntent && result.applied) {
+      lostReply = true;
+      throw Error("lost reply AFTER durable original archive intent");
+    }
+    return result;
+  };
+  try { await f.service.runApproved(approved); }
+  finally { f.owner.store.transition = transition; }
+  assert.equal(lostReply, true, "Full unchanged source must reach SAME-child durable archive intake");
+  const intake = f.store.getReadonly(original.operationId);
+  assert.equal(intake.outcome, "unknown");
+  assert.ok(intake.metadata.captureArchiveIntent);
+  assert.equal(intake.metadata.captureArchive, undefined);
+  assert.equal(nativeCalls, 0);
+  assert.equal(f.store.getReadonly(intake.metadata.captureArchiveIntent.operationId), null);
+  await f.service.close();
+  const reopened = new MaintenanceOperationStore({ dataDir: f.dataDir });
+  const resumed = new StorageRetentionService({ store: reopened, owners: [f.nativeOwner],
+    readContext: async () => ({ ready: true, releaseId: "fixture", isolated: false, busy: false }),
+    withLease: fn => withInterprocessLocks([path.join(f.dataDir, "storage-retention")], fn) });
+  try { await resumed.runApproved(approved); } finally { await resumed.close(); }
+  const recovered = reopened.getReadonly(original.operationId);
+  assert.equal(nativeCalls, 1);
+  assert.ok(["partial", "removed"].includes(recovered.phase), JSON.stringify(recovered));
+  assert.deepEqual(recovered.metadata.binding, original.metadata.binding);
+  assert.deepEqual(recovered.metadata.captureArchiveIntent, intake.metadata.captureArchiveIntent);
+  assert.equal(recovered.metadata.captureArchive.operationId, intake.metadata.captureArchiveIntent.operationId);
+  assert.equal(reopened.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id).operationId, original.operationId);
+  const archive = await new OwnedNativeObjectStore({ dataDir: f.dataDir, gitAt: git }).readArchive(recovered.metadata.captureArchive);
+  assert.deepEqual(archive.manifest.binding.retirement, original.metadata.binding);
+  assert.deepEqual(await readFile(path.join(f.capture, "merge.json")), journal);
+});
+
+test("admitted native intake keeps incomplete source UNKNOWN without archive or native deletion", { skip: process.platform !== "win32" }, async t => {
+  let nativeCalls = 0;
+  const f = await fixture(t, { retire: async () => { nativeCalls++; assert.fail("No native deletion from incomplete source"); } });
+  const { approved, original } = await admitBeforeArchiveFailure(f);
+  const repository = path.join(f.capture, "repository"), kept = await readFile(path.join(repository, "value-0.txt"));
+  await rm(path.join(repository, "value-74.txt")); // Simulated unconfirmed partial source in this disposable fixture only.
+  const before = await inventoryNativeCapture(repository, { allowSharedObjects: true });
+  await f.service.runApproved(approved);
+  const row = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
+  assert.equal(row.operationId, original.operationId);
+  assert.equal(row.outcome, "unknown");
+  assert.equal(row.metadata.captureArchiveIntent, undefined);
+  assert.equal(row.metadata.captureArchive, undefined);
+  assert.equal(nativeCalls, 0);
+  assert.deepEqual(await inventoryNativeCapture(repository, { allowSharedObjects: true }), before);
+  assert.deepEqual(await readFile(path.join(repository, "value-0.txt")), kept);
+});
+
 test("real TaskGit/SQLite owner archives all objects and raw evidence then retires the whole private repository in SAME partial original", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t, { legacyOriginal: true }), repository = path.join(f.capture, "repository"), journal = await readFile(path.join(f.capture, "merge.json"));
   const dangling = await git(repository, ["hash-object", "-w", "--stdin"], { input: "unique unreferenced proof bytes\n" });

@@ -115,7 +115,7 @@ export class NativeCaptureRetirement {
     if (!result.applied) throw new Error("Native capture original CAS changed");
     return result.operation;
   }
-  async #effect(input, reconcile) {
+  async #effect(input) {
     return this.#owned(input.candidate, input.operationId, async owned => {
       if (!same(owned.row.metadata.binding, input.binding)) throw new Error("Native capture original binding changed");
       let row = owned.row, archived;
@@ -124,7 +124,9 @@ export class NativeCaptureRetirement {
         if (!same(archived.manifest.binding.retirement, input.binding) || archived.manifest.binding.stateHash !== owned.stateHash) throw new Error("Original archive context changed");
       } else {
         if (row.metadata.captureArchiveIntent) archived = await owned.objects.readArchiveIntent(row.metadata.captureArchiveIntent);
-        if (reconcile && !row.metadata.captureArchiveIntent) return { status: "unknown", reason: "native-original-archive-unconfirmed" };
+        // A missing archive intent is not no-effect evidence. Continue only
+        // after the complete live source proves the SAME original binding;
+        // partial or changed source cannot acquire a replacement intake.
         const preview = await this.#preview(owned);
         if (preview.status !== "eligible" || !same(preview.binding, input.binding)) return retained("native-capture-preview-changed");
         const request = { sourceRoot: owned.repository, binding: { retirement: input.binding,
@@ -167,10 +169,10 @@ export class NativeCaptureRetirement {
       });
     });
   }
-  prune(input) { return this.#effect(input, false); }
+  prune(input) { return this.#effect(input); }
   async reconcile(input) {
     try {
-      const result = await this.#effect(input, true);
+      const result = await this.#effect(input);
       return result.status === "retained" ? { status: "unknown", reason: result.reason } : result;
     } catch (error) { return { status: "unknown", reason: "native-capture-original-unresolved:" + error.message }; }
   }

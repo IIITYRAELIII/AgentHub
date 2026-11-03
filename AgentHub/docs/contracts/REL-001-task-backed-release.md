@@ -493,6 +493,13 @@ No earlier failure is rewritten or interpreted as no effect; all original
 records remain outside the retired repository (ADR-HUB-385-prior-native-intakes).
 
 Archive intake and pruning intent live in the existing maintenance original.
+If an admitted original has no confirmed archive or archive intent, recovery
+may continue that SAME deterministic intake only after the complete live source
+passes its original full inventory/binding and all current custody checks.
+Missing intent does not establish no effect. Changed or incomplete source stays
+UNKNOWN; recovery never replaces the child, invents a new binding or deletes
+before its verified archive and original pruning intent. A lost durable intent
+reply is recovered from that same canonical row.
 Partial deletion and lost reply reconcile only that child and exact archive;
 there is no replacement ID, guessed no-effect, forced process stop or SQL/ref
 repair. The handle-bound allowlist refuses changed files, foreign links,
