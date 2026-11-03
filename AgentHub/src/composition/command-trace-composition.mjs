@@ -27,15 +27,20 @@ export async function measureStartupBeforeTrace(stage, operation, {
     } catch {}
   };
   const phaseMarkers = [];
-  const recordPhase = ({ phase, outcome, durationMs } = {}) => {
+  const recordPhase = ({ phase, outcome, durationMs, ...details } = {}) => {
     try {
       if (stage !== "sqlite-recovery"
         || !["database-lock", "recovery-lock-acquire", "marker-read", "resume",
           "intent-read", "intent-rollback", "database-stat", "database-check",
-          "quarantine", "recovery-lock-release"].includes(phase)
+          "quarantine", "recovery-lock-release", "inspection-directory",
+          "copy-database", "copy-wal", "inspection-query", "inspection-cleanup"].includes(phase)
         || !["started", "succeeded", "failed"].includes(outcome)
         || !Number.isFinite(durationMs) || durationMs < 0) return;
       const marker = { phase, outcome, durationMs, observedAtMs: clock() };
+      for (const field of ["bytes", "openMs", "checkMs", "closeMs", "workerThreadId"]) {
+        if (Number.isFinite(details[field]) && details[field] >= 0) marker[field] = details[field];
+      }
+      if (/^[A-Z0-9_]{1,64}$/u.test(details.errorCode ?? "")) marker.errorCode = details.errorCode;
       phaseMarkers.push(marker);
       const logged = logger.info("[startup]", JSON.stringify({
         pid: process.pid, releaseId: process.env.AGENT_HUB_RELEASE_ID ?? "",

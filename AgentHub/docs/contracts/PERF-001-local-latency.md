@@ -1,5 +1,18 @@
 # PERF-001 — Local command latency
 
+The startup shell can listen after instance ownership while SQLite integrity is
+pending, using the existing MiniAppServer and browser health polling. The same
+server's later activation keeps its address and auth. Time to listener, first
+HTTP response and actual startup-screen display are distinct from completed
+integrity, business availability and Ready; none substitutes for another.
+
+Startup SQLite inspection keeps its full detached DB/WAL integrity check while
+executing synchronous inspection outside the caller event loop. Existing
+original-startup phases distinguish DB/WAL copy bytes, query round trip, worker
+open/check/close and cleanup. These bounded numeric phases contain no paths or
+content; logging failure cannot alter recovery. Full required work still gates
+readiness, and event-loop isolation alone does not prove earlier web availability.
+
 ## SQLite capture deadline coverage
 
 The process-owned capture deadline begins before child launch and includes
