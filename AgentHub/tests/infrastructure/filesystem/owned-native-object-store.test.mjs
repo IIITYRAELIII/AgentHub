@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { OwnedNativeObjectStore, nativeObjectStorageDescriptor } from "../../../src/infrastructure/filesystem/owned-native-object-store.mjs";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
+import { inventoryNativeCapture } from "../../../src/infrastructure/filesystem/native-capture-inventory.mjs";
 import { measureNativeCaptureAllocation } from "../../../src/infrastructure/filesystem/sealed-native-capture.mjs";
 
 function gitAt(cwd, args, { input = null, stdoutFd = null } = {}) {
@@ -156,4 +157,101 @@ test("foreign existing consumer, pool replacement and ambient graft refuse witho
   finally { if (old === undefined) delete process.env.GIT_GRAFT_FILE; else process.env.GIT_GRAFT_FILE = old; }
   await rm(f.objects.repository, { recursive: true, force: true }); await mkdir(f.objects.repository);
   await assert.rejects(compose(f, "replaced"), /store replaced/u);
+});
+
+async function archiveSource(f) {
+  return { sourceRoot: f.source, binding: { fixture: "archive intake lifetime" },
+    inventory: await inventoryNativeCapture(f.source), assertCurrent: async () => {} };
+}
+const intakeAliases = async objects => (await readdir(objects.root)).filter(n => /^import-[a-f0-9]{64}\.(?:pack|idx)$/u.test(n)).sort();
+
+test("archive retires intake aliases before leased GC without losing originals or live consumer links", async t => {
+  const f = await fixture(t), input = await archiveSource(f);
+  const archived = await f.objects.archive(input);
+  assert.deepEqual(await intakeAliases(f.objects), []);
+  const consumer = path.join(f.root, "live-consumer");
+  await f.objects.provision({ sourceRoot: f.source, repository: consumer, inputs: [f.base, f.result], identityHash: "b".repeat(64) });
+  const beforeLinks = await objectFiles(path.join(consumer, ".git/objects"));
+  const before = process.platform === "win32" ? await measureNativeCaptureAllocation([f.objects.root]) : null;
+  await f.objects.withArchiveLease(archived.archive, async () => gitAt(f.objects.repository, ["gc", "--prune=now"]));
+  const verified = await f.objects.readArchive(archived.archive);
+  assert.deepEqual(verified.manifest, archived.manifest);
+  for (const object of archived.manifest.objects) await gitAt(f.objects.repository, ["cat-file", "-e", object.oid]);
+  for (const file of archived.manifest.files) assert.equal(await gitAt(f.objects.repository, ["cat-file", "-t", file.blob]), "blob");
+  const afterLinks = await objectFiles(path.join(consumer, ".git/objects"));
+  assert.deepEqual(afterLinks.map(({nlink, ...x}) => x), beforeLinks.map(({nlink, ...x}) => x));
+  await gitAt(consumer, ["fsck", "--full", "--no-dangling", f.result]);
+  if (before) {
+    const after = await measureNativeCaptureAllocation([f.objects.root]);
+    assert.ok(after.uniqueAllocatedBytes <= before.uniqueAllocatedBytes + 128 * 1024, JSON.stringify({ before, after }));
+    t.diagnostic("Archive intake FileStandardInfo allocation " + JSON.stringify({ before, after }));
+  }
+});
+
+test("lost durable archive reply retires aliases on SAME successful original reentry", async t => {
+  let once = true, original;
+  const f = await fixture(t, { afterCheckpoint: async (phase, row) => {
+    if (phase === "archived" && once) { once = false; original = row; throw Error("lost archived reply"); }
+  } });
+  const input = await archiveSource(f);
+  await assert.rejects(f.objects.archive(input), /lost archived reply/u);
+  assert.equal(f.store.getReadonly(original.operationId).status, "succeeded");
+  assert.equal((await intakeAliases(f.objects)).length, 2);
+  const archived = await f.objects.archive(input);
+  assert.equal(archived.archive.operationId, original.operationId);
+  assert.equal(f.store.getReadonly(original.operationId).revision, original.revision);
+  assert.deepEqual(await intakeAliases(f.objects), []);
+  await f.objects.withArchiveLease(archived.archive, async () => gitAt(f.objects.repository, ["gc", "--prune=now"]));
+  await f.objects.readArchive(archived.archive);
+});
+
+test("lost durable import reply retires aliases on SAME successful import reentry", async t => {
+  let once = true, original;
+  const f = await fixture(t, { afterCheckpoint: async (phase, row) => {
+    if (phase === "imported" && once) { once = false; original = row; throw Error("lost imported reply"); }
+  } });
+  await assert.rejects(compose(f, "one"), /lost imported reply/u);
+  assert.equal((await intakeAliases(f.objects)).length, 2);
+  await compose(f, "one");
+  assert.equal(f.store.getReadonly(original.operationId).revision, original.revision);
+  assert.deepEqual(await intakeAliases(f.objects), []);
+});
+
+test("foreign intake alias refuses before unlinking either original alias", async t => {
+  let once = true;
+  const f = await fixture(t, { afterCheckpoint: async phase => {
+    if (phase === "archived" && once) { once = false; throw Error("lost archived reply"); }
+  } });
+  const input = await archiveSource(f);
+  await assert.rejects(f.objects.archive(input), /lost archived reply/u);
+  const aliases = await intakeAliases(f.objects), idx = path.join(f.objects.root, aliases.find(n => n.endsWith(".idx")));
+  await rename(idx, idx + ".fixture-original"); await writeFile(idx, "foreign useful data");
+  await assert.rejects(f.objects.archive(input), /alias|custody/u);
+  assert.equal(await readFile(idx, "utf8"), "foreign useful data");
+  assert.equal((await intakeAliases(f.objects)).length, 2);
+  const row = f.store.getReadonly(f.objects.archiveIntent(input).operationId);
+  await f.objects.readArchive(row.metadata.archive);
+});
+
+test("lost alias unlink reply completes only the remaining index on SAME archived original", async t => {
+  let objects, once = true;
+  const f = await fixture(t, { assertCurrent: async () => {
+    if (!objects || !once) return;
+    let names;
+    try { names = await intakeAliases(objects); } catch (e) { if (e.code === "ENOENT") return; throw e; }
+    if (names.length === 1 && names[0].endsWith(".idx")) { once = false; throw Error("lost alias unlink reply"); }
+  } });
+  objects = f.objects;
+  const input = await archiveSource(f), id = objects.archiveIntent(input).operationId;
+  await assert.rejects(objects.archive(input), /lost alias unlink reply/u);
+  const row = f.store.getReadonly(id);
+  assert.equal(row.status, "succeeded");
+  assert.equal((await intakeAliases(objects)).length, 1);
+  await objects.withArchiveLease(row.metadata.archive, async stored => {
+    assert.equal(stored.archive.operationId, id);
+    assert.deepEqual(await intakeAliases(objects), []);
+    await gitAt(objects.repository, ["gc", "--prune=now"]);
+  });
+  assert.equal(f.store.getReadonly(id).revision, row.revision);
+  await objects.readArchive(row.metadata.archive);
 });

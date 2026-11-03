@@ -216,17 +216,48 @@ export class OwnedNativeObjectStore {
         if (before !== c) await this.#git(this.repository, ["update-ref", ref, c, before]);
       }
       row = await this.#patch(row, "imported", { refRoot }, true);
-      // Intentionally unlink only our verified incoming aliases. The pool holds
-      // the same immutable physical files; a lost reply cannot lose the data.
-      const pack = path.join(this.root, "import-" + digest(id) + ".pack"), idx = pack.slice(0, -5) + ".idx";
-      for (const file of [pack, idx]) if (!await absent(file)) {
-        const before = await hashFile(file); await this.#guard();
-        if (!equal(before, await hashFile(file))) throw fail("Imported object alias changed");
-        if (process.platform === "win32") await unlinkOwnedNativeObjectAlias(file, before);
-        else await unlink(file);
-      }
     }
+    await this.#retireTransferAliases(row);
     return row;
+  }
+
+  // Deterministic intake aliases are owned by this SAME durable operation.
+  // Preflight the complete pair before unlinking either name. The live pool
+  // must still hold the exact immutable files, never just equivalent bytes.
+  async #retireTransferAliases(row) {
+    if (row.status !== "succeeded") throw fail("Intake alias retirement requires durable success");
+    const pack = path.join(this.root, "import-" + digest(row.operationId) + ".pack"), idx = pack.slice(0, -5) + ".idx";
+    const presentPack = !await absent(pack), presentIndex = !await absent(idx);
+    if (!presentPack && !presentIndex) return;
+    await this.#guard();
+    if (presentPack) await plain(pack);
+    if (presentIndex) await plain(idx);
+    const trailerFile = presentPack ? pack : idx, h = await open(trailerFile, "r");
+    let trailer;
+    try {
+      const info = await h.stat({ bigint: true }), offset = presentPack ? 20 : 40;
+      if (!info.isFile() || info.size < BigInt(offset)) throw fail("Intake alias custody malformed");
+      trailer = Buffer.alloc(20);
+      const read = await h.read(trailer, 0, 20, Number(info.size) - offset);
+      if (read.bytesRead !== 20) throw fail("Intake alias checksum incomplete");
+    } finally { await h.close(); }
+    const stem = "pack-" + trailer.toString("hex"), poolPack = path.join(this.repository, "objects", "pack", stem + ".pack");
+    const donorPack = await hashFile(poolPack);
+    if (!equal(row.metadata.packIdentity, physical(await plain(poolPack)))) throw fail("Intake alias original pack custody changed");
+    await this.#git(this.repository, ["verify-pack", poolPack.slice(0, -5) + ".idx"]);
+    const aliases = [];
+    for (const [file, donor] of [[pack, poolPack], [idx, poolPack.slice(0, -5) + ".idx"]]) {
+      if (await absent(file)) continue;
+      const identity = await hashFile(file), retained = file === pack ? donorPack : await hashFile(donor);
+      if (!equal(identity, retained) || (await plain(file)).nlink < 2n) throw fail("Intake alias custody changed");
+      aliases.push({ file, donor, identity });
+    }
+    for (const { file, donor, identity } of aliases) {
+      await this.#guard();
+      if (!equal(identity, await hashFile(file)) || !equal(identity, await hashFile(donor))) throw fail("Intake alias custody changed before unlink");
+      if (process.platform === "win32") await unlinkOwnedNativeObjectAlias(file, identity);
+      else await unlink(file);
+    }
   }
 
   async provision({ sourceRoot, repository, inputs, identityHash }) {
@@ -270,7 +301,11 @@ export class OwnedNativeObjectStore {
       await this.#pool(); await assertCurrent();
       const { operationId: id, objectStorage: archiveBinding } = this.archiveIntent({ binding, inventory });
       let row = await this.#create(id, archiveBinding);
-      if (row.status === "succeeded") return this.readArchive(row.metadata.archive);
+      if (row.status === "succeeded") {
+        const stored = await this.readArchive(row.metadata.archive);
+        await this.#retireTransferAliases(row);
+        return stored;
+      }
       const grafts = String(await this.#git(sourceRoot, ["rev-parse", "--path-format=absolute", "--git-path", "info/grafts"]));
       if (!await absent(path.resolve(sourceRoot, grafts))) throw fail("Archive source has rewritten history");
       await this.#git(sourceRoot, ["fsck", "--full", "--no-reflogs", "--no-dangling"]);
@@ -343,7 +378,9 @@ export class OwnedNativeObjectStore {
       const archive = { ...this.descriptor(), operationId: id, ref, commit, tree, manifestBlob,
         manifestSha256: digest(manifestBytes), inventorySha256: archiveBinding.inventorySha256 };
       row = await this.#patch(row, "archived", { archive }, true);
-      return { archive, manifest, repository: this.repository };
+      const stored = await this.readArchive(archive);
+      await this.#retireTransferAliases(row);
+      return stored;
     });
   }
 
@@ -392,12 +429,17 @@ export class OwnedNativeObjectStore {
   // Fresh complete preservation and the destructive consumer share the SAME
   // object-store lease, excluding owned GC/import/ref updates until it returns.
   withArchiveLease(archive, consume) {
-    return this.withLease(async () => consume(await this.readArchive(archive)));
+    return this.withLease(async () => {
+      const stored = await this.readArchive(archive);
+      await this.#retireTransferAliases(this.store.getReadonly(archive.operationId));
+      return consume(stored);
+    });
   }
 
   async withArchiveMath(archive, verify) {
     return this.withLease(async () => {
       const stored = await this.readArchive(archive);
+      await this.#retireTransferAliases(this.store.getReadonly(archive.operationId));
       const parent = path.join(this.dataDir, "native-git-objects", "math");
       await mkdir(parent, { recursive: true }); await plain(parent, true);
       const root = await mkdtemp(path.join(parent, "owned-"));

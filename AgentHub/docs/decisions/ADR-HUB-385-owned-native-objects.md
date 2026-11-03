@@ -33,6 +33,15 @@ Complete import/ref custody precedes the consumer. Physical resource replacement
 foreign output, ambient Git history/storage inputs or an unproved partial output
 refuse; no silent clone/copy fallback or source ref/config mutation is allowed.
 
+Durable successful imports and archives retire only their deterministic owned
+pack/index intake aliases after complete object/ref verification. SAME successful
+original re-entry finishes that retirement after a lost reply, without a new
+operation or replaying transfer. Both aliases must still be the exact physical
+files held by the owned pool; the whole pair is preflighted before unlinking.
+Foreign/replaced aliases refuse, and active consumer links remain untouched.
+Archive-lease entry completes this intake retirement before owned GC or deletion,
+so obsolete input names cannot pin a second pack encoding after repacking.
+
 Every capture has a real separate .git, config, HEAD, refs, index and working
 directory. Only immutable pack/index/reverse-index/loose object files hardlink to
 the owned store. This requires same-filesystem hardlink support; failure is an
