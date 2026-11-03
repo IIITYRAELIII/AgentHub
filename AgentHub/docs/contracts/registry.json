@@ -267,7 +267,8 @@
         "distribution/whole-update-*.mjs",
         "distribution/whole-update-transport.py",
         "distribution/prepare-whole-update.mjs",
-        "distribution/whole-update-resources.ps1"
+        "distribution/whole-update-resources.ps1",
+        "docs/decisions/ADR-HUB-385-retired-generation-source-custody.md"
       ]
     },
     {
@@ -532,7 +533,8 @@
         "src/infrastructure/persistence/native-capture-retirement-evidence.mjs",
         "tests/infrastructure/filesystem/owned-native-object-store.test.mjs",
         "tests/infrastructure/filesystem/native-capture-*.test.mjs",
-        "docs/decisions/ADR-HUB-385-owned-native-objects.md"
+        "docs/decisions/ADR-HUB-385-owned-native-objects.md",
+        "docs/decisions/ADR-HUB-385-retired-generation-source-custody.md"
       ]
     },
     {

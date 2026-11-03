@@ -54,10 +54,10 @@ export class NativeMergeTransportRetention {
   id = "native-merge-transport";
 
   constructor({ dataDir, taskBoard, taskGitWorkspaces, gitAt, deleteTransport = deleteSealedTransport,
-    isStopping = () => false, platform = process.platform } = {}) {
+    isStopping = () => false, readGeneration, platform = process.platform } = {}) {
     Object.assign(this, { root: path.join(dataDir, "task-native-merges"), taskBoard, taskGitWorkspaces,
       gitAt, deleteTransport, isStopping, platform });
-    this.captureRetirement = new NativeCaptureRetirement({ dataDir, taskBoard, taskGitWorkspaces, gitAt, isStopping });
+    this.captureRetirement = new NativeCaptureRetirement({ dataDir, taskBoard, taskGitWorkspaces, gitAt, isStopping, readGeneration });
   }
 
   async list({ after, limit }) {

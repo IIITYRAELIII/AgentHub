@@ -15,7 +15,8 @@ export function createStorageRetentionComposition({ config, store, taskBoard, ta
   const service = new StorageRetentionService({ store, timers, isStopping,
     owners: [new RuntimeUpdateBackupRetention({ runtimeRoot: environment.AGENT_HUB_RUNTIME_ROOT ?? defaultRuntimeRoot({ environment }), store,
       isStopping: () => isStopping() || readBusy() }),
-      taskGitWorkspaces.storageRetentionOwner({ taskBoard, isStopping: () => isStopping() || readBusy() }),
+      taskGitWorkspaces.storageRetentionOwner({ taskBoard, readGeneration: (id, generation) => releaseOperations.retentionGeneration(id, generation),
+        isStopping: () => isStopping() || readBusy() }),
       new RuntimeReleaseRetention({ runtimeRoot: defaultRuntimeRoot({ environment }), pythonExe: config.pythonExe,
         isStopping: () => isStopping() || readBusy() }),
       releaseGitWorkspaces.storageRetentionOwner({

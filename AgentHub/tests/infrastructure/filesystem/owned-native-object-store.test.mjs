@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -21,8 +21,13 @@ function gitAt(cwd, args, { input = null, stdoutFd = null } = {}) {
   });
 }
 async function fixture(t, extra = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "hub-objects-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "hub-objects-")));
+  t.after(async () => {
+    assert.equal(await realpath(root), root);
+    assert.ok(path.basename(root).startsWith("hub-objects-"));
+    assert.equal((await lstat(root)).isSymbolicLink(), false);
+    await rm(root, { recursive: true, force: true });
+  });
   const source = path.join(root, "source"), dataDir = path.join(root, "data");
   await mkdir(source); await mkdir(dataDir);
   await gitAt(source, ["init", "-b", "main"]);
@@ -254,4 +259,56 @@ test("lost alias unlink reply completes only the remaining index on SAME archive
   });
   assert.equal(f.store.getReadonly(id).revision, row.revision);
   await objects.readArchive(row.metadata.archive);
+});
+
+
+test("native missing-object encoding shares delta history and preserves archive plus live consumers", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), history = await readFile(path.join(f.source, "history.bin"));
+  for (let n = 0; n < 9; n++) {
+    history[n] ^= 1;
+    await writeFile(path.join(f.source, "history.bin"), history);
+    await gitAt(f.source, ["add", "history.bin"]);
+    await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "bounded history delta " + n]);
+  }
+  f.result = await gitAt(f.source, ["rev-parse", "HEAD"]);
+  await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "tag", "-a", "original-encoding-tag", "-m", "preserve exact original tag", f.result]);
+  const sourceRefs = await gitAt(f.source, ["show-ref"]), sourceIndex = await readFile(path.join(f.source, ".git/index"));
+  const first = await compose(f, "encoding-one"), second = await compose(f, "encoding-two");
+  assert.equal(first.tree, second.tree);
+  const one = path.join(f.root, "encoding-one/repository"), two = path.join(f.root, "encoding-two/repository");
+  const a = (await objectFiles(path.join(one, ".git/objects"))).filter(x => x.name.startsWith("pack/"));
+  const b = (await objectFiles(path.join(two, ".git/objects"))).filter(x => x.name.startsWith("pack/"));
+  assert.deepEqual(a.map(x => [x.name, x.dev, x.ino]), b.map(x => [x.name, x.dev, x.ino]));
+  assert.ok(a.every(x => x.nlink >= 3));
+  assert.notEqual((await lstat(path.join(one, ".git/index"))).ino, (await lstat(path.join(two, ".git/index"))).ino);
+  const measured = await measureNativeCaptureAllocation([f.objects.root, path.join(one, ".git/objects"), path.join(two, ".git/objects")]);
+  t.diagnostic("Exact ten-revision encoding allocation " + JSON.stringify(measured));
+  // Ten almost-identical 1MiB revisions must not retain ten independent blob
+  // encodings. This is a physical fixture bound, never a production object cap.
+  assert.ok(measured.uniqueAllocatedBytes < history.length * 3, JSON.stringify(measured));
+  const originalObjects = await gitAt(f.source, ["cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"]);
+  const tag = await gitAt(f.source, ["rev-parse", "refs/tags/original-encoding-tag"]);
+  const archived = await f.objects.archive(await archiveSource(f));
+  assert.deepEqual(archived.manifest.objects, originalObjects.split(/\r?\n/u).filter(Boolean)
+    .map(x => { const [oid, type] = x.split(" "); return { oid, type }; }).sort((a, b) => a.oid.localeCompare(b.oid)));
+  assert.deepEqual(await intakeAliases(f.objects), []);
+  await f.objects.withArchiveLease(archived.archive, () => gitAt(f.objects.repository, ["gc", "--prune=now"])); // Disposable fixture only.
+  assert.deepEqual((await f.objects.readArchive(archived.archive)).manifest, archived.manifest);
+  await gitAt(f.objects.repository, ["cat-file", "-e", tag]);
+  await gitAt(one, ["fsck", "--full", "--no-dangling", f.result]);
+  await gitAt(two, ["fsck", "--full", "--no-dangling", f.result]);
+  assert.deepEqual(await readFile(path.join(one, "history.bin")), history);
+  assert.deepEqual(await readFile(path.join(two, "history.bin")), history);
+  assert.equal(await gitAt(f.source, ["show-ref"]), sourceRefs);
+  assert.deepEqual(await readFile(path.join(f.source, ".git/index")), sourceIndex);
+  const before = await objectFiles(path.join(f.objects.repository, "objects"));
+  await writeFile(path.join(f.source, "later-encoding.txt"), "one later tiny selection\n"); await gitAt(f.source, ["add", "."]);
+  await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "later tiny selection"]);
+  f.result = await gitAt(f.source, ["rev-parse", "HEAD"]);
+  await compose(f, "encoding-three");
+  const ids = new Set(before.map(x => x.dev + ":" + x.ino));
+  const added = (await objectFiles(path.join(f.objects.repository, "objects"))).filter(x => !ids.has(x.dev + ":" + x.ino));
+  assert.ok(added.reduce((n, x) => n + x.bytes, 0) < 128 * 1024, JSON.stringify(added));
+  await gitAt(one, ["fsck", "--full", "--no-dangling"]);
+  await gitAt(two, ["fsck", "--full", "--no-dangling"]);
 });

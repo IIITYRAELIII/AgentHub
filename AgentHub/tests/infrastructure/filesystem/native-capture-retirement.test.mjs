@@ -16,6 +16,12 @@ import { retireSealedNativeCapture, measureNativeCaptureAllocation } from "../..
 import { inventoryNativeCapture } from "../../../src/infrastructure/filesystem/native-capture-inventory.mjs";
 import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
 
+import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
+import { ReleaseOperationService } from "../../../src/application/release-operation-service.mjs";
+import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+
+import { assertNativeCaptureNotSourcePinned } from "../../../src/infrastructure/filesystem/native-capture-source-pins.mjs";
+
 const hash = b => createHash("sha256").update(b).digest("hex");
 function git(cwd, args, { input = null, stdoutFd = null, rawOutput = false, binaryOutput = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -422,4 +428,112 @@ test("terminal prepared-only originals preserve their records while one exact co
   assert.deepEqual(await readFile(previousFile), previousBytes);
   assert.equal(f.catalog.mcpOperation(previousId).status, "failed");
   assert.equal(f.catalog.mcpOperation(previousId).error, "retained original failure");
+});
+
+
+test("completed generation Gitless source remainder preserves custody while unrelated SAME native retires", { skip: process.platform !== "win32" }, async t => {
+  let nativeCalls = 0;
+  const f = await fixture(t, { retire: async (...args) => { nativeCalls++; return retireSealedNativeCapture(...args); } });
+  const operationId = "fixture-generation-original", generation = 1;
+  const identity = { schemaVersion: 1, operationId, generation, repositoryRoot: f.source };
+  identity.identitySha256 = hash(`${operationId}:${generation}:${f.source}`);
+  const key = identity.identitySha256.slice(0, 24), generationRoot = path.join(f.dataDir, "release-gens", key);
+  const repository = path.join(generationRoot, "release-repositories", taskRepositoryKey(f.source), "repository");
+  const source = path.join(repository, "AgentHub"), archive = path.join(f.dataDir, "release-generation-evidence", key);
+  await mkdir(path.join(source, "WIP"), { recursive: true });
+  await writeFile(path.join(source, "source.mjs"), "export const retained = true;\n");
+  await writeFile(path.join(source, "WIP", "useful.txt"), "retain this unique original source remainder");
+  await mkdir(path.join(archive, "evidence"), { recursive: true });
+  const manifest = Buffer.from(JSON.stringify({ workspaceId: f.workspace.id, compositionPolicy: "main-selected-git-merge-v1",
+    tasks: [{ taskId: f.task.id, resultCommit: f.state.identity.resultCommit }] }));
+  const manifestHash = hash(manifest), checkpoint = Buffer.from(JSON.stringify({ phase: "frozen", preReleaseHead: f.state.head, manifestHash }));
+  await writeFile(path.join(archive, "identity.json"), JSON.stringify(identity));
+  await writeFile(path.join(archive, "checkpoint.json"), checkpoint);
+  const archivedManifest = path.join(archive, "evidence", manifestHash + ".json");
+  await writeFile(archivedManifest, manifest);
+  // This is a private reproduction of the real owner's partial removal state:
+  // live generation identity/Git are absent, originals are archived, source stays.
+  const prepared = path.join(f.root, "releases", "completed-generation-source"); await mkdir(prepared);
+  const runtimeManifest = path.join(prepared, "runtime-manifest.json");
+  const runtimeBytes = Buffer.from(JSON.stringify({ releaseId: "completed-generation-source", sourceRoot: source,
+    publicationRevision: f.state.head, files: [] }));
+  await writeFile(runtimeManifest, runtimeBytes);
+  const store = new ReleaseOperationStore({ dataDir: f.dataDir, idFactory: () => operationId }), scheduled = [];
+  const release = new ReleaseOperationService({ store, schedule: fn => scheduled.push(fn), processAlive: () => false,
+    compose: async () => ({ repositoryBases: [{ repositoryRoot: f.source, baseCommit: f.state.identity.before }],
+      selectedResults: [{ taskId: f.task.id, resultCommit: f.state.identity.resultCommit }],
+      candidates: [{ repositoryRoot: f.source, releaseRoot: repository, generationRoot, commit: f.state.head,
+        tree: await git(path.join(f.capture, "repository"), ["rev-parse", "HEAD^{tree}"]), manifestHash }] }),
+    validate: async () => ({ status: "passed" }),
+    publishTarget: async () => { await git(f.source, ["update-ref", "refs/heads/fixture-generation-published", f.state.head]); return { status: "applied", revision: f.state.head }; },
+    readTarget: async () => ({ status: "not_applied" }), finalize: async () => ({ closed: [f.task.id] }),
+  });
+  f.owner.readGeneration = (id, n) => release.retentionGeneration(id, n);
+  release.start({ requestId: "original-generation", workspaceId: f.workspace.id, streamId: "fixture-stream", threadId: "fixture-thread",
+    authorization: { taskIds: [f.task.id], validationMode: "full", approvedTargets: [{ targetId: "git", kind: "git", repositoryRoot: f.source }] } });
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained", "unfinished original is not source custody");
+  scheduled.shift()(); await release.drain(operationId);
+  assert.equal(store.get(operationId).state, "done");
+  const before = store.snapshot(operationId), pointer = await readFile(path.join(f.root, "current.json"));
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  const priorGraft = process.env.GIT_GRAFT_FILE;
+  try {
+    let proofReads = 0;
+    const read = (id, n) => { proofReads++; return release.retentionGeneration(id, n); };
+    process.env.GIT_GRAFT_FILE = path.join(f.root, "foreign-history-input");
+    await assert.rejects(f.owner.installationLease(f.root, () => assertNativeCaptureNotSourcePinned(f.root,
+      path.join(f.capture, "repository"), { readGeneration: read })), /ordinary local Git source custody/u);
+    assert.equal(proofReads, 0, "ambient history refuses before reading a derived authority");
+    delete process.env.GIT_GRAFT_FILE;
+    const late = (id, n) => { const value = read(id, n); process.env.GIT_GRAFT_FILE = path.join(f.root, "late-history-input"); return value; };
+    await assert.rejects(f.owner.installationLease(f.root, () => assertNativeCaptureNotSourcePinned(f.root,
+      path.join(f.capture, "repository"), { readGeneration: late })), /ordinary local Git source custody/u);
+    assert.equal(proofReads, 1, "late ambient drift refuses the before-return fence");
+    delete process.env.GIT_GRAFT_FILE; proofReads = 0;
+    const finalRead = (id, n) => { const value = read(id, n); if (proofReads === 2) process.env.GIT_GRAFT_FILE = path.join(f.root, "final-history-input"); return value; };
+    await assert.rejects(f.owner.installationLease(f.root, () => assertNativeCaptureNotSourcePinned(f.root,
+      path.join(f.capture, "repository"), { readGeneration: finalRead })), /ordinary local Git source custody/u);
+    assert.equal(proofReads, 2, "second canonical read cannot introduce ambient history at return");
+    delete process.env.GIT_GRAFT_FILE; proofReads = 0;
+    const restoredIdentity = async (id, n) => { const value = read(id, n); if (proofReads === 2) await writeFile(path.join(generationRoot, "identity.json"), JSON.stringify(identity)); return value; };
+    await assert.rejects(f.owner.installationLease(f.root, () => assertNativeCaptureNotSourcePinned(f.root,
+      path.join(f.capture, "repository"), { readGeneration: restoredIdentity })), /generation custody changed/u);
+    await rm(path.join(generationRoot, "identity.json")); // Only this fixture's injected live identity.
+  } finally { if (priorGraft === undefined) delete process.env.GIT_GRAFT_FILE; else process.env.GIT_GRAFT_FILE = priorGraft; }
+  await writeFile(archivedManifest, Buffer.concat([manifest, Buffer.from(" ")]));
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained", "archive raw hash drift retains");
+  await writeFile(archivedManifest, manifest);
+  await writeFile(runtimeManifest, JSON.stringify({ ...JSON.parse(runtimeBytes), publicationRevision: "0".repeat(40) }));
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained", "wrong exact publication retains");
+  await writeFile(runtimeManifest, runtimeBytes);
+  const approved = [{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }];
+  const borrower = path.join(source, ".git"); await mkdir(path.join(borrower, "objects", "info"), { recursive: true });
+  await writeFile(path.join(borrower, "objects", "info", "alternates"), path.join(f.capture, "repository", ".git", "objects") + "\n");
+  await f.service.runApproved(approved);
+  assert.equal(nativeCalls, 0, "fresh effect guard must preserve a restored live borrower");
+  const first = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
+  assert.ok(!first?.metadata.captureArchive, "no archive/deletion authority from stale preview");
+  assert.equal(await readFile(path.join(source, "WIP", "useful.txt"), "utf8"), "retain this unique original source remainder");
+  assert.equal((await lstat(borrower)).isSymbolicLink(), false);
+  assert.equal(borrower, path.join(source, ".git"));
+  await rm(borrower, { recursive: true }); // Only this fixture's injected borrower.
+  let child;
+  for (let i = 0; i < 128; i++) {
+    await f.service.runApproved(approved);
+    const row = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
+    assert.ok(row); child ??= row.operationId; assert.equal(row.operationId, child);
+    if (row.status === "succeeded") break;
+    assert.equal(row.metadata.lastObservation?.status, "partial", JSON.stringify(row.metadata.lastObservation));
+    assert.ok(row.metadata.lastObservation.files > 0);
+  }
+  assert.equal(f.store.getReadonly(child).status, "succeeded");
+  await assert.rejects(lstat(path.join(f.capture, "repository")), { code: "ENOENT" });
+  assert.equal(await readFile(path.join(source, "source.mjs"), "utf8"), "export const retained = true;\n");
+  assert.equal(await readFile(path.join(source, "WIP", "useful.txt"), "utf8"), "retain this unique original source remainder");
+  assert.deepEqual(await readFile(archivedManifest), manifest);
+  assert.deepEqual(await readFile(path.join(archive, "checkpoint.json")), checkpoint);
+  assert.deepEqual(await readFile(runtimeManifest), runtimeBytes);
+  assert.deepEqual(await readFile(path.join(f.root, "current.json")), pointer);
+  assert.deepEqual(store.snapshot(operationId), before, "source custody proof is read-only under the original release");
 });

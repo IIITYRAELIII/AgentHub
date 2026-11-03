@@ -157,3 +157,36 @@ archive and original pruning intent precede any repository-file deletion; unique
 WIP/UNKNOWN/current/prepared and borrowed-source ODBs remain pinned. Source/Task
 acceptance, production installation and actual reclaimed bytes are separate
 outcomes. Dependency/release/audit categories are not implicitly disposable.
+
+## Retained source after completed generation retirement (ADR-HUB-385)
+
+A runtime/prepared source remains pinned by its declared and physical path and
+by every actual Git/commondir/recursive alternate object store. If the generation
+owner has removed its live identity and Git metadata but left source files,
+absence of Git alone is not custody proof. Only the exact existing generation
+archive, stable plain identity/checkpoint/raw manifest, deterministic original
+generation/repository paths and the SAME canonical completed-generation reader
+may establish that this remainder has no Git object-store borrower. Its exact
+completed candidate must match the runtime publicationRevision and sourceRoot.
+This proof keeps the whole source remainder, WIP, prepared body and original
+archive; it authorizes no source deletion or UNKNOWN settlement.
+
+Missing/changed/nonterminal/foreign/superseded proof, redirected paths and ambient
+Git history/storage inputs refuse. A restored Git marker/alternate borrower or
+late ambient input invalidates the proof at the fresh boundary. Reads retain
+the existing installation custody and exact per-generation lease with bounded
+250ms admission; there is no global reservation, new ledger, cap or deadline.
+The existing canonical readGeneration port passes through the same native owner
+registry. No public tool argument, release receipt, publication identity or
+runtime manifest is rewritten. See ADR-HUB-385-retired-generation-source-custody.
+
+Native missing-object pack encoding keeps Git's object/delta reuse instead of
+forcing every historical blob into a separate encoding. Optional delta search
+uses window 10, at most 8MiB of search memory and one worker; these are encoding
+settings, not object/content admission caps or a total process-memory promise.
+The existing Git deadline and original operation identities remain unchanged.
+Only a new transfer without an existing output uses this encoding. An existing
+incomplete or invalid pack remains under its SAME unknown original and is never
+overwritten/replayed by this correction. A real link/allocation-aware fixture
+checks two native consumers, complete archive objects/tags, leased fixture GC
+and a later missing-only import; fixture bytes are not production savings.

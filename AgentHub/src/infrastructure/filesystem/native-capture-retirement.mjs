@@ -22,8 +22,8 @@ export const nativeCaptureCandidate = id => ({ id: id + ":repository", cursor: i
 export class NativeCaptureRetirement {
   constructor({ dataDir, taskBoard, taskGitWorkspaces, gitAt, isStopping = () => false,
     store = new MaintenanceOperationStore({ dataDir }), retire = retireSealedNativeCapture,
-    sourcePins = assertNativeCaptureNotSourcePinned, installationLease = withRuntimeInstallationLease }) {
-    Object.assign(this, { dataDir, taskBoard, taskGitWorkspaces, gitAt, isStopping, store, retire, sourcePins, installationLease });
+    sourcePins = assertNativeCaptureNotSourcePinned, readGeneration, installationLease = withRuntimeInstallationLease }) {
+    Object.assign(this, { dataDir, taskBoard, taskGitWorkspaces, gitAt, isStopping, store, retire, sourcePins, readGeneration, installationLease });
     this.root = path.join(dataDir, "task-native-merges"); this.runtimeRoot = path.dirname(dataDir);
   }
   async #owned(candidate, operationId, action) {
@@ -48,7 +48,7 @@ export class NativeCaptureRetirement {
       const publication = await this.taskGitWorkspaces.cleanupPreview(identity.taskId, { gitReferences: task.gitReferences, squashAbsorbedBy: task.squashAbsorbedBy });
       if (publication.dirty || publication.unpublished.length || !publication.gitReferences.length
           || publication.gitReferences.some(r => !r.published || !r.publishedRevision || !r.publicationGeneration)) return retained("native-capture-unpublished");
-      await this.sourcePins(this.runtimeRoot, repository);
+      await this.sourcePins(this.runtimeRoot, repository, { readGeneration: this.readGeneration });
       const git = (args, options) => this.gitAt(repository, ["--no-optional-locks", "--no-lazy-fetch", "--no-replace-objects", "-c", "core.fsmonitor=false", ...args], { ...options, lease });
       const current = async () => {
         await lease.assertOwned(); await installation.assertOwned();
@@ -57,7 +57,7 @@ export class NativeCaptureRetirement {
             || !same(originalEvidence, nativeCaptureRetirementEvidence(this.dataDir, identity.taskId, record.operationId))
             || !same(record, await this.taskGitWorkspaces.nativeCaptureRetirementRecordOwned({ taskId: identity.taskId, root, state, lease }))
             || !same(publication, await this.taskGitWorkspaces.cleanupPreview(identity.taskId, { gitReferences: task.gitReferences, squashAbsorbedBy: task.squashAbsorbedBy }))) throw new Error("Native capture retirement authority changed");
-        await this.sourcePins(this.runtimeRoot, repository);
+        await this.sourcePins(this.runtimeRoot, repository, { readGeneration: this.readGeneration });
         for (const dir of [this.root, root]) { const s = await lstat(dir); if (!s.isDirectory() || s.isSymbolicLink()) throw new Error("Native capture owner root redirected"); }
       };
       const resourceCurrent = async () => {

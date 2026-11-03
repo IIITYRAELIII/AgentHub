@@ -165,7 +165,9 @@ export class OwnedNativeObjectStore {
         const handle = await open(pack, "wx+");
         try {
           row = await this.#patch(row, "pack-created", { packIdentity: physical(await handle.stat({ bigint: true })) });
-          await this.#git(sourceRoot, ["pack-objects", "--stdout", "--no-reuse-delta", "--no-reuse-object", "--window=0"],
+          // Preserve native Git reuse/deltas for the exact missing set. Bound
+          // only optional delta-search memory/parallelism, never object content.
+          await this.#git(sourceRoot, ["pack-objects", "--stdout", "--window=10", "--window-memory=8m", "--threads=1"],
             { input: missing.join("\n") + "\n", stdoutFd: handle.fd });
           await handle.sync();
         } finally { await handle.close(); }

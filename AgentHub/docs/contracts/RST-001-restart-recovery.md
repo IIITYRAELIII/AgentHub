@@ -650,3 +650,25 @@ still required. A lost modern request never falls back to legacy stop. Remove
 this compatibility branch when non-protocol public versions cease to be
 supported update sources. Runtime-root/data layout and an interactive same-user
 security context are explicit v1 bounds; other layouts/authority refuse.
+
+## Retained source after completed generation retirement (ADR-HUB-385)
+
+A runtime/prepared source remains pinned by its declared and physical path and
+by every actual Git/commondir/recursive alternate object store. If the generation
+owner has removed its live identity and Git metadata but left source files,
+absence of Git alone is not custody proof. Only the exact existing generation
+archive, stable plain identity/checkpoint/raw manifest, deterministic original
+generation/repository paths and the SAME canonical completed-generation reader
+may establish that this remainder has no Git object-store borrower. Its exact
+completed candidate must match the runtime publicationRevision and sourceRoot.
+This proof keeps the whole source remainder, WIP, prepared body and original
+archive; it authorizes no source deletion or UNKNOWN settlement.
+
+Missing/changed/nonterminal/foreign/superseded proof, redirected paths and ambient
+Git history/storage inputs refuse. A restored Git marker/alternate borrower or
+late ambient input invalidates the proof at the fresh boundary. Reads retain
+the existing installation custody and exact per-generation lease with bounded
+250ms admission; there is no global reservation, new ledger, cap or deadline.
+The existing canonical readGeneration port passes through the same native owner
+registry. No public tool argument, release receipt, publication identity or
+runtime manifest is rewritten. See ADR-HUB-385-retired-generation-source-custody.
