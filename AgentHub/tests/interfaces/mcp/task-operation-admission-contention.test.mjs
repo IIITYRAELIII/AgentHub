@@ -13,6 +13,9 @@ import { createPersistenceMutationCapabilities } from "../../../src/composition/
 import { mcpArgumentsHash } from "../../../src/domain/mcp-arguments-hash.mjs";
 import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 import { AsyncSqliteMutationQueue } from "../../../src/infrastructure/persistence/async-sqlite-mutation-queue.mjs";
+import { CommandTraceService } from "../../../src/application/command-trace-service.mjs";
+import { CommandTraceWorkerStore } from "../../../src/infrastructure/persistence/command-trace-worker-store.mjs";
+import { CommandTraceSpanStore } from "../../../src/infrastructure/persistence/command-trace-span-store.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-admission-contention-"));
@@ -21,7 +24,9 @@ async function fixture(t) {
   await catalog.load();
   const rawTasks = new TaskBoardStore({ databaseFile });
   let server;
-  t.after(async () => { await server?.close(); rawTasks.close(); catalog.close(); await rm(root, { recursive: true, force: true }); });
+  const cleanup = [];
+  t.after(async () => { for (const close of cleanup.reverse()) await close();
+    await server?.close(); rawTasks.close(); catalog.close(); await rm(root, { recursive: true, force: true }); });
   const caps = createPersistenceMutationCapabilities({ rawWorkspaceCatalogStore: catalog, rawTaskBoardStore: rawTasks });
   const tasks = new TaskBoardService({ store: caps.taskBoardStore, workspaceCatalog: caps.workspaceCatalogStore });
   const workspace = await caps.workspaceCatalogStore.createWorkspace({ name: "Admission fixture" });
@@ -53,11 +58,17 @@ async function fixture(t) {
   };
   const token = service.contextToken({ provider: "codex", threadId: "Owner" });
   const input = id => ({ context_token: token, request_id: id, task_id: task.id, description: "one exact effect" });
-  return { root, databaseFile, catalog, tasks, task, service, spans, call, token, input, streams };
+  return { root, databaseFile, catalog, tasks, task, service, spans, call, token, input, streams,
+    onCleanup: close => cleanup.push(close) };
 }
 
 test("exhausted real SQLite BEGIN reports this invocation unadmitted, then same original admits one effect", async t => {
   const f = await fixture(t), args = f.input("same-original-after-contention"), prior = f.tasks.task(f.task.id);
+  const traceFile = path.join(f.root, "trace.sqlite"), store = new CommandTraceWorkerStore({ databaseFile: traceFile });
+  f.onCleanup(() => store.close()); await store.initialize();
+  const trace = new CommandTraceService({ store });
+  const record = f.service.recordCommandTrace;
+  f.service.recordCommandTrace = span => { record(span); return trace.recordBestEffort(span); };
   const blocker = new DatabaseSync(f.databaseFile);
   blocker.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE");
   let reply;
@@ -92,6 +103,16 @@ test("exhausted real SQLite BEGIN reports this invocation unadmitted, then same 
   assert.ok(timing.some(s => s.metadata.outcome === "error" && s.metadata.attempts > 1 && s.metadata.contentionWaitMs > 0));
   assert.ok(timing.some(s => s.metadata.outcome === "ok"));
   assert.ok(f.spans.every(s => !JSON.stringify(s).includes(f.token) && !JSON.stringify(s).includes(args.description)));
+  await store.close();
+  const reopened = new CommandTraceSpanStore({ databaseFile: traceFile });
+  f.onCleanup(() => reopened.close());
+  const saved = await reopened.readCommandTimeline(args.request_id);
+  const refusal = saved.find(s => s.stage === "task-operation-not-admitted");
+  const persistence = saved.find(s => s.stage === "task-operation-admission-sqlite" && s.metadata.outcome === "error");
+  assert.equal(refusal.commandId, args.request_id);
+  assert.ok(persistence.metadata.queueWaitMs >= 0 && persistence.metadata.persistenceMs >= 0);
+  assert.ok(persistence.metadata.contentionWaitMs > 0 && persistence.metadata.attempts > 1);
+  assert.ok(saved.every(s => !JSON.stringify(s).includes(f.token) && !JSON.stringify(s).includes(args.description)));
 });
 
 test("missing receipt lookup is an observation, never a fabricated admission or terminal outcome", async t => {
