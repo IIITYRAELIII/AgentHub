@@ -6,8 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash,
-  normalizedReleaseBaseProvenance } from "../../../src/domain/release-base-provenance.mjs";
+import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash, releaseBaseProvenanceApprovedBase,
+  normalizedReleaseBaseProvenance, assertReleaseBaseProvenance,
+  releasePublicationBaseCommit } from "../../../src/domain/release-base-provenance.mjs";
 import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
@@ -32,7 +33,7 @@ async function commit(root, message) {
   await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message]);
   return git(root, ["rev-parse", "HEAD"]);
 }
-async function fixture(t, { conflict = false } = {}) {
+async function fixture(t, { conflict = false, retainedSource = false, selectedCount = 1 } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-local-source-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const origin = path.join(root, "origin.git"), primary = path.join(root, "primary"), carry = path.join(root, "carry");
@@ -48,6 +49,7 @@ async function fixture(t, { conflict = false } = {}) {
   await git(primary, ["push", "origin", "main"]);
   await git(primary, ["worktree", "add", "-b", "local-carry", carry, main]);
   await save(carry, "AgentHub/README.md", "Previously published OWN code.\n");
+  if (conflict) await save(carry, "AgentHub/server.mjs", "export const repair = 3;\n");
   const published = await commit(carry, "OWN publication");
   await git(carry, ["push", "origin", "HEAD:main"]);
   await save(carry, "AgentHub/server.mjs", "export const repair = 1;\n");
@@ -58,6 +60,13 @@ async function fixture(t, { conflict = false } = {}) {
     conflict ? "export const repair = 2;\n" : "export const selected = true;\n");
   const resultCommit = await commit(feature, "selected feature");
   const tasks = [{ taskId: "only-selected", taskRevision: 2, baseCommit: main, resultCommit }];
+  for (let index = 1; index < selectedCount; index++) {
+    const selectedRoot = path.join(root, `feature-${index}`);
+    await git(primary, ["worktree", "add", "-b", `selected-feature-${index}`, selectedRoot, main]);
+    await save(selectedRoot, `AgentHub/feature-${index}.mjs`, `export const selected = ${index};\n`);
+    tasks.push({ taskId: `selected-${index}`, taskRevision: 2, baseCommit: main,
+      resultCommit: await commit(selectedRoot, `selected feature ${index}`) });
+  }
   const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
   const runtimeRoot = defaultRuntimeRoot({ environment });
   const release = path.join(runtimeRoot, "releases", "installed-repair");
@@ -66,6 +75,7 @@ async function fixture(t, { conflict = false } = {}) {
   const physical = Buffer.from("export const repair = 1;\r\n");
   await save(release, "server.mjs", physical);
   const manifest = Buffer.from(JSON.stringify({ releaseId: "installed-repair", version, releaseVersion,
+    ...(retainedSource ? { sourceRoot: path.join(carry, "AgentHub"), publicationRevision: source } : {}),
     files: [{ path: "server.mjs", bytes: physical.length, sha256: hash(physical) }] }));
   await save(release, "runtime-manifest.json", manifest);
   await save(runtimeRoot, "current.json", JSON.stringify({ current: "installed-repair" }));
@@ -228,6 +238,92 @@ test("valid installed source evidence is verified beyond the former record byte 
   await assert.rejects(f.verify(), /installed manifest changed/u);
 });
 
+test("PUBLIC preparation composes the published base and three exact selected results without installed private code", async t => {
+  const f = await fixture(t, { retainedSource: true, selectedCount: 3 });
+  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
+  const beforePointer = await readFile(path.join(f.runtimeRoot, "current.json"));
+  const beforeManifest = await readFile(path.join(f.release, "runtime-manifest.json"));
+  const provenance = await service.deriveInstalledLocalSourceBaselineForSelection({ projectRoot: f.primary,
+    publishedRevision: f.published, planRevision: f.p.planRevision, tasks: f.tasks });
+  const candidate = await service.prepareCandidate({ projectRoot: f.primary, workspaceId: "workspace",
+    planRevision: f.p.planRevision, frozenTasks: f.tasks,
+    approvedBaseCommit: releaseBaseProvenanceApprovedBase(provenance), baseProvenance: provenance });
+  assert.equal(await git(candidate.releaseRoot, ["show", candidate.preReleaseHead + ":AgentHub/server.mjs"]),
+    "export const repair = 0;", "unselected installed repair must not enter PUBLIC source");
+  assert.equal(candidate.baseCommit, f.published);
+  assert.equal(candidate.manifest.baseProvenance.sourceBaseCommit, f.source);
+  assert.equal(candidate.manifest.baseProvenance.compositionBaseCommit, f.published);
+  assert.deepEqual(candidate.manifest.tasks.map(task => task.resultCommit), f.tasks.map(task => task.resultCommit));
+  assert.equal(await git(candidate.releaseRoot, ["show", candidate.preReleaseHead + ":AgentHub/feature.mjs"]), "export const selected = true;");
+  for (let index = 1; index < 3; index++) assert.equal(await git(candidate.releaseRoot,
+    ["show", `${candidate.preReleaseHead}:AgentHub/feature-${index}.mjs`]), `export const selected = ${index};`);
+  assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), beforePointer);
+  assert.deepEqual(await readFile(path.join(f.release, "runtime-manifest.json")), beforeManifest);
+  assert.deepEqual(await readFile(path.join(f.release, "server.mjs")), f.physical);
+  assert.equal(await git(f.carry, ["rev-parse", "HEAD"]), f.source);
+  assert.equal(await git(f.primary, ["rev-parse", "HEAD"]), f.main);
+  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+  const checkpointFile = (await service.frozenCandidate(f.primary)).checkpointFile;
+  const checkpoint = await readFile(checkpointFile);
+  const manifest = await readFile(candidate.manifestFile);
+  const request = { projectRoot: f.primary, workspaceId: "workspace", planRevision: f.p.planRevision,
+    frozenTasks: f.tasks, approvedBaseCommit: f.published, baseProvenance: provenance };
+  for (const changed of [
+    { ...provenance, compositionBaseCommit: f.source },
+    { ...provenance, sourceBaseTree: "0".repeat(40) },
+    { ...provenance, selectionHash: "0".repeat(64) },
+  ]) await assert.rejects(service.prepareCandidate({ ...request, baseProvenance: changed }), /changed|pins/u);
+  await assert.rejects(service.prepareCandidate({ ...request, approvedBaseCommit: f.source,
+    baseProvenance: f.p }), /operational only/u);
+  await assert.rejects(service.prepareCandidate({ ...request, approvedBaseCommit: f.source, baseProvenance: {
+    ...provenance, compositionBaseCommit: f.source, approvedOriginMainCommit: f.source, adoptions: [],
+    ownGitPublication: { kind: "validated-own-git-publication-v1", operationId: "invented-publication", generation: 1,
+      identitySha256: "0".repeat(64), repositoryRoot: f.primary, publishedBaseCommit: f.published,
+      agreedMainCommit: f.main, commit: f.source, tree: provenance.sourceBaseTree },
+  } }), /OWN Git publication|OWN publication/u);
+  const publicationFile = path.join(f.runtimeRoot, "publication-state.json");
+  const publication = await readFile(publicationFile);
+  for (const value of [{}, { repositories: [{ root: path.join(f.root, "foreign"), revision: f.published }] }]) {
+    await save(f.runtimeRoot, "publication-state.json", JSON.stringify(value));
+    await assert.rejects(service.prepareCandidate(request), /changed|provenance/u);
+  }
+  await writeFile(publicationFile, publication);
+  assert.deepEqual(await readFile(checkpointFile), checkpoint);
+  assert.deepEqual(await readFile(candidate.manifestFile), manifest);
+  const reused = await service.prepareCandidate(request);
+  assert.equal(reused.preReleaseHead, candidate.preReleaseHead);
+  assert.equal(reused.manifestHash, candidate.manifestHash);
+  assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), beforePointer);
+  assert.deepEqual(await readFile(path.join(f.release, "server.mjs")), f.physical);
+});
+
+test("PUBLIC provenance separates exact operational source from the sole published composition base", () => {
+  const p = { schemaVersion: 1, kind: LOCAL_SOURCE_BASELINE_PROVENANCE, publishedBaseCommit: "1".repeat(40),
+    agreedMainCommit: "2".repeat(40), sourceBaseCommit: "3".repeat(40), sourceBaseTree: "4".repeat(40),
+    sourcePatchSha256: "5".repeat(64), installedReleaseId: "private", installedManifestSha256: "6".repeat(64),
+    planRevision: "plan", selectionHash: "7".repeat(64) };
+  assert.deepEqual(normalizedReleaseBaseProvenance(p), p, "legacy operational shape is unchanged");
+  assert.throws(() => assertReleaseBaseProvenance({ publishedBaseCommit: p.publishedBaseCommit,
+    baseCommit: p.sourceBaseCommit, provenance: p }), /operational only/u);
+  const publicInput = { ...p, compositionBaseCommit: p.publishedBaseCommit };
+  const normalized = normalizedReleaseBaseProvenance(publicInput, p.publishedBaseCommit);
+  assert.equal(releaseBaseProvenanceApprovedBase(normalized), p.publishedBaseCommit);
+  assert.equal(releasePublicationBaseCommit({ baseCommit: p.publishedBaseCommit, baseProvenance: normalized }), p.publishedBaseCommit);
+  assert.equal(normalized.sourceBaseCommit, p.sourceBaseCommit);
+  for (const compositionBaseCommit of [p.sourceBaseCommit, "", null, "8".repeat(40)]) {
+    assert.throws(() => normalizedReleaseBaseProvenance({ ...p, compositionBaseCommit }), /pins/u);
+  }
+  assert.throws(() => normalizedReleaseBaseProvenance(publicInput, p.sourceBaseCommit), /pins/u);
+  assert.throws(() => normalizedReleaseBaseProvenance({ ...publicInput, skipIntegrity: true }), /exact/u);
+  assert.throws(() => assertReleaseBaseProvenance({ publishedBaseCommit: "8".repeat(40),
+    baseCommit: p.publishedBaseCommit, provenance: normalized }), /belongs/u);
+  const native = normalizedReleaseBaseProvenance({ schemaVersion: 1, kind: "agreed-main-native-git-v1",
+    publishedBaseCommit: p.publishedBaseCommit, agreedMainCommit: p.agreedMainCommit,
+    compositionBaseCommit: p.publishedBaseCommit }, p.publishedBaseCommit);
+  assert.equal(native.agreedMainCommit, p.agreedMainCommit);
+  assert.equal(releaseBaseProvenanceApprovedBase(native), p.publishedBaseCommit);
+});
+
 test("installed source preserves exact inherited repository files from agreed main", { timeout: 90000 }, async t => {
   const f = await inheritedRepositoryFixture(t);
   const result = await f.verifyInherited();
@@ -370,9 +466,10 @@ test("preparation native conflict is a definite refusal with prior candidate pin
   const checkpoint = await readFile(prior.checkpointFile ?? (await service.frozenCandidate(f.primary)).checkpointFile);
   const guard = { primaryMainCommit: f.main, originMainCommit: f.published, checkpointHash: hash(checkpoint),
     manifestHash: prior.manifestHash, preReleaseHead: prior.preReleaseHead, tree: prior.tree,
-    approvedBaseCommit: f.source, approvedTree: "0".repeat(40) };
-  await assert.rejects(service.prepareCandidate({ ...common, approvedBaseCommit: f.source,
-    baseProvenance: f.p, preparationGuard: guard }), error => {
+    approvedBaseCommit: f.published, approvedTree: "0".repeat(40) };
+  const publicProvenance = { ...f.p, compositionBaseCommit: f.published };
+  await assert.rejects(service.prepareCandidate({ ...common, approvedBaseCommit: f.published,
+    baseProvenance: publicProvenance, preparationGuard: guard }), error => {
     assert.equal(error.code, "RELEASE_PREPARATION_REJECTED");
     assert.ok(error instanceof ReleasePreparationRejectedError);
     assert.equal(typeof error.conflictRoot, "string");
@@ -380,10 +477,10 @@ test("preparation native conflict is a definite refusal with prior candidate pin
     return true;
   });
   // Outside explicit preparation, preserve the native owner's existing error.
-  await assert.rejects(service.prepareCandidate({ ...common, approvedBaseCommit: f.source,
-    baseProvenance: f.p }), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
-  await assert.rejects(service.prepareCandidate({ ...common, approvedBaseCommit: f.source,
-    baseProvenance: f.p, preparationGuard: guard }), { code: "RELEASE_PREPARATION_REJECTED" });
+  await assert.rejects(service.prepareCandidate({ ...common, approvedBaseCommit: f.published,
+    baseProvenance: publicProvenance }), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  await assert.rejects(service.prepareCandidate({ ...common, approvedBaseCommit: f.published,
+    baseProvenance: publicProvenance, preparationGuard: guard }), { code: "RELEASE_PREPARATION_REJECTED" });
   const after = await service.frozenCandidate(f.primary);
   assert.equal(after.preReleaseHead, prior.preReleaseHead);
   assert.equal(after.manifestHash, prior.manifestHash);
@@ -431,20 +528,21 @@ test("installed local source rejects substituted pins, selection, source and act
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
-test("native candidate retains installed local source and selected result through reuse, generation and freeze", async t => {
+test("PUBLIC candidate preserves installed evidence separately through reuse, generation and freeze", async t => {
   const f = await fixture(t);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
   const request = { projectRoot: f.primary, workspaceId: "workspace", planRevision: f.p.planRevision,
-    frozenTasks: f.tasks, approvedBaseCommit: f.source, baseProvenance: f.p };
+    frozenTasks: f.tasks, approvedBaseCommit: f.published,
+    baseProvenance: { ...f.p, compositionBaseCommit: f.published } };
   const before = await git(f.primary, ["rev-parse", "HEAD"]);
   const candidate = await service.prepareCandidate(request);
-  assert.equal(await git(candidate.releaseRoot, ["show", candidate.preReleaseHead + ":AgentHub/server.mjs"]), "export const repair = 1;");
+  assert.equal(await git(candidate.releaseRoot, ["show", candidate.preReleaseHead + ":AgentHub/server.mjs"]), "export const repair = 0;");
   assert.equal(await git(candidate.releaseRoot, ["show", candidate.preReleaseHead + ":AgentHub/feature.mjs"]), "export const selected = true;");
   assert.deepEqual(candidate.manifest.tasks.map(x => x.taskId), ["only-selected"]);
   const again = await service.prepareCandidate(request);
   assert.equal(again.preReleaseHead, candidate.preReleaseHead);
   assert.equal(again.manifestHash, candidate.manifestHash);
-  await assert.rejects(service.prepareCandidate({ ...request, baseProvenance: { ...f.p, selectionHash: "0".repeat(64) } }), /selection changed/);
+  await assert.rejects(service.prepareCandidate({ ...request, baseProvenance: { ...request.baseProvenance, selectionHash: "0".repeat(64) } }), /selection changed/);
   assert.equal((await service.frozenCandidate(f.primary)).preReleaseHead, candidate.preReleaseHead);
   await assert.rejects(service.prepareCandidate({ ...request, validateBeforeCommit: async () => {
     await save(f.runtimeRoot, "current.json", JSON.stringify({ current: "raced-release" }));
@@ -457,7 +555,7 @@ test("native candidate retains installed local source and selected result throug
   const generation = await service.prepareGeneration(generationInput);
   assert.equal(generation.checkpointPhase, "frozen");
   assert.equal(generation.manifest.baseProvenance.sourceBaseCommit, f.source);
-  assert.equal(await git(generation.releaseRoot, ["show", generation.preReleaseHead + ":AgentHub/server.mjs"]), "export const repair = 1;");
+  assert.equal(await git(generation.releaseRoot, ["show", generation.preReleaseHead + ":AgentHub/server.mjs"]), "export const repair = 0;");
   const repeated = await service.prepareGeneration(generationInput);
   assert.equal(repeated.preReleaseHead, generation.preReleaseHead);
   assert.equal(repeated.manifestHash, generation.manifestHash);
@@ -466,6 +564,7 @@ test("native candidate retains installed local source and selected result throug
     changelogContent: notes, releaseDate: new Date("2026-10-16T00:00:00Z") });
   assert.equal(frozen.phase, "frozen");
   assert.equal((await service.frozenCandidate(f.primary)).manifest.baseProvenance.sourceBaseCommit, f.source);
+  assert.deepEqual(await readFile(path.join(f.release, "server.mjs")), f.physical);
   assert.equal(await git(f.primary, ["rev-parse", "HEAD"]), before);
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });

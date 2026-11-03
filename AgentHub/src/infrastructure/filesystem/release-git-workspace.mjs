@@ -1088,6 +1088,11 @@ export class ReleaseGitWorkspaceService {
     return withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async () => {
       const source = await this.frozenCandidate(projectRoot, { changelogContent }).catch(error => { throw stale(error.message); });
       const manifest = JSON.parse(await readFile(source.manifestFile, "utf8"));
+      try {
+        assertReleaseBaseProvenance({ publishedBaseCommit: await durablePublishedRevision(this.#environment, projectRoot),
+          baseCommit: source.baseCommit, provenance: normalizedBaseProvenance(manifest.baseProvenance, source.baseCommit),
+          phase: "PUBLIC prepared generation" });
+      } catch (error) { throw stale(error.message); }
       const tasks = normalizedFrozenTasks(frozenTasks);
       if (source.checkpointPhase !== "prepared" || manifest.compositionPolicy !== NATIVE_RELEASE_POLICY
           || source.planRevision !== planRevision || source.baseCommit !== approvedBaseCommit
@@ -1674,7 +1679,7 @@ export class ReleaseGitWorkspaceService {
       runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual,
       readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }) });
     if (!provenance && pins.length) throw new Error("Ordinary adopted Await has no verified installed source baseline");
-    return provenance;
+    return provenance ? { ...provenance, compositionBaseCommit: provenance.ownGitPublication?.commit ?? publishedRevision } : null;
   }
 
   #historicalChangelogOriginal(provenance) {
@@ -1707,8 +1712,11 @@ export class ReleaseGitWorkspaceService {
     return measureTaskOperation("native:history-authority", async () => {
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
       const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
-      return { bases: [verified.provenance.sourceBaseCommit,
-        ...(verified.provenance.ownGitPublication ? [verified.provenance.ownGitPublication.commit] : [])], metadataBases: verified.metadataBases,
+      const publicBases = [...new Set([verified.provenance.compositionBaseCommit ?? verified.provenance.sourceBaseCommit,
+        ...(verified.provenance.compositionBaseCommit ? [verified.provenance.publishedBaseCommit] : []),
+        ...(verified.provenance.ownGitPublication ? [verified.provenance.ownGitPublication.commit] : [])])];
+      return { bases: publicBases,
+        metadataBases: verified.provenance.compositionBaseCommit ? publicBases : verified.metadataBases,
         ...(verified.changelogEntries ? { changelogEntries: verified.changelogEntries } : {}),
         adoptions: verified.adoptions ?? [] };
     }
@@ -1960,8 +1968,10 @@ export class ReleaseGitWorkspaceService {
     const baseCommit = String(approvedBaseCommit ?? "").trim();
     const localSource = baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE
       ? normalizedBaseProvenance(baseProvenance, baseCommit) : null;
+    const nativeSource = baseProvenance?.kind === NATIVE_MAIN_PROVENANCE
+      ? normalizedBaseProvenance(baseProvenance, baseCommit) : null;
     if (!revision || !/^[a-f0-9]{40}$/u.test(baseCommit)
-        || (localSource ? localSource.agreedMainCommit !== initial.mainCommit : baseCommit !== initial.mainCommit)) {
+        || ((localSource ?? nativeSource)?.agreedMainCommit ?? baseCommit) !== initial.mainCommit) {
       throw new Error("native release requires the exact agreed local main and plan revision");
     }
     const published = await durablePublishedRevision(this.#environment, initial.root);
@@ -2154,7 +2164,9 @@ export class ReleaseGitWorkspaceService {
       // from the registered primary without changing either repository's config.
       const workspace = authority?.phase === "completed" && !forwardPreparation ? initial.root : "workspace";
       await git(["fetch", "--prune", workspace, "+refs/heads/main:refs/remotes/workspace/main"]);
-      for (const commit of [baseCommit, ...tasks.map((task) => task.resultCommit)]) {
+      // Operational source objects are verification inputs, not merge bases.
+      for (const commit of [baseCommit, ...(localSource ? [localSource.sourceBaseCommit] : []),
+        ...tasks.map((task) => task.resultCommit)]) {
         if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
           await git(["fetch", workspace, commit]);
         }
@@ -2278,7 +2290,7 @@ export class ReleaseGitWorkspaceService {
         await validatePreparationMain();
         const current = await primarySnapshot(initial.root);
         assertPrimarySnapshot(current, "native release promotion");
-        if (current.mainCommit !== (localSource?.agreedMainCommit ?? baseCommit) || current.headCommit !== initial.headCommit
+        if (current.mainCommit !== ((localSource ?? nativeSource)?.agreedMainCommit ?? baseCommit) || current.headCommit !== initial.headCommit
             || current.branchRef !== initial.branchRef
             || current.dirty.indexFingerprint !== initial.dirty.indexFingerprint
             || current.dirty.fingerprint !== initial.dirty.fingerprint) {

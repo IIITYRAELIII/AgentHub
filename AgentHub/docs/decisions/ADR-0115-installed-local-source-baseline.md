@@ -2,6 +2,11 @@
 
 Status: accepted scope; implementation requires exact affected review and delivery.
 
+PUBLIC composition authority is superseded by
+[ADR-HUB-403](ADR-HUB-403-public-selected-release-base.md). The installed/source
+identity and physical continuity proof below remain operational evidence; they
+do not make private changes public release members.
+
 The current incident has a published Git baseline, older agreed local main and
 later authorized local repairs already installed. Starting a release from that
 older main would discard repairs. An installed-file overlay would leave Git
