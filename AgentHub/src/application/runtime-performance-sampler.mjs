@@ -1,4 +1,4 @@
-import { sampleRuntimeWorkerMemory, RUNTIME_WORKER_MEMORY_OWNERS, RUNTIME_WORKER_MEMORY_METRICS } from "./runtime-worker-memory.mjs";
+import { scheduleRuntimeWorkerMemory, RUNTIME_WORKER_MEMORY_OWNERS, RUNTIME_WORKER_MEMORY_METRICS } from "./runtime-worker-memory.mjs";
 import { createRuntimeCpuSample } from "./runtime-cpu-sample.mjs";
 
 // Publish existing health counters into the common trace owner; no second
@@ -41,7 +41,7 @@ export function createRuntimePerformanceSampler({ trace, readHealth, instanceId,
           transport: "runtime", outcome: "succeeded", metadata: { metrics: workerMetrics, sampleIntervalMs: intervalMs } });
       }
     } catch { /* Diagnostics cannot fail application work. */ }
-    finally { void sampleRuntimeWorkerMemory().catch(() => {}); }
+    finally { void scheduleRuntimeWorkerMemory()?.catch(() => {}); }
   }
   return { start() { if (!timer) { timer = setIntervalImpl(sample, intervalMs); timer.unref?.(); } },
     stop() { if (timer) clearIntervalImpl(timer); timer = null; return cpuSample.stop(); }, sample };

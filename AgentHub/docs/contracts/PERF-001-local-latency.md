@@ -737,7 +737,11 @@ an observation bound, not worker admission or a limit on history/work. Exit
 removes the exact observation. Samples carry numeric thread/generation and
 request/completion times; missing/failed values are unknown, not zero. At most
 one observation per tracked worker is pending, with no added timer or wait on
-the business path. Native sampling failure cannot change an owner's result.
+the business path. Automatic ticks join only observations started by that
+tick; an already pending observation retains no additional completion chain.
+Other workers can still be observed while one request stays pending. An
+explicit awaited sample may join existing pending observations. Native
+sampling failure cannot change an owner's result.
 
 Existing runtime-health trace frames retain the original metric selection and
 cap; separate small frames persist each worker owner's numeric summary through

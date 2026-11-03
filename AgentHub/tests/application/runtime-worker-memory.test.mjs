@@ -197,3 +197,108 @@ test("actual existing state, usage and publication owners expose heap observatio
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("automatic worker sampling retains a bounded join while native statistics stay pending", async () => {
+  const { observeRuntimeWorkerMemory } = await import("../../src/application/runtime-worker-memory.mjs");
+  let finish, calls = 0;
+  const held = new Promise(resolve => { finish = resolve; });
+  const worker = fakeWorker(701, () => { calls += 1; return held; });
+  observeRuntimeWorkerMemory("rollout", worker);
+  const sampler = createRuntimePerformanceSampler({
+    instanceId: "held-worker-fixture", trace: { recordBestEffort() {} },
+    readHealth: () => ({ diagnostics: {} }), cpuSample: { start() {}, stop() {} },
+  });
+  const originalAllSettled = Promise.allSettled;
+  const originalThen = Promise.prototype.then;
+  let operation, joins = 0;
+  Promise.allSettled = function (iterable) {
+    const inputs = Array.from(iterable);
+    if (!operation && inputs.length === 1) operation = inputs[0];
+    return Reflect.apply(originalAllSettled, this, [inputs]);
+  };
+  Promise.prototype.then = function (...args) {
+    if (this === operation) joins += 1;
+    return Reflect.apply(originalThen, this, args);
+  };
+  let firstJoins, repeatedJoins;
+  try {
+    sampler.sample(); await Promise.resolve();
+    firstJoins = joins;
+    for (let index = 0; index < 32; index += 1) sampler.sample();
+    await Promise.resolve();
+    repeatedJoins = joins;
+  } finally {
+    Promise.allSettled = originalAllSettled;
+    Promise.prototype.then = originalThen;
+    finish(values);
+    await sampleRuntimeWorkerMemory();
+    worker.emit("exit", 0);
+    await sampler.stop();
+  }
+  assert.equal(calls, 1, "native observation itself remains single-flight");
+  assert.ok(firstJoins > 0, "instrumentation observed the real aggregate join");
+  assert.equal(repeatedJoins, firstJoins,
+    "pending automatic samples must not attach another retained join on every tick");
+});
+
+test("automatic worker sampling admits fresh workers while explicit sampling awaits held work", async () => {
+  const observer = createRuntimeWorkerMemoryObserver();
+  let finish, heldCalls = 0, freshCalls = 0;
+  const held = fakeWorker(702, () => { heldCalls += 1; return new Promise(resolve => { finish = resolve; }); });
+  const fresh = fakeWorker(703, () => { freshCalls += 1; return values; });
+  observer.register("rollout", held);
+  const scheduled = observer.schedule();
+  await Promise.resolve();
+  let explicitFinished = false;
+  const explicit = observer.sample().then(() => { explicitFinished = true; });
+  try {
+    for (let index = 0; index < 32; index += 1) assert.equal(observer.schedule(), null);
+    observer.register("usageSync", fresh);
+    const freshOnly = observer.schedule();
+    assert.ok(freshOnly instanceof Promise);
+    await freshOnly;
+    assert.equal(explicitFinished, false, "explicit await still includes existing held work");
+    assert.equal(heldCalls, 1);
+    assert.equal(freshCalls, 1);
+    assert.equal(observer.snapshot().rollout.pendingSamples, 1);
+    assert.equal(observer.snapshot().usageSync.usedHeapBytes, values.used_heap_size);
+    fresh.emit("exit", 0);
+    assert.equal(observer.schedule(), null);
+  } finally {
+    finish(values);
+    await Promise.all([scheduled, explicit]);
+    held.emit("exit", 0);
+    fresh.emit("exit", 0);
+  }
+  assert.equal(explicitFinished, true);
+  assert.equal(observer.snapshot().rollout.activeWorkers, 0);
+});
+
+test("automatic worker sampling preserves unknown failures and ignores exited generations", async () => {
+  const observer = createRuntimeWorkerMemoryObserver();
+  let finish;
+  const old = fakeWorker(704, () => new Promise(resolve => { finish = resolve; }));
+  observer.register("runtimeState", old);
+  const scheduled = observer.schedule();
+  await Promise.resolve();
+  old.emit("exit", 0);
+  const replacement = fakeWorker(704, () => { throw new Error("SECRET"); });
+  observer.register("runtimeState", replacement);
+  try {
+    await observer.schedule();
+    finish(values);
+    await scheduled;
+    const view = observer.snapshot().runtimeState;
+    assert.equal(view.workers[0].generation, 2);
+    assert.equal(view.failedSamples, 1);
+    assert.equal(view.usedHeapBytes, null);
+    assert.equal(view.pendingSamples, 0);
+    assert.equal(view.workers[0].state, "unavailable");
+    assert.doesNotMatch(JSON.stringify(view), /SECRET/);
+  } finally {
+    finish(values);
+    await scheduled;
+    replacement.emit("exit", 0);
+  }
+});

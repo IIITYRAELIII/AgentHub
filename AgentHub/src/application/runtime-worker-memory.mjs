@@ -35,10 +35,13 @@ export function createRuntimeWorkerMemoryObserver({ clock = Date.now } = {}) {
     return true;
   }
 
-  function sample() {
+  function sample(joinPending = true) {
     const pending = [];
     for (const pool of pools.values()) for (const [sequence, record] of pool.records) {
-      if (record.pending) { pending.push(record.pending); continue; }
+      if (record.pending) {
+        if (joinPending) pending.push(record.pending);
+        continue;
+      }
       const worker = record.ref.deref();
       if (!worker || typeof worker.getHeapStatistics !== "function") {
         record.state = "unavailable";
@@ -66,6 +69,9 @@ export function createRuntimeWorkerMemoryObserver({ clock = Date.now } = {}) {
       record.pending = operation;
       pending.push(operation);
     }
+    // Automatic ticks join only observations they start. A held observation
+    // cannot retain another aggregate/reaction on each existing timer tick.
+    if (!joinPending && pending.length === 0) return null;
     return Promise.allSettled(pending);
   }
 
@@ -90,7 +96,7 @@ export function createRuntimeWorkerMemoryObserver({ clock = Date.now } = {}) {
     }
     return result;
   }
-  return { register, sample, snapshot };
+  return { register, sample: () => sample(), schedule: () => sample(false), snapshot };
 }
 
 const observer = createRuntimeWorkerMemoryObserver();
@@ -98,4 +104,5 @@ export function observeRuntimeWorkerMemory(owner, worker) {
   try { return observer.register(owner, worker); } catch { return false; }
 }
 export const sampleRuntimeWorkerMemory = () => observer.sample();
+export const scheduleRuntimeWorkerMemory = () => observer.schedule();
 export const runtimeWorkerMemorySnapshot = () => observer.snapshot();
