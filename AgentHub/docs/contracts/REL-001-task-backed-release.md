@@ -349,6 +349,33 @@ or original operation; subsequent validation still runs every required suite.
 
 ## Installed local source baseline (ADR-0115)
 
+For PUBLIC preparation, installed source is operational evidence, not release
+membership. The existing provenance may bind `compositionBaseCommit` only to its
+exact durable `publishedBaseCommit`, or the existing independently revalidated
+`ownGitPublication.commit` when that original has already published Git before
+full delivery. The latter keeps ADR-HUB-329's exact membership/receipt/origin
+proof and grants no installation or new publication credit. `sourceBaseCommit`, source tree/patch,
+installed manifest, agreed main and selected results keep their original identities
+and full verification. Ordinary Await composes published code plus every exact
+accepted result; it neither merges the installed private source nor removes it
+from the installation. An older agreed main stays separately pinned. The normal
+no-carry path uses the same explicit published composition pin. Explicit reviewed
+main and selected adoption authority retain their existing independent checks.
+
+The installed source's objects may be transported solely for physical/source
+verification. They grant no PUBLIC history or inherited-metadata allowance.
+Fresh selection, origin/publication, source, primary/index, lease and Task CAS
+checks still fence promotion and terminal persistence. Native conflicts remain
+honest conflicts with the existing exact independent review boundary.
+
+Legacy installed-carry envelopes stay readable for original evidence and native
+Test/operational verification. They cannot authorize a new PUBLIC candidate,
+generation, reviewed-main recovery or freeze. Such a prepared candidate must be
+rebuilt through ordinary Await/preparation from published plus the complete
+selected set; immutable old manifests, journals, generations and receipts are
+not retargeted. Release capture still consumes the already prepared candidate,
+without hidden recomposition. See ADR-HUB-403-public-selected-release-base.
+
 Publication keeps the composition source base separate from the remote CAS base.
 The existing sealed manifest/checkpoint provenance supplies the exact approved
 origin (or the retained published baseline when no incoming was adopted).
@@ -358,9 +385,9 @@ exact remote lease still fences fetch/push drift. Provenance mismatch refuses.
 Publication validation children do not inherit a parent's replacement-startup
 operation or launcher identity; startup guards remain unchanged.
 
-The user's authorization of a local repair and its release includes a one-time
-transparent migration of already installed local source. It does not authorize
-new external origin code. `installed-local-source-v1` retains agreed local main
+The historical one-time installed-source migration is operational evidence only
+under the PUBLIC boundary above. It does not authorize new external origin code
+or public membership for unselected private work. `installed-local-source-v1` retains agreed local main
 and the durable OWN publication as separate identities; it never moves primary.
 The exact source base/tree/binary patch, current installed release/manifest,
 plan revision and selected Task IDs/revisions/registered bases/results are pinned.

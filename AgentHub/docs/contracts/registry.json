@@ -398,6 +398,7 @@
         "release.mjs",
         "docs/decisions/ADR-0132-normal-release-continuation.md",
         "docs/decisions/ADR-HUB-329-partial-git-publication-origin.md",
+        "docs/decisions/ADR-HUB-403-public-selected-release-base.md",
         "tests/fixtures/own-git-publication-fixture.mjs",
         "tests/infrastructure/persistence/own-git-publication.test.mjs",
         "src/composition/publication-freeze.mjs",

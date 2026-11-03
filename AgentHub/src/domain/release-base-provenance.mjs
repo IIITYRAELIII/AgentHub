@@ -117,6 +117,7 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
     if (adopted) fields.push("approvedOriginMainCommit", "adoptions");
     if (value.ownGitPublication != null) fields.push("ownGitPublication");
     if (value.historicalChangelog != null) fields.push("historicalChangelog");
+    if (Object.hasOwn(value, "compositionBaseCommit")) fields.push("compositionBaseCommit");
     if (Object.keys(value).some(key => !fields.includes(key)) || fields.some(key => !Object.hasOwn(value, key))) {
       throw new Error("Invalid exact installed local source provenance");
     }
@@ -131,7 +132,9 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
         || !/^[A-Za-z0-9._-]{1,200}$/u.test(normalized.installedReleaseId) || normalized.installedReleaseId.includes("..")
         || !normalized.planRevision || normalized.planRevision.length > 128
         || normalized.sourceBaseCommit === normalized.publishedBaseCommit
-        || expectedBaseCommit && normalized.sourceBaseCommit !== expectedBaseCommit) {
+        || normalized.compositionBaseCommit !== undefined
+          && normalized.compositionBaseCommit !== (normalized.ownGitPublication?.commit ?? normalized.publishedBaseCommit)
+        || expectedBaseCommit && (normalized.compositionBaseCommit ?? normalized.sourceBaseCommit) !== expectedBaseCommit) {
       throw new Error("Invalid installed local source provenance pins");
     }
     if (adopted && (!Array.isArray(value.adoptions) || !COMMIT.test(normalized.approvedOriginMainCommit)
@@ -152,6 +155,10 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
   if (kind === NATIVE_MAIN_PROVENANCE) {
     const normalized = { schemaVersion: Number(value?.schemaVersion), kind,
       publishedBaseCommit: text(value?.publishedBaseCommit), agreedMainCommit: text(value?.agreedMainCommit) };
+    if (Object.hasOwn(value, "compositionBaseCommit")) {
+      normalized.compositionBaseCommit = text(value.compositionBaseCommit);
+      if (normalized.compositionBaseCommit !== normalized.publishedBaseCommit) throw new Error("Native PUBLIC composition base changed");
+    }
     if (value.approvedLocalMainCommit != null || value.approvedOriginMainCommit != null) {
       normalized.approvedLocalMainCommit = text(value.approvedLocalMainCommit);
       normalized.approvedOriginMainCommit = text(value.approvedOriginMainCommit);
@@ -160,7 +167,7 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
     }
     if (normalized.schemaVersion !== 1
         || ![normalized.publishedBaseCommit, normalized.agreedMainCommit].every((commit) => COMMIT.test(commit))
-        || expectedBaseCommit && normalized.agreedMainCommit !== expectedBaseCommit) {
+        || expectedBaseCommit && (normalized.compositionBaseCommit ?? normalized.agreedMainCommit) !== expectedBaseCommit) {
       throw new Error("release candidate has invalid agreed main provenance");
     }
     return normalized;
@@ -210,8 +217,8 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
 // exact approved origin main that the operator expects.
 export function releaseBaseProvenanceApprovedBase(provenance) {
   if (!provenance) return null;
-  if (provenance.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) return provenance.sourceBaseCommit;
-  if (provenance.kind === NATIVE_MAIN_PROVENANCE) return provenance.agreedMainCommit;
+  if (provenance.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) return provenance.compositionBaseCommit ?? provenance.sourceBaseCommit;
+  if (provenance.kind === NATIVE_MAIN_PROVENANCE) return provenance.compositionBaseCommit ?? provenance.agreedMainCommit;
   return provenance.kind === SELECTED_TASK_ADOPTION_PROVENANCE
     ? provenance.adoptedBaseCommit
     : provenance.approvedOriginMainCommit;
@@ -238,12 +245,19 @@ export function assertReleaseBaseProvenance({
 } = {}) {
   const published = text(publishedBaseCommit);
   if (!published) return;
+  if (provenance && provenance.publishedBaseCommit !== published) {
+    throw new Error(`${phase} base provenance belongs to published ${provenance.publishedBaseCommit}, not ${published}`);
+  }
+  // Installed bytes prove operational continuity, never PUBLIC membership.
+  // Legacy envelopes remain readable but require a new ordinary preparation.
+  if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE
+      && (provenance.compositionBaseCommit !== (provenance.ownGitPublication?.commit ?? published)
+        || text(baseCommit) !== provenance.compositionBaseCommit)) {
+    throw new Error(`${phase} installed source is operational only; rebuild PUBLIC from the published base and selected Tasks`);
+  }
   if (text(baseCommit) !== published && !provenance) {
     throw new Error(
       `${phase} advances base ${text(baseCommit)} beyond published ${published} without immutable provenance`,
     );
-  }
-  if (provenance && provenance.publishedBaseCommit !== published) {
-    throw new Error(`${phase} base provenance belongs to published ${provenance.publishedBaseCommit}, not ${published}`);
   }
 }
