@@ -180,6 +180,7 @@
       "title": "Restart and maintenance recovery",
       "document": "RST-001-restart-recovery.md",
       "paths": [
+        "docs/decisions/ADR-HUB-297-startup-inspection-phases.md",
         "docs/decisions/ADR-HUB-392-exact-orphan-recovery.md",
         "src/providers/provider-recovery-services.mjs",
         "src/application/task-observation-service.mjs",
@@ -258,6 +259,7 @@
       "title": "Local command latency",
       "document": "PERF-001-local-latency.md",
       "paths": [
+        "docs/decisions/ADR-HUB-297-startup-inspection-phases.md",
         "claude-session-processes.ps1",
         "assets/web-app/connection-quality.js",
         "assets/web-app/hub-client.js",

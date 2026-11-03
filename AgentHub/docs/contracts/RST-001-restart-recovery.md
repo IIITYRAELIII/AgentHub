@@ -1,5 +1,23 @@
 # RST-001 — Restart and maintenance recovery
 
+After acquiring the existing instance owner, the same MiniAppServer may bind its
+configured listener before infrastructure integrity completes. That starting
+listener opens no journal and exposes only existing static startup assets,
+health and local session handshake; data, events and business intake refuse.
+Its exact host/port and existing auth remain fixed. Configuration after safety
+does not activate intake: the existing ordinary web start owns activation after
+application ports bind. Startup failure drains both listeners before releasing
+instance ownership; an unjoined close refuses that release. Serving this shell
+is neither business availability nor Ready.
+
+Startup's existing SQLite recovery coordinator retains both admission locks and
+the detached DB/WAL copy until its full inspection worker has replied and exited
+and inspection cleanup has completed. Worker transport, I/O or cleanup failure
+cannot certify health or publish Ready. Mapped live SHM is neither copied nor
+modified; corruption, quarantine, intent rollback and replacement keep the same
+owner. No saved healthy flag, size/mtime/TTL shortcut or new recovery ledger is
+introduced. See ADR-HUB-297-startup-inspection-phases.
+
 Installed sync-endpoint migration (ADR-0329) belongs to the existing runtime
 installation owner before stable-file/pointer publication. It does not launch
 or restart Hub, enroll a device or write journal/credential/cursor files. A
