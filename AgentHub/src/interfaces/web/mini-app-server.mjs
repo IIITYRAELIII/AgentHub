@@ -2017,7 +2017,10 @@ export class MiniAppServer {
       });
     });
     this.#server = server;
-    if (this.#runtimeConfigured) this.#subscribeRuntime();
+    if (this.#runtimeConfigured) {
+      this.#subscribeRuntime();
+      this.#startupOnly = false;
+    }
     return this.address();
   }
 

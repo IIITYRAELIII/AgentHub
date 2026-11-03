@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { chromium } from "playwright";
@@ -166,6 +168,54 @@ test("the same listener activates guarded runtime routes only at ordinary start"
   assert.equal(calls, 1);
   assert.equal((await (await fetch(address.url + "health")).json()).ready, false);
   assert.throws(() => server.configureRuntime({ journalDatabase: journal }), /already configured/);
+});
+
+test("ordinary start activates guarded routes after an early occupied-port refusal", async (t) => {
+  const blocker = createServer();
+  blocker.listen(0, "127.0.0.1");
+  await once(blocker, "listening");
+  const port = blocker.address().port;
+  const health = createRuntimeHealth();
+  health.begin({ operations: [{ id: "database", label: "Database" }] });
+  health.startOperation("database");
+  const secret = "r".repeat(43);
+  let calls = 0, subscriptions = 0, unsubscribes = 0;
+  const server = new MiniAppServer({ host: "127.0.0.1", port, startupOnly: true,
+    health, localAccessSecret: secret, telegramRuntime: false });
+  t.after(async () => {
+    await server.close();
+    if (blocker.listening) await new Promise((resolve, reject) =>
+      blocker.close(error => error ? reject(error) : resolve()));
+  });
+  await assert.rejects(server.start(), error => error.code === "EADDRINUSE");
+  assert.equal(server.address(), null);
+  assert.equal(subscriptions, 0);
+  await new Promise((resolve, reject) => blocker.close(error => error ? reject(error) : resolve()));
+  server.configureRuntime({ host: "127.0.0.1", port, health,
+    journalDatabase: { subscribe() { subscriptions += 1; return () => { unsubscribes += 1; }; } },
+    localAccessSecret: secret, telegramRuntime: false,
+    controlHandler: async () => { calls += 1; return { ok: true }; } });
+  health.completeOperation("database");
+  health.complete();
+  const address = await server.start();
+  assert.equal(address.port, port);
+  assert.equal(subscriptions, 1);
+  assert.equal((await (await fetch(address.url + "health")).json()).ready, true);
+  const headers = { "Content-Type": "application/json",
+    Authorization: `webview ${createLocalWebviewSession(secret).token}` };
+  const body = JSON.stringify({ action: "fixture-command", params: {}, commandId: "occupied-port-original" });
+  const response = await fetch(address.url + "api/control", { method: "POST", headers, body });
+  await response.json();
+  assert.equal(response.status, 200,
+    "ordinary successful start must activate configured guarded routes after early bind failure");
+  assert.equal(calls, 1);
+  assert.equal((await fetch(address.url + "api/control", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body })).status, 401);
+  assert.deepEqual(await server.start(), address);
+  assert.equal(subscriptions, 1, "repeat start must not add another runtime subscription");
+  await server.close();
+  assert.equal(unsubscribes, 1);
+  assert.equal(server.address(), null);
 });
 
 test("a failed listener drain joins its sibling and cannot release the instance owner", async () => {

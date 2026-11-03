@@ -25,8 +25,10 @@ ownership, before SQLite recovery. During that interval it opens no journal,
 serves only existing static startup assets, health and local session handshake,
 and refuses data, event streams and business intake. Infrastructure configures
 that same server after safety; the existing ordinary start call activates routes
-only after application ports are bound. Auth, listener identity and readiness
-remain unchanged. Failed infrastructure joins both listeners before releasing
+only after application ports are bound. This activation also applies when an
+early non-critical bind failed and ordinary start binds the configured listener
+for the first time. Auth, listener identity and readiness remain unchanged.
+Failed infrastructure joins both listeners before releasing
 instance ownership. A failure to drain cannot release that owner.
 
 The current web shell can therefore display the real database-check operation
