@@ -808,26 +808,32 @@ export class ReleaseGitWorkspaceService {
       () => this.inspectMainChanges({ projectRoot, publishedRevision, approvedLocalMainCommit, approvedOriginMainCommit }));
     const baseline = String(publishedRevision ?? "").trim();
     if (!baseline) throw new Error("main review requires the last published revision");
-    const primary = await primarySnapshot(projectRoot);
+    // Fixed phases survive the shared detail budget without recording Git args,
+    // repository paths, commit metadata or credentials. Lock includes waiting;
+    // owned begins only after acquisition, so the intervals remain separable.
+    const measured = (phase, operation, metadata = {}) =>
+      measureTaskOperation(`release:main-review:${phase}`, operation, metadata);
+    const primary = await measured("primary", () => primarySnapshot(projectRoot));
     assertPrimarySnapshot(primary, "main review");
     const layout = this.#layout(primary.root);
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
-    return withInterprocessLocks([lock], async () => {
-      const clone = await this.#ensureClone(primary);
+    return measured("lock", () => withInterprocessLocks([lock], () => measured("owned", async () => {
+      const clone = await measured("clone", () => this.#ensureClone(primary));
       const workspace = authority?.phase === "completed" ? primary.root : "workspace";
-      await runGit(["fetch", workspace, "+refs/heads/main:refs/remotes/workspace/main"], {
+      await measured("workspace-fetch", () => runGit(["fetch", workspace, "+refs/heads/main:refs/remotes/workspace/main"], {
         cwd: clone.releaseRoot,
         timeoutMs: null,
-      });
-      await runGit(["fetch", "--prune", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
+      }));
+      await measured("origin-fetch", () => runGit(["fetch", "--prune", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
         cwd: clone.releaseRoot,
         timeoutMs: null,
-      });
-      if (await gitMaybe(["cat-file", "-e", `${baseline}^{commit}`], { cwd: clone.releaseRoot }) === null) {
-        await runGit(["fetch", workspace, baseline], { cwd: clone.releaseRoot, timeoutMs: null });
+      }));
+      if (await measured("baseline-check", () => gitMaybe(["cat-file", "-e", `${baseline}^{commit}`], { cwd: clone.releaseRoot })) === null) {
+        await measured("baseline-fetch", () => runGit(["fetch", workspace, baseline], { cwd: clone.releaseRoot, timeoutMs: null }));
       }
       const localMain = primary.mainCommit;
       const originMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: clone.releaseRoot });
+      const { localContainsPublished, publishedContainsLocal, originContainsPublished } = await measured("ancestry", async () => {
       const localContainsPublished = await gitMaybe(["merge-base", "--is-ancestor", baseline, localMain], {
         cwd: clone.releaseRoot,
       }) !== null;
@@ -843,18 +849,23 @@ export class ReleaseGitWorkspaceService {
       if (!originContainsPublished) {
         throw new Error(`last published revision ${baseline} is not an ancestor of origin/main ${originMain}`);
       }
-      const commitIds = new Set([
+      return { localContainsPublished, publishedContainsLocal, originContainsPublished };
+      });
+      const commitIds = await measured("revision-list", async () => new Set([
         ...(localContainsPublished ? await revisionList(clone.releaseRoot, [localMain, `^${baseline}`]) : []),
         ...await revisionList(clone.releaseRoot, [originMain, `^${baseline}`]),
         ...(!localContainsPublished && publishedContainsLocal
           ? await revisionList(clone.releaseRoot, [baseline, `^${localMain}`])
           : []),
-      ]);
-      const commits = [];
-      for (const commit of commitIds) commits.push(await disclosedCommit(clone.releaseRoot, commit, {
-        localMain,
-        originMain,
-      }));
+      ]));
+      const commits = await measured("disclosures", async () => {
+        const commits = [];
+        for (const commit of commitIds) commits.push(await disclosedCommit(clone.releaseRoot, commit, {
+          localMain,
+          originMain,
+        }));
+        return commits;
+      }, { commitCount: commitIds.size });
       const approved = String(approvedLocalMainCommit ?? "").trim() === localMain
         && String(approvedOriginMainCommit ?? "").trim() === originMain;
       const audit = {
@@ -871,7 +882,7 @@ export class ReleaseGitWorkspaceService {
         approved,
         approvalRequired: (commits.length > 0 || localMain !== originMain) && !approved,
       };
-      const finalPrimary = await primarySnapshot(primary.root);
+      const finalPrimary = await measured("final-primary", () => primarySnapshot(primary.root));
       assertPrimarySnapshot(finalPrimary, "main review");
       if (
         finalPrimary.headCommit !== primary.headCommit
@@ -882,7 +893,7 @@ export class ReleaseGitWorkspaceService {
         throw new Error("registered primary Workspace changed during main review");
       }
       return audit;
-    });
+    })));
   }
 
   #layout(primaryRoot) {

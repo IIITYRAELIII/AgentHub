@@ -17,6 +17,8 @@ import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { taskBranchName, taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { createTaskBoardMutationOwner } from "../../../src/application/sqlite-mutation-owner.mjs";
+import { measureTaskOperation, withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
+import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
 import { WorkspaceReleaseService } from "../../../src/application/workspace-release-service.mjs";
 import {
   PUBLICATION_STAGE_CONTRACT,
@@ -1330,6 +1332,84 @@ test("request-bound prepared checkpoint is not usable after the final primary gu
     () => setup.service.frozenCandidate(setup.primary),
     /release checkpoint is incomplete/u,
   );
+});
+
+test("main review timing preserves post-budget phases, errors and privacy", async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "sensitive-subject.txt"), "synthetic contents\n");
+  const changed = await commit(setup.primary, "synthetic private subject");
+  await git(setup.primary, "push", "origin", "main");
+  const rows = [];
+  const result = await withTaskOperationTiming({ operationId: "main-review-timing-original", record: row => rows.push(row) }, async () => {
+    for (let i = 0; i < 513; i++) await measureTaskOperation("fixture-detail", () => undefined, { detail: true });
+    return setup.service.inspectMainChanges({ projectRoot: setup.primary, publishedRevision: setup.baseCommit });
+  });
+  assert.equal(result.localMain, changed);
+  assert.equal(result.commits[0].subject, "synthetic private subject");
+  assert.equal(result.approvalRequired, true);
+  const phases = ["primary", "lock", "owned", "clone", "workspace-fetch", "origin-fetch", "baseline-check", "ancestry", "revision-list", "disclosures", "final-primary"];
+  for (const phase of phases) {
+    const events = rows.filter(row => row.stage === `release:main-review:${phase}`);
+    assert.deepEqual(events.map(row => row.phase), ["start", "end"]);
+    assert.equal(events[1].outcome, "ok");
+    assert.ok(events[1].durationMs >= 0);
+    assert.ok(events.every(row => row.operationId === "main-review-timing-original"));
+  }
+  assert.equal(rows.find(row => row.stage === "release:main-review:disclosures" && row.phase === "end").commitCount, 1);
+  assert.ok(rows.find(row => row.stage === "trace-summary").suppressedDetailSpans > 0);
+  const serialized = JSON.stringify(rows);
+  for (const secret of [setup.primary, "sensitive-subject.txt", "synthetic private subject", changed]) assert.ok(!serialized.includes(secret));
+  const failures = [];
+  const headBefore = await git(setup.primary, "rev-parse", "HEAD");
+  await assert.rejects(withTaskOperationTiming({ operationId: "main-review-error-original", record: row => failures.push(row) }, async () => {
+    for (let i = 0; i < 513; i++) await measureTaskOperation("fixture-detail", () => undefined, { detail: true });
+    return setup.service.inspectMainChanges({ projectRoot: setup.primary, publishedRevision: "f".repeat(40) });
+  }), error => {
+    assert.match(error.message, /fatal:/u);
+    assert.ok(error.message.includes("f".repeat(40)));
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+  for (const phase of ["baseline-fetch", "owned", "lock"]) {
+    assert.equal(failures.find(row => row.stage === `release:main-review:${phase}` && row.phase === "end").outcome, "error");
+  }
+  assert.equal(await git(setup.primary, "rev-parse", "HEAD"), headBefore);
+});
+
+test("main review timing separates held lock admission from owned work", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const lock = path.join(setup.dataDir, "locks", `release-git-${taskRepositoryKey(setup.primary)}`);
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const observed = Promise.withResolvers();
+  let released = false;
+  let earlyOwned = false;
+  const rows = [];
+  const holder = withInterprocessLocks([lock], async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  let review;
+  try {
+    review = withTaskOperationTiming({ operationId: "main-review-held-original", record: row => {
+      rows.push(row);
+      if (row.stage === "release:main-review:lock" && row.phase === "start") observed.resolve();
+      if (row.stage === "release:main-review:owned" && row.phase === "start" && !released) earlyOwned = true;
+    } }, () => setup.service.inspectMainChanges({ projectRoot: setup.primary, publishedRevision: setup.baseCommit }));
+    await observed.promise;
+    assert.equal(rows.some(row => row.stage === "release:main-review:owned"), false);
+    released = true;
+    release.resolve();
+    const result = await review;
+    assert.equal(result.localMain, setup.baseCommit);
+    assert.equal(earlyOwned, false);
+    const end = phase => rows.find(row => row.stage === `release:main-review:${phase}` && row.phase === "end");
+    assert.ok(end("lock").durationMs >= end("owned").durationMs);
+    assert.equal(end("lock").outcome, "ok");
+  } finally {
+    released = true;
+    release.resolve();
+    await holder;
+    if (review) await review.catch(() => {});
+  }
 });
 
 test("main review discloses every commit since the last successful publication", async (context) => {
