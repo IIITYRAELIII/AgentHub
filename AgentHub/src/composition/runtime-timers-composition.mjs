@@ -29,7 +29,7 @@ export function createRuntimeTimersComposition({
   function stopRuntimeTimers() {
     stopTyping();
     contextCompactions.dispose();
-    providerLogin?.dispose?.();
+    providerLogin?.pause?.();
     usageSyncAuto?.stop?.();
     storageRetention?.stop?.();
     testContourJournalSync?.stop?.();
@@ -44,6 +44,7 @@ export function createRuntimeTimersComposition({
   }
 
   function startRuntimeTimers() {
+    providerLogin?.resume?.();
     deferredInputController.startExpiryMaintenance?.();
     codexContextMaintenance.schedulePeriodic();
     if (!deferredInputController.wakeAll()) {

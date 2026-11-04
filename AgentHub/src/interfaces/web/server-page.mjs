@@ -10,6 +10,18 @@ import { serverConfigurationEntries } from "./server-configuration.mjs";
 
 export const ROOT_AGENTS_MAX_BYTES = 128 * 1024;
 
+export function publicProviderAccounts(accounts) {
+  return (Array.isArray(accounts) ? accounts : []).map((account) => ({
+    provider: String(account?.provider ?? ""),
+    status: String(account?.status ?? "idle"),
+    attemptId: account?.attemptId ? String(account.attemptId) : null,
+    startedAt: account?.startedAt ?? null,
+    finishedAt: account?.finishedAt ?? null,
+    error: account?.error || null,
+    currentAccount: publicAccountDisplay(account?.currentAccount),
+  }));
+}
+
 function requiredRootAgentsTarget(file) {
   const value = String(file ?? "").trim();
   if (!value) throw new Error("Путь корневого AGENTS.md не настроен");
@@ -161,15 +173,7 @@ export function serverPageSnapshot({
     },
     // Sign-in state and allowlisted account display. Sign-in links remain in
     // local start responses; credentials never enter this shared snapshot.
-    accounts: (Array.isArray(accounts) ? accounts : []).map((account) => ({
-      provider: String(account?.provider ?? ""),
-      status: String(account?.status ?? "idle"),
-      attemptId: account?.attemptId ? String(account.attemptId) : null,
-      startedAt: account?.startedAt ?? null,
-      finishedAt: account?.finishedAt ?? null,
-      error: account?.error || null,
-      currentAccount: publicAccountDisplay(account?.currentAccount),
-    })),
+    accounts: publicProviderAccounts(accounts),
     autostart: {
       supported: autostart.supported === true,
       enabled: autostart.enabled === true,

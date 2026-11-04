@@ -42,6 +42,7 @@ export function createRuntimeRestartComposition({
   backgroundJobStore,
   failedUpdateStore,
   stopCodexAppServerTree,
+  providerLogin = null,
   miniAppLifecycle,
   desktopAttachments,
   desktopControlServer,
@@ -102,7 +103,10 @@ export function createRuntimeRestartComposition({
       { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
     ],
     close: [
-      { name: "Codex App Server", run: stopCodexAppServerTree },
+      { name: "Codex App Server", run: async (...args) => {
+        await providerLogin?.close?.();
+        return stopCodexAppServerTree(...args);
+      } },
       { name: "Shared Dashboard bot", run: () => miniAppLifecycle.closeSharedDashboardBot?.() },
       { name: "Mini App publisher", run: () => miniAppLifecycle.closePublisher() },
       {
@@ -125,6 +129,7 @@ export function createRuntimeRestartComposition({
       { name: "file transfer", run: () => fileTransferService?.resume() },
     ],
     finalize: [
+      { name: "provider sign-in", run: () => providerLogin?.dispose?.() },
       { name: "work log usage", run: () => workLogUsageStore.close() },
       { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
       { name: "provider turn telemetry", run: () => providerTurnTelemetryStore?.close?.() },

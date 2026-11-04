@@ -61,6 +61,14 @@ or migration authority is introduced.
 
 ## Server account cards
 
+Local sign-in replies carry their attempt and allowlisted account display only;
+they do not depend on the complete desktop snapshot fitting the IPC response.
+The paired client updates account cards before binding the starter's local URL,
+preserving unrelated state without a second full snapshot request. Protected
+local session/WebView proof takes precedence over coexisting device credentials
+only on the existing unforwarded local boundary; remote device authority never
+grants local-only sign-in commands.
+
 - Account cards display the provider's current account email or authentication
   method, separately from the state of a login attempt. Idle/succeeded attempt
   history never proves current authentication. Missing or failed account reads

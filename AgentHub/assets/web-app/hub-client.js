@@ -5231,6 +5231,13 @@ agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Автозапуск Agent Hub обновлён");
 }));
+function applyProviderLoginReply(result) {
+  if (!Array.isArray(result?.accounts)) return;
+  const server = { ...(lastSnapshot?.server ?? {}), accounts: result.accounts };
+  if (lastSnapshot) lastSnapshot = { ...lastSnapshot, server };
+  agentHub.setServerStatus(server);
+}
+
 /* Страница входа провайдера открывается во внешнем браузере Hub-машины: туда
    же возвращается OAuth callback. */
 async function openProviderLoginPage(authUrl) {
@@ -5242,10 +5249,8 @@ async function openProviderLoginPage(authUrl) {
 agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
   const result = await control("start-provider-login", { provider });
   const login = result?.login;
-  /* Сначала снапшот с новой попыткой, затем её локальная привязка: иначе
-     перерисовка по прежнему снапшоту сбросила бы ссылку и поле кода. */
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
+  /* Сначала состояние новой попытки, затем её локальная привязка. */
+  applyProviderLoginReply(result);
   agentHub.setProviderLoginUrl?.(provider, { attemptId: login?.attemptId ?? null, authUrl: login?.authUrl ?? null });
   /* Claude Code сам открывает браузер со своим callback; его печатная ссылка —
      ручной путь с кодом, поэтому она открывается только кнопкой. */
@@ -5254,15 +5259,13 @@ agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
 }));
 agentHub.on("server:provider-login-code", ({ provider, attemptId, code }) => runAction(async () => {
   const result = await control("submit-provider-login-code", { provider, attemptId, code });
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
+  applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Код передан Claude Code");
 }));
 agentHub.on("server:provider-login-open", ({ authUrl }) => runAction(() => openProviderLoginPage(authUrl)));
 agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async () => {
   const result = await control("cancel-provider-login", { provider });
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
+  applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Вход отменён");
 }));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {

@@ -46,6 +46,13 @@ before readiness, with the existing replacement deadline unchanged.
 
 ## Identity and owner
 
+Provider sign-in admission pauses with reversible timer cutover and resumes with
+the restored runtime. Pending attempts retain their identity and local state
+through an early failed restart. Before provider transport closes, the existing
+sign-in owner joins cancellation of its own attempts and CLI; it never stops
+provider turns. Permanent disposal belongs to finalization and cannot be undone
+by timer recovery. Requests queued across the pause cannot start after resume.
+
 At actual cutover the existing transfer service fences new background preparation
 and GC, stops its timer and drains already admitted filesystem work before the
 instance lock can be released. Its SQLite remains open until successful replacement
