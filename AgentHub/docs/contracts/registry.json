@@ -113,7 +113,9 @@
         "src/providers/codex/codex-task-snapshot-service.mjs",
         "src/infrastructure/persistence/task-read-state-store.mjs",
         "src/infrastructure/persistence/task-sync-store.mjs",
-        "tests/public/composer-send-isolation.test.mjs"
+        "tests/public/composer-send-isolation.test.mjs",
+        "tests/public/workspace-file-client.test.mjs",
+        "tests/interfaces/web/workspace-file-access.test.mjs"
       ]
     },
     {
