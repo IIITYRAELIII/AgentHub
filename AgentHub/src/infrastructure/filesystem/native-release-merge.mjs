@@ -459,9 +459,9 @@ export async function assertNativePreparedComposition({ git, baseCommit, tasks, 
   return assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree, identity, verifyReview });
 }
 
-// Shared pure graph/content verifier. Historical Task readers keep their
-// existing separate Task-history authority check and use these SAME rules.
-export async function assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree,
+// Shared native graph/review proof. Storage preservation uses this proof;
+// current result and historical Task certification add selected content below.
+export async function assertNativeMergeGraph({ git, baseCommit, tasks, merges, head, tree,
   identity, verifyReview = null }) {
   if (!Array.isArray(merges) || merges.length !== tasks.length) throw failure("Prepared native selection changed");
   let prefix = baseCommit;
@@ -480,6 +480,12 @@ export async function assertNativeMergedResults({ git, baseCommit, tasks, merges
   if (prefix !== head || String(await git(["rev-parse", `${head}^{tree}`])) !== tree) {
     throw failure("Prepared native head or tree changed");
   }
+  return resolutions;
+}
+
+export async function assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree,
+  identity, verifyReview = null }) {
+  const resolutions = await assertNativeMergeGraph({ git, baseCommit, tasks, merges, head, tree, identity, verifyReview });
   await assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges });
 }
 

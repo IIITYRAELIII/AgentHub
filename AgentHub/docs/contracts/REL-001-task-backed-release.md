@@ -500,6 +500,18 @@ Missing intent does not establish no effect. Changed or incomplete source stays
 UNKNOWN; recovery never replaces the child, invents a new binding or deletes
 before its verified archive and original pruning intent. A lost durable intent
 reply is recovered from that same canonical row.
+Storage retirement reuses that same admitted original to prove full original
+object/tag/raw preservation and the complete native graph/review. Its canonical
+row, deterministic archive intent, complete binding, raw integration record and
+completed Task evidence must still agree. It does not recertify an old result
+using today's selected-content replay. A historical automatic merge may preserve
+all original data while a newer forced-base replay demands a duplicate suffix;
+that refusal still applies to ordinary current Test/Await and historical Task
+result certification. A changed/unreviewed native graph, foreign original,
+changed raw record or incomplete archive still refuses retirement. This route
+confers no Task acceptance, publication or selected-content review credit.
+See ADR-HUB-385-historical-capture-preservation.
+
 Partial deletion and lost reply reconcile only that child and exact archive;
 there is no replacement ID, guessed no-effect, forced process stop or SQL/ref
 repair. The handle-bound allowlist refuses changed files, foreign links,

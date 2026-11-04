@@ -534,7 +534,9 @@
         "tests/infrastructure/filesystem/owned-native-object-store.test.mjs",
         "tests/infrastructure/filesystem/native-capture-*.test.mjs",
         "docs/decisions/ADR-HUB-385-owned-native-objects.md",
-        "docs/decisions/ADR-HUB-385-retired-generation-source-custody.md"
+        "docs/decisions/ADR-HUB-385-retired-generation-source-custody.md",
+        "docs/decisions/ADR-HUB-385-historical-capture-preservation.md",
+        "tests/fixtures/native-historical-replay-lines.json"
       ]
     },
     {

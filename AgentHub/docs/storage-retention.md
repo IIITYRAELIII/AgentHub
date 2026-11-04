@@ -190,3 +190,14 @@ incomplete or invalid pack remains under its SAME unknown original and is never
 overwritten/replayed by this correction. A real link/allocation-aware fixture
 checks two native consumers, complete archive objects/tags, leased fixture GC
 and a later missing-only import; fixture bytes are not production savings.
+
+## Historical capture preservation
+
+The retirement owner proves complete original object/tag/raw preservation and
+the original native graph/review through the SAME admitted maintenance child.
+It retains the canonical completed Task evidence, raw integration record,
+deterministic archive intent and full binding. This storage proof does not give
+an old candidate current selected-content certification; ordinary Test/Await
+and historical Task readers keep that check. An unreviewed graph, foreign or
+changed original, incomplete archive or late source data still refuses. See
+ADR-HUB-385-historical-capture-preservation.

@@ -135,9 +135,10 @@ export class NativeCaptureRetirement {
         if (row.metadata.captureArchiveIntent && !same(row.metadata.captureArchiveIntent, intent)) throw new Error("Original archive intake drift");
         if (!row.metadata.captureArchiveIntent) row = await this.#patch(row, { phase: "archive-intent", metadata: { captureArchiveIntent: intent } });
         archived ??= await owned.objects.archive(request);
-        // Reuse the canonical native/content verifier against preserved objects
-        // BEFORE admitting the first deletion. No fake auth or new review grant.
-        await this.taskGitWorkspaces.verifyNativeCaptureArchiveOwned({ state: owned.state, record: owned.record, archive: archived, lease: owned.lease });
+        // Verify complete preserved objects and the canonical native graph
+        // under this SAME retirement original. Current result certification is
+        // separate; no fake auth or new review grant is supplied.
+        await this.taskGitWorkspaces.verifyNativeCaptureArchiveOwned({ state: owned.state, record: owned.record, archive: archived, lease: owned.lease, retirementOperationId: input.operationId });
         row = await this.#patch(row, { metadata: { captureArchive: archived.archive }, phase: "archive-confirmed" });
       }
       await owned.current();
