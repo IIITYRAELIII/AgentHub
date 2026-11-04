@@ -923,7 +923,7 @@ namespace AgentHub.RuntimeHost
                     });
                 bool inherited;
                 if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inherited)) inherited = true;
-                WriteLifetime(runtimeRoot, "replacement-created", (int)child.ProcessId, null, inherited, parentPid, false);
+                WriteLifetime(runtimeRoot, "replacement-created", (int)child.ProcessId, null, inherited, parentPid, true);
                 Console.WriteLine(new JavaScriptSerializer().Serialize(new {
                     kind = "agent-hub-owned-replacement-v1", operationId = operation, hostPid = child.ProcessId
                 }));
