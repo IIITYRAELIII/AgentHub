@@ -58,6 +58,46 @@ UNKNOWN, actor/hash/CAS and private cancellation behavior must remain intact.
 
 ## Verification and migration
 
+### Successor cohort isolation
+
+The retained old Job can include a later working Host and Node: Windows detached
+creation does not remove inherited Job membership. That is a real refusal of
+whole-cohort retirement, not grounds to ignore the active successor or old
+provider children. The previous direct controlled-launch policy in ADR-0114 is
+superseded only for the managed Windows replacement invocation.
+
+That invocation now uses a pipe-connected native Host relay. The existing
+external-parent/security owner creates exactly one suspended child outside all
+inherited Jobs, then assigns it to a fresh PID-named Job before Resume. A name
+collision refuses before ownership is acquired; no existing Job is terminated.
+The relay retains the new process and Job handles. A bounded creation reply
+binds the original restart ID. The existing JS operation/release/PID/token Ready
+proof supplies its Node PID; the native owner additionally proves live membership
+in the exact new Job. The caller joins the committed relay before success. The
+successor Host retains its own Job, while the old relay naturally leaves the old
+cohort. EOF/abort terminates only this newly owned Job and waits for zero; missing
+creation/commit replies and unknown cleanup never authorize another launch or
+old-owner recovery. This is ephemeral control of the existing single launch,
+not a receipt ledger, alternate restart or historical retirement authority.
+
+Already running legacy code still emits the old direct invocation. Installing
+new Host bytes alone cannot change that loaded caller. An ordinary first
+adoption from such a runtime may therefore remain inside the retained old Job;
+it is not retirement. Once the corrected JS and Host are coherently running, a
+subsequent supported graceful restart uses the new invocation. All other old
+children must also finish naturally before the retained witness can freshly
+prove zero. The release owner controls both operational transitions and exact
+guards; this source does not run them, repeat historical settlement or replace
+the captured witness. The original collector/native witness source is unchanged.
+
+Maintained isolated tests execute the real compiled Host and real JS launch
+owner, retain a native handle to an anonymous old fixture Job and read its
+actual accounting. They cover an independently live successor with old zero,
+an additional old writer that still prevents zero, native cleanup without Ready,
+a foreign Ready PID and a lost native creation reply without a second launch.
+Only generated synthetic applications and disposable fixture Jobs are used;
+this is not a working Hub startup or actual historical retirement claim.
+
 Real HTTP MCP and SQLite cases compare exact parent/corrected behavior, check
 same-original terminal replay, positive old downstream validation, authority/CAS
 and process guards, persistence races, post-effect validation-looking UNKNOWN,
