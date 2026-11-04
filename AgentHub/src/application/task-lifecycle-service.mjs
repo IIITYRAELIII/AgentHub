@@ -1379,6 +1379,16 @@ export class TaskLifecycleService {
     await this.#assertOwned(lease);
   }
 
+  async assertStoppedWorkflowIdleOwned({ taskId, operationId, lease } = {}) {
+    await this.#assertOwned(lease);
+    const transition = this.taskBoard.lifecycleTransition(operationId);
+    if (transition?.taskId !== taskId || transition.kind !== "workflow" || transition.phase !== "failed"
+        || this.taskBoard.lifecycleOutcome(operationId)) throw new Error("Stopped workflow lifecycle evidence differs");
+    requiredMethod(this.taskGitWorkspaces, "assertNoProcessTreeGuardOwned");
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(taskId, { lease });
+    await this.#assertOwned(lease);
+  }
+
   async reconcileUnknownWorkflowStatusOwned({
     taskId, operationId, projectRoot, guardId, proof, lease, finalizeCommittedWithdrawal = false,
     verifyInitialNativeTest = null,

@@ -67,6 +67,37 @@ function validationReceiptIdentity(receipt) {
     "toolName", "argumentsHash", "createdAtMs", "taskExecution"].map(key => [key, receipt[key]])));
 }
 
+// STOPPED is a durable execution disposition, not authority to rewrite past
+// effects. Compare the entire retained receipt before reporting it read-only.
+function stoppedWorkflowReceipt(receipt, task) {
+  const execution = receipt.taskExecution, stop = execution?.cancellation;
+  if (!stop) return false;
+  const { taskExecution: priorExecution, ...prior } = stop.original ?? {};
+  const { taskExecution: currentExecution, ...current } = receipt;
+  const { cancellation, ...binding } = currentExecution;
+  const same = (a, b) => JSON.stringify(canonicalValue(a)) === JSON.stringify(canonicalValue(b));
+  const aware = binding.protocol === "task-operation-interruption-v1" && typeof binding.ownerId === "string" && binding.ownerId;
+  const retirement = stop.retirement;
+  const retired = aware
+    ? ["joined-local-worker", "durable-execution-fence-and-owned-task-lease"].includes(retirement?.kind)
+      && retirement.ownerId === binding.ownerId
+    : retirement?.retired === true && Boolean(stop.cohort);
+  if (stop.phase !== "stopped" || stop.effects !== "retained_unknown"
+      || stop.requestId !== receipt.requestId || stop.taskId !== task.id || stop.targetWorkspaceId !== task.workspaceId
+      || !Number.isSafeInteger(stop.requestedAtMs) || !Number.isSafeInteger(stop.stoppedAtMs)
+      || stop.stoppedAtMs < stop.requestedAtMs || !stop.cancellationRequestId || !retired
+      || execution.version !== 1 || execution.taskId !== task.id
+      || (execution.taskWorkspaceId != null && execution.taskWorkspaceId !== task.workspaceId)
+      || binding.arguments?.request_id !== receipt.requestId || binding.arguments?.task_id !== task.id
+      || mcpArgumentsHash(binding.arguments) !== receipt.argumentsHash
+      || !same(current, prior)
+      || (priorExecution ? !same(binding, priorExecution)
+        : !same(binding, { version: 1, taskId: task.id, arguments: binding.arguments }))) {
+    throw new Error("Stopped workflow receipt or retained retirement identity differs");
+  }
+  return true;
+}
+
 function supplied(value) {
   return value != null && String(value).trim() !== "";
 }
@@ -589,6 +620,10 @@ export class TaskOperationReconciliationService {
     if (!state) {
       throw new Error("Unknown workflow operation has no exact recoverable or terminal durable state");
     }
+    if (stoppedWorkflowReceipt(receipt, task)) {
+      if (state !== "failed" || outcome) throw new Error("Stopped workflow has no exact failed transition disposition");
+      state = "stopped";
+    }
     return {
       workspace,
       task,
@@ -617,6 +652,12 @@ export class TaskOperationReconciliationService {
   }
 
   async #settle(identity, { recovery = null } = {}) {
+    if (identity.state === "stopped") {
+      return { resolved: true, outcome: "stopped", receipt: identity.receipt, reconciliation: {
+        durableState: "stopped_failed_transition", workflowOutcome: "failed", effects: "retained_unknown",
+        originalReceiptPreserved: true, taskId: identity.task.id, projectRoot: identity.projectRoot,
+      } };
+    }
     if (identity.state === "no_effect") {
       const reconciliation = { outcome: "NO_EFFECT", durableState: "workflow_admission_refusal", evidence: identity.noEffect };
       const receipt = await this.workspaceCatalog.failUnknownMcpOperation(identity.operationId, {
@@ -766,6 +807,15 @@ export class TaskOperationReconciliationService {
       let identity = this.#identity(options);
       if (identity.state === "invalid_input") {
         return await this.#settleMalformed(identity, options, lease, () => { effectsStarted = true; });
+      }
+      if (identity.state === "stopped") {
+        requiredMethod(this.taskLifecycle, "assertStoppedWorkflowIdleOwned");
+        await this.taskLifecycle.assertStoppedWorkflowIdleOwned({ taskId: identity.task.id,
+          operationId: identity.operationId, lease });
+        await lease.assertOwned();
+        identity = this.#identity(options);
+        if (identity.state !== "stopped") throw new Error("Stopped workflow disposition changed under its lease");
+        return this.#settle(identity);
       }
       const needsRecovery = identity.state === "pending" || identity.withdrawal;
       if (identity.state === "pending" && !identity.guardId && !identity.withdrawal

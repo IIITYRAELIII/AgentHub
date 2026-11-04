@@ -58,6 +58,22 @@ UNKNOWN, actor/hash/CAS and private cancellation behavior must remain intact.
 
 ## Verification and migration
 
+### Stopped valid workflow receipts
+
+An existing failed lifecycle transition can coexist with an immutable UNKNOWN
+receipt whose execution was explicitly stopped. The ordinary failed-transition
+settlement attempted to update that receipt and correctly hit the interrupted
+history trigger. Preserve the trigger and every original column. The existing RM
+owner instead returns a read-only stopped disposition after its normal exact
+workflow identity/CAS/root checks, complete retained receipt/binding comparison,
+positive bound stopped retirement metadata and existing recovery leases/process
+guard. It accepts only the failed-transition case, not unresolved execution or a
+committed outcome. The response distinguishes workflow failure, stopped execution
+and retained_unknown effects. No receipt writer, replay route or new ledger is
+added; the separate reconciliation command records its own response normally.
+Same-original replay/reopen and later explicit workflow admission retain their
+existing semantics. This does not create historical NO_EFFECT authority.
+
 ### Successor cohort isolation
 
 The retained old Job can include a later working Host and Node: Windows detached

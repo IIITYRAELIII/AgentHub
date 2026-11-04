@@ -65,6 +65,16 @@ of its whole prior runtime cohort through the existing native witness owner.
 PID absence, error text and elapsed time do not suffice. No original claim/Git
 replay, dirty-source removal or NO_EFFECT inference is authorized.
 
+For an exact UNKNOWN/STOPPED workflow with a failed lifecycle transition, the
+existing RM reconciliation owner reports a read-only stopped disposition under
+the existing Task/repository/Await leases and process guard. It rechecks original
+arguments/CAS/root, the whole retained receipt snapshot and bound stopped
+retirement metadata. The original receipt, error, result, timestamps and stop
+history remain immutable; failed lifecycle does not make its effects known.
+The separate reconciliation command can succeed with outcome stopped and
+effects retained_unknown. A later explicit workflow uses normal fresh guards;
+neither this response nor replay executes the stopped original again.
+
 The existing operation-reconcile CLI exposes the same cancel command via
 `--cancel-arguments <json>` with local provider/thread/Stream identity. A first
 request waiting for legacy retirement is not silently restarted or published.
