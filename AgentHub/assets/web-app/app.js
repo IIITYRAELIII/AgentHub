@@ -9065,10 +9065,10 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
       const presentation = TaskReferences.presentation(reference);
       const status = ({
         new: "New",
-        in_progress: "InProg",
+        in_progress: "Progress",
         blocked: "Blocked",
-        testing: "Test",
-        awaiting_implementation: "Await",
+        testing: "Testing",
+        awaiting_implementation: "Awaiting",
         done: "Done",
       })[reference.workflowStatus] ?? "New";
       const card = el(readOnly ? "button" : "div", {
