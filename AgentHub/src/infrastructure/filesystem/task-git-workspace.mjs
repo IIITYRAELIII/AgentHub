@@ -6054,14 +6054,47 @@ export class TaskGitWorkspaceService {
       throw new Error("Release service Task must not claim an implementation result");
     }
     const workspaces = await this.describe(source.id);
-    if (workspaces.length !== 1 || workspaces[0].dirty) {
+    if (workspaces.length > 1 || workspaces.some(workspace => workspace.dirty)) {
       throw new Error("Release service Task requires one clean managed worktree to preserve");
     }
-    const repositoryRoot = workspaces[0].repositoryRoot;
+    const selectedReferences = (selectedTasks ?? []).map(task => {
+      if (task.workspaceId !== source.workspaceId) throw new Error("Release service selected Task Workspace changed");
+      if (task.gitReferences?.length !== 1) throw new Error("Release service requires one exact repository result per selected Task");
+      return task.gitReferences[0];
+    });
+    const repositoryRoot = workspaces[0]?.repositoryRoot ?? selectedReferences[0]?.projectRoot;
+    if (!repositoryRoot || selectedReferences.some(ref => !samePath(ref.projectRoot, repositoryRoot))) {
+      throw new Error("Release service requires one exact repository for its published selection");
+    }
+    const assertSourceCustody = async () => {
+      const current = await this.describe(source.id);
+      if (JSON.stringify(current) !== JSON.stringify(workspaces)) throw new Error("Release service source custody changed");
+      if (workspaces.length) {
+        if (!samePath(await this.managedRepositoryRoot(workspaces[0].projectRoot,
+          { taskId: source.id, taskNumber: source.taskNumber }), repositoryRoot)) {
+          throw new Error("Release service managed source custody changed");
+        }
+        return;
+      }
+      // describe intentionally omits detached/non-Git directories. They are not
+      // proof that a metadata-only card has no source to preserve.
+      const root = await lstat(path.join(this.taskWorktreesRoot, normalizedTaskId(source.id))).catch(error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      const refs = String(await runGit(["for-each-ref", "--format=%(refname)"], { cwd: repositoryRoot })).split(/\r?\n/u);
+      const branches = [taskBranchName(source.id, repositoryRoot), taskBranchName(source.id, repositoryRoot, source.taskNumber)];
+      if (root || refs.some(ref => branches.some(branch => ref === `refs/heads/${branch}`)
+          || ref.includes(`/${source.id}/`) || ref.endsWith(`/${source.id}`))) {
+        throw new Error("Release service metadata-only source custody is not absent");
+      }
+    };
+    await assertSourceCustody();
     const completed = readPublishedReleaseServiceGeneration({ dataDir: this.dataDir,
       workspaceId: source.workspaceId, repositoryRoot,
       selectedTasks: (selectedTasks ?? []).map(task => ({ id: task.id,
         resultCommit: (task.gitReferences ?? []).find(ref => samePath(ref.projectRoot, repositoryRoot))?.resultCommit })) });
+    if (!completed && !workspaces.length) throw new Error("Metadata-only release service requires its exact completed original");
     const publication = completed ? null : await this.readPublication();
     const published = completed ? { root: completed.candidate.repositoryRoot,
       revision: completed.candidate.commit, manifestHash: completed.candidate.manifestHash,
@@ -6076,7 +6109,7 @@ export class TaskGitWorkspaceService {
     const repositoryKeys = [...new Set([
       taskRepositoryKey(repositoryRoot),
       taskRepositoryKey(published.root),
-      taskRepositoryKey(workspaces[0].projectRoot),
+      ...(workspaces.length ? [taskRepositoryKey(workspaces[0].projectRoot)] : []),
     ])];
     const manifestCopies = [];
     const manifestFiles = [];
@@ -6137,12 +6170,32 @@ export class TaskGitWorkspaceService {
             && ref.resultCommit === manifestTasks[index].resultCommit).length !== 1)) {
       throw new Error("Release service checklist does not match exact published Done results");
     }
+    if (completed && await runGit(["rev-parse", `${publishedRevision}^{tree}`], { cwd: repositoryRoot }) !== completed.candidate.tree) {
+      throw new Error("Published release candidate tree changed");
+    }
+    for (const task of manifestTasks) {
+      if (await gitMaybe(["merge-base", "--is-ancestor", exactCommitId(task.resultCommit, "published selected result"), publishedRevision],
+        { cwd: repositoryRoot }) === null) throw new Error("Published release candidate does not contain its selected result");
+    }
+    if (workspaces.length && await gitMaybe(["merge-base", "--is-ancestor", workspaces[0].headCommit, publishedRevision],
+      { cwd: repositoryRoot }) === null) throw new Error("Release service managed source has unpublished commits");
     const localMain = await localMainCommit(repositoryRoot);
     const remoteMain = await gitMaybe(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], { cwd: repositoryRoot });
-    if (await gitMaybe(["merge-base", "--is-ancestor", publishedRevision, localMain], { cwd: repositoryRoot }) === null
+    const approved = completed?.approvedTarget;
+    const approvedLaggingMain = approved?.approvedLocalMainCommit === localMain
+      && /^[a-f0-9]{40}$/u.test(approved?.approvedOriginMainCommit ?? "")
+      && await gitMaybe(["merge-base", "--is-ancestor", localMain, publishedRevision], { cwd: repositoryRoot }) !== null
+      && await gitMaybe(["merge-base", "--is-ancestor", approved.approvedOriginMainCommit, publishedRevision], { cwd: repositoryRoot }) !== null;
+    if ((!approvedLaggingMain && await gitMaybe(["merge-base", "--is-ancestor", publishedRevision, localMain], { cwd: repositoryRoot }) === null)
         || !remoteMain || await gitMaybe(["merge-base", "--is-ancestor", publishedRevision, remoteMain],
           { cwd: repositoryRoot }) === null) {
       throw new Error("Durable published revision is not contained in local and tracked main");
+    }
+    await assertSourceCustody();
+    if (completed && JSON.stringify(readPublishedReleaseServiceGeneration({ dataDir: this.dataDir,
+      workspaceId: source.workspaceId, repositoryRoot,
+      selectedTasks: selected.map(task => ({ id: task.id, resultCommit: task.gitReferences[0].resultCommit })) })) !== JSON.stringify(completed)) {
+      throw new Error("Published release completed original changed during verification");
     }
     await lease.assertOwned();
     return {
@@ -6154,9 +6207,9 @@ export class TaskGitWorkspaceService {
       planRevision: published.planRevision, manifestHash,
       selectedResults: selected.map((task, index) => ({ taskId: task.id, revision: task.revision,
         resultCommit: manifestTasks[index].resultCommit })),
-      cleanupPlan: { strategy: "preserve_managed_source", deleting: [] },
-      preserving: [{ kind: "managed_source", projectRoot: repositoryRoot,
-        branch: workspaces[0].branch, headCommit: workspaces[0].headCommit }],
+      cleanupPlan: { strategy: workspaces.length ? "preserve_managed_source" : "metadata_only", deleting: [] },
+      preserving: workspaces.map(workspace => ({ kind: "managed_source", projectRoot: repositoryRoot,
+        branch: workspace.branch, headCommit: workspace.headCommit })),
     };
   }
 

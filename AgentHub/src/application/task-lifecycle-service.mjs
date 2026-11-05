@@ -1922,7 +1922,7 @@ export class TaskLifecycleService {
       const cleanup = { taskId: task.id, workspaces: [], gitReferences: [], dirty: false,
         unpublished: [], deleting: [], preserving: releaseService.preserving, releaseService };
       const preview = confirmation(task, "complete", cleanup);
-      preview.warning = "Close only the verified published release service Task; preserve its managed worktree and history.";
+      preview.warning = "Close only the verified published release service Task; preserve all existing source and history.";
       if (confirmCleanup !== true) return preview;
       if (String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
         throw new Error("Published release service confirmation is stale");
