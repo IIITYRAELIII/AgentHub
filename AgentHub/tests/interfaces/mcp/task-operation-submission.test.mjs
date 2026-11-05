@@ -105,6 +105,73 @@ test("ensure preparation keeps one worker and original-root admission/result dia
   assert.ok(stages.every(s => !JSON.stringify(s).includes(f.successorToken) && !Object.hasOwn(s.metadata, "arguments")));
 });
 
+test("same exact UNKNOWN cancel resumes through public submission and retains the interrupted original", async t => {
+  const f = await claimCustodyFixture(t);
+  f.retire();
+  const call = await endpoint(t, f.hub);
+  const args = { context_token: f.managerToken, request_id: "same-unknown-cancel", task_id: f.prior.id,
+    operation_request_id: f.original.requestId, expected_arguments_hash: f.original.argumentsHash,
+    expected_task_revision: f.prior.revision, confirm_cancel: true, original_arguments: f.originalArgs };
+  const unknown = deferred();
+  const markUnknown = f.rawCatalog.markMcpOperationUnknown.bind(f.rawCatalog);
+  f.rawCatalog.markMcpOperationUnknown = async (...values) => {
+    const result = await markUnknown(...values); unknown.resolve(); return result;
+  };
+  const recoveryLock = f.workspaces.withTaskRecoveryLock.bind(f.workspaces);
+  f.workspaces.withTaskRecoveryLock = async () => { throw new Error("controlled failure after durable cancellation intent"); };
+  await call("hub_task_operation_cancel", args);
+  await unknown.promise;
+  await new Promise(resolve => setImmediate(resolve)); // Join the failed worker's finally, no retry timer.
+  const readArgs = { context_token: f.managerToken, operation_request_id: args.request_id,
+    expected_arguments_hash: mcpArgumentsHash(args) };
+  const failed = await call("hub_task_operation_get", readArgs);
+  assert.equal(failed.result.structuredContent.taskOperation.status, "unknown");
+  assert.equal(failed.result.structuredContent.taskOperation.active, false);
+  const preserved = f.catalog.mcpOperation(args.request_id);
+  assert.equal(f.catalog.mcpOperation(f.original.requestId).taskExecution.cancellation.phase, "requested");
+  const entered = deferred(), release = deferred();
+  let workers = 0;
+  f.workspaces.withTaskRecoveryLock = async (...values) => {
+    workers++; entered.resolve(); await release.promise; return recoveryLock(...values);
+  };
+  try {
+    const resumed = await call("hub_task_operation_cancel", args);
+    assert.equal(resumed.result.isError, false);
+    assert.equal(resumed.result.structuredContent.taskOperation.active, true,
+      "The same UNKNOWN cancellation must reach its existing interruption owner");
+    await entered.promise;
+    const repeated = await call("hub_task_operation_cancel", args);
+    assert.equal(repeated.result.structuredContent.taskOperation.active, true);
+    assert.equal(workers, 1);
+    assert.equal((await call("hub_task_operation_cancel", { ...args, confirm_cancel: false })).result.isError, true);
+    assert.equal((await call("hub_task_operation_cancel", { ...args, context_token: f.successorToken })).result.isError, true);
+    assert.equal(workers, 1);
+  } finally { release.resolve(); }
+  // Wait on the same already admitted worker; this is readback, not another mutation.
+  let terminal;
+  for (let i = 0; i < 1000; i++) {
+    terminal = (await call("hub_task_operation_get", readArgs)).result.structuredContent;
+    if (!terminal.taskOperation.active) break;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(terminal.taskOperation.status, "succeeded");
+  assert.equal(terminal.result.phase, "stopped");
+  assert.equal(terminal.result.effects, "retained_unknown");
+  assert.equal(workers, 1);
+  const { taskExecution, ...historical } = f.catalog.mcpOperation(f.original.requestId);
+  assert.deepEqual(historical, f.original);
+  assert.equal(taskExecution.cancellation.phase, "stopped");
+  const row = f.catalog.mcpOperation(args.request_id);
+  for (const key of ["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash", "createdAtMs"])
+    assert.equal(row[key], preserved[key], key);
+  assert.equal((await call("hub_task_operation_cancel", args)).result.structuredContent.taskOperation.status, "succeeded");
+  assert.equal(workers, 1);
+  const reopened = await f.open();
+  assert.equal(reopened.catalog.mcpOperation(args.request_id).status, "succeeded");
+  assert.equal(reopened.catalog.mcpOperation(f.original.requestId).status, "unknown");
+  assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
+});
+
 test("original failure and lost terminal receipt remain readable and never restart their mutation", async t => {
   const f = await claimCustodyFixture(t); let effects = 0;
   f.workspaces.prepareOwned = async () => { effects++; throw new Error("controlled original Git failure"); };
