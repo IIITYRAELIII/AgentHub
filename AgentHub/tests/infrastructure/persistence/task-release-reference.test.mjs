@@ -112,3 +112,38 @@ test("release references keep cycle and Workspace fences and cannot be extracted
   assert.equal(removed.task.checklist[0].linkedTaskId, null);
   assert.equal(removed.task.checklist[0].releaseReference, undefined);
 });
+
+test("legacy checklist migration preserves archived rows, ownership and original request hashes", async (t) => {
+  const f = await fixture(t);
+  const added = await f.update(f.create("Archived release"), "add", "legacy-add", { text: "Retained member" });
+  const input = { id: added.task.id, operation: "link", itemId: added.itemId, linkedTaskId: f.child.id,
+    expectedRevision: added.task.revision, requestId: "legacy-link" };
+  await f.store.updateChecklist(input);
+  const db = new DatabaseSync(f.databaseFile);
+  db.prepare("UPDATE hub_board_tasks SET status = 'done' WHERE id = ?").run(added.task.id);
+  const archived = f.store.task(added.task.id), child = f.store.task(f.child.id);
+  const row = db.prepare(`SELECT id, task_id, text, manual_completed, linked_task_id, position,
+    created_at_ms, updated_at_ms FROM hub_task_checklist_items WHERE id = ?`).get(added.itemId);
+  f.store.close();
+  // Recreate the pre-migration column shape in this tiny private SQLite fixture.
+  db.exec(`DROP TRIGGER hub_task_checklist_release_workspace;
+    DROP TRIGGER hub_task_checklist_release_shape_insert;
+    DROP TRIGGER hub_task_checklist_release_shape_update;
+    DROP INDEX hub_task_checklist_release_reference_idx;
+    ALTER TABLE hub_task_checklist_items DROP COLUMN release_task_id;
+    ALTER TABLE hub_task_checklist_items DROP COLUMN release_reference_json;`);
+  assert.equal(db.prepare("PRAGMA table_info(hub_task_checklist_items)").all().length, 8);
+  db.close();
+  const reopened = new TaskBoardStore({ databaseFile: f.databaseFile });
+  try {
+    assert.deepEqual(reopened.task(added.task.id), archived);
+    assert.deepEqual(reopened.task(f.child.id), child);
+    assert.equal((await reopened.updateChecklist(input)).replayed, true);
+    const migrated = new DatabaseSync(f.databaseFile);
+    try {
+      assert.deepEqual(migrated.prepare(`SELECT id, task_id, text, manual_completed, linked_task_id, position,
+        created_at_ms, updated_at_ms FROM hub_task_checklist_items WHERE id = ?`).get(added.itemId), row);
+      assert.equal(migrated.prepare("PRAGMA table_info(hub_task_checklist_items)").all().length, 10);
+    } finally { migrated.close(); }
+  } finally { reopened.close(); }
+});
