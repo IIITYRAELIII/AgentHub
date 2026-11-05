@@ -405,6 +405,30 @@ function threadFromRow(row) {
   };
 }
 
+const THREAD_RESOLUTION_COLUMNS = `t.*, s.ordinal AS resolved_ordinal, s.name AS resolved_stream_name,
+  w.id AS resolved_workspace_id, w.name AS resolved_workspace_name,
+  w.kind AS resolved_workspace_kind,
+  CASE WHEN s.name IS NOT NULL AND trim(s.name) <> '' THEN 0 ELSE EXISTS (
+    SELECT 1 FROM hub_streams live
+    WHERE live.workspace_id = s.workspace_id AND live.archived_at_ms IS NULL
+    LIMIT 1 OFFSET 1
+  ) END AS multiple_live_streams`;
+
+function resolvedThreadFromRow(row) {
+  if (!row) return null;
+  const thread = threadFromRow(row);
+  const ordinal = Number(row.resolved_ordinal) || 1;
+  const name = row.resolved_stream_name ? String(row.resolved_stream_name) : null;
+  return {
+    workspaceId: String(row.resolved_workspace_id),
+    workspaceName: String(row.resolved_workspace_name),
+    workspaceKind: String(row.resolved_workspace_kind),
+    streamId: thread.streamId, streamOrdinal: ordinal, streamName: name,
+    streamDisplayName: streamDisplayName({ name, ordinal, streamCount: row.multiple_live_streams ? 2 : 1 }),
+    threadPosition: thread.position, thread,
+  };
+}
+
 function sourceName(value) {
   const source = String(value ?? "discovered").trim().toLowerCase();
   if (!SOURCES.has(source)) throw new Error(`invalid thread binding source: ${value}`);
@@ -2126,34 +2150,35 @@ export class WorkspaceCatalogStore {
     // This point read is used for every distinct journal Thread. Display needs
     // only zero/one versus multiple live Streams, never their complete count.
     const row = this.#database.prepare(`
-      SELECT t.*, s.ordinal AS resolved_ordinal, s.name AS resolved_stream_name,
-        w.id AS resolved_workspace_id, w.name AS resolved_workspace_name,
-        w.kind AS resolved_workspace_kind,
-        CASE WHEN s.name IS NOT NULL AND trim(s.name) <> '' THEN 0 ELSE EXISTS (
-          SELECT 1 FROM hub_streams live
-          WHERE live.workspace_id = s.workspace_id AND live.archived_at_ms IS NULL
-          LIMIT 1 OFFSET 1
-        ) END AS multiple_live_streams
+      SELECT ${THREAD_RESOLUTION_COLUMNS}
       FROM hub_threads t
       JOIN hub_streams s ON s.id = t.stream_id
       JOIN hub_workspaces w ON w.id = s.workspace_id
       WHERE t.provider = ? AND t.provider_thread_id = ?
     `).get(identity.provider, identity.threadId);
-    if (!row) return null;
-    const thread = threadFromRow(row);
-    const ordinal = Number(row.resolved_ordinal) || 1;
-    const name = row.resolved_stream_name ? String(row.resolved_stream_name) : null;
-    return {
-      workspaceId: String(row.resolved_workspace_id),
-      workspaceName: String(row.resolved_workspace_name),
-      workspaceKind: String(row.resolved_workspace_kind),
-      streamId: thread.streamId,
-      streamOrdinal: ordinal,
-      streamName: name,
-      streamDisplayName: streamDisplayName({ name, ordinal, streamCount: row.multiple_live_streams ? 2 : 1 }),
-      threadPosition: thread.position,
-      thread,
-    };
+    return resolvedThreadFromRow(row);
+  }
+
+  // A worker already asks for at most 128 exact references per callback. Read
+  // each such group in one fresh statement, without retaining binding authority
+  // between calls or enumerating unrelated Workspace/Thread history.
+  resolveThreads(values) {
+    if (!Array.isArray(values)) throw new TypeError("Thread references must be an array");
+    const identities = values.map(normalizedThreadIdentity);
+    const resolved = identities.map(() => null);
+    for (let offset = 0; offset < identities.length; offset += 128) {
+      const batch = identities.slice(offset, offset + 128);
+      const rows = this.#database.prepare(`
+        WITH requested(slot, provider, thread_id) AS (VALUES ${batch.map(() => "(?, ?, ?)").join(",")})
+        SELECT requested.slot AS resolution_slot, ${THREAD_RESOLUTION_COLUMNS}
+        FROM requested
+        JOIN hub_threads t ON t.provider = requested.provider AND t.provider_thread_id = requested.thread_id
+        JOIN hub_streams s ON s.id = t.stream_id
+        JOIN hub_workspaces w ON w.id = s.workspace_id
+      `).all(...batch.flatMap((identity, index) => [offset + index, identity.provider, identity.threadId]));
+      for (const row of rows) resolved[row.resolution_slot] = resolvedThreadFromRow(row);
+    }
+    return resolved;
   }
 
   assignUnknownThread(value, { source = "discovered", streamName = null } = {}) {

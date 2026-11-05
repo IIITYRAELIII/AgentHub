@@ -445,7 +445,9 @@ test("journal worker projects canonical valid records while preserving excluded 
     const options = { projectRoots: [root], defaultProjectRoot: root, now: Date.parse("2026-09-08T12:00:00Z") };
     const canary = await worker.projectJournal({ ...options, expectedRevision: -1 });
     assert.equal(canary.conflict, true);
-    assert.equal(canary.invalidRecordCount, 2);
+    assert.equal(canary.renderSkipped, true);
+    assert.equal(canary.factsSourceRead, false);
+    assert.equal(canary.invalidRecordCount, undefined, "a refused stale snapshot is not a completed normalization audit");
     assert.equal((await journal.payload()).html, "Original index");
     const result = await worker.projectJournal(options);
     assert.equal(result.projected, true);

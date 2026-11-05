@@ -1,5 +1,14 @@
 # PERF-001 — Local command latency
 
+Startup terminal projection (ADR-HUB-409) uses one cold accounting payload scan,
+reuses those parsed objects for a cold full rebuild and retains warm changed-row
+reads. Existing groups of 128 exact Workspace references use fresh bounded
+catalog statements, not one statement per Thread or a binding cache. Known stale
+journal input refuses before facts/rendering; final CAS still owns commit.
+Original-command worker traces retain numeric read/batch/revision measurements,
+including completed phases on callback failure. Synthetic work counts and local
+timings are not production speedup or a changed readiness/ACK contract.
+
 The startup shell can listen after instance ownership while SQLite integrity is
 pending, using the existing MiniAppServer and browser health polling. The same
 server's later activation keeps its address and auth. Time to listener, first

@@ -778,21 +778,34 @@ export class JournalDatabase {
       const readRecord = database.prepare(`SELECT record_json FROM journal_records
         WHERE provider = ? AND thread_id = ? AND turn_id = ?`);
       let accountingRecordsRead = 0;
-      // Scan identities/revisions only. A cold worker reads each source once;
-      // later calls read changed payloads. The identity set observes deletions
+      let accountingPointReads = 0;
+      const accountingBulkRead = this.#projectionAccounting.size === 0;
+      // A cold worker reads each source once; later calls scan identities and
+      // revisions, reading only changed payloads. The identity set observes deletions
       // even if another projector already cleared the durable dirty dates.
+      // Cold startup needs every accounting record. One sequential payload scan
+      // avoids an identity scan plus one point query per retained turn. Warm
+      // calls still read payloads only for changed identities.
       for (const row of database.prepare(`SELECT provider, thread_id, turn_id, changed_revision
-        FROM journal_records INDEXED BY journal_records_changed_idx
+          ${accountingBulkRead ? ", record_json" : ""}
+        FROM journal_records ${accountingBulkRead ? "" : "INDEXED BY journal_records_changed_idx"}
         ORDER BY provider, thread_id, turn_id`).iterate()) {
         const key = ledgerKey({ provider: row.provider, threadId: row.thread_id, turnId: row.turn_id });
         retained.add(key);
         let cached = this.#projectionAccounting.get(key);
         if (!cached || cached.revision !== row.changed_revision) {
           const parsed = {};
-          insert({ ...row, ...readRecord.get(row.provider, row.thread_id, row.turn_id) }, parsed);
+          const sourceRow = accountingBulkRead ? row : {
+            ...row, ...readRecord.get(row.provider, row.thread_id, row.turn_id),
+          };
+          if (!accountingBulkRead) accountingPointReads += 1;
+          insert(sourceRow, parsed);
           cached = { revision: row.changed_revision, record: parsed[key] ? accountingProjector(parsed[key]) : null };
           this.#projectionAccounting.set(key, cached);
           accountingRecordsRead += 1;
+          // On a cold full rebuild this is also the exact requested source
+          // payload. Do not fetch and parse it a second time below.
+          if (full && accountingBulkRead && parsed[key]) turns[key] = parsed[key];
         }
         if (cached.record) accounting[key] = cached.record;
       }
@@ -810,9 +823,9 @@ export class JournalDatabase {
         if (source?.openDate) dirtyDates.add(source.openDate);
         if (openDate) dirtyDates.add(openDate);
       }
-      if (full) {
+      if (full && !accountingBulkRead) {
         for (const row of database.prepare("SELECT * FROM journal_records ORDER BY provider, thread_id, turn_id").iterate()) insert(row, turns);
-      } else {
+      } else if (!full) {
         const readDay = database.prepare(`SELECT * FROM journal_records
           WHERE completed_at_ms >= ? AND completed_at_ms < ? ORDER BY provider, thread_id, turn_id`);
         for (const date of dirtyDates) {
@@ -821,7 +834,8 @@ export class JournalDatabase {
         }
       }
       database.exec("COMMIT");
-      return { revision, dirtyDates: [...dirtyDates], turns, accounting, accountingRecordsRead, source, current, full, openDate };
+      return { revision, dirtyDates: [...dirtyDates], turns, accounting, accountingRecordsRead,
+        accountingPointReads, accountingBulkRead, source, current, full, openDate };
     } catch (error) {
       database.exec("ROLLBACK");
       throw error;

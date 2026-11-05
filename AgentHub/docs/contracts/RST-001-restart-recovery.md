@@ -326,6 +326,11 @@ A live external/current turn in the same Thread still blocks recovery.
   same-runtime periodic recovery claims pending rows only and cannot steal an
   active projection. The projection drain has no provider, command or Telegram
   side effects and is disposed with the runtime timers.
+  ADR-HUB-409 reduces repeated accounting payload reads and resolves existing
+  bounded Workspace reference groups through fresh catalog reads. A journal
+  revision changed during callbacks is refused before facts/rendering; final
+  transaction CAS, exact outbox readbacks/ACK fences, startup drain order and
+  the replacement readiness deadline remain unchanged.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.
   A disconnected health request alone never asserts a restart. While waiting
