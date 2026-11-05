@@ -35,6 +35,31 @@ const manifest = {
   backgrounds: [{ id: "aurora", name: "Сияние", asset: "sky.webp" }],
 };
 
+test("Nexus leads the catalog and publishes three distinct preloadable scenes", () => {
+  const root = path.resolve(import.meta.dirname, "../../assets/web-app");
+  const registry = loadThemeRegistry(root);
+  const theme = registry.themes[0];
+  assert.equal(theme.id, "nexus");
+  assert.equal(theme.name, "Nexus");
+  assert.equal(theme.backgrounds[0].id, theme.id);
+  assert.equal(theme.backgrounds.length, 3);
+  assert.equal(new Set(theme.backgrounds.map(({ asset }) => asset)).size, 3);
+  for (const background of theme.backgrounds) {
+    assert.equal(background.preload, true);
+    const resource = registry.resources.get(`/themes/nexus/${background.asset}`);
+    assert.ok(resource);
+    assert.equal(resource.contentType, "image/png");
+  }
+  const html = renderThemeHtml("<!-- agent-hub-theme-catalog -->", registry, {
+    resourceUrl: (pathname) => `https://webview.test${pathname}`,
+  });
+  const catalog = JSON.parse(html.slice(html.indexOf(">") + 1, html.lastIndexOf("</script>")));
+  assert.equal(catalog[0].id, "nexus");
+  for (const background of catalog[0].backgrounds) {
+    assert.ok(background.assetUrl.startsWith("https://webview.test/themes/nexus/"));
+  }
+});
+
 test("theme registry discovers a complete theme package without core registration", async () => {
   const directory = await fixture(manifest);
   try {

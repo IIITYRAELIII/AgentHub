@@ -198,3 +198,65 @@ test("real Task lock wait is separated from the protected operation", async (t) 
   assert.equal(acquired.lockKind, "task"); assert.ok(acquired.waitMs > 0);
   assert.ok(events.some(event => event.stage === "workflow" && event.phase === "end" && event.outcome === "ok"));
 });
+
+test("post-budget aggregates preserve full static operator counts and original failures", async () => {
+  const batches = [];
+  const record = createTaskOperationTimingBatchRecorder(rows => batches.push(rows));
+  const original = new Error("private aggregate failure");
+  await assert.rejects(withTaskOperationTiming({ operationId: "post-budget", record }, async () => {
+    for (let index = 0; index < 600; index += 1) {
+      await measureTaskOperation("git-child", () => index, { detail: true, command: "rev-parse" });
+    }
+    await measureTaskOperation("release:base-evidence", async () => {
+      await measureTaskOperation("release:git-command", () => 7, { detail: true });
+      await assert.rejects(measureTaskOperation("release:git-input", () => { throw original; }, { detail: true }), error => error === original);
+    });
+    throw original;
+  }), error => error === original);
+  const events = batches.flat();
+  const summary = events.find(row => row.stage === "trace-summary");
+  assert.equal(events.filter(row => row.stage === "git-child" && row.phase === "start").length, 512);
+  assert.equal(summary.suppressedDetailSpans, 90);
+  assert.equal(summary.aggregateSemantics, "inclusive-nested-not-additive");
+  const group = name => summary.stageAggregates.find(row => row.stage === name);
+  assert.equal(group("git-child").count, 600);
+  assert.equal(group("git-child").suppressedCount, 88);
+  assert.equal(group("git-child").command, "rev-parse");
+  assert.equal(group("release:git-command").count, 1);
+  assert.equal(group("release:git-command").suppressedCount, 1);
+  assert.equal(group("release:git-input").count, 1);
+  assert.equal(group("release:git-input").errorCount, 1);
+  assert.equal(group("release:base-evidence").count, 1);
+  assert.ok(group("release:base-evidence").inclusiveMs >= group("release:git-input").inclusiveMs);
+  assert.ok(summary.stageAggregates.every(row => Number.isFinite(row.inclusiveMs) && row.inclusiveMs >= 0 && row.maxMs >= 0));
+  assert.equal(events.at(-1).stage, "timing-sink-final");
+  assert.ok(!JSON.stringify(summary).includes(original.message));
+  assert.ok(events.every(row => row.operationId === "post-budget"));
+});
+
+test("aggregate classes are fixed and do not retain arbitrary labels or argument content", async () => {
+  const events = [];
+  await withTaskOperationTiming({ operationId: "aggregate-privacy", record: row => events.push(row) }, async () => {
+    await measureTaskOperation("PRIVATE_PATH_STAGE", () => 1, { detail: true, command: "PRIVATE_TOKEN_COMMAND", arbitrary: "PRIVATE_BODY" });
+    await measureTaskOperation("git-child", () => 2, { detail: true, command: "PRIVATE_TOKEN_COMMAND" });
+  });
+  const summary = events.find(row => row.stage === "trace-summary");
+  const wire = JSON.stringify(summary.stageAggregates);
+  assert.equal(wire.includes("PRIVATE"), false);
+  assert.ok(summary.stageAggregates.some(row => row.stage === "other"));
+  assert.ok(summary.stageAggregates.some(row => row.stage === "git-child" && row.command === "other"));
+  assert.ok(Buffer.byteLength(JSON.stringify(summary)) < 16 * 1024);
+});
+
+test("a closed trace retains its immutable aggregate snapshot when a detached child settles later", async () => {
+  const gate = deferred(), entered = deferred(), events = [];
+  let pending;
+  await withTaskOperationTiming({ operationId: "late-child", record: row => events.push(row) }, async () => {
+    pending = measureTaskOperation("git-child", async () => { entered.resolve(); await gate.promise; }, { detail: true, command: "status" });
+    await entered.promise;
+  });
+  const summary = events.find(row => row.stage === "trace-summary");
+  const before = JSON.stringify(summary);
+  gate.resolve(); await pending;
+  assert.equal(JSON.stringify(summary), before);
+});

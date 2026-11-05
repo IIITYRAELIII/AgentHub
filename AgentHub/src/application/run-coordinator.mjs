@@ -10,6 +10,7 @@ import {
 import {
   contextMaintenanceActiveError,
   runtimeRestartPendingError,
+  streamMessageDelivery,
 } from "../domain/deferred-input.mjs";
 import {
   taskOccupancyIdentity,
@@ -19,6 +20,7 @@ import {
 import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
 
 export function activeTurnNotSteerable(error) {
+  if (error?.deliveryOutcome === "unknown" || error?.uncertain === true) return false;
   const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();
   return details.includes("activeturnnotsteerable")
     || details.includes("active turn not steerable")
@@ -103,6 +105,8 @@ export class RunCoordinator {
     this.bindDashboardTask = typeof bindDashboardTask === "function" ? bindDashboardTask : null;
     this.dispatchingClientMessageIds = new Map();
     this.beforeDeferredDispatch = null;
+    this.settledDeferredInput = () => null;
+    this.validateDeferredTarget = () => {};
   }
 
   async bindStartedDashboardTask(run, input) {
@@ -147,13 +151,19 @@ export class RunCoordinator {
     const identity = taskOccupancyIdentity(target);
     const run = this.activeRun(target);
     if (run) {
+      const owner = normalizeTaskExecutionOwner(run.executionOwner);
+      const hubOwned = owner === TASK_EXECUTION_OWNERS.HUB;
+      const uncertain = run.activityUnknown === true || !Object.values(TASK_EXECUTION_OWNERS).includes(owner);
       return {
         key: this.taskLane(run),
         binding: taskOccupancyIdentity(run)?.binding ?? identity?.binding ?? "provisional",
         occupied: true,
-        state: "active",
-        waitReason: "provider-thread-active",
+        state: uncertain ? "unknown" : "active",
+        waitReason: hubOwned
+          ? run.activityUnknown === true ? "managed-run-activity-unknown" : "task-running"
+          : uncertain ? "provider-temporarily-unavailable" : "provider-thread-active",
         run,
+        executionOwner: owner ?? null,
       };
     }
     if (identity?.binding !== "exact") {
@@ -181,7 +191,8 @@ export class RunCoordinator {
   }
 
   async bindDeferredOccupancy(item) {
-    const identity = taskOccupancyIdentity(item);
+    const target = streamMessageDelivery(item) ? { ...item, ...item.deliveryTarget } : item;
+    const identity = taskOccupancyIdentity(target);
     if (!identity || identity.binding !== "exact") return { changed: false, item };
     const clientUserMessageId = String(item?.clientUserMessageId ?? "").trim();
     if (!clientUserMessageId || typeof this.rekeyDeferredOccupancy !== "function") {
@@ -192,14 +203,19 @@ export class RunCoordinator {
     const result = await this.rekeyDeferredOccupancy({
       clientUserMessageId,
       expectedOccupancyKey: item.occupancyKey ?? null,
-      target: item,
+      target,
     });
-    if (result?.conflict) throw new Error("message command occupancy binding conflict");
+    if (result?.conflict) {
+      if (item.manualPaused === true || this.settledDeferredInput(item)) return { ...result, item };
+      throw new Error("message command occupancy binding conflict");
+    }
+    const manualPaused = item.manualPaused === true;
     if (result?.record?.item) Object.assign(item, result.record.item);
     else {
       item.occupancyKey = identity.key;
       item.occupancyBinding = identity.binding;
     }
+    if (manualPaused) { item.manualPaused = true; item.paused = true; }
     return { ...result, item };
   }
 
@@ -354,8 +370,9 @@ export class RunCoordinator {
     this.beforeDeferredDispatch?.(item);
     const id = String(item.clientUserMessageId ?? "");
     if (id) this.dispatchingClientMessageIds.set(id, (this.dispatchingClientMessageIds.get(id) ?? 0) + 1);
-    return this.withPendingAdmission(item, () => (
-      this.serialize(item, () => this.startDeferredUnlocked(item))
+    const target = streamMessageDelivery(item) ? { ...item, ...item.deliveryTarget } : item;
+    return this.withPendingAdmission(target, () => (
+      this.serialize(target, () => this.startDeferredUnlocked(item))
     )).finally(() => {
       const count = this.dispatchingClientMessageIds.get(id) ?? 0;
       if (count <= 1) this.dispatchingClientMessageIds.delete(id);
@@ -364,10 +381,18 @@ export class RunCoordinator {
   }
 
   async startDeferredUnlocked(item) {
-    const initialBarrier = this.admissionBarrier(item);
+    const settled = this.settledDeferredInput(item);
+    if (settled) return { deferredOutcome: settled };
+    this.validateDeferredTarget(item);
+    const deliveryTarget = streamMessageDelivery(item) ? item.deliveryTarget : null;
+    const initialBarrier = this.admissionBarrier({ ...item, ...deliveryTarget });
     if (initialBarrier === "runtime-restart") throw runtimeRestartPendingError();
     if (initialBarrier) throw contextMaintenanceActiveError();
     await this.bindDeferredOccupancy(item);
+    const boundSettlement = this.settledDeferredInput(item);
+    if (boundSettlement) return { deferredOutcome: boundSettlement };
+    if (item.manualPaused === true) return { deferredOutcome: { paused: true } };
+    this.validateDeferredTarget(item);
     const messageOrigin = normalizeInterstreamOrigin(item.messageOrigin);
     const target = {
       provider: item.provider,
@@ -379,6 +404,7 @@ export class RunCoordinator {
       modelId: item.modelId,
       reasoningId: item.reasoningId,
       collaborationMode: item.collaborationMode,
+      ...(streamMessageDelivery(item) ? item.deliveryTarget : {}),
       clientUserMessageId: item.clientUserMessageId,
       telegramDeliveryRequested: item.telegramDeliveryRequested !== false,
       clientSource: item.clientSource,
@@ -392,6 +418,17 @@ export class RunCoordinator {
       if (admittedBarrier === "runtime-restart") throw runtimeRestartPendingError();
       throw contextMaintenanceActiveError();
     }
+    const admittedSettlement = this.settledDeferredInput(item);
+    if (admittedSettlement) {
+      await this.rollbackAdmission(run);
+      return { deferredOutcome: admittedSettlement };
+    }
+    if (item.manualPaused === true) {
+      await this.rollbackAdmission(run);
+      return { deferredOutcome: { paused: true } };
+    }
+    try { this.validateDeferredTarget(item); }
+    catch (error) { await this.rollbackAdmission(run); throw error; }
     run.messageAttachments = persistentAttachmentDescriptors(
       this.describeAttachments,
       item.temporaryFiles ?? [],
@@ -474,16 +511,18 @@ export class RunCoordinator {
     clientUserMessageId,
     clientProjectionIntent = null,
     messageFingerprint = null,
+    reason = null,
   }) {
     const deferred = await this.deferInput(input, attachments, {
-      executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
+      executionOwner: existingRun?.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
       target,
-      conflictKind: "message-steer",
+      conflictKind: existingRun ? "message-steer" : "message-intake",
+      followUpMode: "steer",
       clientUserMessageId,
       clientProjectionIntent,
       messageFingerprint,
-      steerTargetRunId: existingRun.id ?? null,
-      steerTargetTurnId: existingRun.turnId ?? null,
+      steerTargetRunId: existingRun?.id ?? null,
+      steerTargetTurnId: existingRun?.turnId ?? null,
       destination: "queued",
       notify: false,
       persistentFiles: attachments.length > 0,
@@ -491,19 +530,22 @@ export class RunCoordinator {
     if (!deferred.duplicate) this.scheduleDeferred(deferred.item, 0);
     return {
       accepted: true,
-      steerPending: true,
-      deferred: false,
-      queued: false,
+      providerAccepted: false,
+      steerPending: Boolean(existingRun),
+      deferred: !existingRun,
+      queued: !existingRun,
+      reason: reason ?? (existingRun ? null : "message-intake"),
       duplicate: deferred.duplicate === true,
       id: deferred.id,
-      runId: existingRun.id ?? null,
+      runId: existingRun?.id ?? null,
       threadId: target.threadId,
-      turnId: existingRun.turnId ?? null,
+      turnId: existingRun?.turnId ?? null,
       clientUserMessageId,
       ...(clientProjectionIntent ? { clientProjectionIntent } : {}),
       message: deferred.duplicate === true
         ? "Уточнение уже принято Hub и не было отправлено повторно."
-        : "Уточнение принято Hub и будет добавлено в текущий ход.",
+        : existingRun ? "Уточнение принято Hub и будет добавлено в текущий ход."
+          : "Сообщение принято Hub и сохранено в обычной очереди потока.",
     };
   }
 
@@ -523,12 +565,18 @@ export class RunCoordinator {
     messageFingerprint = null,
     followUpMode = "",
   }) {
+    if (target.streamId && !followUpMode) followUpMode = "steer";
     const existingRun = this.activeRun(target);
     const admissionBarrier = this.admissionBarrier(target, {
       exactManagedSteer: followUpMode === "steer" && Boolean(existingRun),
     });
     if (admissionBarrier && (admissionBarrier === "runtime-restart"
       || !(followUpMode === "steer" && existingRun))) {
+      if (followUpMode === "steer" && target.streamId) {
+        return this.queueSteer(input, attachments, {
+          target, existingRun, clientUserMessageId, clientProjectionIntent, messageFingerprint, reason: admissionBarrier,
+        });
+      }
       return this.queue(input, attachments, {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,
@@ -587,6 +635,11 @@ export class RunCoordinator {
         message: "Сообщение сохранено: выберите новый поток, очередь или отмену справа.",
       };
     }
+    if (followUpMode === "steer" && target.streamId) {
+      return this.queueSteer(input, attachments, {
+        target, existingRun: null, clientUserMessageId, clientProjectionIntent, messageFingerprint,
+      });
+    }
     return this.queue(input, attachments, {
       target,
       executionOwner: TASK_EXECUTION_OWNERS.HUB,
@@ -604,7 +657,7 @@ export class RunCoordinator {
     ));
   }
 
-  async steerUnlocked({ input, target, clientUserMessageId }) {
+  async steerUnlocked({ input, target, clientUserMessageId, deferredInput = null }) {
     if (this.isRuntimeStopping()) throw runtimeRestartPendingError();
     const existingRun = this.activeRun(target);
     const expectedRunId = String(target?.steerTargetRunId ?? "").trim();
@@ -626,6 +679,11 @@ export class RunCoordinator {
       throw new Error("Active turn not steerable: another Codex runtime owns the writer");
     }
     let result;
+    if (deferredInput) await this.bindDeferredOccupancy(deferredInput);
+    const settled = deferredInput && this.settledDeferredInput(deferredInput);
+    if (settled) return settled;
+    if (deferredInput?.manualPaused === true) return { paused: true };
+    if (deferredInput) this.validateDeferredTarget(deferredInput);
     try {
       result = await this.providers.call(
         target.provider,
@@ -709,6 +767,7 @@ export class RunCoordinator {
     clientProjectionIntent = null,
     followUpMode = "",
   }) {
+    if (target.streamId && !followUpMode) followUpMode = "steer";
     const existingRun = this.activeRun(target);
     const admissionBarrier = this.admissionBarrier(target, {
       exactManagedSteer: followUpMode === "steer" && Boolean(existingRun),
@@ -726,7 +785,7 @@ export class RunCoordinator {
       ? { state: "active", executionOwner: existingRun.executionOwner }
       : await this.externalActivity(target);
     if (existingRun || externalActivity.state !== "inactive") {
-      if (followUpMode === "steer") {
+      if (followUpMode === "steer" && (existingRun || externalActivity.state !== "unknown")) {
         const executionOwner = normalizeTaskExecutionOwner(
           existingRun?.executionOwner ?? externalActivity.executionOwner,
         );

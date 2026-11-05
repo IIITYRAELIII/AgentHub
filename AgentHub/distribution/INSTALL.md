@@ -8,8 +8,9 @@
 
 Поддерживается Windows x64. Нужны Python 3.10+ для `install_release.py` и Node.js
 с модулем `node:sqlite` для Hub (проверяется установщиком; используй версию,
-поддерживаемую проектом). Возьми проверенный `install_release.py` из этого
-проекта и ready package из его Releases, сохрани опубликованные SHA-256.
+поддерживаемую проектом). Возьми versioned asset `install_release.py` и ready
+package из одной версии Releases этого проекта. Перед запуском установщика
+сверь его опубликованный SHA-256; сохрани контрольные суммы пакета.
 Не используй исходный архив GitHub вместо готовой поставки.
 
 ```powershell
@@ -26,13 +27,66 @@ publisher/TLS, не отдельная подпись автора. Дополн
 
 Для offline-установки используй `--archive <local-zip> --sha256 <published-sha256>`;
 также поддерживается `--url <versioned-public-asset> --sha256 <published-sha256>`.
-Runtime и scratch должны быть отдельными каталогами. Перед обновлением штатно
-останови writers; живой или неизвестный runtime заставит установщик отказать.
-Не обходи отказ повторной отправкой. Автоматического stop/start/restart нет.
+Runtime и scratch должны быть отдельными каталогами. Обычная установка без
+`--prepare-update` требует заранее закрытых writers: живой или неизвестный runtime
+даёт отказ. Этот stopped-only режим сам не останавливает и не запускает Hub.
+Не обходи отказ повторной отправкой.
 
-Для обновления используй тот же standalone-установщик с новым exact tag или
-`latest`. Для rollback добавь `--rollback` к команде с доступным проверенным
-пакетом: существующий runtime owner выберет сохранённую предыдущую версию.
+## Подготовка обновления работающего Hub
+
+Для опубликованной целевой версии используй её проверенный versioned installer
+из отдельного интерактивного терминала того же пользователя, вне process Job
+работающего Hub. Не запускай эту команду из самого Hub. Сохрани один exact stable
+tag, один original operation ID, тот же приватный runtime root и отдельный
+приватный scratch вне runtime:
+
+```powershell
+python install_release.py --release <exact-stable-tag> --prepare-update --operation-id <original-update-id> --runtime-root <installed-private-runtime-root> --scratch-root <separate-private-scratch>
+```
+
+Для этого режима `latest` не допускается. Команда сохраняет и проверяет canonical
+ZIP, descriptor, installer и manifest одной версии, затем передаёт исходную
+операцию существующему package/restart owner. Utilities, Git, npm, пересборка
+исходников и новая публикация получателю не нужны.
+
+Для public **2.0.4 без package handoff** сначала закончи активную работу, но оставь
+Hub запущенным до arm. Подтверди показанный разовый ручной шаг. Только после
+`awaiting-user-stop` с exact old Host/Node PIDs и release останови именно эту
+старую группу в показанное 120-секундное окно. Не запускай новые ходы, второй Hub
+и не меняй пользовательскую сессию. Updater не убивает процессы. Ручное
+принудительное завершение не является graceful и может оставить работу UNKNOWN.
+
+В поддерживающем handoff **Hub 2.1** та же команда использует реально объявленную
+capability и аутентифицированный graceful restart: активная работа завершается,
+существующий stopping fence закрывает writers. Потеря ответа этого пути не
+переключает на ручной stop. Native continuation проверяет завершение всей exact
+старой process/Job группы, делает согласованную копию config/data через SQLite
+backup API, вызывает неизменённый stopped-only installer и один раз запускает
+exact replacement. Успех требует exact ready и settlement исходной операции,
+а не только exit0 установщика. WAL/SHM не копируются как live-файлы; backup не
+восстанавливает данные и не повторяет UNKNOWN работу.
+
+После прерывания или потери ответа читай только тот же original:
+
+```powershell
+python install_release.py --release <same-exact-stable-tag> --update-status --operation-id <same-original-update-id> --runtime-root <same-runtime-root> --scratch-root <same-private-scratch>
+```
+
+`--update-status` не запускает обновление. Отсутствующий original или незавершённое
+скачивание не доказывают успех. Сохраняй scratch, receipts и backup; не удаляй их
+для повтора, не меняй ID/tag и не запускай Hub вручную через unresolved admission.
+При неоднозначном install/start нужен readback исходной операции, не второй запуск
+или автоматический rollback. Поддерживаются Windows x64, стандартный runtime/data
+layout и тот же интерактивный user/security context; чужие/живые/неизвестные
+writers, другие layouts или elevation дают отказ. Нужен запас места под пакет,
+config/data и backup; гарантии времени простоя нет. Controlled fixture checks не
+являются доказательством фактического публичного обновления или provider AFTER.
+
+## Rollback и сохранность данных
+
+Для явного code-only rollback в закрытом stopped-writer окне добавь `--rollback`
+к команде с доступным проверенным пакетом: существующий runtime owner выберет
+сохранённую предыдущую версию.
 Данные и конфигурация не откатываются. Существующие sync URL, выбор компонентов,
 auth и cursors сохраняются; установщик не выбирает новый endpoint и не сбрасывает
 пользовательские данные.

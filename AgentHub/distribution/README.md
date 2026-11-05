@@ -1,5 +1,12 @@
 # Source and distribution boundary
 
+Affected isolated recovery checks reuse `whole_update.mjs <artifacts.json>
+<new-output> downgrade|poststop-recovery`. The first requires a lower target
+build and verifies rejection before stopping; the second requires a legitimate
+newer target and observes a real installer filesystem refusal followed by the
+same verified current becoming Ready. The original update remains FAILED.
+Neither mode is production update/retry authority or public TLS acceptance.
+
 This is preparation for a repository cutover, not permission to retarget an
 existing release operation. The registered release owner still composes,
 validates, prepares and publishes the exact accepted source. The package builder
@@ -157,7 +164,13 @@ acquire a newly invented PREPARED receipt.
 After normal preparation, `artifacts.preparedRuntimeReceipt(identity)` verifies
 the original artifact, full runtime and frozen source/version, then returns
 `{ receipt, receiptFile, receiptSha256 }`. The exact nine-field JSON is retained in
-that artifact's immutable payload. Pass its file and hash to `build_release.py`
+that artifact's immutable payload. New receipts use the physical configured
+runtime root, retaining ordinary descendants and the original artifact namespace
+identity. The distribution caller likewise resolves only its execution root;
+root path/device/inode drift refuses. Python still rejects descendant reparse
+paths. An old alias-bearing receipt is preserved and can require a corrected
+later generation; do not rewrite its JSON or merely replace its CLI path.
+Pass its file and hash to `build_release.py`
 above. A completed artifact, or a verified prepared body whose build reply was
 lost, is reused before another preparation/allocation. Partial bodies without a
 manifest and changed original inputs refuse and remain available for inspection.
@@ -294,7 +307,130 @@ rollback with the same runtime and unchanged participant choices/config/data.
 Only transport is synthetic; no actual Utilities source removal or public
 download acceptance follows from this fixture. No graphical Setup.exe is added.
 
+## Updating an installed Hub from a public package
+
+Download the release's canonical `install_release.py` asset and verify its
+published digest. Use an explicit stable version, one retained private scratch
+directory outside the runtime, and one original operation ID:
+
+```powershell
+python install_release.py --release <exact-stable-version> --prepare-update --operation-id <original-update-id> --runtime-root <installed-runtime-root> --scratch-root <separate-private-scratch>
+```
+
+This requires Windows x64, Python, Node with `node:sqlite`, a same-user interactive
+desktop shell and the standard `<runtime-root>/data` layout. It downloads/verifies
+the exact canonical ZIP/descriptor, verifies the installer against the same
+public metadata, and retains the package. No npm, compiler, source rebuild or
+new publication runs on the recipient. Custom external data roots or different
+elevation/security contexts refuse; do not relocate data to bypass the check.
+
+For **public 2.0.4 without package handoff**, first finish active work. Keep Hub
+running while arming from a separate terminal outside its process Job. Confirm
+the displayed one-time manual step. Only after `awaiting-user-stop` reports the
+exact old Host/Node PIDs and release, stop that old Hub cohort yourself within
+the reported 120-second window. Closing an unrelated window is not proof of
+stopping Hub. Do not introduce new work, start another Hub or log in/out during
+this window. The updater does **not** terminate any process. A manual forced
+stop is crash-consistent, not graceful; uncommitted work may remain UNKNOWN.
+
+The native continuation holds original process/Job handles, waits for every old
+Job member to disappear and rechecks before each effect. Unknown/foreign/live
+writers stop the operation. It then backs up regular config/data using SQLite's
+backup API with writer reservations and integrity checks, runs the verified
+stopped-only installer and launches the exact target once. It does not copy live
+WAL files, restore data, replay unknown work or silently roll back. Backup size
+and verification determine downtime; 45 seconds is only the Job-accounting
+observation bound, not a downtime promise. Keep enough private free space for
+the unpacked package and all runtime data/config plus backup.
+
+After this one-time upgrade, a capable installed Hub advertises its real package
+restart protocol. The SAME command submits its ordinary graceful restart request:
+active work finishes normally before the existing stopping fence, all writers
+close, then native retirement/backup/install/start occur. A lost authenticated
+request never falls back to manual stop or creates another original.
+
+Read the original after interruption or a lost result:
+
+```powershell
+python install_release.py --release <same-exact-version> --update-status --operation-id <same-original-update-id> --runtime-root <same-runtime-root> --scratch-root <same-private-scratch>
+```
+
+This reads only status/phase/outcome. `succeeded` requires the replacement's exact
+ready/original settlement, not merely install exit0. An absent original or
+incomplete pre-admission download is unknown, not success. Transport never
+launches again automatically. New `public-update-preparation-v1` receipts permit
+an explicit repetition of the SAME `--prepare-update` command only before any
+request/dispatch fence, with the same runtime, original ID, exact tag, installer,
+additional checksum and private scratch. The installer must freshly confirm
+canonical original absence; a read failure or any existing original is not
+absence. Exact canonical asset URLs, sizes and digests are pinned before body
+download and cannot change on continuation. Failed bytes remain in their original
+attempt; an exclusive sibling inside that SAME cache performs fresh verification.
+There is no automatic network retry, timeout increase or TLS downgrade.
+
+Historical caches without this receipt remain readback-only, including an empty
+descriptor left by an earlier installer. They cannot be adopted or repaired by
+this command. A saved request or dispatch fence is also readback-only even when
+the canonical original is still absent: a crash/lost reply never grants another
+launch. A different version with the same ID refuses. Preserve the original
+scratch; a different scratch is not a recovery route for an ambiguous dispatch.
+Do not delete receipts/cache/backup to make a retry pass. If install/start failed,
+the current pointer, verified manifests, exact live process evidence and original
+must first be inspected. Any explicit code-only rollback uses the existing
+stopped installer `--rollback`; it does not restore a database or settle UNKNOWN.
+Do not start manually across an unresolved package-original admission fence.
+
+The interrupted-preparation controls are in `update_transport_test.py`. They
+exercise real package/asset verification, filesystem ownership, serialization and
+read-only SQLite; HTTPS and the final subprocess boundary are controlled. They
+do not establish the cause of intermittent public TLS/header/body stalls or prove
+an actual online update. That acceptance still belongs to the release owner.
+
+Release HTTPS reads use the same certificate-validating stdlib transport and
+redirect policies without asking the peer for `Connection: close`. Each response
+is still closed locally after its bounded framed read, including failures; there
+is no connection pool, retry or alternate transport. Paired public API controls
+isolated the early-close request header as a reproducible interoperability
+trigger, including stalls with the same header in a separate TLS stack. This
+does not identify the responsible remote/intermediate component or prove a
+public update. `release_https_test.py` checks complete HTTP framing, local closure,
+redirect/size/error refusal and unchanged certificate-failure propagation.
+
+The focused `package_update_test.py` uses the actual immutable public 2.0.4
+native Host and a literal local application, controlled HTTPS metadata, real
+SQLite/control/backup/installer and exact replacement readiness. Its own natural
+fixture stop represents the manual user action; it is not an old product stop
+callback. It never stops the real App or Hub. Product/provider/public-download
+acceptance remains separate from this bounded fixture.
+
 ## Existing identities and cutover
+
+### Private whole-application update check
+
+Prepare immutable full artifacts with `prepare-whole-update.mjs`, supplying an
+exact clean private source commit and an already verified dependency runtime.
+Lock equality and the entire dependency manifest are checked before reuse.
+Then run `node distribution/whole_update.mjs <artifacts.json> <new-output-root>`.
+The new root is exclusive. The check exercises real Hub composition, authenticated
+Desktop IPC, owned active work, restart/drain, backup, native Host, installer,
+startup and exact Ready, with retained raw results. It never launches the real
+production root or reads its config/secrets. External provider/Telegram and
+canonical-shaped metadata/assets use controlled local peers; no public TLS or
+real account reliability is inferred.
+
+Eligible pre-intent failures can be continued explicitly through the existing
+installed owner: `node <installed-handoff-entry> resume-input <retained-request>
+<failed-revision> <binding-sha>` prints a fresh exact input document. Retain that
+document and submit `node <installed-handoff-entry> resume <retained-request>
+<continuation-document>`. An identical repeated document reads back the original;
+it does not prepare/install/start again. Ordinary installer repetition remains
+readback-only. In addition to typed pre-stop evidence, protocol-v1 first failed
+revision2 can use its positive create/intent/terminal revision topology, with
+the exact old row/binding retained and fresh current/public/native guards. It
+does not create a historical typed proof or claim global NO_EFFECT. Later or
+unproven historical failures, UNKNOWN,
+changed public bytes/current/CAS/roots and prior native effects refuse. Never
+edit a receipt, cache or terminal row to manufacture eligibility.
 
 - Existing Task refs/worktrees, audit receipts and frozen generations stay in the
   old repository identity. A new Git OID is a mapping, never an old publication.

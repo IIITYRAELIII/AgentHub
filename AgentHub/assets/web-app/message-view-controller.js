@@ -13,7 +13,10 @@
       if (!Number.isSafeInteger(index) || index < 1
         || index > MAX_RESPONSE_ANNOTATION_INDEX || seen.has(index)) continue;
       seen.add(index);
-      normalized.push({ index });
+      const position = reference?.position;
+      normalized.push({ index, ...(Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
+        && position.end === position.start + `Цитата ${index}`.length
+        ? { position: { start: position.start, end: position.end } } : {}) });
     }
     return normalized;
   }
@@ -95,6 +98,7 @@
       );
       return [{
         index,
+        ...(reference.position ? { position: reference.position } : {}),
         label: `Цитата ${index}`,
         quote: interactive ? quote : "",
         annotation: quote,
@@ -144,6 +148,30 @@
     return lines.join("\n");
   }
 
+  function responseCitationSegments(value, citations) {
+    const text = String(value ?? "").replace(/\r\n?/gu, "\n").trim();
+    const positioned = [];
+    const unpositioned = [];
+    for (const citation of Array.isArray(citations) ? citations : []) {
+      const { start, end } = citation?.position ?? {};
+      if (Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 0 && end === start + `Цитата ${citation.index}`.length
+        && text.slice(start, end) === `Цитата ${citation.index}`) positioned.push(citation);
+      else unpositioned.push(citation);
+    }
+    positioned.sort((a, b) => a.position.start - b.position.start);
+    if (positioned.some((citation, index) => index && citation.position.start < positioned[index - 1].position.end)) {
+      return { segments: [{ text }], unpositioned: Array.from(citations ?? []) };
+    }
+    const segments = [];
+    let offset = 0;
+    for (const citation of positioned) {
+      segments.push({ text: text.slice(offset, citation.position.start) }, { citation });
+      offset = citation.position.end;
+    }
+    segments.push({ text: text.slice(offset) });
+    return { segments, unpositioned };
+  }
+
   function messageTimestampLabel(value, nowValue = Date.now()) {
     const date = new Date(value);
     if (!Number.isFinite(date.getTime())) return "";
@@ -179,7 +207,7 @@
     return minutes ? `${hours} ч ${minutes} мин` : `${hours} ч`;
   }
 
-  function composerFollowUpMode(task, { steerWhileRunning = false } = {}) {
+  function composerFollowUpMode(_task, { steerWhileRunning = false } = {}) {
     return steerWhileRunning ? "steer" : "queue";
   }
 
@@ -203,7 +231,7 @@
     for (const entry of Array.isArray(entries) ? entries : []) {
       if (entry?.state === "pending") counts.pending += 1;
       else if (entry?.state === "paused") counts.paused += 1;
-      else if (entry?.conflictKind === "message-intake") counts.starting += 1;
+      else if (["dispatching", "steering"].includes(entry?.state)) counts.starting += 1;
       else counts.queued += 1;
     }
     return counts;
@@ -645,6 +673,7 @@
     normalizedResponseAnnotationReferences,
     responseAnnotationCardControl,
     responseCitationControl,
+    responseCitationSegments,
     responseCitationPresentations,
     messageTailWindow,
     inlineMarkdownTokens,

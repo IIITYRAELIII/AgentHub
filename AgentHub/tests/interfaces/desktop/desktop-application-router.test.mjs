@@ -40,6 +40,24 @@ test("Desktop application router requires the Task workflow status handler", () 
   );
 });
 
+test("explicit Task operation cancellation reaches its owner beside a blocked Test", async () => {
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  const control = router([], { overrides: {
+    boardTaskStatus: async () => { enter(); await held; return { stopped: true }; },
+    boardTaskOperationCancel: async params => { release(); return { cancellation: { phase: "stopped", requestId: params.operationRequestId } }; },
+  } });
+  const pending = control.handleDesktopControl({ action: "board-task-status", params: { id: "exact-task", status: "testing" },
+    context: { source: "desktop-control", commandId: "held-test" } });
+  await entered;
+  const result = await control.handleDesktopControl({ action: "board-task-operation-cancel",
+    params: { id: "exact-task", operationRequestId: "held-test" },
+    context: { source: "desktop-control", commandId: "explicit-cancel" } });
+  assert.equal(result.cancellation.requestId, "held-test");
+  assert.deepEqual(await pending, { stopped: true });
+});
+
 test("Desktop application router keeps attachment preparation local and outside command dispatch", async () => {
   const calls = [];
   const control = router(calls);

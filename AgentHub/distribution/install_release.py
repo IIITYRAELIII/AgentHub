@@ -1,22 +1,29 @@
 """Thin stdlib bootstrap for a versioned, checksum-pinned ready Hub package.
 
-No Git, npm, build, provider operation, runtime stop or automatic restart.
+No Git, npm, build, provider operation or automatic runtime stop. Ordinary
+install/rollback never starts Hub. The explicit package-update mode waits for a
+user-stopped legacy cohort, then delegates backup/install/start to RuntimeHost.
 Copy only this file and its installation guide to Utilities at managed cutover.
 """
 from __future__ import annotations
 
 import argparse
+import base64
+from contextlib import closing, contextmanager
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import sqlite3
 import subprocess
 import tempfile
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -70,7 +77,7 @@ def valid_artifact_version(value: str) -> bool:
 
 def file_hash(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    with windows_filesystem_path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -112,15 +119,46 @@ def validate_source_url(url: str, *, redirect=False) -> str:
 
 class AssetRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_source_url(newurl, redirect=True)
+        try:
+            validate_source_url(newurl, redirect=True)
+        except ValueError:
+            if fp is not None:
+                fp.close()
+            raise
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class ReleaseHTTPSConnection(http.client.HTTPSConnection):
+    def putheader(self, header, *values):
+        # Read the framed response before closing locally. Requesting early
+        # peer closure stalls/truncates canonical release responses on some paths.
+        if header.lower() == "connection" and values == ("close",):
+            return
+        super().putheader(header, *values)
+
+
+class ReleaseHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(ReleaseHTTPSConnection, request, context=self._context)
+
+
+@contextmanager
+def release_response(opener, request):
+    try:
+        response = opener.open(request, timeout=30)
+    except urllib.error.HTTPError as error:
+        # An HTTPError owns the response before the with-statement can enter.
+        error.close()
+        raise
+    with response:
+        yield response
 
 
 def download(url: str, target: Path, *, max_bytes=MAX_ARCHIVE_BYTES) -> None:
     validate_source_url(url)
-    opener = urllib.request.build_opener(AssetRedirect())
+    opener = urllib.request.build_opener(ReleaseHTTPSHandler(), AssetRedirect())
     request = urllib.request.Request(url, headers={"User-Agent": "AgentHub-ReadyPackage-Installer"})
-    with opener.open(request, timeout=30) as response, target.open("xb") as out:
+    with release_response(opener, request) as response, windows_filesystem_path(target).open("xb") as out:
         size = 0
         deadline = time.monotonic()+10*60
         while chunk := response.read(1024 * 1024):
@@ -134,6 +172,8 @@ def download(url: str, target: Path, *, max_bytes=MAX_ARCHIVE_BYTES) -> None:
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if fp is not None:
+            fp.close()
         raise ValueError("Release API redirects refused")
 
 
@@ -146,7 +186,7 @@ def release_metadata(release: str) -> dict:
         "User-Agent": "AgentHub-ReadyPackage-Installer", "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"})
     # Public anonymous endpoint only: no gh, environment token or credentials.
-    with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
+    with release_response(urllib.request.build_opener(ReleaseHTTPSHandler(), NoRedirect()), request) as response:
         raw = response.read(MAX_METADATA_BYTES+1)
     if len(raw) > MAX_METADATA_BYTES:
         raise ValueError("Release metadata exceeds budget")
@@ -178,16 +218,17 @@ def select_asset(metadata: dict, name: str, max_bytes: int) -> dict:
     return asset
 
 
-def fetch_release(release: str, scratch: Path) -> tuple[Path, str, dict]:
-    metadata = release_metadata(release)
+def fetch_release(release: str, scratch: Path, *, metadata=None, stage=lambda value: None) -> tuple[Path, str, dict]:
+    metadata = release_metadata(release) if metadata is None else metadata
     asset = select_asset(metadata, PACKAGE_ASSET, MAX_ARCHIVE_BYTES)
     checksum_asset = select_asset(metadata, PACKAGE_ASSET+".json", MAX_METADATA_BYTES)
     checksum_file = scratch/"release.json"
+    stage("descriptor-body")
     download(checksum_asset["browser_download_url"], checksum_file, max_bytes=MAX_METADATA_BYTES)
-    if (checksum_file.stat().st_size != checksum_asset["size"]
+    if (windows_filesystem_path(checksum_file).stat().st_size != checksum_asset["size"]
             or "sha256:"+file_hash(checksum_file) != checksum_asset["digest"]):
         raise ValueError("Release descriptor SHA-256 or size mismatch")
-    descriptor = json.loads(checksum_file.read_text(encoding="utf-8"))
+    descriptor = json.loads(windows_filesystem_path(checksum_file).read_text(encoding="utf-8"))
     if (not isinstance(descriptor, dict) or descriptor.get("schema") != 1
             or descriptor.get("repository") != REPOSITORY or descriptor.get("platform") != "win32-x64"
             or descriptor.get("asset") != PACKAGE_ASSET or descriptor.get("bytes") != asset["size"]
@@ -202,8 +243,9 @@ def fetch_release(release: str, scratch: Path) -> tuple[Path, str, dict]:
     if fields and metadata["tag_name"] != fields["publicVersion"]:
         raise ValueError("Published tag differs from public version")
     archive = scratch/"release.zip"
+    stage("archive-body")
     download(asset["browser_download_url"], archive, max_bytes=asset["size"])
-    if archive.stat().st_size != asset["size"] or file_hash(archive) != descriptor["sha256"]:
+    if windows_filesystem_path(archive).stat().st_size != asset["size"] or file_hash(archive) != descriptor["sha256"]:
         raise ValueError("Release ZIP SHA-256 or size mismatch")
     return archive, metadata["tag_name"], descriptor
 
@@ -217,6 +259,7 @@ def verify_release_descriptor(package: dict, extracted: Path, release: dict) -> 
 
 
 def extract_verified(archive: Path, expected_sha256: str, destination: Path) -> dict:
+    archive = windows_filesystem_path(archive)
     if not archive.is_file() or archive.stat().st_size > MAX_ARCHIVE_BYTES:
         raise ValueError("Ready archive is missing or exceeds its budget")
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or file_hash(archive) != expected_sha256:
@@ -297,6 +340,247 @@ def extract_verified(archive: Path, expected_sha256: str, destination: Path) -> 
     return descriptor
 
 
+def read_update_original(runtime_root: Path, operation_id: str):
+    """Internal authoritative absence is distinct from the public UNKNOWN projection."""
+    _plain_chain(runtime_root/"data")
+    _plain(runtime_root/"data/runtime.sqlite")
+    with closing(sqlite3.connect((runtime_root/"data/runtime.sqlite").as_uri()+"?mode=ro", uri=True, timeout=0)) as database:
+        row = database.execute("SELECT operation_json FROM maintenance_operations WHERE operation_id = ?", (operation_id,)).fetchone()
+    if row is None:
+        return None
+    original = json.loads(row[0])
+    if original.get("operationId") != operation_id or original.get("kind") != "restart":
+        raise ValueError("Different original maintenance identity")
+    return original
+
+
+def original_status(operation_id: str, original) -> dict:
+    if original is None:
+        return {"operationId": operation_id, "state": "unknown", "effectsReplayed": False}
+    return {"operationId": operation_id, "status": original.get("status"), "phase": original.get("phase"),
+            "outcome": original.get("outcome"), "effectsReplayed": False}
+
+
+def update_status(runtime_root: Path, operation_id: str) -> dict:
+    """Bounded read projection only; this never grants retry/install authority."""
+    return original_status(operation_id, read_update_original(runtime_root, operation_id))
+
+
+def _plain(path: Path, *, directory=False):
+    value = windows_filesystem_path(path).lstat()
+    if (stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400
+            or not (stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode))
+            or (not directory and value.st_nlink != 1)):
+        raise ValueError("Linked, shared or nonregular update preparation path refused")
+    return value
+
+
+def _directory_identity(path: Path) -> dict:
+    value = _plain(path, directory=True)
+    return dict(path=str(path), dev=str(value.st_dev), ino=str(value.st_ino))
+
+
+def _plain_chain(path: Path):
+    for ancestor in reversed([path, *path.parents]):
+        _plain(ancestor, directory=True)
+
+
+def _read_record(path: Path) -> dict:
+    before = _plain(path)
+    if before.st_size > MAX_METADATA_BYTES:
+        raise ValueError("Oversized update preparation record")
+    body = windows_filesystem_path(path).read_bytes()
+    after = _plain(path)
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise ValueError("Update preparation record changed during read")
+    result = json.loads(body.decode("utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("Invalid update preparation record")
+    return result
+
+
+def _write_record(path: Path, value: dict):
+    # Exclusive publication: a process crash can leave a partial record, which
+    # refuses rather than being repaired, adopted or interpreted as absence.
+    with windows_filesystem_path(path).open("x", encoding="utf-8") as output:
+        json.dump(value, output, sort_keys=True, separators=(",", ":"))
+        output.flush()
+        os.fsync(output.fileno())
+
+
+@contextmanager
+def _preparation_lock(cache: Path):
+    lock = windows_filesystem_path(cache/"preparation.lock")
+    if not lock.exists():
+        with lock.open("xb") as output:
+            output.write(b"0")
+            output.flush()
+            os.fsync(output.fileno())
+    before = _plain(lock)
+    with lock.open("r+b") as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev, opened.st_ino, opened.st_size) != (before.st_dev, before.st_ino, 1) or opened.st_nlink != 1:
+            raise ValueError("Update preparation lock changed")
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _transport_selection(release: str, installer_sha256: str) -> dict:
+    metadata = release_metadata(release)
+    selected = [select_asset(metadata, name, limit) for name, limit in [
+        (PACKAGE_ASSET, MAX_ARCHIVE_BYTES), (PACKAGE_ASSET+".json", MAX_METADATA_BYTES),
+        ("install_release.py", MAX_METADATA_BYTES)]]
+    # Store only canonical public identities, never expiring redirect URLs or
+    # unrelated API/body/authentication fields.
+    assets = [{key: asset[key] for key in ("name", "state", "size", "digest", "browser_download_url")} for asset in selected]
+    if assets[2]["digest"] != "sha256:"+installer_sha256:
+        raise ValueError("Executing installer differs from the selected public asset")
+    return dict(tag_name=metadata["tag_name"], assets=assets)
+
+
+def prepare_update(args) -> None:
+    # One retained transport, not another updater registry. All lifecycle writes
+    # and effects belong to the existing maintenance/restart/Host owners.
+    runtime = args.runtime_root.resolve(strict=True)
+    scratch = args.scratch_root.resolve(strict=True)
+    _plain_chain(runtime)
+    _plain_chain(scratch)
+    identity = hashlib.sha256((str(runtime)+"\0"+args.operation_id).encode()).hexdigest()[:32]
+    cache = scratch/("agenthub-update-"+identity)
+    preparation = cache/"preparation.json"
+    if windows_filesystem_path(cache).exists() and not windows_filesystem_path(preparation).exists():
+        # Historical unbound caches are immutable/readback-only. In particular,
+        # absence of update-request.json never proves pre-dispatch ownership.
+        _plain_chain(cache)
+        prior_file = cache/"update-request.json"
+        if windows_filesystem_path(prior_file).exists():
+            prior = _read_record(prior_file)
+            if (prior.get("tag") != args.release or prior.get("operationId") != args.operation_id
+                    or Path(prior.get("runtimeRoot", "")).resolve() != runtime):
+                raise ValueError("Original update selection changed; no new effects were submitted")
+        print(json.dumps(update_status(runtime, args.operation_id)))
+        return
+    installer = Path(__file__).resolve(strict=True)
+    _plain(installer)
+    binding = dict(schema=1, kind="public-update-preparation-v1", runtime=_directory_identity(runtime),
+                   scratch=_directory_identity(scratch), operationId=args.operation_id, release=args.release,
+                   archiveSha256=args.sha256, installerSha256=file_hash(installer))
+    if not windows_filesystem_path(cache).exists():
+        original = read_update_original(runtime, args.operation_id)
+        if original is not None:
+            print(json.dumps(original_status(args.operation_id, original)))
+            return
+        windows_filesystem_path(cache).mkdir()
+        _write_record(preparation, dict(binding=binding, cache=_directory_identity(cache)))
+    _plain_chain(cache)
+    with _preparation_lock(cache):
+        record = _read_record(preparation)
+        def assert_bound():
+            _plain_chain(cache)
+            if (record != dict(binding=binding, cache=_directory_identity(cache))
+                    or _directory_identity(runtime) != binding["runtime"]
+                    or args.runtime_root.resolve(strict=True) != runtime
+                    or args.scratch_root.resolve(strict=True) != scratch
+                    or _directory_identity(scratch) != binding["scratch"]
+                    or file_hash(installer) != binding["installerSha256"]
+                    or _read_record(preparation) != record):
+                raise ValueError("Original update selection or physical preparation identity changed")
+        assert_bound()
+        original = read_update_original(runtime, args.operation_id)
+        if (original is not None or windows_filesystem_path(cache/"dispatch-intent.json").exists()
+                or windows_filesystem_path(cache/"update-request.json").exists()):
+            # Neither absent SQL nor a lost subprocess reply can reopen this fence.
+            print(json.dumps(original_status(args.operation_id, original)))
+            return
+        selected = _transport_selection(args.release, binding["installerSha256"])
+        selection_file = cache/"selection.json"
+        if windows_filesystem_path(selection_file).exists():
+            if _read_record(selection_file) != selected:
+                raise ValueError("Original public asset selection changed")
+        else:
+            if {child.name for child in windows_filesystem_path(cache).iterdir()} != {"preparation.json", "preparation.lock"}:
+                raise ValueError("Original public asset selection is missing; retained transport cannot be adopted")
+            _write_record(selection_file, selected)
+        archive_pin = selected["assets"][0]["digest"].removeprefix("sha256:")
+        if args.sha256 and args.sha256 != archive_pin:
+            raise ValueError("Selected release differs from the additional SHA-256 pin")
+        assert_bound()
+        # Every explicit PRE-dispatch continuation gets its own exclusive child;
+        # failed downloads and uncommitted extraction are never reused/overwritten.
+        attempt = cache/Path(tempfile.mkdtemp(prefix="attempt-", dir=windows_filesystem_path(cache))).name
+        _plain_chain(attempt)
+        attempt_identity = _directory_identity(attempt)
+        phase = "descriptor-body"
+        def stage(value):
+            nonlocal phase
+            assert_bound()
+            _plain_chain(attempt)
+            if _directory_identity(attempt) != attempt_identity:
+                raise ValueError("Update preparation attempt identity changed")
+            phase = value
+        try:
+            archive, tag, descriptor = fetch_release(args.release, attempt, metadata=selected, stage=stage)
+        except Exception as error:
+            # No exception text, redirect URLs, headers or response bodies enter
+            # this bounded transport record. It is evidence, not retry authority.
+            code = type(error).__name__
+            try:
+                stage(phase)
+                _write_record(attempt/"transport-result.json", dict(schema=1, operationId=args.operation_id,
+                              phase=phase, outcome="interrupted", failureCode=code if code in
+                              {"TimeoutError", "URLError", "HTTPError", "OSError", "ValueError", "JSONDecodeError"} else "Error"))
+            except Exception as recording_error:
+                error.add_note("Transport result was not saved: "+type(recording_error).__name__)
+            raise
+        stage("verified-assets")
+        _write_record(attempt/"transport-result.json", dict(schema=1, operationId=args.operation_id,
+                      phase="verified-assets", outcome="succeeded", archiveSha256=file_hash(archive),
+                      descriptorSha256=file_hash(attempt/"release.json")))
+        package = attempt/"verified"
+        inner = extract_verified(archive, descriptor["sha256"], package)
+        verify_release_descriptor(inner, package, descriptor)
+        stage("verified-package")
+        _plain_chain(package)
+        node = shutil.which("node")
+        if not node:
+            raise RuntimeError("Node.js with node:sqlite is required")
+        assert_bound()
+        if _read_record(selection_file) != selected:
+            raise ValueError("Original public asset selection changed")
+        original = read_update_original(runtime, args.operation_id)
+        if original is not None:
+            print(json.dumps(original_status(args.operation_id, original)))
+            return
+        request = dict(schema=1, operationId=args.operation_id, runtimeRoot=str(runtime),
+                       packageRoot=str(package.resolve()), tag=tag, archive=str(archive.resolve()),
+                       descriptor=str((attempt/"release.json").resolve()), installer=str(installer))
+        request_file = cache/"update-request.json"
+        _write_record(request_file, request)
+        _write_record(cache/"dispatch-intent.json", dict(schema=1, kind="package-bootstrap-dispatch-v1",
+                      operationId=args.operation_id, preparationSha256=file_hash(preparation),
+                      selectionSha256=file_hash(selection_file), requestSha256=file_hash(request_file)))
+        assert_bound()
+        entry = package/"runtime/src/runtime/runtime-package-handoff.mjs"
+        result = subprocess.run([node, str(entry), "bootstrap-start", str(request_file)], check=False)
+        if result.returncode:
+            raise RuntimeError("Update admission was not confirmed; retained original must be read, not re-launched")
+    print("Keep the retained package/backup until the original update completes. "
+          "A legacy updater waits for your explicit old-app stop; a capable installed Hub uses its ordinary graceful restart owner.")
+    print(json.dumps({"operationId": args.operation_id, "retainedPackage": str(cache), "effectsReplayed": False}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
@@ -307,16 +591,31 @@ def main():
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--scratch-root", type=Path, required=True, help="Private temporary area on the intended volume")
     parser.add_argument("--rollback", action="store_true")
+    parser.add_argument("--inspect-package", action="store_true", help="Verify/extract public input only; no runtime effect")
+    parser.add_argument("--prepare-update", action="store_true", help="Arm the package-side legacy updater; the user stops old Hub")
+    parser.add_argument("--update-status", action="store_true", help="Read the exact original without replaying effects")
+    parser.add_argument("--operation-id", help="Original stable identity for package update/readback")
     args = parser.parse_args()
     if not args.release and not args.sha256:
         parser.error("--sha256 is required with --url or --archive")
     if args.sha256 and not re.fullmatch(r"[0-9a-f]{64}", args.sha256):
         parser.error("--sha256 must be 64 lowercase hexadecimal characters")
+    if sum((args.rollback, args.inspect_package, args.prepare_update, args.update_status)) > 1:
+        parser.error("Choose one installer operation")
+    if args.prepare_update or args.update_status:
+        if not args.release or args.release == "latest" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.operation_id or ""):
+            parser.error("Update requires an exact --release and original --operation-id")
     if os.name != "nt":
         raise RuntimeError("Ready packages currently support Windows x64 only")
     if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
         raise ValueError("Runtime must be outside the disposable package scratch root")
+    if args.update_status:
+        print(json.dumps(update_status(args.runtime_root.resolve(), args.operation_id)))
+        return
     args.scratch_root.mkdir(parents=True, exist_ok=True)
+    if args.prepare_update:
+        prepare_update(args)
+        return
     with tempfile.TemporaryDirectory(prefix="agenthub-package-", dir=windows_filesystem_path(args.scratch_root)) as temporary:
         scratch = Path(temporary)
         archive = args.archive
@@ -334,6 +633,13 @@ def main():
         descriptor = extract_verified(archive, checksum, scratch/"verified")
         if selected:
             verify_release_descriptor(descriptor, scratch/"verified", selected)
+        if args.inspect_package:
+            manifest = (scratch/"verified/runtime/runtime-manifest.json").read_bytes()
+            print(json.dumps({"schema": 1, "kind": "verified-package-input", "releaseId": descriptor["releaseId"],
+                              "packageManifestSha256": file_hash(scratch/"verified/package-manifest.json"),
+                              "runtimeManifestSha256": hashlib.sha256(manifest).hexdigest(),
+                              "runtimeManifestBase64": base64.b64encode(manifest).decode("ascii")}))
+            return
         node = shutil.which("node")
         if not node:
             raise RuntimeError("Node.js runtime with node:sqlite is required; no npm or compiler is needed")
