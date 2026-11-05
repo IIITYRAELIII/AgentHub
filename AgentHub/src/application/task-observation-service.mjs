@@ -7,6 +7,7 @@ import {
 } from "../domain/canonical-user-messages.mjs";
 import {
   createObservedTaskRun,
+  applyObservedResponseAnnotationReferences,
   shouldDeliverObservedCompletion,
   updateObservedResponse,
 } from "../domain/task-runs.mjs";
@@ -280,6 +281,7 @@ export class TaskObservationService {
     const previousStage = run.progressStage;
     const responseChanged = updateObservedResponse(run, snapshot?.answer);
     this.providers.call(run.provider, "applyObservedSnapshot", run, snapshot);
+    applyObservedResponseAnnotationReferences(run, snapshot);
     if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt);
     if (Array.isArray(snapshot?.userMessages)) {
       const currentUserMessages = run.userMessages;
@@ -404,6 +406,7 @@ export class TaskObservationService {
       run.progressStage = String(snapshot.stage ?? run.progressStage);
       this.scheduleProgressUpdate(run);
     }
+    applyObservedResponseAnnotationReferences(run, snapshot);
     this.syncTaskRun(run, {
       active: true,
       stage: snapshot.stage,

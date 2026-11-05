@@ -2,6 +2,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { taskOccupancyIdentity } from "../../domain/task-runs.mjs";
 import { MESSAGE_COMMAND_LIFETIME_MS } from "../../domain/message-command-expiry.mjs";
+import { streamMessageDelivery } from "../../domain/deferred-input.mjs";
 
 const BUSY_TIMEOUT_MS = 0;
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
@@ -987,7 +988,27 @@ export class MessageCommandLedgerStore {
     }
     const current = this.get(id);
     if (!current) return { changed: false, idempotent: false, conflict: false, record: null };
-    if (current.occupancyBinding === "exact") {
+    const expected = String(expectedOccupancyKey ?? "").trim();
+    const retarget = current.occupancyBinding === "exact" && current.occupancyKey !== next.key;
+    if (retarget) {
+      const item = current.item;
+      const accepted = [current.result, current.receipt?.result].some((result) => (
+        result?.providerAccepted === true || result?.steered === true
+      ));
+      const uncertain = /UNCONFIRMED/i.test(String(item?.lastErrorCode ?? ""))
+        || /unconfirmed/.test(String(item?.waitReason ?? ""));
+      const allowed = streamMessageDelivery(item) && streamMessageDelivery(target)
+        && ["queued", "attention-required", "dispatching"].includes(current.state)
+        && !accepted && !uncertain && item.manualPaused !== true && target.manualPaused !== true
+        && item.streamId === target.streamId && item.id === target.id
+        && item.clientUserMessageId === id && target.clientUserMessageId === id
+        && expected === current.occupancyKey
+        && taskOccupancyIdentity(item.deliveryTarget)?.key === next.key
+        && (current.state !== "dispatching" || (item.dispatchingAt
+          && item.dispatchingAt === target.dispatchingAt));
+      if (!allowed) return { changed: false, idempotent: false, conflict: true, record: current };
+    }
+    if (current.occupancyBinding === "exact" && !retarget) {
       return {
         changed: false,
         idempotent: current.occupancyKey === next.key,
@@ -995,7 +1016,6 @@ export class MessageCommandLedgerStore {
         record: current,
       };
     }
-    const expected = String(expectedOccupancyKey ?? "").trim();
     if (expected && current.occupancyKey && expected !== current.occupancyKey) {
       return { changed: false, idempotent: false, conflict: true, record: current };
     }
@@ -1017,7 +1037,9 @@ export class MessageCommandLedgerStore {
       SET occupancy_key = ?, occupancy_binding = 'exact', item_json = ?,
           queue_order = ?, updated_at_ms = ?, revision = revision + 1
       WHERE client_user_message_id = ? AND revision = ?
-        AND state = ? AND (occupancy_binding IS NULL OR occupancy_binding = 'provisional')
+        AND state = ? AND ${retarget
+          ? "occupancy_binding = 'exact' AND occupancy_key = ?"
+          : "(occupancy_binding IS NULL OR occupancy_binding = 'provisional')"}
     `).run(
       next.key,
       JSON.stringify(nextItem),
@@ -1026,6 +1048,7 @@ export class MessageCommandLedgerStore {
       id,
       current.revision,
       current.state,
+      ...(retarget ? [current.occupancyKey] : []),
     );
     if (update.changes === 0) {
       const record = this.get(id);

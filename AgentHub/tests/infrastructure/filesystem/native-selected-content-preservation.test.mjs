@@ -41,6 +41,49 @@ async function fixture(t) {
   return { root, sourceRoot, base, create, compose };
 }
 
+test("published ordinary Test replay binds its original identity without changing other selection policies", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\n\nmiddle\n\nfooter\n");
+  const main = await commit(f.sourceRoot, "agreed base");
+  await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\n\nmiddle\npublished once\nfooter\n");
+  const published = await commit(f.sourceRoot, "publication");
+  await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\npublished once\nmiddle\n\nfooter\n");
+  const dev = await commit(f.sourceRoot, "move inherited block in dev");
+  await gitAt(f.sourceRoot, ["checkout", "--detach", published]);
+  await writeFile(path.join(f.sourceRoot, "own.txt"), "exact own delta\n");
+  const result = await commit(f.sourceRoot, "own correction");
+  const tasks = [{ taskId: "selected", baseCommit: main, resultCommit: result }];
+  const metadata = { generation: "original", repositoryRoot: f.sourceRoot,
+    recordHash: taskGitIdentityHash({ root: f.sourceRoot, revision: published }), commit: published,
+    tree: await gitAt(f.sourceRoot, ["rev-parse", `${published}^{tree}`]) };
+  const identity = { policy: "native-dev-merge-v1", taskId: "selected", resultCommit: result, before: dev, mainCommit: main,
+    nativeHistoryAuthority: { baseline: null, adoptions: [], publishedMetadata: metadata } };
+  const value = await f.compose(dev, tasks, { identity });
+  const verify = input => assertNativePreparedComposition({ git: (args, options) => gitAt(value.root, args, options),
+    baseCommit: dev, tasks, merges: value.merges, head: value.head, tree: value.tree, identity: input,
+    historyAuthority: { bases: [dev], metadataBases: [published] } });
+  await verify(identity);
+  for (const changed of [
+    { ...identity, taskId: "foreign" }, { ...identity, resultCommit: published }, { ...identity, before: main },
+    { ...identity, nativeHistoryAuthority: { ...identity.nativeHistoryAuthority,
+      publishedMetadata: { ...metadata, tree: await gitAt(f.sourceRoot, ["rev-parse", `${main}^{tree}`]) } } },
+    { ...identity, nativeHistoryAuthority: { ...identity.nativeHistoryAuthority,
+      sourcePublication: { revision: main } } },
+  ]) await assert.rejects(verify(changed), { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
+  for (const changed of [{ ...identity, nativeHistoryAuthority: { baseline: null, adoptions: [] } },
+    { ...identity, policy: NATIVE_RELEASE_POLICY }]) {
+    await assert.rejects(verify(changed), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
+  }
+  assert.equal(await gitAt(value.root, ["show", "HEAD:own.txt"]), "exact own delta");
+  assert.equal(await gitAt(value.root, ["show", "HEAD:inherited.txt"]), "header\npublished once\nmiddle\n\nfooter");
+  await gitAt(f.sourceRoot, ["checkout", "--detach", result]);
+  await rm(path.join(f.sourceRoot, "own.txt"));
+  const regressed = await commit(f.sourceRoot, "lost own correction");
+  await assert.rejects(f.compose(regressed, tasks, { identity: { ...identity, before: regressed } }, "lost-own"),
+    error => error.code === "RELEASE_SELECTED_CONTENT_MISSING" && error.missingPaths.includes("own.txt"));
+  assert.equal(await gitAt(f.sourceRoot, ["rev-parse", "main"]), dev);
+});
+
 test("an ancestor result cannot silently lose its selected content", async t => {
   const f = await fixture(t);
   const result = await f.create("accepted result", "new head\n");

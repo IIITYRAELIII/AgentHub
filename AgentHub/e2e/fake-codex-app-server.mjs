@@ -411,6 +411,21 @@ function startTurn(params) {
   }
 
   if (prompt.includes("[hold]")) return turn;
+  if (prompt.includes("[whole-update-wait]")) {
+    const index = process.argv.indexOf("--whole-release-file");
+    const file = index >= 0 ? path.resolve(process.argv[index + 1]) : "";
+    const fixtureRoot = path.join(path.resolve(process.env.AGENT_HUB_RUNTIME_ROOT ?? "."), "fixtures") + path.sep;
+    if (!process.argv.includes("--require-test-contour") || !file.startsWith(fixtureRoot))
+      throw new Error("Whole-update work release must belong to the isolated fixture");
+    const deadline = Date.now() + 120_000;
+    const complete = () => {
+      if (existsSync(file)) finishTurn(thread, turn, { answer: "owned work completed" });
+      else if (Date.now() > deadline) finishTurn(thread, turn, { status: "failed", answer: "fixture timeout" });
+      else schedule(complete, 25);
+    };
+    schedule(complete, 25);
+    return turn;
+  }
   if (prompt.startsWith("[orphan-approval]")) return turn;
   if (prompt.includes("[approval]")) {
     const approvalId = 10_000 + state.nextTurn;

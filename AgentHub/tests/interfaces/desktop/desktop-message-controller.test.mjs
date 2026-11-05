@@ -614,7 +614,7 @@ test("desktop message receipt preserves the interstream source author", async ()
   assert.deepEqual(receipt.result.origin, messageOrigin);
 });
 
-test("desktop message keeps an active follow-up pending for a manual action", async () => {
+test("desktop ordinary follow-up durably targets the Stream without a manual decision", async () => {
   const scheduled = [];
   let deferredOptions = null;
   const messages = controller({
@@ -635,15 +635,16 @@ test("desktop message keeps an active follow-up pending for a manual action", as
     clientUserMessageId: "message-durable-intake",
   });
 
-  assert.equal(result.accepted, false);
-  assert.equal(result.deferred, true);
-  assert.equal(result.queued, undefined);
-  assert.equal(result.reason, "task-running");
-  assert.equal(deferredOptions.destination, undefined);
-  assert.equal(deferredOptions.conflictKind, "task-running");
+  assert.equal(result.accepted, true);
+  assert.equal(result.providerAccepted, false);
+  assert.equal(result.steerPending, true);
+  assert.equal(result.deferred, false);
+  assert.equal(result.queued, false);
+  assert.equal(deferredOptions.destination, "queued");
+  assert.equal(deferredOptions.conflictKind, "message-steer");
   assert.deepEqual(scheduled, [{
-    item: { id: "durable-pending", destination: undefined },
-    delayMs: undefined,
+    item: { id: "durable-pending", destination: "queued" },
+    delayMs: 0,
   }]);
 });
 
