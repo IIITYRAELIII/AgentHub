@@ -474,6 +474,8 @@
         "src/infrastructure/filesystem/native-merge-transport-retention.mjs",
         "src/infrastructure/filesystem/selected-git-bundle.mjs",
         "src/infrastructure/filesystem/sealed-transport-delete.*",
+    "tests/infrastructure/filesystem/sealed-transport-delete.test.mjs",
+    "docs/decisions/ADR-HUB-385-readonly-literal-transport.md",
         "src/runtime/runtime-manager.mjs",
         "src/infrastructure/filesystem/runtime-installation-custody.mjs",
         "src/infrastructure/filesystem/runtime-release-retention*.mjs",

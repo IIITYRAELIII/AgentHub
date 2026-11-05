@@ -451,6 +451,16 @@ digest: an old alias-bearing receipt can require a corrected later generation.
 
 ## Native transport retirement (ADR-0126)
 
+The existing sealed literal-transport sink can retire an eligible read-only Git
+pack through its SAME verified native handle, using the runtime/capture owners'
+existing extended disposition pattern. It never clears attributes by pathname,
+falls back to legacy disposition, or broadens transport authority. Complete
+identity, size/hash, stream/link/reparse and exclusive-writer checks still precede
+disposition; unsupported/native errors remain errors after the child joins.
+Historical UNKNOWN operations are not retried or relabelled by this capability;
+their existing owner needs a separate supported disposition and fresh exact
+operational binding. See ADR-HUB-385-readonly-literal-transport.
+
 Legacy native merge transport contains exact selected base/result ancestry through
 private advertised bundle tips, including dangling accepted inputs, without
 copying all unrelated source refs or mutating source configuration/refs. Git
