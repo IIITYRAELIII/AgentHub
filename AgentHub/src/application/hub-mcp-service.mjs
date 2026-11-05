@@ -3281,7 +3281,12 @@ export class HubMcpService {
         requestId: args.request_id,
       });
     }
-    const started = await this.measureOperation("mcp:admission", () => this.workspaceCatalog.beginMcpOperation({
+    let admittedExecution;
+    const started = await this.measureOperation("mcp:admission", () => {
+      admittedExecution = this.taskOperationInterruption && (context.actorKind === "authenticated-user"
+        || (this.taskOperationCanSubmit(toolName) && !["hub_task_operation_cancel", "hub_task_operation_reconcile"].includes(toolName)))
+        ? this.taskOperationInterruption.binding(args) : null;
+      return this.workspaceCatalog.beginMcpOperation({
       requestId,
       workspaceId: context.workspaceId,
       streamId: context.streamId,
@@ -3290,10 +3295,8 @@ export class HubMcpService {
       ...(context.actorKind ? { actorKind: context.actorKind } : {}),
       toolName,
       argumentsHash: argumentsHash(args),
-      ...(this.taskOperationInterruption && (context.actorKind === "authenticated-user"
-          || (this.taskOperationCanSubmit(toolName) && !["hub_task_operation_cancel", "hub_task_operation_reconcile"].includes(toolName)))
-        ? { taskExecution: this.taskOperationInterruption.binding(args) } : {}),
-    }));
+      ...(admittedExecution ? { taskExecution: admittedExecution } : {}),
+    }); });
     if (started.taskExecution?.cancellation) throw taskOperationInterrupted();
     if (started.status === "succeeded") return claimCustodyState(started)?.result ?? started.result;
     if (started.status === "failed") {
@@ -3481,10 +3484,11 @@ export class HubMcpService {
         }
         throw error;
       } finally {
-        if (completionFailure && this.taskOperationCanSubmit(toolName)) {
-          await this.#preserveCompletionFailure(started, this.taskOperationInterruption?.binding(args).ownerId, completionFailure);
-        }
-        this.#pendingMutations.delete(requestId);
+        try {
+          if (completionFailure && this.taskOperationCanSubmit(toolName)) {
+            await this.#preserveCompletionFailure(started, admittedExecution?.ownerId, completionFailure);
+          }
+        } finally { this.#pendingMutations.delete(requestId); }
       }
     })();
     this.#pendingMutations.set(requestId, pending);

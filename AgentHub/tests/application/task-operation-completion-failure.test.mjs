@@ -131,3 +131,20 @@ test('a canonical success committed before an inner lost reply wins before outer
   await f.hub.submitTaskOperation('hub_task_claim',f.args);assert.equal(effects,1);
   assert.deepEqual(f.catalog.mcpOperation(f.args.request_id),row);
 });
+
+test('completion diagnostics release the local invocation even when later Task reads fail',async t=>{
+  const f=await setup(t),readTask=f.tasks.task.bind(f.tasks);
+  f.workspaces.prepareOwned=async()=>{throw new Error('original failed preparation');};
+  f.rawCatalog.markMcpOperationUnknown=()=>{
+    f.tasks.task=()=>{throw new Error('later fixture Task read failed');};
+    throw new Error('original receipt write failed');
+  };
+  try {
+    await assert.rejects(f.hub.call('hub_task_claim',f.args),error=>{
+      assert.equal(error.code,'MCP_COMPLETION_PERSISTENCE_FAILED');
+      assert.equal(error.cause.message,'original failed preparation');return true;
+    });
+    assert.equal((await f.get()).taskOperation.active,false);
+    assert.equal((await f.get()).taskOperation.completionFailure.persistenceError.message,'original receipt write failed');
+  } finally {f.tasks.task=readTask;}
+});
