@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, writeFile, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, writeFile, readFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { launchBrowser, openFixture, snapshot } from "./composer-production.fixture.mjs";
 import { TaskReadStateStore, taskHasUnreadAnswer } from "../../src/infrastructure/persistence/task-read-state-store.mjs";
 import { DesktopReadModelService } from "../../src/interfaces/desktop/desktop-read-model-service.mjs";
+
+const assetOverrides = process.env.AGENT_HUB_TEST_OVERRIDE_WEB_APP_ROOT
+  ? Object.fromEntries(await Promise.all(["app.js", "hub-client.js"].map(async name => [name,
+    await readFile(path.join(process.env.AGENT_HUB_TEST_OVERRIDE_WEB_APP_ROOT, name)),
+  ]))) : {};
 
 const history = (suffix, revision = 1) => ({
   streamId: `stream-${suffix}`, provider: "codex", threadId: `thread-${suffix}`,
@@ -86,7 +91,7 @@ test("cached navigation paints before selection; a new final clears only after e
         },
       });
     });
-    const errors = await openFixture(page, { surface: "web", fixtureSnapshot: await service.snapshot(), fixtureHistory: history("a") });
+    const errors = await openFixture(page, { surface: "web", fixtureSnapshot: await service.snapshot(), fixtureHistory: history("a"), assetOverrides });
     await page.route("**/api/command-trace/client-events", async route => {
       traceBatches.push(route.request().postDataJSON());
       await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
@@ -187,7 +192,7 @@ test("recent canonical windows stay bounded and explicit close fences its late r
       name: task.streamName, ordinal: task.streamOrdinal, threads: [{ id: task.threadId }] }));
     initial.selected = { ...initial.selected, streamId: "stream-0", threadId: "thread-0" };
     const errors = await openFixture(page, { surface: "web", fixtureSnapshot: initial,
-      fixtureHistory: history("0"), expectedTaskId: "stream-0" });
+      fixtureHistory: history("0"), expectedTaskId: "stream-0", assetOverrides });
     await page.evaluate(histories => {
       const p = window.__bounds = { histories, held: [], hold: false, released: [], reads: [] };
       const release = window.AgentHub.releaseTaskHistory.bind(window.AgentHub);
@@ -244,7 +249,7 @@ test("A-B-A-B reuses loaded canonical history before an unavailable selection re
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     page.setDefaultTimeout(5000);
-    const errors = await openFixture(page, { surface: "web", fixtureSnapshot: snapshot(), fixtureHistory: history("a") });
+    const errors = await openFixture(page, { surface: "web", fixtureSnapshot: snapshot(), fixtureHistory: history("a"), assetOverrides });
     await page.getByText("Loaded answer a/11", { exact: false }).first().waitFor();
     await page.evaluate((histories) => {
       const bridge = window.__fixtureBridge;
@@ -281,6 +286,11 @@ test("A-B-A-B reuses loaded canonical history before an unavailable selection re
     const click = (suffix) => page.locator(`.stream-tabs-track [data-stream-tab-id="stream-${suffix}"]`).click();
     await click("b");
     await page.getByText("Loaded answer b/11", { exact: false }).first().waitFor();
+    const coldRequests = await page.evaluate(() => window.__reuse.reads.filter(row => row.params.streamId === "stream-b")
+      .map(row => ({ action: row.action, knownVersion: row.params.knownVersion ?? "" })));
+    t.diagnostic(JSON.stringify({ coldRequests }));
+    assert.equal(coldRequests.filter(row => row.action === "open-task" || !row.knownVersion).length, 1,
+      "the cold page has one full-read owner; later conditional freshness checks remain allowed");
     await page.locator("[data-chat-scroll]").evaluate(node => {
       node.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
       node.scrollTop = Math.floor(node.scrollHeight / 3);
@@ -299,12 +309,12 @@ test("A-B-A-B reuses loaded canonical history before an unavailable selection re
         held: window.__reuse.held.map(m => ({ action: m.action, streamId: m.params.streamId })),
       }), { suffix, start }));
     }
-    t.diagnostic(JSON.stringify({ evidence, expectedScrollB, errors }));
+    t.diagnostic(JSON.stringify({ coldRequests, evidence, expectedScrollB, errors }));
     if (process.env.AGENT_HUB_UI_EVIDENCE_DIR) {
       await mkdir(process.env.AGENT_HUB_UI_EVIDENCE_DIR, { recursive: true });
       await page.screenshot({ path: path.join(process.env.AGENT_HUB_UI_EVIDENCE_DIR, "retained-chat-switch.png") });
       await writeFile(path.join(process.env.AGENT_HUB_UI_EVIDENCE_DIR, "retained-chat-switch.json"),
-        JSON.stringify({ url: page.url(), title: await page.title(), viewport: page.viewportSize(), evidence, expectedScrollB, errors }, null, 2));
+        JSON.stringify({ url: page.url(), title: await page.title(), viewport: page.viewportSize(), coldRequests, evidence, expectedScrollB, errors }, null, 2));
     }
     assert.deepEqual(evidence.map(row => row.hasLoadedText), [true, true], "both previously loaded chats must paint while selection/history I/O is held");
     assert.ok(Math.abs(evidence[1].scrollTop - expectedScrollB) <= 2, "returning to a loaded page preserves its scroll position");
