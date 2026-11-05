@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { createReleaseOperation } from "../../src/domain/release-operation.mjs";
 import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
@@ -888,6 +889,63 @@ async function fixture(context, {
     activeRun,
   };
 }
+
+test("release reference MCP preserves archived ownership and requires exact RM Workspace authority", async (t) => {
+  const f = await fixture(t, { releaseWorkflowEnabled: true });
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-reference-mcp-"));
+  const databaseFile = path.join(directory, "runtime.sqlite");
+  const store = new TaskBoardStore({ databaseFile });
+  t.after(async () => { store.close(); await rm(directory, { recursive: true, force: true }); });
+  const owner = new TaskBoardService({ store, workspaceCatalog: f.workspaceCatalog });
+  for (const name of ["task", "updateChecklist", "checklistRequestResult", "recoverChecklistEvents"]) {
+    f.taskBoard[name] = owner[name].bind(owner);
+  }
+  const create = text => store.create({ text, workspaceId: "workspace-1", bucket: "workspace", taskPrefix: "HUB", triageStatus: "disabled" });
+  const child = create("Accepted member"), old = create("Archived release"), parent = create("New release");
+  const oldItem = await owner.updateChecklist({ id: old.id, operation: "add", text: "Member", requestId: "old-add", expectedRevision: old.revision });
+  await owner.updateChecklist({ id: old.id, operation: "link", itemId: oldItem.itemId,
+    linkedTaskId: child.id, requestId: "old-link", expectedRevision: oldItem.task.revision });
+  const db = new DatabaseSync(databaseFile);
+  db.prepare("UPDATE hub_board_tasks SET status = 'done' WHERE id = ?").run(old.id);
+  db.prepare("UPDATE hub_board_tasks SET workflow_status = 'awaiting_implementation' WHERE id = ?").run(child.id);
+  const refs = [{ projectRoot: path.resolve(directory, "source"), branch: child.taskNumber, resultCommit: "a".repeat(40) }];
+  db.prepare(`INSERT INTO hub_task_git_references (task_id,project_root,branch,result_commit,updated_at_ms)
+    VALUES (?,?,?,?,1)`).run(child.id, refs[0].projectRoot, refs[0].branch, refs[0].resultCommit);
+  db.close();
+  const archived = owner.task(old.id), childBefore = owner.task(child.id);
+  const item = await owner.updateChecklist({ id: parent.id, operation: "add", text: "Member", requestId: "new-add", expectedRevision: parent.revision });
+  const input = { task_id: parent.id, expected_task_revision: item.task.revision, operation: "link",
+    item_id: item.itemId, linked_task_id: child.id, release_reference: { taskRevision: childBefore.revision, gitReferences: refs } };
+  for (const [thread, name] of [["thread-2", "non-RM"], ["thread-3", "foreign-RM"]]) {
+    await assert.rejects(f.service.call("hub_task_checklist_update", { ...input, request_id: name,
+      context_token: f.service.contextToken({ provider: "codex", threadId: thread }) }), /Release Manager/u);
+    assert.equal(f.workspaceCatalog.mcpOperation(name), null);
+  }
+  const request = { ...input, request_id: "new-release-reference", context_token: f.token };
+  const result = await f.service.call("hub_task_checklist_update", request);
+  assert.equal(result.task.checklist[0].linkedTaskId, child.id);
+  assert.equal(result.task.checklist[0].releaseReference.gitReferences[0].resultCommit, refs[0].resultCommit);
+  assert.deepEqual(await f.service.call("hub_task_checklist_update", request), result);
+  assert.deepEqual(owner.task(old.id), archived);
+  assert.deepEqual(owner.task(child.id), childBefore);
+  assert.equal(f.workspaceCatalog.mcpOperation(request.request_id).status, "succeeded");
+  const another = await owner.updateChecklist({ id: parent.id, operation: "add", text: "Queue boundary",
+    requestId: "queue-add", expectedRevision: owner.task(parent.id).revision });
+  const hierarchy = f.workspaceCatalog.hierarchy;
+  f.taskBoard.updateChecklist = payload => {
+    f.workspaceCatalog.hierarchy = () => hierarchy().map(workspace => ({ ...workspace,
+      streams: workspace.streams.map(stream => ({ ...stream, settings: { ...stream.settings, releaseManager: false } })),
+    }));
+    return owner.updateChecklist(payload);
+  };
+  try {
+    await assert.rejects(f.service.call("hub_task_checklist_update", { ...input, context_token: f.token,
+      item_id: another.itemId, expected_task_revision: another.task.revision, request_id: "role-drift" }), /Release Manager/u);
+    assert.equal(owner.task(parent.id).checklist.find(item => item.id === another.itemId).linkedTaskId, null);
+  } finally { f.workspaceCatalog.hierarchy = hierarchy; }
+  const props = f.service.tools().find(tool => tool.name === "hub_task_checklist_update").inputSchema.properties;
+  assert.equal(props.release_reference.additionalProperties, false);
+});
 
 async function preparationFixture(t) {
   let ledger;

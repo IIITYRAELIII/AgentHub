@@ -1,0 +1,32 @@
+# Release membership references preserve decomposition ownership
+
+An accepted Task may already belong to an archived release's checklist. The
+single `linked_task_id UNIQUE` relation remains decomposition ownership; it
+must not be moved, copied into a second owner or relaxed for release preparation.
+
+The existing checklist row gains a separate nullable `release_task_id` and
+`release_reference_json`. The latter binds the exact accepted Task row revision
+and complete canonical Git references. A row uses one relation kind. A release
+can reference a Task once; different releases can retain their own references.
+Only ownership projects `checklistParent` or authorizes absorption. References
+preserve Task history and cannot be split across Workspaces or silently retargeted.
+
+The existing MCP `link` accepts explicit `release_reference`. It requires the
+real Release Manager role in the same release-enabled Workspace, repeated inside
+the existing queued Task write. The transaction checks parent CAS, exact target
+revision, Await/Done state, full canonical result, same Workspace and cycles.
+Old requests keep their original semantic hash; exact repeats use the same
+checklist receipt/outbox, including after reopening. No second ledger is added.
+
+The ordinary installed-version schema initializer adds nullable columns and
+indexes without rebuilding Tasks or changing archived ownership rows. A reference
+does not advance source acceptance or grant publication. Service closure still
+requires completed members and immutable published evidence, and also checks the
+captured result against each member's current canonical references. Publication
+may legitimately advance a Task revision; it cannot replace the captured result.
+
+This correction ships only through the unified release. No pre-publication
+production migration, source CLI, private install or historical UNKNOWN replay
+is needed. Release selection remains the canonical plan/manifest, not checklist
+projection. The normal authenticated metadata operation becomes available after
+the published version is installed.

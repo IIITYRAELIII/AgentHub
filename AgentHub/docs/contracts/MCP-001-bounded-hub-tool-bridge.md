@@ -677,6 +677,15 @@ Bounded contention retry surrounds the real transaction, preserves the original
 identity and yields to HTTP, SSE and timers instead of increasing `busy_timeout`.
 The owners expose explicit read, short-mutation and internally managed-effect
 allowlists only; an unclassified raw member is not bound into application code.
+The existing checklist `link` operation additionally accepts `release_reference`
+with the exact accepted Task revision and full canonical Git references
+(ADR-HUB-415). This is a Release Manager-only reference in the same release-enabled
+Workspace, rechecked inside the queued Task transaction. It preserves the unique
+decomposition owner and all archived rows. The existing request hash includes
+this binding only when supplied; old receipt identities remain unchanged.
+No alternate CLI, historical UNKNOWN replay, publication or absorption credit is
+introduced. Desktop checklist mutations cannot author or change this RM relation.
+
 Checklist event delivery is an internally managed effect (ADR-0029): its
 single-flight durable outbox drain invokes delivery outside SQL retry and queues
 only quarantine/acknowledgment writes with the original event ID. A busy

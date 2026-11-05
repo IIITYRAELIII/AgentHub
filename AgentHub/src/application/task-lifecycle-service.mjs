@@ -1903,11 +1903,16 @@ export class TaskLifecycleService {
       if (!taskIds.length || new Set(taskIds).size !== taskIds.length) {
         throw new Error("Published release service checklist must select distinct Tasks");
       }
-      const selectedTasks = taskIds.map((id) => {
+      const selectedTasks = taskIds.map((id, index) => {
         const selected = this.#task(id);
         if (selected.workspaceId !== task.workspaceId || selected.status !== "done"
             || selected.workflowStatus !== "done") {
           throw new Error("Published release service checklist contains an unfinished Task");
+        }
+        const reference = checklist[index].releaseReference;
+        if (reference && JSON.stringify(normalizedTaskGitReferences(selected.gitReferences))
+            !== JSON.stringify(normalizedTaskGitReferences(reference.gitReferences))) {
+          throw new Error("Published release service reference result changed");
         }
         return selected;
       });

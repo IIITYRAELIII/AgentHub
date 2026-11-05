@@ -2910,6 +2910,17 @@ confirmed mutation.
 
 ## Workspace policy and Release Manager role
 
+Release membership is an explicit checklist reference, separate from decomposition
+ownership (ADR-HUB-415). It binds the target's exact accepted row revision and
+complete canonical Git results without replacing any archived link or assigning
+another parent. Only the same-Workspace Release Manager can create or modify this
+reference. Parent CAS, target CAS, Await/Done, complete result, cycle, receipt and
+Workspace guards remain authoritative. Current publication selection comes from
+the canonical plan/manifest; a checklist reference alone grants no membership,
+source acceptance, absorption or publication authority. Published service closure
+requires the referenced exact result to remain canonical, in addition to its
+existing completed-set and immutable publication proof.
+
 `settings.releaseWorkflowEnabled=true` activates Task release tracking and the
 built-in workflow rules. Release Manager authority is only
 `stream.settings.releaseManager === true`; multiple Release Manager Streams are allowed.

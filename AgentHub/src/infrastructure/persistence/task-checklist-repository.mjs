@@ -4,7 +4,9 @@ import {
   TASK_CHECKLIST_ITEMS_MAX,
   normalizedTaskChecklistOperation,
   normalizedTaskChecklistText,
+  normalizedReleaseReference,
 } from "../../domain/task-checklist.mjs";
+import { normalizedTaskGitReferences } from "../../domain/task-git-reference.mjs";
 import { taskPresentation } from "../../domain/task-board-task.mjs";
 
 const TASK_CHECKLIST_REQUEST_ID_MAX_LENGTH = 200;
@@ -141,6 +143,36 @@ export function configureTaskChecklist(database) {
       quarantine_reason TEXT NOT NULL DEFAULT ''
     ) WITHOUT ROWID;
   `);
+  // Keep the original ownership slot and its UNIQUE constraint unchanged.
+  const itemColumns = new Set(database.prepare("PRAGMA table_info(hub_task_checklist_items)")
+    .all().map(column => String(column.name)));
+  if (!itemColumns.has("release_task_id")) database.exec(`ALTER TABLE hub_task_checklist_items
+    ADD COLUMN release_task_id TEXT REFERENCES hub_board_tasks(id) ON DELETE RESTRICT`);
+  if (!itemColumns.has("release_reference_json")) database.exec(`ALTER TABLE hub_task_checklist_items
+    ADD COLUMN release_reference_json TEXT`);
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_task_checklist_release_reference_idx
+      ON hub_task_checklist_items(task_id, release_task_id) WHERE release_task_id IS NOT NULL;
+    CREATE TRIGGER IF NOT EXISTS hub_task_checklist_release_shape_insert
+    BEFORE INSERT ON hub_task_checklist_items
+    WHEN (NEW.release_task_id IS NOT NULL AND NEW.linked_task_id IS NOT NULL)
+      OR ((NEW.release_task_id IS NULL) != (NEW.release_reference_json IS NULL))
+    BEGIN SELECT RAISE(ABORT, 'Invalid checklist release reference'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_task_checklist_release_shape_update
+    BEFORE UPDATE ON hub_task_checklist_items
+    WHEN (NEW.release_task_id IS NOT NULL AND NEW.linked_task_id IS NOT NULL)
+      OR ((NEW.release_task_id IS NULL) != (NEW.release_reference_json IS NULL))
+    BEGIN SELECT RAISE(ABORT, 'Invalid checklist release reference'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_task_checklist_release_workspace
+    BEFORE UPDATE OF workspace_id ON hub_board_tasks
+    WHEN EXISTS (
+      SELECT 1 FROM hub_task_checklist_items item JOIN hub_board_tasks counterpart
+      ON counterpart.id = CASE WHEN item.task_id = OLD.id THEN item.release_task_id ELSE item.task_id END
+      WHERE (item.task_id = OLD.id OR item.release_task_id = OLD.id)
+        AND item.release_task_id IS NOT NULL AND NEW.workspace_id IS NOT counterpart.workspace_id
+    )
+    BEGIN SELECT RAISE(ABORT, 'Release reference cannot split Workspaces'); END;
+  `);
   const outboxColumns = new Set(database.prepare(
     "PRAGMA table_info(hub_task_checklist_event_outbox)",
   ).all().map((column) => String(column.name)));
@@ -218,7 +250,7 @@ export function taskChecklistProjectionMap(database, taskIds) {
         linked.workspace_id AS linked_workspace_id, linked.stream_id AS linked_stream_id,
         CAST(linked.row_revision AS TEXT) AS linked_exact_row_revision
       FROM hub_task_checklist_items AS item
-      LEFT JOIN hub_board_tasks AS linked ON linked.id = item.linked_task_id
+      LEFT JOIN hub_board_tasks AS linked ON linked.id = COALESCE(item.linked_task_id, item.release_task_id)
       WHERE item.task_id IN (${placeholders})
       ORDER BY item.task_id, item.position, item.created_at_ms, item.id
     `).all(...batch));
@@ -256,6 +288,7 @@ export function taskChecklistProjectionMap(database, taskIds) {
         || linkedTask?.workflowStatus === "done",
       linkedTaskId: linkedTask?.id ?? null,
       linkedTask,
+      ...(row.release_task_id ? { releaseReference: JSON.parse(row.release_reference_json) } : {}),
     });
   }
   for (const row of parents) {
@@ -276,9 +309,9 @@ function checklistItem(database, taskId, itemId) {
   return row;
 }
 
-function assertLinkAllowed(database, taskId, linkedTaskId, itemId) {
+function assertLinkAllowed(database, taskId, linkedTaskId, itemId, releaseReference = null) {
   if (taskId === linkedTaskId) throw new Error("Task нельзя связать с самой собой");
-  const parent = database.prepare("SELECT workspace_id, status FROM hub_board_tasks WHERE id = ?").get(taskId);
+  const parent = database.prepare("SELECT workspace_id, status, workflow_status FROM hub_board_tasks WHERE id = ?").get(taskId);
   const linked = database.prepare("SELECT workspace_id, status FROM hub_board_tasks WHERE id = ?").get(linkedTaskId);
   if (!linked) {
     throw new Error("Связанная Task не найдена");
@@ -293,18 +326,30 @@ function assertLinkAllowed(database, taskId, linkedTaskId, itemId) {
     SELECT task_id, id FROM hub_task_checklist_items
     WHERE linked_task_id = ? AND id != ?
   `).get(linkedTaskId, itemId);
-  if (owner) throw new Error("Task уже связана с другим пунктом чек-листа");
+  if (owner && !releaseReference) throw new Error("Task уже связана с другим пунктом чек-листа");
   const cycle = database.prepare(`
     WITH RECURSIVE ancestors(id) AS (
-      SELECT task_id FROM hub_task_checklist_items WHERE linked_task_id = ?
+      SELECT task_id FROM hub_task_checklist_items WHERE COALESCE(linked_task_id, release_task_id) = ?
       UNION
       SELECT item.task_id
       FROM hub_task_checklist_items AS item
-      JOIN ancestors ON item.linked_task_id = ancestors.id
+      JOIN ancestors ON COALESCE(item.linked_task_id, item.release_task_id) = ancestors.id
     )
     SELECT 1 FROM ancestors WHERE id = ? LIMIT 1
   `).get(taskId, linkedTaskId);
   if (cycle) throw new Error("Связь создаёт цикл Task");
+  if (releaseReference) {
+    if (parent.status === "done" || parent.workflow_status === "done") throw new Error("Archived release Task cannot be changed");
+    const target = database.prepare(`SELECT workflow_status, CAST(row_revision AS TEXT) AS revision
+      FROM hub_board_tasks WHERE id = ?`).get(linkedTaskId);
+    if (!["awaiting_implementation", "done"].includes(target.workflow_status)
+        || target.revision !== releaseReference.taskRevision) throw new Error("Accepted Task revision changed");
+    const refs = normalizedTaskGitReferences(database.prepare(`SELECT project_root AS projectRoot,
+      branch, result_commit AS resultCommit FROM hub_task_git_references WHERE task_id = ?`).all(linkedTaskId));
+    if (argumentsHash(refs) !== argumentsHash(releaseReference.gitReferences)) {
+      throw new Error("Accepted Task result changed");
+    }
+  }
 }
 
 export function assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, workspaceId) {
@@ -456,6 +501,10 @@ function taskChecklistRequestIdentity(payload) {
     linkedTaskId: String(payload.linkedTaskId ?? "").trim() || null,
     expectedRevision,
   };
+  if (payload.releaseReference != null) {
+    if (operation !== "link") throw new Error("Release reference is only valid for link");
+    semantic.releaseReference = normalizedReleaseReference(payload.releaseReference);
+  }
   return { taskId, requestId, itemId, operation, expectedRevision, semantic, hash: argumentsHash(semantic) };
 }
 
@@ -663,7 +712,7 @@ export function mutateTaskChecklist(database, payload, {
   const replay = taskChecklistRequestOutcome(database, payload);
   if (replay) return replay;
   const task = database.prepare(`
-    SELECT id, workspace_id, stream_id, status, bucket,
+    SELECT id, workspace_id, stream_id, status, workflow_status, bucket,
       CAST(row_revision AS TEXT) AS exact_row_revision
     FROM hub_board_tasks WHERE id = ?
   `).get(taskId);
@@ -694,6 +743,9 @@ export function mutateTaskChecklist(database, payload, {
   } else {
     if (!itemId) throw new Error("Пункт чек-листа не указан");
     const item = checklistItem(database, taskId, itemId);
+    if ((task.status === "done" || task.workflow_status === "done") && (item.release_task_id || semantic.releaseReference)) {
+      throw new Error("Archived release Task cannot be changed");
+    }
     if (operation === "edit") {
       database.prepare(`
         UPDATE hub_task_checklist_items SET text = ?, updated_at_ms = ? WHERE id = ?
@@ -728,16 +780,25 @@ export function mutateTaskChecklist(database, payload, {
     } else if (operation === "link") {
       const linkedTaskId = String(payload.linkedTaskId ?? "").trim();
       if (!linkedTaskId) throw new Error("Связанная Task не указана");
-      assertLinkAllowed(database, taskId, linkedTaskId, itemId);
-      database.prepare(`
-        UPDATE hub_task_checklist_items SET linked_task_id = ?, updated_at_ms = ? WHERE id = ?
-      `).run(linkedTaskId, timestamp, itemId);
+      if (item.release_task_id || (semantic.releaseReference && item.linked_task_id)) {
+        throw new Error("Unlink the existing item binding first");
+      }
+      assertLinkAllowed(database, taskId, linkedTaskId, itemId, semantic.releaseReference);
+      if (semantic.releaseReference) {
+        database.prepare(`UPDATE hub_task_checklist_items
+          SET release_task_id = ?, release_reference_json = ?, updated_at_ms = ? WHERE id = ?`)
+          .run(linkedTaskId, JSON.stringify(semantic.releaseReference), timestamp, itemId);
+      } else {
+        database.prepare(`UPDATE hub_task_checklist_items SET linked_task_id = ?, updated_at_ms = ? WHERE id = ?`)
+          .run(linkedTaskId, timestamp, itemId);
+      }
     } else if (operation === "unlink") {
       database.prepare(`
-        UPDATE hub_task_checklist_items SET linked_task_id = NULL, updated_at_ms = ? WHERE id = ?
+        UPDATE hub_task_checklist_items SET linked_task_id = NULL, release_task_id = NULL,
+          release_reference_json = NULL, updated_at_ms = ? WHERE id = ?
       `).run(timestamp, itemId);
     } else if (operation === "extract") {
-      if (item.linked_task_id) throw new Error("Пункт уже связан с Task");
+      if (item.linked_task_id || item.release_task_id) throw new Error("Пункт уже связан с Task");
       createdTaskId = createExtractedTask(database, {
         parentTask: task,
         itemId,
