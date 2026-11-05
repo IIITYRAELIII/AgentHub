@@ -101,7 +101,7 @@ test("release references keep cycle and Workspace fences and cannot be extracted
   await assert.rejects(async () => f.update(back.task, "link", "cycle", { itemId: back.itemId, linkedTaskId: parent.task.id }), /цикл/u);
   await assert.rejects(async () => f.update(linked.task, "extract", "extract-ref", { itemId: parent.itemId }), /уже связан/u);
   const db = new DatabaseSync(f.databaseFile);
-  assert.throws(() => db.prepare("UPDATE hub_board_tasks SET workspace_id = 'workspace-two' WHERE id = ?").run(f.child.id), /split Workspaces/u);
+  assert.throws(() => db.prepare("UPDATE hub_board_tasks SET workspace_id = 'workspace-two' WHERE id = ?").run(f.child.id), /FOREIGN KEY/u);
   assert.throws(() => db.prepare("DELETE FROM hub_board_tasks WHERE id = ?").run(f.child.id), /FOREIGN KEY/u);
   db.prepare("UPDATE hub_board_tasks SET status = 'done' WHERE id = ?").run(parent.task.id);
   await assert.rejects(async () => f.update(f.store.task(parent.task.id), "unlink", "archived-unlink", { itemId: parent.itemId }), /Archived/u);
@@ -126,12 +126,17 @@ test("legacy checklist migration preserves archived rows, ownership and original
     created_at_ms, updated_at_ms FROM hub_task_checklist_items WHERE id = ?`).get(added.itemId);
   f.store.close();
   // Recreate the pre-migration column shape in this tiny private SQLite fixture.
-  db.exec(`DROP TRIGGER hub_task_checklist_release_workspace;
-    DROP TRIGGER hub_task_checklist_release_shape_insert;
-    DROP TRIGGER hub_task_checklist_release_shape_update;
-    DROP INDEX hub_task_checklist_release_reference_idx;
-    ALTER TABLE hub_task_checklist_items DROP COLUMN release_task_id;
-    ALTER TABLE hub_task_checklist_items DROP COLUMN release_reference_json;`);
+  db.exec(`CREATE TABLE checklist_legacy (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, text TEXT NOT NULL,
+    manual_completed INTEGER NOT NULL DEFAULT 0 CHECK (manual_completed IN (0,1)),
+    linked_task_id TEXT UNIQUE, position INTEGER NOT NULL CHECK (position >= 0),
+    created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+    FOREIGN KEY(task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY(linked_task_id) REFERENCES hub_board_tasks(id) ON DELETE SET NULL);
+    INSERT INTO checklist_legacy SELECT id, task_id, text, manual_completed, linked_task_id,
+      position, created_at_ms, updated_at_ms FROM hub_task_checklist_items;
+    DROP TABLE hub_task_checklist_items;
+    ALTER TABLE checklist_legacy RENAME TO hub_task_checklist_items;`);
   assert.equal(db.prepare("PRAGMA table_info(hub_task_checklist_items)").all().length, 8);
   db.close();
   const reopened = new TaskBoardStore({ databaseFile: f.databaseFile });
@@ -143,7 +148,80 @@ test("legacy checklist migration preserves archived rows, ownership and original
     try {
       assert.deepEqual(migrated.prepare(`SELECT id, task_id, text, manual_completed, linked_task_id, position,
         created_at_ms, updated_at_ms FROM hub_task_checklist_items WHERE id = ?`).get(added.itemId), row);
-      assert.equal(migrated.prepare("PRAGMA table_info(hub_task_checklist_items)").all().length, 10);
+      assert.equal(migrated.prepare("PRAGMA table_info(hub_task_checklist_items)").all().length, 11);
     } finally { migrated.close(); }
+  } finally { reopened.close(); }
+});
+
+test("whole Workspace transfer commits together while raw older writers cannot commit a split", async (t) => {
+  const f = await fixture(t);
+  const added = await f.update(f.create("Release"), "add", "move-add", { text: "Accepted member" });
+  const input = { id: added.task.id, operation: "link", itemId: added.itemId, linkedTaskId: f.child.id,
+    expectedRevision: added.task.revision, requestId: "move-reference",
+    releaseReference: { taskRevision: f.child.revision, gitReferences: f.refs } };
+  await f.store.updateChecklist(input);
+  const original = f.store.task(added.task.id).checklist[0].releaseReference;
+  const db = new DatabaseSync(f.databaseFile);
+  const before = [f.store.task(added.task.id), f.store.task(f.child.id)];
+  db.exec("BEGIN IMMEDIATE");
+  db.prepare("UPDATE hub_board_tasks SET workspace_id = 'workspace-two' WHERE id = ?").run(f.child.id);
+  assert.throws(() => db.exec("COMMIT"), /FOREIGN KEY/u);
+  db.exec("ROLLBACK");
+  assert.deepEqual([f.store.task(added.task.id), f.store.task(f.child.id)], before);
+  // The old SQL bulk writer also works without a new flag/function or helper.
+  assert.equal(db.prepare("UPDATE hub_board_tasks SET workspace_id = 'workspace-two' WHERE workspace_id = 'workspace-one'").run().changes, 2);
+  assert.equal(f.store.task(f.child.id).workspaceId, "workspace-two");
+  assert.equal(f.store.task(added.task.id).workspaceId, "workspace-two");
+  assert.deepEqual(f.store.task(added.task.id).checklist[0].releaseReference, original);
+  assert.equal(f.store.reassignWorkspace("workspace-two", "workspace-three"), 2);
+  assert.equal(f.store.task(f.child.id).workspaceId, "workspace-three");
+  assert.equal(f.store.task(added.task.id).workspaceId, "workspace-three");
+  assert.deepEqual(f.store.task(added.task.id).checklist[0].releaseReference, original);
+  assert.equal(f.store.task(f.child.id).checklistParent, null);
+  assert.throws(() => db.prepare("UPDATE hub_task_checklist_items SET release_workspace_id = 'foreign' WHERE id = ?").run(added.itemId), /FOREIGN KEY/u);
+  assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+  db.close();
+});
+
+test("reference-schema migration retains existing exact bindings and rolls back an invalid scope", async (t) => {
+  const f = await fixture(t);
+  const added = await f.update(f.create("Release"), "add", "migration-add", { text: "Member" });
+  const input = { id: added.task.id, operation: "link", itemId: added.itemId, linkedTaskId: f.child.id,
+    expectedRevision: added.task.revision, requestId: "migration-reference",
+    releaseReference: { taskRevision: f.child.revision, gitReferences: f.refs } };
+  await f.store.updateChecklist(input);
+  const card = f.store.task(added.task.id);
+  f.store.close();
+  const db = new DatabaseSync(f.databaseFile);
+  db.exec(`CREATE TABLE checklist_prior_reference (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, text TEXT NOT NULL,
+    manual_completed INTEGER NOT NULL DEFAULT 0 CHECK (manual_completed IN (0,1)),
+    linked_task_id TEXT UNIQUE, position INTEGER NOT NULL CHECK (position >= 0),
+    created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+    release_task_id TEXT REFERENCES hub_board_tasks(id) ON DELETE RESTRICT, release_reference_json TEXT,
+    FOREIGN KEY(task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY(linked_task_id) REFERENCES hub_board_tasks(id) ON DELETE SET NULL);
+    INSERT INTO checklist_prior_reference SELECT id, task_id, text, manual_completed, linked_task_id,
+      position, created_at_ms, updated_at_ms, release_task_id, release_reference_json FROM hub_task_checklist_items;
+    DROP TABLE hub_task_checklist_items;
+    ALTER TABLE checklist_prior_reference RENAME TO hub_task_checklist_items;`);
+  const raw = db.prepare("SELECT release_reference_json FROM hub_task_checklist_items WHERE id = ?").get(added.itemId);
+  // A preexisting invalid split cannot be silently healed or lose its raw row.
+  db.prepare("UPDATE hub_board_tasks SET workspace_id = 'foreign' WHERE id = ?").run(f.child.id);
+  assert.throws(() => new TaskBoardStore({ databaseFile: f.databaseFile }), /FOREIGN KEY/u);
+  assert.equal(db.prepare("PRAGMA table_info(hub_task_checklist_items)").all().length, 10);
+  assert.deepEqual(db.prepare("SELECT release_reference_json FROM hub_task_checklist_items WHERE id = ?").get(added.itemId), raw);
+  db.prepare("UPDATE hub_board_tasks SET workspace_id = 'workspace-one' WHERE id = ?").run(f.child.id);
+  db.close();
+  const reopened = new TaskBoardStore({ databaseFile: f.databaseFile });
+  try {
+    const migrated = reopened.task(added.task.id);
+    assert.equal(migrated.id, card.id);
+    assert.equal(migrated.revision, card.revision);
+    assert.deepEqual(migrated.checklist.map(item => [item.id, item.text, item.releaseReference]),
+      card.checklist.map(item => [item.id, item.text, item.releaseReference]));
+    assert.equal((await reopened.updateChecklist(input)).replayed, true);
+    assert.equal(reopened.reassignWorkspace("workspace-one", "workspace-target"), 2);
+    assert.deepEqual(reopened.task(added.task.id).checklist[0].releaseReference, card.checklist[0].releaseReference);
   } finally { reopened.close(); }
 });

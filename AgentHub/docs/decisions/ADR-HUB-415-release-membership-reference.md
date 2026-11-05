@@ -18,8 +18,14 @@ revision, Await/Done state, full canonical result, same Workspace and cycles.
 Old requests keep their original semantic hash; exact repeats use the same
 checklist receipt/outbox, including after reopening. No second ledger is added.
 
-The ordinary installed-version schema initializer adds nullable columns and
-indexes without rebuilding Tasks or changing archived ownership rows. A reference
+The ordinary installed-version schema initializer migrates the existing checklist
+table in one transaction, preserving all row IDs, values, original receipts and
+archived ownership; it never rebuilds Tasks. Each reference also has its canonical
+Workspace key, protected by two deferred composite foreign keys to both endpoints.
+Update cascades let the existing whole-Workspace reassignment move both endpoints
+in one transaction, including older writers; a real split fails at COMMIT and
+rolls back. There is no permission flag, side ledger or per-row workspace veto.
+A reference
 does not advance source acceptance or grant publication. Service closure still
 requires completed members and immutable published evidence, and also checks the
 captured result against each member's current canonical references. Publication

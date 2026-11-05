@@ -4,9 +4,12 @@
 
 Native release membership references preserve the unique checklist decomposition
 owner and archived Task rows (ADR-HUB-415). Their nullable checklist columns are
-migrated by the existing schema owner without rebuilding or relinking history.
-A referenced Task cannot be physically deleted or moved to another Workspace;
-an archived release reference cannot be edited or unlinked by normal metadata
+migrated by the existing schema owner without rebuilding Tasks or relinking history.
+A referenced Task cannot be physically deleted or individually split from its
+reference's Workspace. Existing atomic whole-Workspace reassignment/merge remains
+valid when both endpoints move together. Deferred composite foreign keys with
+update cascades check the complete transaction; they also fence older writers.
+An archived release reference cannot be edited or unlinked by normal metadata
 operations. These references do not project a second `checklistParent`.
 
 Catalog mutations composed inside one synchronous catalog transaction retain

@@ -84,9 +84,8 @@ function taskSummary(row) {
   };
 }
 
-export function configureTaskChecklist(database) {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS hub_task_checklist_items (
+function checklistTableSchema(name) {
+  return `CREATE TABLE IF NOT EXISTS ${name} (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
       text TEXT NOT NULL,
@@ -95,9 +94,26 @@ export function configureTaskChecklist(database) {
       position INTEGER NOT NULL CHECK (position >= 0),
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL,
+      release_task_id TEXT REFERENCES hub_board_tasks(id) ON DELETE RESTRICT,
+      release_reference_json TEXT,
+      release_workspace_id TEXT,
       FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE,
-      FOREIGN KEY (linked_task_id) REFERENCES hub_board_tasks(id) ON DELETE SET NULL
-    );
+      FOREIGN KEY (linked_task_id) REFERENCES hub_board_tasks(id) ON DELETE SET NULL,
+      FOREIGN KEY (task_id, release_workspace_id) REFERENCES hub_board_tasks(id, workspace_id)
+        ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED,
+      FOREIGN KEY (release_task_id, release_workspace_id) REFERENCES hub_board_tasks(id, workspace_id)
+        ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED,
+      CHECK ((release_task_id IS NULL AND release_reference_json IS NULL AND release_workspace_id IS NULL)
+        OR (release_task_id IS NOT NULL AND release_reference_json IS NOT NULL
+          AND release_workspace_id IS NOT NULL AND linked_task_id IS NULL))
+    );`;
+}
+
+export function configureTaskChecklist(database) {
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_task_checklist_workspace_key
+      ON hub_board_tasks(id, workspace_id);
+    ${checklistTableSchema("hub_task_checklist_items")}
     CREATE UNIQUE INDEX IF NOT EXISTS hub_task_checklist_position_idx
       ON hub_task_checklist_items(task_id, position);
     CREATE INDEX IF NOT EXISTS hub_task_checklist_parent_idx
@@ -143,14 +159,43 @@ export function configureTaskChecklist(database) {
       quarantine_reason TEXT NOT NULL DEFAULT ''
     ) WITHOUT ROWID;
   `);
-  // Keep the original ownership slot and its UNIQUE constraint unchanged.
+  // Deferred FKs validate the complete transaction, including whole-Workspace moves.
+  // Keep every existing row/id and the original ownership UNIQUE constraint.
   const itemColumns = new Set(database.prepare("PRAGMA table_info(hub_task_checklist_items)")
     .all().map(column => String(column.name)));
-  if (!itemColumns.has("release_task_id")) database.exec(`ALTER TABLE hub_task_checklist_items
-    ADD COLUMN release_task_id TEXT REFERENCES hub_board_tasks(id) ON DELETE RESTRICT`);
-  if (!itemColumns.has("release_reference_json")) database.exec(`ALTER TABLE hub_task_checklist_items
-    ADD COLUMN release_reference_json TEXT`);
+  if (!itemColumns.has("release_workspace_id")) {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const target = itemColumns.has("release_task_id") ? "item.release_task_id" : "NULL";
+      const reference = itemColumns.has("release_reference_json") ? "item.release_reference_json" : "NULL";
+      database.exec(`
+        DROP TRIGGER IF EXISTS hub_task_checklist_release_workspace;
+        ${checklistTableSchema("hub_task_checklist_items_migrating")}
+        INSERT INTO hub_task_checklist_items_migrating
+          (id, task_id, text, manual_completed, linked_task_id, position, created_at_ms, updated_at_ms,
+            release_task_id, release_reference_json, release_workspace_id)
+        SELECT item.id, item.task_id, item.text, item.manual_completed, item.linked_task_id,
+          item.position, item.created_at_ms, item.updated_at_ms, ${target}, ${reference},
+          CASE WHEN ${target} IS NOT NULL THEN parent.workspace_id ELSE NULL END
+        FROM hub_task_checklist_items item LEFT JOIN hub_board_tasks parent ON parent.id = item.task_id;
+        DROP TABLE hub_task_checklist_items;
+        ALTER TABLE hub_task_checklist_items_migrating RENAME TO hub_task_checklist_items;
+        CREATE UNIQUE INDEX hub_task_checklist_position_idx ON hub_task_checklist_items(task_id, position);
+        CREATE INDEX hub_task_checklist_parent_idx ON hub_task_checklist_items(linked_task_id);
+        CREATE UNIQUE INDEX hub_task_checklist_release_reference_idx
+          ON hub_task_checklist_items(task_id, release_task_id) WHERE release_task_id IS NOT NULL;
+      `);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
   database.exec(`
+    DROP TRIGGER IF EXISTS hub_task_checklist_release_workspace;
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_task_checklist_position_idx
+      ON hub_task_checklist_items(task_id, position);
+    CREATE INDEX IF NOT EXISTS hub_task_checklist_parent_idx ON hub_task_checklist_items(linked_task_id);
     CREATE UNIQUE INDEX IF NOT EXISTS hub_task_checklist_release_reference_idx
       ON hub_task_checklist_items(task_id, release_task_id) WHERE release_task_id IS NOT NULL;
     CREATE TRIGGER IF NOT EXISTS hub_task_checklist_release_shape_insert
@@ -163,15 +208,6 @@ export function configureTaskChecklist(database) {
     WHEN (NEW.release_task_id IS NOT NULL AND NEW.linked_task_id IS NOT NULL)
       OR ((NEW.release_task_id IS NULL) != (NEW.release_reference_json IS NULL))
     BEGIN SELECT RAISE(ABORT, 'Invalid checklist release reference'); END;
-    CREATE TRIGGER IF NOT EXISTS hub_task_checklist_release_workspace
-    BEFORE UPDATE OF workspace_id ON hub_board_tasks
-    WHEN EXISTS (
-      SELECT 1 FROM hub_task_checklist_items item JOIN hub_board_tasks counterpart
-      ON counterpart.id = CASE WHEN item.task_id = OLD.id THEN item.release_task_id ELSE item.task_id END
-      WHERE (item.task_id = OLD.id OR item.release_task_id = OLD.id)
-        AND item.release_task_id IS NOT NULL AND NEW.workspace_id IS NOT counterpart.workspace_id
-    )
-    BEGIN SELECT RAISE(ABORT, 'Release reference cannot split Workspaces'); END;
   `);
   const outboxColumns = new Set(database.prepare(
     "PRAGMA table_info(hub_task_checklist_event_outbox)",
@@ -354,12 +390,13 @@ function assertLinkAllowed(database, taskId, linkedTaskId, itemId, releaseRefere
 
 export function assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, workspaceId) {
   const relations = database.prepare(`
-    SELECT item.task_id AS parent_id, item.linked_task_id AS child_id,
+    SELECT item.task_id AS parent_id, COALESCE(item.linked_task_id, item.release_task_id) AS child_id,
       parent.workspace_id AS parent_workspace_id, child.workspace_id AS child_workspace_id
     FROM hub_task_checklist_items AS item
     JOIN hub_board_tasks AS parent ON parent.id = item.task_id
-    JOIN hub_board_tasks AS child ON child.id = item.linked_task_id
-    WHERE item.linked_task_id IS NOT NULL AND (item.task_id = ? OR item.linked_task_id = ?)
+    JOIN hub_board_tasks AS child ON child.id = COALESCE(item.linked_task_id, item.release_task_id)
+    WHERE COALESCE(item.linked_task_id, item.release_task_id) IS NOT NULL
+      AND (item.task_id = ? OR COALESCE(item.linked_task_id, item.release_task_id) = ?)
   `).all(taskId, taskId);
   if (!relations.length) return;
   const targetWorkspaceId = String(workspaceId ?? "").trim();
@@ -382,8 +419,8 @@ export function assertTaskChecklistWorkspaceReassignmentAllowed(database, source
     SELECT 1
     FROM hub_task_checklist_items AS item
     JOIN hub_board_tasks AS parent ON parent.id = item.task_id
-    JOIN hub_board_tasks AS child ON child.id = item.linked_task_id
-    WHERE item.linked_task_id IS NOT NULL
+    JOIN hub_board_tasks AS child ON child.id = COALESCE(item.linked_task_id, item.release_task_id)
+    WHERE COALESCE(item.linked_task_id, item.release_task_id) IS NOT NULL
       AND (parent.workspace_id = ? OR child.workspace_id = ?)
       AND NOT (parent.workspace_id = ? AND child.workspace_id = ?)
     LIMIT 1
@@ -786,8 +823,8 @@ export function mutateTaskChecklist(database, payload, {
       assertLinkAllowed(database, taskId, linkedTaskId, itemId, semantic.releaseReference);
       if (semantic.releaseReference) {
         database.prepare(`UPDATE hub_task_checklist_items
-          SET release_task_id = ?, release_reference_json = ?, updated_at_ms = ? WHERE id = ?`)
-          .run(linkedTaskId, JSON.stringify(semantic.releaseReference), timestamp, itemId);
+          SET release_task_id = ?, release_reference_json = ?, release_workspace_id = ?, updated_at_ms = ? WHERE id = ?`)
+          .run(linkedTaskId, JSON.stringify(semantic.releaseReference), task.workspace_id, timestamp, itemId);
       } else {
         database.prepare(`UPDATE hub_task_checklist_items SET linked_task_id = ?, updated_at_ms = ? WHERE id = ?`)
           .run(linkedTaskId, timestamp, itemId);
@@ -795,7 +832,7 @@ export function mutateTaskChecklist(database, payload, {
     } else if (operation === "unlink") {
       database.prepare(`
         UPDATE hub_task_checklist_items SET linked_task_id = NULL, release_task_id = NULL,
-          release_reference_json = NULL, updated_at_ms = ? WHERE id = ?
+          release_reference_json = NULL, release_workspace_id = NULL, updated_at_ms = ? WHERE id = ?
       `).run(timestamp, itemId);
     } else if (operation === "extract") {
       if (item.linked_task_id || item.release_task_id) throw new Error("Пункт уже связан с Task");
