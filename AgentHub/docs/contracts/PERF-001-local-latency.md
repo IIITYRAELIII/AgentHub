@@ -865,3 +865,13 @@ identities without hydrating retained Git/WIP/dependency/payload trees, opening
 SQLite or acquiring writer reservations on the live runtime. The existing
 original-ID `package-backup-preflight` restart span measures that work. It is not
 queue wait or proof of snapshot completion; actual backup and ready remain distinct.
+
+
+## Input-scoped native production (HUB-411)
+
+New prefix transport excludes only verified receiver-owned history; new object
+consumers do not propagate disjoint archived objects. Pack selection reads index
+membership rather than decompressing unrelated payload. Fixture created/allocated
+bytes are reported separately from production disk reclamation or latency.
+No arbitrary product cap, new scan, dependency copy or skipped authority follows.
+See ADR-HUB-411-input-scoped-native-production.

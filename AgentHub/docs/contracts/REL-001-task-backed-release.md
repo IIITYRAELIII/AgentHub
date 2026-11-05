@@ -451,6 +451,23 @@ digest: an old alias-bearing receipt can require a corrected later generation.
 
 ## Native transport retirement (ADR-0126)
 
+New verified native-prefix transport may exclude exact commit prerequisites
+whose complete history is already owned by the receiving repository. The same
+receiver/source custody and connected prerequisite graph are checked before
+creation and after streaming; ordinary Git bundle verification precedes import.
+The existing journal intent, fresh native merge verification and selected-content
+authority still apply. Legacy full bundles remain unchanged; partial output is
+preserved and never overwritten. No alternate borrowing or history waiver is
+introduced. See ADR-HUB-411-input-scoped-native-production.
+
+New consumers of the existing owned immutable object store link only loose
+objects in their exact imported input closure and immutable pack families that
+intersect it. A necessary pack can contain additional objects; it is not rewritten
+or repacked. Disjoint archived packs/raw blobs do not propagate to new consumers.
+The same maintenance owner, input/closure binding, physical hardlink checks,
+connectivity verification and durable success receipt remain mandatory. Old
+consumers, pool objects, archives and original partial operations are unchanged.
+
 Legacy native merge transport contains exact selected base/result ancestry through
 private advertised bundle tips, including dangling accepted inputs, without
 copying all unrelated source refs or mutating source configuration/refs. Git

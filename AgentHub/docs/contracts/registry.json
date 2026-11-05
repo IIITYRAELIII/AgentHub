@@ -346,7 +346,11 @@
         "src/infrastructure/persistence/native-capture-retirement-evidence.mjs",
         "tests/infrastructure/filesystem/owned-native-object-store.test.mjs",
         "tests/infrastructure/filesystem/native-capture-*.test.mjs",
-        "docs/decisions/ADR-HUB-385-owned-native-objects.md"
+        "docs/decisions/ADR-HUB-385-owned-native-objects.md",
+        "docs/decisions/ADR-HUB-411-input-scoped-native-production.md",
+        "tests/infrastructure/filesystem/native-copy-production.test.mjs",
+        "tests/infrastructure/filesystem/native-object-consumer-production.test.mjs",
+        "tests/infrastructure/filesystem/selected-git-bundle.test.mjs"
       ]
     },
     {
@@ -536,7 +540,11 @@
         "docs/decisions/ADR-HUB-385-owned-native-objects.md",
         "docs/decisions/ADR-HUB-385-retired-generation-source-custody.md",
         "docs/decisions/ADR-HUB-385-historical-capture-preservation.md",
-        "tests/fixtures/native-historical-replay-lines.json"
+        "tests/fixtures/native-historical-replay-lines.json",
+        "docs/decisions/ADR-HUB-411-input-scoped-native-production.md",
+        "tests/infrastructure/filesystem/native-copy-production.test.mjs",
+        "tests/infrastructure/filesystem/native-object-consumer-production.test.mjs",
+        "tests/infrastructure/filesystem/selected-git-bundle.test.mjs"
       ]
     },
     {

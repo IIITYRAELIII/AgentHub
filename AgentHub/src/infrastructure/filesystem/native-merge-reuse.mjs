@@ -91,7 +91,44 @@ async function importCommit({ root, repository, candidate, commit, gitAt, before
       if (!plain(existing) || !existing.isFile()) return false;
       try { await gitAt(repository, ["bundle", "verify", bundle]); }
       catch { return false; } // A partial hint is preserved, never overwritten.
-    } else await createSelectedGitBundle({ root, sourceRoot: candidate.repository, bundle, inputs: [commit], gitAt });
+    } else {
+      // New native consumers already own the complete base/selected input DAG.
+      // Export only the merge objects absent from that receiver, not another
+      // full copy of its history. Object presence grants no prefix authority:
+      // the existing verifier below still decides every exact merge step.
+      const receiver = await info(repository);
+      if (!plain(receiver) || !receiver.isDirectory()) return false;
+      const roots = [...new Set([
+        ...String(await gitAt(repository, ["for-each-ref", "--format=%(objectname)"])).split(/\r?\n/u),
+        String(await gitAt(repository, ["rev-parse", "HEAD^{commit}"])),
+      ].filter(Boolean))].sort();
+      if (roots.some(c => !/^[a-f0-9]{40}$/u.test(c))) throw new Error("Native receiver history roots changed");
+      const types = String(await gitAt(candidate.repository, ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        { input: roots.join("\n") + "\n" })).split(/\r?\n/u);
+      if (types.length !== roots.length) throw new Error("Native receiver history discovery is incomplete");
+      const required = roots.filter((c, i) => types[i] === `${c} commit`);
+      const changedHint = new Error("Retained native hint changed during transport");
+      const verifyPrerequisites = async () => {
+        if (!same(receiver, await info(repository))) throw new Error("Native receiver custody changed");
+        if (!await candidate.unchanged()) throw changedHint;
+        if (!required.length) return;
+        const closure = String(await gitAt(repository, ["rev-list", "--objects", "--no-object-names", "--missing=print", "--stdin"],
+          { input: required.join("\n") + "\n" })).split(/\r?\n/u).filter(Boolean);
+        if (!closure.length || closure.some(c => !/^[a-f0-9]{40}$/u.test(c))) {
+          throw new Error("Native receiver prerequisite history is incomplete");
+        }
+      };
+      try {
+        await createSelectedGitBundle({ root, sourceRoot: candidate.repository, bundle, inputs: [commit], gitAt,
+          prerequisites: required, verifyPrerequisites });
+      } catch (error) {
+        // A changed optional hint is discarded before fetch. Its original
+        // output remains retained; receiver/I/O/authority failures still throw.
+        if (error === changedHint) return false;
+        throw error;
+      }
+      await gitAt(repository, ["bundle", "verify", bundle]);
+    }
     const heads = String(await gitAt(repository, ["bundle", "list-heads", bundle])).split(/\r?\n/u);
     if (!heads.some(row => row.split(" ")[0] === commit)) return false;
     await gitAt(repository, ["fetch", "--no-tags", bundle, commit]);

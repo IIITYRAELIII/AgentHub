@@ -272,6 +272,14 @@ export class OwnedNativeObjectStore {
       let row = await this.#create("native-object-consumer:" + identityHash, binding);
       if (row.status !== "succeeded") {
         if (!await absent(repository)) throw fail("Unfinished native consumer requires its original recovery");
+        const objects = String(await this.#git(this.repository,
+          ["rev-list", "--objects", "--no-object-names", ...inputs])).split(/\r?\n/u).filter(Boolean).sort();
+        if (objects.some(x => !oid(x)) || new Set(objects).size !== objects.length
+            || objects.length !== imported.metadata.objectStorage.objectCount
+            || digest(objects.join("\n") + "\n") !== imported.metadata.objectStorage.closureSha256) {
+          throw fail("Consumer input closure differs from its owned import");
+        }
+        const required = new Set(objects);
         await this.#git(path.dirname(repository), ["init", "--object-format=sha1", "--template=" + path.join(this.root, "empty-hooks"), repository]);
         await this.#git(repository, ["config", "gc.auto", "0"]);
         const sourceObjects = path.join(this.repository, "objects"), destObjects = path.join(repository, ".git", "objects");
@@ -279,9 +287,35 @@ export class OwnedNativeObjectStore {
           if (!/^(?:[a-f0-9]{2}|pack)$/u.test(directory.name)) continue;
           const from = path.join(sourceObjects, directory.name), to = path.join(destObjects, directory.name);
           await plain(from, true); await mkdir(to, { recursive: true }); await plain(to, true);
-          for (const file of await readdir(from)) {
+          const files = await readdir(from), selectedPacks = new Set();
+          if (directory.name === "pack") {
+            for (const file of files.filter(f => /^pack-[a-f0-9]{40}\.idx$/u.test(f))) {
+              await plain(path.join(from, file));
+              const stem = file.slice(0, -4);
+              await plain(path.join(from, stem + ".pack"));
+              // Read only the immutable index to select a pack family. Do not
+              // decompress every unrelated archived pack for each consumer.
+              const indexFile = path.join(from, file), indexIdentity = await hashFile(indexFile);
+              const inventory = String(await this.#git(this.repository, ["show-index"], { input: await readFile(indexFile) }));
+              if (!equal(indexIdentity, await hashFile(indexFile))) throw fail("Owned pack index changed");
+              const packed = inventory.split(/\r?\n/u).filter(Boolean).map(line => {
+                const match = /^\d+ ([a-f0-9]{40})(?: \([a-f0-9]{8}\))?$/u.exec(line);
+                if (!match) throw fail("Owned pack index inventory is malformed");
+                return match[1];
+              });
+              if (!packed.length) throw fail("Owned pack inventory is empty");
+              if (packed.some(x => required.has(x))) selectedPacks.add(stem);
+            }
+          }
+          for (const file of files) {
             if (directory.name === "pack" && (file === "multi-pack-index" || /^pack-[a-f0-9]{40}\.keep$/u.test(file))) continue;
             if (!(directory.name === "pack" ? /^pack-[a-f0-9]{40}\.(?:pack|idx|rev|bitmap)$/u : /^[a-f0-9]{38}$/u).test(file)) throw fail("Foreign object-store entry");
+            await plain(path.join(from, file));
+            if (directory.name === "pack") {
+              const stem = file.replace(/\.[^.]+$/u, "");
+              if (!files.includes(stem + ".idx") || !files.includes(stem + ".pack")) throw fail("Owned pack pair is incomplete");
+              if (!selectedPacks.has(stem)) continue;
+            } else if (!required.has(directory.name + file)) continue;
             await immutableLink(path.join(from, file), path.join(to, file));
           }
         }
