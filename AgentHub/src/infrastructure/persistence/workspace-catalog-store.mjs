@@ -1309,6 +1309,32 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
+  recordMcpOperationCompletionFailure(requestId, { identity, ownerId, diagnostic } = {}) {
+    return this.#transaction(() => {
+      const row = this.mcpOperation(requestId);
+      if (!row || Object.entries(identity ?? {}).length !== 8 || identity.actorKind !== (row.actorKind ?? "provider")
+          || !["workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash", "createdAtMs"]
+            .every(key => identity[key] === row[key])) throw new Error("Completion diagnostic receipt identity differs");
+      if (["succeeded", "failed"].includes(row.status) || row.taskExecution?.cancellation) return row;
+      if (this.claimCustodyForOriginal(requestId) || row.taskExecution?.protocol !== "task-operation-interruption-v1"
+          || !ownerId || row.taskExecution.ownerId !== ownerId) throw new Error("Completion diagnostic execution owner differs");
+      if (diagnostic?.version !== 1 || diagnostic.kind !== "mcp-completion-failure-v1"
+          || diagnostic.effects !== "retained_unknown" || typeof diagnostic.effectCompleted !== "boolean"
+          || ![diagnostic.originalError, diagnostic.persistenceError].every(error => error
+            && typeof error.name === "string" && error.name.length <= 100
+            && (error.code === null || /^[A-Z0-9_]{1,64}$/u.test(error.code))
+            && typeof error.message === "string" && error.message.length <= 4000)
+          || Buffer.byteLength(JSON.stringify(diagnostic), "utf8") > 32_768) throw new Error("Invalid bounded completion diagnostic");
+      if (row.taskExecution.completionFailure) return row;
+      const completionFailure = { ...diagnostic, ownerId, argumentsHash: row.argumentsHash, observedAtMs: this.#nowMs() };
+      const changed = this.#database.prepare(`UPDATE hub_mcp_operations SET task_execution_json=?
+        WHERE request_id=? AND task_execution_json=? AND receipt_state IN ('pending','reconciling','unknown')`)
+        .run(JSON.stringify({ ...row.taskExecution, completionFailure }), requestId, JSON.stringify(row.taskExecution));
+      if (Number(changed.changes) !== 1) throw new Error("Completion diagnostic owner CAS changed");
+      return this.mcpOperation(requestId);
+    });
+  }
+
   completeUnknownMcpOperation(requestId, {
     workspaceId, toolName, result, reconciliation,
   } = {}) {

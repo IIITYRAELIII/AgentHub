@@ -8,7 +8,7 @@ const WORKSPACE_MUTATIONS = new Set([
   "updateWorkspaceDeveloperRules", "recordWorkspaceEvent", "beginMcpOperation",
   "bindMcpOperationInterstreamContentHash", "bindTaskOperationExecution", "requestTaskOperationInterruption", "finishTaskOperationInterruption",
   "completeMcpOperation", "failMcpOperation", "recordClaimAdmissionRefusal", "cancelMcpOperation", "beginMcpOperationReconciliation",
-  "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation",
+  "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation", "recordMcpOperationCompletionFailure",
   "checkpointMcpPreparation", "settleMcpPreparationFailure", "checkpointClaimCustody", "checkpointMcpPreparationForward",
   "mergeWorkspaces", "createWorkspaceFromStream", "createStream", "renameStream",
   "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",

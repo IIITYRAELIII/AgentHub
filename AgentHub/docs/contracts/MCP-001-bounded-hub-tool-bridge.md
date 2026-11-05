@@ -1090,6 +1090,24 @@ operation before the next ordinary action, without changing Task assignment.
 
 ## Task admission and original result readback
 
+A local live invocation is reported as active, an explicit UNKNOWN receipt as
+unknown, and a nonterminal receipt without observed local execution as unresolved.
+Receipt presence and a missing worker never prove queue membership or completion;
+the submission result trace must not label every nonterminal response queued.
+This observation does not replace the canonical receipt status or effect authority.
+
+If writing a failure/UNKNOWN receipt fails, the completion owner preserves both
+bounded errors as diagnostic metadata in the existing execution binding, under
+the exact receipt/actor/hash/current-owner CAS. No new ledger or work queue is
+created. STOPPED history and terminal winners cannot be changed. This finite
+diagnostic write neither reruns effects nor certifies NO_EFFECT. Reopen and exact
+same-ID submission return the retained diagnostics without another worker.
+Original-ID trace spans contain only error codes/hashes and persistence outcome,
+never arbitrary error text. If diagnostic persistence also fails, those existing
+best-effort trace records are the fallback observation; an unavailable trace or
+diagnostic write cannot be represented as durable success. Historical pending
+claims without positive execution/preparation/custody evidence remain unresolved.
+
 Public MCP Task mutations return a `taskOperation` admission/readback envelope
 from the existing MCP ledger once the same worker is registered. Admission is
 not successful business completion. `hub_task_operation_get` reads that exact

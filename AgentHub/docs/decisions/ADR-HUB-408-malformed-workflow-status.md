@@ -58,6 +58,25 @@ UNKNOWN, actor/hash/CAS and private cancellation behavior must remain intact.
 
 ## Verification and migration
 
+### Completion persistence and execution observation
+
+The existing completion owner previously suppressed errors from writing UNKNOWN,
+then submission treated any existing receipt as a result and called all
+nonterminal outcomes queued. A finished worker could leave PENDING/inactive with
+no error. Preserve original and persistence errors, retain both in bounded
+completionFailure metadata on the existing execution binding with exact
+identity/current-owner CAS, and use the existing trace for content-free failure
+identities. A failure of that diagnostic write is not another effect attempt or
+terminal proof. There is no new ledger, queue, background retry or deadline.
+Known terminal winners and immutable STOPPED rows are preserved.
+
+Readback distinguishes local active invocation, explicit durable UNKNOWN,
+terminal receipt and unresolved nonterminal observation. It never infers queued
+from receipt presence, or retirement from an absent local worker. A same-original
+submission stays read-only. Positive committed claim/preparation/custody or exact
+execution-retirement evidence is still needed for supported historical recovery;
+the old pending claim cannot acquire that evidence from this new diagnostic.
+
 ### Stopped valid workflow receipts
 
 An existing failed lifecycle transition can coexist with an immutable UNKNOWN
