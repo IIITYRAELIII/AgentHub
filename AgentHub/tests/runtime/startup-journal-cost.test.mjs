@@ -226,8 +226,10 @@ test('startup backlog retains every real outbox ACK fence before Ready with the 
     rememberLastMessage() {}, rememberSeenTurn() {},
     saveState: async () => { reachedSave(); await saved; }, logger: { error() {} } });
   const noop = async () => {};
+  const health = createRuntimeHealth();
+  health.setDiagnosticSource('fixture', () => ({ synthetic: true }));
   const startup = new AgentHubStartupCoordinator({ telegramEnabled: false,
-    health: createRuntimeHealth(), startMiniApp: noop, startDesktopControl: noop,
+    health, startMiniApp: noop, startDesktopControl: noop,
     startRuntimeCommand: noop, startHubMcp: noop, sanitizeRollouts: noop,
     initializeProvider: noop, providerIsRunning: () => false, recoverRuns: noop,
     retryTerminalProjections: () => service.retryPendingProjections({ recoverProjecting: true }),
@@ -236,9 +238,8 @@ test('startup backlog retains every real outbox ACK fence before Ready with the 
     waitForever: noop, log() {}, logError() {} });
   const start = startup.start();
   try {
-    await Promise.race([saving, new Promise((_, reject) => {
-      const timer = setTimeout(() => reject(new Error('backlog did not reach persistence')), 15000); timer.unref();
-      saving.then(() => clearTimeout(timer));
+    await Promise.race([saving, start.then(() => {
+      throw new Error('startup completed before its terminal persistence fence');
     })]);
     assert.equal(ready, 0);
     assert.ok((await terminal.pendingProjections()).length > 0);
