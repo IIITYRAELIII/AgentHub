@@ -17,7 +17,12 @@ The ordinary selection mutation and known-version background history read keep
 their existing owners. A changed binding or exact historical navigation cannot
 reuse another page's authority. Loaded older pages and scroll position survive
 ordinary switching; queued bottom-pinning cannot override another page or newer
-user scroll intent. Only the exact displayed final after paint can admit a read
+user scroll intent. An unpinned retained page restores its first visible message
+and offset across inactive append/prepend, with its prior top position as the
+fallback if that message disappeared. The anchor contains only scalar identity
+and coordinates, has the same bounded lifetime as the page, and cannot cross a
+Workspace/Stream/provider/Thread replacement. Only a previously pinned reader
+follows the new bottom. Only the exact displayed final after paint can admit a read
 ACK, and only its durable confirmed receipt can clear the ready badge. Reusing
 an older page never acknowledges an unseen newer final.
 

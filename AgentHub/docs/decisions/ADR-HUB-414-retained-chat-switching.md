@@ -23,7 +23,11 @@ the older loaded page is shown; display after paint and a durable exact receipt
 remain necessary. The existing trace reporter records cached paint under the
 selection's trace identity without content or new timers.
 
-Scalar scroll/render state follows the lifetime of its canonical page. Restoring
+Scalar scroll/render state and the first visible message anchor follow the
+lifetime and exact Workspace/Stream/provider/Thread binding of the canonical page.
+An unpinned reader returns to that message even when the inactive page appended
+or prepended messages; missing anchors retain the prior top position. Bottom
+following is reserved for a previously pinned reader. Restoring
 it synchronously establishes the correct scroll owner before live-card updates;
 old pin callbacks cannot follow a different page or newer user intent.
 
