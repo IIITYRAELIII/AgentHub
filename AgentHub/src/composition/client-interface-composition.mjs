@@ -145,6 +145,7 @@ export async function createClientInterfaceComposition({
       ...config.sharedDashboardBot,
       attachmentDirectory: path.join(runtimeCommandRoot, "attachments"),
       handler: handleDesktopControl,
+      recordCommandTrace,
     })
     : null;
   const miniAppLifecycle = new MiniAppLifecycleService({

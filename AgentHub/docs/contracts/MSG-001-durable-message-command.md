@@ -345,6 +345,13 @@ work-log storage retain the raw root prompt and its separately bounded
 ## Remote attachment transport
 
 The shared Dashboard bot's queue notice confirms remote queue admission only.
+The existing paired Hub service signature also permits bounded read-only
+`POST /api/dashboard-bot/inspect`: one exact UUID, or pages of twenty retained
+records filtered by a creation interval of at most twenty-four hours. It exposes
+only original command/bundle/item/attachment identities, scalar state/times and
+receipt-delivery state. It never claims, cleans up, migrates registration,
+renews a lease/expiry, publishes a result or sends a notification. Missing state,
+unavailable inspection and a delivery timeout are distinct observations.
 Its accepted/failed notice follows the local Hub's durable command result. The
 same remote control command owns the pending Telegram receipt and its delivery
 state; an indexed alarm only addresses that record. Committing a terminal result
@@ -375,6 +382,16 @@ the local file visible to the command handler.
 Transport timeout or an incomplete chunk leaves the durable command available
 for a later poll with the same command and attachment identities. The client
 does not create an immediate retry loop to make a stalled body appear reliable.
+Known allowlisted transport codes in an existing error cause remain retryable
+without relying on English error text. A sibling's failure cannot delete
+already finalized command-owned files, including files whose intake result
+reply was lost. A later same-ID poll first revalidates the complete remote
+manifest, then verifies the existing local file's exact size, final SHA-256 and
+image type before skipping its chunk bodies. A different command never borrows
+those paths; mismatched local bytes fail closed without overwrite. This reuses
+the existing final file and its attachment/history lifetime, not a second cache
+or a new expiry owner. Private partial cleanup and canonical intake idempotency
+remain unchanged. See ADR-HUB330-relay-finalized-retry.
 
 A rejected Dashboard poll cannot leave its command workers running into the
 next attempt. The first failure stops assignment in both text and attachment

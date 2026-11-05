@@ -2084,6 +2084,56 @@ export class JournalStore extends DurableObject {
     };
   }
 
+  async #inspectDashboardBotCommands(payload, userId) {
+    // Observation only: no index migration, expiry cleanup, lease or notification.
+    const invalid = () => { throw Object.assign(new Error("invalid dashboard inspection"), { code: "dashboard_inspection_invalid" }); };
+    if (!isPlainObject(payload)) invalid();
+    const exact = Object.hasOwn(payload, "id");
+    const allowed = exact ? ["id"] : ["fromMs", "toMs", "after"];
+    if (Object.keys(payload).some((key) => !allowed.includes(key))) invalid();
+    if (exact && (typeof payload.id !== "string" || !CONTROL_ID_PATTERN.test(payload.id))) invalid();
+    if (!exact && (
+      !Number.isSafeInteger(payload.fromMs) || !Number.isSafeInteger(payload.toMs)
+      || payload.fromMs < 0 || payload.toMs <= payload.fromMs
+      || payload.toMs - payload.fromMs > 86_400_000
+      || (payload.after !== undefined && (typeof payload.after !== "string" || !CONTROL_ID_PATTERN.test(payload.after)))
+    )) invalid();
+    const entries = exact
+      ? new Map([[controlCommandKey(payload.id.toLowerCase()), await this.ctx.storage.get(controlCommandKey(payload.id.toLowerCase()))]])
+      : await this.ctx.storage.list({
+        prefix: "control:command:", limit: 20,
+        ...(payload.after ? { startAfter: controlCommandKey(payload.after.toLowerCase()) } : {}),
+      });
+    const integer = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+    const uuid = (value) => typeof value === "string" && CONTROL_ID_PATTERN.test(value) ? value.toLowerCase() : null;
+    const commands = [];
+    for (const [key, command] of entries) {
+      if (!command || command.userId !== userId || !uuid(command.id)
+        || key !== controlCommandKey(command.id)
+        || !["board-task-ingest", "board-task-augment"].includes(command.action)
+        || (!exact && (command.createdAt < payload.fromMs || command.createdAt >= payload.toMs))) continue;
+      const source = command.params?.sourceDetails ?? {};
+      const items = Array.isArray(source.items) ? source.items : [];
+      commands.push({
+        id: command.id, action: command.action, destination: "dashboard",
+        status: ["pending", "running", "completed", "failed"].includes(command.status) ? command.status : "unknown",
+        createdAt: integer(command.createdAt), updatedAt: integer(command.updatedAt), expiresAt: integer(command.expiresAt),
+        leaseExpiresAt: integer(command.leaseExpiresAt), deliveryAttempt: integer(command.deliveryAttempt),
+        bundleId: uuid(source.bundleId), cardMessageId: integer(source.cardMessageId),
+        messageId: integer(source.messageId),
+        items: items.slice(0, 8).map((item) => ({ updateId: integer(item?.updateId), messageId: integer(item?.messageId) })),
+        itemsTruncated: items.length > 8,
+        attachmentIds: (Array.isArray(command.attachmentIds) ? command.attachmentIds : []).map(uuid).filter(Boolean).slice(0, 8),
+        resultPresent: Object.hasOwn(command, "result"), errorPresent: Object.hasOwn(command, "error"),
+        notificationState: ["pending", "delivered"].includes(command.dashboardBotReceipt?.state) ? command.dashboardBotReceipt.state : null,
+      });
+    }
+    return {
+      observedAt: Date.now(), commands, scanned: entries.size,
+      nextAfter: !exact && entries.size === 20 ? [...entries.keys()].at(-1).slice("control:command:".length) : null,
+    };
+  }
+
   async #registerDashboardBotServiceIdentity(payload) {
     const hubId = String(payload?.hubId ?? "").trim().toLowerCase();
     const secret = String(payload?.secret ?? "").trim();
@@ -3776,6 +3826,24 @@ export class JournalStore extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/dashboard-bot/inspect") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      let identity;
+      try { identity = await this.#authenticateDashboardBotHub(request); }
+      catch (error) {
+        if (!/invalid|expired|too large|not registered|not paired/iu.test(error.message)) throw error;
+        return json({ error: "dashboard inspection is not authorized" }, 401);
+      }
+      let payload;
+      try { payload = JSON.parse(identity.body); }
+      catch { return json({ error: "invalid dashboard inspection" }, 400); }
+      try {
+        return json(await this.#inspectDashboardBotCommands(payload, identity.userId));
+      } catch (error) {
+        if (error.code !== "dashboard_inspection_invalid") throw error;
+        return json({ error: "invalid dashboard inspection" }, 400);
+      }
+    }
     if (request.method === "GET" && url.pathname === "/api/dashboard-bot/wake") {
       try {
         if (String(request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
@@ -5174,6 +5242,13 @@ export default {
       return json({ ok: true, ignored: routed.ignored === true });
       }
       return json({ error: "dashboard bot bundle recovery did not complete" }, 503);
+    }
+    if (url.pathname === "/api/dashboard-bot/inspect") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      const hubId = String(request.headers.get("X-Agent-Hub-Dashboard-Id") ?? "").trim().toLowerCase();
+      if (!CONTROL_ID_PATTERN.test(hubId)) return json({ error: "dashboard inspection is not authorized" }, 401);
+      // Unlike delivery, inspection cannot migrate/register an identity as a fallback.
+      return dashboardBotDurableFetch(env.JOURNAL.getByName(`dashboard-bot:${hubId}`), request, "inspect");
     }
     if ([
       "/api/dashboard-bot/pull",
