@@ -1,5 +1,5 @@
 import { assertTaskOperationExecuting, interruptibleTaskLease, taskOperationExecution } from "../process/task-operation-interruption-context.mjs";
-import { ownedGitArguments } from "./preparation-git-isolation.mjs";
+import { ownedGitArguments, withPreparationGitIsolation } from "./preparation-git-isolation.mjs";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
@@ -1392,6 +1392,65 @@ export class TaskGitWorkspaceService {
       assertTaskOperationExecuting();
       return operation(interruptibleTaskLease(this.#guardedLease(taskId, lease)));
     }, { ...options, signal: taskOperationExecution()?.signal });
+  }
+
+  // The existing Git process-tree journal owns both repository computation and
+  // the one shared immutable-object writer. A dead lease is not child retirement.
+  createNativeObjectStore({ sourceRoot, lease, store, assertCurrent = async () => {} }) {
+    this.#assertAvailable("createNativeObjectStore");
+    requiredGuardLease(lease);
+    const repositoryRoot = canonicalPath(sourceRoot);
+    const poolScope = "repository-native-object-store-sha1";
+    let poolOwner = null;
+    const objects = new OwnedNativeObjectStore({ dataDir: this.dataDir, ...(store ? { store } : {}),
+      assertCurrent: async () => { await lease.assertOwned(); await poolOwner?.assertOwned(); await assertCurrent(); },
+      gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd,
+        lease: poolOwner ?? lease, guardRepositoryRoot: repositoryRoot }),
+      withLease: operation => withInterprocessLocks([path.join(this.dataDir, "native-git-objects")], async poolLease => {
+        await this.#assertNoProcessTreeGuard(poolScope);
+        poolOwner = this.#guardedLease(poolScope, combinedLease(lease, poolLease));
+        try { return await withPreparationGitIsolation(this.dataDir, operation, poolOwner, objects); }
+        finally { poolOwner = null; }
+      }, { signal: taskOperationExecution()?.signal }),
+    });
+    return objects;
+  }
+
+  #sharedDependencies(sourceRoot, outerLease) {
+    return (fingerprint, operation) => {
+      if (!/^[a-f0-9]{64}$/u.test(fingerprint)) throw new Error("Exact dependency compatibility required");
+      const scope = `repository-deps-${fingerprint}`;
+      const root = path.join(this.dataDir, "task-dependency-inputs", fingerprint);
+      return withInterprocessLocks([path.join(this.dataDir, "locks", scope)], async lockLease => {
+        await this.#assertNoProcessTreeGuard(scope);
+        const owner = this.#guardedLease(scope, combinedLease(outerLease, lockLease));
+        const lease = { ...owner, beginProcessTreeGuard: context => owner.beginProcessTreeGuard({
+          ...context, repositoryRoot: canonicalPath(sourceRoot),
+        }) };
+        return operation({ root, lease });
+      }, { signal: taskOperationExecution()?.signal });
+    };
+  }
+
+  async withNativeRepositoryOwner({ sourceRoot, repositoryRoot }, operation) {
+    this.#assertAvailable("withNativeRepositoryOwner");
+    if (typeof operation !== "function") throw new TypeError("Native repository operation is required");
+    const source = canonicalPath(sourceRoot), target = canonicalPath(repositoryRoot);
+    if (samePath(source, target)) throw new Error("Native consumer must own an independent repository");
+    const key = taskRepositoryKey(target), scope = `repository-native-${key}`;
+    return withInterprocessLocks([path.join(this.dataDir, "locks", `native-repository-${key}`)], async lockLease => {
+      await this.#assertNoProcessTreeGuard(scope);
+      await this.#assertRepositoryProcessTreeClear(source);
+      const owner = this.#guardedLease(scope, lockLease);
+      const lease = { ...owner, beginProcessTreeGuard: context => owner.beginProcessTreeGuard({
+        ...context, repositoryRoot: source,
+      }) };
+      return operation({ lease,
+        objects: this.createNativeObjectStore({ sourceRoot: source, lease }),
+        gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd,
+          lease, guardRepositoryRoot: source }),
+      });
+    }, { signal: taskOperationExecution()?.signal });
   }
 
   storageRetentionOwner({ taskBoard, isStopping, readGeneration } = {}) {
@@ -2973,7 +3032,8 @@ export class TaskGitWorkspaceService {
         if (lockfiles.length) await withInterprocessLocks([path.join(this.dataDir, "locks", `task-dependencies-${id}-${custody.namespace.epoch}`)], async dependencyLease => {
           await this.prepareDependencies({ projectRoot: workspace.projectRoot, lockfiles,
             verify: dependencyMode === "verify", lease: combinedLease(lease, dependencyLease),
-            runNpm: (args, options) => this.#runOwnedNpm(args, { ...options, lease: combinedLease(lease, dependencyLease) }) });
+            sharedDependencies: this.#sharedDependencies(workspace.projectRoot, combinedLease(lease, dependencyLease)),
+            runNpm: (args, options) => this.#runOwnedNpm(args, options) });
         });
       }
       return workspace;
@@ -3101,7 +3161,8 @@ export class TaskGitWorkspaceService {
             lockfiles,
             verify: dependencyMode === "verify",
             lease: taskDependencyLease,
-            runNpm: (args, options) => this.#runOwnedNpm(args, { ...options, lease: taskDependencyLease }),
+            sharedDependencies: this.#sharedDependencies(workspace.projectRoot, taskDependencyLease),
+            runNpm: (args, options) => this.#runOwnedNpm(args, options),
           });
           await taskDependencyLease.assertOwned();
         });
@@ -4153,9 +4214,7 @@ export class TaskGitWorkspaceService {
     this.#assertAvailable("verifyNativeCaptureArchiveOwned");
     const { state, record, archive, lease, retirementOperationId = null } = params;
     await requiredGuardLease(lease).assertOwned();
-    const objects = new OwnedNativeObjectStore({ dataDir: this.dataDir,
-      gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease, guardRepositoryRoot: cwd, timeoutMs: 60_000 }),
-      assertCurrent: () => lease.assertOwned() });
+    const objects = this.createNativeObjectStore({ sourceRoot: archive.repository ?? record.snapshot?.repositoryRoot ?? path.join(this.dataDir, "native-git-objects", "sha1", "objects.git"), lease });
     if (retirementOperationId !== null) {
       // Storage preservation does not certify a historical candidate under
       // today's selected-content replay. Complete native graph/review proof
@@ -4234,8 +4293,7 @@ export class TaskGitWorkspaceService {
     }
     const ownedGitAt = (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
       guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });
-    const objectStore = record.objectStorage ? new OwnedNativeObjectStore({ dataDir: this.dataDir, gitAt: ownedGitAt,
-      assertCurrent: () => lease.assertOwned() }) : null;
+    const objectStore = record.objectStorage ? this.createNativeObjectStore({ sourceRoot: snapshot.repositoryRoot, lease }) : null;
     const retirementDatabase = record.target && await lstat(path.join(this.dataDir, "runtime.sqlite")).catch(error => {
       if (error.code === "ENOENT") return null; throw error;
     });
@@ -4243,8 +4301,7 @@ export class TaskGitWorkspaceService {
       .latestStorageArtifactReadonly("native-merge-transport", path.basename(root) + ":repository") : null;
     if (retirement?.metadata?.captureArchive) {
       if (!historicalOnly) throw new Error("Native capture retired; only historical evidence may consume its archive");
-      const objects = objectStore ?? new OwnedNativeObjectStore({ dataDir: this.dataDir, gitAt: ownedGitAt,
-        assertCurrent: () => lease.assertOwned() });
+      const objects = objectStore ?? this.createNativeObjectStore({ sourceRoot: snapshot.repositoryRoot, lease });
       const archived = await objects.readArchive(retirement.metadata.captureArchive);
       const state = JSON.parse(await readFile(path.join(root, "merge.json"), "utf8"));
       if (archived.manifest.binding.stateHash !== createHash("sha256").update(await readFile(path.join(root, "merge.json"))).digest("hex")

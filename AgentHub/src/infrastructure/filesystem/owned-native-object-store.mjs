@@ -476,6 +476,20 @@ export class OwnedNativeObjectStore {
     return this.withLease(async () => {
       const stored = await this.readArchive(archive);
       await this.#retireTransferAliases(this.store.getReadonly(archive.operationId));
+      return this.#withMath(stored, verify);
+    });
+  }
+
+  async withInputMath({ sourceRoot, inputs }, verify) {
+    return this.withLease(async () => {
+      await this.#pool();
+      const imported = await this.#import(sourceRoot, [...new Set(inputs)]);
+      await this.#retireTransferAliases(imported);
+      return this.#withMath({ inputs }, verify);
+    });
+  }
+
+  async #withMath(stored, verify) {
       const parent = path.join(this.dataDir, "native-git-objects", "math");
       await mkdir(parent, { recursive: true }); await plain(parent, true);
       const root = await mkdtemp(path.join(parent, "owned-"));
@@ -512,6 +526,5 @@ export class OwnedNativeObjectStore {
       }
       if (originalError) throw originalError;
       return result;
-    });
   }
 }

@@ -349,6 +349,9 @@
         "docs/decisions/ADR-HUB-385-owned-native-objects.md",
         "docs/decisions/ADR-HUB-411-input-scoped-native-production.md",
         "tests/infrastructure/filesystem/native-copy-production.test.mjs",
+        "src/infrastructure/filesystem/task-dependency-inputs.mjs",
+        "tests/infrastructure/filesystem/release-copy-production.test.mjs",
+        "tests/helpers/fixture-allocation.mjs",
         "tests/infrastructure/filesystem/native-object-consumer-production.test.mjs",
         "tests/infrastructure/filesystem/selected-git-bundle.test.mjs"
       ]
@@ -543,6 +546,9 @@
         "tests/fixtures/native-historical-replay-lines.json",
         "docs/decisions/ADR-HUB-411-input-scoped-native-production.md",
         "tests/infrastructure/filesystem/native-copy-production.test.mjs",
+        "src/infrastructure/filesystem/task-dependency-inputs.mjs",
+        "tests/infrastructure/filesystem/release-copy-production.test.mjs",
+        "tests/helpers/fixture-allocation.mjs",
         "tests/infrastructure/filesystem/native-object-consumer-production.test.mjs",
         "tests/infrastructure/filesystem/selected-git-bundle.test.mjs"
       ]

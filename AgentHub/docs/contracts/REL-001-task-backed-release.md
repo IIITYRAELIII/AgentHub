@@ -460,6 +460,33 @@ authority still apply. Legacy full bundles remain unchanged; partial output is
 preserved and never overwritten. No alternate borrowing or history waiver is
 introduced. See ADR-HUB-411-input-scoped-native-production.
 
+New Await inputs use the same owned immutable object provisioner through the
+ReleaseGit caller. Physical consumer identity includes the destination repository;
+semantic plan, native history, current verifier and selected-content authority do
+not change. The existing TaskGit process-tree journal fences both repository work
+and the shared pool writer, including invocation-only validation math. Temporary
+math may borrow only while that pool lease is held; persistent native captures,
+frozen generations and installed release repositories have no alternates.
+New generations do not manufacture a source bundle when exact inputs are already
+owned. Retained legacy bundles/partials keep their original identity and refusals.
+Generation retirement preserves complete Git graph/raw local work through the
+same object archive before sealed alias removal; nonrepository originals retain
+owned physical aliases rather than another full history copy. Unknown process
+lifetime or changed custody preserves the original and refuses deletion.
+
+For registry-only npm inputs without project install hooks/local links, the Task
+dependency owner keys one installed payload by exact manifest/lock/expected package
+identities plus runtime/platform/architecture/ABI. Publication follows the existing
+owned npm runner and full installed-state validation. Compatible Tasks own separate
+plain directories, stamps and mutable root caches; immutable package/bin payload
+is hardlinked from the verified input. Partial install/attach and changed input
+custody refuse without another npm attempt. Existing ordinary local trees are
+preserved; source-specific lifecycle/link inputs keep their local installation.
+On input changes, prior shared aliases and unique local cache/work move atomically
+into the same Task's ignored retained-dependency area for its existing cleanup;
+no package payload copy or shared-input overwrite occurs.
+
+
 New consumers of the existing owned immutable object store link only loose
 objects in their exact imported input closure and immutable pack families that
 intersect it. A necessary pack can contain additional objects; it is not rewritten

@@ -43,9 +43,49 @@ object-store regression uses a tiny shared fixture pool, proves unrelated raw
 blob/pack exclusion, same required content/custody, immutable hardlinks, unchanged
 pool, reopen and incomplete-pack/original-recovery refusals.
 
-This change does not implement shared dependency installation or replace the
-independent immutable release-generation repository/validation transport. Those
-paths require their own compatible dependency custody and guarded process-tree
-lifetime integration. No mutable donor tree or borrowed ODB is substituted here.
-Fixture savings are not production GB freed or an end-to-end speedup. Existing
-cleanup owns old data; release ownership controls coherent adoption and readiness.
+## Complete producer caller integration
+
+ReleaseGit now calls the existing object provisioner for fresh Await. Consumer
+physical identity includes its destination; the plan/native merge identity is
+unchanged. New independent generation clones share only immutable object files,
+never refs/config/index or alternates. Existing legacy source bundles remain their
+original input; no historical receipt is relabelled or rebuilt. Input-only
+verification uses the existing pool-leased invocation math lifetime and sealed
+cleanup, with the same durable TaskGit process-tree owner. Both the pool writer
+and repository execution remain fenced after an unproven child outcome.
+
+Generation retirement archives every original Git object/ref and raw local file
+through the existing object archive owner, retains its exact inventory/receipt,
+and uses the existing sealed deleter. Remaining generation metadata/transports
+retain physical archive aliases without a second byte copy. Partial sealed
+retirement resumes only the retained exact plan; unknown lifetime/custody refuses.
+The existing generation transport retention port also uses the guarded process
+owner; no new cleanup scheduler, store, reconciling owner or GC is added.
+
+The existing dependency owner may publish one compatible registry-only installed
+payload under its exact manifest/lock/runtime/platform/ABI fingerprint. Its normal
+npm runner, validation, source rereads, per-input lock and durable process guard
+precede publication. Project install hooks, workspaces and local linked inputs
+retain source-specific local installs. Existing local installed trees stay local.
+New compatible Tasks receive immutable package/bin hardlinks and separate plain
+local directories/stamps/.cache. Slot and attached file identities/content are
+checked; incomplete originals never reinstall automatically. Changed inputs retain
+prior aliases and unique cache/work by an atomic same-Task move, then use the new
+input. Required evidence and unique work remain under existing Task cleanup.
+
+## Additional evidence and limits
+
+A small real ReleaseGit fixture reproduces the old fresh Await full bundle, then
+checks the new no-bundle candidate, validation, independent generation/reopen and
+complete retirement with unique local work. Another real TaskGit prepare caller
+proves one owned npm install for two compatible Tasks and the same exact-key
+unknown-installer fence across different Task locks. The dependency owner fixture
+also checks separate caches, changed-input retention and partial install refusal.
+Windows allocations are measured only on disposable fixtures. Package readonly
+flags protect ordinary accidental writes; the same OS user's deliberate permission
+changes are not a new security boundary. Mixed necessary packs remain whole.
+
+Initial accepted native-only evidence remains scoped to its original carrier;
+this caller/dependency/generation extension requires its own exact source review.
+No production GB freed, live cleanup, application, publication or end-to-end speedup
+is implied. Cleanup of old data and runtime adoption remain with their owners.

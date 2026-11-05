@@ -40,8 +40,14 @@ export async function assertPlainIsolationPath(value) {
   }
 }
 export const preparationGitIsolationActive = () => Boolean(contexts.getStore());
-export function withPreparationGitIsolation(dataDir, operation, lease = null) {
-  return contexts.run({ dataDir, lease, gitTail: Promise.resolve() }, operation);
+export const assertPreparationProcessOwned = async () => contexts.getStore()?.lease?.assertOwned();
+export const preparationObjectStore = () => contexts.getStore()?.objects ?? null;
+export function withPreparationGitIsolation(dataDir, operation, lease = null, objects = null) {
+  const parent = contexts.getStore();
+  const owner = lease && parent?.lease ? { ...lease, assertOwned: async () => {
+    await parent.lease.assertOwned(); await lease.assertOwned();
+  } } : lease ?? parent?.lease ?? null;
+  return contexts.run({ dataDir, lease: owner, objects: objects ?? parent?.objects ?? null, gitTail: Promise.resolve() }, operation);
 }
 export function guardedPreparationGit(operation) {
   const active = contexts.getStore();

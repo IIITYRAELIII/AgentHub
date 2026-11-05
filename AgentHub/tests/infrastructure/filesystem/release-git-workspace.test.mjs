@@ -298,7 +298,7 @@ test("published service refuses missing or changed retained evidence, receipts, 
   assert.equal(f.board.lifecycleOutcome(`close-${item.source.id}`), null);
 });
 
-test("one operation generation isolates source bundles per repository", async (context) => {
+test("one operation generation isolates input repositories without duplicate transports", async (context) => {
   const first = await fixture(context);
   const second = await fixture(context);
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "rg-"));
@@ -381,15 +381,8 @@ test("new permanent release captures keep exact selected history without unrelat
   const request = { ...input, operationId: "selected-transport-operation", generation: 1,
     changelogContent: Buffer.from("selected release notes\n", "utf8") };
   const generation = await f.service.prepareGeneration(request);
-  const bundle = path.join(generation.generationRoot, "source.bundle"), original = await readFile(bundle);
-  const broad = path.join(f.root, "all-refs-comparison.bundle");
-  await git(f.primary, "bundle", "create", broad, "--all");
-  const broadBytes = (await stat(broad)).size;
-  assert.ok(broadBytes - original.length > 128_000, "unselected random payload is not copied into the new transport");
-  context.diagnostic(`isolated transport bytes: all-refs=${broadBytes}, selected=${original.length}`);
-  const heads = await git(f.primary, "bundle", "list-heads", bundle);
-  assert.match(heads, / refs\/heads\/main(?:\r?\n|$)/u);
-  assert.doesNotMatch(heads, /HUB-unselected-heavy/u);
+  const bundle = path.join(generation.generationRoot, "source.bundle");
+  await assert.rejects(readFile(bundle), { code: "ENOENT" });
   await git(generation.releaseRoot, "cat-file", "-e", `${selected}^{commit}`);
   await assert.rejects(git(generation.releaseRoot, "cat-file", "-e", otherBlob));
   await assert.rejects(git(generation.releaseRoot, "cat-file", "-e", `${other}^{commit}`));
@@ -397,7 +390,7 @@ test("new permanent release captures keep exact selected history without unrelat
   assert.equal(await git(generation.releaseRoot, "rev-parse", "HEAD"), generation.preReleaseHead);
   const repeated = await f.service.prepareGeneration(request);
   assert.equal(repeated.preReleaseHead, generation.preReleaseHead);
-  assert.deepEqual(await readFile(bundle), original, "original generation transport is never rebuilt on retry");
+  await assert.rejects(readFile(bundle), { code: "ENOENT" }, "reopening a generation does not manufacture a transport");
   assert.equal(await git(f.primary, "show-ref"), sourceRefs, "capture does not mutate source refs");
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
 });
