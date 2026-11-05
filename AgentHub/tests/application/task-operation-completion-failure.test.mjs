@@ -148,3 +148,29 @@ test('completion diagnostics release the local invocation even when later Task r
     assert.equal((await f.get()).taskOperation.completionFailure.persistenceError.message,'original receipt write failed');
   } finally {f.tasks.task=readTask;}
 });
+
+test('reviewer completion diagnostic lookup failure cannot retain an active invocation',async t=>{
+  const f=await setup(t);
+  const original=Object.assign(new Error('reviewer original preparation failure'),{code:'REVIEWER_PREPARE'});
+  const persistence=Object.assign(new Error('reviewer UNKNOWN persistence failure'),{code:'ERR_SQLITE_ERROR'});
+  const lookup=Object.assign(new Error('reviewer Task read unavailable during completion diagnostics'),{code:'ERR_SQLITE_BUSY'});
+  const taskRead=f.tasks.task.bind(f.tasks);
+  let diagnosticPhase=false, observed;
+  f.workspaces.prepareOwned=async()=>{throw original;};
+  f.rawCatalog.markMcpOperationUnknown=()=>{diagnosticPhase=true;throw persistence;};
+  // This is the real TaskBoardService port used by interruption.binding(args).
+  // Only the extra diagnostic-time lookup fails; original admission and work run.
+  f.tasks.task=(...args)=>{if(diagnosticPhase)throw lookup;return taskRead(...args);};
+  try {await f.hub.call('hub_task_claim',f.args);}
+  catch(error){observed=error;}
+  finally {f.tasks.task=taskRead;}
+  const result=await f.get();
+  console.log(JSON.stringify({reviewerCompletionLookup:{errorCode:observed?.code,
+    originalCause:observed?.cause===original,status:result.taskOperation.status,
+    active:result.taskOperation.active,execution:result.taskOperation.execution}}));
+  assert.equal(result.taskOperation.active,false,'settled invocation must release its local active marker even if diagnostic lookup fails');
+  assert.equal(result.taskOperation.execution.state,'unresolved');
+  assert.equal(observed?.code,'MCP_COMPLETION_PERSISTENCE_FAILED');
+  assert.equal(observed.cause,original);
+  assert.equal(observed.errors[1],persistence);
+});
