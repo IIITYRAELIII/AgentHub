@@ -116,6 +116,15 @@ current/rollback custody. Explicit invalid sourceRoot values, changed bindings
 and unselected/prepared source-free bodies remain unknown and block retirement.
 No whole-body rehash is added before each batch; installed custody, bounded
 manifest reads and the existing native per-batch content guards remain owners.
+An active lease may reuse its verified runtime native producer between batches,
+without retaining target handles or target verification. Each reply identifies
+one invocation; it is not a maintenance original, retry or replacement ID.
+Missing/invalid replies remain unknown and join the real child before rejection.
+A failed binding cannot restart within that scope, including after another
+resource runs. Other independently admitted resources retain their existing
+guards. Shutdown closes the bounded producer lifetime before releasing the
+owning lease; no process timeout or abort abandons native work. See
+ADR-HUB-385-runtime-native-executor.
 See ADR-HUB-363-source-free-runtime-pins. The same owner also permits only
 the exact compile-proven historical Whisper cache described
 by REL-001/ADR-HUB-385-generated-runtime-cache. It retires before its manifest

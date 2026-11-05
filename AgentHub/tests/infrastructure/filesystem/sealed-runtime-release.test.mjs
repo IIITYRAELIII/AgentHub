@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { Transform } from "node:stream";
 import { createHash } from "node:crypto";
 import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -7,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { retireSealedRuntimeRelease } from "../../../src/infrastructure/filesystem/sealed-runtime-release.mjs";
 import { trustedWindowsPowerShellPath } from "../../../src/infrastructure/process/system-boot-identity.mjs";
+import { withRuntimeInstallationLease } from "../../../src/infrastructure/filesystem/runtime-installation-custody.mjs";
 
 const native = { skip: process.platform !== "win32" || !process.env.AGENT_HUB_TEST_TMP };
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -88,6 +91,111 @@ test("64-file partial outcome requires original partial authority to resume", na
   assert.equal((await readdir(path.join(f.root, "assets"))).length, 1);
   assert.deepEqual(await retireSealedRuntimeRelease(f.root, f.binding, { allowPartial: true }),
     { status: "complete", files: 1, logicalBytes: f.files[64].bytes });
+  await assert.rejects(lstat(f.root), { code: "ENOENT" });
+});
+
+test("lease-scoped actual batches compile one producer and release native handles between replies", native, async t => {
+  const f = await fixture(t, { count: 130 }), producers = [], original = childProcess.spawn;
+  const manifest = await readFile(f.manifest), unicodeRoot = path.join(f.area, "runtime-данные");
+  await rename(f.root, unicodeRoot); f.root = unicodeRoot;
+  const observed = t.mock.method(childProcess, "spawn", (...args) => {
+    const child = original(...args);
+    if (args[2]?.env?.AGENT_HUB_RUNTIME_RETIRE_SOURCE) {
+      const entry = { child, closed: false }; producers.push(entry);
+      child.once("close", () => { entry.closed = true; });
+    }
+    return child;
+  });
+  syncBuiltinESMExports();
+  const began = performance.now(), results = [];
+  try {
+    await withRuntimeInstallationLease(f.area, async lease => {
+      const first = await retireSealedRuntimeRelease(f.root, f.binding); results.push(first);
+      assert.equal(first.files, 64); assert.equal(first.status, "partial");
+      assert.deepEqual(await readFile(path.join(f.root, "runtime-manifest.json")), manifest);
+      // Return is after C# finally: no target handle remains in the live producer.
+      const moved = path.join(f.area, "between-batches"); await rename(f.root, moved); await rename(moved, f.root);
+      await lease.assertOwned();
+      results.push(await retireSealedRuntimeRelease(f.root, f.binding, { allowPartial: true }));
+      results.push(await retireSealedRuntimeRelease(f.root, f.binding, { allowPartial: true }));
+    });
+    assert.deepEqual(results.map(r => [r.status, r.files]), [["partial", 64], ["partial", 64], ["complete", 2]]);
+    assert.equal(producers.length, 1, "one verified producer per active original, not a fresh compilation per batch");
+    assert.ok(producers.every(p => p.closed), "the real lease joins its producer before releasing");
+    await assert.rejects(lstat(f.root), { code: "ENOENT" });
+  } finally {
+    observed.mock.restore(); syncBuiltinESMExports();
+    t.diagnostic(JSON.stringify({ runtimeNativeBatches: results.length, nativeProducerStarts: producers.length, elapsedMs: performance.now() - began }));
+  }
+});
+
+test("lease-scoped native failure joins and refuses replay while an independent original proceeds", native, async t => {
+  const f = await fixture(t, { count: 65 }), next = await fixture(t), original = childProcess.spawn, producers = [];
+  const observed = t.mock.method(childProcess, "spawn", (...args) => {
+    const child = original(...args);
+    if (args[2]?.env?.AGENT_HUB_RUNTIME_RETIRE_SOURCE) {
+      const entry = { closed: false }; producers.push(entry); child.once("close", () => { entry.closed = true; });
+    }
+    return child;
+  });
+  syncBuiltinESMExports();
+  try {
+    await withRuntimeInstallationLease(f.area, async () => {
+      assert.equal((await retireSealedRuntimeRelease(f.root, f.binding)).files, 64);
+      const foreign = path.join(f.root, "valuable-WIP"); await writeFile(foreign, "retained");
+      await assert.rejects(retireSealedRuntimeRelease(f.root, f.binding, { allowPartial: true }), /sealed-runtime-outcome-unknown/u);
+      assert.equal(producers[0].closed, true, "unknown rejection waits for the real child close");
+      await assert.rejects(retireSealedRuntimeRelease(f.root, f.binding, { allowPartial: true }), /sealed-runtime-/u);
+      assert.equal(producers.length, 1, "no new producer for the uncertain same binding");
+      assert.equal(await readFile(foreign, "utf8"), "retained");
+      assert.equal((await readdir(path.join(f.root, "assets"))).length, 1);
+      assert.equal((await retireSealedRuntimeRelease(next.root, next.binding)).status, "complete");
+      await assert.rejects(retireSealedRuntimeRelease(f.root, f.binding, { allowPartial: true }), /sealed-runtime-/u);
+      assert.equal(producers.length, 2, "switching resources cannot reopen the earlier uncertain binding");
+    });
+    assert.equal(producers.length, 2); assert.ok(producers.every(p => p.closed));
+  } finally { observed.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("lost scoped native reply joins without killing and retains the same partial binding", native, async t => {
+  const f = await fixture(t, { count: 65 }), original = childProcess.spawn;
+  const binding = JSON.parse(JSON.stringify(f.binding)); let dropped = false, closed = false;
+  const observed = t.mock.method(childProcess, "spawn", (...args) => {
+    const child = original(...args);
+    if (!args[2]?.env?.AGENT_HUB_RUNTIME_RETIRE_SOURCE) return child;
+    let buffered = "";
+    const transport = new Transform({ transform(chunk, encoding, callback) {
+      buffered += chunk.toString("utf8");
+      for (let end; (end = buffered.indexOf("\n")) >= 0;) {
+        const line = buffered.slice(0, end); buffered = buffered.slice(end + 1);
+        if (!dropped && JSON.parse(line).kind === "result") {
+          // Drop only the completed reply. Real C# is unchanged, its handles
+          // have returned; EOF requests a graceful producer close, not a kill.
+          dropped = true; child.stdin.end();
+        } else this.push(line + "\n");
+      }
+      callback();
+    } });
+    child.stdout.pipe(transport); child.once("close", () => { closed = true; });
+    return new Proxy(child, { get(target, property) {
+      if (property === "stdout") return transport;
+      const value = Reflect.get(target, property); return typeof value === "function" ? value.bind(target) : value;
+    } });
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(withRuntimeInstallationLease(f.area,
+      () => retireSealedRuntimeRelease(f.root, f.binding)), /sealed-runtime-outcome-unknown:reply-missing/u);
+    assert.equal(dropped, true); assert.equal(closed, true);
+    assert.equal((await readdir(path.join(f.root, "assets"))).length, 1);
+    assert.equal(hash(await readFile(f.manifest)), binding.manifestSha256);
+    assert.deepEqual(f.binding, binding);
+  } finally { observed.mock.restore(); syncBuiltinESMExports(); }
+  // A caller with its retained original pruning authority re-enters through a
+  // fresh owned lease, never a new binding or an automatic in-scope replay.
+  const result = await withRuntimeInstallationLease(f.area,
+    () => retireSealedRuntimeRelease(f.root, binding, { allowPartial: true }));
+  assert.equal(result.status, "complete"); assert.equal(result.files, 1);
   await assert.rejects(lstat(f.root), { code: "ENOENT" });
 });
 

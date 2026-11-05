@@ -61,6 +61,19 @@ operation remains pending between batches, and shutdown drains its actual child.
 The shared installation lease is scoped to the physical runtime root, outside
 ordinary provider/message admission. Install no longer sweeps prepared bodies.
 
+The existing physical installation and storage-maintenance lease callbacks may
+reuse one verified native runtime producer for consecutive batches of the same
+target/binding (ADR-HUB-385-runtime-native-executor). C# source bytes are bound at
+first native use and rechecked before each request; target metadata, content, ADS,
+reparse/link, original admission and lease checks are never cached. The unchanged
+C# method returns only after disposing that invocation's native handles, with a
+fresh 64-file/256-MiB/ten-second batch. A different resource joins the prior
+producer before starting another; a failed binding cannot restart in that scope.
+Scope exit drains and joins the producer before releasing its real lease. There
+is no disk assembly cache, new admission lane or daemon outside that lifetime.
+Producer-start and bounded-fixture timings establish only the measured native
+subpath; unchanged source/owner checks and production elapsed time stay separate.
+
 Repeated journal projection may reuse a verified rendering only within the
 existing usage worker lifetime. Its bounded scalar receipt is not source
 authority: the current SQLite journal revision/index, clean dirty set, exact

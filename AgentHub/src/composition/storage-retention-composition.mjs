@@ -4,6 +4,7 @@ import { withInterprocessLocks } from "../infrastructure/process/interprocess-lo
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { RuntimeReleaseRetention } from "../infrastructure/filesystem/runtime-release-retention.mjs";
 import { RuntimeUpdateBackupRetention } from "../infrastructure/persistence/runtime-update-backup-retention.mjs";
+import { withSealedRuntimeExecutor } from "../infrastructure/filesystem/sealed-runtime-executor.mjs";
 
 export function storageRetentionEnabled({ environment = process.env, recording = false } = {}) {
   return Boolean(environment.AGENT_HUB_RELEASE_ID) && environment.AGENT_HUB_TEST_CONTOUR !== "1" && !recording;
@@ -24,7 +25,8 @@ export function createStorageRetentionComposition({ config, store, taskBoard, ta
         isStopping: () => isStopping() || readBusy(),
       })],
     readContext: () => ({ ready: readReady(), busy: readBusy(), releaseId: environment.AGENT_HUB_RELEASE_ID, isolated: false }),
-    withLease: fn => withInterprocessLocks([path.join(config.dataDir, "storage-retention")], fn, { timeoutMs: 250 }),
+    withLease: fn => withInterprocessLocks([path.join(config.dataDir, "storage-retention")],
+      lease => withSealedRuntimeExecutor(() => fn(lease)), { timeoutMs: 250 }),
   });
   // Health reads only cached bounded status, never the maintenance DB or files.
   health.setDiagnosticSource("storageRetention", () => service.status());
