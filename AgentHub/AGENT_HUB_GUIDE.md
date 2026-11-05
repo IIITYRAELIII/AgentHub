@@ -50,6 +50,6 @@ This conversation is running through Agent Hub.
 
 - Show only the file name as link text, but always use the full absolute path as the link target.
 
-Agent Hub documentation: [README](https://github.com/IIITYRAELIII/Utilities/blob/main/AgentHub/README.md).
+Agent Hub documentation: [README](https://github.com/IIITYRAELIII/AgentHub/blob/main/AgentHub/README.md).
 
 Do not read the README on every turn. Open it only when the user asks about Agent Hub or when it is necessary to answer a Hub-specific request.
