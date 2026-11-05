@@ -1589,6 +1589,7 @@ const state = {
   selectedId: null,
   messages: new Map(),   // taskId -> message[]
   messageRenderLimits: new Map(), // taskId -> visible newest-message count
+  messageScrollStates: new Map(), // scalar position, evicted with its canonical page
   taskDiffs: new Map(),  // taskId -> { text, open }
   historyPagination: new Map(), // taskId -> { hasOlder, loading }
   live: new Map(),       // taskId -> live | null
@@ -3545,6 +3546,7 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false, pr
     return;
   }
   const fallback = representativeStreamTask(streams.find((value) => value.id === next[0]));
+  emit("history:close", { id: target.id });
   if (fallback) selectTaskFromUi(fallback.id, { preserveStreamTabs: preserveClickTarget });
 }
 
@@ -4521,11 +4523,18 @@ function renderStreamTabs() {
   scheduleStreamTabsOverflow();
 }
 
+let publishedRetainedHistoryTaskIds = [];
+
 function publishVisibleStreamTasks(tasks) {
   const ids = tasks.map((task) => task.id);
-  if (sameData(ids, state.visibleStreamTaskIds)) return;
+  const retainedTaskIds = state.tasks.filter((task) => (
+    state.openStreamsByWorkspace.get(workspaceKey(task))?.includes(streamKey(task))
+  )).map((task) => task.id);
+  if (sameData(ids, state.visibleStreamTaskIds)
+    && sameData(retainedTaskIds, publishedRetainedHistoryTaskIds)) return;
   state.visibleStreamTaskIds = ids;
-  emit("workspace:visible-streams", { taskIds: ids });
+  publishedRetainedHistoryTaskIds = retainedTaskIds;
+  emit("workspace:visible-streams", { taskIds: ids, retainedTaskIds });
 }
 
 const { ChatScrollController, shouldLoadOlderPage } = window.AgentHubChatScroll;
@@ -5985,6 +5994,14 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   // previous Stream forever.
   const taskChanged = activeChatId !== task.id
     || String(chatLog.dataset.messageOwnerKey ?? "") !== String(task.id ?? "");
+  if (taskChanged && activeChatId && state.messages.has(activeChatId)
+    && String(chatLog.dataset.messageOwnerKey ?? "") === activeChatId) {
+    state.messageScrollStates.set(activeChatId, {
+      distance: Math.max(0, chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop),
+      pinned: scrollContainerIsNearBottom(chatScroll),
+    });
+  }
+  if (taskChanged) chatScrollControllers.get(chatScroll)?.noteUserIntent();
 
   renderDialogSettings();
   renderStreamChatHeader(task);
@@ -6004,8 +6021,9 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
 
   if (taskChanged) {
     activeChatId = task.id;
-    state.messageRenderLimits.set(task.id, INITIAL_MESSAGE_RENDER_LIMIT);
-    renderMessages({ forceBottom: true });
+    if (!state.messageRenderLimits.has(task.id)) state.messageRenderLimits.set(task.id, INITIAL_MESSAGE_RENDER_LIMIT);
+    const restoredScroll = state.messageScrollStates.get(task.id);
+    renderMessages({ forceBottom: !restoredScroll, restoredScroll });
   }
   renderLive();
   renderApprovals();
@@ -6155,8 +6173,12 @@ function chatIsNearBottom() {
 
 function pinChatToBottom() {
   const controller = chatScrollControllers.get(chatScroll);
+  const owner = chatLog.dataset.messageOwnerKey;
+  let generation = controller?.animationGeneration;
   const apply = () => {
+    if (chatLog.dataset.messageOwnerKey !== owner || controller?.animationGeneration !== generation) return;
     controller?.pinNow();
+    generation = controller?.animationGeneration;
   };
   apply();
   // Финальная карточка нередко приходит одновременно с удалением live-блока.
@@ -6823,14 +6845,15 @@ function renderMessagesContent({
   prependedCount = 0,
   tailLimit = 0,
   exactNavigation = null,
+  restoredScroll = null,
 } = {}) {
   const task = currentTask();
   const taskId = String(task?.id ?? "");
   renderStreamChatHeader(task);
   const scrollController = chatScrollControllers.get(chatScroll);
-  const scrollSnapshot = exactNavigation ? null : scrollController?.capture();
+  const scrollSnapshot = exactNavigation ? null : restoredScroll ?? scrollController?.capture();
   const stickToBottom = !exactNavigation
-    && (forceBottom || scrollSnapshot?.pinned || chatIsNearBottom());
+    && (forceBottom || scrollSnapshot?.pinned || (!restoredScroll && chatIsNearBottom()));
   // Обновление истории после финального ответа использует preserveTop. У низа
   // якорь первого видимого сообщения оставлял зазор после новой карточки.
   // Якорь нужен только читателю, который уже ушёл выше по истории.
@@ -6866,6 +6889,7 @@ function renderMessagesContent({
     if (exactNavigation) focusRenderedMessage(exactNavigation, { behavior: "auto" });
     else if (anchor) restoreChatAnchor(anchor);
     else if (stickToBottom) pinChatToBottom();
+    else if (restoredScroll) scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true });
     else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
     scheduleUnderfilledHistoryLoad();
     return;
@@ -6921,6 +6945,7 @@ function renderMessagesContent({
     scrollController?.addUnread(newTailMessages);
   }
   else if (stickToBottom) pinChatToBottom();
+  else if (restoredScroll) scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true });
   else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, {
     preserveDistance: true,
     newItemsCount: newTailMessages,
@@ -11719,6 +11744,14 @@ const AgentHub = {
       renderLive();
       renderStreamChatHeader(currentTask());
     } else refreshSupplementaryStreamChat(taskId);
+  },
+  releaseTaskHistory(taskId) {
+    if (taskId === state.selectedId || state.visibleStreamTaskIds.includes(taskId)) return false;
+    state.messages.delete(taskId);
+    state.historyPagination.delete(taskId);
+    state.messageRenderLimits.delete(taskId);
+    state.messageScrollStates.delete(taskId);
+    return true;
   },
   setMessagesForExactNavigation(taskId, messages, exactNavigation) {
     const next = Array.isArray(messages) ? messages.slice() : [];

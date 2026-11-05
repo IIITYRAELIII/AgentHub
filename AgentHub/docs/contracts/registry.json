@@ -98,6 +98,8 @@
       "document": "UI-001-message-projection.md",
       "paths": [
         "docs/decisions/ADR-0044-readiness-gated-rotation.md",
+        "docs/decisions/ADR-HUB-414-retained-chat-switching.md",
+        "tests/public/open-chat-history-reuse.test.mjs",
         "assets/web-app/**",
         "src/interfaces/desktop/desktop-read-model-service.mjs",
         "src/interfaces/desktop/desktop-snapshot.mjs",
@@ -171,6 +173,8 @@
       "paths": [
         "docs/decisions/ADR-0125-inactive-codex-recovery-interruption.md",
         "claude-session-processes.ps1",
+        "docs/decisions/ADR-HUB-414-retained-chat-switching.md",
+        "tests/public/open-chat-history-reuse.test.mjs",
         "src/application/restart-request-service.mjs",
         "src/application/agent-hub-startup-coordinator.mjs",
         "src/application/deferred-input*",

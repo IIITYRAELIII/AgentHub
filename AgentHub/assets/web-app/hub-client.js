@@ -128,6 +128,7 @@ let selectionTail = Promise.resolve();
 let initialRouteOpening = true;
 const historyRefreshAtByTask = new Map();
 let visibleStreamTaskIds = new Set();
+let retainedHistoryTaskIds = null;
 let boardTaskViewsSource = null;
 let boardTaskViewsCache = [];
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
@@ -153,6 +154,9 @@ const CONNECTION_LATENCY_PROBE_INTERVAL_MS = 5_000;
 const historyByTask = new Map();
 const historyWindowByTask = new Map();
 const historyPageByTask = new Map();
+// Reuse the existing four-column working-set size, without copying windows or
+// making it a limit on conversations. Explicit close still evicts its page.
+const RECENT_HISTORY_PAGE_COUNT = 4;
 const focusedHistoryWindowByTask = new Map();
 const historyCatchUpDeadlines = new Map();
 const historyCatchUpTurnIds = new Map();
@@ -448,6 +452,13 @@ function readSelectedTaskId() {
 
 function rememberSelectedTaskId(id) {
   selectedTaskId = String(id ?? "").trim();
+  const page = historyPageByTask.get(selectedTaskId);
+  if (page && sameIdentity(page.identity, taskIdentity(selectedTaskId))) {
+    page.reusable = true;
+    historyPageByTask.delete(selectedTaskId);
+    historyPageByTask.set(selectedTaskId, page);
+  }
+  releaseClosedTaskHistories();
   try {
     if (selectedTaskId) localStorage.setItem(selectedTaskKey, selectedTaskId);
     else localStorage.removeItem(selectedTaskKey);
@@ -3090,12 +3101,13 @@ function applyOpened(result, {
   }
   const retainsPinnedFocus = Boolean(result.focusedTurn && exactNavigation?.pinId);
   const newest = historyMessages(history, retainsPinnedFocus ? null : result.focusedTurn);
-  const previousPage = historyPageByTask.get(id);
+  const existingPage = historyPageByTask.get(id);
+  const previousPage = existingPage && sameIdentity(existingPage.identity, history) ? existingPage : null;
   const preserveOlder = !result.focusedTurn
     && previousPage
     && Number(previousPage.start) < Number(history.start);
   if (retainsPinnedFocus) setFocusedHistoryWindow(id, result, exactNavigation);
-  const previousWindow = historyWindowByTask.get(id);
+  const previousWindow = previousPage ? historyWindowByTask.get(id) : null;
   setHistoryWindow(id, retainsPinnedFocus && previousWindow
     ? previousWindow
     : preserveOlder
@@ -3106,6 +3118,7 @@ function applyOpened(result, {
   if (!retainsPinnedFocus || !previousPage) {
     historyPageByTask.set(id, {
       identity: stableIdentity(history),
+      reusable: previousPage?.reusable === true && sameIdentity(previousPage.identity, history),
       start: preserveOlder ? previousPage.start : history.start,
       end: history.end,
       total: history.total,
@@ -3386,15 +3399,39 @@ agentHub.on("task:select", ({ id }) => {
   }
   pendingSelectionId = id;
   rememberSelectedTaskId(id);
+  const page = historyPageByTask.get(id);
+  const retained = page && sameIdentity(page.identity, identity)
+    && historyWindowByTask.has(id) && !focusedHistoryWindowByTask.has(id);
+  const traceId = commandTrace.newId();
+  const started = performance.now();
   selectionTail = runNavigation(
     identity,
     async () => {
+      if (retained) {
+        replaceRoute(`#/chat/stream/${encodeURIComponent(id)}`);
+        agentHub.selectTask(id);
+        syncHistoryPagination(id);
+        renderTaskMessages(id, { preserveScroll: true });
+        const generation = navigationIntents.capture();
+        commandTrace.afterPaint("ui-render", "history-page-paint", started, traceId,
+          { ...identity, clientAssetRevision: "hub414.history.1", trigger: "retained-page",
+            count: historyWindowByTask.get(id)?.length ?? 0 }, null,
+          () => navigationIntents.current(generation) && selectedTaskId === id
+            && sameIdentity(taskIdentity(id), identity) && historyPageByTask.get(id) === page
+            && !document.hidden && document.documentElement.dataset.view === "chat");
+        // Selection keeps its ordered mutation; the canonical, versioned
+        // history refresh is independent of that mutation and the first paint.
+        void enqueueTaskHistoryLoad(id, identity, { preserveScroll: true, traceId });
+        const snapshot = await control("select-task", taskOpenParams(identity, { clientTraceId: traceId }));
+        return { retainedHistory: true, snapshot };
+      }
       const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
       if (opened?.history) verifiedTaskHistory(opened.history, identity);
       return opened;
     },
     (result) => {
-      applyOpened(result);
+      if (result.retainedHistory) applySnapshot(result.snapshot);
+      else applyOpened(result);
       pendingSelectionId = "";
       const route = window.AgentHubNavigationTabs.resolvedChatRoute(result, identity);
       if (route.hash) replaceRoute(route.hash);
@@ -3428,6 +3465,7 @@ function enqueueTaskHistoryLoad(id, identity, {
   refreshSource = false,
   preserveScroll = true,
   onlyWhenSelected = false,
+  traceId = commandTrace.newId(),
 } = {}) {
   let state = historyLoadStates.get(id);
   if (!state) {
@@ -3437,7 +3475,7 @@ function enqueueTaskHistoryLoad(id, identity, {
   state.pending = mergeHistoryLoadRequest(state.pending, {
     identity: stableIdentity(identity),
     generation: historyRequestGenerationByTask.get(id) ?? 0,
-    traceId: commandTrace.newId(),
+    traceId,
     queuedAt: performance.now(),
     refreshSource,
     preserveScroll,
@@ -3517,12 +3555,36 @@ function enqueueTaskHistoryLoad(id, identity, {
   return state.running;
 }
 
-async function loadVisibleTaskHistories(taskIds) {
+function releaseClosedTaskHistories() {
+  if (!retainedHistoryTaskIds) return;
+  const recent = new Set([...historyPageByTask]
+    .filter(([id, page]) => page.reusable && sameIdentity(page.identity, taskIdentity(id)))
+    .slice(-RECENT_HISTORY_PAGE_COUNT).map(([id]) => id));
+  for (const id of historyWindowByTask.keys()) {
+    if (id === selectedTaskId || retainedHistoryTaskIds.has(id) || recent.has(id)) continue;
+    if (!agentHub.releaseTaskHistory(id)) continue;
+    historyRequestGenerationByTask.set(id, (historyRequestGenerationByTask.get(id) ?? 0) + 1);
+    const load = historyLoadStates.get(id);
+    if (load) load.pending = null;
+    historyByTask.delete(id);
+    historyWindowByTask.delete(id);
+    historyPageByTask.delete(id);
+    focusedHistoryWindowByTask.delete(id);
+    historyRefreshAtByTask.delete(id);
+  }
+}
+
+async function loadVisibleTaskHistories(taskIds, retainedTaskIds = retainedHistoryTaskIds) {
   const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
     .map((id) => String(id ?? "").trim())
     .filter(Boolean))];
   visibleStreamTaskIds = new Set(ids);
+  retainedHistoryTaskIds = retainedTaskIds == null ? null : new Set(retainedTaskIds);
+  releaseClosedTaskHistories();
   if (initialRouteOpening) return;
+  // Layout is published before its synchronous task:select intent. Let that
+  // handler own the cold open instead of starting a duplicate history read.
+  await Promise.resolve();
   await Promise.all(ids.map(async (id) => {
     // История выбранного Thread уже загружается open-task. Остальные колонки
     // подгружаются только после того, как пользователь открыл их Stream.
@@ -3533,7 +3595,14 @@ async function loadVisibleTaskHistories(taskIds) {
   }));
 }
 
-agentHub.on("workspace:visible-streams", ({ taskIds }) => void loadVisibleTaskHistories(taskIds));
+agentHub.on("workspace:visible-streams", ({ taskIds, retainedTaskIds }) =>
+  void loadVisibleTaskHistories(taskIds, retainedTaskIds));
+
+agentHub.on("history:close", ({ id }) => {
+  const page = historyPageByTask.get(id);
+  if (page) page.reusable = false;
+  releaseClosedTaskHistories();
+});
 
 agentHub.on("devices:refresh", () => void runAction(async () => {
   agentHub.setTrustedDevices({ loading: true });
