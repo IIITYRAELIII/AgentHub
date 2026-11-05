@@ -6,6 +6,14 @@ import { RuntimeReleaseRetention } from "../infrastructure/filesystem/runtime-re
 import { RuntimeUpdateBackupRetention } from "../infrastructure/persistence/runtime-update-backup-retention.mjs";
 import { withSealedRuntimeExecutor } from "../infrastructure/filesystem/sealed-runtime-executor.mjs";
 
+// Foreground finite series and background passes use the SAME real lease.
+// Passing its token to runApproved must not shorten the native producer lifetime
+// to the nested per-unit installation lease. No child survives this callback.
+export function withStorageRetentionLease(dataDir, operation) {
+  return withInterprocessLocks([path.join(dataDir, "storage-retention")],
+    lease => withSealedRuntimeExecutor(() => operation(lease)), { timeoutMs: 250 });
+}
+
 export function storageRetentionEnabled({ environment = process.env, recording = false } = {}) {
   return Boolean(environment.AGENT_HUB_RELEASE_ID) && environment.AGENT_HUB_TEST_CONTOUR !== "1" && !recording;
 }
@@ -25,8 +33,7 @@ export function createStorageRetentionComposition({ config, store, taskBoard, ta
         isStopping: () => isStopping() || readBusy(),
       })],
     readContext: () => ({ ready: readReady(), busy: readBusy(), releaseId: environment.AGENT_HUB_RELEASE_ID, isolated: false }),
-    withLease: fn => withInterprocessLocks([path.join(config.dataDir, "storage-retention")],
-      lease => withSealedRuntimeExecutor(() => fn(lease)), { timeoutMs: 250 }),
+    withLease: fn => withStorageRetentionLease(config.dataDir, fn),
   });
   // Health reads only cached bounded status, never the maintenance DB or files.
   health.setDiagnosticSource("storageRetention", () => service.status());

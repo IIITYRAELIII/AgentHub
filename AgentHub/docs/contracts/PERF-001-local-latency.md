@@ -62,6 +62,11 @@ The shared installation lease is scoped to the physical runtime root, outside
 ordinary provider/message admission. Install no longer sweeps prepared bodies.
 
 The existing physical installation and storage-maintenance lease callbacks may
+share a producer across normal foreground runApproved passes only when the
+finite outer series acquires `withStorageRetentionLease` from the composition;
+the SAME real token is delegated to each pass and each installation guard stays
+fresh. Old external direct-lock callers do not gain reuse implicitly. Separate
+background lease admissions close their producer independently. Those callbacks
 reuse one verified native runtime producer for consecutive batches of the same
 target/binding (ADR-HUB-385-runtime-native-executor). C# source bytes are bound at
 first native use and rechecked before each request; target metadata, content, ADS,

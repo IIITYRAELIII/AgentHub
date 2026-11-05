@@ -26,6 +26,25 @@ the same uncertain effect. Unscoped callers get a joined single-call scope.
 Nested installation custody shares the outer active maintenance scope; after
 its callback finishes, no producer outlives the real lease.
 
+Foreground callers must acquire their finite outer series through
+`withStorageRetentionLease(dataDir, async storageLease => ...)` from the existing
+storage composition, then pass `withLease: fn => fn(storageLease)` to their
+service. This public composition helper opens the real storage lock and the
+producer scope together and joins the child before lock release, including a
+cooperative stop or exception. The background composition uses the same helper.
+An old external caller opening `withInterprocessLocks` directly bypasses this
+lifetime and still compiles once per nested installation callback; unchanged
+already-approved operators are not silently upgraded. Each separate background
+pass also ends its producer with its own lease. Neither API preserves a process
+between distinct lease admissions. Actual foreground callers need their own
+reviewed import/call-site change and fresh operational binding before adoption.
+
+The owning regression uses real SQLite, RuntimeReleaseRetention and three normal
+runApproved passes under that one real storage lease, completing the SAME
+canonical original in 64/64/2 files with one producer. A second case introduces a
+late prepared-source pin: the fresh next unit refuses, keeps the original and
+remaining files, and a thrown foreground boundary joins before lease reacquires.
+
 Maintained real Windows cases measure three 64/64/2 batches and producer starts,
 rename the target between replies to prove handles were released, retain foreign
 late data, prohibit failed-binding replay even after another resource, and lose

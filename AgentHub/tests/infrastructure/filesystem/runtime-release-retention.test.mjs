@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
@@ -13,6 +15,7 @@ import { runtimePointerTransition } from "../../../src/infrastructure/filesystem
 import { retireSealedRuntimeRelease } from "../../../src/infrastructure/filesystem/sealed-runtime-release.mjs";
 import { StorageRetentionService } from "../../../src/application/storage-retention-service.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
+import { withStorageRetentionLease } from "../../../src/composition/storage-retention-composition.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const execute = promisify(execFile);
@@ -109,6 +112,97 @@ test("actual bounded batches retain SAME original operation, manifest and curren
   const revision = f.store.get(record.operationId).revision;
   await f.service.runOnce();
   assert.equal(f.store.get(record.operationId).revision, revision);
+});
+
+test("finite foreground held storage lease reuses producer across real runApproved originals", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t, 130), producers = [], originalSpawn = childProcess.spawn;
+  const observed = t.mock.method(childProcess, "spawn", (...args) => {
+    const child = originalSpawn(...args);
+    if (args[2]?.env?.AGENT_HUB_RUNTIME_RETIRE_SOURCE) {
+      const entry = { closed: false }; producers.push(entry);
+      child.once("close", () => { entry.closed = true; });
+    }
+    return child;
+  });
+  syncBuiltinESMExports();
+  const began = performance.now(), passes = []; let originalId;
+  try {
+    const preview = await f.owner.preview({ candidate: f.candidate, context: f.context });
+    assert.equal(preview.status, "eligible");
+    const approved = { ownerId: f.owner.id, candidate: f.candidate, binding: preview.binding };
+    // Exact foreground caller wiring: acquire ONCE, then delegate the SAME real
+    // token on each normal pass. Per-unit installation custody remains fresh.
+    await withStorageRetentionLease(path.join(f.root, "maintenance"), async lease => {
+      const service = new StorageRetentionService({ store: f.store, owners: [f.owner], maxUnits: 1,
+        readContext: () => f.context, withLease: fn => fn(lease) });
+      try {
+        for (let pass = 0; pass < 3; pass++) {
+          await lease.assertOwned();
+          const status = await service.runApproved([approved]);
+          const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0];
+          originalId ??= record?.operationId;
+          assert.ok(originalId);
+          const original = f.store.get(originalId);
+          passes.push(original.metadata.lastObservation?.files ?? original.result?.files);
+          assert.equal(producers.length, 1);
+          assert.equal(producers[0].closed, false, "producer stays inside the actual foreground lease");
+          if (pass < 2) {
+            assert.equal(record.operationId, originalId); assert.equal(status.partialBatches, pass + 1);
+            assert.equal(original.status, "reconciling");
+          } else { assert.equal(status.removed, 1); assert.equal(original.status, "succeeded"); }
+        }
+      } finally { await service.close(); }
+    });
+    assert.equal(producers.length, 1); assert.equal(producers[0].closed, true);
+    await withStorageRetentionLease(path.join(f.root, "maintenance"), async lease => {
+      await lease.assertOwned(); assert.equal(producers[0].closed, true);
+    });
+    await assert.rejects(lstat(f.body), { code: "ENOENT" });
+    assert.deepEqual(passes.slice(0, 2), [64, 64]);
+    t.diagnostic(JSON.stringify({ runApprovedPasses: 3, nativeProducerStarts: producers.length,
+      originalId, elapsedMs: performance.now() - began }));
+  } finally { observed.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("foreground stop joins before lease release and late source pin still refuses SAME original", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t, 130), producers = [], originalSpawn = childProcess.spawn;
+  const observed = t.mock.method(childProcess, "spawn", (...args) => {
+    const child = originalSpawn(...args);
+    if (args[2]?.env?.AGENT_HUB_RUNTIME_RETIRE_SOURCE) {
+      const entry = { closed: false }; producers.push(entry); child.once("close", () => { entry.closed = true; });
+    }
+    return child;
+  });
+  syncBuiltinESMExports(); let originalId;
+  try {
+    const preview = await f.owner.preview({ candidate: f.candidate, context: f.context });
+    const approved = { ownerId: f.owner.id, candidate: f.candidate, binding: preview.binding };
+    await assert.rejects(withStorageRetentionLease(path.join(f.root, "maintenance"), async lease => {
+      const service = new StorageRetentionService({ store: f.store, owners: [f.owner], maxUnits: 1,
+        readContext: () => f.context, withLease: fn => fn(lease) });
+      try {
+        assert.equal((await service.runApproved([approved])).partialBatches, 1);
+        originalId = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0].operationId;
+        const prepared = await f.release(99), file = path.join(prepared.body, "runtime-manifest.json");
+        const manifest = JSON.parse(await readFile(file, "utf8")); manifest.sourceRoot = f.body;
+        await writeFile(file, JSON.stringify(manifest));
+        await service.runApproved([approved]);
+        assert.equal(f.store.get(originalId).status, "reconciling");
+        assert.equal(f.store.get(originalId).metadata.lastObservation.reason, "runtime-source-pinned");
+        assert.equal((await readdir(path.join(f.body, "assets"))).length, 66);
+        assert.equal(producers.length, 1);
+        throw Error("foreground cooperative boundary");
+      } finally { await service.close(); }
+    }), /foreground cooperative boundary/u);
+    assert.equal(producers[0].closed, true);
+    await withStorageRetentionLease(path.join(f.root, "maintenance"), async lease => {
+      await lease.assertOwned(); assert.equal(producers[0].closed, true);
+    });
+    assert.equal((await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0].operationId, originalId);
+    assert.ok(await readFile(path.join(f.body, "runtime-manifest.json")));
+  } finally { observed.mock.restore(); syncBuiltinESMExports(); }
 });
 
 test("lost native completion reply reconciles exact absence without a second deletion", async t => {
