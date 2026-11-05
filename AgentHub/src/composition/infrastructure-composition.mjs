@@ -288,8 +288,8 @@ export async function createHubInfrastructure({
     mirror: process.stdout.isTTY || process.stderr.isTTY,
   });
   const startupRecords = [];
-  const startupStep = async (stage, operation) => {
-    const measured = await measureStartupBeforeTrace(stage, operation);
+  const startupStep = async (stage, operation, options) => {
+    const measured = await measureStartupBeforeTrace(stage, operation, options);
     startupRecords.push(measured.record);
     return measured.value;
   };
@@ -306,8 +306,48 @@ export async function createHubInfrastructure({
   });
   let sqliteRecovery;
   let commandTrace;
+  let miniAppServer = null;
+  let publicMiniAppServer = null;
   try {
-    sqliteRecovery = await startupStep("sqlite-recovery", () => sqliteRecoveryCoordinator.prepare());
+    // The same HTTP owner serves its startup shell/health while infrastructure
+    // safety is pending. It opens no journal and accepts no business intake.
+    agentHubRuntimeHealth.begin({ operations: [
+      { id: "database", label: "Проверка базы данных" },
+      { id: "infrastructure", label: "Загрузка инфраструктуры" },
+    ] });
+    agentHubRuntimeHealth.startOperation("database");
+    if (config.miniApp.enabled) {
+      miniAppServer = new MiniAppServer({ ...config.miniApp, startupOnly: true,
+        telegramRuntime: config.components.telegram === true,
+        localAccessSecret: localWebSecret,
+        localAccessSecretFile: path.join(runtimeCommandRoot, "local-web.secret"),
+        assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
+        testContourRuntimeIdentity: testContourRuntimeIdentity(),
+      });
+      if (config.miniApp.quickTunnel.enabled) {
+        publicMiniAppServer = new MiniAppServer({ host: config.miniApp.host,
+          port: config.miniApp.quickTunnel.publicPort, startupOnly: true, requireTelegramAuth: true,
+          telegramRuntime: config.components.telegram === true });
+      }
+      for (const server of [miniAppServer, publicMiniAppServer].filter(Boolean)) {
+        try { await startupStep("web-listener", () => server.start()); }
+        catch (error) {
+          // Web is already a non-critical capability. Its ordinary startup
+          // owner reports any remaining bind failure after infrastructure.
+          sentryDiagnostics.captureException(error, { surface: "server", kind: "startup",
+            component: "infrastructure-composition", action: "web-listener" });
+        }
+      }
+    }
+    try {
+      sqliteRecovery = await startupStep("sqlite-recovery",
+        (recordPhase) => sqliteRecoveryCoordinator.prepare({ recordPhase }), { providePhaseRecorder: true });
+      agentHubRuntimeHealth.completeOperation("database");
+    } catch (error) {
+      agentHubRuntimeHealth.failOperation("database", error);
+      throw error;
+    }
+    agentHubRuntimeHealth.startOperation("infrastructure");
   const localTrustedDeviceStore = new TrustedDeviceStore({
     filePath: path.join(config.dataDir, "trusted-devices.json"),
     // Signatures without the verifier origin are rejected unless an operator
@@ -509,6 +549,7 @@ export async function createHubInfrastructure({
     reportDiagnostic: diagnostic => console.warn("Historical release entry unavailable", diagnostic),
   }));
   const { operations: releaseOperations, commands: releaseOperationCommands } = createReleaseOperationServices({
+    recordCommandTrace: span => commandTrace?.service?.recordBestEffort?.(span) ?? false,
     store: releaseOperationStore,
     dataDir: config.dataDir,
     runtimeRoot: runtimeCommandRoot,
@@ -574,8 +615,7 @@ export async function createHubInfrastructure({
     recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,
     reportUnexpectedError: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   };
-  const miniAppServer = config.miniApp.enabled
-    ? new MiniAppServer({
+  if (miniAppServer) miniAppServer.configureRuntime({
       ...config.miniApp,
       ...serverOptions,
       localAccessSecret: localWebSecret,
@@ -583,16 +623,13 @@ export async function createHubInfrastructure({
       copyWorkspaceFile: copyWindowsFileObject,
       revealWorkspaceFile: revealWindowsFile,
       testContourRuntimeIdentity: testContourRuntimeIdentity(),
-    })
-    : null;
-  const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel.enabled
-    ? new MiniAppServer({
+    });
+  if (publicMiniAppServer) publicMiniAppServer.configureRuntime({
       ...serverOptions,
       host: config.miniApp.host,
       port: config.miniApp.quickTunnel.publicPort,
       requireTelegramAuth: true,
-    })
-    : null;
+    });
   await mkdir(path.dirname(stateFile), { recursive: true });
   commandTrace = createCommandTraceComposition({ dataDir: config.dataDir,
     instanceId: serverInstanceId, releaseId: serverReleaseId,
@@ -666,6 +703,7 @@ export async function createHubInfrastructure({
     );
   }
 
+  agentHubRuntimeHealth.completeOperation("infrastructure");
   return {
     trustedDeviceStore,
     contourExternalEffects,
@@ -717,6 +755,13 @@ export async function createHubInfrastructure({
       action: "initialize",
     });
     await commandTrace?.close?.().catch(() => {});
+    const closed = await Promise.allSettled([miniAppServer, publicMiniAppServer]
+      .filter(Boolean).map(server => Promise.resolve().then(() => server.close())));
+    const closeErrors = closed.filter(result => result.status === "rejected").map(result => result.reason);
+    if (closeErrors.length) {
+      // An unjoined listener cannot release the existing instance owner.
+      throw new AggregateError([error, ...closeErrors], "Cannot drain startup web listeners", { cause: error });
+    }
     await instanceGuard.release();
     throw error;
   }

@@ -57,7 +57,15 @@ export class TaskClaimLockAdmissionError extends Error {
   }
 }
 
+export class TaskClaimSourceAdmissionError extends Error {
+  constructor(cause) {
+    super("Task claim source discovery failed before repository preparation; correct the project root before a new claim", { cause });
+    this.code = "TASK_CLAIM_SOURCE_ADMISSION_FAILED";
+  }
+}
+
 export function claimAdmissionRefusalError(proof) {
+  if (proof?.kind === "task-claim-source-admission-v1") return new TaskClaimSourceAdmissionError();
   return proof?.kind === "task-claim-lock-admission-v1"
     ? new TaskClaimLockAdmissionError() : new TaskClaimExecutorBusyError();
 }
@@ -84,6 +92,13 @@ export function claimAdmissionNoEffectEvidence(receipt, taskId = null) {
         || [admission.repositoryRoot, admission.lockPath].some(value => typeof value !== "string"
           || !value || value.length > 4000 || value.includes("\0"))
         || !admission.lockPath.replaceAll("\\", "/").endsWith(`/locks/task-git-dev-${admission.repositoryKey}.lock`)) return null;
+  } else if (proof.kind === "task-claim-source-admission-v1") {
+    const admission = proof.sourceAdmission;
+    if (proof.code !== "TASK_CLAIM_SOURCE_ADMISSION_FAILED" || admission?.version !== 1
+        || admission.kind !== "task-git-source-admission-v1" || admission.phase !== "before-prepare"
+        || admission.operationId !== receipt.requestId || admission.taskId !== proof.taskId
+        || typeof admission.projectRoot !== "string" || !admission.projectRoot
+        || admission.projectRoot.includes("\0")) return null;
   } else return null;
   for (const key of ["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash", "createdAtMs"]) {
     if (proof[key] !== receipt[key]) return null;

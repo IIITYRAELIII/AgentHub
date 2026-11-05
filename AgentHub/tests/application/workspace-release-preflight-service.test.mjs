@@ -24,9 +24,10 @@ function localSourceFixture() {
   const publication = { repositories: [{ root: f.projectRoot, revision: "f".repeat(40) }] };
   envelope.publicationHash = preparationHash(publication);
   const repository = envelope.repositories[0];
-  repository.approvedBaseCommit = "c".repeat(40);
+  repository.approvedBaseCommit = "f".repeat(40);
   repository.localSourceBaseline = { schemaVersion: 1, kind: "installed-local-source-v1",
     publishedBaseCommit: "f".repeat(40), agreedMainCommit: "f".repeat(40), sourceBaseCommit: "c".repeat(40),
+    compositionBaseCommit: "f".repeat(40),
     sourceBaseTree: "b".repeat(40), sourcePatchSha256: "d".repeat(64), installedReleaseId: "installed-repair",
     installedManifestSha256: "e".repeat(64), planRevision: f.plan.revision,
     selectionHash: localSourceSelectionHash(f.plan.ready) };
@@ -45,10 +46,10 @@ function localSourceFixture() {
     return { provenance: request.provenance };
   };
   const candidate = { repositoryRoot: f.projectRoot, releaseRoot: path.resolve("D:/release-clone"),
-    checkpointPhase: "prepared", planRevision: f.plan.revision, baseCommit: p.sourceBaseCommit,
+    checkpointPhase: "prepared", planRevision: f.plan.revision, baseCommit: p.compositionBaseCommit,
     preReleaseHead: "a".repeat(40), tree: "b".repeat(40), manifestHash: "d".repeat(64),
     manifest: { workspaceId: "workspace-1", planRevision: f.plan.revision,
-      compositionPolicy: "main-selected-git-merge-v1", baseCommit: p.sourceBaseCommit,
+      compositionPolicy: "main-selected-git-merge-v1", baseCommit: p.compositionBaseCommit,
       baseProvenance: p, tasks: f.plan.ready } };
   f.service.releaseGitWorkspaces.frozenCandidate = async () => candidate;
   f.service.releaseGitWorkspaces.assertPrimaryInvariant = async () => ({ projectRoot: f.projectRoot, headCommit: p.agreedMainCommit });
@@ -114,13 +115,14 @@ for (const localSource of [false, true]) for (const drift of [false, true]) {
       const tasks = f.plan.ready.filter(task => task.projectRoot === projectRoot);
       const provenance = localSource ? { schemaVersion: 1, kind: "installed-local-source-v1",
         publishedBaseCommit: published, agreedMainCommit: agreed, sourceBaseCommit: "d".repeat(40),
+        compositionBaseCommit: published,
         sourceBaseTree: "e".repeat(40), sourcePatchSha256: "e".repeat(64), installedReleaseId: "retained",
         installedManifestSha256: "e".repeat(64), planRevision: f.plan.revision,
         selectionHash: localSourceSelectionHash(tasks), approvedOriginMainCommit: agreed, adoptions: [] }
         : { schemaVersion: 1, kind: "explicit-reviewed-main-v1", publishedBaseCommit: published,
           approvedLocalMainCommit: agreed, approvedOriginMainCommit: agreed };
       return { planRevision: f.plan.revision, manifestHash: "e".repeat(64), preReleaseHead: "c".repeat(40),
-        baseCommit: localSource ? provenance.sourceBaseCommit : agreed, manifest: { tasks, baseProvenance: provenance } };
+        baseCommit: localSource ? provenance.compositionBaseCommit : agreed, manifest: { tasks, baseProvenance: provenance } };
     };
     const pending = f.service.withReviewedMainRecovery({ workspaceId: "workspace-1",
       taskIds: f.plan.ready.map(task => task.taskId), approvedRepositories: roots.map(projectRoot => ({ projectRoot,
@@ -155,7 +157,7 @@ test("ordinary Await derives installed source with incoming or agreed-main origi
     };
     f.service.releaseGitWorkspaces.prepareCandidate = async request => {
       assert.deepEqual(request.baseProvenance, f.p);
-      assert.equal(request.approvedBaseCommit, f.p.sourceBaseCommit);
+      assert.equal(request.approvedBaseCommit, f.p.publishedBaseCommit);
       await request.validateBeforeCommit();
       changed = drift;
       const candidate = { ...f.candidate, frozenTasks: f.plan.ready };
@@ -179,7 +181,7 @@ test("installed local source preparation forwards exact baseline/review and rech
   const review = { requestId: "review-original", text: "Exact independent ACCEPT" };
   f.envelope.repositories[0].nativeResolutionReview = review;
   f.service.releaseGitWorkspaces.prepareCandidate = async request => {
-    assert.equal(request.approvedBaseCommit, f.p.sourceBaseCommit);
+    assert.equal(request.approvedBaseCommit, f.p.publishedBaseCommit);
     assert.deepEqual(request.baseProvenance, f.p);
     assert.deepEqual(request.nativeResolutionReview, review);
     await request.validateBeforeCommit();
@@ -192,28 +194,110 @@ test("installed local source preparation forwards exact baseline/review and rech
   assert.ok(f.verified() >= 3);
 });
 
+test("manual public version survives the actual preflight generation boundary", async () => {
+  const f = localSourceFixture();
+  const calls = [];
+  f.service.releaseGitWorkspaces.prepareGeneration = async request => {
+    await request.validateBeforeCommit(); calls.push(request); return f.candidate;
+  };
+  const input = { workspaceId: "workspace-1", operationId: "version-original", generation: 1, taskIds: ["task-current"] };
+  await f.service.prepareOperationGeneration({ ...input, releaseVersion: "3.7.9" });
+  assert.equal(calls[0].releaseVersion, "3.7.9");
+  await f.service.prepareOperationGeneration(input);
+  assert.equal(Object.hasOwn(calls[1], "releaseVersion"), false);
+});
+
 test("installed local source generation reuses the sealed exact selection without changing agreed main", async () => {
   const f = localSourceFixture();
+  let generationCalls = 0;
   f.service.releaseGitWorkspaces.prepareGeneration = async request => {
-    assert.equal(request.approvedBaseCommit, f.p.sourceBaseCommit);
+    generationCalls++;
+    assert.equal(request.approvedBaseCommit, f.p.publishedBaseCommit);
     assert.equal(request.baseProvenance.agreedMainCommit, f.p.agreedMainCommit);
     await request.validateBeforeCommit();
     return f.candidate;
   };
   const result = await f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
     operationId: "release-original", generation: 1, taskIds: ["task-current"] });
-  assert.equal(result.releaseCandidates[0].baseCommit, f.p.sourceBaseCommit);
+  assert.equal(result.releaseCandidates[0].baseCommit, f.p.publishedBaseCommit);
   f.candidate.manifest.tasks = [{ ...f.plan.ready[0], resultCommit: "0".repeat(40) }];
   await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
-    operationId: "release-other", generation: 1, taskIds: ["task-current"] }), /selection changed/);
+    operationId: "release-other", generation: 1, taskIds: ["task-current"] }), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  assert.equal(generationCalls, 1, "stale selection must refuse before another generation is captured");
+});
+
+test("stale prepared publication provenance remains a typed capture refusal with its original cause", async () => {
+  const f = localSourceFixture();
+  f.candidate.manifest.baseProvenance = { ...f.p, publishedBaseCommit: "0".repeat(40) };
+  const before = structuredClone(f.candidate);
+  f.service.releaseGitWorkspaces.prepareGeneration = () => assert.fail("stale provenance cannot capture a generation");
+  const check = (error, capture) => {
+    assert.match(error.message, /prepared PreRelease base provenance belongs to published/u);
+    assert.ok(error.cause instanceof Error);
+    assert.equal(error.message, `${error.cause.message} for ${f.projectRoot}`);
+    assert.equal(error.code, capture ? "RELEASE_PREPARED_CANDIDATE_STALE" : undefined);
+    return true;
+  };
+  await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
+    operationId: "release-original", generation: 1, taskIds: ["task-current"] }), error => check(error, true));
+  await assert.rejects(f.service.preflight({ workspaceId: "workspace-1",
+    expectedPlanRevision: f.plan.revision }), error => check(error, false));
+  assert.deepEqual(f.candidate, before, "refusal must preserve the prepared holder and evidence");
+});
+
+test("stale prepared base refuses capture with a typed code and preserves ordinary preflight refusal", async () => {
+  const f = localSourceFixture();
+  f.candidate.baseCommit = "0".repeat(40);
+  f.candidate.manifest.baseCommit = f.candidate.baseCommit;
+  const before = structuredClone(f.candidate);
+  f.service.releaseGitWorkspaces.prepareGeneration = () => assert.fail("stale base cannot capture a generation");
+  const check = (error, capture) => {
+    assert.match(error.message, /prepared PreRelease base does not match reviewed main/u);
+    assert.equal(error.code, capture ? "RELEASE_PREPARED_CANDIDATE_STALE" : undefined);
+    return true;
+  };
+  await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
+    operationId: "release-original", generation: 1, taskIds: ["task-current"] }), error => check(error, true));
+  await assert.rejects(f.service.preflight({ workspaceId: "workspace-1",
+    expectedPlanRevision: f.plan.revision }), error => check(error, false));
+  assert.deepEqual(f.candidate, before);
 });
 
 test("installed local source preflight verifies the sealed source base rather than silently using main", async () => {
   const f = localSourceFixture();
   const result = await f.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: f.plan.revision });
-  assert.equal(result.releaseCandidates[0].baseCommit, f.p.sourceBaseCommit);
+  assert.equal(result.releaseCandidates[0].baseCommit, f.p.publishedBaseCommit);
   assert.ok(f.verified() >= 1);
   assert.equal(f.calls.some(([name]) => name === "verify-upstream-adoption"), false);
+});
+
+test("PUBLIC ordinary Await without a private carry keeps agreed main separate from published composition", async () => {
+  const f = fixture({ publishedRevision: "f".repeat(40) });
+  const agreedMain = "a".repeat(40), published = "f".repeat(40);
+  f.service.taskGitWorkspaces.releaseBaseEvidence = async () => ({ baseCommit: agreedMain, publishedBaseCommit: published });
+  f.service.releaseGitWorkspaces.prepareCandidate = async request => {
+    assert.equal(request.approvedBaseCommit, published);
+    assert.equal(request.baseProvenance.agreedMainCommit, agreedMain);
+    assert.equal(request.baseProvenance.compositionBaseCommit, published);
+    await request.validateBeforeCommit();
+    await request.commitPrepared({ repositoryRoot: request.projectRoot, frozenTasks: request.frozenTasks,
+      planRevision: f.plan.revision, baseCommit: published,
+      manifest: { tasks: request.frozenTasks, baseProvenance: request.baseProvenance } });
+  };
+  assert.equal(await f.service.prepareAwaitAcceptance({ workspaceId: "workspace-1", acceptingTask: { id: "task-1" },
+    projectRoot: f.projectRoot, operationId: "published-only-await", commitPrepared: async () => "accepted" }), "accepted");
+});
+
+test("PUBLIC preflight and generation reject legacy installed-carry candidates without composing", async () => {
+  const f = localSourceFixture();
+  delete f.p.compositionBaseCommit;
+  f.candidate.baseCommit = f.p.sourceBaseCommit;
+  f.candidate.manifest.baseCommit = f.p.sourceBaseCommit;
+  f.service.releaseGitWorkspaces.prepareGeneration = async () => assert.fail("legacy candidate may not reach generation effects");
+  await assert.rejects(f.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: f.plan.revision }), /operational only/u);
+  await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
+    operationId: "legacy-prepared", generation: 1, taskIds: ["task-current"] }), /operational only/u);
+  assert.equal(f.calls.some(([name]) => ["prepare-candidate", "prepare-generation", "prepare-dev"].includes(name)), false);
 });
 
 async function git(cwd, ...args) {

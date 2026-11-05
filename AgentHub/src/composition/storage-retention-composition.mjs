@@ -3,6 +3,7 @@ import { StorageRetentionService } from "../application/storage-retention-servic
 import { withInterprocessLocks } from "../infrastructure/process/interprocess-lock.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { RuntimeReleaseRetention } from "../infrastructure/filesystem/runtime-release-retention.mjs";
+import { RuntimeUpdateBackupRetention } from "../infrastructure/persistence/runtime-update-backup-retention.mjs";
 
 export function storageRetentionEnabled({ environment = process.env, recording = false } = {}) {
   return Boolean(environment.AGENT_HUB_RELEASE_ID) && environment.AGENT_HUB_TEST_CONTOUR !== "1" && !recording;
@@ -12,7 +13,9 @@ export function createStorageRetentionComposition({ config, store, taskBoard, ta
   timers, readReady, readBusy, isStopping, health, environment = process.env } = {}) {
   if (!storageRetentionEnabled({ environment, recording: Boolean(config.testContourRecording) })) return null;
   const service = new StorageRetentionService({ store, timers, isStopping,
-    owners: [taskGitWorkspaces.storageRetentionOwner({ taskBoard, isStopping: () => isStopping() || readBusy() }),
+    owners: [new RuntimeUpdateBackupRetention({ runtimeRoot: environment.AGENT_HUB_RUNTIME_ROOT ?? defaultRuntimeRoot({ environment }), store,
+      isStopping: () => isStopping() || readBusy() }),
+      taskGitWorkspaces.storageRetentionOwner({ taskBoard, isStopping: () => isStopping() || readBusy() }),
       new RuntimeReleaseRetention({ runtimeRoot: defaultRuntimeRoot({ environment }), isStopping: () => isStopping() || readBusy() }),
       releaseGitWorkspaces.storageRetentionOwner({
         readGeneration: (id, generation) => releaseOperations.retentionGeneration(id, generation),

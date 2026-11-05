@@ -31,10 +31,13 @@ for release integration only; ordinary Task integration cannot adopt a divergent
 main implicitly. The primary HEAD/index/worktree is never a composition target.
 A conflict retains the existing owner refusal and restored dev evidence.
 
-When a normal operation has no matching prepared candidate, the same candidate
-owner prepares it before capturing its immutable generation. A frozen generation
+Superseded for new release capture by ADR-HUB-364-whole-prepared-release:
+the release owner consumes the whole existing prepared Await candidate and never
+prepares a missing/stale candidate itself. Ordinary Task lifecycle acceptance
+owns the full native composition and conflict resolution. A frozen generation
 reopens its own checkpoint and never replays preparation. Existing candidate
 bindings, dirty-byte protection and source/selection validation remain required.
+Historical operation authorizations/receipts are not rewritten.
 
 An approved repository may carry `nativeResolutionReview` as either the existing
 single authenticated review or `{bundlePath,bundleSha256,reviews}`. The latter

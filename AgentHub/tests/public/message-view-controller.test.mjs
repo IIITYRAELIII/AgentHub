@@ -21,6 +21,20 @@ async function messageViewApi() {
   return context.AgentHubMessageView;
 }
 
+test("citation segments use exact coordinates and keep legacy or invalid positions explicit",async()=>{
+  const api=await messageViewApi();
+  const text='Literal Цитата 1\n\nAnswer\nЦитата 1\nTail';
+  const start='Literal Цитата 1\n\nAnswer\n'.length;
+  const citation={index:1,position:{start,end:start+8}};
+  const split=JSON.parse(JSON.stringify(api.responseCitationSegments(text,[citation])));
+  assert.deepEqual(split,{segments:[{text:text.slice(0,start)},{citation},{text:'\nTail'}],unpositioned:[]});
+  for(const reference of [{index:1},{index:1,position:{start:-1,end:7}},{index:1,position:{start:0,end:8}},{index:1,position:{start:NaN,end:8}}]) {
+    const result=api.responseCitationSegments(text,[reference]);
+    assert.equal(result.segments.length,1); assert.equal(result.segments[0].text,text);
+    assert.equal(result.unpositioned.length,1);
+  }
+});
+
 class FakeNode {
   constructor(name) {
     this.name = name;
@@ -318,7 +332,7 @@ test("selected Stream rerenders when logical chat state and DOM ownership diverg
   );
 });
 
-test("explicit active-turn steer remains distinct from queued input", async () => {
+test("ordinary composer defaults to queue and explicit steer preserves current Stream intent", async () => {
   const api = await messageViewApi();
   assert.equal(api.composerFollowUpMode({ running: true }), "queue");
   assert.equal(
@@ -363,16 +377,17 @@ test("fenced blocks expose their exact text for clipboard copy", async () => {
   assert.equal(api.codeBlockCopyRequest(""), null);
 });
 
-test("durable intake staging stays in the command queue as starting", async () => {
+test("queued intake is waiting and only actual dispatch counts as starting", async () => {
   const api = await messageViewApi();
   assert.deepEqual(
     { ...api.deferredQueueCounts([
       { state: "queued", conflictKind: "message-intake" },
       { state: "queued", conflictKind: "task-running" },
+      { state: "dispatching", conflictKind: "message-intake" },
       { state: "pending", conflictKind: "active-run" },
       { state: "paused", conflictKind: "message-intake" },
     ]) },
-    { pending: 1, starting: 1, queued: 1, paused: 1 },
+    { pending: 1, starting: 1, queued: 2, paused: 1 },
   );
 });
 

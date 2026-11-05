@@ -373,6 +373,7 @@ function responseHeaders(contentType, {
   crossOrigin = false,
   immutable = false,
   telegramRuntime = true,
+  styleNonce = "",
 } = {}) {
   return {
     "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-store",
@@ -385,7 +386,7 @@ function responseHeaders(contentType, {
       "img-src 'self' data: blob:",
       "object-src 'none'",
       `script-src 'self'${telegramRuntime ? " https://telegram.org" : ""}`,
-      "style-src 'self'",
+      `style-src 'self'${styleNonce ? ` 'nonce-${styleNonce}'` : ""}`,
     ].join("; "),
     "Content-Type": contentType,
     "Referrer-Policy": "no-referrer",
@@ -558,6 +559,8 @@ export class PublicAuthAttemptLimiter {
 }
 
 export class MiniAppServer {
+  #startupOnly;
+  #runtimeConfigured;
   #activeHandlers = new Set();
   #allowedUserIds;
   #assetBundle;
@@ -605,7 +608,13 @@ export class MiniAppServer {
   #workspaceFileRoots;
   #workspaceFileTransferTickets;
 
-  constructor({
+  constructor(options = {}) {
+    this.#configure(options);
+    this.#startupOnly = options.startupOnly === true;
+    this.#runtimeConfigured = !this.#startupOnly;
+  }
+
+  #configure({
     host = "127.0.0.1",
     port = 8787,
     botToken = "",
@@ -641,6 +650,7 @@ export class MiniAppServer {
     health = agentHubRuntimeHealth,
     testContourRuntimeIdentity = null,
     handlerCloseTimeoutMs = 1_000,
+    startupOnly = false,
   } = {}) {
     this.#host = String(host);
     this.#health = health && typeof health.snapshot === "function" ? health : agentHubRuntimeHealth;
@@ -687,17 +697,29 @@ export class MiniAppServer {
       .map((root) => path.resolve(root));
     this.#workspaceFileTransferTickets = workspaceFileTransferTickets
       ?? new WorkspaceFileTransferTickets();
-    if (!journalDatabase && !journalDatabaseFile) {
+    if (!startupOnly && !journalDatabase && !journalDatabaseFile) {
       throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
     }
-    this.#journalDatabase = journalDatabase ?? new JournalDatabase(journalDatabaseFile);
+    this.#journalDatabase = startupOnly ? null : journalDatabase ?? new JournalDatabase(journalDatabaseFile);
     this.#journalProjectionService = journalProjectionService
       && typeof journalProjectionService.ensureAccountUsageProjectionCurrent === "function"
       ? journalProjectionService
       : null;
     this.#usageSyncRemoteConfigStore = usageSyncRemoteConfigStore;
     this.#usageSyncService = validUsageSyncService(usageSyncService) ? usageSyncService : null;
-    this.#ownsJournalDatabase = !journalDatabase;
+    this.#ownsJournalDatabase = !startupOnly && !journalDatabase;
+  }
+
+  configureRuntime(options) {
+    if (this.#runtimeConfigured) throw new Error("Mini App runtime is already configured");
+    if ((options.host != null && String(options.host) !== this.#host)
+      || (options.port != null && Number(options.port) !== this.#port)) {
+      throw new Error("Mini App startup listener identity changed");
+    }
+    this.#configure({ ...options, host: this.#host, port: this.#port, startupOnly: false });
+    this.#runtimeConfigured = true;
+    // The existing ordinary start call activates business routes after all
+    // application ports are bound. Configuring storage alone grants no intake.
   }
 
   setUsageSyncService(service = null) {
@@ -822,7 +844,7 @@ export class MiniAppServer {
     return { versionCode, versionName, sha256, bytes, apkFile };
   }
 
-  async #staticBody(pathname, bundle) {
+  async #staticBody(pathname, bundle, { nonce = "" } = {}) {
     if (pathname === "/work-log.css") return readFile(bundle.workLogCssFile, "utf8");
     const themeResource = bundle.themeRegistry.resources.get(pathname);
     if (themeResource) {
@@ -836,7 +858,7 @@ export class MiniAppServer {
     const body = asset.binary
       ? await readFile(target)
       : await readFile(target, "utf8");
-    return pathname === "/" ? renderThemeHtml(body, bundle.themeRegistry) : body;
+    return pathname === "/" ? renderThemeHtml(body, bundle.themeRegistry, { nonce }) : body;
   }
 
   #staticDescriptor(pathname, bundle) {
@@ -974,6 +996,15 @@ export class MiniAppServer {
   async #handle(request, response, transportReceivedAtMs = Date.now()) {
     const method = String(request.method ?? "GET").toUpperCase();
     const url = new URL(request.url ?? "/", `http://${this.#host}`);
+    if (this.#startupOnly) {
+      const read = ["GET", "HEAD"].includes(method);
+      const localSession = url.pathname === "/api/local-session";
+      const staticRead = read && Boolean(this.#staticDescriptor(url.pathname, await this.#activeAssetBundle()));
+      if (!localSession && !(read && url.pathname === "/health") && !staticRead) {
+        json(response, 503, { error: "Agent Hub запускается", starting: true }, method);
+        return;
+      }
+    }
     if (await this.#fileTransferRoutes.handlePublic(request, response, method, url)) return;
     const readTiming = route => createHttpReadTiming({
       commandId: url.searchParams.get("clientTraceId"), route, response,
@@ -1929,7 +1960,8 @@ export class MiniAppServer {
     }
     const telegramRuntime = this.#telegramRuntimeAllowed(request);
     try {
-      const read = () => this.#staticBody(url.pathname, assetBundle);
+      const styleNonce = url.pathname === "/" ? randomBytes(18).toString("base64") : "";
+      const read = () => this.#staticBody(url.pathname, assetBundle, { nonce: styleNonce });
       const body = timing ? await timing.measure("http-asset-read", read) : await read();
       send(
         response,
@@ -1941,6 +1973,7 @@ export class MiniAppServer {
           crossOrigin: url.searchParams.has("v"),
           immutable: descriptor.immutable || url.searchParams.has("v"),
           telegramRuntime,
+          styleNonce,
         },
       );
     } catch (error) {
@@ -1950,12 +1983,15 @@ export class MiniAppServer {
 
   async start() {
     if (this.#closePromise) await this.#closePromise;
-    if (this.#server) return this.address();
-    if (!this.#attachmentUploads && this.#attachmentDirectory) {
-      const lease = await acquireAttachmentUploadService({ attachmentDirectory: this.#attachmentDirectory, limits: this.#attachmentUploadLimits });
-      this.#attachmentUploads = lease.service;
-      this.#releaseAttachmentUploads = lease.release;
+    if (this.#server) {
+      if (this.#startupOnly && this.#runtimeConfigured) {
+        await this.#prepareAttachmentUploads();
+        this.#subscribeRuntime();
+        this.#startupOnly = false;
+      }
+      return this.address();
     }
+    if (this.#runtimeConfigured) await this.#prepareAttachmentUploads();
     const server = createServer((request, response) => {
       const transportReceivedAtMs = Date.now();
       const handling = this.#handle(request, response, transportReceivedAtMs).catch((error) => {
@@ -1981,6 +2017,22 @@ export class MiniAppServer {
       });
     });
     this.#server = server;
+    if (this.#runtimeConfigured) {
+      this.#subscribeRuntime();
+      this.#startupOnly = false;
+    }
+    return this.address();
+  }
+
+  async #prepareAttachmentUploads() {
+    if (!this.#attachmentUploads && this.#attachmentDirectory) {
+      const lease = await acquireAttachmentUploadService({ attachmentDirectory: this.#attachmentDirectory, limits: this.#attachmentUploadLimits });
+      this.#attachmentUploads = lease.service;
+      this.#releaseAttachmentUploads = lease.release;
+    }
+  }
+
+  #subscribeRuntime() {
     this.#unsubscribeJournal = this.#journalDatabase.subscribe(() => {
       this.#journalCache = null;
       this.#scheduleChange();
@@ -1989,7 +2041,6 @@ export class MiniAppServer {
       for (const response of this.#clients) response.write(": heartbeat\n\n");
     }, HEARTBEAT_INTERVAL_MS);
     this.#heartbeatTimer.unref?.();
-    return this.address();
   }
 
   address() {

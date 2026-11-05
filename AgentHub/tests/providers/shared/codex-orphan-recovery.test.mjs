@@ -160,3 +160,143 @@ test("ordinary Stop cannot release an original whose snapshot or terminal write 
     assert.equal(f.calls.includes("release"), false);
   }
 });
+
+function retainedInProgressThread(run) {
+  return { thread: { status: { type: "idle" }, turns: [
+    { id: run.turnId, status: "inProgress", items: [] },
+  ] } };
+}
+
+test("reconnect reconciles the accepted inProgress original only after fresh inactivity and exact interrupt rejection", async () => {
+  let f;
+  f = fixture({}, { readThread: async (_id, { applySnapshot }) => applySnapshot(retainedInProgressThread(f.run)) });
+  f.run.executionOwner = "hub";
+  f.run.providerStart = { state: "observed", turnId: f.run.turnId };
+  const originalId = f.run.clientUserMessageId;
+  await f.recovery.recover(f.run);
+  assert.deepEqual(f.calls, ["fresh-activity", "interrupt-original", "fresh-activity",
+    ["commit", "interrupted", "Retained partial answer"]]);
+  assert.equal(f.current(), null);
+  assert.equal(f.run.clientUserMessageId, originalId);
+});
+
+test("an inconclusive recovery read does not permanently suppress later authoritative recovery", async () => {
+  let known = false;
+  const f = fixture({ taskExternalActivity: async () => ({ state: known ? "inactive" : "unknown" }) });
+  await f.recovery.recover(f.run);
+  assert.equal(f.current(), f.run);
+  known = true;
+  await f.recovery.recover(f.run);
+  assert.equal(f.current(), null);
+  assert.equal(f.calls.filter(x => x === "interrupt-original").length, 1);
+});
+
+test("retained inProgress recovery preserves live, external, unknown and mismatched acceptance owners", async () => {
+  for (const variant of ["active", "unknown", "external", "missing-acceptance", "foreign-turn"]) {
+    let f;
+    f = fixture({ taskExternalActivity: async () => ({ state: variant === "active" ? "active" : variant === "unknown" ? "unknown" : "inactive" }) },
+      { readThread: async (_id, { applySnapshot }) => applySnapshot(retainedInProgressThread(f.run)) });
+    f.run.executionOwner = variant === "external" ? "desktop" : "hub";
+    if (variant !== "missing-acceptance") f.run.providerStart = { state: "observed",
+      turnId: variant === "foreign-turn" ? "foreign" : f.run.turnId };
+    await f.recovery.recover(f.run);
+    assert.equal(f.current(), f.run, variant);
+    assert.equal(f.calls.includes("interrupt-original"), false, variant);
+  }
+});
+
+test("repeated observation cannot repeat an accepted or ambiguous recovery interrupt", async () => {
+  for (const accepted of [true, false]) {
+    let attempts = 0;
+    const f = fixture({ interruptCodex: async () => {
+      attempts += 1;
+      if (!accepted) throw new Error("private transport detail");
+    } });
+    await f.recovery.recover(f.run);
+    await f.recovery.recover(f.run);
+    assert.equal(attempts, 1);
+    assert.equal(f.current(), f.run);
+    assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), false);
+  }
+});
+
+test("a newer live provider turn blocks the retained original and throwing diagnostics do not change the decision", async () => {
+  let f;
+  f = fixture({ commandTrace: { startBestEffortSpan() { throw new Error("sink unavailable"); } },
+    taskExternalActivity: async () => ({ state: "active", executionOwner: "desktop" }) },
+    { readThread: async (_id, { applySnapshot }) => applySnapshot({ thread: { status: { type: "active" },
+      turns: [{ id: "turn-new", status: "inProgress", items: [] },
+        { id: f.run.turnId, status: "inProgress", items: [] }] } }) });
+  f.run.executionOwner = "hub";
+  f.run.providerStart = { state: "observed", turnId: f.run.turnId };
+  await f.recovery.recover(f.run);
+  assert.equal(f.current(), f.run);
+  assert.equal(f.calls.includes("interrupt-original"), false);
+  const positive = fixture({ commandTrace: { startBestEffortSpan() { return { finish() { throw new Error("sink"); } }; } } });
+  await positive.recovery.recover(positive.run);
+  assert.equal(positive.current(), null);
+});
+
+test("ordinary UNKNOWN reconciliation cannot replay an approval-lost prompt or interrupt an active Thread", async () => {
+  const f = fixture({}, {
+    autoApprove: () => true,
+    readThread: async (_id, { applySnapshot }) => applySnapshot({ thread: {
+      status: { type: "active", activeFlags: ["waitingOnApproval"] },
+      turns: [{ id: "turn-original", status: "inProgress", items: [] }],
+    } }),
+  });
+  await f.recovery.recover(f.run, { reconcileOnly: true });
+  assert.equal(f.current(), f.run);
+  assert.deepEqual(f.calls, ["observe"]);
+});
+
+
+test("reviewer canonical accepted-before-first-event original is eligible without inventing a provider-start state", async () => {
+  const { markProviderTurnRequested, markProviderTurnAccepted, providerTurnAcceptance } =
+    await import("../../../src/domain/task-runs.mjs");
+  let f;
+  f = fixture({}, { readThread: async (_id, { applySnapshot }) => applySnapshot(retainedInProgressThread(f.run)) });
+  f.run.executionOwner = "hub";
+  markProviderTurnRequested(f.run);
+  markProviderTurnAccepted(f.run, { turnId: f.run.turnId });
+  assert.equal(f.run.providerStart.state, "accepted-awaiting-first-event");
+  assert.equal(providerTurnAcceptance(f.run).accepted, true);
+  await f.recovery.recover(f.run, { reconcileOnly: true });
+  assert.equal(f.current(), null, "A real accepted original must reach the existing guarded interruption owner");
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+});
+
+test("reviewer same canonical first event gives the existing observed positive control", async () => {
+  const { markProviderTurnRequested, markProviderTurnAccepted, markProviderFirstEvent, providerTurnAcceptance } =
+    await import("../../../src/domain/task-runs.mjs");
+  let f;
+  f = fixture({}, { readThread: async (_id, { applySnapshot }) => applySnapshot(retainedInProgressThread(f.run)) });
+  f.run.executionOwner = "hub";
+  markProviderTurnRequested(f.run);
+  markProviderTurnAccepted(f.run, { turnId: f.run.turnId });
+  markProviderFirstEvent(f.run, { turnId: f.run.turnId, method: "turn/started" });
+  assert.equal(f.run.providerStart.state, "observed");
+  assert.equal(providerTurnAcceptance(f.run).accepted, true);
+  await f.recovery.recover(f.run, { reconcileOnly: true });
+  assert.equal(f.current(), null);
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+});
+
+test("canonical accepted-before-first-event recovery retains original guards", async () => {
+  const { markProviderTurnRequested, markProviderTurnAccepted } = await import("../../../src/domain/task-runs.mjs");
+  for (const variant of ["requesting", "unconfirmed", "missing", "foreign-turn", "active", "unknown", "external"]) {
+    let f;
+    f = fixture({ taskExternalActivity: async () => ({ state: ["active", "unknown"].includes(variant) ? variant : "inactive" }) },
+      { readThread: async (_id, { applySnapshot }) => applySnapshot(retainedInProgressThread(f.run)) });
+    f.run.executionOwner = variant === "external" ? "desktop" : "hub";
+    markProviderTurnRequested(f.run);
+    if (variant !== "requesting") markProviderTurnAccepted(f.run, { turnId: f.run.turnId });
+    if (variant === "unconfirmed") f.run.providerStart.state = "unconfirmed";
+    if (variant === "missing") delete f.run.providerStart;
+    if (variant === "foreign-turn") f.run.providerStart.turnId = "foreign-turn";
+    await f.recovery.recover(f.run, { reconcileOnly: true });
+    assert.equal(f.current(), f.run, variant);
+    assert.equal(f.calls.includes("interrupt-original"), false, variant);
+    assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), false, variant);
+  }
+});

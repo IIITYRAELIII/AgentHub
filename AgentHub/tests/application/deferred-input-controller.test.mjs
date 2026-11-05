@@ -153,7 +153,7 @@ test("DeferredInputController keeps the observed 13.429 second provider steer be
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "steered"]);
 });
 
-test("DeferredInputController keeps exact steer behind a managed barrier without retargeting", async () => {
+test("DeferredInputController keeps Stream input behind a managed barrier then queues the same command", async () => {
   let barrierActive = true;
   let targetActive = true;
   let providerEffects = 0;
@@ -189,13 +189,13 @@ test("DeferredInputController keeps exact steer behind a managed barrier without
   await state.controller.process(item.id);
 
   assert.equal(state.queuedInputs.has(item.id), false);
-  assert.equal(state.pendingInputs.get(item.id), item);
+  assert.equal(state.pendingInputs.has(item.id), false);
   assert.equal(item.conflictKind, "message-steer");
   assert.equal(item.steerTargetRunId, "run-old");
   assert.equal(item.steerTargetTurnId, "turn-old");
-  assert.equal(item.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
+  assert.equal(item.lastErrorCode, undefined);
   assert.equal(providerEffects, 0);
-  assert.equal(laterTurnStarts, 0);
+  assert.equal(laterTurnStarts, 1);
 });
 
 test("DeferredInputController recovers a dispatched steer without a second provider effect", async () => {
@@ -534,6 +534,28 @@ test("DeferredInputController self-heals stale provider-thread-active state", as
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["queued", "dispatching", "started"]);
 });
 
+test("managed reclassification rolls back its exact automatic wait on failed persistence", async () => {
+  const state = fixture({ occupancy: async () => ({ occupied: true, run: { id: "managed", executionOwner: "hub" }, waitReason: "task-running" }),
+    persist: async () => { throw Error("disk full"); } });
+  const item = { id: "owned", paused: true, waitReason: "provider-thread-active", attempts: 0 };
+  state.queuedInputs.set(item.id, item);
+  await assert.rejects(state.controller.process(item.id), /disk full/u);
+  assert.deepEqual(item, { id: "owned", paused: true, waitReason: "provider-thread-active", attempts: 0 });
+  assert.deepEqual(state.transitions, []);
+});
+
+test("manual pause arriving during managed occupancy read is never reclassified", async () => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const state = fixture({ occupancy: async () => { await held; return { occupied: true, run: { id: "managed", executionOwner: "hub" }, waitReason: "task-running" }; } });
+  const item = { id: "owned", paused: true, waitReason: "provider-thread-active" };
+  state.queuedInputs.set(item.id, item);
+  const processing = state.controller.process(item.id);
+  item.manualPaused = true; release(); await processing;
+  assert.equal(item.manualPaused, true); assert.equal(item.paused, true);
+  assert.equal(item.waitReason, "provider-thread-active"); assert.deepEqual(state.transitions, []);
+});
+
 test("DeferredInputController restores active-writer pause when durable save fails", async () => {
   const state = fixture({ persist: async () => { throw new Error("disk full"); } });
   const item = {
@@ -669,7 +691,7 @@ test("DeferredInputController preempts polling backoff in every lane after termi
   assert.equal(state.controller.timers.has(themes.id), true);
 });
 
-test("DeferredInputController preserves exact steer intent when its target turn has changed", async () => {
+test("DeferredInputController starts the same Stream command in FIFO after its old turn ends", async () => {
   const started = [];
   let steers = 0;
   const state = fixture({
@@ -700,27 +722,24 @@ test("DeferredInputController preserves exact steer intent when its target turn 
   await state.controller.process("themes");
   assert.equal(steers, 0);
   assert.equal(state.queuedInputs.has("themes"), false);
-  const retained = state.pendingInputs.get("themes");
-  assert.equal(retained.conflictKind, "message-steer");
-  assert.equal(retained.clientUserMessageId, "mcp:request-1");
-  assert.equal(retained.steerTargetRunId, "run-old");
-  assert.equal(retained.steerTargetTurnId, "turn-old");
-  assert.deepEqual(retained.messageOrigin, origin);
-  assert.deepEqual(retained.temporaryFiles, ["stored.png"]);
-  assert.equal(retained.laneReleased, true);
-  assert.equal(retained.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
-  assert.equal(state.transitions.at(-1).state, "pending");
-  assert.match(state.updates.at(-1)[1], /не доставлено в исходный ход/iu);
-  assert.deepEqual(state.notifications, ["themes"]);
+  const retained = state.transitions.at(-1);
+  assert.equal(state.pendingInputs.has("themes"), false);
+  assert.equal(retained.state, "started");
+  const original = state.updates.at(-1)[0];
+  assert.equal(original.clientUserMessageId, "mcp:request-1");
+  assert.deepEqual(original.messageOrigin, origin);
+  assert.deepEqual(original.temporaryFiles, ["stored.png"]);
+  assert.equal(original.lastErrorCode, undefined);
+  assert.deepEqual(state.notifications, []);
   assert.equal(state.controller.timers.has("later"), true);
 
   await state.controller.process("themes");
   await state.controller.process("later");
   assert.equal(steers, 0);
-  assert.deepEqual(started, ["later"]);
+  assert.deepEqual(started, ["themes", "later"]);
 });
 
-test("DeferredInputController returns one provider-rejected steer for an explicit decision", async () => {
+test("DeferredInputController queues a rejected Stream steer without repeating it against the same turn", async () => {
   let steerCalls = 0;
   const state = fixture({
     occupancy: async () => ({
@@ -729,6 +748,7 @@ test("DeferredInputController returns one provider-rejected steer for an explici
       run: { id: "run-1", turnId: "turn-1" },
     }),
     steer: async () => { steerCalls += 1; return null; },
+    isBlocked: async () => true,
   });
   const item = {
     id: "provider-rejected",
@@ -746,20 +766,20 @@ test("DeferredInputController returns one provider-rejected steer for an explici
   await state.controller.process(item.id);
 
   assert.equal(steerCalls, 1);
-  assert.equal(state.queuedInputs.size, 0);
-  assert.equal(state.pendingInputs.get(item.id), item);
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(state.pendingInputs.size, 0);
   assert.equal(item.conflictKind, "message-steer");
   assert.equal(item.steerTargetRunId, "run-1");
   assert.equal(item.steerTargetTurnId, "turn-1");
   assert.deepEqual(item.messageOrigin, { kind: "interstream", requestId: "request-provider-rejected" });
-  assert.equal(item.laneReleased, true);
-  assert.equal(item.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
+  assert.equal(item.steerRejectedTurnId, "turn-1");
+  assert.equal(item.lastErrorCode, undefined);
   assert.equal(item.dispatchingAt, undefined);
   await state.controller.process(item.id);
   assert.equal(steerCalls, 1);
 });
 
-test("DeferredInputController restores exact steer when its attention state cannot persist", async () => {
+test("DeferredInputController keeps a legacy unscoped exact target when attention persistence fails", async () => {
   let persistCalls = 0;
   const state = fixture({
     occupancy: async () => ({ occupied: false, waitReason: null }),
@@ -770,7 +790,6 @@ test("DeferredInputController restores exact steer when its attention state cann
   });
   const item = {
     id: "steer-persist-failure",
-    streamId: "stream-1",
     provider: "codex",
     threadId: "thread-1",
     conflictKind: "message-steer",

@@ -38,9 +38,7 @@ function validBase(value) {
 function normalizedMessage(value) {
   const base = validBase(value);
   const providerText = String(value?.text ?? "");
-  const text = (base?.provider === "codex"
-    ? visibleCodexAssistantText(providerText)
-    : providerText).trim().slice(0, TURN_END_BODY_LIMIT);
+  const text = visibleCodexAssistantText(providerText).trim().slice(0, TURN_END_BODY_LIMIT);
   const providerTitle = String(value?.title ?? "");
   const title = (base?.provider === "codex"
     ? visibleCodexAssistantText(providerTitle)
@@ -162,15 +160,7 @@ function normalizedCompletion(value) {
       status: String(call?.status ?? "completed").trim() || "completed",
     }];
   });
-  const answerProjection = base.provider === "codex"
-    ? codexAssistantResponseProjection(value.finalAnswer)
-    : { text: String(value.finalAnswer ?? ""), responseAnnotationReferences: [] };
-  const suppliedReferences = Array.isArray(value.responseAnnotationReferences)
-    ? value.responseAnnotationReferences
-      .map((reference) => Number(reference?.index))
-      .filter((index) => Number.isSafeInteger(index) && index > 0)
-      .map((index) => ({ index }))
-    : [];
+  const answerProjection = codexAssistantResponseProjection(value.finalAnswer, value.responseAnnotationReferences);
   return {
     ...base,
     turnId,
@@ -203,11 +193,9 @@ function normalizedCompletion(value) {
     prompt: prompts[0] ?? "",
     prompts,
     finalAnswer: answerProjection.text.trim(),
-    ...((suppliedReferences.length || answerProjection.responseAnnotationReferences.length)
+    ...(answerProjection.responseAnnotationReferences.length
       ? {
-        responseAnnotationReferences: suppliedReferences.length
-          ? suppliedReferences
-          : answerProjection.responseAnnotationReferences,
+        responseAnnotationReferences: answerProjection.responseAnnotationReferences,
       }
       : {}),
     responseAttachments: normalizedAttachments(value.responseAttachments),
