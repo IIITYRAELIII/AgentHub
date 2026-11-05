@@ -3,15 +3,11 @@
 ## Normal release continuation (ADR-0132)
 
 `hub_release_run` keeps preparation inside the existing durable release owner.
-Approved repositories may include an exact authenticated native resolution input
-(`nativeResolutionReview`), either a single review or a digest-bound bundle with
-multiple reviews. This is part of immutable operation authorization; it is not
-a force flag or caller-declared conflict allowlist.
+Native Git continuation does not expose an approval-envelope input. The
+Auto-review setting governs agent instructions, not a machine permission gate.
 
 `hub_release_prepare_resume` may continue an already established isolated forward
-segment using its saved original envelope/custody and exact revision. Optional
-`native_resolution_review` changes only that forward segment's review input.
-The owner regenerates the exact isolation plan under existing leases, validates
+segment using its saved original envelope/custody and exact revision. The owner regenerates the exact isolation plan under existing leases, validates
 the stored proof and reads actual Git before effects. An untransferred legacy
 UNKNOWN, missing isolation or changed proof still refuses. Terminal repetition
 is read-only. The existing local consumer supports `--resume-preparation`; no
@@ -83,7 +79,7 @@ it does not falsify old receipts or claim the main logical release complete.
 ## Preparation-only release admission
 
 The repository envelope also admits the bounded optional localSourceBaseline
-and nativeResolutionReview fields specified by REL-001/ADR-0115. They remain
+fields specified by REL-001/ADR-0115. They remain
 inside the same genuine RM authority, exact original argument hash, complete
 selected-row CAS, source closure, existing candidate rollback and terminal
 receipt. No new public command, approval flag, status writer or retry route is
@@ -180,18 +176,17 @@ that same operation. It never silently rebuilds the candidate or changes the
 immutable authorization. See REL-001 for metadata and original capture fences.
 
 
-RM Test/Await with exact Task/workflow CAS may include `native_resolution_review`
-for necessary compatibility changes beyond Git conflict paths. The exact review
-and original review request ID are canonically bound by the same status receipt.
-Await also accepts the existing digest-bound bundle of multiple exact reviews;
-Test retains the single-review input. Closed record validation, genuine RM/CAS,
-every authenticated review and the native sequencer's full Git checks still apply.
-The ordinary source release consumer's `accept` action forwards these same public
-Await business arguments. It adds no Task/status authority or alternate writer.
-The native owner recomputes the full Git merge diff and accepts only the exact
-independent authenticated inter-Stream ACCEPT binding. Reconciliation includes
-the original argument unchanged; it cannot substitute a newer verdict. This does
-not restore selected materialization or waive membership/current-source guards.
+Test/Await, release authorization and preparation continuation do not require
+or expose native_resolution_review/nativeResolutionReview approval inputs.
+The ordinary source release consumer forwards the same business Task/CAS
+arguments, without a native review token. Git ownership, current selection,
+ordered parents/tree/index, history, source and CAS checks remain mandatory.
+Historical reconciliation may reproduce an old original's review argument solely
+to match its immutable argument hash; it grants no approval or new effect.
+Historical preparation metadata likewise remains inert. No review receipt,
+sender/receiver, content hash or ACCEPT envelope authorizes Git continuation.
+See ADR-HUB-416. Auto-review enabled still instructs the agent to obtain review;
+disabled leaves no separate mandatory machine confirmation.
 
 ## Failed validation receipt reconciliation
 

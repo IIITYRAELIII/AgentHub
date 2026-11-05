@@ -25,7 +25,6 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
     "../infrastructure/process/claim-custody-runtime.mjs": { createClaimCustodyRuntime: () => ({}) },
     "../infrastructure/process/task-operation-timing.mjs": { measureTaskOperation: async (_stage, fn) => fn() },
     "../application/task-lifecycle-service.mjs": { TaskLifecycleService: Inert },
-    "../application/native-merge-review.mjs": { createNativeMergeReviewVerifier: () => noop },
     "../application/work-log-usage-store.mjs": { createWorkLogUsageStore: async () => new Inert() },
     "../application/task-board-service.mjs": { TaskBoardService: Inert },
     "../application/task-release-plan-service.mjs": { TaskReleasePlanService: Inert },

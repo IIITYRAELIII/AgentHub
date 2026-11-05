@@ -167,49 +167,25 @@ test("Await refuses a missing native runtime import before promotion and accepts
   const automaticTree = await git(repository, "rev-parse", `${automatic}^{tree}`);
   const diff = (await exec("git", ["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree],
     { cwd: repository, windowsHide: true, encoding: "buffer" })).stdout;
-  const expectedBinding = {
-    identityHash: taskGitIdentityHash(capture.state.identity),
-    parents: [current, selected], commit: amended, tree, automaticTree,
-    diffSha256: createHash("sha256").update(diff).digest("hex"),
-  };
-  await assert.rejects(f.lifecycle.updateWorkflowStatus({
-    taskId: task.id, status: "awaiting_implementation", operationId: "unreviewed-runtime-amendment",
-  }), /Native compatibility correction requires exact independent review/u);
-  assert.deepEqual(await readFile(path.join(capture.folder, "merge.json")), oldJournal);
-  assert.deepEqual(await readFile(checkpointFile), checkpointBefore);
-  assert.deepEqual(f.taskBoard.task(task.id), taskBefore);
-  let checks = 0;
-  f.releaseGitWorkspaces.verifyNativeResolutionReview = async (review, binding) => {
-    assert.deepEqual(review, { requestId: "review-exact-amendment", text: "synthetic independent review port" });
-    assert.deepEqual(binding, expectedBinding);
-    checks += 1;
-  };
   const accepted = await f.lifecycle.updateWorkflowStatus({ taskId: task.id,
-    status: "awaiting_implementation", operationId: "reviewed-runtime-amendment",
-    operationEvidence: { nativeResolutionReview: {
-      requestId: "review-exact-amendment", text: "synthetic independent review port",
-    } },
-  });
+    status: "awaiting_implementation", operationId: "owned-runtime-amendment" });
   assert.equal(accepted.task.workflowStatus, "awaiting_implementation");
-  assert.ok(checks > 0);
   assert.equal(await git(lastGood.releaseRoot, "rev-parse", "refs/heads/PreRelease"), amended);
   assert.equal(await git(lastGood.releaseRoot, "show", `HEAD:${relative}`), helper.trim());
   const finalState = JSON.parse(await readFile(path.join(capture.folder, "merge.json"), "utf8"));
   assert.equal(finalState.head, amended);
-  assert.equal(finalState.merges[0].reviewedResolution.binding.commit, amended);
+  assert.equal(finalState.merges[0].resolution.binding.commit, amended);
   const checkpointAfter = await readFile(checkpointFile);
   const journalAfter = await readFile(path.join(capture.folder, "merge.json"));
   const reflogAfter = await git(repository, "reflog", "--format=%H %gs");
-  const terminal = f.taskBoard.lifecycleOutcome("reviewed-runtime-amendment");
+  const terminal = f.taskBoard.lifecycleOutcome("owned-runtime-amendment");
   assert.equal(terminal.taskId, task.id);
   assert.equal(terminal.result.task.workflowStatus, "awaiting_implementation");
   // This lower-level public lifecycle service refuses a terminal mutation;
   // the existing command/receipt owner supplies original-request readback.
   await assert.rejects(f.lifecycle.updateWorkflowStatus({ taskId: task.id, status: "awaiting_implementation",
-    operationId: "reviewed-runtime-amendment", operationEvidence: { nativeResolutionReview: {
-      requestId: "review-exact-amendment", text: "synthetic independent review port",
-    } } }), { code: "TASK_LIFECYCLE_BEGIN_REJECTED" });
-  assert.deepEqual(f.taskBoard.lifecycleOutcome("reviewed-runtime-amendment"), terminal);
+    operationId: "owned-runtime-amendment" }), { code: "TASK_LIFECYCLE_BEGIN_REJECTED" });
+  assert.deepEqual(f.taskBoard.lifecycleOutcome("owned-runtime-amendment"), terminal);
   assert.deepEqual(await readFile(checkpointFile), checkpointAfter);
   assert.deepEqual(await readFile(path.join(capture.folder, "merge.json")), journalAfter);
   assert.equal(await git(repository, "reflog", "--format=%H %gs"), reflogAfter);

@@ -394,7 +394,6 @@
         "docs/decisions/ADR-0130-original-preparation-stage-recovery.md",
         "tests/infrastructure/persistence/preparation-stage-checkpoint.test.mjs",
         "src/composition/release-operation-composition.mjs",
-        "src/domain/native-resolution-input.mjs",
         "release.mjs",
         "docs/decisions/ADR-0132-normal-release-continuation.md",
         "docs/decisions/ADR-HUB-329-partial-git-publication-origin.md",
@@ -406,7 +405,8 @@
         "tests/public/runtime-manager.test.mjs",
         "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
         "src/infrastructure/persistence/task-turn-projection.mjs",
-        "tests/infrastructure/persistence/task-turn-projection.test.mjs"
+        "tests/infrastructure/persistence/task-turn-projection.test.mjs",
+        "docs/decisions/ADR-HUB-416-native-resolution-without-approval-token.md"
       ]
     },
     {
@@ -455,7 +455,8 @@
         "tests/application/hub-mcp-claim-isolated-custody.test.mjs",
         "tests/application/hub-mcp-claim-unassigned-custody.test.mjs",
         "tests/application/hub-mcp-claim-successor-admission.test.mjs",
-        "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs"
+        "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs",
+        "docs/decisions/ADR-HUB-416-native-resolution-without-approval-token.md"
       ]
     },
     {

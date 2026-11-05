@@ -742,7 +742,7 @@ export class ReleaseGitWorkspaceService {
   constructor({
     dataDir, contourExternalEffects = null, environment = process.env,
     recoveryEvidenceWrite = (handle, value) => handle.writeFile(value, "utf8"),
-    recoveryPhase = async () => {}, verifyNativeResolutionReview = null,
+    recoveryPhase = async () => {},
     readPreparationAuthority = () => null,
     readPreparationOriginal = () => null,
   } = {}) {
@@ -754,7 +754,6 @@ export class ReleaseGitWorkspaceService {
     this.#recoveryPhase = recoveryPhase;
     this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.#publicationDataDir = this.dataDir;
-    this.verifyNativeResolutionReview = verifyNativeResolutionReview;
     this.releaseRepositoriesRoot = path.join(this.dataDir, "release-repositories");
     this.lastReconciliation = {
       checked: 0, registeredWorkspaceRoots: 0, checkpointCount: 0, repositories: [],
@@ -1011,7 +1010,6 @@ export class ReleaseGitWorkspaceService {
       const isolated = new ReleaseGitWorkspaceService({
         dataDir: temporaryRoot, contourExternalEffects: this.#contourExternalEffects,
         environment: this.#environment,
-        verifyNativeResolutionReview: this.verifyNativeResolutionReview,
       });
       isolated.#publicationDataDir = this.#publicationDataDir;
       // Copy Git objects/refs only, never local repository configuration or
@@ -1069,7 +1067,7 @@ export class ReleaseGitWorkspaceService {
         historyAuthority,
         merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
         identity: { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision, baseCommit: source.baseCommit, tasks },
-        verifyReview: this.verifyNativeResolutionReview });
+        });
       if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
         git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }),
         adoptions: historyAuthority.adoptions, originCommit: manifest.baseProvenance.approvedOriginMainCommit });
@@ -1095,7 +1093,7 @@ export class ReleaseGitWorkspaceService {
     operationId, generation, planRevision, projectRoot, workspaceId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
-    ephemeral = false, nativeResolutionReview = null,
+    ephemeral = false,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
     const operation = String(operationId ?? "").trim();
@@ -1146,7 +1144,7 @@ export class ReleaseGitWorkspaceService {
               // Composition is an ordinary stage of this operation. The same
               // candidate owner verifies/reuses its Git checkpoint; no external
               // preparation command or disposable operator is required.
-              await this.prepareCandidate({ ...preparedInput, nativeResolutionReview,
+              await this.prepareCandidate({ ...preparedInput,
                 validateBeforeCommit, preserveFrozen: true });
               preparedSource = await this.#preparedGenerationSource(preparedInput);
             }
@@ -1176,7 +1174,6 @@ export class ReleaseGitWorkspaceService {
           contourExternalEffects: this.#contourExternalEffects,
           environment: this.#environment,
           readPreparationOriginal: this.#readPreparationOriginal,
-          verifyNativeResolutionReview: this.verifyNativeResolutionReview,
         });
         isolated.#publicationDataDir = this.#publicationDataDir;
         if (ephemeral) isolated.#validationReferenceRoot = sourceRoot;
@@ -1834,7 +1831,7 @@ export class ReleaseGitWorkspaceService {
     const isolated = new ReleaseGitWorkspaceService({ dataDir: expected.dataDir,
       contourExternalEffects: this.#contourExternalEffects, environment: this.#environment,
       readPreparationOriginal: this.#readPreparationOriginal,
-      verifyNativeResolutionReview: this.verifyNativeResolutionReview });
+      });
     isolated.#publicationDataDir = this.#publicationDataDir;
     isolated.#isolationContext = isolation;
     const lease = options.forwardPreparation.repositoryLease;
@@ -1883,19 +1880,19 @@ export class ReleaseGitWorkspaceService {
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
-    nativeResolutionReview = null, nativeAwaitRecovery = null, forwardPreparation = null,
+    nativeAwaitRecovery = null, forwardPreparation = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const isolation = forwardPreparation?.readIsolation?.();
     if (isolation && !this.#isolationContext) return this.#prepareIsolatedCandidate({
       planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks, approvedBaseCommit, baseProvenance,
-      validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard, nativeResolutionReview,
+      validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
       nativeAwaitRecovery, forwardPreparation }, isolation);
     const authority = this.#readPreparationAuthority(canonicalPath(projectRoot));
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
       () => this.prepareCandidate({ planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks,
         approvedBaseCommit, baseProvenance, validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-        nativeResolutionReview, nativeAwaitRecovery, forwardPreparation }));
+        nativeAwaitRecovery, forwardPreparation }));
     if (authority && authority.phase !== "completed" && preflightRequestId !== authority.requestId) {
       throw new Error("Isolated original preparation still owns this candidate");
     }
@@ -2042,7 +2039,7 @@ export class ReleaseGitWorkspaceService {
           await assertNativePreparedComposition({ git, baseCommit, tasks, historyAuthority: authority,
             merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
             identity: { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks },
-            verifyReview: this.verifyNativeResolutionReview });
+            });
           const current = await primarySnapshot(initial.root);
           const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
           if (current.mainCommit !== preparationGuard.primaryMainCommit || current.headCommit !== initial.headCommit
@@ -2124,7 +2121,7 @@ export class ReleaseGitWorkspaceService {
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
       const composition = await mergeSelectedResults({
         root: mergeRoot, sourceRoot: clone.releaseRoot, baseCommit, tasks, identity,
-        resolutionReview: nativeResolutionReview, verifyReview: this.verifyNativeResolutionReview,
+
         deliveredHead: checkpoint?.preReleaseHead ?? null,
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
         readJson, writeJson: writeJsonAtomic,

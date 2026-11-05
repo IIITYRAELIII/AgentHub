@@ -2,7 +2,6 @@ import { normalizeTestSelection, verifyTestPlan } from "./test-selection.mjs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { selectedCompositionFields } from "./task-selected-composition.mjs";
-import { normalizedNativeResolution } from "./native-resolution-input.mjs";
 
 
 export const RELEASE_OPERATION_STATES = Object.freeze({
@@ -87,8 +86,10 @@ function normalizedTargets(value) {
         ? { approvedLocalMainCommit: optionalText(entry.approvedLocalMainCommit) } : {}),
       ...(optionalText(entry.approvedOriginMainCommit)
         ? { approvedOriginMainCommit: optionalText(entry.approvedOriginMainCommit) } : {}),
+      // Preserve immutable historical authorization bytes, without treating
+      // their obsolete native-review field as an execution capability.
       ...(entry.nativeResolutionReview != null
-        ? { nativeResolutionReview: normalizedNativeResolution(entry.nativeResolutionReview) } : {}),
+        ? { nativeResolutionReview: structuredClone(entry.nativeResolutionReview) } : {}),
     };
   }).sort((left, right) => left.targetId.localeCompare(right.targetId));
   if (!targets.length) throw new TypeError("approvedTargets requires at least one target");

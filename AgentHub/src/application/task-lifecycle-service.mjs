@@ -1045,7 +1045,7 @@ export class TaskLifecycleService {
                   lease: repositoryLease,
                   operationId,
                   nativeAwaitRecovery,
-                  nativeResolutionReview: operationEvidence?.nativeResolutionReview ?? null,
+
                   commitPrepared: async (prepared) => {
                     if (prepared.task.resultCommit !== acceptedReference.resultCommit) {
                       throw new Error("Task prospective Await result changed before acceptance");
@@ -1145,7 +1145,7 @@ export class TaskLifecycleService {
           expectedResultReferences: task.workflowStatus === "testing" ? task.gitReferences ?? [] : null,
           nativeAbsorptionInput, nativeAbsorptionHistory, expectedTaskRevision: task.revision, validateAbsorption,
           initialNativeTest, validateInitialNativeTest,
-          nativeResolutionReview: operationEvidence?.nativeResolutionReview ?? null,
+
           lease,
         });
         if (!integration.resultProved || !integration.integrated) {

@@ -624,7 +624,7 @@ export class TaskGitWorkspaceService {
     readSystemBootIdentity = readTrustedSystemBootIdentity,
     removeProcessGuard = unlink,
     contourExternalEffects = null,
-    verifyNativeResolutionReview = null,
+
     readClaimCustodyNamespace = () => null,
     recordTiming = (event) => console.info(`[task-operation-timing] ${JSON.stringify(event)}`),
   } = {}) {
@@ -639,7 +639,7 @@ export class TaskGitWorkspaceService {
     this.readSystemBootIdentity = readSystemBootIdentity;
     this.removeProcessGuard = removeProcessGuard;
     this.recordTiming = recordTiming;
-    this.verifyNativeResolutionReview = verifyNativeResolutionReview;
+
     this.readClaimCustodyNamespace = readClaimCustodyNamespace;
   }
 
@@ -3727,7 +3727,7 @@ export class TaskGitWorkspaceService {
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
       const original = await this.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease: ownedLease });
       if (!original?.target || original.nativeAbsorptionInput || original.nativeAbsorptionHistory
-          || original.initialNativeTest || original.nativeResolutionReview) {
+          || original.initialNativeTest) {
         throw new Error("Applied ordinary native Test intent is required");
       }
       const verify = async () => {
@@ -3933,8 +3933,8 @@ export class TaskGitWorkspaceService {
     }
     const composition = await mergeSelectedResults({ root, sourceRoot: snapshot.repositoryRoot,
       baseCommit: record.before, tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit }], identity,
-      resolutionReview: record.nativeResolutionReview ?? null,
-      verifyReview: this.verifyNativeResolutionReview,
+
+
       deliveredHead: record.target ?? null,
       gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
         guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 }),
@@ -4040,7 +4040,7 @@ export class TaskGitWorkspaceService {
 
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,
     nativeAbsorptionHistory = null, expectedTaskRevision = null, validateAbsorption = null,
-    initialNativeTest = null, validateInitialNativeTest = null, nativeResolutionReview = null }) {
+    initialNativeTest = null, validateInitialNativeTest = null }) {
     this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
@@ -4055,9 +4055,6 @@ export class TaskGitWorkspaceService {
       let dev;
       if (initialNativeTest) await validateInitialNativeTest({ record });
       if (record) {
-        if (JSON.stringify(record.nativeResolutionReview ?? null) !== JSON.stringify(nativeResolutionReview)) {
-          throw new Error("Native Test original reviewed resolution changed");
-        }
         if (JSON.stringify(record.initialNativeTest ?? null) !== JSON.stringify(initialNativeTest)) throw new Error("Initial native Test original Git binding changed");
         if (JSON.stringify(record.nativeAbsorptionInput ?? null) !== JSON.stringify(nativeAbsorptionInput)
             || JSON.stringify(record.nativeAbsorptionHistory ?? null) !== JSON.stringify(nativeAbsorptionHistory)
@@ -4094,7 +4091,6 @@ export class TaskGitWorkspaceService {
         record = { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
           snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
           nativeHistoryAuthority: historyAuthority.binding,
-          ...(nativeResolutionReview ? { nativeResolutionReview } : {}),
           ...(initialNativeTest ? { initialNativeTest } : {}),
           ...(nativeAbsorptionInput || nativeAbsorptionHistory ? { expectedTaskRevision,
             ...(nativeAbsorptionInput ? { nativeAbsorptionInput } : {}),
@@ -4512,7 +4508,6 @@ export class TaskGitWorkspaceService {
       nativeAbsorptionInput: params.nativeAbsorptionInput, expectedTaskRevision: params.expectedTaskRevision,
       nativeAbsorptionHistory: params.nativeAbsorptionHistory,
       initialNativeTest: params.initialNativeTest, validateInitialNativeTest: params.validateInitialNativeTest,
-      nativeResolutionReview: params.nativeResolutionReview,
       validateAbsorption: params.validateAbsorption });
     if (integration.integrated) {
       await params.lease.assertOwned();

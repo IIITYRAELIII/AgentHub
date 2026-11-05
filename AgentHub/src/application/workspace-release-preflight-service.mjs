@@ -80,7 +80,6 @@ function approvedRepositoryEntries(entries = []) {
       projectRoot,
       approvedLocalMainCommit: String(entry?.approvedLocalMainCommit ?? entry?.localMainCommit ?? "").trim(),
       approvedOriginMainCommit: String(entry?.approvedOriginMainCommit ?? entry?.originMainCommit ?? "").trim(),
-      ...(entry.nativeResolutionReview ? { nativeResolutionReview: entry.nativeResolutionReview } : {}),
     };
     if (!approval.approvedLocalMainCommit || !approval.approvedOriginMainCommit) {
       throw new Error(`approved release main commits for ${projectRoot} require both local and origin commits`);
@@ -421,7 +420,7 @@ export class WorkspaceReleasePreflightService {
 
   async prepareAwaitAcceptance({
     workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
-    nativeResolutionReview = null, nativeAwaitRecovery = null,
+    nativeAwaitRecovery = null,
   } = {}) {
     if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
     const root = path.resolve(String(projectRoot ?? "").trim());
@@ -430,7 +429,7 @@ export class WorkspaceReleasePreflightService {
     // Lifecycle holds Workspace Await -> Task -> repository locks, including
     // recovery and cross-Task cutover. Retain candidate rollback through Task CAS.
     return this.#prepareAwaitSet({
-      workspaceId, acceptingTask, lease, nativeResolutionReview, nativeAwaitRecovery,
+      workspaceId, acceptingTask, lease, nativeAwaitRecovery,
       commitPrepared: async (prepared) => {
         const matches = prepared.releaseCandidates.flatMap((candidate) => (
           canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
@@ -648,7 +647,6 @@ export class WorkspaceReleasePreflightService {
     reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
     prospectiveOnly = false, freezeGeneration = true, ephemeralGeneration = false,
     previousSelectedResults = [], preparation = null, nativeAwaitRecovery = null,
-    nativeResolutionReview = null,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -778,7 +776,7 @@ export class WorkspaceReleasePreflightService {
         }
         // Native composition starts at the explicitly agreed local main.
         // Reviewing origin does not silently adopt it as a different base.
-        reviewed = { provenance, adoption: null, nativeResolutionReview: approval.nativeResolutionReview };
+        reviewed = { provenance, adoption: null };
       }
       baseChecks.push({ repository, base, reviewed });
       if (reviewed && reviewed.provenance.approvedLocalMainCommit !== base.baseCommit) {
@@ -865,7 +863,7 @@ export class WorkspaceReleasePreflightService {
         ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
         ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
-        nativeResolutionReview: preparationRepository?.nativeResolutionReview ?? reviewed?.nativeResolutionReview ?? nativeResolutionReview,
+
         ...(preparation ? { preflightRequestId: preparation.requestId, preparationGuard: {
           ...preparationRepository, argumentsHash: preparation.argumentsHash,
           sourceCommit: preparation.envelope.sourceCommit, sourceTree: preparation.envelope.sourceTree,
