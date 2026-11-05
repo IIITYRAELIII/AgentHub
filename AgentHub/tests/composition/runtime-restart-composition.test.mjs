@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -12,9 +12,10 @@ import { TaskDiffStore } from "../../src/infrastructure/persistence/task-diff-st
 import { createCommandTraceComposition } from "../../src/composition/command-trace-composition.mjs";
 import { createRuntimeRestartWiring } from "../../src/composition/runtime-restart-wiring-composition.mjs";
 import { CommandTraceWorkerStore } from "../../src/infrastructure/persistence/command-trace-worker-store.mjs";
+import { packageBindingDigest, packageDigest, packageDirectory, packageFile } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
 
 test("restart composition records the original through its trace service and closes the composition worker", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "hub398-restart-trace-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "hub398-restart-trace-")));
   const databaseFile = path.join(root, "data", "traces.sqlite");
   const noop = async () => {};
   let reopened;
@@ -24,9 +25,44 @@ test("restart composition records the original through its trace service and clo
     await mkdir(path.join(root, "data"), { recursive: true });
     await writeFile(path.join(root, "config.json"), "{}");
     await trace.initialize();
-    const request = { operationId: "exact-package-original", metadata: {
-      packageHandoff: { binding: { runtimeRoot: root } },
-    } };
+    const operationId = "exact-package-original";
+    const dataDir = path.join(root, "data");
+    const oldManifest = {
+      releaseId: "trace-old", version: "2.0.4", publicVersion: "2.0.4",
+      versionScheme: "semver-build-v1", releaseVersion: "2.0.4+build.17", buildNumber: 17,
+    };
+    const nextManifest = {
+      ...oldManifest, releaseId: "trace-new", version: "2.0.5", publicVersion: "2.0.5",
+      releaseVersion: "2.0.5+build.18", buildNumber: 18, publicationRevision: "a".repeat(40),
+    };
+    const pointerRaw = JSON.stringify({ current: oldManifest.releaseId });
+    const oldRaw = JSON.stringify(oldManifest);
+    await mkdir(path.join(root, "releases", oldManifest.releaseId), { recursive: true });
+    await writeFile(path.join(root, "current.json"), pointerRaw);
+    await writeFile(path.join(root, "releases", oldManifest.releaseId, "runtime-manifest.json"), oldRaw);
+    const inputs = {};
+    for (const [key, contents] of Object.entries({
+      archive: "fixture-archive", descriptor: "{}", installer: "fixture-installer",
+      runtimeManifest: JSON.stringify(nextManifest),
+    })) {
+      const file = path.join(root, `package-${key}`);
+      await writeFile(file, contents);
+      inputs[key] = await packageFile(file);
+    }
+    const binding = {
+      operationId, runtimeRoot: root, dataDir,
+      roots: { runtime: await packageDirectory(root), data: await packageDirectory(dataDir) },
+      old: { releaseId: oldManifest.releaseId,
+        currentSha256: packageDigest(pointerRaw), manifestSha256: packageDigest(oldRaw) },
+      target: { releaseId: nextManifest.releaseId, version: nextManifest.releaseVersion,
+        sourceCommit: nextManifest.publicationRevision, ...inputs },
+    };
+    const store = new MaintenanceOperationStore({ dataDir });
+    const request = store.create({ operationId, kind: "restart",
+      streamId: "agent-hub-runtime", threadId: "agent-hub-runtime",
+      status: "running", phase: "running",
+      metadata: { packageHandoff: { schema: 1, binding, sha256: packageBindingDigest(binding) } },
+    });
     let blocked = true;
     const wiring = createRuntimeRestartWiring({
       taskRuns: { values: () => [] }, agentProviders: {},
@@ -37,9 +73,9 @@ test("restart composition records the original through its trace service and clo
       runtimeRestart: {
         getRestartRequest: () => request, updateOffset: () => 0,
         isStopping: () => false, beginStopping: () => false,
-        setWaiting: noop, updateRestartMessage: noop, saveState: noop,
+        setWaiting: noop, setStopping: noop, updateRestartMessage: noop, saveState: noop,
         stopRuntimeTimers: noop, stopCodexAppServerTree: noop,
-        maintenanceOperations: {},
+        maintenanceOperations: store,
         commandTrace: { ...trace, close: async () => { await trace.close(); closed = true; } },
         workLogUsageStore: { close: noop }, rateLimitHistoryStore: { close: noop },
         taskSyncStore: { close: noop }, workspaceCatalogStore: { close: noop },
