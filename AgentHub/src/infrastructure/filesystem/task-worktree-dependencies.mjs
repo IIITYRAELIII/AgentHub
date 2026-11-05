@@ -705,6 +705,16 @@ async function installedLockHash(packageRoot, limits, fileSystem) {
   return createHash("sha256").update(content).digest("hex");
 }
 
+async function hasProjectNpmConfiguration(packageRoot, projectRoot) {
+  // Config bytes may contain credentials. Presence alone keeps the existing
+  // source-local npm cwd; never copy/read project config into shared inputs.
+  for (let cursor = packageRoot; pathInside(projectRoot, cursor); cursor = path.dirname(cursor)) {
+    if (await optionalLstat(path.join(cursor, ".npmrc"))) return true;
+    if (cursor === projectRoot || cursor === path.dirname(cursor)) break;
+  }
+  return false;
+}
+
 async function prepareNpmProject({
   projectRoot,
   resolvedProjectRoot,
@@ -772,7 +782,9 @@ async function prepareNpmProject({
     maxBytes: MAX_PACKAGE_METADATA_BYTES, label: "Task package manifest", fileSystem, expectedEntry: packageEntry,
   });
   const manifest = JSON.parse(manifestContent.toString("utf8"));
-  const reusable = !["preinstall", "install", "postinstall", "prepare"].some(key => manifest.scripts?.[key])
+  const reusable = !["preinstall", "install", "postinstall", "prepublish", "preprepare", "prepare", "postprepare"]
+    .some(key => manifest.scripts?.[key])
+    && !await hasProjectNpmConfiguration(packageRoot, projectRoot)
     && !manifest.workspaces && [...expectedPackages.values()].every(value => !value.link
       && !/^(?:file:|link:|workspace:)/u.test(String(value.resolved ?? "")));
   let nodeModulesExists = await assertLocalNodeModules(packageRoot, resolvedPackageRoot);
@@ -787,6 +799,9 @@ async function prepareNpmProject({
       || existingShared?.sharedStorage)) {
     const result = await reuseTaskDependencyInputs({ packageRoot, fingerprint, manifestContent, lockfileContent,
       withOwner: sharedDependencies, lease, limits,
+      assertSourceContext: async () => {
+        if (await hasProjectNpmConfiguration(packageRoot, projectRoot)) throw new Error("Task npm configuration changed during shared input preparation");
+      },
       prepare: (root, sharedLease) => prepareNpmProject({ projectRoot: root, resolvedProjectRoot: root,
         lockfile: path.join(root, "package-lock.json"), runNpm, limits, fileSystem, lease: sharedLease, verify: true }) });
     const validated = await prepareNpmProject({ projectRoot, resolvedProjectRoot, lockfile,

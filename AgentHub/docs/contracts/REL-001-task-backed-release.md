@@ -474,13 +474,16 @@ same object archive before sealed alias removal; nonrepository originals retain
 owned physical aliases rather than another full history copy. Unknown process
 lifetime or changed custody preserves the original and refuses deletion.
 
-For registry-only npm inputs without project install hooks/local links, the Task
+For registry-only npm inputs without project install hooks/local links or project
+`.npmrc`, the Task
 dependency owner keys one installed payload by exact manifest/lock/expected package
 identities plus runtime/platform/architecture/ABI. Publication follows the existing
 owned npm runner and full installed-state validation. Compatible Tasks own separate
 plain directories, stamps and mutable root caches; immutable package/bin payload
 is hardlinked from the verified input. Partial install/attach and changed input
-custody refuse without another npm attempt. Existing ordinary local trees are
+custody refuse without another npm attempt. Project configuration presence is
+rechecked at shared publication/attachment boundaries; config contents and secrets
+are never copied or logged. Existing ordinary local trees are
 preserved; source-specific lifecycle/link inputs keep their local installation.
 On input changes, prior shared aliases and unique local cache/work move atomically
 into the same Task's ignored retained-dependency area for its existing cleanup;

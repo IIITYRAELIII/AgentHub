@@ -65,7 +65,8 @@ owner; no new cleanup scheduler, store, reconciling owner or GC is added.
 The existing dependency owner may publish one compatible registry-only installed
 payload under its exact manifest/lock/runtime/platform/ABI fingerprint. Its normal
 npm runner, validation, source rereads, per-input lock and durable process guard
-precede publication. Project install hooks, workspaces and local linked inputs
+precede publication. All seven npm-ci project lifecycle hooks, project `.npmrc` (presence-only check),
+workspaces and local linked inputs
 retain source-specific local installs. Existing local installed trees stay local.
 New compatible Tasks receive immutable package/bin hardlinks and separate plain
 local directories/stamps/.cache. Slot and attached file identities/content are

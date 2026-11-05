@@ -62,10 +62,11 @@ if (!/^[a-f0-9]{64}$/u.test(previous.lockfileSha256 ?? "")
 // Called only by prepareTaskWorktreeDependencies under its Task lock plus the
 // existing TaskGit durable process-tree owner for this exact compatibility key.
 export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, manifestContent, lockfileContent,
-  withOwner, lease, limits, prepare }) {
+  withOwner, lease, limits, prepare, assertSourceContext = async () => {} }) {
   return withOwner(fingerprint, async ({ root, lease: sharedLease }) => {
     const assertCurrent = async () => {
       await lease?.assertOwned(); await sharedLease.assertOwned();
+      await assertSourceContext();
       if (!(await readFile(path.join(packageRoot, "package.json"))).equals(manifestContent)
           || !(await readFile(path.join(packageRoot, "package-lock.json"))).equals(lockfileContent)) throw fail("Task dependency inputs changed");
     };
