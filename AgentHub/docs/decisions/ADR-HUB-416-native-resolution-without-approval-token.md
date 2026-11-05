@@ -23,7 +23,7 @@ amendments retain the same journal and delivered history remains immutable.
 Selected-content checking retains real automatic context and valid conflict
 resolution, rather than requiring a signed replay waiver. A replay that only
 adds a byte-identical block already retained is idempotent. Unique missing code,
-lost mode/deletion, foreign input paths, stale selection, different parents and
+lost mode/deletion, forged automatic prefixes, stale selection, different parents and
 dirty/foreign checkout still refuse. This is structural preservation evidence,
 not a claim that Git proves arbitrary code semantically equivalent.
 

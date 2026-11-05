@@ -612,11 +612,11 @@ test("public Test and Await preserve owned compatibility cleanup without review 
   await cleanup(stage);
   const reviewedCommit = await git(stage, "rev-parse", "HEAD");
   const beforeDev = await git(f.primary, "rev-parse", "dev");
-  await writeFile(path.join(stage, "foreign.txt"), "not selected\n");
-  await git(stage, "add", ".");
-  await git(stage, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "--amend", "--no-edit");
-  await assert.rejects(f.status(b, "testing", "compat-foreign-content"), error =>
-    error.code === "RELEASE_SELECTED_CONTENT_MISSING" && error.missingPaths.includes("foreign.txt"));
+  const wrongParent = await git(stage, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid",
+    "commit-tree", await git(stage, "rev-parse", "HEAD^{tree}"), "-p", beforeDev, "-m", "foreign parent shape");
+  await git(stage, "checkout", "--detach", wrongParent);
+  await assert.rejects(f.status(b, "testing", "compat-foreign-parents"), error =>
+    error.code === "RELEASE_NATIVE_CHECKOUT_CHANGED");
   assert.equal(await git(f.primary, "rev-parse", "dev"), beforeDev);
   await git(stage, "checkout", "--detach", reviewedCommit);
   await f.status(b, "testing", "compat-test-owned");

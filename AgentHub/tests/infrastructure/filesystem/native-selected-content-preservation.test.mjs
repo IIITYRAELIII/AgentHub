@@ -238,6 +238,26 @@ test("an owned amendment cannot discard unique selected code", async t => {
   await assert.rejects(f.compose(f.base, tasks), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
 });
 
+test("an ordinary owned resolution may add a compatibility helper without a path approval", async t => {
+  const f = await fixture(t);
+  const a = await f.create("A", "selected A\n");
+  const b = await f.create("B", "selected B\n");
+  const tasks = [{ taskId: "A", baseCommit: f.base, resultCommit: a }, { taskId: "B", baseCommit: f.base, resultCommit: b }];
+  let repository;
+  await assert.rejects(f.compose(f.base, tasks), error => {
+    assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); repository = error.conflictRoot; return true;
+  });
+  await writeFile(path.join(repository, "selection.txt"), "selected A+B\n");
+  await writeFile(path.join(repository, "compatibility.mjs"), "export const combined = true;\n");
+  const head = await commit(repository, "ordinary owned compatibility resolution");
+  const value = await f.compose(f.base, tasks);
+  assert.equal(value.head, head);
+  assert.equal((await f.compose(f.base, tasks)).head, head);
+  assert.equal(await gitAt(repository, ["show", "HEAD:compatibility.mjs"]), "export const combined = true;");
+  await assertNativePreparedComposition({ git: (args, options) => gitAt(repository, args, options),
+    baseCommit: f.base, tasks, merges: value.merges, head, tree: value.tree });
+});
+
 test("actual automatic context needs no signed replay-obligation waiver", async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.sourceRoot, "registry.txt"), "base\n");

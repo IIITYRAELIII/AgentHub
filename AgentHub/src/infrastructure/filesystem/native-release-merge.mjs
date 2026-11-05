@@ -268,7 +268,7 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
 
 // Recompute Git evidence on every reopen. Historical reviewedResolution is only
 // an old spelling of this immutable Git binding; its message/receipt is ignored.
-async function verifyMergeStep(git, before, result, target, { storedBinding = null, amendment = false } = {}) {
+async function verifyMergeStep(git, before, result, target, { storedBinding = null, ownedResolution = false } = {}) {
   if (await maybe(git, ["merge-base", "--is-ancestor", result, before]) !== null) {
     if (target !== before) throw failure("Contained native result changed the prefix");
     return null;
@@ -298,12 +298,9 @@ async function verifyMergeStep(git, before, result, target, { storedBinding = nu
     JSON.stringify(storedBinding[key]) !== JSON.stringify(binding[key]))) {
     throw failure("Recorded native resolution binding changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
-  if (extraPaths.length) {
-    const inputPaths = new Set(String(await git(["diff", "--name-only", "--no-renames", "-z", before, result],
-      { rawOutput: true })).split("\0").filter(Boolean));
-    const foreign = extraPaths.filter(file => !inputPaths.has(file));
-    if (foreign.length) throw failure("Native resolution changes content outside its selected inputs", "RELEASE_SELECTED_CONTENT_MISSING",
-      { candidateCommit: target, missingPaths: foreign.sort() });
+  if (extraPaths.length && !ownedResolution && !storedBinding) {
+    throw failure("Completed automatic native prefix contains unexpected changes", "RELEASE_SELECTED_CONTENT_MISSING",
+      { candidateCommit: target, missingPaths: extraPaths.sort() });
   }
   return { before, commit: target, binding, conflictPaths: [...conflicts].filter(file => !extraPaths.includes(file)) };
 }
@@ -386,7 +383,7 @@ export async function mergeSelectedResults({
     const index = state.next - 1;
     const previous = index === 0 ? baseCommit : state.merges[index - 1].commit;
     await requireClean(git);
-    const resolution = await verifyMergeStep(git, previous, tasks[index].resultCommit, currentHead, { amendment: true });
+    const resolution = await verifyMergeStep(git, previous, tasks[index].resultCommit, currentHead, { ownedResolution: true });
     state.merges[index] = { taskId: tasks[index].taskId, resultCommit: tasks[index].resultCommit,
       commit: currentHead, resolved: true, resolution };
     state.head = currentHead;
@@ -446,7 +443,7 @@ export async function mergeSelectedResults({
         throw failure("Native resolution has different merge parents", "RELEASE_NATIVE_CHECKOUT_CHANGED");
       }
       await requireClean(git);
-      const resolution = await verifyMergeStep(git, state.head, task.resultCommit, head);
+      const resolution = await verifyMergeStep(git, state.head, task.resultCommit, head, { ownedResolution: true });
       if (resolution) resolutions.push(resolution);
       state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head, resolved: true,
         ...(resolution ? { resolution } : {}) });

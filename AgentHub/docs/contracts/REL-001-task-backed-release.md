@@ -710,9 +710,10 @@ additions. This avoids reintroducing an already retained block or an obsolete
 Task-base context. A result merely contained in incoming ancestry gets no
 automatic-context exemption: a real inherited rollback still refuses.
 
-Changes outside the input paths remain unexpected content. Within input paths,
-clean conflict context and selected replay continue to detect lost unique code;
-choosing a whole file does not bypass these checks. A preserved automatic entry
+Completed automatic prefixes must retain automatic content. An ordinary owned
+resolution or undelivered amendment may add compatibility helpers, without a
+path approval. Selected replay still detects lost unique code; choosing a whole
+file does not bypass it. A preserved automatic entry
 or a legitimate resolution is not missing just because an independent message
 was not supplied. No additional approval service, flag or ledger is introduced.
 See ADR-HUB-416 and ADR-HUB-329-selected-content-preservation.
