@@ -124,6 +124,52 @@ test("loopback reveal bridge fallback works only on runtime unavailability; loca
   assert.equal(local.downloads.length, 0);
 });
 
+test("local-cookie absence does not renew a valid device session through real transport", async () => {
+  const bootstrap = await readFile(process.env.AGENT_HUB_WORKSPACE_BOOTSTRAP_FILE
+    ?? new URL("../../assets/web-app/browser-device-auth.js", import.meta.url), "utf8");
+  const start = bootstrap.indexOf("async function ensureSession(");
+  const ensureSession = bootstrap.slice(start, bootstrap.indexOf("function elements()", start));
+  const transport = between("async function hubFetch(", "async function hubFetchWithin(");
+  for (const localStatus of [401, 204, "network-error", 503]) {
+    const calls = [], downloads = [];
+    let forcedRenewals = 0;
+    const renewalFailure = new Error("device renewal unavailable"), offline = new Error("network down");
+    const window = { location: { origin: "http://127.0.0.1:8787", href: "http://127.0.0.1:8787/" } };
+    const context = { window, URL, Response, Date, String, Boolean, Error, Promise,
+      document: { createElement: () => ({ click() { downloads.push(this.href); }, remove() {} }), body: { append() {} } },
+      vscode: null, localWorkspaceFilesAvailable: true, localSessionReady: Promise.resolve(),
+      commandTrace: { http: (_name, action) => action() }, markConnectionFailure: (error) => error,
+      agentHub: { on() {}, toast() {} }, authorizationHeaders: () => ({}), runAction: (action) => action(),
+      resourceFileName: (resource) => resource.name, saveBlob: async () => downloads.push("direct"),
+      startAuthentication: async () => { forcedRenewals += 1; throw renewalFailure; },
+      fetch: async (url) => {
+        calls.push(url);
+        if (url === "/api/local-session") {
+          if (localStatus === "network-error") throw offline;
+          return new Response(null, { status: localStatus });
+        }
+        if (url.startsWith("/api/workspace-file?")) return new Response("extension");
+        assert.equal(url, "/api/workspace-file/transfer-ticket");
+        return json({ ok: true, downloadPath: "/api/workspace-file/transfer/fixture" });
+      } };
+    vm.runInNewContext(`let credential = { fixture: true }, localSessionActive = false, sessionActive = true;
+      let sessionExpiresAt = Date.now() + 120000; const SESSION_REFRESH_MARGIN_MS = 60000;
+      ${functions}\n${transport}\n${ensureSession}
+      window.AgentHubBrowserDevice = { isPaired: () => true, ensureSession };
+      window.save = saveLinkResource; window.ticket = requestWorkspaceFileTransfer;`, context);
+    if (localStatus === "network-error") await assert.rejects(window.save(file()), (error) => error === offline);
+    else if (localStatus === 503) await assert.rejects(window.save(file()), /503/u);
+    else await window.save(file());
+    assert.equal(forcedRenewals, 0, "absent local proof must not force device renewal");
+    assert.equal(downloads.length, [401, 204].includes(localStatus) ? 1 : 0);
+    assert.equal(calls.filter((url) => url === "/api/workspace-file/transfer-ticket").length, localStatus === 401 ? 1 : 0);
+    // Control: this exact live device session can still obtain a ticket even
+    // while the unrelated renewal port is unavailable.
+    assert.equal((await window.ticket(file().localPath)).ok, true);
+    assert.equal(forcedRenewals, 0);
+  }
+});
+
 test("native browser click downloads paired loopback artifacts through the real HTTP owner", async () => {
   const { chromium } = await import("playwright");
   const { MiniAppServer } = await import(process.env.AGENT_HUB_WORKSPACE_SERVER_FILE

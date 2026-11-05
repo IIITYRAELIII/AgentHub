@@ -49,7 +49,8 @@ async function hasLocalWorkspaceFileAccess() {
   if (!localWorkspaceFilesAvailable) return false;
   // Loopback is a location, not proof of the browser's authorization. The
   // existing session owner checks the protected cookie, including after reload.
-  const response = await hubFetch("/api/local-session", { method: "HEAD", cache: "no-store" });
+  // Its expected 401 is not expiry of the separate trusted-device session.
+  const response = await hubFetch("/api/local-session", { method: "HEAD", cache: "no-store" }, false);
   if (response.status === 204) return true;
   if ([401, 403, 404].includes(response.status)) return false;
   throw new Error(`Не удалось проверить локальный доступ: HTTP ${response.status}`);
