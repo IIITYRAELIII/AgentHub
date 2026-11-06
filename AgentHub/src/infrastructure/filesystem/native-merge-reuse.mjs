@@ -224,6 +224,12 @@ export async function retainedNativeConflict({ root, repository, candidates, sta
           ["merge-tree", "--write-tree", "-z", before, step.resultCommit], { rawOutput: true, acceptableExitCodes: [1] }));
         if (!old || taskGitIdentityHash(old.stages) !== taskGitIdentityHash(stages)) continue;
         const selected = await treeEntries(git, `${step.commit}^{tree}`, true), replacements = new Map();
+        const previousAutomatic = await treeEntries(git, old.tree, true);
+        // Partial conflict reuse must not silently drop a compatibility helper
+        // or another manual afterimage outside the copied conflict paths. Whole
+        // prefix reuse retains those bytes; otherwise keep the real conflict.
+        if ([...new Set([...previousAutomatic.keys(), ...selected.keys()])].some(file =>
+          !state.conflict.paths.includes(file) && previousAutomatic.get(file) !== selected.get(file))) continue;
         for (const file of state.conflict.paths) {
           const entry = selected.get(file);
           if (!/^(100644|100755) blob [a-f0-9]{40}$/u.test(entry ?? "")) break;
