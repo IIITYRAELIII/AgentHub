@@ -309,13 +309,19 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
     // whole-line deletion, or the same words removed elsewhere in the file,
     // cannot provide evidence for losing this selected line.
     if (!prefix || !suffix) return null;
-    return JSON.stringify([oldWords[prefix - 1], oldWords.slice(prefix, oldWords.length - suffix),
-      newWords.slice(prefix, newWords.length - suffix), oldWords[oldWords.length - suffix]]);
+    const removed = oldWords.slice(prefix, oldWords.length - suffix);
+    const added = newWords.slice(prefix, newWords.length - suffix);
+    // A parameter removed from the middle of a declaration can be the last
+    // shorthand argument at a caller. Its adjacent comma changes sides; the
+    // ordered removed tokens, not a file-wide word count, carry that edit.
+    if (removed[0] === ",") removed.shift();
+    if (removed.at(-1) === ",") removed.pop();
+    return !added.length && removed.length ? removed : null;
   };
   let incomingEdits = null;
   const selectedInlineEdits = async () => {
     if (incomingEdits) return incomingEdits;
-    incomingEdits = new Set();
+    incomingEdits = [];
     // Use Git's actual stage-1 blob, including its virtual merge base. Do not
     // treat the current parent's unique additions as incoming removals.
     const stages = String(await git(["merge-tree", "--write-tree", "-z", before, result],
@@ -333,7 +339,7 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
       if (oldLines.length !== newLines.length) return;
       for (let index = 0; index < oldLines.length; index++) {
         const edit = inlineEdit(oldLines[index], newLines[index]);
-        if (edit && losesWords(oldLines[index], newLines[index])) incomingEdits.add(edit);
+        if (edit) incomingEdits.push(edit);
       }
     };
     for (const line of delta.split("\n")) {
@@ -365,7 +371,11 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
     for (let index = 0; index < removed.length; index++) {
       if (!losesWords(removed[index], added[index])) continue;
       const edit = inlineEdit(removed[index], added[index]);
-      if (!edit || !available.has(edit)) return false;
+      // A shorthand use may omit the declaration's default value, but its
+      // removed tokens must still be one contiguous part of that same inline
+      // deletion. Never combine unrelated removals or permute their words.
+      if (!edit || !available.some(incoming => incoming.some((_, start) =>
+        edit.every((word, offset) => incoming[start + offset] === word)))) return false;
     }
     return true;
   };
