@@ -1002,8 +1002,10 @@ That exact owned binding also carries compatibility corrections to clean context
 inside a real conflict file. Reopen recomputes this coverage; unrelated extra
 paths do not receive it. Whole-parent substitution, deleted clean code and
 restoration of the other parent's clean context still refuse composition.
-Inline removals from unique clean context must be accounted for by the incoming
-selected delta, derived from Git's actual stage-1 blob and word diff. Conflict
+Inline removals from unique clean context must match an incoming inline edit,
+derived from Git's actual stage-1 blob: the ordered removed/replacement tokens
+and both retained local boundary tokens must agree. Whole-line deletion or
+unrelated removals elsewhere cannot account for losing a selected addition. Conflict
 additions cannot lend evidence to a mixed hunk that drops unique clean code.
 This structural check does not claim semantic equivalence of replacement code.
 

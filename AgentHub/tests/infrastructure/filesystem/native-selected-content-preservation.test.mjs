@@ -281,6 +281,38 @@ test("an owned amendment cannot discard unique selected code", async t => {
   await assert.rejects(f.compose(f.base, tasks), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
 });
 
+test("owned conflict compatibility rejects cross-region removal credit for a selected addition", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.sourceRoot, ".gitattributes"), "*.txt text eol=lf\n");
+  const gap = name => Array.from({ length: 12 }, (_, i) => `${name} context ${i}\n`).join("");
+  const body = (first, second, tail) => `${first}${gap("first")}${second}${gap("second")}${tail}\n`;
+  await writeFile(path.join(f.sourceRoot, "selection.txt"), body("base clean\n", "implementation selected unique\n", "base shared"));
+  const base = await commit(f.sourceRoot, "cross-region base");
+  const a = await f.create("A", body("unique selected implementation\nbase clean\n", "implementation selected unique\n", "selected A"), base);
+  const b = await f.create("B", body("base clean\n", "", "selected B"), base);
+  const tasks = [{ taskId: "A", baseCommit: base, resultCommit: a }, { taskId: "B", baseCommit: base, resultCommit: b }];
+  let repository;
+  await assert.rejects(f.compose(base, tasks), error => {
+    assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); repository = error.conflictRoot; return true;
+  });
+  const automatic = await readFile(path.join(repository, "selection.txt"), "utf8");
+  assert.ok(automatic.startsWith("unique selected implementation\nbase clean\n"));
+  assert.ok(!automatic.includes("implementation selected unique\n"));
+  assert.ok(automatic.indexOf("unique selected implementation") < automatic.indexOf("<<<<<<< HEAD"));
+  const lost = body("base clean\n", "", "selected A+B");
+  await writeFile(path.join(repository, "selection.txt"), lost);
+  const target = await commit(repository, "incorrectly lose A using unrelated B removals");
+  const stateFile = path.join(f.root, "capture", "merge.json");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const unchanged = await readFile(stateFile);
+    await assert.rejects(f.compose(base, tasks), error => error.code === "RELEASE_SELECTED_CONTENT_MISSING"
+      && error.missingPaths.includes("selection.txt"));
+    assert.deepEqual(await readFile(stateFile), unchanged);
+    assert.equal(await gitAt(repository, ["rev-parse", "HEAD"]), target);
+    assert.equal(await readFile(path.join(repository, "selection.txt"), "utf8"), lost);
+  }
+});
+
 test("owned conflict compatibility edits retain their selected-content evidence on reopen", async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.sourceRoot, ".gitattributes"), "*.txt text eol=lf\n");

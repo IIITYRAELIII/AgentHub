@@ -295,29 +295,59 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
     for (const word of words(value)) result.set(word, (result.get(word) ?? 0) + 1);
     return result;
   };
-  let incomingRemoved = null;
-  const selectedRemovals = async () => {
-    if (incomingRemoved) return incomingRemoved;
-    incomingRemoved = new Map();
+  const losesWords = (oldText, newText) => {
+    const retained = counts(newText);
+    return [...counts(oldText)].some(([word, count]) => count > (retained.get(word) ?? 0));
+  };
+  const inlineEdit = (oldText, newText) => {
+    const oldWords = words(oldText), newWords = words(newText);
+    let prefix = 0, suffix = 0;
+    while (prefix < Math.min(oldWords.length, newWords.length) && oldWords[prefix] === newWords[prefix]) prefix++;
+    while (suffix < Math.min(oldWords.length, newWords.length) - prefix
+        && oldWords[oldWords.length - suffix - 1] === newWords[newWords.length - suffix - 1]) suffix++;
+    // An inline compatibility edit retains both of its local boundaries. A
+    // whole-line deletion, or the same words removed elsewhere in the file,
+    // cannot provide evidence for losing this selected line.
+    if (!prefix || !suffix) return null;
+    return JSON.stringify([oldWords[prefix - 1], oldWords.slice(prefix, oldWords.length - suffix),
+      newWords.slice(prefix, newWords.length - suffix), oldWords[oldWords.length - suffix]]);
+  };
+  let incomingEdits = null;
+  const selectedInlineEdits = async () => {
+    if (incomingEdits) return incomingEdits;
+    incomingEdits = new Set();
     // Use Git's actual stage-1 blob, including its virtual merge base. Do not
     // treat the current parent's unique additions as incoming removals.
     const stages = String(await git(["merge-tree", "--write-tree", "-z", before, result],
       { acceptableExitCodes: [1] })).split("\0");
     const stage = stages.find(row => row.slice(row.indexOf("\t") + 1) === file
       && row.slice(0, row.indexOf("\t")).split(" ")[2] === "1");
-    if (!stage) return incomingRemoved;
+    if (!stage) return incomingEdits;
     const baseBlob = stage.split(" ")[1];
     const resultBlob = String(await git(["rev-parse", `${result}:${file}`]));
-    const delta = String(await git(["diff", "--no-ext-diff", "--no-textconv", "--no-color",
-      "--word-diff=porcelain", "--word-diff-regex=[A-Za-z0-9_$]+|[^[:space:]]", baseBlob, resultBlob], { rawOutput: true }));
+    const delta = String(await git(["-c", "diff.algorithm=myers", "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+      "--no-indent-heuristic", "--unified=0", "--inter-hunk-context=0", baseBlob, resultBlob], { rawOutput: true }));
     let inHunk = false;
+    let oldLines = [], newLines = [];
+    const retainEdits = () => {
+      if (oldLines.length !== newLines.length) return;
+      for (let index = 0; index < oldLines.length; index++) {
+        const edit = inlineEdit(oldLines[index], newLines[index]);
+        if (edit && losesWords(oldLines[index], newLines[index])) incomingEdits.add(edit);
+      }
+    };
     for (const line of delta.split("\n")) {
-      if (line.startsWith("@@ ")) inHunk = true;
-      else if (inHunk && line.startsWith("-")) {
-        for (const word of words(line.slice(1))) incomingRemoved.set(word, (incomingRemoved.get(word) ?? 0) + 1);
+      if (line.startsWith("@@ ")) {
+        retainEdits(); inHunk = true; oldLines = []; newLines = [];
+      } else if (inHunk && line.startsWith("-")) oldLines.push(line.slice(1));
+      else if (inHunk && line.startsWith("+")) newLines.push(line.slice(1));
+      else if (inHunk && line.startsWith("\\")) {
+        // An unterminated boundary cannot supply a complete inline edit.
+        oldLines = []; newLines = []; inHunk = false;
       }
     }
-    return incomingRemoved;
+    retainEdits();
+    return incomingEdits;
   };
   let sourceLine = 0, removed = [], added = [], markerEdit = false;
   const preserved = async () => {
@@ -329,14 +359,13 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
     // Mixed marker/clean hunks cannot lend their conflict additions to erased
     // unique clean code. Ordinary marker-only edits need no such projection.
     if (markerEdit) return false;
-    const dropped = counts(oldBlock), replacement = counts(newBlock), available = await selectedRemovals();
-    for (const [word, count] of dropped) {
-      const removedCount = count - (replacement.get(word) ?? 0);
-      if (removedCount > (available.get(word) ?? 0)) return false;
-    }
-    for (const [word, count] of dropped) {
-      const removedCount = Math.max(0, count - (replacement.get(word) ?? 0));
-      available.set(word, (available.get(word) ?? 0) - removedCount);
+    if (!losesWords(oldBlock, newBlock)) return true;
+    if (removed.length !== added.length) return false;
+    const available = await selectedInlineEdits();
+    for (let index = 0; index < removed.length; index++) {
+      if (!losesWords(removed[index], added[index])) continue;
+      const edit = inlineEdit(removed[index], added[index]);
+      if (!edit || !available.has(edit)) return false;
     }
     return true;
   };

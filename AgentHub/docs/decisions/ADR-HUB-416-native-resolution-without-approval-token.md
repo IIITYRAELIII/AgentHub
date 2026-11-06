@@ -35,10 +35,13 @@ Whole-parent substitution, deletion of clean code and restoration of the other
 parent's clean context still refuse composition instead of receiving an
 override. This is a structural loss check, not a semantic approval of arbitrary
 replacement code. No approval token or additional durable state is introduced.
-For unique clean context, removed words must be present in the incoming selected
-change's removals from Git's actual stage-1 blob; retained replacement words are
-not removals. This carries an API compatibility correction without authorizing
-an unrelated clean-code deletion or a novel replacement that loses unique code.
+For unique clean context, a lossy inline edit must match the incoming selected
+change from Git's actual stage-1 blob: ordered removed/replacement tokens and
+both retained local boundary tokens agree. A file-wide bag of removed words is
+insufficient; unrelated removal in another region cannot authorize losing a
+selected addition. Whole-line loss supplies no inline boundaries. This carries
+an API compatibility correction such as uniqueCall(legacy) to uniqueCall()
+without authorizing an unrelated clean-code deletion or novel replacement.
 The evidence is recomputed, including virtual-base stage-1 content, on reopen.
 Only the composition baseline identifies inherited context. A clean block newly
 added by both selected parents is still selected code and cannot be discarded
