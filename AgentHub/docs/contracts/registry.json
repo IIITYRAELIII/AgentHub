@@ -354,6 +354,7 @@
         "tests/infrastructure/filesystem/dependency-context.test.mjs",
         "tests/helpers/fixture-allocation.mjs",
         "tests/infrastructure/filesystem/native-object-consumer-production.test.mjs",
+        "tests/infrastructure/filesystem/native-detached-reuse-production.test.mjs",
         "tests/infrastructure/filesystem/selected-git-bundle.test.mjs"
       ]
     },
@@ -552,6 +553,7 @@
         "tests/infrastructure/filesystem/dependency-context.test.mjs",
         "tests/helpers/fixture-allocation.mjs",
         "tests/infrastructure/filesystem/native-object-consumer-production.test.mjs",
+        "tests/infrastructure/filesystem/native-detached-reuse-production.test.mjs",
         "tests/infrastructure/filesystem/selected-git-bundle.test.mjs"
       ]
     },

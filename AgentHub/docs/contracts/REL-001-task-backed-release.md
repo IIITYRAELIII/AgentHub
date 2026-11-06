@@ -453,7 +453,14 @@ digest: an old alias-bearing receipt can require a corrected later generation.
 
 New verified native-prefix transport may exclude exact commit prerequisites
 whose complete history is already owned by the receiving repository. The same
-receiver/source custody and connected prerequisite graph are checked before
+discovery includes the sealed base and selected results, even when a detached
+receiver's newly composed HEAD is absent from the retained donor. Donor object
+availability and complete receiver prerequisite closure remain required.
+A conflict-only hint may be rejected before transport when its regular incoming
+file provably differs from the current direct stage-3 side under a single old
+merge base. Ambiguous path/base mappings retain the complete old-stage check;
+usable hints still require the fresh current verifier and automatic outside.
+Receiver/source custody and connected prerequisite graph are checked before
 creation and after streaming; ordinary Git bundle verification precedes import.
 The existing journal intent, fresh native merge verification and selected-content
 authority still apply. Legacy full bundles remain unchanged; partial output is

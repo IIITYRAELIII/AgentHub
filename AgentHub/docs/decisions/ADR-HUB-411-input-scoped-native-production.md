@@ -106,3 +106,19 @@ files and OIDs across readonly longpaths-off/on fsck and an actual fetch before
 and after the one local setting. The maintained producer regression provisions
 a deep independent consumer and fetches its exact input through a real child
 server. The existing Await/generation/retirement caller checks the full path.
+
+## Detached receiver prerequisites and rejected hints
+
+The receiver's exact sealed base and selected-result commits supplement its
+advertised refs and HEAD when discovering shared prerequisites. Detached owned
+consumers can have no refs and a freshly recomposed HEAD absent from the donor.
+Each prerequisite still requires donor availability, complete receiver closure
+and the existing custody rechecks before bundle verification and import.
+
+A retained conflict hint whose incoming file demonstrably differs from the
+current direct stage-3 entry is rejected before transport. Ambiguous rename or
+virtual-side mappings retain the full existing comparison. Every usable hint
+still passes all old stages and fresh current merge verification; active WIP
+and old journals remain untouched. A 64-KiB real owning-caller regression checks
+the detached receiver's missing donor HEAD, bundle prerequisites and size,
+current automatic content, reopen and zero rejected-side hint transports.
