@@ -303,6 +303,11 @@ test("owned conflict compatibility edits retain their selected-content evidence 
   const stateFile = path.join(f.root, "capture", "merge.json"), saved = await readFile(stateFile);
   assert.equal((await f.compose(base, tasks)).head, head);
   assert.deepEqual(await readFile(stateFile), saved);
+  const foreignPath = path.join(repository, "foreign.txt");
+  await writeFile(foreignPath, "unowned work must survive\n");
+  await assert.rejects(f.compose(base, tasks), { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
+  assert.equal(await readFile(foreignPath, "utf8"), "unowned work must survive\n");
+  await rm(foreignPath);
   const input = { git: (args, options) => gitAt(repository, args, options), baseCommit: base, tasks,
     merges: value.merges, head, tree: value.tree };
   await assertNativeMergedResults(input);
