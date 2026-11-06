@@ -38,13 +38,19 @@ test("a deep Windows native consumer serves its complete input to a real fetch c
     const storage = await objects.provision({ sourceRoot: source, repository, inputs: [selected], identityHash });
     await objects.assertConsumer({ repository, inputs: [selected], identityHash, storage });
     await assert.rejects(readFile(path.join(repository, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
+    const tree = await producerGit(repository, ["rev-parse", `${selected}^{tree}`]);
+    const output = await producerGit(repository, ["-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
+      "commit-tree", tree, "-p", selected], { input: "owned native output\n" });
+    await producerGit(repository, ["update-ref", "refs/heads/main", output]);
+    await producerGit(repository, ["symbolic-ref", "HEAD", "refs/heads/main"]);
     const receiver = path.join(root, "receiver.git");
     await producerGit(root, ["init", "--bare", receiver]);
     // The client -c cannot replace the child server's persistent path policy.
-    await producerGit(receiver, ["fetch", "--no-tags", repository, selected]);
-    assert.equal(await producerGit(receiver, ["rev-parse", "FETCH_HEAD"]), selected);
-    assert.equal(await producerGit(receiver, ["show", `${selected}:selected.txt`]), "one exact native input");
-    await producerGit(receiver, ["fsck", "--connectivity-only", "--no-dangling", selected]);
+    await producerGit(receiver, ["fetch", "--no-tags", repository, output]);
+    assert.equal(await producerGit(receiver, ["rev-parse", "FETCH_HEAD"]), output);
+    assert.equal(await producerGit(receiver, ["show", `${output}:selected.txt`]), "one exact native input");
+    await producerGit(receiver, ["merge-base", "--is-ancestor", selected, output]);
+    await producerGit(receiver, ["fsck", "--connectivity-only", "--no-dangling", output]);
     await objects.assertConsumer({ repository, inputs: [selected], identityHash, storage });
   });
 });
