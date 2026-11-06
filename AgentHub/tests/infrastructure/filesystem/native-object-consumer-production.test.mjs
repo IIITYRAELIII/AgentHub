@@ -24,6 +24,7 @@ test("a deep Windows native consumer serves its complete input to a real fetch c
   while (path.join(repository, ".git", "objects", "ab", "c".repeat(38)).length < 286) {
     repository = path.join(repository, "deep-native-consumer");
   }
+  await mkdir(path.dirname(repository), { recursive: true });
   const objects = new OwnedNativeObjectStore({ dataDir, gitAt });
   const identityHash = hash("deep consumer");
   const storage = await objects.provision({ sourceRoot: source, repository, inputs: [selected], identityHash });
