@@ -464,6 +464,8 @@
       "document": "USG-001-usage-attribution.md",
       "paths": [
         "src/domain/token-usage.mjs",
+        "src/domain/turn-duration-recovery.mjs",
+        "turn-duration-recovery.mjs",
         "src/domain/work-log-usage-sync.mjs",
         "src/domain/usage-sync-identity.mjs",
         "src/domain/team-usage-accounts.mjs",

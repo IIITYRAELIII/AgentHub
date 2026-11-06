@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { planTurnDurationRecovery } from "../domain/turn-duration-recovery.mjs";
 
 import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
@@ -219,6 +220,24 @@ export class WorkLogUsageStore {
 
   journalWriteDiagnostics() {
     return this.#repository.journalWriteDiagnostics?.() ?? null;
+  }
+
+  async recoverTurnDuration(identity, evidence, { apply = false } = {}) {
+    return this.#repository.enqueue(async () => {
+      const record = await this.#repository.getRecord(identity);
+      const predecessor = await this.#repository.getRecord({
+        ...identity, turnId: evidence?.predecessorTurnId,
+      });
+      const recovery = planTurnDurationRecovery(record, { predecessor, telemetry: evidence?.telemetry });
+      if (!recovery) return { eligible: false, applied: false };
+      if (!apply) return { eligible: true, applied: false, recovery };
+      if (JSON.stringify(record.durationRecovery) === JSON.stringify(recovery)) {
+        return { eligible: true, applied: false, unchanged: true, recovery };
+      }
+      const updated = { ...record, durationRecovery: recovery };
+      await this.#repository.upsertRecords([updated]);
+      return { eligible: true, applied: true, projectionPending: true, recovery };
+    }, { load: false, pointRead: true });
   }
 
   async #projectionSource() {

@@ -164,7 +164,7 @@ export function createCodexObservabilityComposition({
     const key = turnEndKey(identity);
     const existing = turnStarts.get(key);
     if (existing) return;
-    const run = taskRuns.forEvent({ ...identity, allowThreadFallback: true });
+    const run = taskRuns.forEvent(identity);
     const record = {
       ...existing,
       ...identity,
@@ -174,8 +174,8 @@ export function createCodexObservabilityComposition({
       gitBaseline: null,
     };
     setBounded(turnStarts, key, record, 500);
-    if (!run) return;
-    run.turnId ||= identity.turnId;
+    if (!run || run.provider !== identity.provider || run.threadId !== identity.threadId
+      || run.turnId !== identity.turnId) return;
     run.startedAt = record.startedAt || run.startedAt;
     run.gitBaseline = record.gitBaseline ?? run.gitBaseline;
     taskRuns.reindex(run);
