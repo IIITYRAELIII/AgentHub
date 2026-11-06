@@ -26,6 +26,15 @@ function completionFailure(message) {
   };
 }
 
+async function retainUnknownFixture(f, input) {
+  const pending = f.catalog.mcpOperation(input.request_id);
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.taskExecution.completionFailure.originalError.code, "TASK_WORKFLOW_NO_EFFECT");
+  // This test's reconciler addresses an explicit UNKNOWN. A failed completion
+  // write alone leaves pending; this separate fixture writer establishes UNKNOWN.
+  await f.catalog.markMcpOperationUnknown(input.request_id, new Error("fixture resumed original classification"));
+}
+
 async function fixture(context, { releaseWorkflowEnabled = true, configuredRoot = true } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-workflow-refusal-"));
   const databaseFile = path.join(root, "hub.sqlite");
@@ -109,13 +118,14 @@ for (const [configuredRoot, suppliedRoot] of [[false, true], [false, false], [tr
       task_id: f.task.id, description: "rev18" });
     f.rawCatalog.failMcpOperation = () => { throw new Error("lost receipt write"); };
     await assert.rejects(f.hub.call("hub_task_status_update", f.input), completionFailure("lost receipt write"));
+    await retainUnknownFixture(f, f.input);
     const original = f.catalog.mcpOperation(f.input.request_id);
     const outcome = f.tasks.lifecycleOutcome(f.input.request_id);
-    assert.equal(original.status, "pending");
+    assert.equal(original.status, "unknown");
     assert.equal(original.taskExecution.completionFailure.persistenceError.message, "lost receipt write");
     assert.equal(outcome.result.noEffect.projectRoot, configuredRoot ? f.root : null);
     const reopened = await f.open();
-    const hub = f.service(reopened, false);
+    const hub = f.service(reopened, true);
     assert.deepEqual(reopened.catalog.mcpOperation(f.input.request_id), original);
     const args = { context_token: f.token, request_id: "database-only-reconcile", task_id: f.task.id,
       operation_request_id: f.input.request_id, ...(suppliedRoot ? { project_root: f.root } : {}), confirm_reconcile: true,
@@ -155,6 +165,7 @@ for (const state of ["legacy", "admitted", "foreign", "corrupt"]) {
       await f.tasks.update({ id: f.task.id, title: f.task.title, description: "rev18" });
       f.rawCatalog.failMcpOperation = () => { throw new Error("lost receipt write"); };
       await assert.rejects(f.hub.call("hub_task_status_update", f.input), completionFailure("lost receipt write"));
+      await retainUnknownFixture(f, f.input);
       if (state === "corrupt") {
         // Fault injection affects only this disposable fixture's durable proof.
         const db = new DatabaseSync(path.join(f.root, "hub.sqlite"));
@@ -174,7 +185,7 @@ for (const state of ["legacy", "admitted", "foreign", "corrupt"]) {
     }
     const original = f.catalog.mcpOperation(f.input.request_id);
     const reopened = await f.open();
-    const hub = f.service(reopened, false);
+    const hub = f.service(reopened, true);
     const args = { context_token: f.token, request_id: `database-only-${state}-reconcile`, task_id: f.task.id,
       operation_request_id: f.input.request_id, confirm_reconcile: true, expected_task_revision: state === "foreign" ? 18 : 17,
       expected_workflow_status: "testing" };
@@ -212,6 +223,7 @@ test("SQL refusal settlement failure cannot certify the reconciler's own receipt
   await f.tasks.update({ id: f.task.id, title: f.task.title, description: "rev18" });
   f.rawCatalog.failMcpOperation = () => { throw new Error("lost receipt write"); };
   await assert.rejects(f.hub.call("hub_task_status_update", f.input), completionFailure("lost receipt write"));
+  await retainUnknownFixture(f, f.input);
   const original = f.catalog.mcpOperation(f.input.request_id);
   const reopened = await f.open();
   reopened.rawCatalog.failUnknownMcpOperation = () => { throw new Error("ambiguous settlement write"); };
@@ -319,6 +331,7 @@ test("status-only refusal retains exact argument shape and wrong selection canno
   delete input.expected_task_revision;
   f.rawCatalog.failMcpOperation = () => { throw new Error("lost receipt write"); };
   await assert.rejects(f.hub.call("hub_task_status_update", input), completionFailure("lost receipt write"));
+  await retainUnknownFixture(f, input);
   assert.equal(f.tasks.lifecycleOutcome(input.request_id).result.noEffect.code, "WORKFLOW_STATUS_CHANGED");
   const reopened = await f.open();
   const hub = f.service(reopened);
@@ -326,7 +339,7 @@ test("status-only refusal retains exact argument shape and wrong selection canno
     operation_request_id: input.request_id, project_root: f.root, confirm_reconcile: true,
     expected_task_revision: 17, expected_workflow_status: "in_progress" };
   await assert.rejects(hub.call("hub_task_operation_reconcile", args), /identity/);
-  assert.equal(reopened.catalog.mcpOperation(input.request_id).status, "pending");
+  assert.equal(reopened.catalog.mcpOperation(input.request_id).status, "unknown");
   assert.equal(reopened.catalog.mcpOperation(args.request_id).status, "failed");
   const exact = { ...args, request_id: "exact-refusal-selection" };
   delete exact.expected_task_revision;
