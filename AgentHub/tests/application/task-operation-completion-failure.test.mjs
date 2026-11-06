@@ -3,6 +3,7 @@ import test from 'node:test';
 import path from 'node:path';
 import { claimCustodyFixture } from '../fixtures/claim-custody-public-fixture.mjs';
 import { createCommandTraceComposition } from '../../src/composition/command-trace-composition.mjs';
+import { TaskLifecycleService } from '../../src/application/task-lifecycle-service.mjs';
 
 const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
 async function setup(t){
@@ -17,6 +18,89 @@ async function setup(t){
     context_token:token,operation_request_id:args.request_id});
   return {...f,args,done,trace,traces,get};
 }
+
+for(const outerWriteFails of [false,true])test(`Await lifecycle persistence failure survives ${outerWriteFails?'failed':'successful'} outer UNKNOWN write and reopen`,async t=>{
+  const f=await setup(t);
+  const workspace=f.catalog.workspace(f.prior.workspaceId);
+  await f.catalog.updateWorkspaceSettings(workspace.id,{...workspace.settings,releaseWorkflowEnabled:true});
+  await f.tasks.setWorkflowStatus({id:f.prior.id,status:'testing'});
+  await f.tasks.recordTaskGitReference({taskId:f.prior.id,projectRoot:f.source.repositoryRoot,
+    branch:f.source.branch,resultSnapshot:{repoRoot:f.source.repositoryRoot,tree:f.source.headCommit}});
+  const task=f.tasks.task(f.prior.id);
+  const original=Object.assign(new Error('fixture native merge requires owned resolution'),{code:'RELEASE_NATIVE_MERGE_CONFLICT'});
+  const persistence=Object.assign(new Error('fixture lifecycle failure write unavailable'),{code:'FIXTURE_LIFECYCLE_SQL'});
+  const outer=Object.assign(new Error('fixture outer UNKNOWN write unavailable'),{code:'FIXTURE_OUTER_SQL'});
+  let attempts=0,failWrites=0;
+  f.hub.taskLifecycle=new TaskLifecycleService({taskBoard:f.tasks,workspaceCatalog:f.catalog,
+    taskGitWorkspaces:f.workspaces,releasePreflight:{
+      async withAwaitTransition(_id,operation){return operation();},
+      async prepareAwaitAcceptance(){attempts++;throw original;},
+    }});
+  f.rawTasks.failLifecycleTransition=()=>{failWrites++;throw persistence;};
+  if(outerWriteFails)f.rawCatalog.markMcpOperationUnknown=()=>{throw outer;};
+  Object.assign(f.args,{request_id:'await-lifecycle-completion',status:'awaiting_implementation',
+    expected_task_revision:task.revision,expected_workflow_status:'testing'});
+  let caught;
+  try{await f.hub.call('hub_task_status_update',f.args);}catch(error){caught=error;}
+  const lifecycleError=outerWriteFails?caught.cause:caught;
+  assert.equal(lifecycleError.code,'TASK_LIFECYCLE_PERSISTENCE_FAILED');
+  assert.equal(lifecycleError.cause.cause,original);
+  assert.equal(lifecycleError.errors[1],persistence);
+  if(outerWriteFails){assert.equal(caught.code,'MCP_COMPLETION_PERSISTENCE_FAILED');assert.equal(caught.errors[1],outer);}
+  assert.equal(attempts,1);assert.equal(failWrites,1);
+  assert.equal(f.tasks.lifecycleTransition(f.args.request_id).phase,'pending_git');
+  assert.equal(f.tasks.lifecycleOutcome(f.args.request_id),null);
+  const value=await f.get();
+  assert.equal(value.taskOperation.active,false);
+  assert.equal(value.taskOperation.status,outerWriteFails?'pending':'unknown');
+  assert.equal(value.taskOperation.execution.state,outerWriteFails?'unresolved':'unknown');
+  assert.equal(value.taskOperation.completionFailure.persistenceError.message,persistence.message);
+  assert.equal(value.taskOperation.completionFailure.originalError.code,'TASK_AWAIT_INTEGRATION_FAILED');
+  assert.equal(value.taskOperation.completionFailure.effects,'retained_unknown');
+  const opened=await f.open(),peer=f.service(opened,false);
+  const token=peer.contextToken({provider:'codex',threadId:`${f.successor.id}-thread`});
+  assert.deepEqual((await f.get(peer,token)).taskOperation.completionFailure,value.taskOperation.completionFailure);
+  await peer.submitTaskOperation('hub_task_status_update',{...f.args,context_token:token});
+  assert.equal(attempts,1);assert.equal(failWrites,1);
+  await f.trace.close();
+  const reopened=createCommandTraceComposition({databaseFile:path.join(f.root,'trace.sqlite')});
+  f.traces.push(reopened);await reopened.initialize();
+  const span=(await reopened.service.readCommandTimeline(f.args.request_id)).find(x=>x.stage==='task-operation-completion-failure');
+  assert.equal(span.metadata.persistenceErrorCode,'FIXTURE_LIFECYCLE_SQL');
+  assert.equal(span.metadata.originalErrorCode,'TASK_AWAIT_INTEGRATION_FAILED');
+  assert.ok(!JSON.stringify(span).includes(persistence.message));
+});
+test('Await failure after Task lease loss cannot persist lifecycle failure or invent a persistence diagnostic',async t=>{
+  const f=await setup(t);
+  const workspace=f.catalog.workspace(f.prior.workspaceId);
+  await f.catalog.updateWorkspaceSettings(workspace.id,{...workspace.settings,releaseWorkflowEnabled:true});
+  await f.tasks.setWorkflowStatus({id:f.prior.id,status:'testing'});
+  await f.tasks.recordTaskGitReference({taskId:f.prior.id,projectRoot:f.source.repositoryRoot,
+    branch:f.source.branch,resultSnapshot:{repoRoot:f.source.repositoryRoot,tree:f.source.headCommit}});
+  const task=f.tasks.task(f.prior.id),withTaskLock=f.workspaces.withTaskLock.bind(f.workspaces);
+  const original=Object.assign(new Error('fixture native merge failed before lease loss'),{code:'RELEASE_NATIVE_MERGE_CONFLICT'});
+  let lost=false,failWrites=0;
+  f.workspaces.withTaskLock=(id,operation,...rest)=>withTaskLock(id,lease=>operation({...lease,
+    async assertOwned(){if(lost)throw new Error('fixture Task lease lost');await lease.assertOwned();},
+  }),...rest);
+  f.rawTasks.failLifecycleTransition=()=>{failWrites++;throw new Error('fenced lifecycle write must not run');};
+  f.hub.taskLifecycle=new TaskLifecycleService({taskBoard:f.tasks,workspaceCatalog:f.catalog,
+    taskGitWorkspaces:f.workspaces,releasePreflight:{
+      async withAwaitTransition(_id,operation){return operation();},
+      async prepareAwaitAcceptance(){lost=true;throw original;},
+    }});
+  Object.assign(f.args,{request_id:'await-fenced-lifecycle-failure',status:'awaiting_implementation',
+    expected_task_revision:task.revision,expected_workflow_status:'testing'});
+  await assert.rejects(f.hub.call('hub_task_status_update',f.args),error=>{
+    assert.equal(error.code,'TASK_AWAIT_INTEGRATION_FAILED');assert.equal(error.cause,original);return true;
+  });
+  assert.equal(failWrites,0);
+  assert.equal(f.tasks.lifecycleTransition(f.args.request_id).phase,'pending_git');
+  assert.equal(f.tasks.lifecycleOutcome(f.args.request_id),null);
+  const value=await f.get();
+  assert.equal(value.taskOperation.active,false);assert.equal(value.taskOperation.status,'unknown');
+  assert.equal(value.taskOperation.completionFailure,undefined);
+});
 test('completion failure preserves both errors across readback and reopen without replay',async t=>{
   const f=await setup(t);let prepares=0;
   f.workspaces.prepareOwned=async()=>{prepares++;throw Object.assign(new Error('original fixture preparation failure'),{code:'PREPARE_FIXTURE'});};

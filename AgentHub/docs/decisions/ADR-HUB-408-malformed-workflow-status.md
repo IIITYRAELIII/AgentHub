@@ -70,6 +70,14 @@ identities. A failure of that diagnostic write is not another effect attempt or
 terminal proof. There is no new ledger, queue, background retry or deadline.
 Known terminal winners and immutable STOPPED rows are preserved.
 
+A lifecycle failure writer previously caught its own persistence error together
+with lease loss, so a successful outer UNKNOWN write could still lose that inner
+exception. Keep the lease-loss fence, but propagate a persistence failure with
+both error identities to the existing completion diagnostic. An additional outer
+write failure retains that first pair and its own exception chain. No new ledger,
+queue, retry or historical receipt repair is introduced. Original timing alone
+does not establish the SQL error code of an older invocation.
+
 Readback distinguishes local active invocation, explicit durable UNKNOWN,
 terminal receipt and unresolved nonterminal observation. It never infers queued
 from receipt presence, or retirement from an absent local worker. A same-original

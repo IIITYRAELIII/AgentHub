@@ -1108,6 +1108,13 @@ best-effort trace records are the fallback observation; an unavailable trace or
 diagnostic write cannot be represented as durable success. Historical pending
 claims without positive execution/preparation/custody evidence remain unresolved.
 
+The same diagnostic preserves a failure of lifecycle failure persistence inside
+the admitted operation, even if the outer UNKNOWN receipt is written successfully.
+The original operation error and that inner persistence exception retain their
+identities through the existing exception chain. If outer persistence also fails,
+it does not replace the first failure pair. Lease loss still prevents lifecycle
+writes; these diagnostics confer no terminal outcome or replay authority.
+
 Public MCP Task mutations return a `taskOperation` admission/readback envelope
 from the existing MCP ledger once the same worker is registered. Admission is
 not successful business completion. `hub_task_operation_get` reads that exact

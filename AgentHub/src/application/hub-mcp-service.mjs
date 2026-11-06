@@ -38,7 +38,7 @@ import {
 } from "../domain/task-board-task.mjs";
 import { taskRunIsActive } from "../domain/task-runs.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
-import { TaskLifecycleService, TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalDependencyError, TaskWithdrawalBusyError, TaskSquashTransferRejectedError } from "./task-lifecycle-service.mjs";
+import { TaskLifecycleService, TaskLifecyclePersistenceError, TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalDependencyError, TaskWithdrawalBusyError, TaskSquashTransferRejectedError } from "./task-lifecycle-service.mjs";
 import { TaskOperationReconciliationService } from "./task-operation-reconciliation-service.mjs";
 import { TaskIntegrationRejectedError } from "./task-lifecycle-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
@@ -3386,12 +3386,15 @@ export class HubMcpService {
         const persist = async action => {
           try { return await action(); }
           catch (persistenceError) {
-            completionFailure = { originalError: error, persistenceError, effectCompleted };
+            completionFailure ??= { originalError: error, persistenceError, effectCompleted };
             throw Object.assign(new AggregateError([error, persistenceError],
               "MCP completion persistence failed; original outcome requires authoritative readback", { cause: error }),
             { code: "MCP_COMPLETION_PERSISTENCE_FAILED" });
           }
         };
+        if (error instanceof TaskLifecyclePersistenceError) {
+          completionFailure = { originalError: error.cause, persistenceError: error.errors[1], effectCompleted };
+        }
         // An own stage may have committed before a reply/storage exception. Its
         // dedicated ledger column survives compaction and is the exact readback.
         if (this.workspaceCatalog.mcpOperation(requestId)?.taskExecution?.cancellation) throw taskOperationInterrupted();

@@ -36,10 +36,18 @@ export class TaskIntegrationConflictError extends Error {
 
 export class TaskAwaitIntegrationError extends Error {
   constructor(cause) {
-    super(`Await integration evidence failed; Task status was not changed: ${cause.message}`);
+    super(`Await integration evidence failed; Task status was not changed: ${cause.message}`, { cause });
     this.code = "TASK_AWAIT_INTEGRATION_FAILED";
     if (cause.binding) this.details = { nativeResolutionBinding: cause.binding,
       diffPath: cause.diffPath, extraPaths: cause.extraPaths ?? [] };
+  }
+}
+
+export class TaskLifecyclePersistenceError extends AggregateError {
+  constructor(originalError, persistenceError) {
+    super([originalError, persistenceError], "Task lifecycle failure persistence failed; effect outcome remains unknown",
+      { cause: originalError });
+    this.code = "TASK_LIFECYCLE_PERSISTENCE_FAILED";
   }
 }
 
@@ -184,10 +192,15 @@ export class TaskLifecycleService {
   async #failWhileOwned(lease, operationId, error) {
     try {
       await this.#assertOwned(lease);
-      await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, error), operationId);
     } catch {
       // A fenced owner must not write after lease loss. Startup reconciliation
       // owns the remaining durable transition.
+      return;
+    }
+    try {
+      await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, error), operationId);
+    } catch (persistenceError) {
+      throw new TaskLifecyclePersistenceError(error, persistenceError);
     }
   }
 
