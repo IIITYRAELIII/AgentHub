@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 import build_release as stage
 
 
@@ -47,6 +48,12 @@ class PackageCheckpointTests(unittest.TestCase):
         self.notices.write_text("synthetic notices", encoding="utf-8")
         self.output = self.root / "output"
         self.namespace = self.output / self.receipt["version"]
+        self.recipient = self.root / "recipient"
+        self.recipient.mkdir()
+        for name, data in {"install_release.py": b"# synthetic public recipient; never executed\n",
+                           "install-prepared.mjs": b"// synthetic recipient; never executed\n",
+                           "config.example.json": b"{}\n"}.items():
+            (self.recipient / name).write_bytes(data)
 
     def save_receipt(self):
         self.receipt_file.write_text(json.dumps(self.receipt), encoding="utf-8")
@@ -55,7 +62,7 @@ class PackageCheckpointTests(unittest.TestCase):
     def run_stage(self, **overrides):
         arguments = dict(receipt_path=self.receipt_file, receipt_sha256=self.receipt_sha, source_commit="1" * 40,
                          version=self.manifest["releaseVersion"], license_file=self.license,
-                         notices_file=self.notices, output_root=self.output)
+                         notices_file=self.notices, output_root=self.output, recipient_root=self.recipient)
         arguments.update(overrides)
         return stage.package_release(**arguments)
 
@@ -104,10 +111,11 @@ class PackageCheckpointTests(unittest.TestCase):
         self.assertNotIn("releaseRoot", first["inputs"])
 
     def test_cli_is_the_same_safe_checkpoint_on_repeat(self):
-        command = [sys.executable, str(stage.ROOT / "build_release.py"), "--prepared-receipt", str(self.receipt_file),
+        command = [sys.executable, "-B", str(stage.ROOT / "build_release.py"), "--prepared-receipt", str(self.receipt_file),
                    "--receipt-sha256", self.receipt_sha, "--source-commit", "1" * 40,
                    "--version", self.manifest["releaseVersion"], "--license", str(self.license),
-                   "--notices", str(self.notices), "--output-root", str(self.output)]
+                   "--notices", str(self.notices), "--output-root", str(self.output),
+                   "--recipient-root", str(self.recipient)]
         results = []
         for _ in range(2):
             value = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", timeout=30)

@@ -988,7 +988,9 @@ export class HubMcpService {
       }, ["validation_mode", "approved_targets"]),
       tool("hub_release_get", "Read one durable release operation, immutable candidate generations, step receipts and delivery events.", {
         operation_id: { type: "string" },
-      }, ["operation_id"]),
+        operation_request_id: { type: "string", description: "Read the original run/continue command after a lost reply; never submit another mutation." },
+        original_arguments: { type: "object", description: "Exact original business arguments, required for original request readback." },
+      }),
       tool("hub_release_continue", "Continue the same original release. Explicit task_scope=all_await uses the existing revision/generation and not-applied amendment owner; original authorization and historical receipts remain immutable.", {
         operation_id: { type: "string" },
         published_dev_sync: { type: "object", additionalProperties: false,
@@ -1166,6 +1168,32 @@ export class HubMcpService {
     if (!this.taskOperationCanSubmit(name)) return this.call(name, args);
     const context = this.#authorize(args.context_token);
     return this.#submitTaskOperation(context, name, args, onAdmission => this.call(name, args, { onAdmission }));
+  }
+
+  async joinSubmittedTaskOperation(originalArguments) {
+    // Local API lifetime only: join an already admitted exact worker. This
+    // neither invokes #mutate nor starts/resumes/reconciles any operation.
+    const context = this.#authorize(originalArguments.context_token);
+    const read = () => this.#taskOperationReadback(context, {
+      operation_request_id: originalArguments.request_id,
+      original_arguments: originalArguments,
+    });
+    const pending = this.#pendingMutations.get(originalArguments.request_id);
+    let readError;
+    try { read(); } catch (error) {
+      if (!pending) throw error;
+      readError = error;
+    }
+    let workerError;
+    if (pending) { try { await pending; } catch (error) { workerError = error; } }
+    let receipt;
+    try { receipt = read(); }
+    catch (error) {
+      if (workerError || readError) throw new AggregateError([workerError, readError, error].filter(Boolean), "Original worker and receipt read failed");
+      throw error;
+    }
+    if (workerError || readError) throw new AggregateError([workerError, readError].filter(Boolean), "Original API work failed; its receipt remains unchanged");
+    return receipt;
   }
 
   async call(name, args = {}, { onAdmission = null } = {}) {
@@ -2719,9 +2747,32 @@ export class HubMcpService {
   }
 
   #getReleaseOperation(context, args) {
+    if (args.operation_request_id != null) {
+      if (args.operation_id != null) throw new Error("Release readback addresses an operation or an original request, not both");
+      const requestId = requiredText(args.operation_request_id, "original request id", 200);
+      const row = this.workspaceCatalog.mcpOperation(requestId);
+      if (!row || !["hub_release_run", "hub_release_continue"].includes(row.toolName)) throw new Error("Original release command receipt is unavailable");
+      if (row.workspaceId !== context.workspaceId) throw new Error("Original release command authority differs");
+      this.#workspace(context, row.workspaceId);
+      if (!this.#isReleaseManager(context) && (row.streamId !== context.streamId
+        || row.provider !== context.provider || row.threadId !== context.auditThreadId)) throw new Error("Original release command authority differs");
+      if (!args.original_arguments || args.original_arguments.request_id !== requestId
+        || argumentsHash(args.original_arguments) !== row.argumentsHash) throw new Error("Original release command arguments differ");
+      const snapshot = row.toolName === "hub_release_run"
+        ? this.#releaseOperation().getByRequest(row.workspaceId, requestId)
+        : this.#releaseOperation().get(requiredText(args.original_arguments.operation_id, "operation id", 200));
+      if (snapshot) this.#workspace(context, snapshot.operation.workspaceId);
+      return { ...(snapshot ?? { operation: null }), ...(snapshot && typeof this.#releaseOperation().hasLocalWork === "function"
+        ? { execution: { localActive: this.#releaseOperation().hasLocalWork(snapshot.operation.operationId) } } : {}), originalCommand: {
+        requestId, argumentsHash: row.argumentsHash, toolName: row.toolName, status: row.status,
+        active: this.#pendingMutations.has(requestId), terminal: ["succeeded", "failed"].includes(row.status),
+        error: row.error, createdAtMs: row.createdAtMs, completedAtMs: row.completedAtMs,
+      } };
+    }
     const snapshot = this.#releaseOperation().get(requiredText(args.operation_id, "operation id", 200));
     this.#workspace(context, snapshot.operation.workspaceId);
-    return snapshot;
+    return { ...snapshot, ...(typeof this.#releaseOperation().hasLocalWork === "function"
+      ? { execution: { localActive: this.#releaseOperation().hasLocalWork(snapshot.operation.operationId) } } : {}) };
   }
 
   #continueReleaseOperation(context, args) {

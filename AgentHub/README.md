@@ -543,15 +543,14 @@ durable ACK состояние читается через `hub_release_get`; т
 исправления выбранной Task автоматически продолжают ту же operation. Каждое
 готовое поколение фиксирует принятые результаты, согласованную основу main,
 manifest и clean release root. Оно не обновляет тестовый контур из rolling dev.
-Штатный source consumer — `node release.mjs run|continue|get|accept --provider
-<provider> --thread <thread-id> --stream <stream-id> --request-file <business.json>`.
+Внешний consumer — `agent-hub-release run|continue|get|accept --connection-file
+<private-connection.json> --request-file <business.json>`.
 `accept` передаёт обычный публичный Await-запрос (`task_id`, `status`, `request_id`,
-точные `expected_task_revision`/`expected_workflow_status`) и, если нужны разрешения
-нескольких native-конфликтов, один `native_resolution_review` с
-`bundlePath`, `bundleSha256`, `reviews`. Каждый review содержит исходные
-`requestId` и полный authenticated `text`; sequencer проверяет весь набор до
-применения. Токен в JSON не передаётся: consumer получает его из действующего
-provider/thread/stream. Та же команда дожидается уже запущенной этим принятием
+точные `expected_task_revision`/`expected_workflow_status`). Caller capability
+хранится отдельно от business JSON в приватном connection-файле действующего
+Hub API. Для source owner команда `release:api` принимает реальные
+provider/thread/stream и выдаёт этот файл; внешний клиент не открывает БД.
+Та же команда дожидается уже запущенной этим принятием
 работы release owner; после потери ответа читают исходную квитанцию и operation,
 а не создают новый выпуск. Отдельный entry/driver/config на каждый префикс не нужен.
 Окончательная фиксация версии/CHANGELOG остаётся частью единого release pipeline. Проверки
@@ -800,16 +799,13 @@ Android при обнаружении нового экземпляра допо
 выборочно:
 
 ```powershell
-npm run publish:changed -- --stream <stream-id> --thread <thread-id>
+agent-hub-release run --connection-file <private-connection.json> --request-file <authorized-release.json>
 ```
 
-Для ручного выбора всех трёх чисел public version добавьте `--version X.Y.Z`,
-например `--version 3.7.9`. Без параметра сохраняется автоматический patch.
-Версия относится к новой операции; `--resume`/`--status` используют сохранённую
-версию исходного `operationId`, поэтому новый `--version` с ними не передаётся.
-В штатном source entry `node release.mjs run --provider <provider> --thread
-<thread-id> --stream <stream-id> --request-file <JSON>` то же значение задаётся
-полем `"release_version": "3.7.9"` вместе с обычными аргументами `hub_release_run`.
+Для ручного выбора всех трёх чисел public version задайте в business JSON
+поле `"release_version": "3.7.9"` вместе с обычными аргументами `hub_release_run`.
+Без этого поля сохраняется автоматический patch. Версия относится к новой
+операции; `continue`/`get` адресуют исходный `operation_id` и не меняют её.
 Значение фиксируется durable owner; package/lock вручную менять не нужно.
 
 После durable ACK стабильный worker сравнивает generation commit с последней
@@ -817,8 +813,8 @@ npm run publish:changed -- --stream <stream-id> --thread <thread-id>
 runtime и Worker без повторной Android-сборки; Android, Desktop и VS Code
 собираются только при изменении их собственных исходников. Неизвестный путь
 автоматически возвращает полный безопасный сценарий. Для самой первой выборочной
-публикации допустимо явно задать уже опубликованный commit:
-`npm run publish:changed -- --stream <stream-id> --thread <thread-id> --from <commit>`. Время каждого этапа печатается в
+публикации используются сохранённая подтверждённая основа и полный accepted
+кандидат существующего release owner. Время каждого этапа печатается в
 консоль. Авторитетное состояние читается через `hub_release_get`; журналы
 дочернего стабильного runner сохраняются как step evidence, а не как второй
 release owner. Поэтому потеря PTY не требует нового request ID или повторения
@@ -1789,3 +1785,30 @@ projection, including when an existing card updates or history reloads. This lab
 does not infer cancellation from a Stop acknowledgement or alter message content.
 Focused rendering check: `node --test --test-name-pattern 'cancelled agent card'
 tests/public/message-view-controller.test.mjs`.
+
+
+### Independent release operator (ADR-HUB-419)
+
+Release tooling uses the independent `IIITYRAELIII/AgentHub-ReleaseTools` package.
+Its `agent-hub-release run|continue|get|accept|task-read` commands consume existing
+MCP business JSON and a separate private connection file. `identity` prints the
+independent tool version/content digest; `doctor` checks endpoint method support
+without submitting a workflow. The Hub adapters require the exact
+`AGENT_HUB_RELEASE_TOOLS_ROOT` / `AGENT_HUB_RELEASE_TOOLS_SHA256` pin.
+`publish:changed` and `publish:all` are compatibility launchers into that external
+operator; new calls supply `--connection-file` and `--request-file` (plus
+`--full-tests` for the authorized full pipeline). Retained historical callers
+keep their original arguments and executor for their already admitted runs.
+No old original request or frozen generation is rewritten during migration.
+
+For a coherent source owner, `release:api` exposes Hub's existing public API;
+only that Hub component owns stores, actor/CAS checks and addressed worker joins.
+The external client never imports an internal Hub runtime. New request-addressed
+release recovery requires the Hub adapter from ADR-HUB-419; an older endpoint's
+ordinary operation-ID reads remain compatible. Running a new client alone does
+not upgrade the server or its publication executor.
+
+The application retains its own minimal [self-build interface](docs/building.md).
+The independent tool owns archive packaging and publication orchestration, and
+is excluded from application runtime artifacts. Transfer of its staged sources
+to the separate repository must be verified before removing staging from Hub.

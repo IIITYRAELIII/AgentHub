@@ -1,0 +1,10 @@
+{
+  "name": "@iiityraeliii/agent-hub-release-tools",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.5.0" },
+  "bin": { "agent-hub-release": "bin/release.mjs" },
+  "scripts": { "test": "node --test tests/*.test.mjs" },
+  "files": ["bin", "src", "python", "tests", "LICENSE", "README.md", "export-manifest.json"]
+}

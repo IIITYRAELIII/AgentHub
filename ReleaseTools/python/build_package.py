@@ -9,7 +9,7 @@ import re
 import stat
 import zipfile
 
-from install_release import REPOSITORY, file_hash, safe_name, semantic_fields
+from archive_contract import REPOSITORY, file_hash, safe_name, semantic_fields
 
 ROOT = Path(__file__).resolve().parent
 
@@ -54,7 +54,8 @@ def verified_runtime_payload(prepared: Path, source_commit: str) -> tuple[bytes,
     return original, manifest, payload
 
 
-def build_package(prepared: Path, license_file: Path, notices_file: Path, source_commit: str, output: Path) -> dict:
+def build_package(prepared: Path, license_file: Path, notices_file: Path, source_commit: str, output: Path,
+                  recipient_root: Path) -> dict:
     if output.exists() or output.with_suffix(output.suffix+".json").exists():
         raise ValueError("Package output already exists")
     original, manifest, payload = verified_runtime_payload(prepared, source_commit)
@@ -66,8 +67,8 @@ def build_package(prepared: Path, license_file: Path, notices_file: Path, source
     manifest["distributionSource"] = {"repository": REPOSITORY, "commit": source_commit,
                                        "preparedManifestSha256": hashlib.sha256(original).hexdigest()}
     payload["runtime/runtime-manifest.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2)+"\n").encode()
-    payload["install-prepared.mjs"] = regular(ROOT/"install-prepared.mjs")
-    payload["config.example.json"] = regular(ROOT/"config.example.json")
+    payload["install-prepared.mjs"] = regular(recipient_root/"install-prepared.mjs")
+    payload["config.example.json"] = regular(recipient_root/"config.example.json")
     payload["LICENSE"] = regular(license_file)
     payload["THIRD_PARTY_NOTICES.md"] = regular(notices_file)
     dependencies = []
@@ -113,9 +114,10 @@ def main():
     parser.add_argument("--notices", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--recipient-root", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(build_package(args.prepared_runtime.resolve(), args.license, args.notices,
-                                   args.source_commit, args.output), indent=2))
+                                   args.source_commit, args.output, args.recipient_root), indent=2))
 
 
 if __name__ == "__main__":

@@ -2,8 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { publishChanged } from "./publish-changed.mjs";
-import { runStep } from "./publish-all.mjs";
+import { createExternalPublicationTools } from "./src/composition/release-tooling-composition.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { installPreparedRuntime, prepareRuntime, verifyInstalledRuntime } from "./src/runtime/runtime-manager.mjs";
 import { createFrozenReleasePublication } from "./src/infrastructure/process/frozen-release-publication.mjs";
@@ -14,6 +13,7 @@ import { ReleaseOperationStore } from "./src/infrastructure/persistence/release-
 import { artifactVersionIdentity } from "./src/domain/agent-hub-version.mjs";
 import { releaseApprovedTargets } from "./src/domain/release-operation.mjs";
 import { createGitHubDistributionSteps } from "./src/infrastructure/process/github-release-publication.mjs";
+import { readReleaseToolPackage } from "./src/infrastructure/process/release-tool-package.mjs";
 
 function requiredEnvironment(name) {
   const value = String(process.env[name] ?? "").trim();
@@ -76,6 +76,7 @@ export function distributionArtifactAdapter(artifacts, distribution) {
 }
 
 async function run() {
+  const { publishChanged, runStep } = await createExternalPublicationTools({ sourceRoot: process.cwd() });
   const dataDir = requiredEnvironment("AGENT_HUB_DATA_DIR");
   const operationId = requiredEnvironment("AGENT_HUB_RELEASE_OPERATION_ID");
   const generationNumber = Number(requiredEnvironment("AGENT_HUB_RELEASE_GENERATION"));
@@ -85,6 +86,8 @@ async function run() {
   const candidateIdentity = requiredEnvironment("AGENT_HUB_RELEASE_CANDIDATE_IDENTITY");
   const runtimeRoot = path.resolve(process.env.AGENT_HUB_RUNTIME_ROOT || defaultRuntimeRoot());
   const repositoryRoot = path.resolve(process.cwd(), "..");
+  const tool = await readReleaseToolPackage();
+  const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
   await writeFile(path.join(executionRoot, "runner.json"), `${JSON.stringify({
     schemaVersion: 1,
     pid: process.pid,
@@ -93,6 +96,7 @@ async function run() {
     generation: generationNumber,
     targetId,
     candidate: candidateIdentity,
+    tool: toolIdentity,
     startedAt,
   }, null, 2)}\n`, "utf8");
   const store = new ReleaseOperationStore({ dataDir });
@@ -153,6 +157,7 @@ async function run() {
     generation: generationNumber,
     targetId,
     candidate: generation.identitySha256,
+    tool: toolIdentity,
     ...(generation.testPlans ? { testPlans: generation.testPlans } : {}),
     revision: candidate.commit,
     publicationStatus: result.status,

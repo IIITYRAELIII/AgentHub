@@ -1,0 +1,42 @@
+{
+  "apiVersion": 1,
+  "repository": "IIITYRAELIII/AgentHub-ReleaseTools",
+  "files": [
+    "package.json",
+    "export-manifest.json",
+    "LICENSE",
+    "bin/release.mjs",
+    "src/hub-client.mjs",
+    "src/tool-identity.mjs",
+    "src/build.mjs",
+    "src/publish-all.mjs",
+    "src/publish-changed.mjs",
+    "src/github-publication.mjs",
+    "src/publication-artifacts.mjs",
+    "python/build_release.py",
+    "python/build_package.py",
+    "python/archive_contract.py",
+    "README.md"
+  ],
+  "repositoryFiles": [
+    "package.json",
+    "export-manifest.json",
+    "LICENSE",
+    "bin/release.mjs",
+    "src/hub-client.mjs",
+    "src/tool-identity.mjs",
+    "src/build.mjs",
+    "src/publish-all.mjs",
+    "src/publish-changed.mjs",
+    "src/github-publication.mjs",
+    "src/publication-artifacts.mjs",
+    "python/build_release.py",
+    "python/build_package.py",
+    "python/archive_contract.py",
+    "README.md",
+    ".gitignore",
+    "tests/hub-client.test.mjs",
+    "tests/test_build_release.py",
+    "tests/build.test.mjs"
+  ]
+}

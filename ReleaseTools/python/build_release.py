@@ -12,13 +12,29 @@ import stat
 import tempfile
 
 from build_package import build_package, regular, verified_runtime_payload
-from install_release import REPOSITORY, extract_verified, file_hash, semantic_fields, valid_artifact_version, windows_filesystem_path
+from archive_contract import REPOSITORY, extract_verified, file_hash, semantic_fields, valid_artifact_version, windows_filesystem_path
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ("AgentHub-win32-x64.zip", "AgentHub-win32-x64.zip.json", "install_release.py", "SHA256SUMS")
 RECEIPT_FIELDS = {"schema", "phase", "operationId", "generation", "sourceCommit", "releaseId", "version",
                   "releaseRoot", "manifestSha256"}
-TOOLS = ("build_release.py", "build_package.py", "install_release.py", "install-prepared.mjs", "config.example.json")
+TOOLS = ("build_release.py", "build_package.py", "archive_contract.py")
+RECIPIENT = ("install_release.py", "install-prepared.mjs", "config.example.json")
+
+
+def tool_identity() -> dict:
+    root = ROOT.parent
+    manifest = json.loads(regular(root / "export-manifest.json").decode("utf-8"))
+    metadata = json.loads(regular(root / "package.json").decode("utf-8"))
+    files = []
+    for name in sorted(manifest["files"]):
+        parts = name.split("/")
+        if name.startswith("/") or "\\" in name or any(x in {"", ".", ".."} for x in parts):
+            raise ValueError("Invalid tool export path")
+        raw = regular(root.joinpath(*parts))
+        files.append({"path": name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+    return {"name": metadata["name"], "version": metadata["version"],
+            "sha256": hashlib.sha256(json.dumps(files, separators=(",", ":")).encode()).hexdigest()}
 
 
 def _sha(data: bytes) -> str:
@@ -66,7 +82,7 @@ def _write_json(path: Path, value: dict) -> None:
 
 
 def _inputs(receipt_path: Path, receipt_sha256: str, source_commit: str, version: str,
-            license_file: Path, notices_file: Path) -> tuple[dict, Path, bytes]:
+            license_file: Path, notices_file: Path, recipient_root: Path) -> tuple[dict, Path, bytes]:
     raw, receipt = _read_json(receipt_path)
     if not re.fullmatch(r"[0-9a-f]{64}", receipt_sha256) or _sha(raw) != receipt_sha256:
         raise ValueError("Prepared receipt SHA-256 mismatch")
@@ -95,7 +111,8 @@ def _inputs(receipt_path: Path, receipt_sha256: str, source_commit: str, version
               "sourceCommit": source_commit, "version": version, "releaseId": receipt["releaseId"],
               "preparedReceiptSha256": receipt_sha256, "preparedManifestSha256": _sha(original),
               "licenseSha256": _sha(regular(license_file)), "noticesSha256": _sha(regular(notices_file)),
-              "tools": {name: _sha(regular(ROOT / name)) for name in TOOLS}}
+              "tool": tool_identity(), "tools": {name: _sha(regular(ROOT / name)) for name in TOOLS},
+              "recipient": {name: _sha(regular(recipient_root / name)) for name in RECIPIENT}}
     return inputs, prepared, raw
 
 
@@ -119,7 +136,7 @@ def _verify_assets(namespace: Path, inputs: dict) -> list[dict]:
         raise ValueError("Package descriptor identity mismatch")
     if semantic_fields(descriptor, descriptor=True) != {k: inputs[k] for k in ("versionScheme", "publicVersion", "buildNumber") if k in inputs}:
         raise ValueError("Package semantic identity mismatch")
-    if file_hash(installer) != inputs["tools"]["install_release.py"]:
+    if file_hash(installer) != inputs["recipient"]["install_release.py"]:
         raise ValueError("Versioned installer integrity mismatch")
     expected_sums = "".join(f"{row['sha256']}  {row['name']}\n" for row in rows[:3]).encode("ascii")
     if regular(checksums) != expected_sums:
@@ -154,12 +171,12 @@ def _verify_assets(namespace: Path, inputs: dict) -> list[dict]:
 
 
 def package_release(receipt_path: Path, receipt_sha256: str, source_commit: str, version: str,
-                    license_file: Path, notices_file: Path, output_root: Path) -> dict:
+                    license_file: Path, notices_file: Path, output_root: Path, recipient_root: Path) -> dict:
     """Return the exact saved PACKAGED result on retry; refuse incomplete work."""
-    inputs, prepared, receipt = _inputs(receipt_path, receipt_sha256, source_commit, version, license_file, notices_file)
+    inputs, prepared, receipt = _inputs(receipt_path, receipt_sha256, source_commit, version, license_file, notices_file, recipient_root)
     identity = _sha(_json_bytes(inputs))
     namespace = _plain_chain(output_root / version)
-    for source in [prepared, ROOT, _plain_chain(receipt_path), _plain_chain(license_file), _plain_chain(notices_file)]:
+    for source in [prepared, ROOT.parent, _plain_chain(recipient_root), _plain_chain(receipt_path), _plain_chain(license_file), _plain_chain(notices_file)]:
         if namespace == source or namespace.is_relative_to(source) or source.is_relative_to(namespace):
             raise ValueError("Package output overlaps an immutable input")
     intent = {"schema": 1, "phase": "PACKAGING", "inputIdentity": identity, "inputs": inputs}
@@ -182,10 +199,10 @@ def package_release(receipt_path: Path, receipt_sha256: str, source_commit: str,
         _write(namespace / "prepared-receipt.json", receipt)
         assets = namespace / "assets"
         assets.mkdir(mode=0o700)
-        build_package(prepared, license_file, notices_file, source_commit, assets / ASSETS[0])
-        _write(assets / ASSETS[2], regular(ROOT / "install_release.py"))
+        build_package(prepared, license_file, notices_file, source_commit, assets / ASSETS[0], recipient_root)
+        _write(assets / ASSETS[2], regular(recipient_root / "install_release.py"))
         _write(assets / ASSETS[3], "".join(f"{file_hash(assets / name)}  {name}\n" for name in ASSETS[:3]).encode("ascii"))
-        if _inputs(receipt_path, receipt_sha256, source_commit, version, license_file, notices_file)[0] != inputs:
+        if _inputs(receipt_path, receipt_sha256, source_commit, version, license_file, notices_file, recipient_root)[0] != inputs:
             raise ValueError("Package inputs changed during build")
         result = {"schema": 1, "phase": "PACKAGED", "inputIdentity": identity, "inputs": inputs,
                   "assets": _verify_assets(namespace, inputs)}
@@ -209,9 +226,10 @@ def main() -> None:
     parser.add_argument("--license", type=Path, required=True)
     parser.add_argument("--notices", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--recipient-root", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(package_release(args.prepared_receipt, args.receipt_sha256, args.source_commit, args.version,
-                                    args.license, args.notices, args.output_root), indent=2))
+                                    args.license, args.notices, args.output_root, args.recipient_root), indent=2))
 
 
 if __name__ == "__main__":

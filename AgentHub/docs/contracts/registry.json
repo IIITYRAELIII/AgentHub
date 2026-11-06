@@ -504,7 +504,18 @@
         "src/infrastructure/filesystem/runtime-package-target.mjs",
         "tests/domain/runtime-package-identity.test.mjs",
         "tests/runtime/runtime-package-handoff.test.mjs",
-        "docs/decisions/ADR-HUB-376-public-package-handoff.md"
+        "docs/decisions/ADR-HUB-376-public-package-handoff.md",
+        "release-api.mjs",
+        "build-runtime.mjs",
+        "src/composition/release-api-runtime.mjs",
+        "src/composition/release-tooling-composition.mjs",
+        "src/infrastructure/process/release-tool-package.mjs",
+        "src/infrastructure/process/release-tool-launcher.mjs",
+        "src/interfaces/mcp/release-api-host.mjs",
+        "tests/interfaces/mcp/external-release-client.test.mjs",
+        "tests/public/external-release-tool-package.test.mjs",
+        "docs/building.md",
+        "docs/decisions/ADR-HUB-419-independent-release-tools.md"
       ]
     },
     {
@@ -570,7 +581,11 @@
         "src/infrastructure/filesystem/direct-task-publication.mjs",
         "tests/application/task-direct-published-cleanup.test.mjs",
         "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
-        "src/infrastructure/filesystem/cleanup-preservation.mjs"
+        "src/infrastructure/filesystem/cleanup-preservation.mjs",
+        "release-api.mjs",
+        "src/composition/release-api-runtime.mjs",
+        "src/interfaces/mcp/release-api-host.mjs",
+        "tests/interfaces/mcp/external-release-client.test.mjs"
       ]
     },
     {

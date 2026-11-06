@@ -1,0 +1,330 @@
+import { spawn } from "node:child_process";
+import { createWriteStream, mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+export function createAllPublicationTools(ports) {
+  const { sourceRoot, artifactVersionIdentity, calendarVersion, freezePreparedPublication, callDesktopControl, readDesktopControlEndpoint, ensureWrangler, defaultRuntimeRoot, publicationRuntimeStatus, startInstalledPublicationRuntime, waitForRuntimeReplacement, prepareCommittedAgentHubReleaseVersion, assertReleaseCloneForPublication, publicationCheckpointStore, runPublicationSteps, publicationRunStore, completePublication, withPublicationLock, stopProcessTree, assertCleanPublicationTree, assertCurrentPublicationRevision, currentRevision, writePublicationState } = ports;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const ROOT = path.resolve(sourceRoot);
+const REPOSITORY_ROOT = path.resolve(ROOT, "..");
+const python = process.platform === "win32" ? "python.exe" : "python3";
+const DEFAULT_STEP_TIMEOUT_MS = 15 * 60 * 1_000;
+const FULL_TEST_BUDGET = Object.freeze({
+  timeoutMs: null,
+  idleTimeoutMs: 10 * 60 * 1_000,
+});
+const RESTART_REQUEST_TIMEOUT_MS = 30_000;
+
+function publicationRepositories(identity, revision) {
+  const profile = identity?.deploymentProfile === "github-release" ? { deploymentProfile: "github-release" } : {};
+  if (identity?.release) {
+    return [{
+      root: identity.release.primaryRoot,
+      revision,
+      planRevision: identity.release.planRevision,
+      manifestHash: identity.release.manifestHash,
+      baseCommit: identity.release.baseCommit,
+      preReleaseHead: identity.release.preReleaseHead,
+      ...profile,
+    }];
+  }
+  return [{ root: identity?.worktreeRoot ?? REPOSITORY_ROOT, revision, ...profile }];
+}
+
+function npmStep(label, args) {
+  const npmCli = String(process.env.npm_execpath ?? "").trim();
+  if (npmCli) {
+    return { label, command: process.execPath, args: [npmCli, ...args] };
+  }
+  if (process.platform === "win32") {
+    return {
+      label,
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", "npm", ...args],
+    };
+  }
+  return { label, command: "npm", args };
+}
+
+function publicationSteps({
+  skipTests = false,
+  skipWorker = false,
+  testContour = false,
+  fullTestCheckpointId = "",
+  workerChangedFiles = null,
+  frozenVersion = null,
+} = {}) {
+  return [
+    ...(!skipTests ? [
+      {
+        ...npmStep("Полные тесты Agent Hub", ["run", "test:all"]),
+        ...FULL_TEST_BUDGET,
+        ...(fullTestCheckpointId ? {
+          env: {
+            AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId,
+          },
+        } : {}),
+      },
+    ] : []),
+    ...(!skipTests && testContour
+      ? [npmStep("Тестовый контур Agent Hub", ["run", "contour:verify", "--", "--require-installed"])]
+      : []),
+    npmStep("Сборка Agent Hub Mobile", ["run", "android:build",
+      ...(frozenVersion?.runtimeReleaseVersion.includes("+build.")
+        ? ["--", "-ArtifactVersion", frozenVersion.runtimeReleaseVersion] : [])]),
+    npmStep("Сборка runtime-релиза", ["run", "runtime:deploy",
+      ...(frozenVersion ? ["--", "--expected-release-version", frozenVersion.runtimeReleaseVersion,
+        "--publication-revision", frozenVersion.head] : [])]),
+    ...(!skipWorker ? [
+      npmStep("Развёртывание Mini App Worker", ["run", "worker:deploy"]),
+      {
+        ...npmStep("Проверка Mini App Worker", ["run", "worker:verify"]),
+        ...(Array.isArray(workerChangedFiles) ? {
+          env: { AGENT_HUB_WORKER_CHANGED_FILES: JSON.stringify(workerChangedFiles) },
+        } : {}),
+      },
+    ] : []),
+    npmStep("Активация runtime-релиза", ["run", "runtime:activate"]),
+    {
+      label: "Установка расширения VS Code",
+      command: python,
+      args: ["install.py", "--extension-only"],
+    },
+  ];
+}
+
+function runStep({
+  label,
+  command,
+  args,
+  env = {},
+  timeoutMs = DEFAULT_STEP_TIMEOUT_MS,
+  idleTimeoutMs = 0,
+  logFile = "",
+  cwd = ROOT,
+}, {
+  spawnImpl = spawn,
+  stopTree = stopProcessTree,
+  schedule = setTimeout,
+  unschedule = clearTimeout,
+} = {}) {
+  const startedAt = Date.now();
+  console.log(`\n==> ${label}`);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let stopping = false;
+    let timer = null;
+    let idleTimer = null;
+    const log = logFile ? (() => {
+      mkdirSync(path.dirname(logFile), { recursive: true });
+      const stream = createWriteStream(logFile, { flags: "a" });
+      stream.write(`\n==> ${label}\n`);
+      return stream;
+    })() : null;
+    const child = spawnImpl(command, args, {
+      cwd,
+      env: { ...process.env, ...env, PYTHONUTF8: "1" },
+      shell: false,
+      stdio: log || idleTimeoutMs ? ["inherit", "pipe", "pipe"] : "inherit",
+      windowsHide: true,
+      detached: process.platform !== "win32",
+    });
+    const finish = (operation, value) => {
+      if (settled) return;
+      settled = true;
+      unschedule(timer);
+      unschedule(idleTimer);
+      log?.end();
+      operation(value);
+    };
+    const stop = (reason) => {
+      if (settled || stopping) return;
+      stopping = true;
+      void Promise.resolve(child.pid ? stopTree(child.pid) : false)
+        .then((stopped) => { if (stopped === false) child.kill?.("SIGKILL"); })
+        .catch(() => child.kill?.("SIGKILL"))
+        .finally(() => finish(reject, new Error(`${label}: ${reason}`)));
+    };
+    const progress = () => {
+      if (!idleTimeoutMs || settled || stopping) return;
+      unschedule(idleTimer);
+      idleTimer = schedule(() => stop(`нет вывода ${idleTimeoutMs} мс; проверьте последний тест в журнале`), idleTimeoutMs);
+      idleTimer.unref?.();
+    };
+    child.stdout?.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      log?.write(chunk);
+      progress();
+    });
+    child.stderr?.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      log?.write(chunk);
+      progress();
+    });
+    if (timeoutMs != null) {
+      timer = schedule(() => stop(`превышен таймаут ${timeoutMs} мс`), timeoutMs);
+      timer.unref?.();
+    }
+    progress();
+    child.once("error", (error) => finish(reject, error));
+    child.once("exit", (code, signal) => {
+      if (stopping) return;
+      if (code === 0) {
+        const completed = `<== ${label}: ${((Date.now() - startedAt) / 1_000).toFixed(1)} с`;
+        console.log(completed);
+        log?.write(`${completed}\n`);
+        finish(resolve);
+      }
+      else {
+        const error = new Error(`${label}: процесс завершён с ${signal ?? `кодом ${code}`}`);
+        log?.write(`${error.message}\n`);
+        finish(reject, error);
+      }
+    });
+  });
+}
+
+async function restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, {
+  readStatus = publicationRuntimeStatus,
+  readEndpoint = readDesktopControlEndpoint,
+  startInstalled = startInstalledPublicationRuntime,
+} = {}) {
+  const status = await readStatus({ runtimeRoot });
+  const expectedReleaseId = status.current;
+  if (!expectedReleaseId) throw new Error("No published runtime is available for restart");
+  const before = await readEndpoint(runtimeRoot).catch(() => null);
+  if (status.running === false) {
+    const launch = await startInstalled({ runtimeRoot, expectedReleaseId, readStatus });
+    await verifyRestart({ runtimeRoot, expectedReleaseId, readStatus });
+    return { accepted: true, started: launch.started, message: "Опубликованный runtime запущен и проверен" };
+  }
+  if (status.running !== true) throw new Error("Agent Hub process state is unknown");
+  const result = await restart("restart-server", {}, {
+    runtimeRoot,
+    timeoutMs: RESTART_REQUEST_TIMEOUT_MS,
+  });
+  if (result?.waiting === true || result?.accepted === false) return { ...result, deferred: true };
+  await verifyRestart({ previousEndpointId: before?.endpointId ?? null, runtimeRoot, expectedReleaseId, readStatus });
+  return result;
+}
+
+function parseArguments(args) {
+  const known = new Set(["--skip-tests", "--skip-worker", "--skip-restart", "--test-contour"]);
+  const unknown = args.filter((item) => !known.has(item));
+  if (unknown.length) throw new Error(`Неизвестные аргументы: ${unknown.join(", ")}`);
+  return {
+    skipTests: args.includes("--skip-tests"),
+    skipWorker: args.includes("--skip-worker"),
+    skipRestart: args.includes("--skip-restart"),
+    testContour: args.includes("--test-contour"),
+  };
+}
+
+async function publishAll(args = process.argv.slice(2), {
+  run = runStep,
+  restart = callDesktopControl,
+  before = async () => {},
+  exclusive = withPublicationLock,
+  record = async (publicationState) => writePublicationState(publicationState ?? {
+    revision: await currentRevision({ cwd: REPOSITORY_ROOT }),
+    publishedAt: new Date().toISOString(),
+    mode: "full",
+  }),
+  revision = currentRevision,
+  ensureWorkerDependency = ensureWrangler,
+  prepareVersion = async () => ({ changed: false }),
+  freezeVersion = null,
+  checkpoint = null,
+  journal = null,
+  runtimeRoot = defaultRuntimeRoot(),
+  verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
+  readRuntimeStatus = publicationRuntimeStatus,
+} = {}) {
+  return exclusive(async () => {
+    const options = parseArguments(args);
+    await before();
+    const frozen = freezeVersion ? await freezeVersion() : null;
+    const frozenVersion = frozen && typeof frozen === "object" ? { ...frozen } : null;
+    if (frozenVersion) {
+      const fields = Object.keys(frozenVersion).sort();
+      if (JSON.stringify(fields) !== JSON.stringify(["head", "releaseVersion", "runtimeReleaseVersion"])
+          || typeof frozenVersion.releaseVersion !== "string"
+          || typeof frozenVersion.head !== "string"
+          || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(frozenVersion.head)
+          || artifactVersionIdentity(frozenVersion.runtimeReleaseVersion).publicVersion !== frozenVersion.releaseVersion) {
+        throw new Error("Invalid frozen public/source/artifact version binding");
+      }
+    } else if (typeof frozen === "string" && !calendarVersion(frozen)) {
+      throw new Error("Semantic full publication requires its frozen artifact version");
+    }
+    const expectedVersion = frozenVersion?.releaseVersion ?? frozen;
+    const head = checkpoint || frozenVersion ? await revision({ cwd: REPOSITORY_ROOT }) : null;
+    if (frozenVersion && frozenVersion.head !== head) throw new Error("Frozen publication source revision changed");
+    await prepareVersion(expectedVersion == null ? {} : { expectedVersion });
+    if (!options.skipWorker) await ensureWorkerDependency();
+    const steps = publicationSteps({
+      ...options,
+      fullTestCheckpointId: head ? `full:${head}` : "",
+      frozenVersion,
+    });
+    const identity = {
+      mode: "full", revision: head, worktreeRoot: REPOSITORY_ROOT, runtimeRoot,
+      validationMode: options.skipTests ? "quick" : "full",
+      labels: steps.map((step) => step.label),
+      ...(frozenVersion ? { frozenVersion } : {}),
+    };
+    try {
+      await runPublicationSteps(steps, {
+        run,
+        checkpoint,
+        identity,
+        journal,
+      });
+      const completion = await completePublication({
+        identity, publicationState: {
+          revision: head,
+          repositories: publicationRepositories(identity, head),
+          mode: "full",
+          validationMode: identity.validationMode,
+        },
+        journal, checkpoint, needsRestart: true, skipRestart: options.skipRestart,
+        readRuntimeStatus, verifyRestart, writeState: record,
+        requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
+      });
+      console.log(`\nПубликация: ${completion.status}.`);
+      if (completion.handoff?.action === "yield_current_turn") {
+        console.log("Safe restart подготовлен: завершите текущий агентский ход без новых операций.");
+      }
+      return completion;
+    } catch (error) {
+      await journal?.finish("failed", error);
+      throw error;
+    }
+  });
+}
+
+
+  return { FULL_TEST_BUDGET, publicationRepositories, npmStep, publicationSteps, runStep, restartRuntimeAndVerify, parseArguments, publishAll, waitForRuntimeReplacement };
+}

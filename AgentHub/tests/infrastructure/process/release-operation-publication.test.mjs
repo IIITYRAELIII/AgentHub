@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { readReleaseToolPackage } from "../../../src/infrastructure/process/release-tool-package.mjs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -218,7 +219,12 @@ test("stable runner refuses publication when the exact generation lacks the requ
     environment: { ...process.env, LOCALAPPDATA: path.join(root, "local-app-data") },
     runnerFile: path.resolve("release-operation-publication-runner.mjs"),
   });
-  await assert.rejects(publication.publish({ operation, generation, target }), {
+  await assert.rejects(publication.publish({ operation, generation, target }).catch(async error => {
+    const log = path.join(dataDir, "release-operation-executions",
+      identity(`${operationId}:${generation.generation}:${target.targetId}`), "stderr.log");
+    t.diagnostic((await readFile(log, "utf8").catch(() => "runner stderr unavailable")).slice(-6000));
+    throw error;
+  }), {
     code: "RELEASE_VALIDATION_FAILED",
     failedStep: "Проверка release candidate в изолированном контуре",
   });
@@ -231,6 +237,8 @@ test("stable runner refuses publication when the exact generation lacks the requ
 });
 
 test("publication launches the stable owner runner and reads its exact generation effect", async (t) => {
+  const tool = await readReleaseToolPackage();
+  const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-publication-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const candidateRoot = path.join(root, "candidate");
@@ -272,6 +280,7 @@ test("publication launches the stable owner runner and reads its exact generatio
           targetId: target.targetId,
           candidate: generation.identitySha256,
           status: "applied",
+          tool: toolIdentity,
           revision: "published-commit",
         })}\n`, "utf8");
         child.emit("exit", 0);
@@ -291,6 +300,30 @@ test("publication launches the stable owner runner and reads its exact generatio
   assert.equal(spawnCalls[0].options.env.AGENT_HUB_RESTART_OPERATION_ID, undefined);
   assert.equal(spawnCalls[0].options.env.AGENT_HUB_RESTART_LAUNCHER_PID, undefined);
   assert.equal(spawnCalls[0].options.env.SYNTHETIC_KEEP, "retained");
+  assert.equal(spawnCalls[0].options.env.AGENT_HUB_RELEASE_TOOLS_ROOT, tool.root);
+  assert.equal(spawnCalls[0].options.env.AGENT_HUB_RELEASE_TOOLS_SHA256, tool.sha256);
+  const runnerFileState = path.join(executionRoot, "runner.json");
+  const runner = JSON.parse(await readFile(runnerFileState, "utf8"));
+  assert.deepEqual(runner.tool, toolIdentity);
+  const resultFile = path.join(executionRoot, "result.json");
+  const originalResult = await readFile(resultFile, "utf8");
+  await writeFile(resultFile, JSON.stringify({ ...JSON.parse(originalResult), tool: { ...toolIdentity, sha256: "0".repeat(64) } }));
+  assert.equal((await publication.readback({ operation, generation, target })).status, "unknown");
+  await writeFile(resultFile, JSON.stringify({ ...JSON.parse(originalResult), status: "not_applied" }));
+  const retainedRunner = await readFile(runnerFileState);
+  const other = new ReleaseOperationPublication({ dataDir: path.join(root, "data"), runtimeRoot: path.join(root, "runtime"),
+    readToolPackage: async () => ({ ...tool, sha256: "0".repeat(64) }),
+    readPublicationStateImpl: async () => null, gitRemoteHeadImpl: async () => "base-commit",
+    processAliveImpl: () => false, publicationRunStoreFactory: () => ({ read: async () => null }),
+    spawnImpl: () => assert.fail("a changed tool must not replay an original"),
+  });
+  await assert.rejects(other.publish({ operation, generation, target }), /recorded tool executor/);
+  assert.deepEqual(await readFile(runnerFileState), retainedRunner);
+  const legacy = { ...runner }; delete legacy.tool;
+  await writeFile(runnerFileState, JSON.stringify(legacy));
+  const retainedLegacy = await readFile(runnerFileState);
+  await assert.rejects(publication.publish({ operation, generation, target }), /recorded tool executor/);
+  assert.deepEqual(await readFile(runnerFileState), retainedLegacy); assert.equal(spawnCalls.length, 1);
 });
 
 test("publication readback stays unknown while the exact runner is alive", async (t) => {
