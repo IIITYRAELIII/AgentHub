@@ -18,14 +18,16 @@ export class AsyncSqliteMutationQueue {
     lastQueueWaitMs: 0, maxQueueWaitMs: 0, lastExecutionMs: 0, lastTotalMs: 0,
   };
 
-  async run(operation, { timeoutMs = 2_000, requestId = null } = {}) {
+  async run(operation, { timeoutMs = 2_000, requestId = null, recordMutationTiming = null } = {}) {
     if (typeof operation !== "function") throw new TypeError("SQLite mutation operation is required");
-    const entry = { enqueuedAt: performance.now() };
+    const entry = { enqueuedAt: performance.now(), queueWaitMs: 0, executionMs: 0, retries: 0, exhausted: false };
+    let failure = null;
     this.#pending.add(entry);
     this.#diagnostics.queued += 1;
     this.#diagnostics.maxDepth = Math.max(this.#diagnostics.maxDepth, this.#diagnostics.queued);
     const execute = async () => {
       const startedAt = performance.now();
+      entry.queueWaitMs = startedAt - entry.enqueuedAt;
       this.#diagnostics.lastQueueWaitMs = startedAt - entry.enqueuedAt;
       this.#diagnostics.maxQueueWaitMs = Math.max(this.#diagnostics.maxQueueWaitMs, this.#diagnostics.lastQueueWaitMs);
       // timeoutMs bounds contention after dequeue. It never cancels a queued
@@ -39,6 +41,7 @@ export class AsyncSqliteMutationQueue {
           } catch (error) {
             if (!sqliteContention(error)) throw error;
             if (performance.now() >= deadline) {
+              entry.exhausted = true;
               this.#diagnostics.exhausted += 1;
               this.#diagnostics.lastWaitMs = performance.now() - startedAt;
               this.#diagnostics.lastAt = new Date().toISOString();
@@ -46,6 +49,7 @@ export class AsyncSqliteMutationQueue {
               throw error;
             }
             this.#diagnostics.retries += 1;
+            entry.retries += 1;
             this.#diagnostics.lastWaitMs = performance.now() - startedAt;
             this.#diagnostics.lastAt = new Date().toISOString();
             await wait(Math.min(delayMs, Math.max(1, deadline - performance.now())));
@@ -53,6 +57,7 @@ export class AsyncSqliteMutationQueue {
           }
         }
       } finally {
+        entry.executionMs = performance.now() - startedAt;
         this.#diagnostics.lastExecutionMs = performance.now() - startedAt;
       }
     };
@@ -63,12 +68,23 @@ export class AsyncSqliteMutationQueue {
       this.#diagnostics.completed += 1;
       return result;
     } catch (error) {
+      failure = error;
       this.#diagnostics.failed += 1;
       throw error;
     } finally {
       this.#diagnostics.lastTotalMs = performance.now() - entry.enqueuedAt;
       this.#pending.delete(entry);
       this.#diagnostics.queued = Math.max(0, this.#diagnostics.queued - 1);
+      if (typeof recordMutationTiming === "function") {
+        try {
+          recordMutationTiming({ queueWaitMs: entry.queueWaitMs, executionMs: entry.executionMs,
+            totalMs: performance.now() - entry.enqueuedAt, retries: entry.retries, exhausted: entry.exhausted,
+            outcome: failure ? "failed" : "succeeded", processId: process.pid,
+            errorCode: !failure ? null : ["ERR_SQLITE_ERROR", "SQLITE_BUSY", "SQLITE_LOCKED"].includes(failure.code)
+              ? failure.code : "other",
+            ...(Number.isSafeInteger(failure?.errcode) ? { errcode: failure.errcode } : {}) });
+        } catch { /* Diagnostics cannot replace the queued mutation outcome. */ }
+      }
     }
   }
 

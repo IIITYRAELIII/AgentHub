@@ -1,5 +1,15 @@
 # PERF-001 — Local command latency
 
+Journal title writes distinguish row preparation, BEGIN acquisition and the
+actual SQL transaction from local queue wait and contention retries. Existing
+usage-worker spans retain fixed numeric first/last transaction UTC intervals,
+counts and process/worker identity on success and failure. Lifecycle BEGIN,
+failure and commit mutations retain their original Task timing identity with
+fixed store/method/error-code classes and local queue measurements. Diagnostics
+contain no record content, SQL values or paths and do not change retry bounds,
+transaction/CAS behavior or errors. These observations are not a latency fix or
+proof that an overlapping historical request held a particular SQLite lock.
+
 Workflow enum validation records a bounded original-ID input phase before the
 lifecycle owner. Deterministic historical malformed-original reconciliation
 separates validation, execution-retirement checks and receipt settlement through

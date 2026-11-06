@@ -1032,34 +1032,63 @@ export class JournalDatabase {
     return value ? JSON.parse(value) : null;
   }
 
-  async upsertRecords(records, { expectedRevision = null } = {}) {
-    const values = Array.isArray(records)
-      ? records.map((record) => ["", record])
-      : Object.entries(records ?? {});
-    const rows = values.map(([key, record]) => recordRow(record, key)).filter(Boolean);
-    if (!rows.length) return { upserted: 0, revision: await this.currentRevision() };
-    const database = await this.#open();
-    database.exec("BEGIN IMMEDIATE");
-    let revision;
+  async upsertRecords(records, { expectedRevision = null, recordMutationTiming = null } = {}) {
+    const timing = { operation: "journal-record-upsert", rows: 0, rowPreparationMs: 0, beginMs: 0,
+      transactionMs: 0, lockAcquiredAtMs: null, lockReleasedAtMs: null, outcome: "preparation-refused" };
+    const preparationStarted = performance.now();
+    let transactionStarted = null;
     try {
-      const currentRevision = revisionOf(database);
-      if (expectedRevision !== null && currentRevision !== Number(expectedRevision)) {
-        const error = new Error("Journal records changed before the metadata update");
-        error.code = "JOURNAL_REVISION_CONFLICT";
-        throw error;
+      const values = Array.isArray(records)
+        ? records.map((record) => ["", record])
+        : Object.entries(records ?? {});
+      const rows = values.map(([key, record]) => recordRow(record, key)).filter(Boolean);
+      timing.rows = rows.length;
+      timing.rowPreparationMs = performance.now() - preparationStarted;
+      if (!rows.length) {
+        timing.outcome = "unchanged";
+        return { upserted: 0, revision: await this.currentRevision() };
       }
-      const nextRevision = currentRevision + 1;
-      const insert = insertRecordStatement(database);
-      for (const row of rows) insertRow(insert, row, nextRevision);
-      revision = advanceRevision(database);
-      database.exec("COMMIT");
-    } catch (error) {
-      database.exec("ROLLBACK");
-      throw error;
+      const database = await this.#open();
+      timing.outcome = "begin-refused";
+      const beginStarted = performance.now();
+      try { database.exec("BEGIN IMMEDIATE"); }
+      finally { timing.beginMs = performance.now() - beginStarted; }
+      transactionStarted = performance.now();
+      timing.lockAcquiredAtMs = Date.now();
+      let revision;
+      try {
+        const currentRevision = revisionOf(database);
+        if (expectedRevision !== null && currentRevision !== Number(expectedRevision)) {
+          const error = new Error("Journal records changed before the metadata update");
+          error.code = "JOURNAL_REVISION_CONFLICT";
+          throw error;
+        }
+        const nextRevision = currentRevision + 1;
+        const insert = insertRecordStatement(database);
+        for (const row of rows) insertRow(insert, row, nextRevision);
+        revision = advanceRevision(database);
+        database.exec("COMMIT");
+        timing.lockReleasedAtMs = Date.now();
+        timing.outcome = "committed";
+      } catch (error) {
+        timing.outcome = "rollback-refused";
+        database.exec("ROLLBACK");
+        timing.lockReleasedAtMs = Date.now();
+        timing.outcome = "rolled-back";
+        throw error;
+      } finally {
+        timing.transactionMs = performance.now() - transactionStarted;
+        transactionStarted = null;
+      }
+      const result = { upserted: rows.length, revision };
+      this.#changed({ type: "ledger", ...result });
+      return result;
+    } finally {
+      if (typeof recordMutationTiming === "function") {
+        try { recordMutationTiming({ ...timing, finishedAtMs: Date.now() }); }
+        catch { /* Measurement failure cannot change SQL results or errors. */ }
+      }
     }
-    const result = { upserted: rows.length, revision };
-    this.#changed({ type: "ledger", ...result });
-    return result;
   }
 
   async deleteRecords(identities) {
