@@ -35,11 +35,12 @@ Whole-parent substitution, deletion of clean code and restoration of the other
 parent's clean context still refuse composition instead of receiving an
 override. This is a structural loss check, not a semantic approval of arbitrary
 replacement code. No approval token or additional durable state is introduced.
-For unique clean context, a lossy inline deletion retains both local boundaries
-on each changed line. Its removed tokens must be a contiguous ordered span of
+For unique clean context, a lossy inline deletion retains local context on each
+changed line. Its removed tokens must be a contiguous ordered span of
 one incoming inline deletion from Git's actual stage-1 blob. This also projects
 a removed parameter to a shorthand caller without its declaration's default
-value, allowing its adjacent comma at either edge. A file-wide bag of removed
+value, allowing its adjacent comma at either edge and a wrapped argument at the
+start/end of a retained line. A file-wide bag of removed
 words is insufficient: whole-line loss, novel replacement, permuted words or
 combining unrelated removals cannot supply that proof. This carries an API
 compatibility correction such as uniqueCall(legacy) to uniqueCall(), while

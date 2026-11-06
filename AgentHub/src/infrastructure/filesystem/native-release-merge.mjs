@@ -305,10 +305,12 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
     while (prefix < Math.min(oldWords.length, newWords.length) && oldWords[prefix] === newWords[prefix]) prefix++;
     while (suffix < Math.min(oldWords.length, newWords.length) - prefix
         && oldWords[oldWords.length - suffix - 1] === newWords[newWords.length - suffix - 1]) suffix++;
-    // An inline compatibility edit retains both of its local boundaries. A
+    // An inline compatibility edit retains context on the same line. A
     // whole-line deletion, or the same words removed elsewhere in the file,
     // cannot provide evidence for losing this selected line.
-    if (!prefix || !suffix) return null;
+    // An argument at a wrapped line's first/last position has only one such
+    // boundary. It must still leave that line, rather than remove it entirely.
+    if (!prefix && !suffix) return null;
     const removed = oldWords.slice(prefix, oldWords.length - suffix);
     const added = newWords.slice(prefix, newWords.length - suffix);
     // A parameter removed from the middle of a declaration can be the last

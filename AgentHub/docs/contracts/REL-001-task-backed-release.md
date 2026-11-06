@@ -1002,11 +1002,12 @@ That exact owned binding also carries compatibility corrections to clean context
 inside a real conflict file. Reopen recomputes this coverage; unrelated extra
 paths do not receive it. Whole-parent substitution, deleted clean code and
 restoration of the other parent's clean context still refuse composition.
-Inline removals from unique clean context require a retained boundary on both
-sides of each changed line and a contiguous ordered token span from an incoming
+Inline removals from unique clean context require retained context on each
+changed line and a contiguous ordered token span from an incoming
 inline deletion, derived from Git's actual stage-1 blob. A shorthand caller may
 project the declaration's removed parameter without its default value; adjacent
-commas do not change that span. Whole-line deletion, replacement or a combination
+commas and wrapping at the start/end of a line do not change that span.
+Whole-line deletion, replacement or a combination
 of unrelated removals cannot account for losing a selected addition. Conflict
 additions cannot lend evidence to a mixed hunk that drops unique clean code.
 This structural check does not claim semantic equivalence of replacement code.
