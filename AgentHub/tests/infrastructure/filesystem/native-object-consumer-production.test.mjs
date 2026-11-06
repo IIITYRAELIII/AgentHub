@@ -6,6 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { OwnedNativeObjectStore } from "../../../src/infrastructure/filesystem/owned-native-object-store.mjs";
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { preparationGitInvocation, withPreparationGitIsolation } from "../../../src/infrastructure/filesystem/preparation-git-isolation.mjs";
 
 const gitAt = (cwd, args, options = {}) => runTaskGitCommand(args, { ...options, cwd });
 const hash = x => createHash("sha256").update(x).digest("hex");
@@ -25,20 +26,27 @@ test("a deep Windows native consumer serves its complete input to a real fetch c
     repository = path.join(repository, "deep-native-consumer");
   }
   await mkdir(path.dirname(repository), { recursive: true });
-  const objects = new OwnedNativeObjectStore({ dataDir, gitAt });
-  const identityHash = hash("deep consumer");
-  const storage = await objects.provision({ sourceRoot: source, repository, inputs: [selected], identityHash });
-  await objects.assertConsumer({ repository, inputs: [selected], identityHash, storage });
-  await assert.rejects(readFile(path.join(repository, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
-  const receiver = path.join(root, "receiver.git");
-  await gitAt(root, ["init", "--bare", receiver]);
-  // runTaskGitCommand already supplies the client -c core.longpaths=true.
-  // The child server must independently read its own deep object paths.
-  await gitAt(receiver, ["fetch", "--no-tags", repository, selected]);
-  assert.equal(await gitAt(receiver, ["rev-parse", "FETCH_HEAD"]), selected);
-  assert.equal(await gitAt(receiver, ["show", `${selected}:selected.txt`]), "one exact native input");
-  await gitAt(receiver, ["fsck", "--connectivity-only", "--no-dangling", selected]);
-  await objects.assertConsumer({ repository, inputs: [selected], identityHash, storage });
+  await withPreparationGitIsolation(dataDir, async () => {
+    // Use the real preparation caller policy, including its clean Git config
+    // environment. An inherited user setting must not repair this fixture.
+    const producerGit = (cwd, args, options = {}) => {
+      const invocation = preparationGitInvocation(args, cwd);
+      return runTaskGitCommand(invocation.args, { ...options, cwd, env: invocation.env });
+    };
+    const objects = new OwnedNativeObjectStore({ dataDir, gitAt: producerGit });
+    const identityHash = hash("deep consumer");
+    const storage = await objects.provision({ sourceRoot: source, repository, inputs: [selected], identityHash });
+    await objects.assertConsumer({ repository, inputs: [selected], identityHash, storage });
+    await assert.rejects(readFile(path.join(repository, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
+    const receiver = path.join(root, "receiver.git");
+    await producerGit(root, ["init", "--bare", receiver]);
+    // The client -c cannot replace the child server's persistent path policy.
+    await producerGit(receiver, ["fetch", "--no-tags", repository, selected]);
+    assert.equal(await producerGit(receiver, ["rev-parse", "FETCH_HEAD"]), selected);
+    assert.equal(await producerGit(receiver, ["show", `${selected}:selected.txt`]), "one exact native input");
+    await producerGit(receiver, ["fsck", "--connectivity-only", "--no-dangling", selected]);
+    await objects.assertConsumer({ repository, inputs: [selected], identityHash, storage });
+  });
 });
 
 test("new native consumer links only its input closure, preserving shared pool and original custody", async t => {
