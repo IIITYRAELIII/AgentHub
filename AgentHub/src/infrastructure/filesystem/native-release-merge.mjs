@@ -262,6 +262,52 @@ async function changesCleanConflictContext(git, automaticTree, target, file, bef
   return hunks === 0;
 }
 
+// A recorded owned resolution covers its real conflict files, including
+// compatibility edits outside marker ranges. Keep structural loss checks:
+// choosing an entire parent, deleting clean code, or restoring the other
+// parent's clean context is not evidence that selected code was preserved.
+async function retainsConflictCleanContext(git, automaticTree, target, file, before, result) {
+  const body = String(await git(["show", `${automaticTree}:${file}`], { rawOutput: true }));
+  const resolved = String(await git(["show", `${target}:${file}`], { rawOutput: true }));
+  const parents = await Promise.all([before, result].map(async commit => {
+    const value = await maybe(git, ["show", `${commit}:${file}`], { rawOutput: true });
+    return value === null ? null : String(value);
+  }));
+  if (parents.includes(resolved)) return false;
+  const ranges = [];
+  let opened = null;
+  for (const [index, line] of body.split("\n").entries()) {
+    if (line === `<<<<<<< ${before}`) opened = index + 1;
+    if (line === `>>>>>>> ${result}` && opened !== null) {
+      ranges.push([opened, index + 1]); opened = null;
+    }
+  }
+  if (opened !== null || !ranges.length) return false;
+  const patch = String(await git(["--literal-pathspecs", "-c", "diff.algorithm=myers", "diff", "--no-ext-diff", "--no-textconv",
+    "--no-renames", "--no-color", "--no-indent-heuristic", "--unified=0", "--inter-hunk-context=0",
+    automaticTree, target, "--", file], { rawOutput: true }));
+  if (/^(?:old mode|new mode|deleted file|new file|Binary files)/mu.test(patch)) return false;
+  let sourceLine = 0, removed = [], added = [];
+  const preserved = () => {
+    if (!removed.some(line => line.trim())) return true;
+    if (!added.some(line => line.trim())) return false;
+    const oldBlock = removed.join("\n") + "\n", newBlock = added.join("\n") + "\n";
+    return !parents.some(parent => parent !== null && parent.includes(newBlock) && !parent.includes(oldBlock));
+  };
+  for (const line of patch.split("\n")) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@/u.exec(line);
+    if (hunk) {
+      if (!preserved()) return false;
+      sourceLine = Number(hunk[1]); removed = []; added = [];
+    } else if (sourceLine && line.startsWith("-")) {
+      if (!ranges.some(([a, b]) => sourceLine >= a && sourceLine <= b)) removed.push(line.slice(1));
+      sourceLine++;
+    } else if (sourceLine && line.startsWith("+")) added.push(line.slice(1));
+    else if (sourceLine && line.startsWith(" ")) sourceLine++;
+  }
+  return preserved();
+}
+
 async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
   // TaskGit seals this repository publication in the original Test intent and
   // revalidates it through its existing source/origin/CAS fences. It is not a
@@ -389,7 +435,12 @@ async function verifyMergeStep(git, before, result, target, { storedBinding = nu
     throw failure("Completed automatic native prefix contains unexpected changes", "RELEASE_SELECTED_CONTENT_MISSING",
       { candidateCommit: target, missingPaths: extraPaths.sort() });
   }
-  return { before, commit: target, binding, conflictPaths: [...conflicts].filter(file => !extraPaths.includes(file)) };
+  const conflictPaths = [];
+  for (const file of conflicts) {
+    if (!extraPaths.includes(file) || (ownedResolution || storedBinding)
+        && await retainsConflictCleanContext(git, automaticTree, target, file, before, result)) conflictPaths.push(file);
+  }
+  return { before, commit: target, binding, conflictPaths };
 }
 
 // Verify an already accepted native candidate without composing another one.

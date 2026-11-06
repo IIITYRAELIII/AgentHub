@@ -27,6 +27,15 @@ lost mode/deletion, forged automatic prefixes, stale selection, different parent
 dirty/foreign checkout still refuse. This is structural preservation evidence,
 not a claim that Git proves arbitrary code semantically equivalent.
 
+An actual conflict file remains covered by its exact owned resolution binding
+when compatibility corrections also change clean context outside its markers.
+Reopen recomputes that coverage from ordered parents, automatic/result trees and
+the complete diff; unrelated extra paths never acquire conflict coverage.
+Whole-parent substitution, deletion of clean code and restoration of the other
+parent's clean context still receive the selected-content check instead of an
+override. This is a structural loss check, not a semantic approval of arbitrary
+replacement code. No approval token or additional durable state is introduced.
+
 ## Migration and verification
 
 New public status/release/preparation inputs omit native approval fields.

@@ -998,6 +998,11 @@ Historical reviewedResolution is Git evidence only; its review text and receipt
 are not execution capabilities. Ordinary resolution and an undelivered final
 amendment use the same issued checkout and existing journal. Delivered history
 cannot be amended. New resolution evidence contains Git bindings, not approvals.
+That exact owned binding also carries compatibility corrections to clean context
+inside a real conflict file. Reopen recomputes this coverage; unrelated extra
+paths do not receive it. Whole-parent substitution, deleted clean code and
+restoration of the other parent's clean context still undergo selected replay.
+This structural check does not claim semantic equivalence of replacement code.
 
 After the complete selected set is merged, selected delta replay still checks
 for missing code, deletion and mode changes. Exact automatic context from an

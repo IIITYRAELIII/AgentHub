@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { runTaskGitCommand, TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
-import { assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY }
+import { assertNativeMergedResults, assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY }
   from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 
 const gitAt = (cwd, args, options = {}) => runTaskGitCommand(args, { ...options, cwd });
@@ -279,6 +279,59 @@ test("an owned amendment cannot discard unique selected code", async t => {
   await gitAt(value.root, ["add", "."]);
   await gitAt(value.root, ["-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "--amend", "--no-edit"]);
   await assert.rejects(f.compose(f.base, tasks), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
+});
+
+test("owned conflict compatibility edits retain their selected-content evidence on reopen", async t => {
+  const f = await fixture(t);
+  const gap = "stable context\n".repeat(12);
+  const body = (clean, shared) => `${clean}\n${gap}${shared}\n`;
+  await writeFile(path.join(f.sourceRoot, "selection.txt"), body("base clean", "base shared"));
+  const base = await commit(f.sourceRoot, "compatibility base");
+  const a = await f.create("A", body("uniqueCall(legacy)", "selected A"), base);
+  const b = await f.create("B", body("base clean", "selected B"), base);
+  const tasks = [{ taskId: "A", baseCommit: base, resultCommit: a }, { taskId: "B", baseCommit: base, resultCommit: b }];
+  let repository;
+  await assert.rejects(f.compose(base, tasks), error => {
+    assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); repository = error.conflictRoot; return true;
+  });
+  await writeFile(path.join(repository, "selection.txt"), body("uniqueCall()", "selected A+B"));
+  const head = await commit(repository, "combine selected API with its compatibility correction");
+  const value = await f.compose(base, tasks);
+  assert.equal(value.head, head);
+  assert.equal(await gitAt(repository, ["show", "HEAD:selection.txt"]), body("uniqueCall()", "selected A+B").trim());
+  assert.ok(value.merges[1].resolution.conflictPaths.includes("selection.txt"));
+  const stateFile = path.join(f.root, "capture", "merge.json"), saved = await readFile(stateFile);
+  assert.equal((await f.compose(base, tasks)).head, head);
+  assert.deepEqual(await readFile(stateFile), saved);
+  const input = { git: (args, options) => gitAt(repository, args, options), baseCommit: base, tasks,
+    merges: value.merges, head, tree: value.tree };
+  await assertNativeMergedResults(input);
+  const stale = structuredClone(value.merges); stale[1].resolution.binding.diffSha256 = "0".repeat(64);
+  await assert.rejects(assertNativeMergedResults({ ...input, merges: stale }), { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
+  const foreign = structuredClone(value.merges); foreign[1].commit = a;
+  await assert.rejects(assertNativeMergedResults({ ...input, merges: foreign }), { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
+  await assert.rejects(assertNativeMergedResults({ ...input, tasks: [tasks[0], { ...tasks[1], resultCommit: a }] }),
+    /Prepared native result evidence changed/u);
+  assert.deepEqual(await readFile(stateFile), saved);
+});
+
+for (const loss of ["delete", "restore-parent"]) test(`owned conflict compatibility cannot ${loss} unique clean selected code`, async t => {
+  const f = await fixture(t);
+  const gap = "stable context\n".repeat(12);
+  const body = (clean, shared) => `${clean}${gap}${shared}\n`;
+  await writeFile(path.join(f.sourceRoot, "selection.txt"), body("base clean\n", "base shared"));
+  const base = await commit(f.sourceRoot, "loss base");
+  const a = await f.create("A", body("unique selected implementation\n", "selected A"), base);
+  const b = await f.create("B", body("base clean\n", "selected B"), base);
+  const tasks = [{ taskId: "A", baseCommit: base, resultCommit: a }, { taskId: "B", baseCommit: base, resultCommit: b }];
+  let repository;
+  await assert.rejects(f.compose(base, tasks), error => {
+    assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); repository = error.conflictRoot; return true;
+  });
+  await writeFile(path.join(repository, "selection.txt"), body(loss === "delete" ? "" : "base clean\n", "selected A+B"));
+  await commit(repository, "incorrect clean-context loss beside a real conflict resolution");
+  for (let attempt = 0; attempt < 2; attempt++) await assert.rejects(f.compose(base, tasks),
+    error => error.code === "RELEASE_SELECTED_CONTENT_MISSING" && error.missingPaths.includes("selection.txt"));
 });
 
 test("an ordinary owned resolution may add a compatibility helper without a path approval", async t => {
