@@ -5,14 +5,14 @@ const MUTATION_ACTIONS = Object.freeze([
   "select-task", "send-message", "new-task", "rotate-stream", "create-stream",
   "update-setting", "rename-task", "archive-task", "cancel-run",
   "refresh-model-catalog",
-  "resolve-approval", "deferred-input", "restart-server", "retry-startup", "set-autostart",
+  "resolve-approval", "deferred-input", "restart-server", "restart-package", "resume-package", "retry-startup", "set-autostart",
   "update-server-configuration", "update-root-agents", "update-global-pre-turn-instructions", "compact-context", "create-device-pairing",
   "revoke-device", "submit-bug-report",
   "rename-workspace", "update-workspace-settings", "move-workspace-to-folder", "rename-workspace-folder", "update-workspace-rules", "complete-workspace-release", "create-workspace", "archive-workspace", "restore-workspace", "delete-archived-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
   "release-operation-run", "release-operation-continue",
   "archive-stream", "update-stream-settings", "update-stream-rules", "move-stream",
   "board-task-create", "board-task-ingest", "board-task-update", "board-task-checklist", "board-task-checklist-linked-action", "board-task-attachment-add", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
-  "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
+  "board-task-retry-triage", "board-task-start", "board-task-operation-cancel", "board-column-move", "board-column-comment",
   "board-workspace-move",
   "usage-sync", "usage-sync-status", "usage-sync-now", "usage-sync-invite", "usage-sync-enroll",
   "usage-sync-device-label",
@@ -20,7 +20,7 @@ const MUTATION_ACTIONS = Object.freeze([
 ]);
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
-  "send-message", "cancel-run", "deferred-input", "restart-server", "retry-startup",
+  "send-message", "cancel-run", "deferred-input", "restart-server", "restart-package", "resume-package", "retry-startup", "board-task-operation-cancel",
   "refresh-model-catalog",
   "usage-sync-now", "usage-sync-invite", "usage-sync-enroll", "usage-sync-device-label",
 ]);
@@ -32,6 +32,8 @@ const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
  * credentials.
  */
 const LOCAL_ONLY_ACTIONS = Object.freeze([
+  "restart-package",
+  "resume-package",
   "attachment-upload",
   "update-server-configuration",
   "start-provider-login",
@@ -124,6 +126,14 @@ export function createDesktopApplicationRouter({
       "status-details": handlers.statusDetails,
       "speak-last-answer": handlers.speakLastAnswer,
       "restart-server": handlers.restartServer,
+      "restart-package": (params) => {
+        if (!handlers.restartPackage) throw new Error("Package restart is unavailable in this runtime");
+        return handlers.restartPackage(params);
+      },
+      "resume-package": (params) => {
+        if (!handlers.resumePackage) throw new Error("Package continuation is unavailable in this runtime");
+        return handlers.resumePackage(params);
+      },
       "set-autostart": handlers.setAutostart,
       "update-server-configuration": handlers.updateServerConfiguration,
       "start-provider-login": (params) => {
@@ -185,6 +195,7 @@ export function createDesktopApplicationRouter({
       "board-task-ingest": handlers.boardTaskIngest,
       "board-task-update": handlers.boardTaskUpdate,
       "board-task-read": handlers.boardTaskRead,
+      "board-task-operation-cancel": handlers.boardTaskOperationCancel,
       "board-task-diff": handlers.boardTaskDiff,
       "board-task-checklist": handlers.boardTaskChecklist,
       "board-task-checklist-linked-action": handlers.boardTaskChecklistLinkedAction,

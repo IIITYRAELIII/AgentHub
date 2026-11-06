@@ -6,8 +6,9 @@ import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mj
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 export class DesktopTaskBoardController {
-  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, taskLifecycle = null, taskGitWorkspaces = null, voiceTranscriber = null, attachmentDirectory = null, snapshot, logger = console } = {}) {
+  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, taskLifecycle = null, taskGitWorkspaces = null, voiceTranscriber = null, attachmentDirectory = null, snapshot, hubMcpService = null, logger = console } = {}) {
     this.taskBoard = taskBoard;
+    this.hubMcpService = hubMcpService;
     this.workspaceCatalog = workspaceCatalog;
     this.dispatchCommand = dispatchCommand;
     this.sendMessage = sendMessage;
@@ -40,8 +41,15 @@ export class DesktopTaskBoardController {
     };
   }
 
-  read({ id } = {}) {
-    return { task: this.taskBoard.card(id) };
+  read({ id, operationRequestId, argumentsHash } = {}) {
+    const operation = operationRequestId
+      ? this.hubMcpService.readDesktopTaskOperation({ id }, operationRequestId, argumentsHash) : null;
+    let task = null;
+    try { if (id) task = this.taskBoard.card(id); }
+    catch (error) { if (!operation?.taskOperation.terminal) throw error; }
+    if (!operation && !task) task = this.taskBoard.card(id);
+    return { task, taskOperations: id ? this.hubMcpService?.taskOperationInterruption?.list(id) ?? [] : [],
+      ...(operation ? { operation } : {}) };
   }
 
   async diff({ id } = {}) {
@@ -52,7 +60,13 @@ export class DesktopTaskBoardController {
     }) };
   }
 
-  create(params) {
+  create(params, context = {}) {
+    if (context.taskOperationReceipt && this.hubMcpService) {
+      if (!this.workspaceCatalog.workspace(params.workspaceId)) throw new Error("Workspace не найден");
+      return this.hubMcpService.runDesktopTaskOperation({ workspaceId: params.workspaceId }, params.operationId ?? context.commandId, null,
+        () => this.taskBoard.create({ text: params.text, source: "hub", bucket: "workspace", workspaceId: params.workspaceId }),
+        { receiptOnly: true, toolName: "hub_task_create", parameters: { workspace_id: params.workspaceId, text: params.text } });
+    }
     return this.#mutate(() => {
       if (!this.workspaceCatalog.workspace(params.workspaceId)) throw new Error("Workspace не найден");
       return this.taskBoard.create({
@@ -141,7 +155,10 @@ export class DesktopTaskBoardController {
     return this.#boardMutationSnapshot(params);
   }
 
-  update(params) {
+  update(params, context = {}) {
+    if (context.taskOperationReceipt && this.hubMcpService) return this.hubMcpService.runDesktopTaskOperation(
+      this.taskBoard.task(params.id), params.operationId ?? context.commandId, null, () => this.taskBoard.update(params),
+      { receiptOnly: true, toolName: "hub_task_update", parameters: { ...params } });
     return this.#mutate(() => this.taskBoard.update(params));
   }
 
@@ -174,12 +191,24 @@ export class DesktopTaskBoardController {
 
   async status(params, context = {}) {
     if (!this.taskLifecycle) throw new Error("Task lifecycle service is unavailable");
-    const result = await this.taskLifecycle.updateWorkflowStatus({
-      taskId: params.id,
-      status: params.status,
-      operationId: String(params.operationId ?? context.commandId ?? "").trim(),
-    });
+    const operationId = String(params.operationId ?? context.commandId ?? "").trim();
+    const run = () => this.taskLifecycle.updateWorkflowStatus({ taskId: params.id, status: params.status, operationId });
+    const result = this.hubMcpService
+      ? await this.hubMcpService.runDesktopTaskOperation(this.taskBoard.task(params.id), operationId, params.status, run,
+        { receiptOnly: context.taskOperationReceipt === true }) : await run();
+    if (result?.taskOperation) return result;
     return { ...await this.#boardMutationSnapshot(params), lifecycleResult: result };
+  }
+
+  async cancelOperation(params) {
+    const owner = this.hubMcpService?.taskOperationInterruption;
+    if (!owner || params.confirmCancel !== true) throw new Error("Подтверди прерывание операции");
+    const task = this.taskBoard.task(params.id);
+    const cancellation = await owner.cancel({ actor: { user: true, workspaceId: task.workspaceId },
+      taskId: task.id, operationRequestId: params.operationRequestId,
+      cancellationRequestId: params.requestId, expectedArgumentsHash: params.argumentsHash,
+      expectedTaskRevision: params.expectedRevision });
+    return { ...this.read({ id: task.id }), cancellation };
   }
 
   moveColumn(params) {
@@ -206,23 +235,33 @@ export class DesktopTaskBoardController {
 
   async complete(params, context = {}) {
     if (!this.taskLifecycle) throw new Error("Task lifecycle service is unavailable");
-    const result = await this.taskLifecycle.complete({
-      taskId: params.id,
-      operationId: String(params.operationId ?? context.commandId ?? "").trim(),
+    const operationId = String(params.operationId ?? context.commandId ?? "").trim();
+    const run = () => this.taskLifecycle.complete({
+      taskId: params.id, operationId,
       confirmCleanup: params.confirmCleanup === true,
       expectedCleanupToken: params.expectedCleanupToken ?? null,
     });
+    if (context.taskOperationReceipt && this.hubMcpService) return this.hubMcpService.runDesktopTaskOperation(
+      this.taskBoard.task(params.id), operationId, null, run,
+      { receiptOnly: true, toolName: "hub_task_complete", parameters: { confirm_cleanup: params.confirmCleanup === true,
+        expected_cleanup_token: params.expectedCleanupToken ?? null } });
+    const result = await run();
     return { ...await this.snapshot({ refresh: true }), lifecycleResult: result };
   }
 
   async remove(params, context = {}) {
     if (!this.taskLifecycle) throw new Error("Task lifecycle service is unavailable");
-    const result = await this.taskLifecycle.delete({
-      taskId: params.id,
-      operationId: String(params.operationId ?? context.commandId ?? "").trim(),
+    const operationId = String(params.operationId ?? context.commandId ?? "").trim();
+    const run = () => this.taskLifecycle.delete({
+      taskId: params.id, operationId,
       confirmCleanup: params.confirmCleanup === true,
       expectedCleanupToken: params.expectedCleanupToken ?? null,
     });
+    if (context.taskOperationReceipt && this.hubMcpService) return this.hubMcpService.runDesktopTaskOperation(
+      this.taskBoard.task(params.id), operationId, null, run,
+      { receiptOnly: true, toolName: "hub_task_delete", parameters: { confirm_cleanup: params.confirmCleanup === true,
+        expected_cleanup_token: params.expectedCleanupToken ?? null } });
+    const result = await run();
     return { ...await this.snapshot({ refresh: true }), lifecycleResult: result };
   }
 

@@ -13,6 +13,7 @@ import {
 } from "../runtime/restart-recovery.mjs";
 import { readFile } from "node:fs/promises";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
+import { armPackageRestart, packageCheckpoint, preflightPackageRestart } from "../runtime/runtime-package-handoff.mjs";
 
 export function createRuntimeRestartComposition({
   getRestartRequest,
@@ -69,7 +70,11 @@ export function createRuntimeRestartComposition({
   updateRestartMessage,
   startRuntimeTimers,
   delay,
+  maintenanceOperations = null,
 }) {
+  // Infrastructure owns the composition (including shutdown); measurement is
+  // provided by its service. Direct service callers retain the same interface.
+  const traceService = commandTrace?.service ?? commandTrace;
   const restartNotifications = new RestartNotificationService({
     getRequest: getRestartRequest,
     setRequest: setRestartRequest,
@@ -140,8 +145,8 @@ export function createRuntimeRestartComposition({
 
   const runtimeRestart = new RuntimeRestartController({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
-    measure: (id, stage, action) => commandTrace?.measureBestEffort
-      ? commandTrace.measureBestEffort({ commandId: id, stage: `restart-${stage}`, transport: "runtime" }, action)
+    measure: (id, stage, action) => traceService?.measureBestEffort
+      ? traceService.measureBestEffort({ commandId: id, stage: `restart-${stage}`, transport: "runtime" }, action)
       : action(),
     getRequest: getRestartRequest,
     updateOffset,
@@ -155,6 +160,12 @@ export function createRuntimeRestartComposition({
     stopTimers: stopRuntimeTimers,
     stopMedia: () => mediaController.stop(),
     resumeAfterAbort: () => startRuntimeTimers(),
+    packageHandoff: maintenanceOperations ? {
+      preflight: preflightPackageRestart,
+      arm: (request) => armPackageRestart({ request, store: maintenanceOperations }),
+      writersClosed: (request) => packageCheckpoint(maintenanceOperations,
+        request.operationId, "package-writers-closed"),
+    } : null,
     launchReplacement: async () => {
       const operationId = getRestartRequest()?.operationId;
       const pointer = JSON.parse(await readFile(path.join(agentHubRoot, "..", "..", "current.json"), "utf8").catch(() => "{}"));
@@ -168,8 +179,8 @@ export function createRuntimeRestartComposition({
       });
       return launchReplacementAndWait({ invocation, lockFile: instanceLockFile,
         expectedReleaseId, expectedOperationId: operationId ?? "",
-        measure: (stage, action) => commandTrace?.measureBestEffort
-          ? commandTrace.measureBestEffort({ commandId: operationId, stage: `restart-${stage}`,
+        measure: (stage, action) => traceService?.measureBestEffort
+          ? traceService.measureBestEffort({ commandId: operationId, stage: `restart-${stage}`,
             transport: "runtime", metadata: { expectedReleaseId, oldPid: process.pid } }, action)
           : action(),
       });
@@ -198,9 +209,9 @@ export function createRuntimeRestartComposition({
       startTimers: startRuntimeTimers,
       markReady: () => instanceGuard.markReady(),
     }),
-    abortRestart: async (error) => {
+    abortRestart: async (error, evidence) => {
       setStopping(false);
-      await failRestartOperation(error);
+      await failRestartOperation(error, evidence);
       setRestartRequest(null);
       let saveError = null;
       try {

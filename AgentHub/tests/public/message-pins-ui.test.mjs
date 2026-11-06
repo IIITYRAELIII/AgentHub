@@ -548,10 +548,10 @@ test("production pin navigation survives stale and fresh history until an explic
       top: target?.getBoundingClientRect().top ?? null,
     };
   });
-  const returnToStreamWith = async (page, controller, snapshot) => {
+  const refreshOpenStreamWith = async (page, controller, snapshot) => {
     controller.setSnapshot(snapshot);
-    await page.locator(".stream-tabs-track [data-stream-tab-id='stream-2']").evaluate((button) => button.click());
-    await page.locator("[data-chat-log] [data-item-id='stream-2-answer-99']").waitFor();
+    // Refresh this still-open focused window. Ordinary Stream replacement
+    // legitimately releases a closed column's history (ADR-HUB-343).
     const response = page.waitForResponse((candidate) => {
       if (!candidate.url().endsWith("/api/control")) return false;
       const body = candidate.request().postDataJSON();
@@ -599,12 +599,12 @@ test("production pin navigation survives stale and fresh history until an explic
       const freshHistoryResponse = page.waitForResponse((candidate) => {
         if (!candidate.url().endsWith("/api/control")) return false;
         const body = candidate.request().postDataJSON();
-        return body?.action === "task-history" && body?.params?.streamId === "stream-1";
+        return body?.action === "open-task" && body?.params?.streamId === "stream-1";
       });
       try {
         await Promise.all([
           freshHistoryResponse,
-          returnToStreamWith(page, controller, navigationSnapshot({ version: "snapshot-2" })),
+          refreshOpenStreamWith(page, controller, navigationSnapshot({ version: "snapshot-2" })),
         ]);
       } catch (error) {
         throw new Error(`${error.message}; requests=${JSON.stringify(controller.requests)}`);
@@ -623,17 +623,17 @@ test("production pin navigation survives stale and fresh history until an explic
 
       await page.locator("[data-message-pin-current]").evaluate((button) => button.click());
       await target.waitFor({ state: "visible" });
-      await returnToStreamWith(page, controller, navigationSnapshot({
+      await refreshOpenStreamWith(page, controller, navigationSnapshot({
         version: "snapshot-3",
         pinAvailable: false,
       }));
       await page.waitForFunction(() => !document.querySelector("[data-chat-log] [data-item-id='answer-target']"));
       assert.equal(await page.locator("[data-message-pin-current]").isDisabled(), true);
 
-      await returnToStreamWith(page, controller, navigationSnapshot({ version: "snapshot-4" }));
+      await refreshOpenStreamWith(page, controller, navigationSnapshot({ version: "snapshot-4" }));
       await page.locator("[data-message-pin-current]").evaluate((button) => button.click());
       await target.waitFor({ state: "visible" });
-      await returnToStreamWith(page, controller, navigationSnapshot({ version: "snapshot-5", pinPresent: false }));
+      await refreshOpenStreamWith(page, controller, navigationSnapshot({ version: "snapshot-5", pinPresent: false }));
       await page.waitForFunction(() => !document.querySelector("[data-chat-log] [data-item-id='answer-target']"));
       assert.equal(await page.locator("[data-message-pin-shelf]").isHidden(), true);
       await page.close();

@@ -56,4 +56,23 @@ export class ReleaseOperationFinalization {
     }
     return { status: "completed", repositories, tasks };
   }
+
+  // Repair only the already-published original's dev integration. Task delivery
+  // remains owned by ordinary finalize and is never repeated by this command.
+  async synchronizePublishedDev({ operation, generation, projectRoot, expectedDevCommit,
+    nativeResolutionReview = null, validate }) {
+    const candidate = generation.candidates.find(item => item.repositoryRoot === projectRoot);
+    if (!candidate) throw new Error("Published dev sync repository is not in the frozen generation");
+    await validate();
+    const primary = await this.releaseGitWorkspaces.verifyPublishedPrimary({
+      projectRoot, publishedRevision: candidate.commit, planRevision: candidate.planRevision,
+    });
+    if (primary?.status !== "preserved") throw new Error("Published dev sync primary verification failed");
+    await validate();
+    return this.taskGitWorkspaces.synchronizeMainIntoDev({ projectRoot, publishedRevision: candidate.commit,
+      publishedSync: { operationId: operation.operationId, workspaceId: operation.workspaceId,
+        generation: generation.generation, candidateIdentity: generation.identitySha256,
+        expectedDevCommit, tasks: [...new Set(generation.selectedResults.map(item => item.taskId))].sort().map(taskId => ({ taskId })) },
+      nativeResolutionReview, validatePublishedSync: validate });
+  }
 }

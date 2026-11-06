@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +9,60 @@ import { createRuntimeRestartComposition } from "../../src/composition/runtime-r
 import { restartRequestProjection, restartUiProjection } from "../../src/domain/maintenance-operation.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { TaskDiffStore } from "../../src/infrastructure/persistence/task-diff-store.mjs";
+import { createCommandTraceComposition } from "../../src/composition/command-trace-composition.mjs";
+import { createRuntimeRestartWiring } from "../../src/composition/runtime-restart-wiring-composition.mjs";
+import { CommandTraceWorkerStore } from "../../src/infrastructure/persistence/command-trace-worker-store.mjs";
+
+test("restart composition records the original through its trace service and closes the composition worker", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub398-restart-trace-"));
+  const databaseFile = path.join(root, "data", "traces.sqlite");
+  const noop = async () => {};
+  let reopened;
+  let closed = false;
+  const trace = createCommandTraceComposition({ databaseFile });
+  try {
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "config.json"), "{}");
+    await trace.initialize();
+    const request = { operationId: "exact-package-original", metadata: {
+      packageHandoff: { binding: { runtimeRoot: root } },
+    } };
+    let blocked = true;
+    const wiring = createRuntimeRestartWiring({
+      taskRuns: { values: () => [] }, agentProviders: {},
+      runCoordinator: { hasPendingAdmission: () => blocked },
+      backgroundJobs: { activeSize: 0 }, streamMaintenance: { activeCount: () => 0 },
+      getRestartRequest: () => request, isStopping: () => false,
+      restartRequestService: { canPerform: () => true },
+      runtimeRestart: {
+        getRestartRequest: () => request, updateOffset: () => 0,
+        isStopping: () => false, beginStopping: () => false,
+        setWaiting: noop, updateRestartMessage: noop, saveState: noop,
+        stopRuntimeTimers: noop, stopCodexAppServerTree: noop,
+        maintenanceOperations: {},
+        commandTrace: { ...trace, close: async () => { await trace.close(); closed = true; } },
+        workLogUsageStore: { close: noop }, rateLimitHistoryStore: { close: noop },
+        taskSyncStore: { close: noop }, workspaceCatalogStore: { close: noop },
+        taskReadStateStore: { close: noop }, runtimeStateStore: { close: noop },
+      },
+    });
+    assert.equal(wiring.restartBlockingWorkCount(), 1);
+    blocked = false;
+    assert.equal(wiring.restartBlockingWorkCount(), 0);
+    assert.equal((await wiring.performRestart()).status, "ignored");
+    assert.equal((await wiring.runtimeResources.finalize()).ok, true);
+    assert.equal(closed, true);
+    assert.equal(trace.store.stats().workerRunning, false);
+    reopened = new CommandTraceWorkerStore({ databaseFile });
+    const spans = await reopened.readCommandTimeline(request.operationId);
+    assert.deepEqual(spans.filter(span => span.stage === "restart-readiness").map(span => span.outcome), ["waiting", "ready"]);
+    assert.deepEqual(spans.filter(span => span.stage === "restart-package-backup-preflight").map(span => span.outcome), ["started", "succeeded"]);
+    assert.ok(spans.find(span => span.stage === "restart-package-backup-preflight" && span.outcome === "succeeded").monotonicDurationMs >= 0);
+  } finally {
+    await trace.close(); await reopened?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("the existing restart drain persists the latest remembered diff before replacement", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(),"hub315-drain-"));

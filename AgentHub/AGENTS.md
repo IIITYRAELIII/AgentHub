@@ -48,6 +48,12 @@
 
 ## Testing
 
+- When observable behavior changes, inspect affected existing tests, shared
+  fixtures and callers, including negative cases, for expectations of the old
+  behavior. Update obsolete expectations in the same change and run the affected
+  checks. Preserve still-valid assertions; changing an expected value or skipping
+  a case must not conceal a regression.
+
 - Do not add or extend tests that read production source files and assert literal
   implementation text, formatting, CSS declarations, or regular-expression
   snapshots. Existing source-text assertions are legacy coverage, not a pattern

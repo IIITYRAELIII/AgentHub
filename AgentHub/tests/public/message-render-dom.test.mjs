@@ -5,6 +5,12 @@ import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sy
 import { readCodexTracePageInWorker } from "../../src/providers/codex/codex-rollout-activity-worker-client.mjs";
 import path from "node:path";
 import test from "node:test";
+import { codexAssistantResponseProjection } from "../../src/domain/codex-response-annotation.mjs";
+import { claudeTranscriptHistory } from "../../src/application/task-history.mjs";
+import { PreTurnInstructionStore } from "../../src/infrastructure/persistence/pre-turn-instruction-store.mjs";
+import { fileURLToPath } from "node:url";
+import { codexTraceEntry } from "../../src/providers/codex/codex-rollout-activity.mjs";
+import { clientPerformanceTraceSpans } from "../../src/application/client-performance-trace.mjs";
 
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
 const TEST_THEME_CATALOG = JSON.stringify([{
@@ -106,6 +112,153 @@ test.before(async () => {
 test.after(async () => {
   await browser?.close();
 });
+
+test("positioned annotations interleave four nonsorted answers through stream history and reload", {timeout:45000}, async()=>{
+  const raw='# Зачем нужна история Git\n\nИстория Git сохраняет изменения. 🦊 :agent-annotation{index="2"}\n\nЗависимости можно переиспользовать. :codex-annotation{index="1"}\n\nВременные копии удаляются после проверки. :agent-annotation{index="3"}\n\nМедиа принадлежит открытой задаче. :codex-annotation{index="4"}';
+  for(const width of [1366,390]) for(const provider of ['codex','claude']) {
+    const page=await browser.newPage({viewport:{width,height:1000}}); const diagnostics=[];
+    page.setDefaultTimeout(3000);
+    page.on('pageerror',e=>diagnostics.push(e.message));
+    page.on('console',m=>{
+      if(m.type()==='error' && m.text().includes('404 (Not Found)')
+        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(['error','warning'].includes(m.type())) diagnostics.push(m.text());
+    });
+    try {
+      await openWebApp(page);
+      const source={id:'placement-source',provider,threadId:'thread-1',turnId:'original',itemId:'original-item',role:'agent',text:'Dependencies; Git; Cleanup; Media.'};
+      await seedMessages(page,[source],{provider,agentLabel:provider});
+      const annotations=await page.evaluate(async(source)=>{
+        const api=window.AgentHubMessageDisclosure, surface=document.querySelector('[data-message-id="placement-source"] .msg-body');
+        const text=surface.textContent;
+        return Promise.all(['Dependencies','Git','Cleanup','Media'].map(async(word)=>{
+          const start=text.indexOf(word),end=start+word.length;
+          return {text:word,annotation:'Question '+word,source:{version:1,...api.responseAnnotationSourceIdentity(source),surfaceKind:'message-body',surfaceIndex:0,start,end,
+            contentHash:await api.responseAnnotationSha256(api.responseAnnotationSourceContent(source)),surfaceHash:await api.responseAnnotationSha256(text),selectionHash:await api.responseAnnotationSha256(word)}};
+        }));
+      },source);
+      const user={id:'placement-user',provider,threadId:'thread-1',turnId:'reply',itemId:'user',role:'user',text:'User :agent-annotation{index="4"}',responseAnnotationRequest:'User :agent-annotation{index="4"}',responseAnnotations:annotations};
+      const project=(answer)=>provider==='codex'?codexAssistantResponseProjection(answer):(()=>{
+        const h=claudeTranscriptHistory([{type:'user',uuid:'u',message:{role:'user',content:'Check'}},{type:'assistant',uuid:'a',message:{role:'assistant',content:[{type:'text',text:answer}]}}].map(JSON.stringify).join('\n'))[0];
+        return {text:h.answer,responseAnnotationReferences:h.messages[1].responseAnnotationReferences};
+      })();
+      const answer=(value)=>({id:'placement-answer',provider,threadId:'thread-1',turnId:'reply',itemId:'answer',role:'agent',...project(value)});
+      const sequence=(selector='[data-message-id="placement-answer"] .msg-body')=>page.locator(selector).evaluate(body=>Array.from(body.querySelectorAll('h1,p,[data-response-citation-index]')).map(n=>n.dataset.responseCitationIndex?'quote'+n.dataset.responseCitationIndex:n.textContent.trim()));
+      const expected=['Зачем нужна история Git','История Git сохраняет изменения. 🦊','quote2','Зависимости можно переиспользовать.','quote1','Временные копии удаляются после проверки.','quote3','Медиа принадлежит открытой задаче.','quote4'];
+      // Stream a complete first card, then an incomplete next marker: no all-top relocation or raw prefix.
+      const boundary=raw.indexOf(':codex-annotation');
+      await seedMessages(page,[source,user],{provider,agentLabel:provider,running:true});
+      if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      for(const partial of [raw.slice(0,boundary),raw.slice(0,boundary+':codex-annotation{index="'.length),raw]) {
+        await page.evaluate(value=>window.AgentHub.setLive('task-1',value),answer(partial));
+        const values=await sequence('[data-live-body]');
+        assert.deepEqual(values.slice(0,3),expected.slice(0,3));
+        assert.doesNotMatch(await page.locator('[data-live-body]').textContent(),/:agent-annotation|:codex-annotation/u);
+      }
+      assert.deepEqual(await sequence('[data-live-body]'),expected);
+      await page.evaluate(()=>window.AgentHub.setLive('task-1',null));
+      await seedMessages(page,[source,user,answer(raw)],{provider,agentLabel:provider});
+      assert.deepEqual(await sequence(),expected);
+      assert.equal(await page.locator('[data-message-id="placement-answer"] .msg-body').evaluate(n=>Array.from(n.childNodes).filter(c=>c.nodeType===Node.TEXT_NODE).map(c=>c.textContent).join('').trim()),'');
+      const retained=JSON.parse(JSON.stringify([source,user,answer(raw)]));
+      // Reload/reconnect from retained structured message metadata, with no original marker parser in the browser.
+      await page.reload({waitUntil:'load'}); await page.waitForFunction(()=>typeof window.AgentHub==='object');
+      await seedMessages(page,retained,{provider,agentLabel:provider});
+      if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      assert.deepEqual(await sequence(),expected);
+      assert.ok((await page.locator('[data-message-id="placement-user"]').textContent()).includes(user.text));
+      for(const index of [2,1,3,4]) {
+        await page.locator(`[data-message-id="placement-answer"] [data-response-citation-index="${index}"]`).click();
+        const target=page.locator('[data-message-id="placement-user"] .msg-annotation-content').nth(index-1);
+        assert.equal(await target.getAttribute('data-response-annotation-source')!==null,true);
+        await target.click();
+        assert.equal((await page.locator('[data-message-id="placement-source"] .msg-source-citation-highlight').allTextContents()).join(''),annotations[index-1].text);
+      }
+      assert.match(await page.title(),/Agent Hub/iu); assert.equal(page.url(),'http://127.0.0.1/');
+      if(process.env.AGENT_HUB_QA_SCREENSHOT) {
+        await page.locator('[data-message-id="placement-answer"]').scrollIntoViewIfNeeded();
+        await page.screenshot({path:`${process.env.AGENT_HUB_QA_SCREENSHOT}-placement-${provider}-${width}.png`});
+      }
+      assert.deepEqual(diagnostics,[]);
+    } finally {await page.close();}
+  }
+});
+
+test("generic annotation aliases render one exact source link for each provider on desktop and mobile", {timeout:30000}, async()=>{
+  for(const width of [1366,390]) for(const provider of ['codex','claude']) {
+    const page=await browser.newPage({viewport:{width,height:850}}); const diagnostics=[];
+    page.setDefaultTimeout(3000);
+    page.on('pageerror',e=>diagnostics.push(e.message));
+    page.on('console',m=>{
+      // This existing routed harness has no runtime health/SSE server.
+      if(m.type()==='error' && m.text().includes('404 (Not Found)')
+        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(['error','warning'].includes(m.type())) diagnostics.push({text:m.text(),location:m.location()});
+    });
+    try {
+      await openWebApp(page);
+      const raw=':agent-annotation{index="1"} Checked :codex-annotation{index="1"} once.\n`literal :agent-annotation{index="2"}`';
+      const projected=provider==='codex'?codexAssistantResponseProjection(raw):(()=>{
+        const history=claudeTranscriptHistory([
+          {type:'user',uuid:'u',message:{role:'user',content:'Check'}},
+          {type:'assistant',uuid:'a',message:{role:'assistant',content:[{type:'text',text:raw}]}}
+        ].map(JSON.stringify).join('\n'));
+        return {text:history[0].answer,responseAnnotationReferences:history[0].messages[1].responseAnnotationReferences};
+      })();
+      const source={id:'generic-source',provider,threadId:'thread-1',turnId:'original-turn',itemId:'original-item',role:'agent',text:'Original **exact** selection 🦊.'};
+      await seedMessages(page,[source],{provider,agentLabel:provider});
+      const locator=await page.evaluate(async(source)=>{
+        const api=window.AgentHubMessageDisclosure;
+        const surface=document.querySelector('[data-message-id="generic-source"] .msg-body');
+        const text=surface.textContent; const start=text.indexOf('exact'); const end=start+'exact selection 🦊.'.length;
+        return {version:1,...api.responseAnnotationSourceIdentity(source),surfaceKind:'message-body',surfaceIndex:0,start,end,
+          contentHash:await api.responseAnnotationSha256(api.responseAnnotationSourceContent(source)),surfaceHash:await api.responseAnnotationSha256(text),selectionHash:await api.responseAnnotationSha256(text.slice(start,end))};
+      },source);
+      const user={id:'generic-user',provider,threadId:'thread-1',turnId:'reply-turn',itemId:'user-item',role:'user',text:'Literal :agent-annotation{index="2"}',responseAnnotationRequest:'Literal :agent-annotation{index="2"}',responseAnnotations:[{text:'exact selection 🦊.',annotation:'Check this comment',source:locator}]};
+      const answer={id:'generic-answer',provider,threadId:'thread-1',turnId:'reply-turn',itemId:'answer-item',role:'agent',...projected};
+      await seedMessages(page,[source,user,answer],{provider,agentLabel:provider});
+      if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      const article=page.locator('[data-message-id="generic-answer"]');
+      assert.equal(await article.locator('[data-response-citation-index="1"]').count(),1);
+      assert.equal(await article.locator('[data-response-citation-index="2"]').count(),0);
+      assert.ok((await article.textContent()).includes('literal :agent-annotation{index="2"}'));
+      assert.ok((await page.locator('[data-message-id="generic-user"]').textContent()).includes(user.text));
+      await article.locator('[data-response-citation-index="1"]').click();
+      await page.locator('[data-message-id="generic-user"] .msg-annotation-content.is-citation-target').waitFor();
+      assert.equal(await page.locator('[data-message-id="generic-user"] .msg-annotation-content').evaluate(n=>n.classList.contains('is-citation-target')),true);
+      await page.locator('[data-message-id="generic-user"] [data-response-annotation-source]').click();
+      assert.equal((await page.locator('[data-message-id="generic-source"] .msg-source-citation-highlight').allTextContents()).join(''),'exact selection 🦊.');
+      assert.match(await page.title(),/Agent Hub/iu); assert.equal(new URL(page.url()).hostname,'127.0.0.1');
+      if(process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({path:`${process.env.AGENT_HUB_QA_SCREENSHOT}-generic-${provider}-${width}.png`});
+      assert.deepEqual(diagnostics,[]);
+    } finally {await page.close();}
+  }
+});
+
+test("generic annotation canonical Guide reaches the read-only rendered editor and neutral prompt roundtrip",{timeout:15000},async()=>{
+  const page=await browser.newPage();
+  const temp=await mkdtemp(path.join(os.tmpdir(),'guide-editor-'));
+  try {
+    const store=new PreTurnInstructionStore({guideFile:fileURLToPath(new URL('../../AGENT_HUB_GUIDE.md',import.meta.url)),globalFile:path.join(temp,'global.md')});
+    await store.loadGuide(); const snapshot=await store.snapshot();
+    await openWebApp(page);
+    const observed=await page.evaluate(snapshot=>{
+      window.AgentHubPreTurnInstructionsEditor.setSnapshot(snapshot);
+      const input=document.querySelector('[data-agent-hub-guide-input]');
+      const api=window.AgentHubMessageLifecycle;
+      const prompt=api.responseAnnotationPrompt('Check',[{text:'Exact quote',annotation:'Exact comment'}]);
+      return {guide:input.value,readOnly:input.readOnly,prompt,
+        modern:api.embeddedResponseAnnotations(prompt),legacy:api.embeddedResponseAnnotations(prompt.replace('## My request:','## My request for Codex:'))};
+    },snapshot);
+    assert.equal(observed.guide,snapshot.guide.content); assert.equal(observed.readOnly,true);
+    assert.equal(observed.guide.split('Reuse installed dependencies when the lockfile, runtime and platform requirements match; do not create a copy per Task. After successful transfer and verification, remove temporary Git bundles and copies through their owning cleanup mechanism; preserve unique work and required evidence.').length,2);
+    assert.ok(observed.prompt.includes('earlier assistant response')); assert.ok(observed.prompt.includes('## My request:\nCheck'));
+    assert.deepEqual(observed.modern,observed.legacy); assert.equal(observed.modern.request,'Check');
+    assert.deepEqual(observed.modern.annotations,[{text:'Exact quote',annotation:'Exact comment'}]);
+  } finally {await page.close();await rm(temp,{recursive:true,force:true});}
+});
+
+
 
 test("bounded trace archive loads only on demand and citations recover an evicted exact group", { timeout: 20_000 }, async () => {
   const page = await browser.newPage();
@@ -867,4 +1020,130 @@ test("citation navigation materializes a deferred source before range lookup", a
   } finally {
     await page.close();
   }
+});
+
+test("active commentary quote survives an exact group rerender while full source read is pending",{timeout:25000},async()=>{
+  const page=await browser.newPage({viewport:{width:1366,height:850}});
+  try {
+    await openWebApp(page); await seedMessages(page,[],{running:true,status:'running'});
+    const live={provider:'codex',threadId:'thread-1',turnId:'active-turn',itemId:'active-item',author:'Agent',text:'',
+      activityGroups:[{id:'commentary:1',reasoning:'Сервисные карточки релизов остались открыты с устаревшими записями.',activities:[]}]};
+    await page.evaluate(live=>{
+      window.__activeQuoteLive=live;
+      window.AgentHub.on('history:trace-page',({resolve})=>{window.__resolveActiveQuote=resolve;});
+      window.AgentHub.setLive('task-1',live);
+    },live);
+    await page.locator('[data-live-trace] .turn-trace-reasoning').waitFor();
+    await page.evaluate(()=>{
+      const surface=document.querySelector('[data-live-trace] .turn-trace-reasoning');
+      const message=surface.closest('[data-role]');
+      window.__activeQuoteResult=responseAnnotationFromSelection({message,surface,quote:surface.textContent.trim(),offsets:{start:0,end:surface.textContent.trim().length}});
+    });
+    assert.equal(await page.evaluate(()=>typeof window.__resolveActiveQuote),'function');
+    await page.evaluate(()=>{
+      window.AgentHub.setLive('task-1',{...window.__activeQuoteLive,activityGroups:[...window.__activeQuoteLive.activityGroups,{id:'commentary:2',reasoning:'Next stage',activities:[]}]});
+      window.__resolveActiveQuote({groups:window.__activeQuoteLive.activityGroups});
+    });
+    const result=await page.evaluate(()=>window.__activeQuoteResult);
+    assert.ok(result?.source,'unchanged exact commentary must remain quotable after a neighboring group rerender');
+    assert.equal(result.source.traceGroupId,'commentary:1'); assert.equal(result.source.itemId,'active-item');
+    assert.equal(result.quote,live.activityGroups[0].reasoning);
+  } finally {await page.close();}
+});
+
+test("active quote binds native reasoning before response item and survives draft send completed history and reload",{timeout:25000},async()=>{
+  const group=codexTraceEntry({type:'response_item',payload:{type:'reasoning',id:'native-reasoning-source',summary:[{type:'summary_text',text:'Current **exact** commentary 🦊.'}]}});
+  for(const width of [1366,390]) {
+    const page=await browser.newPage({viewport:{width,height:850}}); page.setDefaultTimeout(4000);
+    try {
+      await openWebApp(page);await seedMessages(page,[],{running:true,status:'running'});
+      if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      const live={provider:'codex',threadId:'thread-1',turnId:'quote-turn',itemId:null,author:'Agent',text:'',activityGroups:[group]};
+      await page.evaluate(live=>{
+        window.__quoteLive=live;window.__quoteSends=[];
+        window.AgentHub.on('message:send',detail=>window.__quoteSends.push(detail));
+        window.AgentHub.on('history:trace-page',({identity,tracePage,resolve})=>{window.__nativeQuoteRequest={identity,tracePage};window.__nativeQuoteResolve=resolve;});
+        window.AgentHub.setLive('task-1',live);
+      },live);
+      await page.locator('[data-live-trace] .turn-trace-reasoning').waitFor();
+      await page.evaluate(()=>{
+        const surface=document.querySelector('[data-live-trace] .turn-trace-reasoning');
+        const api=window.AgentHubMessageDisclosure;const range=api.domRangeFromOffsets(surface,0,surface.textContent.length);
+        getSelection().removeAllRanges();getSelection().addRange(range);
+        window.__nativeQuotePending=addAnnotation(selectedQuotableSelection());
+      });
+      assert.equal(await page.evaluate(()=>typeof window.__nativeQuoteResolve),'function');
+      await page.evaluate(()=>{
+        window.AgentHub.setLive('task-1',{...window.__quoteLive,itemId:'later-answer-item',text:'Later answer',activityGroups:[...window.__quoteLive.activityGroups,{id:'reasoning:next',sourceItemId:'next',reasoning:'Next stage',activities:[]}]});
+        window.__nativeQuoteResolve({groups:window.__quoteLive.activityGroups});
+      });
+      assert.equal(await page.evaluate(()=>window.__nativeQuotePending),true);
+      assert.equal(await page.locator('[data-annotations] .annotation-quote').textContent(),'Current exact commentary 🦊.');
+      await page.locator('[data-annotation-comment-index="0"]').fill('Verify this exact source');
+      await page.locator('[data-composer-input]').fill('Check'); await page.locator('[data-composer-input]').press('Enter');
+      await page.waitForFunction(()=>window.__quoteSends.length===1);
+      const sent=await page.evaluate(()=>window.__quoteSends[0]);const annotation=sent.annotations[0];
+      assert.equal(annotation.source.itemId,'native-reasoning-source');assert.equal(annotation.source.traceGroupId,group.id);
+      assert.equal(annotation.source.turnId,'quote-turn');assert.equal(annotation.source.provider,'codex');
+      const verified=await page.evaluate(async({group,annotation})=>{
+        const api=window.AgentHubMessageDisclosure;const message={provider:'codex',threadId:'thread-1',turnId:'quote-turn',itemId:'later-answer-item',role:'agent',activityGroups:[group]};
+        const surface=document.querySelector('[data-live-trace] .turn-trace-reasoning');
+        return api.responseAnnotationSourceHashesMatch(annotation.source,{contentHash:await api.responseAnnotationSha256(api.responseAnnotationSourceContent(message,annotation.source)),surfaceHash:await api.responseAnnotationSha256(surface.textContent),selectionHash:await api.responseAnnotationSha256(annotation.quote)});
+      },{group,annotation});assert.equal(verified,true);
+      const source={id:'completed-source',provider:'codex',threadId:'thread-1',turnId:'quote-turn',itemId:'later-answer-item',role:'agent',text:'Completed',activityGroups:[group]};
+      const user={id:'quoted-user',role:'user',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'user-item',text:'Check',responseAnnotations:[{text:annotation.quote,annotation:annotation.annotation,source:annotation.source}]};
+      const projection=codexAssistantResponseProjection(':codex-annotation{index="1"} Verified');
+      const answer={id:'linked-answer',role:'agent',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'answer-item',...projection};
+      await page.reload();await page.waitForFunction(()=>window.AgentHub);
+      await seedMessages(page,[source,user,answer]);if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
+      await page.evaluate(group=>window.AgentHub.on('history:trace-page',({resolve})=>resolve({groups:[group]})),group);
+      await page.locator('[data-message-id="linked-answer"] [data-response-citation-index="1"]').click();
+      await page.locator('[data-message-id="quoted-user"] .is-citation-target').waitFor();
+      await page.locator('[data-message-id="quoted-user"] [data-response-annotation-source]').click();
+      await page.locator('[data-message-id="completed-source"] .msg-source-citation-highlight').first().waitFor();
+      assert.equal((await page.locator('[data-message-id="completed-source"] .msg-source-citation-highlight').allTextContents()).join(''),annotation.quote);
+      if(process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({path:`${process.env.AGENT_HUB_QA_SCREENSHOT}-active-quote-${width}.png`});
+    } finally {await page.close();}
+  }
+});
+
+test("active quote refuses missing foreign changed and mismatched sources with bounded payload-free reasons",{timeout:20000},async()=>{
+  const page=await browser.newPage();
+  try {
+    await openWebApp(page);await seedMessages(page,[],{running:true,status:'running'});
+    const results=await page.evaluate(async()=>{
+      const events=[];window.AgentHubCommandTrace.bindReporter(async({events:batch})=>events.push(...batch));
+      const group={id:'reasoning:native',sourceItemId:'native',reasoning:'Private selected content',activities:[]};
+      const original={provider:'codex',threadId:'thread-1',turnId:'active-turn',itemId:null,text:'',activityGroups:[group]};
+      let resolve,reject;window.AgentHub.on('history:trace-page',p=>{resolve=p.resolve;reject=p.reject;});
+      const refusals=[];
+      for(const kind of ['missing','foreign','changed-surface','new-native-item','wrong-page-item','wrong-group','wrong-range','read-failed']) {
+        resolve=reject=null;
+        const live=kind==='missing'?{...original,activityGroups:[{id:group.id,reasoning:group.reasoning,activities:[]}]}:original;
+        window.AgentHub.setLive('task-1',live);
+        const surface=document.querySelector('[data-live-trace] .turn-trace-reasoning');
+        const promise=responseAnnotationFromSelection({message:surface.closest('[data-role]'),surface,quote:group.reasoning,offsets:{start:0,end:group.reasoning.length-(kind==='wrong-range'?1:0)}});
+        if(resolve) {
+          if(kind==='foreign')window.AgentHub.setLive('task-1',{...live,turnId:'foreign-turn'});
+          if(kind==='changed-surface')window.AgentHub.setLive('task-1',{...live,activityGroups:[{...group,reasoning:'Changed private content'}]});
+          if(kind==='new-native-item')window.AgentHub.setLive('task-1',{...live,activityGroups:[{...group,sourceItemId:'replacement'}]});
+          if(kind==='read-failed')reject(new Error('private dependency details'));
+          else resolve({groups:[{...group,...(kind==='wrong-page-item'?{sourceItemId:'foreign'}:{}),...(kind==='wrong-group'?{id:'foreign-group'}:{})}]});
+        }
+        refusals.push({kind,result:await promise});
+      }
+      for(let batch=0;batch<16;batch++) {
+        await window.AgentHubCommandTrace.flush();
+        const state=window.AgentHubCommandTrace.diagnostics();
+        if(!state.pending&&!state.flushing)break;
+      }
+      return {refusals,events:events.filter(e=>e.metadata?.action==='annotation-source'),draftCount:document.querySelectorAll('[data-annotations] .annotation-quote').length};
+    });
+    assert.equal(results.draftCount,0);assert.ok(results.refusals.every(x=>x.result===null));
+    assert.equal(results.events.length,8);
+    const spans=clientPerformanceTraceSpans({events:results.events});
+    assert.deepEqual(spans.map(x=>x.metadata.decision),['source-unavailable','source-replaced','source-replaced','source-replaced','source-item-mismatch','source-group-mismatch','selected-range-mismatch','source-read-failed']);
+    assert.ok(spans.every(x=>x.outcome==='failed'));
+    assert.doesNotMatch(JSON.stringify(results.events),/Private selected|Changed private|dependency details/u);
+  } finally {await page.close();}
 });

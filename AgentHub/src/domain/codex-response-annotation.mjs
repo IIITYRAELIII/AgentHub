@@ -1,6 +1,6 @@
-const COMPLETE_MARKER = /^([ \t]*):codex-annotation\{index="([^"\r\n]*)"\}(?:[ \t]+(.*)|[ \t]*$)/u;
-const MARKER_PREFIX = ':codex-annotation{index="';
-const PARTIAL_MARKER = /^:codex-annotation\{index="[^"\r\n]*(?:"\}?)?$/u;
+const COMPLETE_MARKER = /^([ \t]*):(?:agent|codex)-annotation\{index="([^"\r\n]*)"\}(?:[ \t]+(.*)|[ \t]*$)/u;
+const MARKER_PREFIXES = [':agent-annotation{index="', ':codex-annotation{index="'];
+const PARTIAL_MARKER = /^:(?:agent|codex)-annotation\{index="[^"\r\n]*(?:"\}?)?$/u;
 const DECIMAL_INDEX = /^\d+$/u;
 const FENCE_START = /^[ \t]{0,3}(`{3,}|~{3,})/u;
 
@@ -14,14 +14,19 @@ export function normalizedCodexResponseAnnotationReferences(references) {
     if (!Number.isSafeInteger(index) || index < 1
       || index > MAX_CODEX_RESPONSE_ANNOTATION_INDEX || seen.has(index)) continue;
     seen.add(index);
-    normalized.push({ index });
+    const position = reference?.position;
+    normalized.push({ index, ...(Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
+      && position.end === position.start + `Цитата ${index}`.length
+      ? { position: { start: position.start, end: position.end } } : {}) });
   }
   return normalized;
 }
 
-export function codexAssistantResponseProjection(value) {
+export function codexAssistantResponseProjection(value, references = []) {
   const text = String(value ?? "");
-  if (!text.includes(":codex")) return { text, responseAnnotationReferences: [] };
+  if (!text.includes(":codex") && !text.includes(":agent")) {
+    return { text, responseAnnotationReferences: normalizedCodexResponseAnnotationReferences(references) };
+  }
   const newline = text.includes("\r\n") ? "\r\n" : "\n";
   let fence = "";
   let inlineTicks = 0;
@@ -32,22 +37,30 @@ export function codexAssistantResponseProjection(value) {
     while (offset > 0 && value[--offset] === "\\") slashes++;
     return slashes % 2 === 1;
   };
-  const inlinePlain = (segment, segmentOffset) => {
-    const tail = segment.lastIndexOf(":codex");
+  const inlinePlain = (segment, segmentOffset, outputOffset) => {
+    const tail = Math.max(segment.lastIndexOf(":codex"), segment.lastIndexOf(":agent"));
     if (tail >= 0 && !escapedAt(segment, tail)) {
       const candidate = segment.slice(tail);
       if (!COMPLETE_MARKER.test(candidate)
-        && (MARKER_PREFIX.startsWith(candidate) || PARTIAL_MARKER.test(candidate))) segment = segment.slice(0, tail);
+        && (MARKER_PREFIXES.some((prefix) => prefix.startsWith(candidate)) || PARTIAL_MARKER.test(candidate))) segment = segment.slice(0, tail);
     }
-    return segment.replace(/:codex-annotation\{index="([^"\r\n]*)"\}[ \t]*/gu, (marker, raw, offset) => {
+    let difference = 0;
+    return segment.replace(/:(?:agent|codex)-annotation\{index="([^"\r\n]*)"\}[ \t]*/gu, (marker, raw, offset) => {
       if (escapedAt(segment, offset)) return marker;
       const index = DECIMAL_INDEX.test(raw) ? Number(raw) : Number.NaN;
       const valid = Number.isSafeInteger(index) && index >= 1 && index <= MAX_CODEX_RESPONSE_ANNOTATION_INDEX;
-      if (valid && referencedIndices.has(index)) return "";
-      if (valid) { referencedIndices.add(index); responseAnnotationReferences.push({ index }); }
+      if (valid && referencedIndices.has(index)) { difference -= marker.length; return ""; }
       const before = segmentOffset + offset > 0 ? newline : "";
       const after = offset + marker.length < segment.length ? newline : "";
-      return `${before}${valid ? `Цитата ${index}` : "Цитата"}${after}`;
+      const label = valid ? `Цитата ${index}` : "Цитата";
+      if (valid) {
+        referencedIndices.add(index);
+        const start = outputOffset + offset + difference + before.length;
+        responseAnnotationReferences.push({ index, position: { start, end: start + label.length } });
+      }
+      const replacement = `${before}${label}${after}`;
+      difference += replacement.length - marker.length;
+      return replacement;
     });
   };
   const ticksByLength = new Map();
@@ -67,11 +80,11 @@ export function codexAssistantResponseProjection(value) {
     const end = positions[low];
     return end !== undefined && !/\r?\n[ \t]*\r?\n/u.test(text.slice(start, end));
   };
-  const inlineProjection = (line, textOffset) => {
+  const inlineProjection = (line, textOffset, outputOffset) => {
     let result = "", offset = 0;
     for (const match of line.matchAll(/`+/gu)) {
       const segment = line.slice(offset, match.index);
-      result += inlineTicks ? segment : inlinePlain(segment, offset);
+      result += inlineTicks ? segment : inlinePlain(segment, offset, outputOffset + result.length);
       result += match[0];
       let slashes = 0;
       for (let index = match.index - 1; index >= 0 && line[index] === "\\"; index--) slashes++;
@@ -81,10 +94,11 @@ export function codexAssistantResponseProjection(value) {
       else if (inlineTicks === match[0].length) inlineTicks = 0;
       offset = match.index + match[0].length;
     }
-    return result + (inlineTicks ? line.slice(offset) : inlinePlain(line.slice(offset), offset));
+    return result + (inlineTicks ? line.slice(offset) : inlinePlain(line.slice(offset), offset, outputOffset + result.length));
   };
   let nextLineOffset = 0;
-  const visible = text.split(/\r?\n/u).map((line) => {
+  let outputOffset = 0;
+  const projectLine = (line) => {
     const textOffset = nextLineOffset;
     nextLineOffset += line.length + (text[textOffset + line.length] === "\r" ? 2 : 1);
     const fenceMatch = inlineTicks ? null : FENCE_START.exec(line);
@@ -102,20 +116,36 @@ export function codexAssistantResponseProjection(value) {
       const valid = Number.isSafeInteger(index) && index >= 1
         && index <= MAX_CODEX_RESPONSE_ANNOTATION_INDEX;
       if (valid && referencedIndices.has(index)) {
-        return complete[3] ? `${complete[1]}${inlineProjection(complete[3], textOffset + line.length - complete[3].length)}` : complete[1];
+        return complete[3] ? `${complete[1]}${inlineProjection(complete[3], textOffset + line.length - complete[3].length, outputOffset + complete[1].length)}` : complete[1];
       }
       if (valid) referencedIndices.add(index);
-      if (valid) responseAnnotationReferences.push({ index });
       const label = valid ? `${complete[1]}Цитата ${index}` : `${complete[1]}Цитата`;
-      return complete[3] ? `${label}${newline}${complete[1]}${inlineProjection(complete[3], textOffset + line.length - complete[3].length)}` : label;
+      if (valid) responseAnnotationReferences.push({ index, position: {
+        start: outputOffset + complete[1].length, end: outputOffset + label.length,
+      } });
+      return complete[3] ? `${label}${newline}${complete[1]}${inlineProjection(complete[3], textOffset + line.length - complete[3].length, outputOffset + label.length + newline.length + complete[1].length)}` : label;
     }
-    return inlineProjection(line, textOffset);
+    return inlineProjection(line, textOffset, outputOffset);
+  };
+  const visible = text.split(/\r?\n/u).map((line) => {
+    const result = projectLine(line);
+    outputOffset += result.length + newline.length;
+    return result;
   }).join(newline);
-  return { text: visible, responseAnnotationReferences };
+  // Coordinates belong to this exact projected assistant text, normalized to LF
+  // and trimmed at its boundary like the existing live/history consumers.
+  const leading = visible.replace(/\r\n?/gu, "\n").length - visible.replace(/\r\n?/gu, "\n").trimStart().length;
+  for (const reference of responseAnnotationReferences) {
+    const start = visible.slice(0, reference.position.start).replace(/\r\n?/gu, "\n").length - leading;
+    reference.position = { start, end: start + `Цитата ${reference.index}`.length };
+  }
+  return { text: visible, responseAnnotationReferences: normalizedCodexResponseAnnotationReferences([
+    ...responseAnnotationReferences, ...(Array.isArray(references) ? references : []),
+  ]) };
 }
 
 /**
- * Converts Codex' reserved response-annotation locator into a readable label
+ * Converts the agent response-annotation locator (including the legacy Codex alias) into a readable label
  * only at the trusted provider-assistant boundary. Callers must not apply this
  * to user-authored text. Markdown code fences and inline-code literals remain
  * untouched.

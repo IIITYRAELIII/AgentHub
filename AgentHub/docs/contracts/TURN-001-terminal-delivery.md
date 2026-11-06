@@ -60,13 +60,21 @@ terminal.
   turn. The retired probe is a bounded historical exception identified only by
   its generated reserved `client_id`, never by prompt or response text (ADR-0073).
 - Restart recovery may establish a new interrupted outcome for an exact managed
-  accepted run through the existing cancellation owner (ADR-0125). A fresh idle
-  provider Thread with that exact interrupted turn is only eligibility: fresh
+  accepted run through the existing cancellation owner (ADR-0125, ADR-HUB-392).
+  A fresh idle provider Thread with that exact interrupted turn is only eligibility.
+  An exact retained `inProgress` turn is also eligible only with positive Hub
+  ownership and an accepted/observed provider-start bound to the same turn: fresh
   provider/native inactivity, definite rejection of the original exact interrupt,
   a second fresh inactivity check and unchanged ownership are required. Missing
   or failed snapshot/terminal persistence keeps admission. This does not infer a
   historical success, rewrite the rollout, replay the old prompt or authorize a
   different run. Terminal persistence still precedes admission release.
+- Ordinary managed UNKNOWN observation re-enters that same recovery owner at its
+  existing cadence. Inconclusive/live prechecks cannot cache a negative recovery
+  result forever. Concurrent checks share one attempt; an accepted or ambiguous
+  interrupt remains fenced and cannot be repeated by polling. Its ACK is not a
+  terminal. Another live turn or external owner in the same Thread keeps the
+  original blocked; mailbox read/cancellation cannot establish provider terminal.
 - If a previously committed Codex completion is contradicted by a later exact
   rollout terminal for the same provider/thread/turn, the terminal owner uses
   expected-revision CAS to commit a higher revision and its existing projection
