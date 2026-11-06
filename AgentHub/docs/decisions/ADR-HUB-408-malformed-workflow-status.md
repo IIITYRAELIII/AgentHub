@@ -78,6 +78,14 @@ write failure retains that first pair and its own exception chain. No new ledger
 queue, retry or historical receipt repair is introduced. Original timing alone
 does not establish the SQL error code of an older invocation.
 
+The same rule covers reads used to classify completion after an unsuccessful
+lifecycle BEGIN. A follow-up Task read must not mask the initial persistence
+exception. A later failed classification read retains both errors through the
+existing bounded diagnostic and releases the local invocation. A committed BEGIN
+with a lost reply still retains its real pending transition and UNKNOWN receipt;
+missing lifecycle data never proves NO_EFFECT. Explicit aware cancellation uses
+its existing positive recovery-lock/process-guard path, without fabricating rows.
+
 Readback distinguishes local active invocation, explicit durable UNKNOWN,
 terminal receipt and unresolved nonterminal observation. It never infers queued
 from receipt presence, or retirement from an absent local worker. A same-original

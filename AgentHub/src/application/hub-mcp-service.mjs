@@ -3383,7 +3383,7 @@ export class HubMcpService {
         } else await this.workspaceCatalog.completeMcpOperation(requestId, result);
         return result;
       } catch (error) {
-        const completionReadFailure = persistenceError => {
+        const completionPersistenceFailure = persistenceError => {
           completionFailure ??= { originalError: error, persistenceError, effectCompleted };
           return Object.assign(new AggregateError([error, persistenceError],
             "MCP completion persistence failed; original outcome requires authoritative readback", { cause: error }),
@@ -3391,11 +3391,11 @@ export class HubMcpService {
         };
         const observe = action => {
           try { return action(); }
-          catch (persistenceError) { throw completionReadFailure(persistenceError); }
+          catch (persistenceError) { throw completionPersistenceFailure(persistenceError); }
         };
         const persist = async action => {
           try { return await action(); }
-          catch (persistenceError) { throw completionReadFailure(persistenceError); }
+          catch (persistenceError) { throw completionPersistenceFailure(persistenceError); }
         };
         if (error instanceof TaskLifecyclePersistenceError) {
           completionFailure = { originalError: error.cause, persistenceError: error.errors[1], effectCompleted };
