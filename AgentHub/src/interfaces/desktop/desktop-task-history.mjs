@@ -5,6 +5,7 @@ import {
   EMPTY_TURN_COMPLETION_TEXT,
   exactTurnReceiptBindings,
   isEmptyTurnCompletionPlaceholder,
+  responseAnnotationDetails,
   userTaskReferencePromptDetails,
   withoutCodexInspectionAttachments,
   withoutMisclassifiedSubagentUsers,
@@ -990,6 +991,11 @@ export function createDesktopTaskHistoryFactory({
               )
                 ? (receipt?.result?.responseAnnotations ?? message.responseAnnotations)
                 : [];
+              const embeddedAnnotations = role === "user" && !responseAnnotations.length
+                ? responseAnnotationDetails(interstream?.text ?? sourceText)
+                : null;
+              const projectedAnnotations = responseAnnotations.length
+                ? responseAnnotations : embeddedAnnotations?.items ?? [];
               if (!["user", "agent"].includes(role) || (!text && !attachments.length)) return [];
               const taskReferencesOnly = attachments.length > 0
                 && attachments.every((attachment) => attachment?.kind === "task");
@@ -1022,11 +1028,12 @@ export function createDesktopTaskHistoryFactory({
                 ...(String(message?.model ?? "").trim()
                   ? { model: String(message.model).trim() }
                   : {}),
-                ...(role === "user" && responseAnnotations.length
+                ...(role === "user" && projectedAnnotations.length
                   ? {
-                    responseAnnotations: normalizedResponseAnnotations(responseAnnotations),
+                    responseAnnotations: normalizedResponseAnnotations(projectedAnnotations),
                     responseAnnotationRequest: displayUserPrompt(
-                      receipt?.result?.responseAnnotationRequest ?? message.responseAnnotationRequest,
+                      receipt?.result?.responseAnnotationRequest ?? message.responseAnnotationRequest
+                        ?? embeddedAnnotations?.request,
                     ),
                   }
                   : {}),

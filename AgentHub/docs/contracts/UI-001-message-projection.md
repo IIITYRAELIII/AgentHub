@@ -78,6 +78,11 @@ the same selected text at the same UTF-16 offsets; otherwise creation fails
 visibly rather than guessing offsets. All three hashes remain mandatory on
 navigation. Legacy citations already bound to shortened content are not rewritten.
 
+Large compaction snapshots and user-input records do not become agent trace
+items. Exact source reads validate their complete JSON structure with bounded
+memory while retaining their original bytes in the source hash. Agent trace
+records, lifecycle identity, malformed data and transport bounds remain strict.
+
 ## Invariants
 
 A message, live-answer or queue update in one supplementary visible Stream
@@ -267,6 +272,17 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   their existing parent-item/group identity and hash interpretation. This
   compatibility is removable only after authoritative retained projections
   supply actual native group-item provenance; no local text-based backfill.
+
+Managed history extracts each user's response annotations from its raw envelope
+before projecting the display body; a supplied root or steer message must retain
+its own quote, comment and exact validated source. Explicit structured metadata
+takes precedence. History API compatibility applies only to retained raw
+`response-annotations` envelopes without structured annotations, including the
+existing terminal-ledger recovery projection. It uses the same annotation parser
+on that exact message, not another message's prompt or an inferred source. This
+read-only compatibility may be removed after those retained raw rows have been
+canonically reprojected or retired. Missing or malformed data is never invented;
+opening history adds no scan, provider call or second persistence owner.
 
 User-selected quote text has no independent length cap. Selection, composer
 draft persistence, submission and history retain the complete selected text;
