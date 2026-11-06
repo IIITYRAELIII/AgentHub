@@ -3383,36 +3383,41 @@ export class HubMcpService {
         } else await this.workspaceCatalog.completeMcpOperation(requestId, result);
         return result;
       } catch (error) {
+        const completionReadFailure = persistenceError => {
+          completionFailure ??= { originalError: error, persistenceError, effectCompleted };
+          return Object.assign(new AggregateError([error, persistenceError],
+            "MCP completion persistence failed; original outcome requires authoritative readback", { cause: error }),
+          { code: "MCP_COMPLETION_PERSISTENCE_FAILED" });
+        };
+        const observe = action => {
+          try { return action(); }
+          catch (persistenceError) { throw completionReadFailure(persistenceError); }
+        };
         const persist = async action => {
           try { return await action(); }
-          catch (persistenceError) {
-            completionFailure ??= { originalError: error, persistenceError, effectCompleted };
-            throw Object.assign(new AggregateError([error, persistenceError],
-              "MCP completion persistence failed; original outcome requires authoritative readback", { cause: error }),
-            { code: "MCP_COMPLETION_PERSISTENCE_FAILED" });
-          }
+          catch (persistenceError) { throw completionReadFailure(persistenceError); }
         };
         if (error instanceof TaskLifecyclePersistenceError) {
           completionFailure = { originalError: error.cause, persistenceError: error.errors[1], effectCompleted };
         }
         // An own stage may have committed before a reply/storage exception. Its
         // dedicated ledger column survives compaction and is the exact readback.
-        if (this.workspaceCatalog.mcpOperation(requestId)?.taskExecution?.cancellation) throw taskOperationInterrupted();
-        const completed = this.workspaceCatalog.mcpOperation(requestId);
+        if (observe(() => this.workspaceCatalog.mcpOperation(requestId))?.taskExecution?.cancellation) throw taskOperationInterrupted();
+        const completed = observe(() => this.workspaceCatalog.mcpOperation(requestId));
         if (completed?.status === "succeeded" && completed.argumentsHash === argumentsHash(args)) {
           return claimCustodyState(completed)?.result ?? completed.result;
         }
         if (args.claim_custody && toolName === "hub_task_operation_reconcile") {
-          const durable = claimCustodyState(this.workspaceCatalog.mcpOperation(requestId));
+          const durable = claimCustodyState(observe(() => this.workspaceCatalog.mcpOperation(requestId)));
           if (durable) return durable.result;
         }
-        if (this.workspaceCatalog.claimCustodyForOriginal?.(requestId)) throw new TaskClaimContinuationWithdrawnError();
-        if (!effectCompleted && custodyConsume && this.taskBoard.claimBindingForOperation(requestId)) {
+        if (observe(() => this.workspaceCatalog.claimCustodyForOriginal?.(requestId))) throw new TaskClaimContinuationWithdrawnError();
+        if (!effectCompleted && custodyConsume && observe(() => this.taskBoard.claimBindingForOperation(requestId))) {
           await persist(() => this.workspaceCatalog.markMcpOperationUnknown(requestId,new Error(`Custody assignment committed before outer completion: ${error.message}`)));
           throw error;
         }
         if (toolName === "hub_release_prepare") {
-          const terminal = this.workspaceCatalog.mcpOperation(requestId);
+          const terminal = observe(() => this.workspaceCatalog.mcpOperation(requestId));
           if (terminal?.status === "succeeded" && terminal.argumentsHash === argumentsHash(args)) return terminal.result;
           // Stage-backed failures belong exclusively to the invocation owner.
           // This outer intake may resume after a newer owner has acquired it.
@@ -3431,7 +3436,7 @@ export class HubMcpService {
           if (reconciled) throw error;
         }
         if (effectCompleted) {
-          const terminal = this.workspaceCatalog.mcpOperation(requestId);
+          const terminal = observe(() => this.workspaceCatalog.mcpOperation(requestId));
           if (terminal?.status === "succeeded" && terminal.argumentsHash === argumentsHash(args)) return terminal.result;
           await persist(() => this.workspaceCatalog.markMcpOperationUnknown?.(
             requestId,
@@ -3440,7 +3445,7 @@ export class HubMcpService {
           throw new Error(`MCP effect completed but receipt reconciliation is required for request_id ${requestId}`, { cause: error });
         }
         const claimRefusal = toolName === "hub_task_claim"
-          ? this.#claimAdmissionRefusal(this.workspaceCatalog.mcpOperation(requestId), args.task_id) : null;
+          ? observe(() => this.#claimAdmissionRefusal(this.workspaceCatalog.mcpOperation(requestId), args.task_id)) : null;
         if (claimRefusal) {
           const refusal = claimAdmissionRefusalError(claimRefusal);
           try {
@@ -3450,7 +3455,7 @@ export class HubMcpService {
           }
           throw refusal;
         }
-        const workflowRefusal = toolName === "hub_task_status_update" ? this.#workflowAdmissionRefusal(started) : null;
+        const workflowRefusal = toolName === "hub_task_status_update" ? observe(() => this.#workflowAdmissionRefusal(started)) : null;
         const reconciliationRefusal = toolName === "hub_task_operation_reconcile"
           && error instanceof TaskOperationReconciliationRefusedError;
         if (workflowRefusal || reconciliationRefusal) {
@@ -3469,7 +3474,7 @@ export class HubMcpService {
           throw error;
         }
         const durableLifecycle = ["hub_task_start", "hub_task_reassign"].includes(toolName)
-          && this.#hasPreparedTaskStart(context, args, requestId);
+          && observe(() => this.#hasPreparedTaskStart(context, args, requestId));
         const claimAdmissionNoEffect = toolName === "hub_task_claim"
           ? await Promise.resolve(this.taskGitWorkspaces?.claimAdmissionNoEffectEvidence?.({
               taskId: args.task_id,

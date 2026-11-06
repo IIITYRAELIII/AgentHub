@@ -1115,6 +1115,14 @@ identities through the existing exception chain. If outer persistence also fails
 it does not replace the first failure pair. Lease loss still prevents lifecycle
 writes; these diagnostics confer no terminal outcome or replay authority.
 
+A failed lifecycle BEGIN also retains its original exception if a follow-up
+Task read is unavailable. Completion classification reads use the same bounded
+failure diagnostic as completion writes: a second failed read preserves both
+errors without inventing a lifecycle row, terminal receipt or NO_EFFECT result.
+Same-original reopen remains read-only. An explicit supported cancellation may
+fence an aware execution with no lifecycle row under its existing recovery lease
+and process guard; only its positive STOPPED result establishes that disposition.
+
 Public MCP Task mutations return a `taskOperation` admission/readback envelope
 from the existing MCP ledger once the same worker is registered. Admission is
 not successful business completion. `hub_task_operation_get` reads that exact

@@ -988,15 +988,17 @@ export class TaskLifecycleService {
         } : {}),
         }), operationId);
       } catch (error) {
-        const current = this.#task(task.id);
         if (error instanceof TaskLifecycleBeginRejectedError && admissionReceipt?.replayed === false
-            && !(releaseWorkflow && task.workflowStatus === "blocked" && workflowStatus !== "blocked")
-            && ((expectedRevision != null && current.revision !== Number(expectedRevision))
-              || (expectedWorkflowStatus != null && current.workflowStatus !== String(expectedWorkflowStatus).trim()))) {
-          // BEGIN rolled back, and no preparation/effects preceded it. Seal the
-          // original CAS refusal rather than leaving a receipt-only crash gap.
-          return this.#refuseWorkflowAdmission({ taskId: task.id, admissionReceipt, projectRoot,
-            status: workflowStatus, expectedRevision, expectedWorkflowStatus }, lease);
+            && !(releaseWorkflow && task.workflowStatus === "blocked" && workflowStatus !== "blocked")) {
+          // Only a rolled-back admission can use this fresh CAS observation.
+          // A failed observation cannot replace the original persistence error.
+          let current;
+          try { current = this.#task(task.id); } catch { throw error; }
+          if ((expectedRevision != null && current.revision !== Number(expectedRevision))
+              || (expectedWorkflowStatus != null && current.workflowStatus !== String(expectedWorkflowStatus).trim())) {
+            return this.#refuseWorkflowAdmission({ taskId: task.id, admissionReceipt, projectRoot,
+              status: workflowStatus, expectedRevision, expectedWorkflowStatus }, lease);
+          }
         }
         throw error;
       }
