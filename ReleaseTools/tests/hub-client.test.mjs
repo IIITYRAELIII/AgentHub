@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { HubClient, HubReplyUnknown, executeRelease } from "../src/hub-client.mjs";
 
 async function server(t, dispatch) {
@@ -129,4 +134,53 @@ test("credentials in business JSON and redirects refuse before leaking caller ca
   assert.equal(calls, 0);
   await assert.rejects(client.call("get", { operation_id: "original" }), error => !error.message.includes("secret"));
   assert.equal(calls, 1);
+});
+
+test("executable release outcomes preserve failed, waiting and done originals for run, continue and get", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-tool-cli-"));
+  t.after(async () => {
+    assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep + "release-tool-cli-"));
+    await rm(root, { recursive: true, force: true });
+  });
+  let state;
+  const f = await server(t, ({ name, arguments: args }) => {
+    if (name !== "hub_release_get") return { accepted: true, operationId: "same-original" };
+    assert.equal(args.operation_id, "same-original");
+    return { operation: { operationId: "same-original", state,
+      lastError: state === "failed" ? { code: "BUILD_FAILED", message: "original build failure" } : null },
+    execution: { localActive: false } };
+  });
+  const connection = path.join(root, "connection.json"), request = path.join(root, "request.json");
+  await writeFile(connection, JSON.stringify({ url: f.client.url, contextToken: "caller-fixture" }));
+  const outcomes = [];
+  for (const action of ["run", "continue", "get"]) {
+    for (state of ["failed", "waiting", "done"]) {
+      const business = action === "run" ? { request_id: "original-run", validation_mode: "full" }
+        : action === "continue" ? { operation_id: "same-original", request_id: "original-continuation" }
+          : { operation_id: "same-original" };
+      await writeFile(request, JSON.stringify(business));
+      const before = f.calls.length;
+      const child = spawn(process.execPath, [fileURLToPath(new URL("../bin/release.mjs", import.meta.url)),
+        action, "--connection-file", connection, "--request-file", request], { cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", chunk => { stdout += chunk; });
+      child.stderr.on("data", chunk => { stderr += chunk; });
+      const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+      const records = stdout.trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(records.at(-1).result.operation.operationId, "same-original");
+      assert.equal(records.at(-1).result.operation.state, state);
+      assert.deepEqual(records.at(-1).result.operation.lastError,
+        state === "failed" ? { code: "BUILD_FAILED", message: "original build failure" } : null);
+      assert.equal(stderr, "");
+      assert.ok(!stdout.includes("caller-fixture"));
+      const names = f.calls.slice(before).map(row => row.name);
+      assert.deepEqual(names, action === "get" ? ["hub_release_get"] : [`hub_release_${action}`, "hub_release_get"]);
+      if (action !== "get") assert.equal(records[0].accepted.operationId, "same-original");
+      outcomes.push({ action, state, code });
+    }
+  }
+  t.diagnostic(JSON.stringify(outcomes));
+  for (const outcome of outcomes) {
+    assert.equal(outcome.code, outcome.state === "failed" ? 1 : 0, `${outcome.action}: ${outcome.state}`);
+  }
 });

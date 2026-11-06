@@ -68,6 +68,9 @@ The new adapter also reports `execution.localActive` for the addressed release.
 The client waits while that actual local work remains active. An older endpoint
 without that field returns its current snapshot without claiming that its worker
 has joined; use the Hub-side API owner below for the complete joined lifecycle.
+An authoritative failed release exits 1 for `run`, `continue` and `get`, keeping
+the exact acknowledgement, result and original error on stdout. A waiting or
+done snapshot exits 0; the JSON state distinguishes waiting from completion.
 
 A running Hub with these MCP methods can serve the client. Its actual installed
 behavior remains authoritative; changing the client does not upgrade that Hub.

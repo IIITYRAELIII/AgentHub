@@ -101,6 +101,7 @@ export async function main(argv, { output = line => process.stdout.write(`${JSON
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main(process.argv.slice(2)).then(result => {
     if (result?.taskOperation && result.taskOperation.status !== "succeeded") process.exitCode = 1;
+    if (result?.operation?.state === "failed") process.exitCode = 1;
     if (result?.accepted === false) process.exitCode = 1;
     if (result?.missingMethods?.length) process.exitCode = 1;
   }).catch(error => {
