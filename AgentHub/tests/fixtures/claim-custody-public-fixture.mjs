@@ -16,7 +16,7 @@ import { taskBranchName } from "../../src/domain/task-git-reference.mjs";
 
 const run = promisify(execFile);
 const hash = value => createHash("sha256").update(value).digest("hex");
-export async function claimCustodyFixture(t, { dataDir = null, unassigned = false, prepared = false } = {}) {
+export async function claimCustodyFixture(t, { dataDir = null, unassigned = false, prepared = false, databaseName = "hub.sqlite" } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "claim-custody-"));
   const repository = path.join(root, "repo");
   await mkdir(repository);
@@ -26,7 +26,7 @@ export async function claimCustodyFixture(t, { dataDir = null, unassigned = fals
   await writeFile(path.join(repository, "source.txt"), "accepted source\n");
   await git(repository, "add", ".");
   await git(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "source");
-  const databaseFile = path.join(root, "hub.sqlite");
+  const databaseFile = path.join(root, databaseName);
   const sessions = [];
   const open = async () => {
     const rawCatalog = new WorkspaceCatalogStore({ databaseFile });

@@ -6,7 +6,7 @@ import test from "node:test";
 import { exactCanarySafeCommand, runCodexAppServerCompatibilityCanary } from "../../src/composition/codex-app-server-canary.mjs";
 
 const fixture = path.resolve(import.meta.dirname, "../fixtures/codex-update-canary-app-server.mjs");
-async function run(context, kind) {
+async function run(context, kind, environmentOverrides = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub348-approval-"));
   context.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   await mkdir(path.join(root, "home")); await writeFile(path.join(root, "home/auth.json"), "{}\n");
@@ -14,7 +14,7 @@ async function run(context, kind) {
   const result = runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
     dataDir: path.join(root, "data"),
     executableArgs: [fixture, `--command-case=${kind}`, `--tool-ledger=${ledger}`],
-    environment: { ...process.env, CODEX_HOME: path.join(root, "home") }, protectDirectory: async () => {},
+    environment: { ...process.env, CODEX_HOME: path.join(root, "home"), ...environmentOverrides }, protectDirectory: async () => {},
     rpcTimeoutMs: 3000, totalTimeoutMs: 15000, logger: { error() {} },
   });
   return { result, detail: async () => JSON.parse(await readFile(`${ledger}.detail.json`, "utf8")),
@@ -71,3 +71,30 @@ for (const kind of ["thread", "turn", "cwd", "command", "nonce", "shell", "item"
     assert.ok(count <= (["duplicate", "late", "wrong-completion"].includes(kind) ? 1 : 0));
   });
 }
+
+test("uppercase ProgramFiles supplies the direct-shell candidate when canonical is undefined", async context => {
+  const programFiles = process.env.ProgramFiles ?? process.env.PROGRAMFILES;
+  assert.ok(programFiles);
+  const probe = await run(context, "direct-pwsh", { ProgramFiles: undefined, PROGRAMFILES: programFiles });
+  const result = await probe.result;
+  assert.equal(result.ok, true);
+  assert.equal(result.evidence.safeToolCount, 1);
+  assert.equal(result.evidence.safeToolApprovalCount, 0);
+  assert.equal((await probe.effects()).length, 1);
+  const detail = await probe.detail();
+  assert.equal(detail.exitCode, 0);
+  assert.equal(detail.stdoutMatches, true);
+});
+
+test("invalid canonical ProgramFiles never falls back to the uppercase alias", async context => {
+  const programFiles = process.env.ProgramFiles ?? process.env.PROGRAMFILES;
+  assert.ok(programFiles);
+  for (const ProgramFiles of ["", "C:\\Repository\\Program Files"]) {
+    const probe = await run(context, "direct-pwsh", { ProgramFiles, PROGRAMFILES: programFiles });
+    await assert.rejects(probe.result, /safe-tool/u);
+    assert.equal((await probe.effects()).length, 1, "fixture executed the same safe command; candidate refused its mismatched root");
+    const detail = await probe.detail();
+    assert.equal(detail.exitCode, 0);
+    assert.equal(detail.stdoutMatches, true);
+  }
+});

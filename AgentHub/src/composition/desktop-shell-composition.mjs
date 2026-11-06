@@ -92,6 +92,7 @@ export function createDesktopShellComposition({
     streamMaintenance,
     taskBoard,
     taskLifecycle,
+    hubMcpService,
     taskGitWorkspaces,
     taskVoiceTranscriber,
     attachmentDirectory,
@@ -601,6 +602,7 @@ export function createDesktopShellComposition({
       taskBoard,
       taskVoiceTranscriber,
       taskLifecycle,
+      hubMcpService,
       attachmentDirectory,
       usageSyncAuto,
       usageSyncRemoteConfigStore,
@@ -615,6 +617,8 @@ export function createDesktopShellComposition({
       }),
       runtimeHealth: () => ({
         ...agentHubRuntimeHealth.snapshot(),
+        ...(process.env.AGENT_HUB_PACKAGE_HANDOFF_PROTOCOL === "1" && typeof desktopActions.restartPackage === "function"
+          ? { packageHandoff: { protocol: 1 } } : {}),
         process: {
           pid: process.pid,
           instanceId: String(server.instanceId ?? ""),
@@ -634,6 +638,8 @@ export function createDesktopShellComposition({
       statusDetails: desktopReadSystem.desktopStatusDetails,
       speakLastAnswer: desktopReadSystem.desktopSpeakLastAnswer,
       restartServer: desktopActions.restartServer,
+      restartPackage: desktopActions.restartPackage,
+      resumePackage: desktopActions.resumePackage,
       openAttachment: desktopOpenAttachment,
       uploadAttachment: desktopUploadAttachment,
       browseDirectory: (params, context) => desktopDirectoryPicker.browse(params, context),

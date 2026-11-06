@@ -57,6 +57,7 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
   let catalog, store, board, taskGit, releaseGit, preflight, lifecycle, service, token;
   let releaseStore, releaseOperations;
   const ownedReleases = [];
+  let releaseValidationAllowed = false;
   const retainRelease = (owner, store, operationId) => {
     if (!ownedReleases.some(item => item.owner === owner && item.operationId === operationId)) {
       ownedReleases.push({ owner, store, operationId });
@@ -110,7 +111,14 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
       releasePlanner: new TaskReleasePlanService({ taskBoard: board, taskGitWorkspaces: taskGit }),
       taskGitWorkspaces: taskGit, releaseGitWorkspaces: releaseGit,
       readPublicationState: async () => publication,
-      resolveReleaseValidationSource: () => assert.fail("Await must not refresh a shared Contour"),
+      resolveReleaseValidationSource: repositories => {
+        assert.equal(releaseValidationAllowed, true, "Await must not select release validation");
+        assert.equal(repositories.length, 1);
+        assert.equal(repositories[0].projectRoot, primary);
+        assert.equal(repositories[0].worktreeRoot, repositories[0].frozenCandidate.releaseRoot);
+        return { kind: "workspace-release-pipeline", projectRoot: primary,
+          sourceRoot: path.join(repositories[0].worktreeRoot, "AgentHub") };
+      },
       validateProductionCandidate: () => assert.fail("Await must not publish or run broad validation"),
     });
     lifecycle = new TaskLifecycleService({ taskBoard: board, workspaceCatalog: catalog, taskGitWorkspaces: taskGit, releasePreflight: preflight });
@@ -138,10 +146,13 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
     root, primary, base, workspace,
     get board() { return board; }, get taskGit() { return taskGit; }, get lifecycle() { return lifecycle; }, get catalog() { return catalog; },
     get preflight() { return preflight; },
-    async continueRelease(operationId) {
+    async continueRelease(operationId, requestId = "prepared-release-continue") {
       retainRelease(releaseOperations, releaseStore, operationId);
-      await service.call("hub_release_continue", { context_token: token, operation_id: operationId, request_id: "prepared-release-continue" });
-      return releaseOperations.drain(operationId);
+      releaseValidationAllowed = true;
+      try {
+        await service.call("hub_release_continue", { context_token: token, operation_id: operationId, request_id: requestId });
+        return await releaseOperations.drain(operationId);
+      } finally { releaseValidationAllowed = false; }
     },
     get publication() { return publication; },
     get releaseGit() { return releaseGit; },
@@ -235,18 +246,21 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
       const args = { context_token: token, request_id: requestId, task_ids: (Array.isArray(task) ? task : [task]).map(item => item.id),
         validation_mode: "focused", approved_targets: [{ targetId: "fixture", kind: "git", repositoryRoot: primary,
           approvedLocalMainCommit: base, approvedOriginMainCommit: originMain }] };
-      const commands = new ReleaseOperationCommandService({ releaseOperations, workspaceCatalog: catalog, taskBoard: board });
-      const admit = () => releaseMetadata ? commands.start({ requestId, workspaceId: workspace.id,
-        streamId: stream.id, threadId: "fixture-thread", taskIds: args.task_ids, validationMode: args.validation_mode,
-        approvedTargets: args.approved_targets, releaseMetadata }) : service.call("hub_release_run", args);
-      const ack = await admit();
-      retainRelease(releaseOperations, releaseStore, ack.operationId);
-      const snapshot = await releaseOperations.drain(ack.operationId);
-      const replay = await admit();
-      assert.equal(replay.operationId, ack.operationId);
-      const read = await service.call("hub_release_get", { context_token: token, operation_id: ack.operationId });
-      assert.equal(read.operation.operationId, ack.operationId);
-      return snapshot;
+      releaseValidationAllowed = true;
+      try {
+        const commands = new ReleaseOperationCommandService({ releaseOperations, workspaceCatalog: catalog, taskBoard: board });
+        const admit = () => releaseMetadata ? commands.start({ requestId, workspaceId: workspace.id,
+          streamId: stream.id, threadId: "fixture-thread", taskIds: args.task_ids, validationMode: args.validation_mode,
+          approvedTargets: args.approved_targets, releaseMetadata }) : service.call("hub_release_run", args);
+        const ack = await admit();
+        retainRelease(releaseOperations, releaseStore, ack.operationId);
+        const snapshot = await releaseOperations.drain(ack.operationId);
+        const replay = await admit();
+        assert.equal(replay.operationId, ack.operationId);
+        const read = await service.call("hub_release_get", { context_token: token, operation_id: ack.operationId });
+        assert.equal(read.operation.operationId, ack.operationId);
+        return snapshot;
+      } finally { releaseValidationAllowed = false; }
     },
     async reopen() { await joinReleases(); store.close(); catalog.close(); await open(); },
     async create(name) {
@@ -268,6 +282,67 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
     },
   };
 }
+
+test("public Test replays only the authenticated published delta after Task fast-forward", async t => {
+  const f = await fixture(t, { compatibilityFiles: true }), task = await f.create("Own correction");
+  const publishedRoot = path.join(f.root, "publisher");
+  await git(f.primary, "worktree", "add", "-b", "publication", publishedRoot, f.base);
+  const publishedBody = "// header\n\n// middle\nfunction publishedOnce() {}\n// footer\n";
+  const currentBody = "// header\nfunction publishedOnce() {}\n// middle\n\n// footer\n";
+  await writeFile(path.join(publishedRoot, "test-one.js"), publishedBody);
+  await commit(publishedRoot, "published inherited context");
+  const published = await git(publishedRoot, "rev-parse", "HEAD");
+  await git(publishedRoot, "push", "origin", "HEAD:main");
+  await git(task.root, "merge", "--ff-only", published);
+  const sourceContext = await readFile(path.join(task.root, "test-one.js"));
+  await writeFile(path.join(task.root, "own.txt"), "exact own correction\n");
+  await commit(task.root, "own delta after published main");
+  const result = await git(task.root, "rev-parse", "HEAD"), sourceTree = await git(task.root, "write-tree");
+  const dev = await f.taskGit.prepareDev(f.primary);
+  await git(dev.projectRoot, "merge", "--ff-only", published);
+  await writeFile(path.join(dev.projectRoot, "test-one.js"), currentBody);
+  await writeFile(path.join(dev.projectRoot, "later-test.txt"), "preserve current Test\n");
+  await commit(dev.projectRoot, "current Test moves the already published block");
+  const before = await git(f.primary, "rev-parse", "dev");
+  const original = structuredClone(f.publication);
+  for (const invalid of [
+    { repositories: [{ root: f.primary, revision: published }] },
+    { generation: "foreign", repositories: [{ root: path.join(f.root, "foreign"), revision: published }] },
+    original,
+  ]) {
+    for (const key of Object.keys(f.publication)) delete f.publication[key];
+    Object.assign(f.publication, invalid);
+    const snapshot = await f.taskGit.snapshot({ taskId: task.id, projectRoot: task.root });
+    await assert.rejects(f.taskGit.mergeIntoDev(snapshot), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
+    assert.equal(await git(f.primary, "rev-parse", "dev"), before);
+    assert.equal(await git(task.root, "rev-parse", "HEAD"), result);
+  }
+  Object.assign(f.publication, { generation: "published-original", repositories: [{ root: f.primary, revision: published }] });
+  const snapshot = await f.taskGit.snapshot({ taskId: task.id, projectRoot: task.root });
+  await writeFile(path.join(task.root, "own.txt"), "uncommitted foreign source\n");
+  await assert.rejects(f.taskGit.mergeIntoDev(snapshot), /source|snapshot|worktree|dirty|changed/iu);
+  assert.equal(await git(f.primary, "rev-parse", "dev"), before);
+  await git(task.root, "restore", "own.txt");
+  const response = await f.status(task, "testing", "published-delta-original-test");
+  assert.equal(response.workflowStatus, "testing");
+  assert.equal(f.board.task(task.id).gitReferences[0].resultCommit, result);
+  const head = await git(f.primary, "rev-parse", "dev");
+  assert.deepEqual((await git(f.primary, "show", "-s", "--format=%P", head)).split(" "), [before, result]);
+  assert.equal(await readFile(path.join(dev.projectRoot, "test-one.js"), "utf8"), currentBody);
+  assert.equal((await exec("git", ["show", "HEAD:own.txt"], { cwd: dev.projectRoot, windowsHide: true })).stdout,
+    "exact own correction\n");
+  assert.equal((await exec("git", ["show", "HEAD:later-test.txt"], { cwd: dev.projectRoot, windowsHide: true })).stdout,
+    "preserve current Test\n");
+  assert.deepEqual(await readFile(path.join(task.root, "test-one.js")), sourceContext);
+  assert.equal((await exec("git", ["show", "HEAD:test-one.js"], { cwd: task.root, windowsHide: true })).stdout, publishedBody);
+  assert.equal(await git(task.root, "write-tree"), sourceTree);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
+  const outcome = f.board.lifecycleOutcome("published-delta-original-test");
+  await f.reopen();
+  assert.deepEqual(f.board.lifecycleOutcome("published-delta-original-test"), outcome);
+  assert.equal(f.board.task(task.id).workflowStatus, "testing");
+  assert.equal(await git(f.primary, "rev-parse", "dev"), head);
+});
 
 test("fixture joins its admitted original release before closing stores on reopen", async t => {
   const f = await fixture(t);
@@ -672,7 +747,7 @@ test("public Test and Await accept only the exact reviewed automatic compatibili
   await f.reopen();
   assert.equal((await f.releaseGit.frozenCandidate(f.primary)).preReleaseHead, awaitCommit);
   const generation = await f.release([a, b], f.base, "compat-prepared-generation");
-  assert.equal(generation.generations.length, 1);
+  assert.equal(generation.generations.length, 1, JSON.stringify(generation.operation.lastError));
   assert.equal(generation.operation.waitReason.code, "validation_failed");
   const captured = generation.generations[0].candidates[0];
   await git(captured.releaseRoot, "merge-base", "--is-ancestor", awaitCommit, captured.commit);
@@ -715,20 +790,23 @@ test("public durable release composes native immutable generation with separatel
   const published = await git(publishedRoot, "rev-parse", "HEAD");
   await git(publishedRoot, "push", "origin", `${published}:refs/heads/main`);
   f.publication.repositories[0].revision = published;
-  const stale = await f.release(a, published);
-  assert.equal(stale.operation.waitReason.code, "prepared_candidate_stale");
-  assert.equal(stale.generations.length, 0);
-  await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id, reviewedMainApprovals: {
-    approvedRepositories: [{ projectRoot: f.primary, approvedLocalMainCommit: f.base, approvedOriginMainCommit: published }],
-  } });
-  const snapshot = await f.continueRelease(stale.operation.operationId);
-  assert.equal(snapshot.operation.operationId, stale.operation.operationId);
+  // Publication changed after Await. Its owner must refresh the prepared
+  // candidate with exact reviewed pins BEFORE release captures it.
+  const refreshed = await f.preflight.withAwaitTransition(f.workspace.id, () =>
+    f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id,
+      reviewedMainApprovals: { approvedLocalMainCommit: f.base, approvedOriginMainCommit: published } }));
+  const prepared = refreshed.releaseCandidates[0];
+  assert.equal(prepared.manifest.baseProvenance.publishedBaseCommit, published);
+  assert.equal(prepared.manifest.baseProvenance.approvedOriginMainCommit, published);
+  assert.equal(prepared.baseCommit, f.base);
+  const snapshot = await f.release(a, published);
   assert.equal(snapshot.operation.state, "waiting", JSON.stringify(snapshot.operation.lastError));
   assert.equal(snapshot.operation.waitReason.code, "validation_failed");
   assert.equal(snapshot.generations.length, 1);
   const generation = snapshot.generations[0];
   assert.equal(generation.selectedResults[0].resultCommit, source);
   const candidate = generation.candidates[0];
+  assert.equal(candidate.manifest.preparedCandidate.commit, prepared.preReleaseHead);
   assert.equal(candidate.baseCommit, f.base);
   assert.equal(candidate.manifest.compositionPolicy, "main-selected-git-merge-v1");
   assert.equal(candidate.manifest.baseProvenance.approvedOriginMainCommit, published);
@@ -767,11 +845,6 @@ test("public release generation retains prepared PreRelease conflict resolution"
   await f.status(b, "awaiting_implementation", "prepared-await-b-resolved");
   const prepared = await f.releaseGit.frozenCandidate(f.primary);
   assert.equal(prepared.preReleaseHead, resolution);
-  const subset = await f.release(a, f.base, "prepared-stale-selection");
-  assert.equal(subset.operation.state, "waiting");
-  assert.equal(subset.operation.waitReason.code, "prepared_candidate_stale");
-  assert.equal(subset.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
-  assert.equal(subset.generations.length, 0);
   const notes = Buffer.from("authorized prepared release notes\n");
   const notesPath = path.join(f.root, "authorized-CHANGELOG.md");
   await writeFile(notesPath, notes);
@@ -813,4 +886,38 @@ test("public release generation retains prepared PreRelease conflict resolution"
   assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), resolution);
   assert.equal(await git(prepared.releaseRoot, "status", "--porcelain"), "");
   assert.deepEqual(await readFile(notesPath), notes);
+  // A new selection may refresh the mutable prepared holder. The accepted
+  // resolution must first be captured, and that immutable generation survives.
+  const frozenHead = await git(candidate.releaseRoot, "rev-parse", "HEAD");
+  const frozenManifestFile = path.join(path.dirname(candidate.releaseRoot), "evidence", `${candidate.manifestHash}.json`);
+  const frozenManifest = await readFile(frozenManifestFile);
+  // A public subset cannot exclude B while it remains accepted Await.
+  await assert.rejects(f.release(a, f.base, "prepared-subset-refused"), /whole current Await set/u);
+  await f.status(b, "testing", "prepared-return-b-before-subset");
+  const stale = await f.release(a, f.base, "prepared-stale-selection");
+  assert.equal(stale.operation.state, "waiting");
+  assert.equal(stale.operation.waitReason.code, "prepared_candidate_stale", JSON.stringify(stale.operation.lastError));
+  assert.equal(stale.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+  assert.match(stale.operation.lastError.message, /prepared PreRelease does not match the accepted release plan/u);
+  assert.equal(stale.generations.length, 0);
+  // Returning B to Test changes membership; release cannot rebuild that holder.
+  // Prepare the whole remaining Await set through its ordinary owner, then
+  // continue the same refused original without changing the frozen A+B release.
+  const remaining = await f.preflight.withAwaitTransition(f.workspace.id, () =>
+    f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id }));
+  const remainingCandidate = remaining.releaseCandidates[0];
+  const subset = await f.continueRelease(stale.operation.operationId, "prepared-stale-selection-continue");
+  assert.equal(subset.operation.operationId, stale.operation.operationId);
+  assert.equal(subset.operation.state, "waiting");
+  assert.equal(subset.operation.waitReason.code, "validation_failed");
+  assert.equal(subset.generations.length, 1);
+  assert.deepEqual(subset.generations[0].selectedResults.map(item => item.taskId), [a.id]);
+  assert.equal(subset.generations[0].candidates[0].manifest.preparedCandidate.commit, remainingCandidate.preReleaseHead);
+  assert.equal(subset.generations[0].candidates[0].manifest.preparedCandidate.tree, remainingCandidate.tree);
+  assert.equal(await git(subset.generations[0].candidates[0].releaseRoot, "show", "HEAD:shared.txt"), "A");
+  assert.equal(await git(candidate.releaseRoot, "rev-parse", "HEAD"), frozenHead);
+  assert.deepEqual(await readFile(frozenManifestFile), frozenManifest);
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.commit}:shared.txt`), "accepted PreRelease resolution");
+  assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });

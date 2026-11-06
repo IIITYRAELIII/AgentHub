@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "./src/infrastructure/filesystem/preparation-git-isolation.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -183,7 +184,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
 }
 
 async function git(args, root = workspaceRoot) {
-  const result = await execFileAsync("git", ["-C", root, ...args], {
+  const result = await execFileAsync("git", ownedGitArguments(["-C", root, ...args]), {
     encoding: "utf8", windowsHide: true,
   });
   return String(result.stdout ?? "").trim();

@@ -368,6 +368,11 @@ export class TaskBoardService {
     return this.store.lifecycleOutcome(operationId);
   }
 
+  committedNativeTestForDev(payload) {
+    requiredMethod(this.store, "committedNativeTestForDev");
+    return this.store.committedNativeTestForDev(payload);
+  }
+
   recordWorkflowAdmissionRefusal(payload) {
     requiredMethod(this.store, "recordWorkflowAdmissionRefusal");
     return this.store.recordWorkflowAdmissionRefusal(payload);
@@ -408,6 +413,11 @@ export class TaskBoardService {
       const event = this.#event("task.workflow-status.rolled-back", task, { workflowStatus: task.workflowStatus });
       return event && typeof event.then === "function" ? event.then(() => task) : task;
     });
+  }
+
+  resumeConfirmedDeleteTransition(operationId, payload) {
+    requiredMethod(this.store, "resumeConfirmedDeleteTransition");
+    return this.store.resumeConfirmedDeleteTransition(operationId, payload);
   }
 
   finalizeCleanupTransition(operationId, payload = {}) {

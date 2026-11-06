@@ -12,6 +12,7 @@ export function createDesktopReadComposition({
     desktopContextSnapshot,
     desktopRunSnapshot,
     desktopTaskSnapshot,
+    desktopReadTask,
     desktopSnapshot: rawDesktopSnapshot,
   } = createDesktopSnapshotFactory({
     ...snapshot,
@@ -22,6 +23,7 @@ export function createDesktopReadComposition({
 
   const desktopReadModel = new DesktopReadModelService({
     snapshot: rawDesktopSnapshot,
+    resolveReadTask: desktopReadTask,
     readStateStore: readModel.readStateStore,
     trustedDeviceUserId: readModel.trustedDeviceUserId,
     hasAllowedUsers: readModel.hasAllowedUsers,

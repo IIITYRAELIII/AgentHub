@@ -3,6 +3,33 @@ import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 
 const context = new AsyncLocalStorage();
 const MAX_DETAIL_SPANS = 512;
+// Fixed diagnostic classes only; no argv, paths or caller-provided stage labels.
+const AGGREGATE_STAGES = new Set(["git-child", "owned-command", "lease-assert", "process-guard",
+  "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
+  "release:integration-evidence", "native:history-authority", "native:task-histories",
+  "native:cutover", "native:promotion-authority", "lock-native-bootstrap", "lock-native-publish",
+  "release:planner", "release:publication", "release:main-validation", "release:primary-validation", "release:validate-prepared", "release:prepared-source", "release:promotion-validate", "release:promotion-checkout", "release:freeze-admission", "release:freeze-owned", "release:freeze-candidate", "release:freeze-base", "release:freeze-installed-baseline", "release:freeze-callback", "release:freeze-callback-baseline"]);
+const AGGREGATE_COMMANDS = new Set(["rev-parse", "status", "log", "show", "diff", "merge-base", "merge",
+  "worktree", "sparse-checkout", "config", "symbolic-ref", "update-ref", "for-each-ref", "cat-file",
+  "rev-list", "add", "commit", "reset", "read-tree", "checkout", "ls-files", "merge-abort", "external"]);
+
+function aggregate(state, stage, metadata, durationMs, outcome, suppressed) {
+  try {
+    if (state.closed) return;
+    const group = AGGREGATE_STAGES.has(stage) ? stage : "other";
+    const command = ["git-child", "owned-command"].includes(group)
+      ? (AGGREGATE_COMMANDS.has(metadata.command) ? metadata.command : "other") : null;
+    const key = `${group}:${command ?? ""}`;
+    const prior = state.aggregates.get(key) ?? { stage: group, ...(command ? { command } : {}),
+      count: 0, errorCount: 0, suppressedCount: 0, inclusiveMs: 0, maxMs: 0 };
+    prior.count += 1;
+    prior.errorCount += Number(outcome === "error");
+    prior.suppressedCount += Number(suppressed);
+    prior.inclusiveMs += durationMs;
+    prior.maxMs = Math.max(prior.maxMs, durationMs);
+    state.aggregates.set(key, prior);
+  } catch { /* Diagnostic aggregation cannot change an operation outcome. */ }
+}
 let nextTraceId = 0;
 
 function emit(state, event) {
@@ -11,6 +38,7 @@ function emit(state, event) {
   try {
     const result = state.record({ component: "task-operation-timing", operationId: state.operationId,
       traceId: state.traceId,
+      ...(state.generation === undefined ? {} : { generation: state.generation }),
       taskId: state.taskId, at: new Date().toISOString(), ...event });
     result?.catch?.(() => {});
   } catch { /* Diagnostics never change the operation outcome. */ }
@@ -78,7 +106,8 @@ export function createTaskOperationTimingBatchRecorder(writeBatch, { maxEvents =
         // This second, bounded diagnostic write reports the cost of the final
         // summary batch. Its own latency is the one explicitly unmeasured tail.
         writeBatch([{ component: event.component, operationId: event.operationId,
-          traceId: event.traceId, taskId: event.taskId, at: new Date().toISOString(),
+          traceId: event.traceId, taskId: event.taskId,
+          ...(event.generation === undefined ? {} : { generation: event.generation }), at: new Date().toISOString(),
           stage: "timing-sink-final", phase: "checkpoint", finalBatchWriteMs,
           totalBatchWriteMs: priorTotalMs + finalBatchWriteMs,
           batchWrites: priorWrites + 1, unmeasuredTailWrites: 1 }]);
@@ -103,19 +132,18 @@ export async function measureTaskOperationAwait(stage, operation, { reportAtMs =
 export async function measureTaskOperation(stage, operation, { detail = false, ...metadata } = {}) {
   const state = context.getStore();
   if (!state) return operation();
-  if (detail && state.details++ >= MAX_DETAIL_SPANS) {
-    state.suppressed += 1;
-    return operation();
-  }
-  const spanId = ++state.sequence;
+  const suppressed = detail && state.details++ >= MAX_DETAIL_SPANS;
+  if (suppressed) state.suppressed += 1;
+  const spanId = suppressed ? null : ++state.sequence;
   const started = performance.now();
-  emit(state, { stage, spanId, phase: "start", ...metadata });
+  if (!suppressed) emit(state, { stage, spanId, phase: "start", ...metadata });
   let outcome = "ok";
   try { return await operation(); }
   catch (error) { outcome = "error"; throw error; }
   finally {
-    emit(state, { stage, spanId, phase: "end", outcome,
-      durationMs: Math.max(0, performance.now() - started), ...metadata });
+    const durationMs = Math.max(0, performance.now() - started);
+    aggregate(state, stage, metadata, durationMs, outcome, suppressed);
+    if (!suppressed) emit(state, { stage, spanId, phase: "end", outcome, durationMs, ...metadata });
   }
 }
 
@@ -123,11 +151,12 @@ export function recordTaskOperationTiming(stage, metadata = {}) {
   emit(context.getStore(), { stage, phase: "checkpoint", ...metadata });
 }
 
-export function withTaskOperationTiming({ operationId, taskId, record }, operation) {
+export function withTaskOperationTiming({ operationId, taskId, generation, record }, operation) {
   if (!operationId || typeof record !== "function") return operation();
   const state = { operationId: String(operationId).slice(0, 512), taskId: String(taskId ?? "").slice(0, 160),
+    ...(Number.isSafeInteger(generation) && generation > 0 ? { generation } : {}),
     traceId: ++nextTraceId,
-    record, sequence: 0, details: 0, suppressed: 0, closed: false,
+    record, sequence: 0, details: 0, suppressed: 0, closed: false, aggregates: new Map(),
     synchronousRecordMs: 0, maxSynchronousRecordMs: 0 };
   return context.run(state, async () => {
     const loopDelay = monitorEventLoopDelay({ resolution: 20 });
@@ -139,7 +168,9 @@ export function withTaskOperationTiming({ operationId, taskId, record }, operati
         synchronousRecordMs: state.synchronousRecordMs,
         maxSynchronousRecordMs: state.maxSynchronousRecordMs,
         eventLoopDelayMaxMs: loopDelay.max / 1_000_000,
-        eventLoopDelayP99Ms: loopDelay.percentile(99) / 1_000_000 });
+        eventLoopDelayP99Ms: loopDelay.percentile(99) / 1_000_000,
+        aggregateSemantics: "inclusive-nested-not-additive",
+        stageAggregates: [...state.aggregates.values()].map(group => ({ ...group })) });
       state.closed = true;
     }
   });
