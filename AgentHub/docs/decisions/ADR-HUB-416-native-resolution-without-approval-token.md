@@ -32,7 +32,7 @@ when compatibility corrections also change clean context outside its markers.
 Reopen recomputes that coverage from ordered parents, automatic/result trees and
 the complete diff; unrelated extra paths never acquire conflict coverage.
 Whole-parent substitution, deletion of clean code and restoration of the other
-parent's clean context still receive the selected-content check instead of an
+parent's clean context still refuse composition instead of receiving an
 override. This is a structural loss check, not a semantic approval of arbitrary
 replacement code. No approval token or additional durable state is introduced.
 For unique clean context, removed words must be present in the incoming selected

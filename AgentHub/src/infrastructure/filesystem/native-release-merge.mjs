@@ -480,8 +480,12 @@ async function verifyMergeStep(git, before, result, target, { storedBinding = nu
   }
   const conflictPaths = [];
   for (const file of conflicts) {
-    if (!extraPaths.includes(file) || (ownedResolution || storedBinding)
-        && await retainsConflictCleanContext(git, automaticTree, target, file, before, result)) conflictPaths.push(file);
+    if (extraPaths.includes(file) && (ownedResolution || storedBinding)
+        && !await retainsConflictCleanContext(git, automaticTree, target, file, before, result)) {
+      throw failure("Owned conflict resolution discards selected clean context", "RELEASE_SELECTED_CONTENT_MISSING",
+        { candidateCommit: target, missingPaths: [file] });
+    }
+    conflictPaths.push(file);
   }
   return { before, commit: target, binding, conflictPaths };
 }
