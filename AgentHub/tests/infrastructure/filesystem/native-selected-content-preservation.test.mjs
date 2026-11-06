@@ -283,22 +283,23 @@ test("an owned amendment cannot discard unique selected code", async t => {
 
 test("owned conflict compatibility edits retain their selected-content evidence on reopen", async t => {
   const f = await fixture(t);
-  const gap = "stable context\n".repeat(12);
-  const body = (clean, shared) => `${clean}\n${gap}${shared}\n`;
-  await writeFile(path.join(f.sourceRoot, "selection.txt"), body("base clean", "base shared"));
+  const gap = Array.from({ length: 12 }, (_, i) => `stable context ${i}\n`).join("");
+  const body = (api, clean, shared) => `${api}\n${clean}\n${gap}${shared}\n`;
+  await writeFile(path.join(f.sourceRoot, "selection.txt"), body("function provide(legacy) {}", "base clean", "base shared"));
   const base = await commit(f.sourceRoot, "compatibility base");
-  const a = await f.create("A", body("uniqueCall(legacy)", "selected A"), base);
-  const b = await f.create("B", body("base clean", "selected B"), base);
+  const a = await f.create("A", body("function provide(legacy) {}", "uniqueCall(legacy)", "selected A"), base);
+  const b = await f.create("B", body("function provide() {}", "base clean", "selected B"), base);
   const tasks = [{ taskId: "A", baseCommit: base, resultCommit: a }, { taskId: "B", baseCommit: base, resultCommit: b }];
   let repository;
   await assert.rejects(f.compose(base, tasks), error => {
     assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); repository = error.conflictRoot; return true;
   });
-  await writeFile(path.join(repository, "selection.txt"), body("uniqueCall()", "selected A+B"));
+  assert.match(await readFile(path.join(repository, "selection.txt"), "utf8"), /^function provide\(\) \{\}\nuniqueCall\(legacy\)\n/u);
+  await writeFile(path.join(repository, "selection.txt"), body("function provide() {}", "uniqueCall()", "selected A+B"));
   const head = await commit(repository, "combine selected API with its compatibility correction");
   const value = await f.compose(base, tasks);
   assert.equal(value.head, head);
-  assert.equal(await gitAt(repository, ["show", "HEAD:selection.txt"]), body("uniqueCall()", "selected A+B").trim());
+  assert.equal(await gitAt(repository, ["show", "HEAD:selection.txt"]), body("function provide() {}", "uniqueCall()", "selected A+B").trim());
   assert.ok(value.merges[1].resolution.conflictPaths.includes("selection.txt"));
   const stateFile = path.join(f.root, "capture", "merge.json"), saved = await readFile(stateFile);
   assert.equal((await f.compose(base, tasks)).head, head);
@@ -309,7 +310,7 @@ test("owned conflict compatibility edits retain their selected-content evidence 
   assert.equal(await readFile(foreignPath, "utf8"), "unowned work must survive\n");
   await rm(foreignPath);
   const input = { git: (args, options) => gitAt(repository, args, options), baseCommit: base, tasks,
-    merges: value.merges, head, tree: value.tree };
+    merges: value.merges, head, tree: value.tree, identity: { policy: NATIVE_RELEASE_POLICY, baseCommit: base, tasks } };
   await assertNativeMergedResults(input);
   const stale = structuredClone(value.merges); stale[1].resolution.binding.diffSha256 = "0".repeat(64);
   await assert.rejects(assertNativeMergedResults({ ...input, merges: stale }), { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
@@ -320,9 +321,9 @@ test("owned conflict compatibility edits retain their selected-content evidence 
   assert.deepEqual(await readFile(stateFile), saved);
 });
 
-for (const loss of ["delete", "restore-parent"]) test(`owned conflict compatibility cannot ${loss} unique clean selected code`, async t => {
+for (const loss of ["delete", "restore-parent", "replace-novel"]) test(`owned conflict compatibility cannot ${loss} unique clean selected code`, async t => {
   const f = await fixture(t);
-  const gap = "stable context\n".repeat(12);
+  const gap = Array.from({ length: 12 }, (_, i) => `stable context ${i}\n`).join("");
   const body = (clean, shared) => `${clean}${gap}${shared}\n`;
   await writeFile(path.join(f.sourceRoot, "selection.txt"), body("base clean\n", "base shared"));
   const base = await commit(f.sourceRoot, "loss base");
@@ -333,7 +334,9 @@ for (const loss of ["delete", "restore-parent"]) test(`owned conflict compatibil
   await assert.rejects(f.compose(base, tasks), error => {
     assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); repository = error.conflictRoot; return true;
   });
-  await writeFile(path.join(repository, "selection.txt"), body(loss === "delete" ? "" : "base clean\n", "selected A+B"));
+  assert.match(await readFile(path.join(repository, "selection.txt"), "utf8"), /^unique selected implementation\n/u);
+  const badClean = loss === "delete" ? "" : loss === "restore-parent" ? "base clean\n" : "novel unrelated compatibility code\n";
+  await writeFile(path.join(repository, "selection.txt"), body(badClean, "selected A+B"));
   await commit(repository, "incorrect clean-context loss beside a real conflict resolution");
   for (let attempt = 0; attempt < 2; attempt++) await assert.rejects(f.compose(base, tasks),
     error => error.code === "RELEASE_SELECTED_CONTENT_MISSING" && error.missingPaths.includes("selection.txt"));

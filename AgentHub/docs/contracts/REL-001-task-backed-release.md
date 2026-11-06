@@ -1002,6 +1002,9 @@ That exact owned binding also carries compatibility corrections to clean context
 inside a real conflict file. Reopen recomputes this coverage; unrelated extra
 paths do not receive it. Whole-parent substitution, deleted clean code and
 restoration of the other parent's clean context still undergo selected replay.
+Inline removals from unique clean context must be accounted for by the incoming
+selected delta, derived from Git's actual stage-1 blob and word diff. Conflict
+additions cannot lend evidence to a mixed hunk that drops unique clean code.
 This structural check does not claim semantic equivalence of replacement code.
 
 After the complete selected set is merged, selected delta replay still checks

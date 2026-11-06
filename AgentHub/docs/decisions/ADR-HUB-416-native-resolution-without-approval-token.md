@@ -35,6 +35,11 @@ Whole-parent substitution, deletion of clean code and restoration of the other
 parent's clean context still receive the selected-content check instead of an
 override. This is a structural loss check, not a semantic approval of arbitrary
 replacement code. No approval token or additional durable state is introduced.
+For unique clean context, removed words must be present in the incoming selected
+change's removals from Git's actual stage-1 blob; retained replacement words are
+not removals. This carries an API compatibility correction without authorizing
+an unrelated clean-code deletion or a novel replacement that loses unique code.
+The evidence is recomputed, including virtual-base stage-1 content, on reopen.
 
 ## Migration and verification
 

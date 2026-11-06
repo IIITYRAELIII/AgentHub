@@ -287,20 +287,63 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
     "--no-renames", "--no-color", "--no-indent-heuristic", "--unified=0", "--inter-hunk-context=0",
     automaticTree, target, "--", file], { rawOutput: true }));
   if (/^(?:old mode|new mode|deleted file|new file|Binary files)/mu.test(patch)) return false;
-  let sourceLine = 0, removed = [], added = [];
-  const preserved = () => {
+  const words = value => value.match(/[A-Za-z0-9_$]+|[^\s]/gu) ?? [];
+  const counts = value => {
+    const result = new Map();
+    for (const word of words(value)) result.set(word, (result.get(word) ?? 0) + 1);
+    return result;
+  };
+  let incomingRemoved = null;
+  const selectedRemovals = async () => {
+    if (incomingRemoved) return incomingRemoved;
+    incomingRemoved = new Map();
+    // Use Git's actual stage-1 blob, including its virtual merge base. Do not
+    // treat the current parent's unique additions as incoming removals.
+    const stages = String(await git(["merge-tree", "--write-tree", "-z", before, result],
+      { acceptableExitCodes: [1] })).split("\0");
+    const stage = stages.find(row => row.slice(row.indexOf("\t") + 1) === file
+      && row.slice(0, row.indexOf("\t")).split(" ")[2] === "1");
+    if (!stage) return incomingRemoved;
+    const baseBlob = stage.split(" ")[1];
+    const resultBlob = String(await git(["rev-parse", `${result}:${file}`]));
+    const delta = String(await git(["diff", "--no-ext-diff", "--no-textconv", "--no-color",
+      "--word-diff=porcelain", "--word-diff-regex=[A-Za-z0-9_$]+|[^[:space:]]", baseBlob, resultBlob], { rawOutput: true }));
+    let inHunk = false;
+    for (const line of delta.split("\n")) {
+      if (line.startsWith("@@ ")) inHunk = true;
+      else if (inHunk && line.startsWith("-")) {
+        for (const word of words(line.slice(1))) incomingRemoved.set(word, (incomingRemoved.get(word) ?? 0) + 1);
+      }
+    }
+    return incomingRemoved;
+  };
+  let sourceLine = 0, removed = [], added = [], markerEdit = false;
+  const preserved = async () => {
     if (!removed.some(line => line.trim())) return true;
-    if (!added.some(line => line.trim())) return false;
     const oldBlock = removed.join("\n") + "\n", newBlock = added.join("\n") + "\n";
-    return !parents.some(parent => parent !== null && parent.includes(newBlock) && !parent.includes(oldBlock));
+    if (parents.every(parent => parent !== null && parent.includes(oldBlock))) return true;
+    // Mixed marker/clean hunks cannot lend their conflict additions to erased
+    // unique clean code. Ordinary marker-only edits need no such projection.
+    if (markerEdit) return false;
+    const dropped = counts(oldBlock), replacement = counts(newBlock), available = await selectedRemovals();
+    for (const [word, count] of dropped) {
+      const removedCount = count - (replacement.get(word) ?? 0);
+      if (removedCount > (available.get(word) ?? 0)) return false;
+    }
+    for (const [word, count] of dropped) {
+      const removedCount = Math.max(0, count - (replacement.get(word) ?? 0));
+      available.set(word, (available.get(word) ?? 0) - removedCount);
+    }
+    return true;
   };
   for (const line of patch.split("\n")) {
     const hunk = /^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@/u.exec(line);
     if (hunk) {
-      if (!preserved()) return false;
-      sourceLine = Number(hunk[1]); removed = []; added = [];
+      if (!await preserved()) return false;
+      sourceLine = Number(hunk[1]); removed = []; added = []; markerEdit = false;
     } else if (sourceLine && line.startsWith("-")) {
       if (!ranges.some(([a, b]) => sourceLine >= a && sourceLine <= b)) removed.push(line.slice(1));
+      else markerEdit = true;
       sourceLine++;
     } else if (sourceLine && line.startsWith("+")) added.push(line.slice(1));
     else if (sourceLine && line.startsWith(" ")) sourceLine++;
