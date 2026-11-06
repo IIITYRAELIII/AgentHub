@@ -95,13 +95,28 @@ Desktop paged history clones only each selected cached turn.
 
 Explicit “All stages” reads use the existing history owner and rollout worker,
 without provider calls, history writes or automatic polling. They stream a fixed
-source prefix in 64 KiB chunks, cap a record at 4 MiB and return at most 50 groups
-and 512 KiB per page. An oversized block fails visibly, without truncation.
+source prefix in 64 KiB chunks and retain at most 4 MiB for a raw record or its
+internal projected JSON representation. Raw records over 4 MiB are admitted only
+when complete structural and escape validation positively identifies a top-level
+`compacted` record or `response_item` with `payload.type=message` and
+`payload.role=user`. Their large string values may be omitted only from that
+bounded internal representation; it supplies no trace content, lifecycle state
+or source identity. The original bytes still enter the full raw-prefix hash.
+Oversized agent, lifecycle, unknown or unclassifiable records remain errors;
+invalid JSON, invalid escapes, incomplete records and a projected representation
+over 4 MiB also fail closed. This scoped exception does not raise the record
+budget for agent evidence or change automatic preview reads
+(ADR-HUB-237-exact-trace-record-bounds).
+Pages return at most 50 groups and 512 KiB. An oversized block fails visibly,
+without truncation. Exact provider/Thread/turn/item and duplicate-source checks
+remain mandatory.
 Canonical source generation, prefix byte length and SHA-256 bind subsequent
 pages; append does not shift that snapshot, and changed prefixes fail closed.
 The browser retains only the displayed page. This is an explicit detail-read
 exception to the automatic 16 MiB tail policy: each page scans its fixed prefix,
 so time is proportional to source size, not promised constant time (ADR-0077).
+The 4 MiB bound describes retained record representations, not total process
+heap or RSS; input chunks, ordinary parsed records and the bounded page coexist.
 
 The usage worker's disposable fact cache holds at most 32 MiB of serialized
 facts. SQLite insert/update/delete triggers on all three fact tables maintain

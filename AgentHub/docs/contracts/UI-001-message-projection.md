@@ -82,6 +82,9 @@ Large compaction snapshots and user-input records do not become agent trace
 items. Exact source reads validate their complete JSON structure with bounded
 memory while retaining their original bytes in the source hash. Agent trace
 records, lifecycle identity, malformed data and transport bounds remain strict.
+This is the exact-detail raw-record exception and retained-representation bound
+specified by PERF-001 and ADR-HUB-237-exact-trace-record-bounds, not permission
+to truncate or infer an annotation source.
 
 ## Invariants
 
