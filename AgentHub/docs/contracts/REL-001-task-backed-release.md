@@ -1054,7 +1054,8 @@ the exact source permits the same original to finish with no additional Git CAS.
 
 Await prepares the current selected exact branches from agreed main. The same
 native sequencer may reuse a verified unchanged ordered prefix from another
-completed capture, rather than repeat its Git merges. Repository/common directory,
+capture's recorded completed steps, including a partial composition stopped on a
+later step, rather than repeat its Git merges. Repository/common directory,
 Workspace, policy, base, whole provenance/history authority and implementation
 stamp must agree. Complete normalized Task entries are compared in order. The
 first changed, removed or reordered entry ends the reusable prefix; no old suffix
@@ -1073,6 +1074,13 @@ enriched. This migration bridge is unnecessary once matching captures carry the
 current implementation context; it does not weaken a current authority refusal.
 
 An identical conflict may reuse only exact whole path/stage/mode/blob context.
+Recorded completed steps require matching ordered Task/results, merges length,
+integer next and last recorded head; the active conflict and uncommitted bytes
+are never retained solutions. A stamped conflict-only hint may cross an
+implementation change or selection-specific baseProvenance planRevision and
+selectionHash labels; all other provenance/history/context fields still agree.
+Such hints never supply a whole prefix. Recorded resolved parents are checked,
+and current verification supplies authority without any old review/exemption.
 Git objects retain the entire new automatic tree and substitute only the retained
 regular-file conflict entries; the current verifier proves unchanged clean context
 outside actual marker ranges. A new two-parent resolution belongs to the current
@@ -1087,6 +1095,8 @@ import closure and fresh owning authority/lease/CAS checks still precede promoti
 Existing original-ID spans distinguish lookup, transport, prefix verification,
 remaining merges and final checks; protected work is not queue-wait evidence.
 See ADR-HUB-372-verified-native-reuse.
+See ADR-HUB-418-partial-native-conflict-reuse for partial-step eligibility and
+the separate conflict-only proof across selection/implementation changes.
 
 Native
 checkout in the exclusive Hub-owned clone precedes ref CAS and is guarded by

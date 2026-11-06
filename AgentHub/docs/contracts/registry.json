@@ -434,6 +434,7 @@
         "tests/infrastructure/filesystem/native-merge-reuse.test.mjs",
         "tests/infrastructure/filesystem/native-merge-reuse-authority.test.mjs",
         "docs/decisions/ADR-HUB-372-verified-native-reuse.md",
+      "docs/decisions/ADR-HUB-418-partial-native-conflict-reuse.md",
         "src/infrastructure/filesystem/published-dev-sync.mjs",
         "tests/application/published-dev-sync.test.mjs",
         "tests/infrastructure/filesystem/native-selected-content-preservation.test.mjs",
