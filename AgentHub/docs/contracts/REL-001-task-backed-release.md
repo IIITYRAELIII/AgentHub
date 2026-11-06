@@ -1025,6 +1025,17 @@ additions. This avoids reintroducing an already retained block or an obsolete
 Task-base context. A result merely contained in incoming ancestry gets no
 automatic-context exemption: a real inherited rollback still refuses.
 
+For an exact captured ordinary selection, the existing composition baseline may
+bound replay when Git proves both the older Task base is its ancestor and that
+baseline is an ancestor of this exact selected result. The captured policy,
+baseline and complete Task descriptor set must match; a foreign/unbound set or
+unproved ancestry retains its original replay range. This does not choose another
+base, infer publication from a moving ref or skip a path. It avoids reinserting
+already inherited published context at an old location while still checking the
+entire remaining selected delta, real missing code, deletion and mode changes.
+The separately bound ordinary Test publication and virtual merge-base policies
+remain unchanged.
+
 Completed automatic prefixes must retain automatic content. An ordinary owned
 resolution or undelivered amendment may add compatibility helpers, without a
 path approval. Selected replay still detects lost unique code; choosing a whole

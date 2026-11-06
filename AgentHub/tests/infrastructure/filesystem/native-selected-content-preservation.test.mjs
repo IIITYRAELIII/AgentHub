@@ -39,6 +39,69 @@ async function fixture(t) {
   return { root, sourceRoot, base, create, compose };
 }
 
+async function publishedReplayFixture(t) {
+  const f = await fixture(t);
+  await writeFile(path.join(f.sourceRoot, ".gitattributes"), "*.txt text eol=lf\n");
+  const gap = label => Array.from({ length: 12 }, (_, i) => `${label} stable ${i}\n`).join("");
+  const initialization = "owner = bindOwner();\nowner.ready();\nowner.listen();\n";
+  const body = ({ published = false, moved = false, selected = false, mode = "legacy" } = {}) =>
+    `header\n${moved ? initialization : ""}${gap("first")}middle\n`
+      + `${published && !moved ? initialization : ""}${gap("second")}`
+      + `guard ${selected ? "selected" : "baseline"}\n${gap("third")}mode ${mode}\n`;
+  const main = await f.create("agreed pre-publication base", body());
+  const published = await f.create("publication", body({ published: true, mode: "published" }), main);
+  const selected = await f.create("selected guard", body({ published: true, selected: true, mode: "published" }), published);
+  const moved = await f.create("later selected move and independent context",
+    body({ published: true, moved: true, selected: true, mode: "current" }), selected);
+  const tasks = [{ taskId: "guard", baseCommit: main, resultCommit: selected },
+    { taskId: "move", baseCommit: main, resultCommit: moved }];
+  return { ...f, main, published, selected, moved, tasks, initialization, body };
+}
+
+test("ordinary selected replay uses captured publication ancestry without duplicating moved context", async t => {
+  const f = await publishedReplayFixture(t);
+  const value = await f.compose(f.published, f.tasks);
+  const identity = { policy: NATIVE_RELEASE_POLICY, baseCommit: f.published, tasks: f.tasks };
+  const expected = f.body({ published: true, moved: true, selected: true, mode: "current" });
+  assert.equal(await readFile(path.join(value.root, "selection.txt"), "utf8"), expected);
+  assert.equal(expected.split(f.initialization).length - 1, 1);
+  assert.ok(expected.includes("guard selected\n"));
+  await assertNativeMergedResults({ git: (args, options) => gitAt(value.root, args, options),
+    baseCommit: f.published, tasks: f.tasks, merges: value.merges, head: value.head, tree: value.tree, identity });
+  assert.equal((await f.compose(f.published, f.tasks)).head, value.head);
+  const stateFile = path.join(f.root, "capture", "merge.json");
+  const state = await readFile(stateFile);
+  await assert.rejects(f.compose(f.published, f.tasks, { identity: { ...identity, foreign: true } }),
+    { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
+  assert.deepEqual(await readFile(stateFile), state);
+  await writeFile(path.join(value.root, "selection.txt"), expected.replace("guard selected\n", "guard baseline\n"));
+  await gitAt(value.root, ["add", "."]);
+  await gitAt(value.root, ["-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "--amend", "--no-edit"]);
+  const lostHead = await gitAt(value.root, ["rev-parse", "HEAD"]);
+  const lostTree = await gitAt(value.root, ["rev-parse", "HEAD^{tree}"]);
+  const lostMerges = value.merges.map(({ taskId, resultCommit, commit }, index) =>
+    ({ taskId, resultCommit, commit: index === value.merges.length - 1 ? lostHead : commit }));
+  await assert.rejects(assertNativeMergedResults({ git: (args, options) => gitAt(value.root, args, options),
+    baseCommit: f.published, tasks: f.tasks, merges: lostMerges, head: lostHead, tree: lostTree, identity }),
+    error => error.code === "RELEASE_SELECTED_CONTENT_MISSING"
+    && error.missingPaths.includes("selection.txt"));
+  assert.deepEqual(await readFile(stateFile), state);
+});
+
+test("ordinary selected replay refuses unbound publication ancestry", async t => {
+  const f = await publishedReplayFixture(t);
+  const identities = [
+    { policy: NATIVE_RELEASE_POLICY, tasks: f.tasks },
+    { policy: NATIVE_RELEASE_POLICY, baseCommit: f.main, tasks: f.tasks },
+    { policy: NATIVE_RELEASE_POLICY, baseCommit: f.published, tasks: [{ ...f.tasks[0], taskId: "foreign" }, f.tasks[1]] },
+  ];
+  for (const [index, identity] of identities.entries()) {
+    await assert.rejects(f.compose(f.published, f.tasks, { identity }, `unbound-${index}`),
+      error => error.code === "RELEASE_SELECTED_CONTENT_MISSING" && error.missingPaths.includes("selection.txt"));
+  }
+  assert.equal(await gitAt(f.sourceRoot, ["rev-parse", "HEAD"]), f.moved);
+});
+
 test("published ordinary Test replay binds its original identity without changing other selection policies", async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\n\nmiddle\n\nfooter\n");

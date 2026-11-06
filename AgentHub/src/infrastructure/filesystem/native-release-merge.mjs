@@ -461,6 +461,8 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
 async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
   const virtualReplay = await publishedVirtualReplay({ git, identity, baseCommit, tasks });
   const publishedBase = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
+  const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit
+    && Array.isArray(identity.tasks) && taskGitIdentityHash(identity.tasks) === taskGitIdentityHash(tasks);
   const target = new Map(await entries(git, ["ls-tree", "-r", "-z", head]));
   const resolvedPaths = new Set();
   for (const { binding, conflictPaths } of resolutions) {
@@ -475,9 +477,20 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     const actual = merged ? new Map(await entries(git, ["ls-tree", "-r", "-z",
       (String(await git(["merge-tree", "--write-tree", "--name-only", "-z", prefix, task.resultCommit],
         { acceptableExitCodes: [1] })).split("\0"))[0]])) : new Map();
+    let replayBase = publishedBase || task.baseCommit || baseCommit;
+    // The captured composition already owns its complete baseline tree. If
+    // that exact baseline lies inside this selected history, replay only the
+    // remaining delta rather than reinserting inherited code at an old site.
+    // No remote/ref lookup or path exemption supplies this ancestry evidence;
+    // ordinary Test's separately bound published base keeps its own policy.
+    if (capturedComposition && !publishedBase && replayBase !== baseCommit
+        && await maybe(git, ["merge-base", "--is-ancestor", replayBase, baseCommit]) !== null
+        && await maybe(git, ["merge-base", "--is-ancestor", baseCommit, task.resultCommit]) !== null) {
+      replayBase = baseCommit;
+    }
     const replayBefore = virtualReplay ? baseCommit : head;
     const replay = String(await git(["merge-tree", "--write-tree", "--name-only", "-z",
-      ...(virtualReplay ? [] : [`--merge-base=${publishedBase || task.baseCommit || baseCommit}`]),
+      ...(virtualReplay ? [] : [`--merge-base=${replayBase}`]),
       replayBefore, task.resultCommit], { acceptableExitCodes: [1] })).split("\0");
     const replayTree = replay.shift();
     if (!/^[a-f0-9]{40}$/u.test(replayTree)) throw failure("Selected Task content replay is unavailable");

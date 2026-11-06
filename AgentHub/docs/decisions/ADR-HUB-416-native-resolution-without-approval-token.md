@@ -55,6 +55,16 @@ Only the composition baseline identifies inherited context. A clean block newly
 added by both selected parents is still selected code and cannot be discarded
 merely because it is common to those two parents.
 
+Ordinary selected replay uses the existing captured composition baseline as a
+lower bound only when its policy, baseline and complete selected descriptor set
+match and Git proves older Task base -> captured baseline -> exact Task result.
+Already inherited published context must not be replayed into a second location
+when another selected result moved the retained block. The remaining selected
+delta still undergoes the same complete content checks. Missing or foreign
+capture evidence and unproved ancestry retain the previous range; this adds no
+path waiver, remote lookup, authority input or publication inference. Ordinary
+Test's separately sealed publication and virtual-base replay retain their policy.
+
 ## Migration and verification
 
 New public status/release/preparation inputs omit native approval fields.
