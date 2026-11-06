@@ -467,6 +467,10 @@ not change. The existing TaskGit process-tree journal fences both repository wor
 and the shared pool writer, including invocation-only validation math. Temporary
 math may borrow only while that pool lease is held; persistent native captures,
 frozen generations and installed release repositories have no alternates.
+On Windows a newly initialized consumer persists the existing long-path Git
+policy before object use. A local fetch's upload-pack child does not inherit
+the client's command-scoped policy; both must read the same complete input
+without shortening the owned path or changing global Git configuration.
 New generations do not manufacture a source bundle when exact inputs are already
 owned. Retained legacy bundles/partials keep their original identity and refusals.
 Generation retirement preserves complete Git graph/raw local work through the

@@ -281,6 +281,9 @@ export class OwnedNativeObjectStore {
         }
         const required = new Set(objects);
         await this.#git(path.dirname(repository), ["init", "--object-format=sha1", "--template=" + path.join(this.root, "empty-hooks"), repository]);
+        // upload-pack drops the client's -c settings: persist the same Windows
+        // path policy before this independent consumer can serve its objects.
+        if (process.platform === "win32") await this.#git(repository, ["config", "core.longpaths", "true"]);
         await this.#git(repository, ["config", "gc.auto", "0"]);
         const sourceObjects = path.join(this.repository, "objects"), destObjects = path.join(repository, ".git", "objects");
         for (const directory of await readdir(sourceObjects, { withFileTypes: true })) {

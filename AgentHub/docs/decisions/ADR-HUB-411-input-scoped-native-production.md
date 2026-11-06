@@ -90,3 +90,19 @@ Initial accepted native-only evidence remains scoped to its original carrier;
 this caller/dependency/generation extension requires its own exact source review.
 No production GB freed, live cleanup, application, publication or end-to-end speedup
 is implied. Cleanup of old data and runtime adoption remain with their owners.
+
+## Windows consumer server initialization
+
+A deep generation consumer could read its inputs through the owned Git caller
+but fail when another repository fetched its new merge: upload-pack discards
+the client's command-scoped configuration. Fresh consumer initialization now
+persists the existing Windows `core.longpaths=true` policy before object use.
+Other platforms retain their existing configuration. No global Git setting,
+path shortening, alternate or graph exception is introduced; retained consumers
+and historical receipts are not rewritten.
+
+The fixed-source counterexample retains the same three physical Git object
+files and OIDs across readonly longpaths-off/on fsck and an actual fetch before
+and after the one local setting. The maintained producer regression provisions
+a deep independent consumer and fetches its exact input through a real child
+server. The existing Await/generation/retirement caller checks the full path.

@@ -10,6 +10,36 @@ import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-g
 const gitAt = (cwd, args, options = {}) => runTaskGitCommand(args, { ...options, cwd });
 const hash = x => createHash("sha256").update(x).digest("hex");
 
+test("a deep Windows native consumer serves its complete input to a real fetch child", { skip: process.platform !== "win32" }, async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-long-consumer-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
+  const source = path.join(root, "source"), dataDir = path.join(root, "data");
+  await mkdir(source);
+  await gitAt(source, ["init", "-b", "main"]);
+  await writeFile(path.join(source, "selected.txt"), "one exact native input\n");
+  await gitAt(source, ["add", "."]);
+  await gitAt(source, ["-c", "user.name=Fixture", "-c", "user.email=fixture@invalid", "commit", "-m", "input"]);
+  const selected = await gitAt(source, ["rev-parse", "HEAD"]);
+  let repository = path.join(root, "consumer");
+  while (path.join(repository, ".git", "objects", "ab", "c".repeat(38)).length < 286) {
+    repository = path.join(repository, "deep-native-consumer");
+  }
+  const objects = new OwnedNativeObjectStore({ dataDir, gitAt });
+  const identityHash = hash("deep consumer");
+  const storage = await objects.provision({ sourceRoot: source, repository, inputs: [selected], identityHash });
+  await objects.assertConsumer({ repository, inputs: [selected], identityHash, storage });
+  await assert.rejects(readFile(path.join(repository, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
+  const receiver = path.join(root, "receiver.git");
+  await gitAt(root, ["init", "--bare", receiver]);
+  // runTaskGitCommand already supplies the client -c core.longpaths=true.
+  // The child server must independently read its own deep object paths.
+  await gitAt(receiver, ["fetch", "--no-tags", repository, selected]);
+  assert.equal(await gitAt(receiver, ["rev-parse", "FETCH_HEAD"]), selected);
+  assert.equal(await gitAt(receiver, ["show", `${selected}:selected.txt`]), "one exact native input");
+  await gitAt(receiver, ["fsck", "--connectivity-only", "--no-dangling", selected]);
+  await objects.assertConsumer({ repository, inputs: [selected], identityHash, storage });
+});
+
 test("new native consumer links only its input closure, preserving shared pool and original custody", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-object-producer-"));
   t.after(() => rm(root, { recursive: true, force: true }));
