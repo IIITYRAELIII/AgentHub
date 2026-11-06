@@ -1809,6 +1809,7 @@ ordinary operation-ID reads remain compatible. Running a new client alone does
 not upgrade the server or its publication executor.
 
 The application retains its own minimal [self-build interface](docs/building.md).
-The independent tool owns archive packaging and publication orchestration, and
-is excluded from application runtime artifacts. Transfer of its staged sources
-to the separate repository must be verified before removing staging from Hub.
+The independent tool owns archive packaging and publication orchestration in
+[AgentHub-ReleaseTools](https://github.com/IIITYRAELIII/AgentHub-ReleaseTools).
+Its sources and tests live in that repository, outside the Hub source and runtime
+artifacts. Hub adapters consume an explicitly configured immutable tool version.

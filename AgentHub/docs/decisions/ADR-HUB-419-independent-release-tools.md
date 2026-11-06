@@ -25,8 +25,9 @@ Retries retain the original pin; a historical executor without that identity
 uses its retained original consumer. Applied historical readbacks stay intact.
 Tool replacement happens between joined consumers, never inside a frozen run.
 
-The staged tool source has an explicit export manifest and retains its MIT
-license. The publisher transfers it to the independent canonical repository,
-then removes staging from the final Hub source. Runtime packaging excludes the
-source-only operator entry points and never includes the tool package. This is
-not an application install, publication, Task Done or remote repository claim.
+The tool source has an explicit export manifest and retains its MIT license in
+the independent canonical `IIITYRAELIII/AgentHub-ReleaseTools` repository. The
+publisher verified its parentless initial commit and all exported blobs before
+staging was removed from Hub. Runtime packaging excludes the source-only
+operator entry points and never includes the tool package. Its publication and
+application source delivery remain separate from installing or publishing Hub.
