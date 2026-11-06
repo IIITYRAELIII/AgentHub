@@ -1007,6 +1007,8 @@ changed line and a contiguous ordered token span from an incoming
 inline deletion, derived from Git's actual stage-1 blob. A shorthand caller may
 project the declaration's removed parameter without its default value; adjacent
 commas and wrapping at the start/end of a line do not change that span.
+The retained context must include a word token: punctuation-only residue such
+as the semicolon after a completely removed selected call supplies no evidence.
 Whole-line deletion, replacement or a combination
 of unrelated removals cannot account for losing a selected addition. Conflict
 additions cannot lend evidence to a mixed hunk that drops unique clean code.

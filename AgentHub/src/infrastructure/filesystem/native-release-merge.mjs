@@ -311,6 +311,10 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
     // An argument at a wrapped line's first/last position has only one such
     // boundary. It must still leave that line, rather than remove it entirely.
     if (!prefix && !suffix) return null;
+    const retained = [...oldWords.slice(0, prefix), ...oldWords.slice(oldWords.length - suffix)];
+    // Delimiters alone are not retained code: uniqueCall(); -> ; loses the
+    // complete selected call even when another inline edit removed that call.
+    if (!retained.some(word => /^[A-Za-z0-9_$]+$/u.test(word))) return null;
     const removed = oldWords.slice(prefix, oldWords.length - suffix);
     const added = newWords.slice(prefix, newWords.length - suffix);
     // A parameter removed from the middle of a declaration can be the last

@@ -40,7 +40,9 @@ changed line. Its removed tokens must be a contiguous ordered span of
 one incoming inline deletion from Git's actual stage-1 blob. This also projects
 a removed parameter to a shorthand caller without its declaration's default
 value, allowing its adjacent comma at either edge and a wrapped argument at the
-start/end of a retained line. A file-wide bag of removed
+start/end of a retained line. At least one word token must remain in the local
+context; punctuation alone, such as uniqueCall(); becoming ;, cannot represent
+the selected caller. A file-wide bag of removed
 words is insufficient: whole-line loss, novel replacement, permuted words or
 combining unrelated removals cannot supply that proof. This carries an API
 compatibility correction such as uniqueCall(legacy) to uniqueCall(), while
