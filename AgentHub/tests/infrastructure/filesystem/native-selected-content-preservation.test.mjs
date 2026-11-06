@@ -283,8 +283,10 @@ test("an owned amendment cannot discard unique selected code", async t => {
 
 test("owned conflict compatibility edits retain their selected-content evidence on reopen", async t => {
   const f = await fixture(t);
+  await writeFile(path.join(f.sourceRoot, ".gitattributes"), "*.txt text eol=lf\n");
   const gap = Array.from({ length: 12 }, (_, i) => `stable context ${i}\n`).join("");
-  const body = (api, clean, shared) => `${api}\n${clean}\n${gap}${shared}\n`;
+  const apiGap = Array.from({ length: 12 }, (_, i) => `API context ${i}\n`).join("");
+  const body = (api, clean, shared) => `${api}\n${apiGap}${clean}\n${gap}${shared}\n`;
   await writeFile(path.join(f.sourceRoot, "selection.txt"), body("function provide(legacy) {}", "base clean", "base shared"));
   const base = await commit(f.sourceRoot, "compatibility base");
   const a = await f.create("A", body("function provide(legacy) {}", "uniqueCall(legacy)", "selected A"), base);
@@ -294,7 +296,10 @@ test("owned conflict compatibility edits retain their selected-content evidence 
   await assert.rejects(f.compose(base, tasks), error => {
     assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); repository = error.conflictRoot; return true;
   });
-  assert.match(await readFile(path.join(repository, "selection.txt"), "utf8"), /^function provide\(\) \{\}\nuniqueCall\(legacy\)\n/u);
+  const automatic = await readFile(path.join(repository, "selection.txt"), "utf8");
+  assert.ok(automatic.startsWith("function provide() {}\n"));
+  assert.ok(automatic.indexOf("\nuniqueCall(legacy)\n") > 0);
+  assert.ok(automatic.indexOf("uniqueCall(legacy)") < automatic.indexOf("<<<<<<< HEAD\n"));
   await writeFile(path.join(repository, "selection.txt"), body("function provide() {}", "uniqueCall()", "selected A+B"));
   const head = await commit(repository, "combine selected API with its compatibility correction");
   const value = await f.compose(base, tasks);
@@ -323,6 +328,7 @@ test("owned conflict compatibility edits retain their selected-content evidence 
 
 for (const loss of ["delete", "restore-parent", "replace-novel"]) test(`owned conflict compatibility cannot ${loss} unique clean selected code`, async t => {
   const f = await fixture(t);
+  await writeFile(path.join(f.sourceRoot, ".gitattributes"), "*.txt text eol=lf\n");
   const gap = Array.from({ length: 12 }, (_, i) => `stable context ${i}\n`).join("");
   const body = (clean, shared) => `${clean}${gap}${shared}\n`;
   await writeFile(path.join(f.sourceRoot, "selection.txt"), body("base clean\n", "base shared"));
