@@ -313,27 +313,28 @@ test("owned conflict compatibility rejects cross-region removal credit for a sel
   }
 });
 
-test("owned conflict compatibility rejects punctuation-only residue after selected caller loss", async t => {
+for (const residue of [";", "return ;"]) test(`owned conflict compatibility rejects ${residue} residue after selected caller loss`, async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.sourceRoot, ".gitattributes"), "*.txt text eol=lf\n");
   const gap = name => Array.from({ length: 12 }, (_, i) => `${name} context ${i}\n`).join("");
   const body = (first, second, tail) => `${first}${gap("first")}${second}${gap("second")}${tail}\n`;
   const originalHolder = "function baseHolder() { uniqueCall(); return oldValue; }\n";
   const changedHolder = "function baseHolder() { ; return oldValue; }\n";
-  await writeFile(path.join(f.sourceRoot, "selection.txt"), body(";\nbase clean\n", originalHolder, "base shared"));
+  const caller = residue === ";" ? "uniqueCall();" : "return uniqueCall();";
+  await writeFile(path.join(f.sourceRoot, "selection.txt"), body(`${residue}\nbase clean\n`, originalHolder, "base shared"));
   const base = await commit(f.sourceRoot, "statement loss base");
-  const a = await f.create("A", body("uniqueCall();\nbase clean\n", originalHolder, "selected A"), base);
-  const b = await f.create("B", body(";\nbase clean\n", changedHolder, "selected B"), base);
+  const a = await f.create("A", body(`${caller}\nbase clean\n`, originalHolder, "selected A"), base);
+  const b = await f.create("B", body(`${residue}\nbase clean\n`, changedHolder, "selected B"), base);
   const tasks = [{ taskId: "A", baseCommit: base, resultCommit: a }, { taskId: "B", baseCommit: base, resultCommit: b }];
   let repository;
   await assert.rejects(f.compose(base, tasks), error => {
     assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); repository = error.conflictRoot; return true;
   });
   const automatic = await readFile(path.join(repository, "selection.txt"), "utf8");
-  assert.ok(automatic.startsWith("uniqueCall();\nbase clean\n"));
+  assert.ok(automatic.startsWith(`${caller}\nbase clean\n`));
   assert.ok(!automatic.includes("baseHolder() { uniqueCall();"));
   assert.ok(automatic.indexOf("uniqueCall();") < automatic.indexOf("<<<<<<< HEAD"));
-  const lost = body(";\nbase clean\n", changedHolder, "selected A+B");
+  const lost = body(`${residue}\nbase clean\n`, changedHolder, "selected A+B");
   assert.ok(!lost.includes("uniqueCall"));
   await writeFile(path.join(repository, "selection.txt"), lost);
   const target = await commit(repository, "incorrectly replace selected caller with punctuation");

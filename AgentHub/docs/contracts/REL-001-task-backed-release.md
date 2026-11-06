@@ -1009,6 +1009,8 @@ project the declaration's removed parameter without its default value; adjacent
 commas and wrapping at the start/end of a line do not change that span.
 The retained context must include a word token: punctuation-only residue such
 as the semicolon after a completely removed selected call supplies no evidence.
+Retaining a keyword alone also cannot justify removing its complete call; a
+removed call expression needs a retained enclosing parenthesized expression.
 Whole-line deletion, replacement or a combination
 of unrelated removals cannot account for losing a selected addition. Conflict
 additions cannot lend evidence to a mixed hunk that drops unique clean code.

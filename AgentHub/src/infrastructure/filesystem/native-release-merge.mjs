@@ -317,6 +317,12 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
     if (!retained.some(word => /^[A-Za-z0-9_$]+$/u.test(word))) return null;
     const removed = oldWords.slice(prefix, oldWords.length - suffix);
     const added = newWords.slice(prefix, newWords.length - suffix);
+    // A retained keyword such as return is no evidence for deleting its whole
+    // call. A removed call expression must remain inside a retained outer
+    // parenthesized expression (for example an optional nested argument).
+    const enclosing = oldWords.slice(0, prefix).reduce((depth, word) =>
+      depth + (word === "(" ? 1 : word === ")" ? -1 : 0), 0);
+    if (removed.includes("(") && enclosing <= 0) return null;
     // A parameter removed from the middle of a declaration can be the last
     // shorthand argument at a caller. Its adjacent comma changes sides; the
     // ordered removed tokens, not a file-wide word count, carry that edit.
