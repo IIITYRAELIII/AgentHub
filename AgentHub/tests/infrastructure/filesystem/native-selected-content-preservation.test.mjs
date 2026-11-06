@@ -326,7 +326,7 @@ test("owned conflict compatibility edits retain their selected-content evidence 
   assert.deepEqual(await readFile(stateFile), saved);
 });
 
-for (const loss of ["delete", "restore-parent", "replace-novel"]) test(`owned conflict compatibility cannot ${loss} unique clean selected code`, async t => {
+for (const loss of ["delete", "restore-parent", "replace-novel", "shared-delete"]) test(`owned conflict compatibility cannot ${loss} unique clean selected code`, async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.sourceRoot, ".gitattributes"), "*.txt text eol=lf\n");
   const gap = Array.from({ length: 12 }, (_, i) => `stable context ${i}\n`).join("");
@@ -334,14 +334,14 @@ for (const loss of ["delete", "restore-parent", "replace-novel"]) test(`owned co
   await writeFile(path.join(f.sourceRoot, "selection.txt"), body("base clean\n", "base shared"));
   const base = await commit(f.sourceRoot, "loss base");
   const a = await f.create("A", body("unique selected implementation\n", "selected A"), base);
-  const b = await f.create("B", body("base clean\n", "selected B"), base);
+  const b = await f.create("B", body(loss === "shared-delete" ? "unique selected implementation\n" : "base clean\n", "selected B"), base);
   const tasks = [{ taskId: "A", baseCommit: base, resultCommit: a }, { taskId: "B", baseCommit: base, resultCommit: b }];
   let repository;
   await assert.rejects(f.compose(base, tasks), error => {
     assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); repository = error.conflictRoot; return true;
   });
   assert.match(await readFile(path.join(repository, "selection.txt"), "utf8"), /^unique selected implementation\n/u);
-  const badClean = loss === "delete" ? "" : loss === "restore-parent" ? "base clean\n" : "novel unrelated compatibility code\n";
+  const badClean = ["delete", "shared-delete"].includes(loss) ? "" : loss === "restore-parent" ? "base clean\n" : "novel unrelated compatibility code\n";
   await writeFile(path.join(repository, "selection.txt"), body(badClean, "selected A+B"));
   await commit(repository, "incorrect clean-context loss beside a real conflict resolution");
   for (let attempt = 0; attempt < 2; attempt++) await assert.rejects(f.compose(base, tasks),

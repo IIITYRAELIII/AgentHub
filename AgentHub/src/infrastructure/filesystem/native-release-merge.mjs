@@ -266,13 +266,15 @@ async function changesCleanConflictContext(git, automaticTree, target, file, bef
 // compatibility edits outside marker ranges. Keep structural loss checks:
 // choosing an entire parent, deleting clean code, or restoring the other
 // parent's clean context is not evidence that selected code was preserved.
-async function retainsConflictCleanContext(git, automaticTree, target, file, before, result) {
+async function retainsConflictCleanContext(git, automaticTree, target, file, before, result, baseCommit) {
   const body = String(await git(["show", `${automaticTree}:${file}`], { rawOutput: true }));
   const resolved = String(await git(["show", `${target}:${file}`], { rawOutput: true }));
   const parents = await Promise.all([before, result].map(async commit => {
     const value = await maybe(git, ["show", `${commit}:${file}`], { rawOutput: true });
     return value === null ? null : String(value);
   }));
+  const baselineValue = baseCommit ? await maybe(git, ["show", `${baseCommit}:${file}`], { rawOutput: true }) : null;
+  const baseline = baselineValue === null ? null : String(baselineValue);
   if (parents.includes(resolved)) return false;
   const ranges = [];
   let opened = null;
@@ -321,7 +323,9 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
   const preserved = async () => {
     if (!removed.some(line => line.trim())) return true;
     const oldBlock = removed.join("\n") + "\n", newBlock = added.join("\n") + "\n";
-    if (parents.every(parent => parent !== null && parent.includes(oldBlock))) return true;
+    // Common to both selected parents is not sufficient: both may have added
+    // this same unique code after the composition baseline.
+    if (baseline !== null && baseline.includes(oldBlock)) return true;
     // Mixed marker/clean hunks cannot lend their conflict additions to erased
     // unique clean code. Ordinary marker-only edits need no such projection.
     if (markerEdit) return false;
@@ -444,7 +448,7 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
 
 // Recompute Git evidence on every reopen. Historical reviewedResolution is only
 // an old spelling of this immutable Git binding; its message/receipt is ignored.
-async function verifyMergeStep(git, before, result, target, { storedBinding = null, ownedResolution = false } = {}) {
+async function verifyMergeStep(git, before, result, target, { storedBinding = null, ownedResolution = false, baseCommit = null } = {}) {
   if (await maybe(git, ["merge-base", "--is-ancestor", result, before]) !== null) {
     if (target !== before) throw failure("Contained native result changed the prefix");
     return null;
@@ -481,7 +485,7 @@ async function verifyMergeStep(git, before, result, target, { storedBinding = nu
   const conflictPaths = [];
   for (const file of conflicts) {
     if (extraPaths.includes(file) && (ownedResolution || storedBinding)
-        && !await retainsConflictCleanContext(git, automaticTree, target, file, before, result)) {
+        && !await retainsConflictCleanContext(git, automaticTree, target, file, before, result, baseCommit)) {
       throw failure("Owned conflict resolution discards selected clean context", "RELEASE_SELECTED_CONTENT_MISSING",
         { candidateCommit: target, missingPaths: [file] });
     }
@@ -509,7 +513,7 @@ export async function assertNativeMergedResults({ git, baseCommit, tasks, merges
       throw failure("Prepared native result evidence changed");
     }
     const resolution = await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
-      { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding });
+      { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding, baseCommit });
     if (resolution) resolutions.push(resolution);
     prefix = step.commit;
   }
@@ -579,7 +583,7 @@ export async function mergeSelectedResults({
   if (reuse && state.reuseContext && taskGitIdentityHash(state.reuseContext) === taskGitIdentityHash(reuse)
       && state.next === 0 && !state.merging && !state.conflict && !state.reuseIntent) {
     const prefix = await verifiedNativePrefix({ root, repository, candidates, tasks, baseCommit, gitAt, beforeTransport,
-      verify: (before, result, target, step) => verifyMergeStep(git, before, result, target, { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding }) });
+      verify: (before, result, target, step) => verifyMergeStep(git, before, result, target, { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding, baseCommit }) });
     if (prefix) {
       state.reuseIntent = prefix;
       await writeJson(stateFile, state);
@@ -597,7 +601,7 @@ export async function mergeSelectedResults({
       if (step.taskId !== tasks[i].taskId || step.resultCommit !== tasks[i].resultCommit) {
         throw failure("Native prefix reuse no longer has ordinary authority", "RELEASE_NATIVE_CHECKOUT_CHANGED");
       }
-      await verifyMergeStep(git, before, step.resultCommit, step.commit, { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding });
+      await verifyMergeStep(git, before, step.resultCommit, step.commit, { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding, baseCommit });
       before = step.commit;
     }
     if (before !== state.reuseIntent.head || String(await git(["rev-parse", `${before}^{tree}`])) !== state.reuseIntent.tree) {
@@ -626,7 +630,7 @@ export async function mergeSelectedResults({
     const index = state.next - 1;
     const previous = index === 0 ? baseCommit : state.merges[index - 1].commit;
     await requireClean(git);
-    const resolution = await verifyMergeStep(git, previous, tasks[index].resultCommit, currentHead, { ownedResolution: true });
+    const resolution = await verifyMergeStep(git, previous, tasks[index].resultCommit, currentHead, { ownedResolution: true, baseCommit });
     state.merges[index] = { taskId: tasks[index].taskId, resultCommit: tasks[index].resultCommit,
       commit: currentHead, resolved: true, resolution };
     state.head = currentHead;
@@ -639,7 +643,7 @@ export async function mergeSelectedResults({
       throw failure("Native merge journal selection changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
     }
     const resolution = await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
-      { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding });
+      { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding, baseCommit });
     if (resolution) resolutions.push(resolution);
     prefix = step.commit;
   }
@@ -655,7 +659,7 @@ export async function mergeSelectedResults({
           throw failure("Interrupted native merge has no exact automatic readback", "RELEASE_NATIVE_CHECKOUT_CHANGED");
         }
         await requireClean(git);
-        const resolution = await verifyMergeStep(git, state.head, task.resultCommit, head);
+        const resolution = await verifyMergeStep(git, state.head, task.resultCommit, head, { baseCommit });
         if (resolution) resolutions.push(resolution);
         state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head,
           ...(resolution ? { resolved: true, resolution } : {}) });
@@ -683,7 +687,7 @@ export async function mergeSelectedResults({
         if (!retained && await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]) === task.resultCommit) {
           await requireUntouchedConflict(git, state.head, task.resultCommit, state.conflict);
           retained = await retainedNativeConflict({ root, repository, candidates, state, task, identity, gitAt, beforeTransport,
-            verify: (before, result, target, step) => verifyMergeStep(git, before, result, target, { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding, ownedResolution: true }) });
+            verify: (before, result, target, step) => verifyMergeStep(git, before, result, target, { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding, ownedResolution: true, baseCommit }) });
         }
         if (retained) {
           assertCurrentInputs();
@@ -692,7 +696,7 @@ export async function mergeSelectedResults({
               || String(await git(["rev-parse", `${retained.commit}^{tree}`])) !== retained.tree) {
             throw failure("Retained native conflict intent changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
           }
-          await verifyMergeStep(git, state.head, task.resultCommit, retained.commit, { ownedResolution: true });
+          await verifyMergeStep(git, state.head, task.resultCommit, retained.commit, { ownedResolution: true, baseCommit });
           state.conflict.retainedResolution = retained;
           await writeJson(stateFile, state);
           choice = { binding: retained, retained: true };
@@ -705,7 +709,7 @@ export async function mergeSelectedResults({
         else if (mergeHead || !state.conflict.resolution && !state.conflict.reviewedResolution && !choice.retained) {
           throw failure("Native conflict operation changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
         } else await requireClean(git);
-        const accepted = await verifyMergeStep(git, state.head, task.resultCommit, choice.binding.commit, { ownedResolution: true });
+        const accepted = await verifyMergeStep(git, state.head, task.resultCommit, choice.binding.commit, { ownedResolution: true, baseCommit });
         // Retain the accepted boundary BEFORE abort/checkout, so either side of
         // a lost local response is read back through this same journal.
         state.conflict.resolution = accepted;
@@ -724,7 +728,7 @@ export async function mergeSelectedResults({
         throw failure("Native resolution has different merge parents", "RELEASE_NATIVE_CHECKOUT_CHANGED");
       }
       await requireClean(git);
-      const resolution = await verifyMergeStep(git, state.head, task.resultCommit, head, { ownedResolution: true });
+      const resolution = await verifyMergeStep(git, state.head, task.resultCommit, head, { ownedResolution: true, baseCommit });
       if (resolution) resolutions.push(resolution);
       state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head, resolved: true,
         ...(resolution ? { resolution } : {}) });

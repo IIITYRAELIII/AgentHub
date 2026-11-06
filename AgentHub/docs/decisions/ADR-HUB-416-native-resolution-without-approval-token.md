@@ -40,6 +40,9 @@ change's removals from Git's actual stage-1 blob; retained replacement words are
 not removals. This carries an API compatibility correction without authorizing
 an unrelated clean-code deletion or a novel replacement that loses unique code.
 The evidence is recomputed, including virtual-base stage-1 content, on reopen.
+Only the composition baseline identifies inherited context. A clean block newly
+added by both selected parents is still selected code and cannot be discarded
+merely because it is common to those two parents.
 
 ## Migration and verification
 
