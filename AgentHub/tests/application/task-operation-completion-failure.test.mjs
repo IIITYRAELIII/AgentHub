@@ -92,7 +92,7 @@ test('Await failure after Task lease loss cannot persist lifecycle failure or in
   Object.assign(f.args,{request_id:'await-fenced-lifecycle-failure',status:'awaiting_implementation',
     expected_task_revision:task.revision,expected_workflow_status:'testing'});
   await assert.rejects(f.hub.call('hub_task_status_update',f.args),error=>{
-    assert.equal(error.code,'TASK_AWAIT_INTEGRATION_FAILED');assert.equal(error.cause,original);return true;
+    assert.equal(error,original);return true;
   });
   assert.equal(failWrites,0);
   assert.equal(f.tasks.lifecycleTransition(f.args.request_id).phase,'pending_git');
