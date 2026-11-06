@@ -39,8 +39,8 @@ async function publishedVirtualReplay({ git, identity, baseCommit, tasks }) {
   return true;
 }
 
-async function maybe(git, args) {
-  try { return await git(args); } catch { return null; }
+async function maybe(git, args, options) {
+  try { return await git(args, options); } catch { return null; }
 }
 
 function failure(message, code = "RELEASE_NATIVE_HISTORY_REQUIRED", details = {}) {
