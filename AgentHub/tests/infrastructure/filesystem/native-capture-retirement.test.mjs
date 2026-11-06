@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { Transform } from "node:stream";
 import { randomBytes, createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile, symlink } from "node:fs/promises";
 import os from "node:os";
@@ -24,6 +27,8 @@ import { assertNativeCaptureNotSourcePinned } from "../../../src/infrastructure/
 
 import { assertNativeMergedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import historicalReplayLines from "../../fixtures/native-historical-replay-lines.json" with { type: "json" };
+import { withStorageRetentionLease } from "../../../src/composition/storage-retention-composition.mjs";
+import { createTaskOperationTimingLogRecorder } from "../../../src/infrastructure/persistence/task-operation-timing-log.mjs";
 
 const hash = b => createHash("sha256").update(b).digest("hex");
 function git(cwd, args, { input = null, stdoutFd = null, rawOutput = false, binaryOutput = false } = {}) {
@@ -34,7 +39,7 @@ function git(cwd, args, { input = null, stdoutFd = null, rawOutput = false, bina
     c.stdin.end(input);
   });
 }
-async function fixture(t, { legacyOriginal = false, historicalReplay = null, ...options } = {}) {
+async function fixture(t, { legacyOriginal = false, historicalReplay = null, selectedFiles = 75, ...options } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-retire-native-")), dataDir = path.join(root, "data"), source = path.join(root, "primary");
   await mkdir(dataDir); await mkdir(source); await mkdir(path.join(root, "releases"));
   await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "fixture-current", previous: null, runtimeRetention: { retired: [] } }));
@@ -68,7 +73,7 @@ async function fixture(t, { legacyOriginal = false, historicalReplay = null, ...
   let publication = null;
   const taskGit = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
   const prepared = await taskGit.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: source });
-  for (let i = 0; i < 75; i++) await writeFile(path.join(prepared.projectRoot, "value-" + i + ".txt"), "selected " + i);
+  for (let i = 0; i < selectedFiles; i++) await writeFile(path.join(prepared.projectRoot, "value-" + i + ".txt"), "selected " + i);
   const snapshot = await taskGit.snapshot({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: prepared.projectRoot });
   if (historicalReplay) {
     await writeFile(path.join(source, "replay.txt"), historicalReplay.prefix); await git(source, ["add", "."]);
@@ -120,6 +125,174 @@ async function admitBeforeArchiveFailure(f) {
   assert.equal(original.metadata.captureArchive, undefined);
   return { approved, original };
 }
+
+test("native foreground lease series uses one producer and one leased archive proof per continuation", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, { selectedFiles: 140 }), producers = [], archiveReads = [], passes = [];
+  const originalSpawn = childProcess.spawn, originalRead = OwnedNativeObjectStore.prototype.readArchive;
+  const logFile = path.join(f.root, "native-timing.log");
+  f.taskGit.recordTiming = createTaskOperationTimingLogRecorder({ logFile, maxBytes: 4 * 1024 * 1024, maxFiles: 2 });
+  const observed = t.mock.method(childProcess, "spawn", (...args) => {
+    const child = originalSpawn(...args);
+    const input = args[2]?.env?.AGENT_HUB_CAPTURE_INPUT;
+    if (input && JSON.parse(input).root === path.join(f.capture, "repository")) {
+      const record = { closed: false }; producers.push(record); child.once("close", () => { record.closed = true; });
+    }
+    return child;
+  });
+  const observedRead = t.mock.method(OwnedNativeObjectStore.prototype, "readArchive", async function (...args) {
+    const held = await lstat(path.join(this.dataDir, "native-git-objects.lock")).then(() => true, () => false);
+    archiveReads.push({ held });
+    return originalRead.apply(this, args);
+  });
+  syncBuiltinESMExports();
+  let originalId, archiveId;
+  const began = performance.now();
+  try {
+    const preview = await f.owner.preview({ candidate: f.candidate });
+    assert.equal(preview.status, "eligible", JSON.stringify(preview));
+    const approved = [{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }];
+    await f.service.close();
+    await withStorageRetentionLease(f.dataDir, async lease => {
+      const service = new StorageRetentionService({ store: f.store, owners: [f.nativeOwner],
+        readContext: () => ({ ready: true, releaseId: "fixture", isolated: false, busy: false }), withLease: fn => fn(lease) });
+      try {
+        for (let pass = 0; pass < 16; pass++) {
+          await lease.assertOwned(); const beforeReads = archiveReads.length;
+          await service.runApproved(approved);
+          const row = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
+          originalId ??= row.operationId; archiveId ??= row.metadata.captureArchive?.operationId;
+          assert.equal(row.operationId, originalId); assert.equal(row.metadata.captureArchive?.operationId, archiveId);
+          const result = row.status === "succeeded" ? row.metadata.result : row.metadata.lastObservation;
+          assert.ok(["partial", "removed"].includes(result?.status), JSON.stringify(row));
+          assert.equal(row.metadata.captureBatchSequence, pass + 1);
+          assert.equal(row.metadata.captureTiming.batchSequence, pass + 1);
+          assert.equal(row.metadata.captureTiming.candidateHash, hash(JSON.stringify(f.candidate)));
+          assert.equal(row.metadata.captureTiming.phases["native-retire:archive-read"].count, archiveReads.length - beforeReads);
+          assert.ok(row.metadata.captureTiming.phases["native-retire:current"].count >= 2);
+          assert.ok(row.metadata.captureTiming.phases["native-retire:source-pins"].count >= 3);
+          assert.equal(result.nativeTelemetry.producerSequence, pass + 1);
+          assert.equal(result.nativeTelemetry.native.unlinkedFiles, result.files);
+          assert.equal(result.nativeTelemetry.producerStarts, pass === 0 ? 1 : 0);
+          for (const field of ["planMs", "prevalidateMs", "hashUnlinkMs", "directoryCleanupMs", "nativeMs"]) assert.ok(result.nativeTelemetry.native[field] >= 0);
+          passes.push({ status: result.status, reads: archiveReads.slice(beforeReads), files: result.files });
+          if (row.status === "succeeded") break;
+        }
+        assert.equal(f.store.getReadonly(originalId).status, "succeeded");
+      } finally { await service.close(); }
+    });
+    t.diagnostic(JSON.stringify({ originalId, passes: passes.map(x => ({ status: x.status, files: x.files, archiveReads: x.reads.length })),
+      producerStarts: producers.length, elapsedMs: performance.now() - began }));
+    assert.ok(passes.filter(x => x.status === "partial").length >= 2, "Exercise real continuation batches");
+    assert.equal(producers.length, 1, "Actual finite owning series reuses one verified native producer");
+    assert.ok(producers.every(x => x.closed), "Every producer joins before the held lease exits");
+    for (const pass of passes.slice(1)) {
+      assert.equal(pass.reads.length, 1, "One full archive verification for each continuation");
+      assert.ok(pass.reads[0].held, "Full archive proof stays inside the real object-store lease");
+    }
+    await assert.rejects(lstat(path.join(f.capture, "repository")), { code: "ENOENT" });
+    assert.equal(f.store.getReadonly(archiveId).status, "succeeded");
+    const reopened = new MaintenanceOperationStore({ dataDir: f.dataDir });
+    assert.equal(reopened.getReadonly(originalId).metadata.captureArchive.operationId, archiveId);
+    assert.equal(reopened.getReadonly(originalId).metadata.captureTiming.batchSequence, passes.length);
+    const events = (await readFile(logFile, "utf8")).split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line.slice(line.indexOf("{"))));
+    const nativeEvents = events.filter(event => event.stage.startsWith("native-retire:"));
+    assert.ok(nativeEvents.some(event => event.stage === "native-retire:producer-close" && event.joined && event.exitCode === 0));
+    assert.ok(nativeEvents.every(event => event.operationId === originalId && event.candidateHash === hash(JSON.stringify(f.candidate))));
+    assert.ok(!JSON.stringify(nativeEvents).includes(f.root), "New phase records contain no filesystem paths");
+    t.diagnostic(JSON.stringify({ finalBatchTiming: reopened.getReadonly(originalId).metadata.captureTiming,
+      nativePhaseEvents: nativeEvents.filter(event => event.stage === "native-retire:native-phases" && event.owningBatch)
+        .map(({ producerSequence, producerStarts, compileMs, producerStartupMs, roundTripMs, native }) => ({ producerSequence, producerStarts, compileMs, producerStartupMs, roundTripMs, native })) }));
+  } finally { observedRead.mock.restore(); observed.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("held native owner keeps source/current refusals and foreign-file failure on SAME original with durable timings", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, { selectedFiles: 140 }), repository = path.join(f.capture, "repository");
+  const stateFile = path.join(f.capture, "merge.json"), stateBytes = await readFile(stateFile), logFile = path.join(f.root, "failure-timing.log");
+  f.taskGit.recordTiming = createTaskOperationTimingLogRecorder({ logFile, maxBytes: 4 * 1024 * 1024, maxFiles: 2 });
+  const preview = await f.owner.preview({ candidate: f.candidate }); assert.equal(preview.status, "eligible");
+  const approved = [{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }];
+  await f.service.close(); let originalId;
+  await assert.rejects(withStorageRetentionLease(f.dataDir, async lease => {
+    const service = new StorageRetentionService({ store: f.store, owners: [f.nativeOwner], withLease: fn => fn(lease),
+      readContext: () => ({ ready: true, releaseId: "fixture", isolated: false, busy: false }) });
+    try {
+      await service.runApproved(approved);
+      const first = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
+      originalId = first.operationId; assert.equal(first.metadata.lastObservation.status, "partial");
+      const late = path.join(f.root, "releases", "late-source"); await mkdir(late);
+      await writeFile(path.join(late, "runtime-manifest.json"), JSON.stringify({ releaseId: "late-source", sourceRoot: repository, files: [] }));
+      await service.runApproved(approved);
+      const pinned = f.store.getReadonly(originalId);
+      assert.equal(pinned.outcome, "unknown"); assert.match(pinned.metadata.lastObservation.reason, /source/iu);
+      assert.equal(pinned.metadata.captureTiming.phases["native-retire:source-pins"].errorCount, 1);
+      await rm(late, { recursive: true }); // Only the injected private fixture pin.
+      await writeFile(stateFile, JSON.stringify({ ...JSON.parse(stateBytes), diagnosticForeignState: true }));
+      await service.runApproved(approved);
+      const changed = f.store.getReadonly(originalId);
+      assert.equal(changed.outcome, "unknown"); assert.match(changed.metadata.lastObservation.reason, /changed|context/iu);
+      await writeFile(stateFile, stateBytes); // Restore only the private injected journal drift.
+      await writeFile(path.join(repository, "foreign-useful.txt"), "retain this foreign work");
+      await service.runApproved(approved);
+      const failed = f.store.getReadonly(originalId);
+      assert.equal(failed.outcome, "unknown"); assert.match(failed.metadata.lastObservation.reason, /capture-unexpected-file/u);
+      assert.equal(failed.metadata.captureArchive.operationId, first.metadata.captureArchive.operationId);
+      assert.equal(failed.metadata.captureTiming.phases["native-retire:native-call"].errorCount, 1);
+      assert.equal(await readFile(path.join(repository, "foreign-useful.txt"), "utf8"), "retain this foreign work");
+    } finally { await service.close(); }
+  }), /capture-unexpected-file/u);
+  await withStorageRetentionLease(f.dataDir, lease => lease.assertOwned());
+  const reopened = new MaintenanceOperationStore({ dataDir: f.dataDir }), retained = reopened.getReadonly(originalId);
+  assert.equal(retained.outcome, "unknown"); assert.equal(retained.metadata.captureTiming.batchSequence, 4);
+  const events = (await readFile(logFile, "utf8")).split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line.slice(line.indexOf("{"))));
+  assert.ok(events.some(x => x.stage === "native-retire:producer-close" && x.joined && x.outcome === "error" && x.operationId === originalId));
+  assert.ok(events.some(x => x.stage === "native-retire:native-phases" && x.outcome === "error" && x.native.unlinkedFiles === 0));
+  assert.ok((await lstat(repository)).isDirectory());
+});
+
+test("native owner preserves lost framed reply UNKNOWN after real partial effect and joins its child", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, { selectedFiles: 140 }), repository = path.join(f.capture, "repository"), logFile = path.join(f.root, "lost-reply-timing.log");
+  f.taskGit.recordTiming = createTaskOperationTimingLogRecorder({ logFile, maxBytes: 4 * 1024 * 1024, maxFiles: 2 });
+  const preview = await f.owner.preview({ candidate: f.candidate }); assert.equal(preview.status, "eligible");
+  const before = await inventoryNativeCapture(repository, { allowSharedObjects: Boolean(f.state.objectStorage) }), starts = [], spawn = childProcess.spawn;
+  const observed = t.mock.method(childProcess, "spawn", (...args) => {
+    const child = spawn(...args), input = args[2]?.env?.AGENT_HUB_CAPTURE_INPUT;
+    if (input && JSON.parse(input).root === repository) {
+      const entry = { closed: false }; starts.push(entry); child.once("close", () => { entry.closed = true; });
+      let buffered = "";
+      const framed = new Transform({ transform(chunk, _encoding, done) {
+        buffered += chunk.toString("utf8");
+        for (let at; (at = buffered.indexOf("\n")) >= 0;) {
+          const line = buffered.slice(0, at); buffered = buffered.slice(at + 1);
+          const value = JSON.parse(line); if (value.kind === "result") value.sequence++;
+          this.push(JSON.stringify(value) + "\n");
+        }
+        done();
+      }, flush(done) { if (buffered) this.push(buffered); done(); } });
+      child.stdout.pipe(framed); child.stdout = framed;
+    }
+    return child;
+  }); syncBuiltinESMExports(); let originalId;
+  try {
+    await f.service.close();
+    await assert.rejects(withStorageRetentionLease(f.dataDir, async lease => {
+      const service = new StorageRetentionService({ store: f.store, owners: [f.nativeOwner], withLease: fn => fn(lease),
+        readContext: () => ({ ready: true, releaseId: "fixture", isolated: false, busy: false }) });
+      try {
+        await service.runApproved([{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }]);
+        const row = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id); originalId = row.operationId;
+        assert.equal(row.outcome, "unknown"); assert.match(row.metadata.lastObservation.reason, /invalid-result/u);
+        assert.equal(row.metadata.captureTiming.outcome, "error"); assert.ok(row.metadata.captureArchive);
+      } finally { await service.close(); }
+    }), /invalid-result/u);
+    assert.equal(starts.length, 1); assert.equal(starts[0].closed, true);
+    const missing = await Promise.all(before.files.map(file => lstat(path.join(repository, file.path)).then(() => false, error => { if (error.code === "ENOENT") return true; throw error; })));
+    assert.equal(missing.filter(Boolean).length, 64, "Independent filesystem observation does not settle the unknown reply");
+    const reopened = new MaintenanceOperationStore({ dataDir: f.dataDir });
+    assert.equal(reopened.getReadonly(originalId).outcome, "unknown");
+    assert.equal(reopened.getReadonly(originalId).metadata.captureTiming.phases["native-retire:native-call"].errorCount, 1);
+    await withStorageRetentionLease(f.dataDir, lease => lease.assertOwned());
+  } finally { observed.mock.restore(); syncBuiltinESMExports(); }
+});
 
 test("admitted native intake recovers SAME child from full source and retains a lost durable archive-intent reply", { skip: process.platform !== "win32" }, async t => {
   let nativeCalls = 0;
@@ -328,22 +501,25 @@ test("archive tag-anchor loss and GC preserve the SAME unknown original and sour
   await objects.readArchive(archive);
   const before = await inventoryNativeCapture(repository, { allowSharedObjects: true });
   const journalBefore = await readFile(path.join(f.capture, "merge.json"));
-  const actualReadArchive = OwnedNativeObjectStore.prototype.readArchive;
+  const actualWithArchiveLease = OwnedNativeObjectStore.prototype.withArchiveLease;
   let drifted = false;
-  OwnedNativeObjectStore.prototype.readArchive = async function (...args) {
-    const value = await actualReadArchive.apply(this, args);
+  OwnedNativeObjectStore.prototype.withArchiveLease = async function (...args) {
     if (!drifted && args[0].operationId === archive.operationId) {
       drifted = true;
-      // Actual private drift AFTER a successful read. The final leased read
-      // must notice it before admitting even the first native file deletion.
-      await git(objects.repository, ["update-ref", "-d", tagRef, tag]);
-      await git(objects.repository, ["gc", "--prune=now"]);
-      await assert.rejects(git(objects.repository, ["cat-file", "-e", tag]));
+      // Actual drift BEFORE acquiring the final object lease. Mutating refs
+      // inside that held lease would bypass the very owner being exercised.
+      await withInterprocessLocks([path.join(f.dataDir, "native-git-objects")], async lease => {
+        await lease.assertOwned();
+        await git(objects.repository, ["update-ref", "-d", tagRef, tag]);
+        await git(objects.repository, ["gc", "--prune=now"]);
+        await assert.rejects(git(objects.repository, ["cat-file", "-e", tag]));
+        await lease.assertOwned();
+      });
     }
-    return value;
+    return actualWithArchiveLease.apply(this, args);
   };
   try { await f.service.runApproved(approved); }
-  finally { OwnedNativeObjectStore.prototype.readArchive = actualReadArchive; }
+  finally { OwnedNativeObjectStore.prototype.withArchiveLease = actualWithArchiveLease; }
   assert.equal(drifted, true);
   assert.equal(nativeCalls, 1, "No native deletion after an archive root was lost");
   assert.equal(f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id).operationId, original.operationId);

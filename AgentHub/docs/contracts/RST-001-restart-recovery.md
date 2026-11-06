@@ -125,6 +125,14 @@ resource runs. Other independently admitted resources retain their existing
 guards. Shutdown closes the bounded producer lifetime before releasing the
 owning lease; no process timeout or abort abandons native work. See
 ADR-HUB-385-runtime-native-executor.
+The same finite producer scope covers native-capture retirement without caching
+target handles or checks. A failed capture binding cannot restart inside that
+scope; producer failure drains/joins before rejection. The existing maintenance
+original preserves its batch sequence/latest bounded timing summary, while the
+existing rotating Task timing recorder flushes failure and final producer-join
+observations under that original. Process reopen creates no retry authority;
+original-owner reconciliation and full fresh leased archive proof still apply.
+See ADR-HUB-385-native-capture-executor.
 See ADR-HUB-363-source-free-runtime-pins. The same owner also permits only
 the exact compile-proven historical Whisper cache described
 by REL-001/ADR-HUB-385-generated-runtime-cache. It retires before its manifest

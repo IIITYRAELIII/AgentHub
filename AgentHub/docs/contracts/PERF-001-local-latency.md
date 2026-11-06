@@ -79,6 +79,26 @@ is no disk assembly cache, new admission lane or daemon outside that lifetime.
 Producer-start and bounded-fixture timings establish only the measured native
 subpath; unchanged source/owner checks and production elapsed time stay separate.
 
+The same finite scope also serves sealed native captures. Runtime and capture
+protocols bind their own exact source bytes; switching resource or protocol joins
+the prior producer, with at most one live child. Capture continuation retains
+one complete fresh archive proof inside its existing archive lease. A persisted
+descriptor does not require an additional unleased proof before that fence.
+Initial archival, all-object/tag/raw preservation and original graph checks stay
+unchanged. No target verification, remaining-tree walk or native limit is cached.
+
+Capture diagnostics use the existing Task-operation timing recorder and SAME
+maintenance original, candidate hash and durable batch sequence. They distinguish
+owned setup/current/source checks, archive-lease wait/full read, producer startup
+and compilation, request round trip, native plan/prevalidation/hash-unlink/directory
+cleanup, and final joined child lifetime. Numeric counts/durations and source
+digests contain no paths, file/message contents or argv. The original retains a
+bounded latest-batch summary across reopen; the existing rotating timing log
+retains failure and producer-join events. A diagnostic failure never replaces an
+effect error or changes authority. Nested durations are inclusive, not additive;
+reduced starts/proof counts alone do not establish a production wall-time gain.
+See ADR-HUB-385-native-capture-executor.
+
 Repeated journal projection may reuse a verified rendering only within the
 existing usage worker lifetime. Its bounded scalar receipt is not source
 authority: the current SQLite journal revision/index, clean dirty set, exact

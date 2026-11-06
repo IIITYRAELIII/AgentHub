@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { trustedWindowsPowerShellPath } from "../process/system-boot-identity.mjs";
+import { executeScopedCaptureRetirement, withSealedRuntimeExecutor } from "./sealed-runtime-executor.mjs";
+import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 const source = fileURLToPath(new URL("./sealed-native-capture.cs", import.meta.url));
 function run(mode, input) {
   if (process.platform !== "win32") return Promise.reject(new Error("native-capture-platform-unavailable"));
@@ -32,12 +34,27 @@ function run(mode, input) {
     });
   });
 }
-export async function retireSealedNativeCapture(root, plan, sha256, { allowPartial = false } = {}) {
+export async function retireSealedNativeCapture(root, plan, sha256, { allowPartial = false, onProducerClose } = {}) {
   if (!path.isAbsolute(root) || !path.isAbsolute(plan) || !/^[a-f0-9]{64}$/u.test(sha256) || typeof allowPartial !== "boolean") throw new TypeError("Exact native capture proof required");
-  const result = await run("retire", { root, plan, sha256, allowPartial });
-  if (!["complete", "partial"].includes(result.status) || !Number.isSafeInteger(result.files) || result.files < 0 || result.files > 64
-      || !["logicalBytes", "allocatedBytesUnlinked", "sharedObjectsUnlinked"].every(k => Number.isSafeInteger(result[k]) && result[k] >= 0)) throw new Error("native-capture-outcome-unknown:invalid-metrics");
-  return result;
+  const validate = raw => {
+    const result = JSON.parse(raw);
+    if (!["complete", "partial"].includes(result.status) || !Number.isSafeInteger(result.files) || result.files < 0 || result.files > 64
+        || !["logicalBytes", "allocatedBytesUnlinked", "sharedObjectsUnlinked"].every(k => Number.isSafeInteger(result[k]) && result[k] >= 0)) throw new Error("native-capture-outcome-unknown:invalid-metrics");
+    return result;
+  };
+  return measureTaskOperation("native-retire:native-call", () => withSealedRuntimeExecutor(async () => {
+    try {
+      const result = await executeScopedCaptureRetirement(source, trustedWindowsPowerShellPath(process.env), {
+        SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP,
+        AGENT_HUB_CAPTURE_SOURCE: source, AGENT_HUB_CAPTURE_INPUT: JSON.stringify({ root, plan, sha256, allowPartial }),
+      }, validate, onProducerClose);
+      recordTaskOperationTiming("native-retire:native-phases", { ...result.nativeTelemetry, owningBatch: Boolean(onProducerClose) });
+      return result;
+    } catch (error) {
+      if (error.nativeTelemetry) recordTaskOperationTiming("native-retire:native-phases", { ...error.nativeTelemetry, owningBatch: Boolean(onProducerClose), outcome: "error" });
+      throw error;
+    }
+  }));
 }
 export function measureNativeCaptureAllocation(roots) {
   if (!Array.isArray(roots) || !roots.length || roots.some(r => !path.isAbsolute(r))) throw new TypeError("Exact selected roots required");

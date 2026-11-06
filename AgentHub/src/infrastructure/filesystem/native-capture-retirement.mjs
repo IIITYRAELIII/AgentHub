@@ -10,6 +10,7 @@ import { assertNativeCaptureNotSourcePinned } from "./native-capture-source-pins
 import { retireSealedNativeCapture, measureNativeCaptureAllocation } from "./sealed-native-capture.mjs";
 import { withRuntimeInstallationLease } from "./runtime-installation-custody.mjs";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
+import { measureTaskOperation, recordTaskOperationTiming, withTaskOperationTiming } from "../process/task-operation-timing.mjs";
 const sha = x => createHash("sha256").update(x).digest("hex");
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const retained = reason => ({ status: "retained", reason });
@@ -27,6 +28,18 @@ export class NativeCaptureRetirement {
     this.root = path.join(dataDir, "task-native-merges"); this.runtimeRoot = path.dirname(dataDir);
   }
   async #owned(candidate, operationId, action) {
+    const started = performance.now(); let entered = false;
+    try {
+      return await this.#ownedContext(candidate, operationId, owned => {
+        entered = true;
+        recordTaskOperationTiming("native-retire:owned-setup", { durationMs: Math.max(0, performance.now() - started), outcome: "ok" });
+        return action(owned);
+      });
+    } finally {
+      if (!entered) recordTaskOperationTiming("native-retire:owned-setup", { durationMs: Math.max(0, performance.now() - started), outcome: "error" });
+    }
+  }
+  async #ownedContext(candidate, operationId, action) {
     if (candidate?.kind !== kind || !/^[a-f0-9]{24}$/u.test(candidate.captureId || "")
         || candidate.id !== candidate.captureId + ":repository") return retained("native-capture-identity-unknown");
     const root = path.join(this.root, candidate.captureId), stateFile = path.join(root, "merge.json");
@@ -48,18 +61,18 @@ export class NativeCaptureRetirement {
       const publication = await this.taskGitWorkspaces.cleanupPreview(identity.taskId, { gitReferences: task.gitReferences, squashAbsorbedBy: task.squashAbsorbedBy });
       if (publication.dirty || publication.unpublished.length || !publication.gitReferences.length
           || publication.gitReferences.some(r => !r.published || !r.publishedRevision || !r.publicationGeneration)) return retained("native-capture-unpublished");
-      await this.sourcePins(this.runtimeRoot, repository, { readGeneration: this.readGeneration });
+      await measureTaskOperation("native-retire:source-pins", () => this.sourcePins(this.runtimeRoot, repository, { readGeneration: this.readGeneration }));
       const git = (args, options) => this.gitAt(repository, ["--no-optional-locks", "--no-lazy-fetch", "--no-replace-objects", "-c", "core.fsmonitor=false", ...args], { ...options, lease });
-      const current = async () => {
+      const current = () => measureTaskOperation("native-retire:current", async () => {
         await lease.assertOwned(); await installation.assertOwned();
         if (this.isStopping() || this.taskBoard.task(identity.taskId)?.revision !== task.revision
             || sha(await readFile(stateFile)) !== sha(raw)
             || !same(originalEvidence, nativeCaptureRetirementEvidence(this.dataDir, identity.taskId, record.operationId))
             || !same(record, await this.taskGitWorkspaces.nativeCaptureRetirementRecordOwned({ taskId: identity.taskId, root, state, lease }))
             || !same(publication, await this.taskGitWorkspaces.cleanupPreview(identity.taskId, { gitReferences: task.gitReferences, squashAbsorbedBy: task.squashAbsorbedBy }))) throw new Error("Native capture retirement authority changed");
-        await this.sourcePins(this.runtimeRoot, repository, { readGeneration: this.readGeneration });
+        await measureTaskOperation("native-retire:source-pins", () => this.sourcePins(this.runtimeRoot, repository, { readGeneration: this.readGeneration }));
         for (const dir of [this.root, root]) { const s = await lstat(dir); if (!s.isDirectory() || s.isSymbolicLink()) throw new Error("Native capture owner root redirected"); }
-      };
+      });
       const resourceCurrent = async () => {
         await lease.assertOwned(); await installation.assertOwned();
         if (this.isStopping() || this.taskBoard.task(identity.taskId)?.revision !== task.revision
@@ -116,12 +129,51 @@ export class NativeCaptureRetirement {
     return result.operation;
   }
   async #effect(input) {
+    const original = this.store.getReadonly(input.operationId);
+    if (!original || original.metadata.owner !== "native-merge-transport" || original.metadata.candidate?.id !== input.candidate?.id) throw new Error("Native capture original missing or foreign");
+    if (!same(original.metadata.binding, input.binding)) throw new Error("Native capture original binding changed");
+    const candidateHash = sha(JSON.stringify(input.candidate)), batchSequence = (original.metadata.captureBatchSequence ?? 0) + 1;
+    const timing = { batchSequence, candidateHash, phases: {}, nativeProducerStarts: 0, outcome: "error" }, started = performance.now();
+    const identity = { operationId: input.operationId, taskId: input.binding.originalEvidence.taskId };
+    const record = event => {
+      if (event.stage.startsWith("native-retire:") && Number.isFinite(event.durationMs)) {
+        const phase = timing.phases[event.stage] ??= { count: 0, errorCount: 0, inclusiveMs: 0 };
+        phase.count++; phase.errorCount += Number(event.outcome === "error"); phase.inclusiveMs += event.durationMs;
+      }
+      if (event.stage === "native-retire:native-phases" && event.owningBatch) timing.nativeProducerStarts += event.producerStarts ?? 0;
+      this.taskGitWorkspaces.recordTiming({ ...event, candidateHash, batchSequence });
+    };
+    return withTaskOperationTiming({ ...identity, record }, async () => {
+      try {
+        await this.#patch(original, { metadata: { captureBatchSequence: batchSequence } });
+        const result = await this.#effectOwned(input, joined => withTaskOperationTiming({ ...identity,
+          record: event => this.taskGitWorkspaces.recordTiming({ ...event, candidateHash, batchSequence }) },
+        async () => recordTaskOperationTiming("native-retire:producer-close", joined)));
+        timing.outcome = result.status;
+        return result;
+      } finally {
+        timing.elapsedMs = Math.max(0, performance.now() - started);
+        recordTaskOperationTiming("native-retire:batch", timing);
+        // The existing original owns bounded diagnostic progress too. It grants
+        // no effect authority and a diagnostic write never replaces its error.
+        try {
+          const latest = this.store.getReadonly(input.operationId);
+          if (!latest || !same(latest.metadata.binding, input.binding)) throw Error("Timing original changed");
+          await this.#patch(latest, { metadata: { captureTiming: timing } });
+        } catch {
+          recordTaskOperationTiming("native-retire:timing-save", { outcome: "error" });
+        }
+      }
+    });
+  }
+  async #effectOwned(input, onProducerClose) {
     return this.#owned(input.candidate, input.operationId, async owned => {
       if (!same(owned.row.metadata.binding, input.binding)) throw new Error("Native capture original binding changed");
       let row = owned.row, archived;
       if (row.metadata.captureArchive) {
-        archived = await owned.objects.readArchive(row.metadata.captureArchive);
-        if (!same(archived.manifest.binding.retirement, input.binding) || archived.manifest.binding.stateHash !== owned.stateHash) throw new Error("Original archive context changed");
+        // Carry only the immutable descriptor. The complete fresh proof and
+        // exact binding checks remain inside SAME withArchiveLease below.
+        archived = { archive: row.metadata.captureArchive };
       } else {
         if (row.metadata.captureArchiveIntent) archived = await owned.objects.readArchiveIntent(row.metadata.captureArchiveIntent);
         // A missing archive intent is not no-effect evidence. Continue only
@@ -134,11 +186,11 @@ export class NativeCaptureRetirement {
         const intent = owned.objects.archiveIntent(request);
         if (row.metadata.captureArchiveIntent && !same(row.metadata.captureArchiveIntent, intent)) throw new Error("Original archive intake drift");
         if (!row.metadata.captureArchiveIntent) row = await this.#patch(row, { phase: "archive-intent", metadata: { captureArchiveIntent: intent } });
-        archived ??= await owned.objects.archive(request);
+        archived ??= await measureTaskOperation("native-retire:archive-intake", () => owned.objects.archive(request));
         // Verify complete preserved objects and the canonical native graph
         // under this SAME retirement original. Current result certification is
         // separate; no fake auth or new review grant is supplied.
-        await this.taskGitWorkspaces.verifyNativeCaptureArchiveOwned({ state: owned.state, record: owned.record, archive: archived, lease: owned.lease, retirementOperationId: input.operationId });
+        await measureTaskOperation("native-retire:archive-verification", () => this.taskGitWorkspaces.verifyNativeCaptureArchiveOwned({ state: owned.state, record: owned.record, archive: archived, lease: owned.lease, retirementOperationId: input.operationId }));
         row = await this.#patch(row, { metadata: { captureArchive: archived.archive }, phase: "archive-confirmed" });
       }
       await owned.current();
@@ -161,7 +213,7 @@ export class NativeCaptureRetirement {
           if (!hadPruningIntent) throw new Error("Native capture absence without original pruning");
           return { status: "already-removed", logicalBytes: 0, files: 0 };
         }
-        const result = await this.retire(owned.repository, planFile, planSha, { allowPartial: hadPruningIntent });
+        const result = await this.retire(owned.repository, planFile, planSha, { allowPartial: hadPruningIntent, onProducerClose });
         if (result.status === "complete") {
           if (await lstat(owned.repository).catch(absent)) throw new Error("Native capture retirement is not absent");
           return { ...result, status: "removed" };
@@ -170,7 +222,10 @@ export class NativeCaptureRetirement {
       });
     });
   }
-  prune(input) { return this.#effect(input); }
+  async prune(input) {
+    try { return await this.#effect(input); }
+    catch (error) { return { status: "unknown", reason: "native-capture-original-unresolved:" + error.message }; }
+  }
   async reconcile(input) {
     try {
       const result = await this.#effect(input);

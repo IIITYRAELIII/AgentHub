@@ -95,7 +95,27 @@ public static class AgentHubSealedNativeCapture {
   private static void Mode() {AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling",false);AppContext.SetSwitch("Switch.System.IO.BlockLongPaths",false);}
   private static JavaScriptSerializer Serializer() {return new JavaScriptSerializer{MaxJsonLength=int.MaxValue,RecursionLimit=128};}
 
+  // Per-invocation diagnostics only. The single verified producer serializes
+  // requests; this carries no target handle, verification or deletion authority.
+  private sealed class RetirementTiming {
+    public readonly Dictionary<string,object> Values=new Dictionary<string,object>{{"version",1},{"planMs",0.0},{"prevalidateMs",0.0},{"hashUnlinkMs",0.0},{"directoryCleanupMs",0.0},
+      {"planFiles",0},{"planDirectories",0},{"validatedFiles",0},{"validatedDirectories",0},{"hashedFiles",0},{"hashedBytes",0L},{"unlinkedFiles",0}};
+    private readonly System.Diagnostics.Stopwatch total=System.Diagnostics.Stopwatch.StartNew();
+    private readonly System.Diagnostics.Stopwatch phase=System.Diagnostics.Stopwatch.StartNew();
+    private string current="planMs";
+    public void Next(string name){Values[current]=(double)Values[current]+phase.Elapsed.TotalMilliseconds;phase.Restart();current=name;}
+    public void Increment(string name){Values[name]=Convert.ToInt64(Values[name])+1L;}
+    public string Finish(){Values[current]=(double)Values[current]+phase.Elapsed.TotalMilliseconds;Values["nativeMs"]=total.Elapsed.TotalMilliseconds;return Serializer().Serialize(Values);}
+  }
+  private static string lastRetirementTimings="{}";
+  public static string LastRetirementTimings(){return lastRetirementTimings;}
+
   public static string Retire(string selectedRoot,string planPath,string planHash,bool allowPartial) {
+    var timing=new RetirementTiming();lastRetirementTimings="{}";
+    try{return RetireCore(selectedRoot,planPath,planHash,allowPartial,timing);}
+    finally{lastRetirementTimings=timing.Finish();}
+  }
+  private static string RetireCore(string selectedRoot,string planPath,string planHash,bool allowPartial,RetirementTiming timing) {
     Mode();string root=Full(selectedRoot);var ancestors=Ancestors(root);var dirs=new List<Dir>();
     try {
       Dictionary<string,object> plan;
@@ -106,7 +126,9 @@ public static class AgentHubSealedNativeCapture {
         if(Hash(ps)!=planHash)throw new IOException("capture-plan-hash-changed");ps.Position=0;
         using(var reader=new StreamReader(ps,new UTF8Encoding(false,true),true,4096,true))plan=Map(Serializer().DeserializeObject(reader.ReadToEnd()));
         if(!Case.Equals(Path.GetFullPath((string)plan["repository"]),Path.GetFullPath(selectedRoot)))throw new IOException("capture-plan-root-mismatch");
+        timing.Next("prevalidateMs");
         var rh=Open(root,true,true,false);dirs.Add(new Dir{Path=root,Relative="",Handle=rh});Match(Information(rh),Map(plan["root"]));
+        timing.Increment("validatedDirectories");
         var files=new Dictionary<string,Asset>(Case);var expectedDirs=new Dictionary<string,Dictionary<string,object>>(Case);
         foreach(object value in (object[])plan["files"]) {
           var f=Map(value);var id=Map(f["identity"]);string relative=Relative((string)f["path"]);
@@ -118,32 +140,37 @@ public static class AgentHubSealedNativeCapture {
             EnforceTimes=!objectFile,Write=objectFile?0:Time(f["writeTimeNs"]),Change=objectFile?0:Time(f["changeTimeNs"])});
         }
         foreach(object value in (object[])plan["directories"]){var d=Map(value);string relative=(string)d["path"];if(relative!="")expectedDirs.Add(Relative(relative),Map(d["identity"]));}
+        timing.Values["planFiles"]=files.Count;timing.Values["planDirectories"]=expectedDirs.Count+1;
         int found=0,foundDirs=0;
         for(int n=0;n<dirs.Count;n++)foreach(string child in Directory.EnumerateFileSystemEntries(dirs[n].Path)) {
           string relative=child.Substring(root.Length+1).Replace('\\','/');var attrs=File.GetAttributes(child);
           if((attrs&FileAttributes.ReparsePoint)!=0)throw new IOException("capture-reparse-refused");
           if((attrs&FileAttributes.Directory)!=0){
             Dictionary<string,object> id;if(!expectedDirs.TryGetValue(relative,out id))throw new IOException("capture-unexpected-directory");
-            var h=Open(child,true,true,false);dirs.Add(new Dir{Path=child,Relative=relative,Handle=h});Match(Information(h),id);foundDirs++;
+            var h=Open(child,true,true,false);dirs.Add(new Dir{Path=child,Relative=relative,Handle=h});Match(Information(h),id);foundDirs++;timing.Increment("validatedDirectories");
           }else{
             Asset a;if(!files.TryGetValue(relative,out a))throw new IOException("capture-unexpected-file");
-            using(var h=Open(child,false,true,a.Shared))Match(h,a);found++;
+            using(var h=Open(child,false,true,a.Shared))Match(h,a);found++;timing.Increment("validatedFiles");
           }
         }
         if(!allowPartial&&(found!=files.Count||foundDirs!=expectedDirs.Count))throw new IOException("capture-missing-without-original");
         var ordered=new List<string>(files.Keys);ordered.Sort(Case);
+        timing.Next("hashUnlinkMs");
         int removed=0,sharedRemoved=0;long bytes=0,allocation=0;var clock=System.Diagnostics.Stopwatch.StartNew();
         foreach(string relative in ordered) {
           Asset a=files[relative];string target=root+"\\"+relative.Replace('/','\\');
           if(!File.Exists(target)){if(allowPartial)continue;throw new IOException("capture-file-disappeared");}
           if(removed>=64||(removed>0&&(bytes+a.Bytes>256L*1024*1024||clock.ElapsedMilliseconds>=10000)))break;
           using(var h=Open(target,false,true,a.Shared))using(var stream=new FileStream(h,FileAccess.Read)) {
-            Match(h,a);if(Hash(stream)!=a.Hash)throw new IOException("capture-file-hash-changed");Match(h,a);
+            Match(h,a);string digest=Hash(stream);timing.Increment("hashedFiles");timing.Values["hashedBytes"]=Convert.ToInt64(timing.Values["hashedBytes"])+a.Bytes;
+            if(digest!=a.Hash)throw new IOException("capture-file-hash-changed");Match(h,a);
             Info i=Information(h);if(i.Links==1)allocation+=Allocated(h);else sharedRemoved++;
             DisposeEntry(h);
+            timing.Increment("unlinkedFiles");
           }
           removed++;bytes+=a.Bytes;
         }
+        timing.Next("directoryCleanupMs");
         for(int n=dirs.Count-1;n>0;n--)if(Empty(dirs[n].Path)){Streams(dirs[n].Handle,true);DisposeEntry(dirs[n].Handle);dirs[n].Handle.Dispose();}
         bool complete=Empty(root);
         if(complete){Streams(rh,true);Match(Information(rh),Map(plan["root"]));DisposeEntry(rh);}

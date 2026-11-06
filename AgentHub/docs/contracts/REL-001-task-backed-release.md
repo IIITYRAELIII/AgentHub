@@ -535,6 +535,17 @@ Exact selected-root allocation is measured with FileStandardInfo and file-ID
 deduplication, including newly allocated pool data; volume free-space deltas and
 cumulative scheduler counters are not reclaimed-byte proof.
 
+A persisted capture archive is carried as its unchanged descriptor to the SAME
+object-store lease. Immediately before retirement that lease performs the full
+fresh original/ref/tree/manifest/tag/object/type/reachability proof and exact
+retirement/state binding checks. Eliminating a preliminary unleased duplicate
+read does not eliminate that proof, initial intake or historical graph review.
+Finite producer reuse changes process lifetime only: every batch retains fresh
+Task/publication/source/current checks and the complete native remaining-tree,
+identity/hash/ADS/reparse/link checks and original partial bounds. Bounded timing
+metadata on that original is diagnostic and grants no retirement/retry authority.
+See ADR-HUB-385-native-capture-executor.
+
 For transport retention only, an exact immutable superseded generation may use
 its SAME original's completed successor proof. Every canonical generation on
 the strictly decreasing supersedes chain must verify its original identity,

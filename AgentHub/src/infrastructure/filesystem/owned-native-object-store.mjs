@@ -1,4 +1,5 @@
 import path from "node:path";
+import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, open, readFile, readdir, link, unlink } from "node:fs/promises";
 import { MaintenanceOperationStore } from "../persistence/maintenance-operation-store.mjs";
@@ -386,7 +387,11 @@ export class OwnedNativeObjectStore {
     });
   }
 
-  async readArchive(archive) {
+  readArchive(archive) {
+    return measureTaskOperation("native-retire:archive-read", () => this.#readArchive(archive));
+  }
+
+  async #readArchive(archive) {
     await this.#pool(true);
     if (!archive || archive.storeId !== this.id || !oid(archive.commit) || !oid(archive.tree)
         || !oid(archive.manifestBlob) || !/^refs\/agent-hub\/archives\/[a-f0-9]{64}$/u.test(archive.ref)) throw fail("Archive binding malformed");
@@ -430,12 +435,19 @@ export class OwnedNativeObjectStore {
 
   // Fresh complete preservation and the destructive consumer share the SAME
   // object-store lease, excluding owned GC/import/ref updates until it returns.
-  withArchiveLease(archive, consume) {
-    return this.withLease(async () => {
-      const stored = await this.readArchive(archive);
-      await this.#retireTransferAliases(this.store.getReadonly(archive.operationId));
-      return consume(stored);
-    });
+  async withArchiveLease(archive, consume) {
+    const started = performance.now(); let acquired = false;
+    try {
+      return await this.withLease(async () => {
+        acquired = true;
+        recordTaskOperationTiming("native-retire:archive-lease-wait", { durationMs: Math.max(0, performance.now() - started), outcome: "ok" });
+        const stored = await this.readArchive(archive);
+        await this.#retireTransferAliases(this.store.getReadonly(archive.operationId));
+        return consume(stored);
+      });
+    } finally {
+      if (!acquired) recordTaskOperationTiming("native-retire:archive-lease-wait", { durationMs: Math.max(0, performance.now() - started), outcome: "error" });
+    }
   }
 
   async withArchiveMath(archive, verify) {
