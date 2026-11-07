@@ -386,6 +386,10 @@ test("first frozen compose recovery keeps failed attempt and amends the same rel
   assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "applied");
   assert.equal(validations, 0);
   assert.deepEqual([composeCalls, inspections, recoveries], [1, 1, 1]);
+  const unamended = await f.service.continue(ack.operationId, { requestId: "no-implicit-first-amendment" });
+  assert.equal(unamended.accepted, false);
+  assert.equal(unamended.reason, "test-selection-required");
+  assert.equal(f.store.get(ack.operationId).currentGeneration, 1);
   const frozenGeneration = structuredClone(recovered.generations[0]);
   const amendment = await f.service.continue(ack.operationId, { requestId: "include-correction",
     expectedRevision: recovered.operation.revision, expectedGeneration: 1,

@@ -2221,6 +2221,10 @@ test("public first compose continuation advertises generation zero and keeps its
   assert.equal(recovered.operation.waitReason.code, "release_inputs_changed");
   assert.deepEqual(recovered.receipts.find(receipt => receipt.attempt === 1), first);
   assert.equal(recovered.receipts.find(receipt => receipt.attempt === 2).status, "applied");
+  const ordinary = await service.call("hub_release_continue", { context_token: token,
+    operation_id: ack.operationId, request_id: "public-first-unamended" });
+  assert.equal(ordinary.reason, "test-selection-required");
+  assert.equal(scheduled.length, 0);
 });
 
 test("manual public version reaches the same durable release admission and survives original readback", async context => {

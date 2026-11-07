@@ -291,6 +291,9 @@ export class ReleaseOperationService {
     // external condition. It neither resumes nor publishes that condition.
     this.#observe(current.operationId);
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
+    if (current.state === "waiting" && current.waitReason?.code === "release_inputs_changed" && current.firstComposeRecovery) {
+      return { accepted: false, reason: "test-selection-required", operation: current };
+    }
     let operation = current;
     if (current.state === RELEASE_OPERATION_STATES.WAITING) {
       const resumeState = String(current.resumeState ?? "").trim();
