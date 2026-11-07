@@ -339,6 +339,7 @@
       "document": "REL-001-task-backed-release.md",
       "paths": [
         "docs/decisions/ADR-HUB-424-first-freeze-recovery.md",
+        "tests/application/hub-mcp-service.test.mjs",
         "tests/application/release-operation-service.test.mjs",
         "tests/application/workspace-release-operation-adapter.test.mjs",
         "tests/application/workspace-release-preflight-service.test.mjs",
