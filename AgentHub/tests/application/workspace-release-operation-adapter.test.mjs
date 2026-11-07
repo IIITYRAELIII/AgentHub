@@ -39,6 +39,40 @@ test("manual public version forwards the original authorization to generation pr
   assert.equal(Object.hasOwn(calls[1], "releaseVersion"), false);
 });
 
+test("first compose adapter recovers the original before forwarding retained versions to its amendment", async () => {
+  const { adapter } = fixture([]);
+  const calls = [];
+  const binding = { repositoryRoot: "D:/repo", releaseVersion: "2.1.5", runtimeReleaseVersion: "2.1.5+build.29901174" };
+  const candidate = { repositoryRoot: "D:/repo", baseCommit: "base", preReleaseHead: "frozen", tree: "tree",
+    manifestHash: "manifest", frozenTasks: [{ taskId: "old-task", resultCommit: "old-result", taskRevision: 3 }] };
+  adapter.releasePreflight.firstOperationGeneration = async input => {
+    calls.push(input);
+    if (!input.inspectOnly) await input.validateBeforeCommit();
+    return { planRevision: "original-plan", releaseCandidates: input.inspectOnly ? [{ binding, candidate }] : [candidate] };
+  };
+  const operation = { operationId: "same-original", workspaceId: "workspace", selectedResults: [],
+    authorization: { taskIds: ["old-task"], approvedTargets: [{ repositoryRoot: "D:/repo",
+      approvedLocalMainCommit: "main", approvedOriginMainCommit: "origin" }], fingerprint: "original", releaseVersion: "2.1.5" } };
+  assert.deepEqual(await adapter.inspectFirstCompose({ operation, generation: 1 }), [binding]);
+  let ownerChecks = 0;
+  const composed = await adapter.recoverFirstCompose({ operation, generation: 1, recovery: { candidates: [binding] },
+    validateBeforeCommit: async () => { ownerChecks++; } });
+  assert.equal(ownerChecks, 1);
+  assert.equal(composed.candidates[0].commit, "frozen");
+  assert.deepEqual(composed.selectedResults.map(item => item.taskId), ["old-task"]);
+  assert.deepEqual(calls[1].expectedBindings, [binding]);
+  assert.deepEqual(calls[1].taskIds, ["old-task"]);
+  operation.firstComposeRecovery = { candidates: [binding] };
+  operation.testSelectionAmendments = [{ taskIds: ["old-task", "fix-task"], taskScope: "all_await" }];
+  adapter.releasePreflight.prepareOperationGeneration = async input => {
+    calls.push(input); return { releaseCandidates: [], planRevision: "next-plan" };
+  };
+  await adapter.compose({ operation, generation: 2 });
+  assert.deepEqual(calls[2].frozenVersions, [binding]);
+  assert.equal(Object.hasOwn(calls[2], "taskIds"), false);
+  assert.deepEqual(operation.authorization.taskIds, ["old-task"]);
+});
+
 test("publication reservation uses the Workspace Await boundary for the exact generation", async () => {
   const selectedResults = [
     { taskId: "task-b", resultCommit: "result-b", acceptanceRevision: 3 },

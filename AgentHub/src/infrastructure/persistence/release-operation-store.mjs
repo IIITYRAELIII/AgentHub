@@ -11,6 +11,7 @@ import {
   completedReleaseGenerationEvidence,
   effectiveReleaseTaskIds,
   failedCompositionRecovery,
+  failedFirstComposeRecovery,
   releaseCompositionInput,
   effectiveReleaseTaskScope,
   createReleaseOperation,
@@ -600,6 +601,7 @@ export class ReleaseOperationStore {
     emitEvent = true,
     reviewedMainRecovery = null,
     testSelectionAmendment = null,
+    firstComposeRecovery = null,
   } = {}) {
     const id = String(operationId ?? "").trim();
     if (!id) throw new TypeError("operationId is required");
@@ -637,6 +639,19 @@ export class ReleaseOperationStore {
             return receipt?.status !== "failed" || receipt.effect?.status !== "not_applied";
           })) throw new Error("Reviewed-main recovery requires terminal not-applied publication receipts");
         }
+        if (firstComposeRecovery && expectedRevision === current.revision) {
+          const raw = JSON.parse(row.operation_json);
+          if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("First compose recovery is source-owner-fenced");
+          const captured = failedFirstComposeRecovery({ operation: current,
+            receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=?")
+              .all(id).map(row => readJson(row.receipt_json)),
+            generations: database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=?")
+              .all(id).map(row => readJson(row.generation_json)) });
+          if (!captured || captured.receiptSha256 !== firstComposeRecovery.receiptSha256
+              || captured.inputSha256 !== firstComposeRecovery.inputSha256 || captured.attempt !== firstComposeRecovery.attempt) {
+            throw new Error("First compose recovery failed receipt changed");
+          }
+        }
         if (testSelectionAmendment && expectedRevision === current.revision) {
           const raw = JSON.parse(row.operation_json);
           if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("Test selection amendment is source-owner-fenced");
@@ -662,6 +677,7 @@ export class ReleaseOperationStore {
           updatedAt: this.now(),
           reviewedMainRecovery,
           testSelectionAmendment,
+          firstComposeRecovery,
         });
         if (!result.applied) {
           database.exec("ROLLBACK");

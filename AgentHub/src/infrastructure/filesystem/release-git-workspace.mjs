@@ -44,7 +44,7 @@ import {
   readPublicationRunStatus,
 } from "../persistence/publication-run-store.mjs";
 import { publicationStateFile, publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
-import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
+import { freezePreparedPublicationCandidate, frozenMetadataMaterialization } from "./freeze-publication-candidate.mjs";
 import { assertNativeTaskHistories, assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY } from "./native-release-merge.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
@@ -1080,7 +1080,7 @@ export class ReleaseGitWorkspaceService {
     }
   }
 
-  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent, releaseVersion,
+  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent, releaseVersion, expectedRuntimeVersion,
     exactBaseProvenance = false, verificationRoot = null }) {
     const layout = this.#layout(projectRoot);
     const stale = message => Object.assign(new Error(`${message}; prepare the current Await candidate through the normal owner`),
@@ -1143,7 +1143,8 @@ export class ReleaseGitWorkspaceService {
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
         inputHash: sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit, tasks, baseProvenance,
           changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)),
-          ...(releaseVersion !== undefined ? { releaseVersion } : {}) })) };
+          ...(releaseVersion !== undefined ? { releaseVersion } : {}),
+          ...(expectedRuntimeVersion !== undefined ? { expectedRuntimeVersion } : {}) })) };
       return { binding, candidate: { ...source, baseProvenance, frozenTasks: tasks,
         mergedTaskIds: tasks.map(task => task.taskId),
         manifest: { ...manifest, ...(baseProvenance ? { baseProvenance } : {}), preparedCandidate: binding } } };
@@ -1155,6 +1156,7 @@ export class ReleaseGitWorkspaceService {
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
     ephemeral = false, nativeResolutionReview = null, releaseVersion = undefined,
+    expectedRuntimeVersion = undefined, firstComposeRecovery = null,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
     if (releaseVersion !== undefined) normalizeReleaseVersion(releaseVersion);
@@ -1170,7 +1172,7 @@ export class ReleaseGitWorkspaceService {
     const lock = path.join(this.dataDir, "locks", `release-generation-${generationKey}`);
     return withInterprocessLocks([lock], async () => {
       try {
-        await mkdir(generationDataDir, { recursive: true });
+        if (!firstComposeRecovery) await mkdir(generationDataDir, { recursive: true });
         const identityFile = path.join(generationDataDir, "identity.json");
         let identity = {
           schemaVersion: 1,
@@ -1185,10 +1187,20 @@ export class ReleaseGitWorkspaceService {
           throw new Error("release generation directory identity collision");
         }
         if (existingPrepared) identity = existingIdentity;
+        if (!existingIdentity && firstComposeRecovery) throw new Error("First compose retained identity is missing");
         if (!existingIdentity) await writeJsonAtomic(identityFile, identity);
+        if (firstComposeRecovery) {
+          const reader = new ReleaseGitWorkspaceService({ dataDir: generationDataDir,
+            contourExternalEffects: this.#contourExternalEffects, environment: this.#environment,
+            readPreparationOriginal: this.#readPreparationOriginal });
+          reader.#publicationDataDir = this.#publicationDataDir;
+          return reader.#firstFrozenGeneration({ identity, generationDataDir,
+            projectRoot: sourceRoot, ...firstComposeRecovery });
+        }
         const preparedInput = { projectRoot: sourceRoot, workspaceId, planRevision,
           frozenTasks, approvedBaseCommit, baseProvenance, changelogContent,
-          ...(releaseVersion !== undefined ? { releaseVersion } : {}) };
+          ...(releaseVersion !== undefined ? { releaseVersion } : {}),
+          ...(expectedRuntimeVersion !== undefined ? { expectedRuntimeVersion } : {}) };
         const generationLayout = this.#layout(sourceRoot);
         const localCheckpointFile = path.join(generationDataDir, "release-repositories", generationLayout.repositoryKey, "checkpoint.json");
         const localCheckpoint = freezePublication ? await readJson(localCheckpointFile) : null;
@@ -1197,7 +1209,8 @@ export class ReleaseGitWorkspaceService {
           const inputHash = sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit,
             tasks: normalizedFrozenTasks(frozenTasks), baseProvenance,
             changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)),
-            ...(releaseVersion !== undefined ? { releaseVersion } : {}) }));
+            ...(releaseVersion !== undefined ? { releaseVersion } : {}),
+            ...(expectedRuntimeVersion !== undefined ? { expectedRuntimeVersion } : {}) }));
           if (existingPrepared && existingPrepared.inputHash !== inputHash) {
             throw Object.assign(new Error("Original generation prepared input changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
           }
@@ -1301,6 +1314,7 @@ export class ReleaseGitWorkspaceService {
           changelogContent: frozenChangelog,
           reusePersistedChangelog: Boolean(localCheckpoint?.publicationFreeze),
           ...(releaseVersion !== undefined ? { expectedVersion: releaseVersion } : {}),
+          ...(expectedRuntimeVersion !== undefined ? { expectedRuntimeVersion } : {}),
           validateBeforeCommit: validatePrepared,
         });
         const frozen = await isolated.frozenCandidate(sourceRoot);
@@ -3357,11 +3371,86 @@ export class ReleaseGitWorkspaceService {
     return { checkpointSha256: sha256(bytes), candidate: await this.frozenCandidate(projectRoot) };
   }
 
+  async firstFrozenGeneration({ operationId, projectRoot, ...options }) {
+    const sourceRoot = await repositoryRoot(projectRoot);
+    const key = sha256(`${operationId}:1:${sourceRoot}`).slice(0, 24);
+    const identity = await readJson(path.join(this.dataDir, "release-gens", key, "identity.json"));
+    if (!identity?.preparedCandidate) throw new Error("First compose has no retained prepared generation");
+    return withPreparationGitIsolation(this.dataDir, () => this.prepareGeneration({
+      operationId, generation: 1, projectRoot: sourceRoot, firstComposeRecovery: options }));
+  }
+
+  async #firstFrozenGeneration({ identity, generationDataDir, projectRoot, workspaceId, taskIds,
+    releaseVersion, changelogContent, approvedLocalMainCommit, approvedOriginMainCommit,
+    inspectOnly = false, expectedBinding = null, validateBeforeCommit = async () => {} }) {
+    if (identity.operationId == null || identity.generation !== 1
+        || !samePath(identity.repositoryRoot, projectRoot)
+        || identity.identitySha256 !== sha256(`${identity.operationId}:1:${projectRoot}`)) {
+      throw new Error("First frozen generation original identity changed");
+    }
+    const candidate = await this.#readFrozenCandidate(projectRoot, { metadataPreview: true });
+    const checkpointBytes = await readFile(candidate.checkpointFile);
+    const checkpoint = JSON.parse(checkpointBytes);
+    const manifest = JSON.parse(await readFile(candidate.manifestFile, "utf8"));
+    const primary = await primarySnapshot(projectRoot);
+    const origin = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: projectRoot });
+    if (candidate.checkpointPhase !== "frozen" || candidate.manifest.workspaceId !== workspaceId
+        || primary.headCommit !== approvedLocalMainCommit || origin !== approvedOriginMainCommit
+        || candidate.manifest.taskIds.some(taskId => !taskIds.includes(taskId))
+        || stableManifest(manifest.preparedCandidate) !== stableManifest(identity.preparedCandidate)
+        || checkpoint.publicationFreeze?.preparedHead !== identity.preparedCandidate.commit
+        || releaseVersion !== undefined && checkpoint.publicationFreeze?.releaseVersion !== releaseVersion) {
+      throw new Error("First frozen generation authorization or prepared candidate changed");
+    }
+    const inputHash = sha256(stableManifest({ workspaceId, planRevision: candidate.planRevision,
+      approvedBaseCommit: candidate.baseCommit, tasks: normalizedFrozenTasks(manifest.tasks),
+      baseProvenance: manifest.baseProvenance ?? null,
+      changelogHash: changelogContent == null ? null : sha256(Buffer.from(changelogContent)),
+      ...(releaseVersion === undefined ? {} : { releaseVersion }) }));
+    const intent = checkpoint.publicationFreeze;
+    if (intent.changelogPayloadFile !== (intent.changelogContentHash === null ? null
+      : `publication-changelog-${intent.changelogContentHash}.bin`)) throw new Error("First frozen payload path changed");
+    for (const key of ["preparedHead", "releaseVersion", "runtimeReleaseVersion", "changelogBlob", "changelogContentHash", "changelogPayloadFile"]) {
+      if (manifest.publication?.[key] !== intent[key]) throw new Error("First frozen publication intent changed");
+    }
+    if (manifest.publication?.head !== candidate.preReleaseHead) throw new Error("First frozen publication head changed");
+    const payload = intent.changelogPayloadFile == null ? null
+      : await readFile(path.join(path.dirname(candidate.checkpointFile), "evidence", intent.changelogPayloadFile));
+    if (inputHash !== identity.preparedCandidate.inputHash
+        || (payload === null ? null : sha256(payload)) !== intent.changelogContentHash
+        || (changelogContent == null ? null : sha256(Buffer.from(changelogContent))) !== intent.changelogContentHash) {
+      throw new Error("First frozen generation original input or payload changed");
+    }
+    const binding = { repositoryRoot: projectRoot, generationRoot: generationDataDir,
+      identitySha256: sha256(stableManifest(identity)), checkpointSha256: sha256(checkpointBytes),
+      manifestHash: candidate.manifestHash, commit: candidate.preReleaseHead, tree: candidate.tree,
+      preparedInputHash: inputHash, releaseVersion: intent.releaseVersion,
+      runtimeReleaseVersion: intent.runtimeReleaseVersion, changelogContentHash: intent.changelogContentHash };
+    if (inspectOnly) return { binding, candidate };
+    if (stableManifest(binding) !== stableManifest(expectedBinding)) throw new Error("First frozen generation changed after recovery admission");
+    await this.freezePublicationCandidate({ projectRoot, workspaceId, expectedPlanRevision: candidate.planRevision,
+      expectedPreparedHead: intent.preparedHead, changelogContent: payload, reusePersistedChangelog: true,
+      recoverMetadataMaterialization: true, validateBeforeCommit,
+      expectedVersion: intent.releaseVersion, expectedRuntimeVersion: intent.runtimeReleaseVersion });
+    const frozen = await this.frozenCandidate(projectRoot);
+    if (frozen.manifestHash !== binding.manifestHash || frozen.preReleaseHead !== binding.commit
+        || frozen.tree !== binding.tree || sha256(await readFile(candidate.checkpointFile)) !== binding.checkpointSha256) {
+      throw new Error("First frozen generation changed during recovery");
+    }
+    return { binding, candidate: { ...frozen, operationId: identity.operationId, generation: 1,
+      generationRoot: generationDataDir, frozenTasks: normalizedFrozenTasks(manifest.tasks),
+      mergedTaskIds: manifest.tasks.map(task => task.taskId) } };
+  }
+
   async frozenCandidate(projectRoot, { changelogContent = undefined, allowAbsent = false } = {}) {
+    return this.#readFrozenCandidate(projectRoot, { changelogContent, allowAbsent });
+  }
+
+  async #readFrozenCandidate(projectRoot, { changelogContent = undefined, allowAbsent = false, metadataPreview = false } = {}) {
     this.#assertAvailable("frozenCandidate");
     const authority = this.#readPreparationAuthority(canonicalPath(projectRoot));
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
-      () => this.frozenCandidate(projectRoot, { changelogContent, allowAbsent }));
+      () => this.#readFrozenCandidate(projectRoot, { changelogContent, allowAbsent, metadataPreview }));
     const primary = await primarySnapshot(projectRoot);
     const layout = this.#layout(primary.root);
     const checkpoint = await readJson(layout.checkpointFile);
@@ -3430,7 +3519,9 @@ export class ReleaseGitWorkspaceService {
       authorizedNotes = Boolean(info?.isFile() && !info.isSymbolicLink()
         && (await readFile(file)).equals(Buffer.from(changelogContent)));
     }
-    if (releaseBranch !== expectedCheckout || releaseHead !== branchHead || (releaseDirty && !authorizedNotes)) {
+    const pendingMetadata = metadataPreview && checkpointPhase === "frozen" && releaseDirty
+      ? await frozenMetadataMaterialization({ root: marker.releaseRoot, head: checkpoint.preReleaseHead }) : [];
+    if (releaseBranch !== expectedCheckout || releaseHead !== branchHead || (releaseDirty && !authorizedNotes && !pendingMetadata.length)) {
       throw new Error(`release checkpoint clone is not an exact clean ${expectedCheckout} checkout for phase ${checkpointPhase}`);
     }
     if (manifest.schemaVersion !== 2
@@ -3474,6 +3565,7 @@ export class ReleaseGitWorkspaceService {
       releaseRoot: layout.releaseRoot,
       checkpointFile: layout.checkpointFile,
       checkpointPhase,
+      ...(pendingMetadata.length ? { pendingMetadata } : {}),
       planRevision: String(checkpoint.planRevision),
       manifestHash: String(checkpoint.manifestHash),
       manifestFile,

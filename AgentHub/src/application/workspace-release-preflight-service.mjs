@@ -471,7 +471,7 @@ export class WorkspaceReleasePreflightService {
 
   async prepareOperationGeneration({
     workspaceId, operationId, generation, taskIds, approvedRepositories = [], changelogContent = undefined,
-    previousSelectedResults = [], releaseVersion = undefined,
+    previousSelectedResults = [], releaseVersion = undefined, frozenVersions = [],
   } = {}) {
     if (typeof this.releaseGitWorkspaces.prepareGeneration !== "function") {
       throw new Error("immutable release generation preparation is unavailable");
@@ -517,6 +517,11 @@ export class WorkspaceReleasePreflightService {
       const releaseCandidates = [];
       for (const repository of prepared.repositories) {
         const source = repository.frozenCandidate;
+        const frozenVersion = frozenVersions.find(item => canonicalRoot(item.repositoryRoot) === canonicalRoot(repository.projectRoot));
+        if (frozenVersions.length && !frozenVersion
+            || frozenVersion && releaseVersion !== undefined && releaseVersion !== frozenVersion.releaseVersion) {
+          throw new Error("Original frozen repository version binding changed");
+        }
         if (source.checkpointPhase !== "prepared") throw Object.assign(new Error("Await owner must prepare the current release candidate"),
           { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
         await validate();
@@ -525,7 +530,9 @@ export class WorkspaceReleasePreflightService {
           planRevision: plan.revision, approvedBaseCommit: source.baseCommit,
           baseProvenance: source.manifest.baseProvenance, frozenTasks: source.manifest.tasks,
           ...(changelogContent === undefined ? {} : { changelogContent }), validateBeforeCommit: validate,
-          ...(releaseVersion !== undefined ? { releaseVersion } : {}),
+          ...(frozenVersion ? { releaseVersion: frozenVersion.releaseVersion,
+            expectedRuntimeVersion: frozenVersion.runtimeReleaseVersion }
+            : releaseVersion !== undefined ? { releaseVersion } : {}),
         }));
         if (previousSelectedResults.length) await this.releaseGitWorkspaces.assertSelectedResultLineage({ candidate, previousSelectedResults });
         releaseCandidates.push(candidate);
@@ -533,6 +540,41 @@ export class WorkspaceReleasePreflightService {
       await validate();
       return { workspaceId: String(workspaceId), planRevision: plan.revision,
         taskIds: prepared.taskIds, releaseCandidates, overlaps: plan.conflicts };
+    });
+  }
+
+  async firstOperationGeneration({ workspaceId, operationId, generation, taskIds, approvedRepositories,
+    changelogContent, releaseVersion, inspectOnly, expectedBindings = [], validateBeforeCommit = async () => {} }) {
+    if (generation !== 1) throw new Error("First compose recovery requires generation one");
+    requiredMethod(this.releaseGitWorkspaces, "firstFrozenGeneration");
+    return this.withAwaitTransition(workspaceId, async () => {
+      const approvals = approvedRepositoryEntries(approvedRepositories);
+      if (!approvals.size) throw new Error("First compose recovery requires original repository approvals");
+      const releaseCandidates = [];
+      for (const approval of approvals.values()) {
+        const frozen = await this.releaseGitWorkspaces.firstFrozenGeneration({ ...approval,
+          operationId, projectRoot: approval.projectRoot, workspaceId, taskIds,
+          changelogContent, releaseVersion, inspectOnly: true });
+        releaseCandidates.push(frozen);
+      }
+      const actualIds = [...new Set(releaseCandidates.flatMap(item => item.candidate.manifest.taskIds))].sort();
+      if (JSON.stringify(actualIds) !== JSON.stringify([...taskIds].sort())) {
+        throw new Error("First frozen generation does not contain its original whole selection");
+      }
+      if (inspectOnly) return { releaseCandidates };
+      if (taskGitIdentityHash(releaseCandidates.map(item => item.binding)) !== taskGitIdentityHash(expectedBindings)) {
+        throw new Error("First frozen generation binding changed after admission");
+      }
+      await validateBeforeCommit();
+      const recovered = [];
+      for (const [index, approval] of [...approvals.values()].entries()) {
+        const value = await this.releaseGitWorkspaces.firstFrozenGeneration({ ...approval,
+          operationId, projectRoot: approval.projectRoot, workspaceId, taskIds,
+          changelogContent, releaseVersion, expectedBinding: expectedBindings[index], validateBeforeCommit });
+        recovered.push(value.candidate);
+      }
+      await validateBeforeCommit();
+      return { planRevision: recovered[0].planRevision, releaseCandidates: recovered };
     });
   }
 

@@ -1084,3 +1084,14 @@ proof, never new prepare/assignment or an execution owner transfer. Missing or
 changed committed proof refuses. Shared execution context is a port capability
 observed by both application and process/SQL adapters, with one async-local
 instance; application code does not import a process implementation.
+
+## First frozen compose continuation (HUB-424)
+
+The existing release continue arguments and original actor/authorization/CAS
+remain authoritative. A positively proven failed FIRST compose at generation
+zero may admit recovery of its already frozen local generation one through the
+same durable owner. Its failed receipt stays unchanged; a new attempt is appended.
+No client repair parameters, new API, release original or UNKNOWN conversion are
+introduced. Changed accepted membership waits for the existing explicit amendment
+before validation/publication of the corrected next generation. See REL-001 and
+ADR-HUB-424-first-freeze-recovery.
