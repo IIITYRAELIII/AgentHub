@@ -35,6 +35,7 @@ export class DeferredInputService {
     clientProjectionIntent = null,
     steerTargetRunId = null,
     steerTargetTurnId = null,
+    followUpMode = "",
     destination = "pending",
     notify = true,
     persistentFiles = false,
@@ -71,6 +72,7 @@ export class DeferredInputService {
       temporaryFiles,
       conflictKind,
       clientUserMessageId: normalizedClientUserMessageId,
+      ...(followUpMode === "steer" ? { followUpMode } : {}),
       ...(normalizedClientProjectionIntent
         ? { clientProjectionIntent: normalizedClientProjectionIntent }
         : {}),
@@ -111,6 +113,7 @@ export class DeferredInputService {
       forceSpeechButton,
       allowForce,
       conflictKind,
+      ...(followUpMode === "steer" ? { followUpMode } : {}),
       clientUserMessageId: normalizedClientUserMessageId,
       ...(normalizedClientProjectionIntent
         ? { clientProjectionIntent: normalizedClientProjectionIntent }

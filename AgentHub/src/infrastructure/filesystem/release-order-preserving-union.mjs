@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "./preparation-git-isolation.mjs";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -13,7 +14,7 @@ function bytes(value) {
 
 async function gitBytes(cwd, args) {
   try {
-    const result = await execFileAsync("git", args, {
+    const result = await execFileAsync("git", ownedGitArguments(args), {
       cwd, windowsHide: true, encoding: "buffer", maxBuffer: 64 * 1024 * 1024,
     });
     return bytes(result.stdout);
@@ -96,7 +97,7 @@ function mergeTreeNameOnly(value) {
 
 async function isAncestor(root, ancestor, descendant) {
   try {
-    await execFileAsync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+    await execFileAsync("git", ownedGitArguments(["merge-base", "--is-ancestor", ancestor, descendant]), {
       cwd: root, windowsHide: true, encoding: "buffer", maxBuffer: 64 * 1024 * 1024,
     });
     return true;
@@ -108,7 +109,7 @@ async function isAncestor(root, ancestor, descendant) {
 async function historicalBaseMatchesApprovedPaths(root, historicalBase, approvedBase, stages) {
   if (historicalBase === approvedBase) return true;
   try {
-    await execFileAsync("git", ["merge-base", "--is-ancestor", historicalBase, approvedBase], {
+    await execFileAsync("git", ownedGitArguments(["merge-base", "--is-ancestor", historicalBase, approvedBase]), {
       cwd: root, windowsHide: true, encoding: "buffer", maxBuffer: 64 * 1024 * 1024,
     });
     for (const stage of stages) {

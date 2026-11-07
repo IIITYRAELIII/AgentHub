@@ -122,6 +122,19 @@ VS Code webview преобразует те же пути в разрешённ�
 - `theme.json` и этот README не раздаются локальным сервером; растровые ресурсы
   получают immutable-кэш, CSS/JS/HTML — `no-store`.
 
+## Первый кадр: URL и CSP
+
+Канонические URL ресурсов задавайте до загрузки CSS темы и выполнения `app.js`,
+а не после первого относительного запроса. Для encoded-фона до получения
+метаданных используйте `none`, без относительного fallback. Встроенные начальные
+стили должны иметь nonce, совпадающий с CSP фактического HTTP-ответа.
+Владельцы этого порядка — [`renderThemeHtml`](../../../theme-registry.cjs) и
+[`MiniAppServer`](../../../src/interfaces/web/mini-app-server.mjs).
+При изменении раннего рендеринга проверяйте холодную загрузку через настоящий
+MiniApp HTTP с production CSP-заголовками: задержите `app.js` и encoded metadata,
+убедитесь в отсутствии ошибочных запросов/404 и CSP-ошибок в консоли. Ближайшие
+регрессии — [`theme-background-first-paint.test.mjs`](../../../tests/public/theme-background-first-paint.test.mjs).
+
 ## Проверка
 
 Из каталога `Utilities/AgentHub` выполните:

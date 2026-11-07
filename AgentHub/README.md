@@ -803,6 +803,15 @@ Android при обнаружении нового экземпляра допо
 npm run publish:changed -- --stream <stream-id> --thread <thread-id>
 ```
 
+Для ручного выбора всех трёх чисел public version добавьте `--version X.Y.Z`,
+например `--version 3.7.9`. Без параметра сохраняется автоматический patch.
+Версия относится к новой операции; `--resume`/`--status` используют сохранённую
+версию исходного `operationId`, поэтому новый `--version` с ними не передаётся.
+В штатном source entry `node release.mjs run --provider <provider> --thread
+<thread-id> --stream <stream-id> --request-file <JSON>` то же значение задаётся
+полем `"release_version": "3.7.9"` вместе с обычными аргументами `hub_release_run`.
+Значение фиксируется durable owner; package/lock вручную менять не нужно.
+
 После durable ACK стабильный worker сравнивает generation commit с последней
 успешно опубликованной ревизией и собирает только затронутые поверхности. Общие Web UI-файлы обновляют
 runtime и Worker без повторной Android-сборки; Android, Desktop и VS Code

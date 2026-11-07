@@ -1,6 +1,11 @@
 export const CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE = "ERR_CONTEXT_MAINTENANCE_ACTIVE";
 export const RUNTIME_RESTART_PENDING_ERROR_CODE = "ERR_RUNTIME_RESTART_PENDING";
 
+export function streamMessageDelivery(item) {
+  return Boolean(String(item?.streamId ?? "").trim()) && (item?.conflictKind === "message-steer"
+    || (item?.conflictKind === "message-intake" && item.followUpMode === "steer"));
+}
+
 export function contextMaintenanceActiveError() {
   return Object.assign(
     new Error("context maintenance is active"),

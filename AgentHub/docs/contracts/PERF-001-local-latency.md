@@ -1,5 +1,18 @@
 # PERF-001 — Local command latency
 
+The startup shell can listen after instance ownership while SQLite integrity is
+pending, using the existing MiniAppServer and browser health polling. The same
+server's later activation keeps its address and auth. Time to listener, first
+HTTP response and actual startup-screen display are distinct from completed
+integrity, business availability and Ready; none substitutes for another.
+
+Startup SQLite inspection keeps its full detached DB/WAL integrity check while
+executing synchronous inspection outside the caller event loop. Existing
+original-startup phases distinguish DB/WAL copy bytes, query round trip, worker
+open/check/close and cleanup. These bounded numeric phases contain no paths or
+content; logging failure cannot alter recovery. Full required work still gates
+readiness, and event-loop isolation alone does not prove earlier web availability.
+
 ## SQLite capture deadline coverage
 
 The process-owned capture deadline begins before child launch and includes
@@ -64,6 +77,14 @@ result alone never establishes unchanged projection inputs.
 
 ## Bounded Codex trace and fact projections
 
+The browser's canonical history cache follows the existing open-column layout,
+not every Stream visited during the document lifetime. Closing/replacing a
+column releases its loaded history, focused page, pagination and app message
+projection; the selected/visible column remains protected during transitions.
+Still-open columns keep their pages. Reopening uses the ordinary history owner.
+This bounds retention by opened content without a timer, arbitrary LRU size,
+background source read, truncation or a new durable state owner (ADR-HUB-343).
+
 Codex rollout preview retains at most 256 groups, 128 activities per group,
 1,024 activities per turn and one million reasoning characters in aggregate;
 an individual retained reasoning block is never cut. Earlier omitted groups or
@@ -90,6 +111,13 @@ Oversized projections use uncached reads. Pricing, attribution, projection CAS,
 terminal/outbox durability and full scalar aggregation retain their owners.
 
 ## Trace contract
+
+The existing client `context-estimate-paint` stage uses the authenticated common
+trace batch owner, retaining its original compaction ID, Thread/turn identity,
+paired start/completion and monotonic paint duration. Its presence must not
+reject neighbouring valid measurements. The explicit stage allowlist, outcomes,
+identity/time limits, metadata filtering, 32-event and 32-KiB bounds remain in
+force; telemetry grants no command, provider or lifecycle authority.
 
 Task-card Git previews run only on explicit request and retain at most 64 KiB of
 diff text per response, with visible truncation. Board snapshots never run Git
@@ -243,6 +271,17 @@ monotonic durations and original UTC endpoints are captured before the work and
 submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.
 A process failure before trace initialization cannot leave these records; the
 startup error log remains the evidence for that boundary.
+The same startup span may record content-free SQLite recovery phases before the
+trace worker exists: database-lock admission, recovery-lock acquisition, marker
+and intent reads, rollback/resume, database inspection/quarantine and lock release.
+Admission ends at protected callback entry; protected recovery duration is not
+labelled lock wait. Only fixed phase/outcome and elapsed/UTC scalars are retained,
+without database paths, owner tokens or SQL content. Successful phase observations
+flush through the same trace worker; failure before that worker remains in the
+ordinary startup log. Diagnostic failure cannot change recovery or admission.
+Missing terminal phases and a passing private restart do not establish a
+historical holder or resolve the original stalled startup.
+
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
 startup, on writes and at most once per minute while idle. Limit maintenance
@@ -359,6 +398,20 @@ stable content-free reason (`absent`, `fingerprint changed`, or the exact
 uncacheable policy reason); they never print environment values or fabricate
 reusable evidence. See ADR-0346. Existing frozen/admitted generations retain
 their original runner; this policy applies only to subsequent compositions.
+
+Targeted retry uses the same checkpoint eligibility for its read-only plan and
+execution. Retained failures survive runs of another subset. Only that file's
+successful execution/cleanup clears its failure. The effective isolated child
+environment binds profile overrides and real OS identity; overwritten private
+home/state/temp inputs use one stable ownership token for proof. Other environment,
+toolchain, transitive sources, declared assets and browser inputs remain bound.
+Unknown inputs stay unknown and rerun; arbitrary import-capture text is not logged.
+See ADR-HUB-374. No historical digest is upgraded into new-policy evidence.
+
+The temporary allocator consumes its parent before child environment projection.
+That shared input retains its absolute/resolved location and device/inode in the
+proof; directory modification times and random child suffixes do not invalidate
+reuse. Unavailable allocator identity remains unknown, not an execution ban.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
@@ -726,3 +779,80 @@ resource-accounting owner or starting a child. `none` has no dependency/accounti
 work. Selected files retain current isolation, shared-resource admission and the
 40% cooperative CPU/RAM policy. Selection is not cacheability and not a resource
 waiver. Inventory listing/plan resolution is read-only; it runs no test.
+
+## Long Task work versus transport waiting
+
+Task admission and result spans use the original operation ID in the existing
+CommandTrace sink. They contain only tool/phase/live-worker scalars, never
+arguments, content, tokens or paths. Client admission and final-result projection
+join that original. Existing TaskGit traces retain queue/lease, composition,
+Git/I/O and persistence timings; do not count nested spans as additional wall
+time. Fast receipt delivery does not claim that composition became faster.
+Transport deadlines remain distinct from real operation outcomes. Only read
+reconnection uses the existing transport cadence; valid work receives no new
+total deadline, arbitrary size cap or global execution lane.
+
+## Error-only release persistence diagnostics (HUB-368)
+
+The existing CommandTrace sink records a release-persistence span only after a
+persistence attempt encounters an error, including a later successful retry. It
+uses the original operation ID and bounded method/transaction-phase/native-code,
+owner-epoch, generation, step, attempt, queue-wait and elapsed metadata. SQL values,
+arguments, error messages, raw paths and content are excluded. Original effect
+and receipt-settlement error codes remain distinguishable. The normal source
+release CLI flushes its existing trace worker before closing the local runtime.
+These observations identify the failing persistence boundary; a controlled writer
+fixture does not establish which process held a historical production lock.
+
+
+## Task preparation timing after detailed retention (HUB-372)
+
+The existing original-operation timing summary retains fixed-class call/error
+counts, suppressed counts, inclusive elapsed sum and maximum even after its
+unchanged 512-detail-span budget. Fixed Git verb classes and named preparation
+owner phases contain no arguments, paths, owner tokens or message/file content.
+Nested inclusive aggregates are not additive wall time, CPU or disk attribution.
+Base/integration evidence, history authority/history checks, cutover and final
+promotion authority retain their existing callbacks and fresh guard order.
+Ordinary candidate-lock admission reports elapsed to protected callback entry;
+the protected body is not reported as queue wait. The same batch/log owner flushes
+the summary on normal success or thrown failure. Process death before summary is
+still incomplete evidence, not a reconstructed aggregate or completed operation.
+Diagnostic sink failure cannot change outcomes. These measurements do not remove
+proofs, cache authority, optimize Await or establish production speedup. The next
+otherwise-required lifecycle check must execute the reviewed instrumented owner;
+merely storing this code in a Task result does not instrument an older runtime.
+
+## Repeated runtime directory protection (HUB-376)
+
+Update-backup retention (HUB-383) uses the existing deferred after-ready scheduler,
+with cached health only, bounded original-discovery pages and bounded per-entry
+deletion batches. Its scheduler binding contains original/digest/cursor references;
+the same canonical child stores the larger owner proof. Backup content is verified
+at preview/admission, not rehashed before every deleted entry. A large copy may
+require multiple cooperative batches; observed pending excess is not a claim that
+five copies already remain. No production speed or disk saving is inferred from
+private fixture timings, and no periodic whole-disk scan is introduced.
+
+
+The existing directory-security owner may avoid a repeated icacls invocation
+only after fresh exact root DACL and physical identity proof. The requested
+account resolves to the same SID used by the existing grant arguments; exact
+protected/canonical Allow FullControl OI/CI with unrestricted propagation for
+that account, SYSTEM and Administrators is required, with no extra, inherited
+or deny ACE. Unknown/changed proof takes the original apply/error path. This is
+not a saved stamp, recursive descendant audit or a change to config-file ACL.
+Normal newly created files/directories must still inherit the intended grants.
+
+Package shutdown retains existing original-ID restart phase spans; package
+preparation, backup, installer and readiness are real independent work, not
+queue/lock wait merely because they take time. Private fixture wall time and
+saved ACL calls do not establish production speedup or fixed downtime. Unobserved
+cross-process stages remain unmeasured; no inferred CPU/disk attribution.
+
+Package backup support inspection uses the same shallow/declared durable scope
+as the stopped snapshot (ADR-HUB-380). It reads selected file headers and directory
+identities without hydrating retained Git/WIP/dependency/payload trees, opening
+SQLite or acquiring writer reservations on the live runtime. The existing
+original-ID `package-backup-preflight` restart span measures that work. It is not
+queue wait or proof of snapshot completion; actual backup and ready remain distinct.

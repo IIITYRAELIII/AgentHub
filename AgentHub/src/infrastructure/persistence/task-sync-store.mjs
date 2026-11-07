@@ -14,7 +14,7 @@ import {
   normalizeInterstreamOrigin,
 } from "../../domain/interstream-message.mjs";
 import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
-import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
+import { normalizedResponseAnnotations, normalizedResponseAnnotationItemId } from "../../domain/response-annotation-source.mjs";
 import {
   durableUserCommandItemId,
   indexedDurableMessageMetadata,
@@ -102,7 +102,8 @@ function cleanActivityGroups(groups) {
     const activities = cleanActivities(group?.activities);
     if (!reasoning && !activities.length) return [];
     return [{
-      id: cleanText(group?.id, 200) || `group:${index}`,
+      id: cleanText(group?.id, 300) || `group:${index}`,
+      ...(normalizedResponseAnnotationItemId(group?.sourceItemId) ? { sourceItemId: normalizedResponseAnnotationItemId(group.sourceItemId) } : {}),
       reasoning,
       activities,
       ...(Number(group?.omittedGroupsBefore) > 0

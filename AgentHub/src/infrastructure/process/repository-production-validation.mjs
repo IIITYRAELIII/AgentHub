@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "../filesystem/preparation-git-isolation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -116,7 +117,7 @@ function assertFrozenCandidate(repository, { workspaceId, planRevision } = {}) {
 }
 
 async function gitOutput(args, { cwd }) {
-  const { stdout } = await execFileAsync("git", args, { cwd, windowsHide: true, encoding: "utf8" });
+  const { stdout } = await execFileAsync("git", ownedGitArguments(args), { cwd, windowsHide: true, encoding: "utf8" });
   return String(stdout).trim();
 }
 

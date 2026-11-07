@@ -29,10 +29,15 @@ test("compiled RuntimeHost reapplies isolated environment from persistent marker
   await writeFile(marker, JSON.stringify({ schemaVersion: 1, id: "acceptance-test", root: owned }));
   const run = () => execute(binary, [owned], { windowsHide: true, timeout: 3_000 });
   const result = JSON.parse((await run()).stdout);
+  const packageJob = () => execute(binary, [owned, "package-job-name"], { windowsHide: true, timeout: 3_000 });
+  const acceptanceJob = (await packageJob()).stdout.trim();
+  assert.match(acceptanceJob, /Acceptance/u);
+  assert.notEqual(acceptanceJob, "Local\\IIITYRAELIII.AgentHub.123");
   assert.equal(result.tokenPresent, false);
   assert.equal(result.executableOverridePresent, false);
   assert.equal(result.sentryPresent, false);
   assert.equal(result.nodeOptionsPresent, false);
+  assert.equal(result.restartOperationId, "owned-isolated-restart");
   assert.equal(result.home, path.join(owned, "home"));
   assert.equal(result.codexHome, path.join(owned, "home", ".codex"));
   assert.equal(result.profile, "fake-codex");
@@ -47,6 +52,24 @@ test("compiled RuntimeHost reapplies isolated environment from persistent marker
   // Simulate a fresh WMI environment: the marker, not inheritance from the first
   // run, must reproduce the same sandbox on a second independent invocation.
   assert.deepEqual(JSON.parse((await run()).stdout), result);
+  const importDirectory = path.join(owned, "imports"); await mkdir(importDirectory);
+  const preload = path.join(importDirectory, "controlled-transport.mjs");
+  const preloadBytes = Buffer.from("// owned transport fixture\n");
+  await writeFile(preload, preloadBytes);
+  const importMarker = { schemaVersion: 1, id: "acceptance-test", root: owned,
+    nodeImport: { file: preload, sha256: createHash("sha256").update(preloadBytes).digest("hex") } };
+  await writeFile(marker, JSON.stringify(importMarker));
+  assert.equal(JSON.parse((await run()).stdout).nodeOptions, `--import=${pathToFileURL(preload).href}`);
+  await writeFile(preload, "changed");
+  await assert.rejects(run(), /nodeImport hash mismatch/);
+  await writeFile(preload, preloadBytes);
+  await writeFile(marker, JSON.stringify({ ...importMarker, nodeImport: { ...importMarker.nodeImport, file: path.join(temporary, "outside.mjs") } }));
+  await assert.rejects(run(), /escapes its root/);
+  await writeFile(marker, JSON.stringify(importMarker));
+  const moved = path.join(temporary, "foreign-imports");
+  await rename(importDirectory, moved); await symlink(moved, importDirectory, "junction");
+  await assert.rejects(run(), /reparse point/);
+  await rm(importDirectory); await rename(moved, importDirectory);
   await writeFile(marker, JSON.stringify({ schemaVersion: 1, id: "acceptance-test", root: temporary }));
   await assert.rejects(run(), /identity mismatch/);
   await writeFile(marker, JSON.stringify({ schemaVersion: 1, id: "acceptance-test", root: owned }));
@@ -65,6 +88,7 @@ test("compiled RuntimeHost reapplies isolated environment from persistent marker
   await execute(binary, [owned, "close"], { windowsHide: true, timeout: 8_000 });
   await assert.rejects(run(), /acceptance is closed/);
   await rm(marker);
+  assert.equal((await packageJob()).stdout.trim(), "Local\\IIITYRAELIII.AgentHub.123");
   const ordinary = JSON.parse((await run()).stdout);
   assert.equal(ordinary.tokenPresent, true);
   assert.equal(ordinary.executableOverridePresent, true);

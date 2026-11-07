@@ -3,6 +3,48 @@ import test from "node:test";
 import { CodexUsageTracker } from "../../../src/providers/codex/codex-usage-tracker.mjs";
 import { CodexEventService } from "../../../src/providers/codex/codex-event-service.mjs";
 import { ContextCompactionTracker, isContextCompactionItem } from "../../../src/providers/codex/context-compaction-tracker.mjs";
+import { upsertRunReasoningBlock, replaceRunActivityGroups } from "../../../src/domain/run-activity.mjs";
+import { codexTraceEntry } from "../../../src/providers/codex/codex-rollout-activity.mjs";
+import { codexTurnActivityGroups } from "../../../src/application/task-history.mjs";
+import { LocalTaskSyncStore } from "../../../src/infrastructure/persistence/task-sync-store.mjs";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+test("active quote native item provenance agrees across event rollout history and SQLite reopen",async()=>{
+  const temp=await mkdtemp(path.join(os.tmpdir(),'quote-native-')); let store;
+  try {
+    const run={id:'run-1',provider:'codex',threadId:'thread-1',turnId:'turn-1',status:'running',responseText:'',responseItemId:null};
+    const service=createService(run,{upsertReasoningBlock:upsertRunReasoningBlock});
+    await service.handle({method:'item/reasoning/summaryTextDelta',params:{threadId:'thread-1',turnId:'turn-1',itemId:'native-reasoning',delta:'Reasoning'}});
+    assert.equal(run.responseItemId,null); assert.equal(run.activityGroups[0].sourceItemId,'native-reasoning');
+    const item={id:'native-commentary',type:'agentMessage',phase:'commentary',text:'Visible commentary'};
+    await service.handle({method:'item/started',params:{threadId:'thread-1',turnId:'turn-1',item}});
+    const group=run.activityGroups.at(-1); assert.equal(group.sourceItemId,item.id); assert.equal(group.id,'commentary:'+item.id);
+    const recorded=codexTraceEntry({type:'response_item',payload:{type:'message',id:item.id,role:'assistant',phase:'commentary',content:[{type:'output_text',text:item.text}]}});
+    const historical=codexTurnActivityGroups({items:[item]})[0];
+    assert.deepEqual([recorded.id,recorded.sourceItemId,recorded.reasoning],[group.id,group.sourceItemId,group.reasoning]);
+    assert.deepEqual([historical.id,historical.sourceItemId,historical.reasoning],[group.id,group.sourceItemId,group.reasoning]);
+    const recovered={};replaceRunActivityGroups(recovered,run.activityGroups); assert.equal(recovered.activityGroups[0].sourceItemId,'native-reasoning');
+    const task={provider:'codex',threadId:'thread-1',projectRoot:temp};
+    const filePath=path.join(temp,'task-sync.json');store=new LocalTaskSyncStore({filePath});await store.load();
+    await store.recordHistory(task,[{id:'turn-1',prompt:'User',answer:'',active:true,status:'inProgress',activityGroups:run.activityGroups}],{},Date.now());
+    store.close();store=new LocalTaskSyncStore({filePath});await store.load();
+    assert.equal(store.history(task)[0].activityGroups[0].sourceItemId,'native-reasoning');
+    assert.equal(store.history(task)[0].activityGroups[1].sourceItemId,item.id);
+    const longId='native-'+ 'x'.repeat(220);
+    const longItem={...item,id:longId}; const longRun={};
+    const longGroup=upsertRunReasoningBlock(longRun,{id:longId,kind:'commentary',text:item.text});
+    const longRecorded=codexTraceEntry({type:'response_item',payload:{type:'message',id:longId,role:'assistant',phase:'commentary',content:[{type:'output_text',text:item.text}]}});
+    assert.equal(longGroup.id,longRecorded.id);assert.equal(longGroup.id,codexTurnActivityGroups({items:[longItem]})[0].id);
+    await store.recordHistory(task,[{id:'turn-long',prompt:'User',answer:'',active:true,status:'inProgress',activityGroups:[longGroup]}],{},Date.now());
+    store.close();store=new LocalTaskSyncStore({filePath});await store.load();
+    assert.equal(store.history(task)[0].activityGroups[0].id,longGroup.id);assert.equal(store.history(task)[0].activityGroups[0].sourceItemId,longId);
+    const unbound={};upsertRunReasoningBlock(unbound,{delta:'No native ID'});
+    assert.equal(unbound.activityGroups[0].sourceItemId,undefined);
+    assert.equal(codexTraceEntry({type:'response_item',payload:{type:'reasoning',summary:[{type:'summary_text',text:'Unbound'}]}}).sourceItemId,undefined);
+  } finally {store?.close();await rm(temp,{recursive:true,force:true});}
+});
 
 function createService(run, overrides = {}) {
   const noop = () => {};
@@ -233,7 +275,7 @@ test("Codex event service exposes commentary as a live reasoning block", async (
     method: "item/agentMessage/delta",
     params: { turnId: "t1", itemId: "comment-1", delta: "Проверяю." },
   });
-  assert.deepEqual(blocks.at(-1), { id: "comment-1", text: "Проверяю." });
+  assert.deepEqual(blocks.at(-1), { id: "comment-1", sourceItemId: "comment-1", kind: "commentary", text: "Проверяю." });
   assert.equal(run.providerStart.phase, "reasoning");
   assert.equal(Number.isFinite(run.providerStart.firstContentAtMs), true);
 });

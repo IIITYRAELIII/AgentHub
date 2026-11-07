@@ -50,7 +50,9 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
     "../infrastructure/persistence/usage-sync-remote-config-store.mjs": { UsageSyncRemoteConfigStore: Inert },
     "../infrastructure/process/instance-lock.mjs": { SingleInstanceGuard: Inert },
     "../infrastructure/process/repository-production-validation.mjs": { createRepositoryProductionValidationAdapter: () => ({}) },
-    "../application/runtime-health.mjs": { agentHubRuntimeHealth: { setDiagnosticSource: noop } },
+    "../application/runtime-health.mjs": { agentHubRuntimeHealth: {
+      setDiagnosticSource: noop, begin: noop, startOperation: noop, completeOperation: noop, failOperation: noop,
+    } },
     "../interfaces/web/local-web-auth.mjs": { ensureLocalWebSecret: async () => "synthetic" },
     "../interfaces/web/trusted-device-access.mjs": { TrustedDeviceRegistry: Inert },
     "../providers/codex/codex-rollout-context.mjs": { CodexRolloutContextSanitizer: Inert },
@@ -62,7 +64,7 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
     }) },
     "../interfaces/mcp/hub-mcp-server.mjs": { HubMcpServer: Inert },
   };
-  let mcpOptions, miniAppOptions;
+  let mcpOptions, miniAppOptions, releaseOptions;
   const spans = [];
   const reached = new Error("owned trace initialization boundary");
   const trace = {
@@ -71,6 +73,13 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
   let closed = 0;
   const mcpSpan = { commandId: "release:original:7:operation.progress", stage: "release-event-intake", outcome: "started" };
   const miniAppSpan = { commandId: "existing-mini-app", stage: "intake", outcome: "started" };
+  const releaseSpan = { commandId: "original-release", stage: "release-persistence", outcome: "failed" };
+  modules["./release-operation-composition.mjs"] = { createReleaseOperationServices: options => {
+    releaseOptions = options;
+    assert.equal(typeof options.recordCommandTrace, "function");
+    assert.equal(options.recordCommandTrace(releaseSpan), false);
+    return { operations: new Inert(), commands: {} };
+  } };
   modules["../application/hub-mcp-service.mjs"] = { HubMcpService: class {
     constructor(options) {
       mcpOptions = options;
@@ -80,6 +89,9 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
   } };
   modules["../interfaces/web/mini-app-server.mjs"] = { MiniAppServer: class {
     constructor(options) { miniAppOptions = options; }
+    async start() {}
+    configureRuntime(options) { miniAppOptions = options; }
+    async close() {}
   } };
   modules["./command-trace-composition.mjs"] = {
     measureStartupBeforeTrace: async (_stage, fn) => ({ value: await fn(), record: noop }),
@@ -89,6 +101,8 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
         assert.equal(miniAppOptions.recordCommandTrace(miniAppSpan), true, "the existing MiniApp recorder still works");
         assert.equal(spans[0], mcpSpan, "forward the original span unchanged to the existing sink");
         assert.equal(spans[1], miniAppSpan);
+        assert.equal(releaseOptions.recordCommandTrace(releaseSpan), true);
+        assert.equal(spans[2], releaseSpan);
         throw reached;
       }, close: async () => { closed += 1; },
     }),
@@ -103,6 +117,6 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
     }, agentHubRoot: root, runtimeCommandRoot: root, journalDatabaseFile: root + "/journal.sqlite",
     instanceLockFile: root + "/instance.lock", stateFile: root + "/state.json", globalWorkLogProjectRoots: [],
   }), error => error === reached);
-  assert.deepEqual(spans, [mcpSpan, miniAppSpan]);
+  assert.deepEqual(spans, [mcpSpan, miniAppSpan, releaseSpan]);
   assert.equal(closed, 1, "the owned trace fixture is drained at the sentinel boundary");
 });

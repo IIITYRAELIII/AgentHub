@@ -525,7 +525,7 @@ async function openFixture(page, {
       return;
     }
     if (requestUrl.pathname === "/") {
-      const source = await readFile(new URL("index.html", webAppRoot), "utf8");
+      const source = assetOverrides["index.html"] ?? await readFile(new URL("index.html", webAppRoot), "utf8");
       const body = source
         .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
         .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "")

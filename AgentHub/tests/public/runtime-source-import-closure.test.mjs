@@ -50,3 +50,30 @@ test("native source membership reads the declared release observer graph and sti
     readModule,
   }), /missing relative imports:.*release-progress\/identity\.mjs/u);
 });
+
+test("native source membership includes the declared Git JSON companion and refuses missing dependencies", async () => {
+  const importer = "src/infrastructure/filesystem/preparation-git-isolation.mjs";
+  const policy = "src/infrastructure/filesystem/git-invocation-policy.json";
+  const helper = "src/infrastructure/filesystem/preparation-policy-helper.mjs";
+  const unrelated = "src/infrastructure/filesystem/unrelated-data.json";
+  const bodies = new Map([
+    [importer, 'import policy from "./git-invocation-policy.json" with { type: "json" }; import "./preparation-policy-helper.mjs"; export { policy };'],
+    [policy, '{"windowsPrefix":["-c","core.longpaths=true"]}'],
+    [helper, "export const identity = 'fixture';"],
+    [unrelated, "{}"],
+  ]);
+  // Same selection and raw module callback as the native preparation guard.
+  const names = [...bodies.keys()];
+  const sources = new Map(names.filter(isRuntimeSourceModule)
+    .map(name => [name, Buffer.from(bodies.get(name))]));
+  const included = names.filter(isRuntimeSourceFile);
+  const readModule = name => sources.get(name).toString("utf8");
+  assert.equal(included.includes(unrelated), false);
+  await verifyRuntimeImportClosure("/owned/source", included, { readModule });
+  await assert.rejects(verifyRuntimeImportClosure("/owned/source",
+    names.filter(name => name !== policy).filter(isRuntimeSourceFile), { readModule }),
+  /missing relative imports:.*\.\/git-invocation-policy\.json/u);
+  await assert.rejects(verifyRuntimeImportClosure("/owned/source",
+    names.filter(name => name !== helper).filter(isRuntimeSourceFile), { readModule }),
+  /missing relative imports:.*\.\/preparation-policy-helper\.mjs/u);
+});
