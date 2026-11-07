@@ -134,6 +134,23 @@ test("frozen metadata recovery retains the original and refuses other bytes", as
   }
 });
 
+test("retained first-freeze build refuses an actual runtime allocation collision", async t => {
+  const f = await fixture(t);
+  const runtimeRoot = path.join(path.dirname(f.primary), "occupied-runtime");
+  const allocated = path.join(runtimeRoot, "releases", "occupied");
+  await mkdir(allocated, { recursive: true });
+  await writeFile(path.join(allocated, "runtime-manifest.json"), JSON.stringify({
+    releaseId: "occupied", version: "2.1.5", releaseVersion: "2.1.5+build.42", files: [],
+    versionScheme: "semver-build-v1", publicVersion: "2.1.5", buildNumber: 42,
+  }));
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const checkpoint = await readFile(f.checkpointFile);
+  await assert.rejects(f.freeze({ runtimeRoot, expectedVersion: "2.1.5",
+    expectedRuntimeVersion: "2.1.5+build.42" }), /runtime version is no longer available/u);
+  assert.deepEqual(await readFile(f.checkpointFile), checkpoint);
+  assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "HEAD"), f.candidate.preReleaseHead);
+});
+
 test("freeze pins the artifact version separately and retry never reallocates it", async (t) => {
   const f = await fixture(t);
   const runtimeRoot = path.join(f.primary, "..", "runtime");
