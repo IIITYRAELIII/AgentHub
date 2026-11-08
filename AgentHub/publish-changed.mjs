@@ -1,6 +1,7 @@
 import { normalizeReleaseTaskIds, normalizeReleaseVersion } from "./src/domain/release-operation.mjs";
 import { normalizeTestSelection, resolveTestSelection, verifyTestPlan } from "./src/domain/test-selection.mjs";
 import { discoverReleaseTestInventory, RELEASE_CHECK_IDS } from "./src/infrastructure/filesystem/release-test-inventory.mjs";
+import { preparePublicationTestSelection } from "./src/infrastructure/filesystem/publication-test-selection.mjs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -136,8 +137,9 @@ export function focusedSteps(plan, {
   quick = false,
   visualTests = false,
   testPlan = null,
+  testSelectionArgs = null,
 } = {}) {
-  if (testPlan != null) return selectedPublicationSteps(plan, testPlan, { fullTestCheckpointId, workerChangedFiles });
+  if (testPlan != null) return selectedPublicationSteps(plan, testPlan, { fullTestCheckpointId, workerChangedFiles, testSelectionArgs });
   const releaseCandidateContour = plan.fullTests;
   const full = publicationSteps({
     skipTests: quick && plan.unknown.length > 0,
@@ -200,7 +202,7 @@ export function focusedSteps(plan, {
   return steps.filter(Boolean);
 }
 
-export function selectedPublicationSteps(plan, testPlan, { fullTestCheckpointId = "", workerChangedFiles = null } = {}) {
+export function selectedPublicationSteps(plan, testPlan, { fullTestCheckpointId = "", workerChangedFiles = null, testSelectionArgs = null } = {}) {
   verifyTestPlan(testPlan);
   const selected = new Set(testPlan.selectedIds);
   const files = testPlan.selectedIds.filter(id => !RELEASE_CHECK_IDS.includes(id));
@@ -209,7 +211,7 @@ export function selectedPublicationSteps(plan, testPlan, { fullTestCheckpointId 
     ["run", "contour:verify", "--", "--require-installed", "--release-candidate"]));
   if (selected.has("check:contour")) checks.push(npmStep("Тестовый контур Agent Hub", ["run", "contour:verify", "--", "--require-installed"]));
   if (files.length) checks.push({ label: "Выбранные тесты Agent Hub", command: process.execPath,
-    args: ["test-suite.mjs", "selected", `--selection=${JSON.stringify({ mode: "include", ids: files })}`],
+    args: ["test-suite.mjs", "selected", ...(testSelectionArgs ?? [`--selection=${JSON.stringify({ mode: "include", ids: files })}`])],
     timeoutMs: null, idleTimeoutMs: 10 * 60 * 1000,
     env: { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: `${fullTestCheckpointId}:selection:${testPlan.identitySha256}` } });
   const deployment = focusedSteps({ ...plan, fullTests: false }, { quick: true, workerChangedFiles })
@@ -368,6 +370,7 @@ export async function publishChanged(args = process.argv.slice(2), {
   finalizePublication = null,
   preparePublication = null,
   prepareArtifactSteps = async (steps) => steps,
+  prepareTestSelection = preparePublicationTestSelection,
   verifyArtifacts = async () => {},
   repositoryRoot = process.cwd(),
   deploymentProfile = "installed-runtime",
@@ -492,6 +495,8 @@ export async function publishChanged(args = process.argv.slice(2), {
       .digest("hex");
     const workerChangedFiles = files.filter((file) => workerDeploymentFile(file)
       || file === "AgentHub/cloudflare-worker/verify-deployment.mjs");
+    const testSelectionArgs = testPlan?.selectedIds.some(id => !RELEASE_CHECK_IDS.includes(id))
+      ? await prepareTestSelection(testPlan, { repositoryRoot: publicationRoot, revision: head }) : null;
     let steps = await withStepFingerprints(focusedSteps(plan, {
       fullTestCheckpointId,
       testContour: options.testContour,
@@ -499,6 +504,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       quick: options.quick,
       visualTests: needsVisualPublicationTests(files),
       testPlan,
+      testSelectionArgs,
     }), files, publicationRoot);
     const candidateRoot = path.join(publicationRoot, "AgentHub");
     steps = steps.map((step) => ({ ...step, cwd: step.cwd ?? candidateRoot }));

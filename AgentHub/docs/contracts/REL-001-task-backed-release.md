@@ -3485,6 +3485,19 @@ Affected checks: `tests/interfaces/release-progress-autostart.test.mjs` and the
 
 ## Explicit test selection (ADR-HUB-351)
 
+Publication sends file selections to `test-suite.mjs selected` through an
+addressed whole-plan payload and its SHA-256, keeping argv independent of the
+number of selected IDs. The existing publication owner verifies the frozen
+plan before preparing the payload. The child verifies its bytes, exact source
+root/commit, clean source and complete current inventory before dependencies,
+accounting or test children. It derives every selected core ID from that same
+plan. Candidate contour and Worker retain their publication steps. Existing
+inline selection remains the direct runner API; publication always uses the
+bounded file transport, including small selections. Immutable payloads remain
+under the candidate's ignored WIP for the owning cleanup after joined consumers.
+Publication identity, per-file checkpoint identity and completed-step reuse keep
+their existing owners. See ADR-HUB-426-frozen-release-inventory.
+
 Frozen release inventory contains `check:release-candidate` and `check:worker`;
 it does not contain the rolling dev-only `check:contour`. The existing selected
 publication dispatcher runs the candidate contour with `--release-candidate`

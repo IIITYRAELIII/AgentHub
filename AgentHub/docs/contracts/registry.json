@@ -365,6 +365,7 @@
         "src/domain/test-selection.mjs",
         "src/domain/test-suite-groups.mjs",
         "src/infrastructure/filesystem/release-test-inventory.mjs",
+        "src/infrastructure/filesystem/publication-test-selection.mjs",
         "tests/application/release-test-selection.test.mjs",
         "tests/application/frozen-release-inventory.test.mjs",
         "docs/decisions/ADR-HUB-426-frozen-release-inventory.md",
