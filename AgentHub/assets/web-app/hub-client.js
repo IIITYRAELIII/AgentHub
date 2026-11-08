@@ -40,8 +40,20 @@ const localWorkspaceFilesAvailable = window.AgentHubResourceInteractions.localWo
 });
 function remoteWorkspaceFileBridgeAvailable() {
   return !vscode
-    && !localWorkspaceFilesAvailable
     && window.AgentHubBrowserDevice?.isPaired?.() === true;
+}
+
+async function hasLocalWorkspaceFileAccess() {
+  await localSessionReady;
+  if (vscode) return true;
+  if (!localWorkspaceFilesAvailable) return false;
+  // Loopback is a location, not proof of the browser's authorization. The
+  // existing session owner checks the protected cookie, including after reload.
+  // Its expected 401 is not expiry of the separate trusted-device session.
+  const response = await hubFetch("/api/local-session", { method: "HEAD", cache: "no-store" }, false);
+  if (response.status === 204) return true;
+  if ([401, 403, 404].includes(response.status)) return false;
+  throw new Error(`Не удалось проверить локальный доступ: HTTP ${response.status}`);
 }
 
 async function requestWorkspaceFileTransfer(localPath) {
@@ -5193,7 +5205,7 @@ async function saveLinkResource(resource) {
     return;
   }
   if (String(resource?.localPath ?? "").trim()) {
-    if (!localWorkspaceFilesAvailable) {
+    if (!await hasLocalWorkspaceFileAccess()) {
       if (!remoteWorkspaceFileBridgeAvailable()) {
         throw new Error("Чтобы скачать файл с компьютера Agent Hub, сначала сопряги это устройство");
       }
@@ -5291,9 +5303,12 @@ agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
   const localPath = String(resource?.localPath ?? "").trim();
   if (!localPath) throw new Error("Локальный путь не указан");
   if (vscode) await bridgeCall("copy-link-object", { href: localPath });
-  else if (remoteWorkspaceFileBridgeAvailable()) await launchWorkspaceFileBridge("copy", localPath);
-  else if (!localWorkspaceFilesAvailable) {
-    throw new Error("Для удалённого браузера сопряги устройство и установи Windows File Bridge");
+  else if (!await hasLocalWorkspaceFileAccess()) {
+    if (!remoteWorkspaceFileBridgeAvailable()) {
+      throw new Error("Для удалённого браузера сопряги устройство и установи Windows File Bridge");
+    }
+    await launchWorkspaceFileBridge("copy", localPath);
+    return;
   }
   else {
     const response = await hubFetch("/api/workspace-file/copy", {
@@ -5306,7 +5321,7 @@ agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
       throw new Error(String(payload.error ?? `Не удалось скопировать файл: HTTP ${response.status}`));
     }
   }
-  if (!remoteWorkspaceFileBridgeAvailable()) agentHub.toast("Файл скопирован в буфер обмена");
+  agentHub.toast("Файл скопирован в буфер обмена");
 }));
 
 window.AgentHubFileTransferOwner?.configure(async (action, body) => {

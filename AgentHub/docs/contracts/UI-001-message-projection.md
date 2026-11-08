@@ -858,3 +858,16 @@ and final snapshot follow canonical success only. Preview/confirmation keep
 their existing token and separate explicit command identities. A transport ACK
 is recorded once even if later work fails. A lost worker observation does not
 become fabricated failure, NO_EFFECT or permission to replay.
+
+## Workspace file download authority
+
+Loopback host detection is a surface hint, not protected local authorization.
+After the existing session bootstrap resolves, browser file saving checks the
+existing local-session owner. A confirmed protected local session keeps direct
+Workspace file access; a paired browser without that proof uses the existing
+single-use transfer ticket, including on localhost. VS Code retains its native
+bridge. Expected absence of the local cookie must not force renewal of an
+otherwise valid trusted-device session. Unknown session/network failures and file/path rejections are surfaced,
+not retried as a different file request. Runtime reveal remains first; only its
+explicit unavailable result permits the existing paired File Bridge fallback.
+Server authentication priority, roots/realpath guards and file bytes are unchanged.
