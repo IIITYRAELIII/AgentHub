@@ -44,3 +44,17 @@ performance work. Pending validation still follows the exact frozen selection.
 The current explicit NONE exception does not certify the interrupted full suite
 or change publication/build/health requirements. Existing original trace spans
 measure retained-generation verification separately from publication work.
+
+The terminal cleanup boundary now retires a generation only after completed
+publication. A failed successor compose keeps the unpublished predecessor that
+the SAME original still owns. Historical archives are preserved as immutable
+evidence. When that predecessor was already retired, the narrow continuation
+uses the existing object-store archive proof and lease to restore the exact
+original raw Git metadata, index, refs and worktree, link the retained object
+closure and restore archived outer generation metadata. Fresh original archive,
+consumer and physical destination identities are required. An append-only
+maintenance restoration original binds the new physical repository to the old
+consumer without changing either old receipt. Partial own restoration can resume
+only through the same identity and byte checks. Foreign destinations and altered
+archive metadata refuse. The source is then checked by the existing frozen reader
+before the complete test inventory is read and the recovery CAS can commit.

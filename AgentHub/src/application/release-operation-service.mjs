@@ -475,11 +475,11 @@ export class ReleaseOperationService {
         || typeof this.withRetainedGeneration !== "function") return { accepted: false, reason: "ineligible", operation: current };
     requiredText(requestId, "retained generation recovery requestId");
     const generation = this.store.generation(operationId, expectedGeneration);
-    if (typeof this.resolveTestPlans !== "function"
-        || releaseIdentitySha256(await this.resolveTestPlans(generation.candidates, effectiveTestSelection(current))) !== releaseIdentitySha256(generation.testPlans)) {
-      throw new Error("Retained generation test inventory changed");
-    }
     return this.withRetainedGeneration({ operation: current, generation, commit: async (evidence, validate) => {
+      if (typeof this.resolveTestPlans !== "function"
+          || releaseIdentitySha256(await this.resolveTestPlans(generation.candidates, effectiveTestSelection(current))) !== releaseIdentitySha256(generation.testPlans)) {
+        throw new Error("Retained generation test inventory changed");
+      }
       const readbacks = [];
       for (const target of releaseApprovedTargets(current)) {
         const readback = normalizeReadback(await this.readTarget({ operation: current, generation, target }));
@@ -904,7 +904,7 @@ export class ReleaseOperationService {
       } finally {
         this.#running.delete(operationId);
       }
-      if (current && releaseOperationIsTerminal(current) && current.currentGeneration > 0) {
+      if (current?.state === RELEASE_OPERATION_STATES.DONE && current.currentGeneration > 0) {
         const generation = this.store.generation(current.operationId, current.currentGeneration);
         if (generation) await this.cleanupGeneration?.({ operation: current, generation }).catch(() => {});
       }

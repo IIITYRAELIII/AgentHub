@@ -216,6 +216,33 @@ test("public retained recovery restores its original retired frozen checkout fro
   assert.deepEqual(f.counts(), { publications: 1, compositions: 1 });
 });
 
+test("archived retained recovery refuses changed archive bindings, metadata and occupied destinations", async t => {
+  const f = await fixture(t);
+  const before = f.store.snapshot(f.request.operationId);
+  await f.releaseGit.discardGenerationCandidate({ ...f.candidate, operationId: f.request.operationId, generation: 7 });
+  const archiveRoot = path.join(path.dirname(path.dirname(f.candidate.generationRoot)), "release-generation-evidence", path.basename(f.candidate.generationRoot));
+  const receiptFile = path.join(archiveRoot, sha(f.candidate.releaseRoot).slice(0, 24) + ".objects.json");
+  const receiptBytes = await readFile(receiptFile), receipt = JSON.parse(receiptBytes);
+  const refuse = async () => {
+    await assert.rejects(() => f.command.continue(f.request));
+    assert.deepEqual(f.store.snapshot(f.request.operationId), before);
+    assert.equal(f.counts().publications, 0);
+  };
+  await writeJson(receiptFile, { ...receipt, binding: { ...receipt.binding, repository: path.join(f.root, "foreign") } });
+  await refuse();
+  await writeFile(receiptFile, receiptBytes);
+  const checkpointFile = path.join(archiveRoot, "raw", "release-repositories", path.basename(path.dirname(f.candidate.releaseRoot)), "checkpoint.json");
+  const checkpointBytes = await readFile(checkpointFile);
+  await writeFile(checkpointFile, "{}\n");
+  await refuse();
+  await writeFile(checkpointFile, checkpointBytes);
+  await mkdir(f.candidate.generationRoot);
+  await writeFile(path.join(f.candidate.generationRoot, "foreign.txt"), "foreign work\n");
+  await refuse();
+  assert.deepEqual(await readdir(f.candidate.generationRoot), ["foreign.txt"]);
+  assert.equal(await readFile(path.join(f.candidate.generationRoot, "foreign.txt"), "utf8"), "foreign work\n");
+});
+
 test("public continue reuses the original real Git frozen allocation after a terminal later compose failure", async t => {
   const f = await fixture(t);
   const before = f.store.snapshot(f.request.operationId);

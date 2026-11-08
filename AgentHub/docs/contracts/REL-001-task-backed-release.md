@@ -3804,3 +3804,14 @@ Publication rechecks source and artifact authority and reuses the original
 generation/checkpoints. Changed, partial, UNKNOWN or foreign evidence refuses.
 No allocator exclusion, generation retargeting or generic terminal resume is
 introduced. See ADR-HUB-422-retained-generation-recovery.
+
+A failed unpublished generation retains its checkout. If an older owner already
+retired it into its positively completed native object archive, this same narrow
+recovery restores only that original repository and generation metadata under
+their generation, repository and archive leases. Archive identity, original
+consumer, raw refs/index/worktree bytes, frozen metadata and complete object
+closure must match. Existing immutable pool objects are linked without a history
+copy or alternates. The existing maintenance owner records the restored physical
+custody without rewriting the original archive or consumer receipt. Foreign or
+changed destinations refuse. Frozen verification and complete test inventory
+readback follow restoration, before recovery CAS and publication admission.

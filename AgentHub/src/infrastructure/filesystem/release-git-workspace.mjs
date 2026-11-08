@@ -3551,7 +3551,10 @@ export class ReleaseGitWorkspaceService {
     const generationRoot = path.join(this.dataDir, "release-gens", ownerHash.slice(0, 24));
     if (!samePath(candidate.generationRoot, generationRoot)) throw new Error("Retained generation root changed");
     return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${ownerHash.slice(0, 24)}`)],
-      () => withPreparationGitIsolation(this.dataDir, async () => {
+      generationLease => this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot, repositoryRoot: generationRoot },
+        ({ lease, objects }) => withPreparationGitIsolation(this.dataDir, async () => {
+        const releaseEntry = await lstat(candidate.releaseRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+        if (!releaseEntry) await this.#restoreRetainedGeneration({ operationId, generation, sourceRoot, ownerHash, generationRoot, candidate, objects });
         const ownerBytes = await readFile(path.join(generationRoot, "identity.json"));
         const owner = JSON.parse(ownerBytes);
         if (owner.operationId !== operationId || owner.generation !== generation || owner.identitySha256 !== ownerHash
@@ -3587,7 +3590,73 @@ export class ReleaseGitWorkspaceService {
           commit: actual.preReleaseHead, tree: actual.tree, manifestHash: actual.manifestHash,
           releaseVersion: intent.releaseVersion, runtimeReleaseVersion: intent.runtimeReleaseVersion,
           changelogContentHash: intent.changelogContentHash };
-      }));
+      }, { ...lease, assertOwned: async () => { await generationLease.assertOwned(); await lease.assertOwned(); } }, objects)));
+  }
+
+  async #restoreRetainedGeneration({ operationId, generation, sourceRoot, ownerHash, generationRoot, candidate, objects }) {
+    const archiveRoot = path.join(this.dataDir, "release-generation-evidence", ownerHash.slice(0, 24));
+    await assertPlainIsolationPath(archiveRoot);
+    const ownerBytes = await readFile(path.join(archiveRoot, "identity.json")), owner = JSON.parse(ownerBytes);
+    const repository = path.join(generationRoot, "release-repositories", taskRepositoryKey(sourceRoot), "repository");
+    if (owner.operationId !== operationId || owner.generation !== generation || owner.identitySha256 !== ownerHash
+        || !samePath(owner.repositoryRoot, sourceRoot) || !samePath(candidate.releaseRoot, repository)
+        || stableManifest(owner.preparedCandidate) !== stableManifest(candidate.manifest.preparedCandidate)) {
+      throw new Error("Archived retained generation identity changed");
+    }
+    const receipt = await readJson(path.join(archiveRoot, sha256(repository).slice(0, 24) + ".objects.json"));
+    const inventoryBytes = await readFile(path.join(archiveRoot, sha256(repository).slice(0, 24) + ".inventory.json"));
+    if (receipt?.binding.kind !== "release-generation-repository-v1" || receipt.binding.repository !== repository
+        || stableManifest(receipt.binding.generationIdentity) !== stableManifest(owner)
+        || receipt.binding.inventorySha256 !== sha256(inventoryBytes)) throw new Error("Archived retained repository binding changed");
+    const metadata = [], pending = [path.join(archiveRoot, "raw")];
+    while (pending.length) {
+      const directory = pending.pop();
+      await assertPlainIsolationPath(directory);
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory() && !entry.isSymbolicLink()) pending.push(file);
+        else if (entry.isFile() && !entry.isSymbolicLink()) metadata.push({
+          relative: path.relative(path.join(archiveRoot, "raw"), file), bytes: await readFile(file) });
+        else throw new Error("Archived generation metadata is not plain");
+      }
+    }
+    const child = path.join("release-repositories", taskRepositoryKey(sourceRoot));
+    const identityFile = metadata.find(item => item.relative === "identity.json");
+    const checkpoint = metadata.find(item => item.relative === path.join(child, "checkpoint.json"));
+    const manifest = metadata.find(item => item.relative === path.join(child, "evidence", candidate.manifestHash + ".json"));
+    if (!identityFile?.bytes.equals(ownerBytes) || !checkpoint || !manifest || sha256(manifest.bytes) !== candidate.manifestHash
+        || !checkpoint.bytes.equals(await readFile(path.join(archiveRoot, "checkpoint.json")))
+        || stableManifest(JSON.parse(manifest.bytes)) !== stableManifest(candidate.manifest)) throw new Error("Archived frozen metadata changed");
+    const physical = info => ({ dev: String(info.dev), ino: String(info.ino), birthtimeNs: String(info.birthtimeNs) });
+    await objects.restoreArchive({ archive: receipt.archive, repository, assertCurrent: assertPreparationProcessOwned,
+      prepare: async ({ metadata: state, checkpoint: save }) => {
+        let entry = await lstat(generationRoot, { bigint: true }).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+        if (!entry) {
+          if (state.physicalGenerationRoot) throw new Error("Original generation restoration root disappeared");
+          await mkdir(generationRoot);
+          entry = await lstat(generationRoot, { bigint: true });
+          await save({ physicalGenerationRoot: physical(entry) });
+          state = { ...state, physicalGenerationRoot: physical(entry) };
+        }
+        if (!entry.isDirectory() || entry.isSymbolicLink() || stableManifest(physical(entry)) !== stableManifest(state.physicalGenerationRoot)) {
+          throw new Error("Generation restoration destination is occupied or replaced");
+        }
+        for (const item of metadata) {
+          const target = path.join(generationRoot, item.relative);
+          if (!pathInside(generationRoot, target) || pathInside(repository, target) || samePath(repository, target)) {
+            throw new Error("Archived outer metadata escaped generation custody");
+          }
+          await mkdir(path.dirname(target), { recursive: true });
+          await assertPlainIsolationPath(path.dirname(target));
+          const existing = await lstat(target).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+          if (existing) {
+            if (!existing.isFile() || existing.isSymbolicLink() || !(await readFile(target)).equals(item.bytes)) throw new Error("Restored outer metadata changed");
+          } else {
+            const handle = await open(target, "wx");
+            try { await handle.writeFile(item.bytes); await handle.sync(); } finally { await handle.close(); }
+          }
+        }
+      } });
   }
 
   async #firstFrozenGeneration({ identity, generationDataDir, projectRoot, workspaceId, taskIds,
