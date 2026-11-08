@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { preparationIsolationLayout, isolationDigest, assertPlainIsolationPath,
-  withPreparationGitIsolation, preparationGitInvocation, preparationGitIsolationActive, guardedPreparationGit } from "./preparation-git-isolation.mjs";
+  withPreparationGitIsolation, preparationGitInvocation, preparationGitIsolationActive, guardedPreparationGit, preparationObjectStore, assertPreparationProcessOwned } from "./preparation-git-isolation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -9,9 +9,11 @@ import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { normalizeReleaseVersion } from "../../domain/release-operation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
+import { retireSealedNativeCapture } from "./sealed-native-capture.mjs";
+import { inventoryNativeCapture } from "./native-capture-inventory.mjs";
 import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
-import { runOwnedGit } from "./task-git-workspace.mjs";
+import { runOwnedGit, TaskGitWorkspaceService } from "./task-git-workspace.mjs";
 import { readOwnGitPublicationOrigin } from "../persistence/release-operation-store.mjs";
 import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline, publishedMetadataContext,
   assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, assertHistoricalChangelog, sourceBlobs } from "./local-source-baseline.mjs";
@@ -44,7 +46,7 @@ import {
   readPublicationRunStatus,
 } from "../persistence/publication-run-store.mjs";
 import { publicationStateFile, publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
-import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
+import { freezePreparedPublicationCandidate, frozenMetadataMaterialization } from "./freeze-publication-candidate.mjs";
 import { assertNativeTaskHistories, assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY } from "./native-release-merge.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
@@ -736,6 +738,24 @@ function assertMissingProvenanceAuthority(authority, { request, candidate }) {
   }
 }
 
+async function withPreparationCleanup(root, operation) {
+  const before = await lstat(root);
+  let result, original;
+  try { result = await operation(); } catch (error) { original = error; }
+  try {
+    await assertPreparationProcessOwned();
+    const current = await lstat(root);
+    if (!current.isDirectory() || current.isSymbolicLink() || before.dev !== current.dev
+        || before.ino !== current.ino || before.birthtimeMs !== current.birthtimeMs) throw new Error("Invocation cleanup root changed; retained");
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  } catch (cleanup) {
+    if (original) throw new AggregateError([original, cleanup], "Preparation and owned cleanup failed", { cause: original });
+    throw cleanup;
+  }
+  if (original) throw original;
+  return result;
+}
+
 export class ReleaseGitWorkspaceService {
   #contourExternalEffects;
   #environment;
@@ -748,10 +768,13 @@ export class ReleaseGitWorkspaceService {
   #readPreparationOriginal;
   #publicationDataDir;
 
+  #repositoryOwner;
+  #ownedInputs = [];
+
   constructor({
     dataDir, contourExternalEffects = null, environment = process.env,
     recoveryEvidenceWrite = (handle, value) => handle.writeFile(value, "utf8"),
-    recoveryPhase = async () => {}, verifyNativeResolutionReview = null,
+    recoveryPhase = async () => {},
     readPreparationAuthority = () => null,
     readPreparationOriginal = () => null,
   } = {}) {
@@ -763,7 +786,7 @@ export class ReleaseGitWorkspaceService {
     this.#recoveryPhase = recoveryPhase;
     this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.#publicationDataDir = this.dataDir;
-    this.verifyNativeResolutionReview = verifyNativeResolutionReview;
+    this.#repositoryOwner = new TaskGitWorkspaceService({ dataDir: this.dataDir, contourExternalEffects });
     this.releaseRepositoriesRoot = path.join(this.dataDir, "release-repositories");
     this.lastReconciliation = {
       checked: 0, registeredWorkspaceRoots: 0, checkpointCount: 0, repositories: [],
@@ -779,10 +802,17 @@ export class ReleaseGitWorkspaceService {
     return new ReleaseGenerationTransportRetention({ dataDir: this.dataDir, readGeneration, isStopping,
       withGenerationLease: (key, action) => withInterprocessLocks([
         path.join(this.dataDir, "locks", `release-generation-${key}`),
-      ], action, { timeoutMs: 250 }),
+      ], async generationLease => {
+        const root = path.join(this.dataDir, "release-gens", key);
+        const identity = await readJson(path.join(root, "identity.json"));
+        if (!identity?.repositoryRoot) throw new Error("Generation process owner identity missing");
+        return this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot: identity.repositoryRoot, repositoryRoot: root },
+          ({ lease, objects }) => withPreparationGitIsolation(this.dataDir, () => action({ ...lease,
+            assertOwned: async () => { await generationLease.assertOwned(); await lease.assertOwned(); } }), lease, objects));
+      }, { timeoutMs: 250 }),
       gitAt: async (root, args, { lease, ...options } = {}) => {
         await lease.assertOwned();
-        if (["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE",
+        if (["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE",
           "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"].some(name => process.env[name])) {
           throw new Error("Release retention requires its ordinary local Git object/index context");
         }
@@ -812,31 +842,44 @@ export class ReleaseGitWorkspaceService {
     projectRoot, publishedRevision, approvedLocalMainCommit = null, approvedOriginMainCommit = null,
   } = {}) {
     this.#assertAvailable("inspectMainChanges");
+    if (!preparationObjectStore()) {
+      const sourceRoot = await repositoryRoot(projectRoot);
+      return this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot,
+        repositoryRoot: this.#layout(sourceRoot).releaseRoot }, ({ lease, objects }) =>
+        withPreparationGitIsolation(this.dataDir, () => this.inspectMainChanges({ projectRoot,
+          publishedRevision, approvedLocalMainCommit, approvedOriginMainCommit }), lease, objects));
+    }
     const authority = this.#readPreparationAuthority(canonicalPath(projectRoot));
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
       () => this.inspectMainChanges({ projectRoot, publishedRevision, approvedLocalMainCommit, approvedOriginMainCommit }));
     const baseline = String(publishedRevision ?? "").trim();
     if (!baseline) throw new Error("main review requires the last published revision");
-    const primary = await primarySnapshot(projectRoot);
+    // Fixed phases survive the shared detail budget without recording Git args,
+    // repository paths, commit metadata or credentials. Lock includes waiting;
+    // owned begins only after acquisition, so the intervals remain separable.
+    const measured = (phase, operation, metadata = {}) =>
+      measureTaskOperation(`release:main-review:${phase}`, operation, metadata);
+    const primary = await measured("primary", () => primarySnapshot(projectRoot));
     assertPrimarySnapshot(primary, "main review");
     const layout = this.#layout(primary.root);
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
-    return withInterprocessLocks([lock], async () => {
-      const clone = await this.#ensureClone(primary);
+    return measured("lock", () => withInterprocessLocks([lock], () => measured("owned", async () => {
+      const clone = await measured("clone", () => this.#ensureClone(primary));
       const workspace = authority?.phase === "completed" ? primary.root : "workspace";
-      await runGit(["fetch", workspace, "+refs/heads/main:refs/remotes/workspace/main"], {
+      await measured("workspace-fetch", () => runGit(["fetch", workspace, "+refs/heads/main:refs/remotes/workspace/main"], {
         cwd: clone.releaseRoot,
         timeoutMs: null,
-      });
-      await runGit(["fetch", "--prune", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
+      }));
+      await measured("origin-fetch", () => runGit(["fetch", "--prune", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
         cwd: clone.releaseRoot,
         timeoutMs: null,
-      });
-      if (await gitMaybe(["cat-file", "-e", `${baseline}^{commit}`], { cwd: clone.releaseRoot }) === null) {
-        await runGit(["fetch", workspace, baseline], { cwd: clone.releaseRoot, timeoutMs: null });
+      }));
+      if (await measured("baseline-check", () => gitMaybe(["cat-file", "-e", `${baseline}^{commit}`], { cwd: clone.releaseRoot })) === null) {
+        await measured("baseline-fetch", () => runGit(["fetch", workspace, baseline], { cwd: clone.releaseRoot, timeoutMs: null }));
       }
       const localMain = primary.mainCommit;
       const originMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: clone.releaseRoot });
+      const { localContainsPublished, publishedContainsLocal, originContainsPublished } = await measured("ancestry", async () => {
       const localContainsPublished = await gitMaybe(["merge-base", "--is-ancestor", baseline, localMain], {
         cwd: clone.releaseRoot,
       }) !== null;
@@ -852,18 +895,23 @@ export class ReleaseGitWorkspaceService {
       if (!originContainsPublished) {
         throw new Error(`last published revision ${baseline} is not an ancestor of origin/main ${originMain}`);
       }
-      const commitIds = new Set([
+      return { localContainsPublished, publishedContainsLocal, originContainsPublished };
+      });
+      const commitIds = await measured("revision-list", async () => new Set([
         ...(localContainsPublished ? await revisionList(clone.releaseRoot, [localMain, `^${baseline}`]) : []),
         ...await revisionList(clone.releaseRoot, [originMain, `^${baseline}`]),
         ...(!localContainsPublished && publishedContainsLocal
           ? await revisionList(clone.releaseRoot, [baseline, `^${localMain}`])
           : []),
-      ]);
-      const commits = [];
-      for (const commit of commitIds) commits.push(await disclosedCommit(clone.releaseRoot, commit, {
-        localMain,
-        originMain,
-      }));
+      ]));
+      const commits = await measured("disclosures", async () => {
+        const commits = [];
+        for (const commit of commitIds) commits.push(await disclosedCommit(clone.releaseRoot, commit, {
+          localMain,
+          originMain,
+        }));
+        return commits;
+      }, { commitCount: commitIds.size });
       const approved = String(approvedLocalMainCommit ?? "").trim() === localMain
         && String(approvedOriginMainCommit ?? "").trim() === originMain;
       const audit = {
@@ -880,7 +928,7 @@ export class ReleaseGitWorkspaceService {
         approved,
         approvalRequired: (commits.length > 0 || localMain !== originMain) && !approved,
       };
-      const finalPrimary = await primarySnapshot(primary.root);
+      const finalPrimary = await measured("final-primary", () => primarySnapshot(primary.root));
       assertPrimarySnapshot(finalPrimary, "main review");
       if (
         finalPrimary.headCommit !== primary.headCommit
@@ -891,7 +939,7 @@ export class ReleaseGitWorkspaceService {
         throw new Error("registered primary Workspace changed during main review");
       }
       return audit;
-    });
+    })));
   }
 
   #layout(primaryRoot) {
@@ -914,7 +962,7 @@ export class ReleaseGitWorkspaceService {
     };
   }
 
-  async #ensureClone(primary) {
+  async #ensureClone(primary, inputs = this.#ownedInputs) {
     const layout = this.#layout(primary.root);
     const authority = this.#readPreparationAuthority(primary.root);
     const allowedStorage = authority ? path.join(authority.isolation.dataDir, "release-repositories") : this.releaseRepositoriesRoot;
@@ -922,37 +970,32 @@ export class ReleaseGitWorkspaceService {
       throw new Error("release clone escaped its Agent Hub-owned root");
     }
     const gitFile = path.join(layout.releaseRoot, ".git");
-    let created = false;
+    let created = false, objectStorage = null;
     if (!await fileExists(gitFile) && !await stat(gitFile).catch(() => null)) {
       if (authority) throw new Error("Registered isolated candidate is missing; preserve its original recovery");
       const upstream = await gitMaybe(["remote", "get-url", "origin"], { cwd: primary.root });
       if (!upstream) throw new Error(`release repository has no origin remote: ${primary.root}`);
       await mkdir(layout.root, { recursive: true });
-      // Transport objects and refs, never repository-local configuration or
-      // hooks. Use the same bundle boundary as validation/generation; Git's
-      // clone protection remains enabled and the source hook setup is intact.
       const sourceRoot = this.#validationReferenceRoot ?? primary.root;
-      const transportRoot = this.#validationBundle ? null
-        : await mkdtemp(path.join(layout.root, "clone-source-"));
-      const bundle = this.#validationBundle ?? path.join(transportRoot, "source.bundle");
-      try {
-        if (transportRoot) await runGit(["bundle", "create", bundle, "refs/heads/main"], {
-          cwd: sourceRoot, timeoutMs: null,
-        });
-        await runGit([
-          "clone", "--single-branch", "--branch", "main",
-          "--no-local", "--no-hardlinks", "--no-checkout",
-          ...(this.#validationReferenceRoot ? ["--reference-if-able", this.#validationReferenceRoot] : []),
-          bundle, layout.releaseRoot,
-        ], { cwd: layout.root, timeoutMs: null });
-      } finally {
-        if (transportRoot) {
-          if (!pathInside(layout.root, transportRoot) || path.dirname(transportRoot) !== layout.root) throw new Error("Clone transport escaped its owned root");
-          await rm(transportRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-        }
+      const objects = preparationObjectStore();
+      if (!objects) throw new Error("Release object provisioning requires its guarded repository owner");
+      if (this.#validationBundle) {
+        // A retained legacy generation keeps its original transport identity.
+        await runGit(["clone", "--single-branch", "--branch", "main", "--no-local", "--no-hardlinks",
+          "--no-checkout", this.#validationBundle, layout.releaseRoot], { cwd: layout.root, timeoutMs: null });
+        await runGit(["remote", "rename", "origin", "workspace"], { cwd: layout.releaseRoot });
+      } else {
+        const required = [...new Set([primary.mainCommit, ...inputs].filter(Boolean))];
+        const identityHash = taskGitIdentityHash({ kind: "release-input-clone-v1", repository: layout.releaseRoot,
+          sourceRoot, inputs: required });
+        const storage = await objects.provision({ sourceRoot, repository: layout.releaseRoot,
+          inputs: required, identityHash });
+        await objects.assertConsumer({ repository: layout.releaseRoot, inputs: required, identityHash, storage });
+        objectStorage = { inputs: required, identityHash, storage };
+        await runGit(["update-ref", "refs/heads/main", primary.mainCommit, "0".repeat(40)], { cwd: layout.releaseRoot });
+        await runGit(["symbolic-ref", "HEAD", "refs/heads/main"], { cwd: layout.releaseRoot });
+        await runGit(["remote", "add", "workspace", sourceRoot], { cwd: layout.releaseRoot });
       }
-      await runGit(["remote", "rename", "origin", "workspace"], { cwd: layout.releaseRoot });
-      if (!this.#validationBundle) await runGit(["remote", "set-url", "workspace", sourceRoot], { cwd: layout.releaseRoot });
       await runGit(["config", "core.longpaths", "true"], { cwd: layout.releaseRoot });
       if (this.#isolationContext) {
         for (const [key, value] of [["core.hooksPath", path.join(this.dataDir, "empty-hooks")],
@@ -993,8 +1036,11 @@ export class ReleaseGitWorkspaceService {
     )) {
       throw new Error("managed release clone marker belongs to another repository");
     }
+    objectStorage ??= existingMarker?.objectStorage ?? null;
+    if (objectStorage) await preparationObjectStore().assertConsumer({ repository: releaseRoot, ...objectStorage });
     const marker = {
       schemaVersion: 1,
+      ...(objectStorage ? { objectStorage } : {}),
       kind: "agent-hub-owned-release-clone",
       managedRoot: path.dirname(layout.root),
       primaryRoot: primary.root,
@@ -1022,7 +1068,7 @@ export class ReleaseGitWorkspaceService {
       const input = { projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit,
         baseProvenance, exactBaseProvenance: true };
       const verificationRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
-      try {
+      return withPreparationCleanup(verificationRoot, async () => {
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         const prepared = await measureTaskOperation("release:prepared-source", async () => this.#preparedGenerationSource({ ...input,
           verificationRoot: path.join(verificationRoot, "before") }));
@@ -1037,29 +1083,16 @@ export class ReleaseGitWorkspaceService {
           planRevision, baseCommit: current.candidate.baseCommit, tree: current.candidate.tree,
           taskIds: current.candidate.frozenTasks.map(task => task.taskId).sort(),
           mergedTaskIds: current.candidate.mergedTaskIds };
-      } finally {
-        await rm(verificationRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-      }
+      });
     }
     const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
-    try {
+    return withPreparationCleanup(temporaryRoot, async () => {
       const isolated = new ReleaseGitWorkspaceService({
         dataDir: temporaryRoot, contourExternalEffects: this.#contourExternalEffects,
         environment: this.#environment,
-        verifyNativeResolutionReview: this.verifyNativeResolutionReview,
       });
       isolated.#publicationDataDir = this.#publicationDataDir;
-      // Copy Git objects/refs only, never local repository configuration or
-      // hooks. Git's clone protection remains enabled for the bundle transport.
-      // The live primary still supplies identity and invariant checks.
-      const bundle = path.join(temporaryRoot, "source.bundle");
-      const sourceRoot = await repositoryRoot(projectRoot);
-      const mainCommit = await runGit(["rev-parse", "refs/heads/main"], { cwd: sourceRoot });
-      await createSelectedGitBundle({ root: temporaryRoot, sourceRoot, bundle, mainCommit,
-        inputs: [mainCommit, String(approvedBaseCommit ?? "").trim(),
-          ...normalizedFrozenTasks(frozenTasks).map(task => task.resultCommit)],
-        gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: null }) });
-      isolated.#validationBundle = bundle;
+      isolated.#repositoryOwner = this.#repositoryOwner;
       const candidate = await isolated.prepareCandidate({
         planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, baseProvenance,
         validateBeforeCommit,
@@ -1074,13 +1107,10 @@ export class ReleaseGitWorkspaceService {
         taskIds: candidate.frozenTasks.map((task) => task.taskId).sort(),
         mergedTaskIds: candidate.mergedTaskIds,
       };
-    } finally {
-      // Only the exact freshly allocated directory is owned by this invocation.
-      await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-    }
+    });
   }
 
-  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent, releaseVersion,
+  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent, releaseVersion, expectedRuntimeVersion,
     exactBaseProvenance = false, verificationRoot = null }) {
     const layout = this.#layout(projectRoot);
     const stale = message => Object.assign(new Error(`${message}; prepare the current Await candidate through the normal owner`),
@@ -1105,18 +1135,7 @@ export class ReleaseGitWorkspaceService {
             && stableManifest(manifest.baseProvenance) !== stableManifest(baseProvenance))) {
         throw stale("Prepared PreRelease selection, base or evidence is stale");
       }
-      let verificationRepository = source.releaseRoot;
-      if (verificationRoot) {
-        await mkdir(verificationRoot, { recursive: true });
-        const bundle = path.join(verificationRoot, "source.bundle");
-        await createSelectedGitBundle({ root: verificationRoot, sourceRoot: source.releaseRoot, bundle,
-          mainCommit: source.baseCommit,
-          inputs: [source.baseCommit, source.preReleaseHead, ...tasks.map(task => task.resultCommit)],
-          gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: null }) });
-        verificationRepository = path.join(verificationRoot, "repository.git");
-        await runGit(["clone", "--bare", "--no-local", "--no-hardlinks", bundle, verificationRepository],
-          { cwd: verificationRoot });
-      }
+      const verify = async verificationRepository => {
       const git = (args, options = {}) => runGit(args, { ...options, cwd: verificationRepository });
       const historyAuthority = await this.#nativeHistoryAuthority({ projectRoot, provenance: manifest.baseProvenance,
         planRevision, tasks });
@@ -1124,7 +1143,7 @@ export class ReleaseGitWorkspaceService {
         historyAuthority,
         merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
         identity: { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision, baseCommit: source.baseCommit, tasks },
-        verifyReview: this.verifyNativeResolutionReview });
+        });
       if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
         git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }),
         adoptions: historyAuthority.adoptions, originCommit: manifest.baseProvenance.approvedOriginMainCommit });
@@ -1143,10 +1162,18 @@ export class ReleaseGitWorkspaceService {
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
         inputHash: sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit, tasks, baseProvenance,
           changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)),
-          ...(releaseVersion !== undefined ? { releaseVersion } : {}) })) };
+          ...(releaseVersion !== undefined ? { releaseVersion } : {}),
+          ...(expectedRuntimeVersion !== undefined ? { expectedRuntimeVersion } : {}) })) };
       return { binding, candidate: { ...source, baseProvenance, frozenTasks: tasks,
         mergedTaskIds: tasks.map(task => task.taskId),
         manifest: { ...manifest, ...(baseProvenance ? { baseProvenance } : {}), preparedCandidate: binding } } };
+      };
+      if (!verificationRoot) return verify(source.releaseRoot);
+      return this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot: source.releaseRoot,
+        repositoryRoot: verificationRoot }, ({ lease, objects }) =>
+        withPreparationGitIsolation(this.dataDir, () => objects.withInputMath({ sourceRoot: source.releaseRoot,
+          inputs: [source.baseCommit, source.preReleaseHead, ...tasks.map(task => task.resultCommit)] },
+          ({ repository }) => verify(repository)), lease, objects));
     });
   }
 
@@ -1154,9 +1181,19 @@ export class ReleaseGitWorkspaceService {
     operationId, generation, planRevision, projectRoot, workspaceId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
-    ephemeral = false, nativeResolutionReview = null, releaseVersion = undefined,
+    ephemeral = false, releaseVersion = undefined,
+    expectedRuntimeVersion = undefined, firstComposeRecovery = null,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
+    if (!preparationObjectStore()) {
+      const source = await repositoryRoot(projectRoot);
+      const target = path.join(this.dataDir, "release-gens", sha256(`${operationId}:${Number(generation)}:${source}`).slice(0, 24));
+      return this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot: source, repositoryRoot: target },
+        ({ lease, objects }) => withPreparationGitIsolation(this.dataDir, () => this.prepareGeneration({
+          operationId, generation, planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
+          baseProvenance, validateBeforeCommit, changelogContent, freezePublication, ephemeral,
+          releaseVersion, expectedRuntimeVersion, firstComposeRecovery }), lease, objects));
+    }
     if (releaseVersion !== undefined) normalizeReleaseVersion(releaseVersion);
     const operation = String(operationId ?? "").trim();
     const generationNumber = Number(generation);
@@ -1170,7 +1207,7 @@ export class ReleaseGitWorkspaceService {
     const lock = path.join(this.dataDir, "locks", `release-generation-${generationKey}`);
     return withInterprocessLocks([lock], async () => {
       try {
-        await mkdir(generationDataDir, { recursive: true });
+        if (!firstComposeRecovery) await mkdir(generationDataDir, { recursive: true });
         const identityFile = path.join(generationDataDir, "identity.json");
         let identity = {
           schemaVersion: 1,
@@ -1185,10 +1222,20 @@ export class ReleaseGitWorkspaceService {
           throw new Error("release generation directory identity collision");
         }
         if (existingPrepared) identity = existingIdentity;
+        if (!existingIdentity && firstComposeRecovery) throw new Error("First compose retained identity is missing");
         if (!existingIdentity) await writeJsonAtomic(identityFile, identity);
+        if (firstComposeRecovery) {
+          const reader = new ReleaseGitWorkspaceService({ dataDir: generationDataDir,
+            contourExternalEffects: this.#contourExternalEffects, environment: this.#environment,
+            readPreparationOriginal: this.#readPreparationOriginal });
+          reader.#publicationDataDir = this.#publicationDataDir;
+          return reader.#firstFrozenGeneration({ identity, generationDataDir,
+            projectRoot: sourceRoot, ...firstComposeRecovery });
+        }
         const preparedInput = { projectRoot: sourceRoot, workspaceId, planRevision,
           frozenTasks, approvedBaseCommit, baseProvenance, changelogContent,
-          ...(releaseVersion !== undefined ? { releaseVersion } : {}) };
+          ...(releaseVersion !== undefined ? { releaseVersion } : {}),
+          ...(expectedRuntimeVersion !== undefined ? { expectedRuntimeVersion } : {}) };
         const generationLayout = this.#layout(sourceRoot);
         const localCheckpointFile = path.join(generationDataDir, "release-repositories", generationLayout.repositoryKey, "checkpoint.json");
         const localCheckpoint = freezePublication ? await readJson(localCheckpointFile) : null;
@@ -1197,7 +1244,8 @@ export class ReleaseGitWorkspaceService {
           const inputHash = sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit,
             tasks: normalizedFrozenTasks(frozenTasks), baseProvenance,
             changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)),
-            ...(releaseVersion !== undefined ? { releaseVersion } : {}) }));
+            ...(releaseVersion !== undefined ? { releaseVersion } : {}),
+            ...(expectedRuntimeVersion !== undefined ? { expectedRuntimeVersion } : {}) }));
           if (existingPrepared && existingPrepared.inputHash !== inputHash) {
             throw Object.assign(new Error("Original generation prepared input changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
           }
@@ -1215,26 +1263,19 @@ export class ReleaseGitWorkspaceService {
           } else if (!existingPrepared) throw new Error("Frozen generation has no original prepared binding");
         }
         const bundle = path.join(generationDataDir, "source.bundle");
-        if (!ephemeral && !await fileExists(bundle)) {
-          const mainCommit = await runGit(["rev-parse", "refs/heads/main"], { cwd: sourceRoot });
-          const inputs = [mainCommit, String(approvedBaseCommit ?? "").trim(),
-            ...normalizedFrozenTasks(frozenTasks).map(task => task.resultCommit)];
-          // The prepared candidate is fetched by exact identity below. Capture
-          // only main/base/selected result ancestry, never unrelated source refs.
-          // Preserve partial output for this original generation's recovery.
-          await createSelectedGitBundle({ root: generationDataDir, sourceRoot, bundle, inputs, mainCommit,
-            gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: null }) });
-        }
         const isolated = new ReleaseGitWorkspaceService({
           dataDir: generationDataDir,
           contourExternalEffects: this.#contourExternalEffects,
           environment: this.#environment,
           readPreparationOriginal: this.#readPreparationOriginal,
-          verifyNativeResolutionReview: this.verifyNativeResolutionReview,
         });
         isolated.#publicationDataDir = this.#publicationDataDir;
-        if (ephemeral) isolated.#validationReferenceRoot = sourceRoot;
-        else isolated.#validationBundle = bundle;
+        isolated.#repositoryOwner = this.#repositoryOwner;
+        isolated.#ownedInputs = [String(approvedBaseCommit ?? ""),
+          ...normalizedFrozenTasks(frozenTasks).map(task => task.resultCommit),
+          ...(preparedSource ? [preparedSource.candidate.preReleaseHead] : [])];
+        if (await fileExists(bundle)) isolated.#validationBundle = bundle;
+        else isolated.#validationReferenceRoot = preparedSource?.candidate.releaseRoot ?? sourceRoot;
         const validatePrepared = () => measureTaskOperation("release:validate-prepared", async () => {
           if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
           if (!localCheckpoint?.publicationFreeze) {
@@ -1301,6 +1342,7 @@ export class ReleaseGitWorkspaceService {
           changelogContent: frozenChangelog,
           reusePersistedChangelog: Boolean(localCheckpoint?.publicationFreeze),
           ...(releaseVersion !== undefined ? { expectedVersion: releaseVersion } : {}),
+          ...(expectedRuntimeVersion !== undefined ? { expectedRuntimeVersion } : {}),
           validateBeforeCommit: validatePrepared,
         });
         const frozen = await isolated.frozenCandidate(sourceRoot);
@@ -1319,8 +1361,10 @@ export class ReleaseGitWorkspaceService {
         };
       } catch (error) {
         if (ephemeral) {
-          await rm(generationDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
-            .catch((cleanupError) => { error.cleanupError = cleanupError; });
+          try {
+            await assertPreparationProcessOwned();
+            await rm(generationDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+          } catch (cleanupError) { error.cleanupError = cleanupError; }
         }
         throw error;
       }
@@ -1332,7 +1376,17 @@ export class ReleaseGitWorkspaceService {
     const key = path.basename(String(candidate?.generationRoot ?? ""));
     if (!/^[a-f0-9]{24}$/u.test(key)) throw new Error("release generation cleanup identity required");
     return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${key}`)],
-      lease => this.#discardGenerationCandidate(candidate, lease));
+      async generationLease => {
+        const root = path.join(this.dataDir, "release-gens", key);
+        if (!samePath(root, candidate.generationRoot)) throw new Error("Generation cleanup root changed");
+        const identity = await readJson(path.join(root, "identity.json"));
+        if (!identity?.repositoryRoot) throw new Error("Generation cleanup process identity missing");
+        return this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot: identity.repositoryRoot, repositoryRoot: root },
+          ({ lease, objects }) => withPreparationGitIsolation(this.dataDir, () =>
+            this.#discardGenerationCandidate(candidate, { ...lease, assertOwned: async () => {
+              await generationLease.assertOwned(); await lease.assertOwned();
+            } }), lease, objects));
+      });
   }
 
   async #discardGenerationCandidate(candidate, lease) {
@@ -1397,7 +1451,111 @@ export class ReleaseGitWorkspaceService {
         }
       }
     }
-    await lease.assertOwned();
+    // Preserve the complete original Git graph, refs/index and unique local
+    // files in the existing object archive owner BEFORE retiring a generation.
+    // Never produce a second whole repository/history bundle for this handoff.
+    const repositories = [path.join(evidenceSource, "repository")];
+    const nativeRoot = path.join(evidenceSource, "native-merges");
+    for (const entry of await readdir(nativeRoot, { withFileTypes: true }).catch(error => {
+      if (error.code === "ENOENT") return []; throw error;
+    })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[a-f0-9]{24}$/u.test(entry.name)) {
+        throw new Error("Generation native repository custody changed; retained");
+      }
+      repositories.push(path.join(nativeRoot, entry.name, "repository"));
+    }
+    for (const repository of repositories) {
+      const info = await lstat(repository).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+      if (!info) continue;
+      if (!info.isDirectory() || info.isSymbolicLink() || !pathInside(generationRoot, repository)) throw new Error("Generation archive root changed");
+      await lease.assertOwned(); await assertPreparationProcessOwned();
+      const retainedPlan = path.join(archiveRoot, sha256(repository).slice(0, 24) + ".inventory.json");
+      const retainedBytes = await readFile(retainedPlan).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+      if (retainedBytes) {
+        const prior = await readJson(path.join(archiveRoot, sha256(repository).slice(0, 24) + ".objects.json"));
+        const originalInventory = JSON.parse(retainedBytes);
+        if (prior?.binding.repository !== repository || stableManifest(prior.binding.generationIdentity) !== stableManifest(identity)
+            || prior.binding.inventorySha256 !== sha256(retainedBytes)
+            || originalInventory.repository !== repository) throw new Error("Original generation retirement changed; retained");
+        await preparationObjectStore().readArchive(prior.archive);
+        let resumed;
+        do {
+          await lease.assertOwned(); await assertPreparationProcessOwned();
+          resumed = await retireSealedNativeCapture(repository, retainedPlan, sha256(retainedBytes), { allowPartial: true });
+          if (resumed.status === "partial" && !resumed.files) throw new Error("Original generation retirement made no progress; retained");
+        } while (resumed.status === "partial");
+        continue;
+      }
+      const marker = await readJson(path.join(repository, ".git", RELEASE_MARKER));
+      const native = marker ? null : await readJson(path.join(path.dirname(repository), "merge.json"));
+      const consumer = marker?.objectStorage ?? (native?.objectStorage ? {
+        storage: native.objectStorage,
+        identityHash: taskGitIdentityHash({ repository, identityHash: taskGitIdentityHash(native.identity) }),
+        inputs: [...new Set([native.identity.baseCommit, ...native.identity.tasks.map(task => task.resultCommit)])],
+      } : null);
+      if (consumer) await preparationObjectStore().assertConsumer({ repository, ...consumer });
+      const inventory = await inventoryNativeCapture(repository, { allowSharedObjects: Boolean(consumer) });
+      const binding = { kind: "release-generation-repository-v1", generationIdentity: identity,
+        repository, inventorySha256: sha256(JSON.stringify(inventory)) };
+      const { archive } = await preparationObjectStore().archive({ sourceRoot: repository, binding, inventory,
+        assertCurrent: () => lease.assertOwned() });
+      const destination = path.join(archiveRoot, sha256(repository).slice(0, 24) + ".objects.json");
+      const bytes = Buffer.from(JSON.stringify({ binding, archive }));
+      const existing = await readFile(destination).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+      if (existing && !existing.equals(bytes)) throw new Error("Generation archive receipt changed; retained");
+      if (!existing) { const handle = await open(destination, "wx");
+        try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } }
+      await preparationObjectStore().readArchive(archive);
+      if (sha256(JSON.stringify(await inventoryNativeCapture(repository, { allowSharedObjects: Boolean(consumer) }))) !== binding.inventorySha256) throw new Error("Generation changed after archive; retained");
+      // Existing sealed native deleter unlinks immutable aliases without
+      // changing read-only attributes on the retained pool/other consumers.
+      const plan = path.join(archiveRoot, sha256(repository).slice(0, 24) + ".inventory.json");
+      const planBytes = Buffer.from(JSON.stringify(inventory));
+      const priorPlan = await readFile(plan).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+      if (priorPlan && !priorPlan.equals(planBytes)) throw new Error("Generation deletion inventory changed; retained");
+      if (!priorPlan) { const handle = await open(plan, "wx"); try { await handle.writeFile(planBytes); await handle.sync(); } finally { await handle.close(); } }
+      let retired;
+      do {
+        await lease.assertOwned(); await assertPreparationProcessOwned();
+        retired = await retireSealedNativeCapture(repository, plan, sha256(planBytes), { allowPartial: retired !== undefined });
+        if (retired.status === "partial" && !retired.files) throw new Error("Generation repository retirement made no progress; retained");
+      } while (retired.status === "partial");
+    }
+    const pending = [generationRoot];
+    const rawFiles = [];
+    while (pending.length) {
+      const directory = pending.pop();
+      const entry = await lstat(directory);
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !pathInside(generationRoot, directory)) throw new Error("Generation outer custody changed");
+      for (const item of await readdir(directory, { withFileTypes: true })) {
+        const file = path.join(directory, item.name);
+        if (repositories.some(repository => samePath(file, repository))) continue;
+        if (item.isSymbolicLink()) throw new Error("Generation outer alias requires owning disposition; retained");
+        if (item.isDirectory()) pending.push(file);
+        else if (item.isFile()) rawFiles.push(file);
+        else throw new Error("Generation outer entry requires owning disposition; retained");
+      }
+    }
+    const sealed = [];
+    for (const file of rawFiles) {
+      await lease.assertOwned(); await assertPreparationProcessOwned();
+      const relative = path.relative(generationRoot, file), target = path.join(archiveRoot, "raw", relative);
+      if (!pathInside(archiveRoot, target)) throw new Error("Generation raw archive escaped owner");
+      await mkdir(path.dirname(target), { recursive: true });
+      const before = await lstat(file);
+      try { await link(file, target); } catch (error) { if (error.code !== "EEXIST") throw error; }
+      const after = await lstat(target);
+      if (!before.isFile() || before.isSymbolicLink() || !after.isFile() || after.isSymbolicLink()
+          || before.dev !== after.dev || before.ino !== after.ino || before.birthtimeMs !== after.birthtimeMs
+          || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error("Generation raw archive identity changed; retained");
+      sealed.push({ file, target, before });
+    }
+    for (const { file, target, before } of sealed) {
+      const current = await lstat(file), retained = await lstat(target);
+      if (current.dev !== before.dev || current.ino !== before.ino || current.size !== before.size
+          || current.mtimeMs !== before.mtimeMs || retained.ino !== before.ino || retained.dev !== before.dev) throw new Error("Generation changed before retirement; retained");
+    }
+    await lease.assertOwned(); await assertPreparationProcessOwned();
     await rm(generationRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 
@@ -1483,6 +1641,13 @@ export class ReleaseGitWorkspaceService {
   }
 
   async promoteGenerationCandidate({ projectRoot, candidate, validateBeforeCommit = null, commitPrepared = null } = {}) {
+    if (!preparationObjectStore()) {
+      const sourceRoot = await repositoryRoot(projectRoot);
+      return this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot,
+        repositoryRoot: this.#layout(sourceRoot).releaseRoot }, ({ lease, objects }) =>
+        withPreparationGitIsolation(this.dataDir, () => this.promoteGenerationCandidate({
+          projectRoot, candidate, validateBeforeCommit, commitPrepared }), lease, objects));
+    }
     this.#assertAvailable("promoteGenerationCandidate");
     if (!candidate?.releaseRoot || !candidate?.preReleaseHead || !candidate?.manifest) {
       throw new Error("prospective release generation is incomplete");
@@ -1897,8 +2062,9 @@ export class ReleaseGitWorkspaceService {
     const isolated = new ReleaseGitWorkspaceService({ dataDir: expected.dataDir,
       contourExternalEffects: this.#contourExternalEffects, environment: this.#environment,
       readPreparationOriginal: this.#readPreparationOriginal,
-      verifyNativeResolutionReview: this.verifyNativeResolutionReview });
+      });
     isolated.#publicationDataDir = this.#publicationDataDir;
+    isolated.#repositoryOwner = this.#repositoryOwner;
     isolated.#isolationContext = isolation;
     const lease = options.forwardPreparation.repositoryLease;
     if (typeof lease?.assertOwned !== "function" || typeof lease?.beginProcessTreeGuard !== "function") {
@@ -1946,19 +2112,28 @@ export class ReleaseGitWorkspaceService {
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
-    nativeResolutionReview = null, nativeAwaitRecovery = null, forwardPreparation = null,
+    nativeAwaitRecovery = null, forwardPreparation = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
+    if (!preparationObjectStore()) {
+      const sourceRoot = await repositoryRoot(projectRoot);
+      return this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot,
+        repositoryRoot: this.#layout(sourceRoot).releaseRoot }, ({ lease, objects }) =>
+        withPreparationGitIsolation(this.dataDir, () => this.prepareCandidate({
+          planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks, approvedBaseCommit, baseProvenance,
+          validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
+          nativeAwaitRecovery, forwardPreparation }), lease, objects));
+    }
     const isolation = forwardPreparation?.readIsolation?.();
     if (isolation && !this.#isolationContext) return this.#prepareIsolatedCandidate({
       planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks, approvedBaseCommit, baseProvenance,
-      validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard, nativeResolutionReview,
+      validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
       nativeAwaitRecovery, forwardPreparation }, isolation);
     const authority = this.#readPreparationAuthority(canonicalPath(projectRoot));
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
       () => this.prepareCandidate({ planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks,
         approvedBaseCommit, baseProvenance, validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-        nativeResolutionReview, nativeAwaitRecovery, forwardPreparation }));
+        nativeAwaitRecovery, forwardPreparation }));
     if (authority && authority.phase !== "completed" && preflightRequestId !== authority.requestId) {
       throw new Error("Isolated original preparation still owns this candidate");
     }
@@ -2013,7 +2188,7 @@ export class ReleaseGitWorkspaceService {
       if (forwardPreparation && nativeAwaitRecovery) throw new Error("Forward preparation cannot archive another Await original");
       const clone = forwardPreparation && !this.#isolationContext
         ? { ...layout, ...await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot }) }
-        : await this.#ensureClone(initial);
+        : await this.#ensureClone(initial, [baseCommit, ...tasks.map(task => task.resultCommit)]);
       if (this.#isolationContext) await this.#assertIsolationClone(clone, this.#isolationContext);
       const git = (args, options = {}) => runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: null });
       const checkpoint = await readJson(clone.checkpointFile);
@@ -2107,7 +2282,7 @@ export class ReleaseGitWorkspaceService {
           await assertNativePreparedComposition({ git, baseCommit, tasks, historyAuthority: authority,
             merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
             identity: { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks },
-            verifyReview: this.verifyNativeResolutionReview });
+            });
           const current = await primarySnapshot(initial.root);
           const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
           if (current.mainCommit !== preparationGuard.primaryMainCommit || current.headCommit !== initial.headCommit
@@ -2220,7 +2395,7 @@ export class ReleaseGitWorkspaceService {
           tree: retained.tree, journalHash: sha256(bytes), mergesHash: taskGitIdentityHash(old.merges),
           verifyInRepository: retainedGit => assertNativePreparedComposition({ git: retainedGit, baseCommit,
             tasks: oldTasks, merges: old.merges, head: retained.preReleaseHead, tree: retained.tree,
-            identity: oldIdentity, verifyReview: this.verifyNativeResolutionReview, historyAuthority: oldAuthority }),
+            identity: oldIdentity, historyAuthority: oldAuthority }),
           unchanged: async () => sha256(await readFile(clone.checkpointFile)) === sha256(checkpointBytes)
             && sha256(await readFile(retained.manifestFile)) === retained.manifestHash };
       });
@@ -2229,10 +2404,13 @@ export class ReleaseGitWorkspaceService {
         reuseContext: { repositoryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
           baseProvenance: provenance ?? null, historyAuthority: historyAuthority ?? null },
         readLegacyReuseBinding,
-        resolutionReview: nativeResolutionReview, verifyReview: this.verifyNativeResolutionReview,
         deliveredHead: checkpoint?.preReleaseHead ?? null,
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
         readJson, writeJson: writeJsonAtomic,
+        provisionNativeObjects: input => preparationObjectStore().provision({ ...input,
+          identityHash: taskGitIdentityHash({ repository: input.repository, identityHash: input.identityHash }) }),
+        verifyNativeObjects: input => preparationObjectStore().assertConsumer({ ...input,
+          identityHash: taskGitIdentityHash({ repository: input.repository, identityHash: input.identityHash }) }),
       }).catch(error => {
         // Only private native staging has changed at this boundary. Keep its
         // issued checkout for resolution without making a definite conflict
@@ -3357,11 +3535,86 @@ export class ReleaseGitWorkspaceService {
     return { checkpointSha256: sha256(bytes), candidate: await this.frozenCandidate(projectRoot) };
   }
 
+  async firstFrozenGeneration({ operationId, projectRoot, ...options }) {
+    const sourceRoot = await repositoryRoot(projectRoot);
+    const key = sha256(`${operationId}:1:${sourceRoot}`).slice(0, 24);
+    const identity = await readJson(path.join(this.dataDir, "release-gens", key, "identity.json"));
+    if (!identity?.preparedCandidate) throw new Error("First compose has no retained prepared generation");
+    return withPreparationGitIsolation(this.dataDir, () => this.prepareGeneration({
+      operationId, generation: 1, projectRoot: sourceRoot, firstComposeRecovery: options }));
+  }
+
+  async #firstFrozenGeneration({ identity, generationDataDir, projectRoot, workspaceId, taskIds,
+    releaseVersion, changelogContent, approvedLocalMainCommit, approvedOriginMainCommit,
+    inspectOnly = false, expectedBinding = null, validateBeforeCommit = async () => {} }) {
+    if (identity.operationId == null || identity.generation !== 1
+        || !samePath(identity.repositoryRoot, projectRoot)
+        || identity.identitySha256 !== sha256(`${identity.operationId}:1:${projectRoot}`)) {
+      throw new Error("First frozen generation original identity changed");
+    }
+    const candidate = await this.#readFrozenCandidate(projectRoot, { metadataPreview: true });
+    const checkpointBytes = await readFile(candidate.checkpointFile);
+    const checkpoint = JSON.parse(checkpointBytes);
+    const manifest = JSON.parse(await readFile(candidate.manifestFile, "utf8"));
+    const primary = await primarySnapshot(projectRoot);
+    const origin = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: projectRoot });
+    if (candidate.checkpointPhase !== "frozen" || candidate.manifest.workspaceId !== workspaceId
+        || primary.headCommit !== approvedLocalMainCommit || origin !== approvedOriginMainCommit
+        || candidate.manifest.taskIds.some(taskId => !taskIds.includes(taskId))
+        || stableManifest(manifest.preparedCandidate) !== stableManifest(identity.preparedCandidate)
+        || checkpoint.publicationFreeze?.preparedHead !== identity.preparedCandidate.commit
+        || releaseVersion !== undefined && checkpoint.publicationFreeze?.releaseVersion !== releaseVersion) {
+      throw new Error("First frozen generation authorization or prepared candidate changed");
+    }
+    const inputHash = sha256(stableManifest({ workspaceId, planRevision: candidate.planRevision,
+      approvedBaseCommit: candidate.baseCommit, tasks: normalizedFrozenTasks(manifest.tasks),
+      baseProvenance: manifest.baseProvenance ?? null,
+      changelogHash: changelogContent == null ? null : sha256(Buffer.from(changelogContent)),
+      ...(releaseVersion === undefined ? {} : { releaseVersion }) }));
+    const intent = checkpoint.publicationFreeze;
+    if (intent.changelogPayloadFile !== (intent.changelogContentHash === null ? null
+      : `publication-changelog-${intent.changelogContentHash}.bin`)) throw new Error("First frozen payload path changed");
+    for (const key of ["preparedHead", "releaseVersion", "runtimeReleaseVersion", "changelogBlob", "changelogContentHash", "changelogPayloadFile"]) {
+      if (manifest.publication?.[key] !== intent[key]) throw new Error("First frozen publication intent changed");
+    }
+    if (manifest.publication?.head !== candidate.preReleaseHead) throw new Error("First frozen publication head changed");
+    const payload = intent.changelogPayloadFile == null ? null
+      : await readFile(path.join(path.dirname(candidate.checkpointFile), "evidence", intent.changelogPayloadFile));
+    if (inputHash !== identity.preparedCandidate.inputHash
+        || (payload === null ? null : sha256(payload)) !== intent.changelogContentHash
+        || (changelogContent == null ? null : sha256(Buffer.from(changelogContent))) !== intent.changelogContentHash) {
+      throw new Error("First frozen generation original input or payload changed");
+    }
+    const binding = { repositoryRoot: projectRoot, generationRoot: generationDataDir,
+      identitySha256: sha256(stableManifest(identity)), checkpointSha256: sha256(checkpointBytes),
+      manifestHash: candidate.manifestHash, commit: candidate.preReleaseHead, tree: candidate.tree,
+      preparedInputHash: inputHash, releaseVersion: intent.releaseVersion,
+      runtimeReleaseVersion: intent.runtimeReleaseVersion, changelogContentHash: intent.changelogContentHash };
+    if (inspectOnly) return { binding, candidate };
+    if (stableManifest(binding) !== stableManifest(expectedBinding)) throw new Error("First frozen generation changed after recovery admission");
+    await this.freezePublicationCandidate({ projectRoot, workspaceId, expectedPlanRevision: candidate.planRevision,
+      expectedPreparedHead: intent.preparedHead, changelogContent: payload, reusePersistedChangelog: true,
+      recoverMetadataMaterialization: true, validateBeforeCommit,
+      expectedVersion: intent.releaseVersion, expectedRuntimeVersion: intent.runtimeReleaseVersion });
+    const frozen = await this.frozenCandidate(projectRoot);
+    if (frozen.manifestHash !== binding.manifestHash || frozen.preReleaseHead !== binding.commit
+        || frozen.tree !== binding.tree || sha256(await readFile(candidate.checkpointFile)) !== binding.checkpointSha256) {
+      throw new Error("First frozen generation changed during recovery");
+    }
+    return { binding, candidate: { ...frozen, operationId: identity.operationId, generation: 1,
+      generationRoot: generationDataDir, frozenTasks: normalizedFrozenTasks(manifest.tasks),
+      mergedTaskIds: manifest.tasks.map(task => task.taskId) } };
+  }
+
   async frozenCandidate(projectRoot, { changelogContent = undefined, allowAbsent = false } = {}) {
+    return this.#readFrozenCandidate(projectRoot, { changelogContent, allowAbsent });
+  }
+
+  async #readFrozenCandidate(projectRoot, { changelogContent = undefined, allowAbsent = false, metadataPreview = false } = {}) {
     this.#assertAvailable("frozenCandidate");
     const authority = this.#readPreparationAuthority(canonicalPath(projectRoot));
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
-      () => this.frozenCandidate(projectRoot, { changelogContent, allowAbsent }));
+      () => this.#readFrozenCandidate(projectRoot, { changelogContent, allowAbsent, metadataPreview }));
     const primary = await primarySnapshot(projectRoot);
     const layout = this.#layout(primary.root);
     const checkpoint = await readJson(layout.checkpointFile);
@@ -3430,7 +3683,9 @@ export class ReleaseGitWorkspaceService {
       authorizedNotes = Boolean(info?.isFile() && !info.isSymbolicLink()
         && (await readFile(file)).equals(Buffer.from(changelogContent)));
     }
-    if (releaseBranch !== expectedCheckout || releaseHead !== branchHead || (releaseDirty && !authorizedNotes)) {
+    const pendingMetadata = metadataPreview && checkpointPhase === "frozen" && releaseDirty
+      ? await frozenMetadataMaterialization({ root: marker.releaseRoot, head: checkpoint.preReleaseHead }) : [];
+    if (releaseBranch !== expectedCheckout || releaseHead !== branchHead || (releaseDirty && !authorizedNotes && !pendingMetadata.length)) {
       throw new Error(`release checkpoint clone is not an exact clean ${expectedCheckout} checkout for phase ${checkpointPhase}`);
     }
     if (manifest.schemaVersion !== 2
@@ -3474,6 +3729,7 @@ export class ReleaseGitWorkspaceService {
       releaseRoot: layout.releaseRoot,
       checkpointFile: layout.checkpointFile,
       checkpointPhase,
+      ...(pendingMetadata.length ? { pendingMetadata } : {}),
       planRevision: String(checkpoint.planRevision),
       manifestHash: String(checkpoint.manifestHash),
       manifestFile,
