@@ -9,7 +9,7 @@ sequencer remains the only state/effect owner; this changes ordinary preparation
 not Task Test integration, publication selection or the release command.
 
 Each new plan keeps its own full identity and journal. Sibling captures are hints,
-not authority. The full normalized ordered Task entries, repository/common dir,
+not authority. For whole-prefix reuse, the full normalized ordered Task entries, repository/common dir,
 Workspace, base, policy, provenance/history authority and current implementation
 hash must match. Reuse stops at the first changed entry. Git bundle transport
 imports the verified prefix; it does not copy an old final candidate containing
@@ -17,6 +17,9 @@ an excluded tail. The current verifier checks each step without old review field
 Within one invocation, the same immutable proof is not computed three times;
 after restart it is re-established. Final whole-current selected content/history,
 runtime import closure and the owning fresh authority/lease/CAS remain mandatory.
+ADR-HUB-418-partial-native-conflict-reuse extends eligibility to recorded completed
+steps of partial captures and separately re-verifies conflict-only hints across
+selection labels or implementation changes; it does not transfer prefix authority.
 
 ## Repeated conflict
 

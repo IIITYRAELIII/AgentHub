@@ -41,6 +41,30 @@ async function snapshot(root) {
     } };
 }
 
+// Conflict afterimages are hints, not a verified prefix. A different selection
+// or verifier implementation must run the CURRENT exact-stage/marker proof;
+// repository, effective base, installed source and history authority still match.
+function conflictScope(context) {
+  if (context?.version !== 1 || !/^[a-f0-9]{64}$/u.test(context.implementation ?? "")) return null;
+  const value = structuredClone(context);
+  delete value.implementation;
+  if (value.baseProvenance && typeof value.baseProvenance === "object") {
+    delete value.baseProvenance.planRevision;
+    delete value.baseProvenance.selectionHash;
+  }
+  return taskGitIdentityHash(value);
+}
+
+// The current sequencer returns immutable ordinary Git evidence on success;
+// the older verifier returns null. Neither form transfers a review capability.
+function ordinaryVerification(value, before, result, commit) {
+  return value == null || value.before === before && value.commit === commit
+    && Array.isArray(value.conflictPaths) && !value.review && !value.compatibilityReview
+    && JSON.stringify(value.binding?.parents) === JSON.stringify([before, result])
+    && value.binding?.commit === commit;
+}
+const refusedHint = error => error.code?.startsWith("RELEASE_NATIVE_") || error.code === "RELEASE_SELECTED_CONTENT_MISSING";
+
 export async function nativeReuseCandidates({ root, identity, context, readLegacyBinding = null }) {
   if (!context) return [];
   return measureTaskOperation("native:reuse-lookup", async () => {
@@ -52,18 +76,25 @@ export async function nativeReuseCandidates({ root, identity, context, readLegac
       const s = candidate.state;
       if (s.version !== 1 || s.identity?.policy !== identity.policy || s.identity?.workspaceId !== identity.workspaceId
           || s.identity?.baseCommit !== identity.baseCommit || !Array.isArray(s.identity.tasks)
-          || s.next !== s.identity.tasks.length || !Array.isArray(s.merges) || s.merges.length !== s.next
-          || s.merging || s.conflict || s.head !== (s.merges.at(-1)?.commit ?? identity.baseCommit)) continue;
+          || !Number.isSafeInteger(s.next) || s.next < 1 || s.next > s.identity.tasks.length
+          || !Array.isArray(s.merges) || s.merges.length !== s.next
+          || s.next === s.identity.tasks.length && (s.merging || s.conflict)
+          || !s.merges.every((step, i) => /^[a-f0-9]{40}$/u.test(step?.commit ?? "")
+            && step.taskId === s.identity.tasks[i]?.taskId && step.resultCommit === s.identity.tasks[i]?.resultCommit)
+          || s.head !== s.merges.at(-1).commit) continue;
       let count = 0;
       while (count < Math.min(identity.tasks.length, s.next)
           && taskGitIdentityHash(identity.tasks[count]) === taskGitIdentityHash(s.identity.tasks[count])) count++;
       if (s.reuseContext && taskGitIdentityHash(s.reuseContext) === taskGitIdentityHash(context)) candidates.push({ ...candidate, count });
-      else historical.push({ ...candidate, count });
+      else if (conflictScope(context) !== null && conflictScope(s.reuseContext) === conflictScope(context)) {
+        // Never pass a cross-implementation/selection hint to prefix adoption.
+        candidates.push({ ...candidate, count: 0, conflictOnly: true });
+      } else if (s.next === s.identity.tasks.length && !s.merging && !s.conflict) historical.push({ ...candidate, count });
     }
     // One already prepared, hash-bound capture may predate this implementation.
     // Only its existing owning checkpoint reader can supply the missing scope;
     // never stamp/enrich an old journal or trust an arbitrary historical tree.
-    if (!candidates.length && historical.length && typeof readLegacyBinding === "function") {
+    if (!candidates.some(candidate => !candidate.conflictOnly) && historical.length && typeof readLegacyBinding === "function") {
       const binding = await readLegacyBinding();
       const candidate = binding && historical.find(c => c.root === binding.root && c.hash === binding.journalHash
         && taskGitIdentityHash(c.state.identity) === binding.identityHash && c.state.head === binding.head
@@ -155,18 +186,19 @@ export async function verifiedNativePrefix({ root, repository, candidates, tasks
       for (let i = 0; i < candidate.count; i++) {
         const step = candidate.state.merges[i], task = tasks[i];
         if (step.taskId !== task.taskId || step.resultCommit !== task.resultCommit) break;
+        let resolution;
         try {
-          // Verify the exact Git resolution again; no old approval capability
-          // participates in reuse of the retained objects.
-          await verify(before, task.resultCommit, step.commit, step);
+          // No review argument is supplied. Extra bytes/compatibility need a
+          // fresh current binding and therefore cannot cross this boundary.
+          resolution = await verify(before, task.resultCommit, step.commit, step);
+          if (!ordinaryVerification(resolution, before, task.resultCommit, step.commit)) break;
         } catch (error) {
-          if (error.code?.startsWith("RELEASE_NATIVE_") || error.code === "RELEASE_SELECTED_CONTENT_MISSING") break;
+          if (refusedHint(error)) break;
           throw error;
         }
         merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: step.commit,
-          ...(step.resolved ? { resolved: true } : {}), ...(step.contained ? { contained: true } : {}),
-          ...(step.resolution ? { resolution: step.resolution } : {}),
-          ...(step.reviewedResolution ? { reviewedResolution: step.reviewedResolution } : {}) });
+          ...(resolution ? { resolution } : {}),
+          ...(step.resolved ? { resolved: true } : {}), ...(step.contained ? { contained: true } : {}) });
         before = step.commit;
       }
       if (merges.length > (best?.merges.length ?? 0) && await candidate.unchanged()) {
@@ -255,6 +287,7 @@ export async function retainedNativeConflict({ root, repository, candidates, sta
         if (await incompatibleIncomingSide({ candidate, step, before, task, stages, gitAt, git })) continue;
         if (!await importCommit({ root, repository, candidate, commit: step.commit,
           receiverInputs: [identity.baseCommit, ...identity.tasks.map(task => task.resultCommit)], gitAt, beforeTransport })) continue;
+        if (String(await git(["show", "-s", "--format=%P", step.commit])) !== `${before} ${step.resultCommit}`) continue;
         const old = stageRecords(await git(
           ["merge-tree", "--write-tree", "-z", before, step.resultCommit], { rawOutput: true, acceptableExitCodes: [1] }));
         if (!old || taskGitIdentityHash(old.stages) !== taskGitIdentityHash(stages)) continue;
@@ -274,9 +307,11 @@ export async function retainedNativeConflict({ root, repository, candidates, sta
         const tree = await replaceConflictEntries(git, current.tree, replacements);
         const commit = String(await git(["-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
           "commit-tree", tree, "-p", state.head, "-p", task.resultCommit, "-m", "Reuse exact retained native conflict context"]));
-        try { await verify(state.head, task.resultCommit, commit); }
+        try {
+          if (!ordinaryVerification(await verify(state.head, task.resultCommit, commit), state.head, task.resultCommit, commit)) continue;
+        }
         catch (error) {
-          if (error.code?.startsWith("RELEASE_NATIVE_") || error.code === "RELEASE_SELECTED_CONTENT_MISSING") continue;
+          if (refusedHint(error)) continue;
           throw error;
         }
         if (!await candidate.unchanged()) continue;
