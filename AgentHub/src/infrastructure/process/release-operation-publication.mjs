@@ -2,7 +2,7 @@ import { ownedGitArguments } from "../filesystem/preparation-git-isolation.mjs";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, lstat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, lstat, writeFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { processIsAlive } from "./process-liveness.mjs";
@@ -12,6 +12,9 @@ import { readPublicationCheckpoint } from "../persistence/publication-checkpoint
 import { releaseIdentitySha256 } from "../../domain/release-operation.mjs";
 import { releasePublicationBaseCommit } from "../../domain/release-base-provenance.mjs";
 import { readReleaseToolPackage } from "./release-tool-package.mjs";
+import { readArtifact } from "./publication-artifacts.mjs";
+import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
+import { withRuntimeInstallationLease, readRuntimePointer, captureRuntimeReleaseBinding } from "../filesystem/runtime-installation-custody.mjs";
 
 function identity(value) {
   return createHash("sha256").update(String(value)).digest("hex");
@@ -198,6 +201,14 @@ export class ReleaseOperationPublication {
       throw error;
     }
     const candidate = candidateFor(generation, target);
+    const recovery = operation.retainedGenerationRecoveries?.at(-1);
+    if (recovery?.generation === generation.generation) {
+      await this.withRetainedGeneration({ operation, generation, commit: async evidence => {
+        if (releaseIdentitySha256(evidence) !== releaseIdentitySha256(recovery.evidence[0]?.artifacts)) {
+          throw new Error("Retained prepared runtime changed after recovery admission");
+        }
+      } });
+    }
     const layout = this.#layout(operation, generation, target);
     await mkdir(layout.root, { recursive: true });
     const current = await this.readback({ operation, generation, target });
@@ -297,6 +308,113 @@ export class ReleaseOperationPublication {
       child.unref();
       await Promise.all([stdout.close(), stderr.close()]);
     }
+  }
+
+  async withRetainedGeneration({ operation, generation, commit }) {
+    return withRuntimeInstallationLease(this.runtimeRoot, async () => {
+      const physicalRoot = await realpath(this.runtimeRoot);
+      const inspect = async () => {
+        const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
+          expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
+        const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
+        const pointer = await readRuntimePointer(physicalRoot);
+        const lock = await readJson(path.join(physicalRoot, "data", "bot.lock"));
+        if (lock && (!Number.isSafeInteger(lock.pid) || lock.pid <= 0)) throw new Error("Retained runtime process custody is unknown");
+        const evidence = [];
+        for (const target of operation.authorization.approvedTargets) {
+          if (target.kind !== "agent-hub-publication") throw new Error("Retained generation target is unsupported");
+          const candidate = candidateFor(generation, target);
+          const layout = this.#layout(operation, generation, target);
+          const runner = await readJson(layout.stateFile);
+          const saved = await this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment }).read();
+          const plan = generation.testPlans?.find(item => path.resolve(item.repositoryRoot) === path.resolve(candidate.repositoryRoot))?.plan;
+          const publicationIndex = saved?.steps?.findIndex(step => step.label === "Публикация Git") ?? -1;
+          const failedIndex = saved?.steps?.findIndex(step => step.status === "failed") ?? -1;
+          if (runner?.operationId !== operation.operationId || runner.generation !== generation.generation
+              || runner.targetId !== target.targetId || runner.candidate !== generation.identitySha256
+              || runner.status !== "exited" || !Number.isInteger(runner.exitCode) || runner.exitCode === 0
+              || !Number.isSafeInteger(runner.pid) || runner.pid <= 0 || this.processAlive(runner.pid) !== false
+              || JSON.stringify(runner.tool) !== JSON.stringify(toolIdentity)
+              || saved?.status !== "failed" || saved.identity?.revision !== candidate.commit
+              || path.resolve(saved.identity?.worktreeRoot ?? "") !== path.resolve(candidate.releaseRoot)
+              || path.resolve(saved.identity?.runtimeRoot ?? "") !== physicalRoot
+              || !plan || releaseIdentitySha256(saved.identity.testPlan) !== releaseIdentitySha256(plan)
+              || plan.selection.mode !== "none" || saved.progress?.publicationState
+              || failedIndex < 0 || publicationIndex <= failedIndex
+              || saved.steps.slice(publicationIndex).some(step => step.status !== "pending")) {
+            throw new Error("Retained publisher has no exact terminal pre-effect failure");
+          }
+          const sourceRoot = path.join(candidate.releaseRoot, "AgentHub");
+          const runtimePublication = { operationId: operation.operationId, generation: generation.generation,
+            sourceCommit: candidate.commit, version: candidate.manifest?.publication?.runtimeReleaseVersion };
+          const artifactIdentity = { revision: candidate.commit, sourceRoot, runtimeRoot: this.runtimeRoot,
+            protocol: 1, runtimePublication };
+          const key = identity(JSON.stringify(artifactIdentity)).slice(0, 32);
+          const releaseId = `publication-${key}`;
+          let directory = physicalRoot;
+          for (const part of ["publication-artifacts", key, "runtime"]) {
+            directory = path.join(directory, part);
+            const info = await lstat(directory);
+            if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Retained artifact custody changed");
+          }
+          for (const [relative, isDirectory] of [["artifact.json", false], ["payload", true], ["payload/prepared-runtime.json", false]]) {
+            const info = await lstat(path.join(directory, relative));
+            if (info.isSymbolicLink() || (isDirectory ? !info.isDirectory() : !info.isFile())) {
+              throw new Error("Retained artifact file custody changed");
+            }
+          }
+          const artifact = await readArtifact(directory, artifactIdentity);
+          if (!artifact || identity(JSON.stringify(artifact)) !== saved.progress?.artifactHashes?.runtime) {
+            throw new Error("Retained runtime artifact differs from the original publication");
+          }
+          const releaseRoot = path.join(physicalRoot, "releases", releaseId);
+          const before = await captureRuntimeReleaseBinding(releaseRoot, releaseId);
+          if ([pointer.current, pointer.previous, lock?.releaseId].includes(releaseId)
+              || pointer.runtimeRetention?.retired?.some(item => item.releaseId === releaseId)) {
+            throw new Error("Retained prepared runtime has installation or retirement custody");
+          }
+          if (artifact.result?.releaseId !== releaseId || artifact.result?.manifestHash !== before.manifestSha256) {
+            throw new Error("Retained runtime manifest changed");
+          }
+          const manifest = await readJson(path.join(releaseRoot, "runtime-manifest.json"));
+          const directories = new Set([releaseRoot]);
+          for (const entry of manifest.files) {
+            const parts = String(entry.path).split("/");
+            let current = releaseRoot;
+            for (const [index, part] of parts.entries()) {
+              if (!part || part === "." || part === ".." || /[\\:]/u.test(part)) throw new Error("Retained runtime path changed");
+              current = path.join(current, part);
+              if (directories.has(current)) continue;
+              const info = await lstat(current);
+              const isDirectory = index < parts.length - 1;
+              if (info.isSymbolicLink() || (isDirectory ? !info.isDirectory() : !info.isFile())) throw new Error("Retained runtime file custody changed");
+              if (isDirectory) directories.add(current);
+            }
+          }
+          await verifyRuntimeManifest(releaseRoot, releaseId);
+          const receiptBytes = await readFile(path.join(directory, "payload", "prepared-runtime.json"));
+          const expectedReceipt = { schema: 1, phase: "PREPARED", ...runtimePublication,
+            releaseId, releaseRoot, manifestSha256: before.manifestSha256 };
+          if (releaseIdentitySha256(JSON.parse(receiptBytes)) !== releaseIdentitySha256(expectedReceipt)
+              || manifest.publicationRevision !== candidate.commit || manifest.sourceRoot !== sourceRoot
+              || manifest.releaseVersion !== runtimePublication.version
+              || JSON.stringify(await captureRuntimeReleaseBinding(releaseRoot, releaseId)) !== JSON.stringify(before)) {
+            throw new Error("Retained runtime payload or prepared receipt changed");
+          }
+          evidence.push({ targetId: target.targetId, tool: toolIdentity, artifactSha256: releaseIdentitySha256(artifact),
+            receiptSha256: identity(receiptBytes), binding: before,
+            pointerSha256: releaseIdentitySha256(pointer), lockSha256: releaseIdentitySha256(lock) });
+        }
+        await tool.assertUnchanged();
+        return evidence;
+      };
+      const evidence = await inspect();
+      return commit(evidence, async () => {
+        if (releaseIdentitySha256(await inspect()) !== releaseIdentitySha256(evidence)) {
+          throw new Error("Retained runtime custody changed before recovery CAS");
+        }
+      });
+    });
   }
 
   async readback({ operation, generation, target, reviewedMain = null }) {

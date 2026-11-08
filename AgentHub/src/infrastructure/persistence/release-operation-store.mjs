@@ -7,6 +7,7 @@ import { selectedCompositionIdentity } from "../../domain/task-selected-composit
 import { normalizedOwnGitPublication } from "../../domain/release-base-provenance.mjs";
 
 import {
+  retainedGenerationRecovery,
   createCandidateGeneration,
   completedReleaseGenerationEvidence,
   effectiveReleaseTaskIds,
@@ -608,6 +609,7 @@ export class ReleaseOperationStore {
     reviewedMainRecovery = null,
     testSelectionAmendment = null,
     firstComposeRecovery = null,
+    retainedRecovery = null,
   } = {}) {
     const id = String(operationId ?? "").trim();
     if (!id) throw new TypeError("operationId is required");
@@ -644,6 +646,18 @@ export class ReleaseOperationStore {
             const receipt = readJson(row.receipt_json);
             return receipt?.status !== "failed" || receipt.effect?.status !== "not_applied";
           })) throw new Error("Reviewed-main recovery requires terminal not-applied publication receipts");
+        }
+        if (retainedRecovery && expectedRevision === current.revision) {
+          const raw = JSON.parse(row.operation_json);
+          if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("Retained recovery is source-owner-fenced");
+          const captured = retainedGenerationRecovery({ operation: current,
+            receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? ORDER BY generation, step_id, attempt")
+              .all(id).map(row => readJson(row.receipt_json)),
+            generations: database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=? ORDER BY generation")
+              .all(id).map(row => readJson(row.generation_json)) });
+          if (!captured || releaseIdentitySha256(captured) !== releaseIdentitySha256(retainedRecovery.boundary)) {
+            throw new Error("Retained generation failed receipts or immutable input changed");
+          }
         }
         if (firstComposeRecovery && expectedRevision === current.revision) {
           const raw = JSON.parse(row.operation_json);
@@ -684,6 +698,7 @@ export class ReleaseOperationStore {
           reviewedMainRecovery,
           testSelectionAmendment,
           firstComposeRecovery,
+          retainedRecovery,
         });
         if (!result.applied) {
           database.exec("ROLLBACK");

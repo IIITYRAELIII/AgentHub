@@ -3790,3 +3790,17 @@ compatibility approval. Task base, native identity/journal, history/metadata
 admission, ordinary release/Await and published multi-base sync rules do not
 change. Missing publication context and any other merge-base shape retain the
 existing replay policy. See ADR-HUB-400-published-test-content-boundary.
+
+
+## Retained original runtime allocation recovery
+
+The existing public continue may recover the SAME frozen generation only after
+a positively failed later allocator collision with its own prepared runtime.
+Idle original/CAS, exact all-Await results, NONE plan/inventory, notes, version,
+executor, frozen clone and prepared artifact custody must match. All target
+readbacks must positively remain not_applied. The existing SQLite owner repeats
+receipt/generation guards and appends recovery without replacing failed history.
+Publication rechecks source and artifact authority and reuses the original
+generation/checkpoints. Changed, partial, UNKNOWN or foreign evidence refuses.
+No allocator exclusion, generation retargeting or generic terminal resume is
+introduced. See ADR-HUB-422-retained-generation-recovery.

@@ -42,6 +42,9 @@ export function createReleaseOperationServices({
     withReviewedMainRecovery: input => adapter.withReviewedMainRecovery(input),
     inspectFirstCompose: input => adapter.inspectFirstCompose(input),
     recoverFirstCompose: input => adapter.recoverFirstCompose(input),
+    withRetainedGeneration: input => taskGitWorkspaces.withOperationTrace({
+      operationId: input.operation.operationId, generation: input.generation.generation,
+    }, () => releasePreflight.measureOperation("release:retained-generation-recovery", () => adapter.withRetainedGeneration(input))),
     requestCorrection,
     cleanupGeneration: input => adapter.cleanupGeneration(input),
     processAlive: processIsAlive,

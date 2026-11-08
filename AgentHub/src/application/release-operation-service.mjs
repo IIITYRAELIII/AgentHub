@@ -11,6 +11,7 @@ import {
   failedComposeRecoveryEligible,
   failedCompositionRecovery,
   failedFirstComposeRecovery,
+  retainedGenerationRecovery,
   releaseCompositionInput,
   releaseApprovedTargets,
   effectiveTestSelection,
@@ -204,6 +205,7 @@ export class ReleaseOperationService {
     withTaskSelection = null,
     inspectFirstCompose = null,
     recoverFirstCompose = null,
+    withRetainedGeneration = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -256,6 +258,7 @@ export class ReleaseOperationService {
     this.withTaskSelection = withTaskSelection;
     this.inspectFirstCompose = inspectFirstCompose;
     this.recoverFirstCompose = recoverFirstCompose;
+    this.withRetainedGeneration = withRetainedGeneration;
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization, resolveAuthorization = null } = {}) {
@@ -343,6 +346,14 @@ export class ReleaseOperationService {
     if (current.testSelectionAmendments?.some(item => item.requestId === options.requestId)
         || options.testSelection != null || options.taskIds != null || options.taskScope != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
     if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
+    const previousRecovery = current.retainedGenerationRecoveries?.find(item => item.requestId === options.requestId);
+    if (previousRecovery) {
+      if (previousRecovery.priorRevision !== options.expectedRevision || previousRecovery.generation !== options.expectedGeneration) {
+        throw new Error("Retained generation recovery request changed");
+      }
+      return { accepted: true, duplicate: true, operationId, recovery: previousRecovery.identitySha256 };
+    }
+    if (retainedGenerationRecovery(this.store.snapshot(operationId))) return this.#recoverRetainedGeneration(operationId, options);
     if (current.state === "failed" && current.currentGeneration === 0 && this.inspectFirstCompose) {
       return this.#recoverFirstCompose(operationId, options);
     }
@@ -451,6 +462,44 @@ export class ReleaseOperationService {
     } catch {
       console.warn('Release progress monitor unavailable: MONITOR_OBSERVATION_FAILED');
     }
+  }
+
+  async #recoverRetainedGeneration(operationId, { requestId, expectedRevision, expectedGeneration }) {
+    const snapshot = this.store.snapshot(operationId);
+    const current = snapshot.operation;
+    if (current.revision !== expectedRevision || current.currentGeneration !== expectedGeneration) {
+      return { accepted: false, reason: "stale-revision", operation: current };
+    }
+    const boundary = retainedGenerationRecovery(snapshot);
+    if (!boundary || this.#running.has(operationId) || this.#scheduled.has(operationId)
+        || typeof this.withRetainedGeneration !== "function") return { accepted: false, reason: "ineligible", operation: current };
+    requiredText(requestId, "retained generation recovery requestId");
+    const generation = this.store.generation(operationId, expectedGeneration);
+    if (typeof this.resolveTestPlans !== "function"
+        || releaseIdentitySha256(await this.resolveTestPlans(generation.candidates, effectiveTestSelection(current))) !== releaseIdentitySha256(generation.testPlans)) {
+      throw new Error("Retained generation test inventory changed");
+    }
+    return this.withRetainedGeneration({ operation: current, generation, commit: async (evidence, validate) => {
+      const readbacks = [];
+      for (const target of releaseApprovedTargets(current)) {
+        const readback = normalizeReadback(await this.readTarget({ operation: current, generation, target }));
+        if (readback.status !== "not_applied") throw new Error(`Retained publication effect is ${readback.status}`);
+        readbacks.push({ targetId: target.targetId, generation: expectedGeneration, evidence: readback });
+      }
+      await validate();
+      const contents = { requestId, operationId, priorRevision: expectedRevision, generation: expectedGeneration,
+        authorizationFingerprint: current.authorization.fingerprint, boundary, evidence, readbacks,
+        priorFailure: { completedAt: current.completedAt, error: current.lastError } };
+      const recovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+      const result = await this.store.runOperationMutation(operationId, () => this.store.transition(operationId, {
+        state: "publish", currentStep: "publish", lastError: null, publicationEffects: {},
+        nextAction: "resume the exact retained frozen generation",
+      }, { expectedRevision, retainedRecovery: recovery, eventKind: "operation.retained-generation-recovery",
+        event: { operationId, recovery } }));
+      if (result.applied) { this.#observe(operationId); this.#schedule(operationId); }
+      return { accepted: result.applied, reason: result.reason, operationId, revision: result.operation.revision,
+        recovery: recovery.identitySha256 };
+    } });
   }
 
   async #recoverFirstCompose(operationId, { requestId, expectedRevision, expectedGeneration }) {

@@ -3544,6 +3544,50 @@ export class ReleaseGitWorkspaceService {
       operationId, generation: 1, projectRoot: sourceRoot, firstComposeRecovery: options }));
   }
 
+  async inspectRetainedGeneration({ operationId, generation, workspaceId, candidate, changelogContent }) {
+    this.#assertAvailable("inspectRetainedGeneration");
+    const sourceRoot = await repositoryRoot(candidate.repositoryRoot);
+    const ownerHash = sha256(`${operationId}:${generation}:${sourceRoot}`);
+    const generationRoot = path.join(this.dataDir, "release-gens", ownerHash.slice(0, 24));
+    if (!samePath(candidate.generationRoot, generationRoot)) throw new Error("Retained generation root changed");
+    return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${ownerHash.slice(0, 24)}`)],
+      () => withPreparationGitIsolation(this.dataDir, async () => {
+        const ownerBytes = await readFile(path.join(generationRoot, "identity.json"));
+        const owner = JSON.parse(ownerBytes);
+        if (owner.operationId !== operationId || owner.generation !== generation || owner.identitySha256 !== ownerHash
+            || !samePath(owner.repositoryRoot, sourceRoot) || !owner.preparedCandidate) throw new Error("Retained generation custody changed");
+        const reader = new ReleaseGitWorkspaceService({ dataDir: generationRoot,
+          contourExternalEffects: this.#contourExternalEffects, environment: this.#environment });
+        const actual = await reader.frozenCandidate(sourceRoot);
+        const checkpointBytes = await readFile(actual.checkpointFile);
+        const checkpoint = JSON.parse(checkpointBytes);
+        const publication = actual.manifest.publication;
+        const intent = checkpoint.publicationFreeze;
+        if (actual.checkpointPhase !== "frozen" || actual.manifest.workspaceId !== workspaceId
+            || actual.preReleaseHead !== candidate.commit || actual.tree !== candidate.tree
+            || actual.manifestHash !== candidate.manifestHash || actual.planRevision !== candidate.planRevision
+            || !samePath(actual.releaseRoot, candidate.releaseRoot)
+            || stableManifest(actual.manifest) !== stableManifest(candidate.manifest)
+            || stableManifest(actual.manifest.preparedCandidate) !== stableManifest(owner.preparedCandidate)
+            || publication?.head !== candidate.commit || intent?.preparedHead !== owner.preparedCandidate.commit
+            || publication.changelogContentHash !== (changelogContent == null ? null : sha256(Buffer.from(changelogContent)))) {
+          throw new Error("Retained frozen candidate or release notes changed");
+        }
+        for (const key of ["preparedHead", "releaseVersion", "runtimeReleaseVersion", "changelogBlob", "changelogContentHash", "changelogPayloadFile"]) {
+          if (publication[key] !== intent[key]) throw new Error("Retained frozen publication intent changed");
+        }
+        if (intent.changelogPayloadFile !== `publication-changelog-${intent.changelogContentHash}.bin`
+            || sha256(await readFile(path.join(path.dirname(actual.checkpointFile), "evidence", intent.changelogPayloadFile))) !== intent.changelogContentHash
+            || sha256(await readFile(path.join(actual.releaseRoot, "CHANGELOG.md"))) !== intent.changelogContentHash) {
+          throw new Error("Retained frozen release notes bytes changed");
+        }
+        return { ownerSha256: sha256(ownerBytes), checkpointSha256: sha256(checkpointBytes),
+          commit: actual.preReleaseHead, tree: actual.tree, manifestHash: actual.manifestHash,
+          releaseVersion: intent.releaseVersion, runtimeReleaseVersion: intent.runtimeReleaseVersion,
+          changelogContentHash: intent.changelogContentHash };
+      }));
+  }
+
   async #firstFrozenGeneration({ identity, generationDataDir, projectRoot, workspaceId, taskIds,
     releaseVersion, changelogContent, approvedLocalMainCommit, approvedOriginMainCommit,
     inspectOnly = false, expectedBinding = null, validateBeforeCommit = async () => {} }) {

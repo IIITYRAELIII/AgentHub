@@ -142,6 +142,36 @@ export class WorkspaceReleaseOperationAdapter {
     return this.releasePreflight.withReviewedMainRecovery(input);
   }
 
+  withRetainedGeneration({ operation, generation, commit }) {
+    return this.withTaskSelection({ operation, taskScope: effectiveReleaseTaskScope(operation),
+      taskIds: effectiveReleaseTaskIds(operation), commit: async (current, validateSelection) => {
+        if (selectionIdentity(current) !== selectionIdentity(generation.selectedResults)) {
+          throw new Error("Retained generation accepted selection changed");
+        }
+        const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
+        const inspect = async () => {
+          const frozen = [];
+          for (const candidate of generation.candidates) {
+            frozen.push(await this.releasePreflight.releaseGitWorkspaces.inspectRetainedGeneration({
+              operationId: operation.operationId, generation: generation.generation,
+              workspaceId: operation.workspaceId, candidate, changelogContent,
+            }));
+          }
+          await this.validate({ operation, generation });
+          await validateSelection();
+          return frozen;
+        };
+        const frozen = await inspect();
+        return this.publication.withRetainedGeneration({ operation, generation, commit: (artifacts, validateArtifacts) =>
+          commit([{ frozen, artifacts }], async () => {
+            if (selectionIdentity(current) !== selectionIdentity(generation.selectedResults)
+                || JSON.stringify(await inspect()) !== JSON.stringify(frozen)) throw new Error("Retained frozen authority changed");
+            await releaseMetadataBytes(effectiveReleaseMetadata(operation));
+            await validateArtifacts();
+          }) });
+      } });
+  }
+
   validate({ operation, generation }) {
     return this.releasePreflight.validateOperationGeneration({
       workspaceId: operation.workspaceId,
@@ -151,6 +181,20 @@ export class WorkspaceReleaseOperationAdapter {
 
   reservePublication({ operation, generation, reserve, recompose }) {
     return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
+      const recovery = operation.retainedGenerationRecoveries?.at(-1);
+      if (recovery?.generation === generation.generation) {
+        const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
+        const frozen = [];
+        for (const candidate of generation.candidates) {
+          frozen.push(await this.releasePreflight.releaseGitWorkspaces.inspectRetainedGeneration({
+            operationId: operation.operationId, generation: generation.generation,
+            workspaceId: operation.workspaceId, candidate, changelogContent,
+          }));
+        }
+        if (JSON.stringify(frozen) !== JSON.stringify(recovery.evidence[0]?.frozen)) {
+          throw new Error("Retained frozen candidate changed before publication");
+        }
+      }
       const current = await this.releasePreflight.operationSelection({
         workspaceId: operation.workspaceId,
         ...(effectiveReleaseTaskScope(operation) === "all_await" ? {} : { taskIds: effectiveReleaseTaskIds(operation) }),
