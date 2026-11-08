@@ -4108,3 +4108,32 @@ the existing installation custody and exact per-generation lease with bounded
 The existing canonical readGeneration port passes through the same native owner
 registry. No public tool argument, release receipt, publication identity or
 runtime manifest is rewritten. See ADR-HUB-385-retired-generation-source-custody.
+
+## Exact first frozen compose recovery (HUB-424)
+
+Freeze Git writes and readback share the existing preparation invocation policy
+and sanitized environment. Only the owner's private index path is overlaid.
+A strict frozen reader still rejects dirty content. Under the existing generation
+owner, recovery may rematerialize only the three frozen version/notes files whose
+entire physical content differs from the committed blob solely by CRLF conversion.
+The original HEAD/main/PreRelease, tree, manifest, checkpoint, publication intent,
+payload, source approvals and input must remain exact. Staged, unrelated, linked,
+non-regular or substantively changed files refuse before restoration.
+
+The existing request-addressed continue has one positive terminal exception:
+failed FIRST compose at generation zero, no registered generation or publication,
+only definite failed compose receipts for the unchanged original input, plus
+verified retained frozen generation one. Fresh original authorization and CAS,
+immutable local bindings and a transactional receipt recheck precede admission.
+Unknown, partial, changed input and any other terminal state are not eligible.
+The same original appends attempt two/generation one; failed attempt one remains.
+No new release original, journal editing or inferred NO_EFFECT is permitted.
+
+If current accepted membership differs, recovered generation one enters the
+existing release_inputs_changed boundary before validation/publication. The
+existing explicit Task/test/notes amendment then composes generation two with the
+correction included, preserving generation one and the original public/build
+version binding. Runtime allocation collisions still refuse. This is recovery
+of legacy first-freeze materialization, not a general terminal-resume or dirty-tree
+waiver. Remove the materialization compatibility branch when retained affected
+generations are no longer supported. See ADR-HUB-424-first-freeze-recovery.

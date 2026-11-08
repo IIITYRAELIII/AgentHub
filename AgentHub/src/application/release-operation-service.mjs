@@ -10,6 +10,7 @@ import {
   reviewedMainBinding,
   failedComposeRecoveryEligible,
   failedCompositionRecovery,
+  failedFirstComposeRecovery,
   releaseCompositionInput,
   releaseApprovedTargets,
   effectiveTestSelection,
@@ -201,6 +202,8 @@ export class ReleaseOperationService {
     observeOperation = null,
     resolveTestPlans = null,
     withTaskSelection = null,
+    inspectFirstCompose = null,
+    recoverFirstCompose = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -221,6 +224,9 @@ export class ReleaseOperationService {
     }
     if (cleanupGeneration != null && typeof cleanupGeneration !== "function") {
       throw new TypeError("cleanupGeneration must be a function");
+    }
+    for (const port of [inspectFirstCompose, recoverFirstCompose]) {
+      if (port != null && typeof port !== "function") throw new TypeError("First compose recovery port must be a function");
     }
     if (typeof processAlive !== "function") throw new TypeError("processAlive is required");
     if (typeof schedule !== "function") throw new TypeError("schedule is required");
@@ -248,6 +254,8 @@ export class ReleaseOperationService {
     this.observeOperation = observeOperation;
     this.resolveTestPlans = resolveTestPlans;
     this.withTaskSelection = withTaskSelection;
+    this.inspectFirstCompose = inspectFirstCompose;
+    this.recoverFirstCompose = recoverFirstCompose;
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization, resolveAuthorization = null } = {}) {
@@ -335,12 +343,18 @@ export class ReleaseOperationService {
     if (current.testSelectionAmendments?.some(item => item.requestId === options.requestId)
         || options.testSelection != null || options.taskIds != null || options.taskScope != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
     if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
+    if (current.state === "failed" && current.currentGeneration === 0 && this.inspectFirstCompose) {
+      return this.#recoverFirstCompose(operationId, options);
+    }
     // Addressed observation also works while the original is waiting on an
     // external condition. It neither resumes nor publishes that condition.
     this.#observe(current.operationId);
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
     if (waitingForExplicitAmendment(current)) {
       return { accepted: false, operation: current, reason: "test-selection-required" };
+    }
+    if (current.state === "waiting" && current.waitReason?.code === "release_inputs_changed" && current.firstComposeRecovery) {
+      return { accepted: false, reason: "test-selection-required", operation: current };
     }
     let operation = current;
     if (current.state === RELEASE_OPERATION_STATES.WAITING) {
@@ -437,6 +451,31 @@ export class ReleaseOperationService {
     } catch {
       console.warn('Release progress monitor unavailable: MONITOR_OBSERVATION_FAILED');
     }
+  }
+
+  async #recoverFirstCompose(operationId, { requestId, expectedRevision, expectedGeneration }) {
+    const snapshot = this.store.snapshot(operationId);
+    const current = snapshot.operation;
+    if (expectedRevision !== current.revision || expectedGeneration !== 0) {
+      return { accepted: false, reason: "stale-revision", operation: current };
+    }
+    const failed = failedFirstComposeRecovery(snapshot);
+    if (!failed || this.#running.has(operationId) || this.#scheduled.has(operationId)
+        || typeof this.recoverFirstCompose !== "function") return { accepted: false, reason: "ineligible", operation: current };
+    requiredText(requestId, "first compose recovery requestId");
+    const frozen = await this.inspectFirstCompose({ operation: current, generation: 1 });
+    const contents = { ...failed, requestId, operationId, priorGeneration: 0, priorRevision: current.revision,
+      authorizationFingerprint: current.authorization.fingerprint,
+      input: releaseCompositionInput(current), candidates: frozen,
+      priorFailure: { completedAt: current.completedAt, error: current.lastError } };
+    const recovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+    const result = await this.store.runOperationMutation(operationId, () => this.store.transition(operationId, {
+      state: "compose", currentStep: "compose", lastError: null, nextAction: "recover exact frozen first generation",
+    }, { expectedRevision, firstComposeRecovery: recovery, eventKind: "operation.first-compose-recovery",
+      event: { operationId, recovery } }));
+    if (result.applied) { this.#observe(operationId); this.#schedule(operationId); }
+    return { accepted: result.applied, reason: result.reason, operationId,
+      revision: result.operation.revision, recovery: recovery.identitySha256 };
   }
 
   async #amendTestSelection(operationId, { requestId, testSelection, taskIds, taskScope, releaseMetadata, expectedRevision, expectedGeneration, reviewedMain }) {
@@ -921,11 +960,7 @@ export class ReleaseOperationService {
         effect: { identitySha256: existingGeneration.identitySha256 },
         expectedOwner: owner,
       });
-      const advanced = await this.#advance(operation.operationId, "validate", {
-        currentGeneration: generationNumber,
-        selectedResults: existingGeneration.selectedResults,
-        nextAction: "validate immutable candidate generation",
-      }, owner);
+      const advanced = await this.#advanceComposed(operation, existingGeneration, owner);
       await this.#discardSupersededFailedValidation(operation);
       return advanced;
     }
@@ -940,17 +975,17 @@ export class ReleaseOperationService {
       if (!generation || (recordedIdentity && generation.identitySha256 !== recordedIdentity)) {
         throw new Error("composed generation receipt does not match immutable candidate evidence");
       }
-      const advanced = await this.#advance(operation.operationId, "validate", {
-        currentGeneration: generationNumber,
-        selectedResults: generation.selectedResults,
-        nextAction: "validate immutable candidate generation",
-      }, owner);
+      const advanced = await this.#advanceComposed(operation, generation, owner);
       await this.#discardSupersededFailedValidation(operation);
       return advanced;
     }
     let composedGeneration = null;
     try {
-      const composed = await this.compose({ operation, generation: generationNumber });
+      const firstRecovery = operation.currentGeneration === 0 ? operation.firstComposeRecovery : null;
+      const composed = firstRecovery
+        ? await this.recoverFirstCompose({ operation, generation: 1, recovery: firstRecovery,
+          validateBeforeCommit: async () => this.#assertOwner(operation.operationId, owner) })
+        : await this.compose({ operation, generation: generationNumber });
       if (effectiveTestSelection(operation) && typeof this.resolveTestPlans !== "function") throw new Error("Release test inventory owner is unavailable");
       const generation = createCandidateGeneration({
         ...composed,
@@ -972,11 +1007,7 @@ export class ReleaseOperationService {
         status: "applied",
         effect: { identitySha256: generation.identitySha256 }, expectedOwner: owner,
       });
-      const advanced = await this.#advance(operation.operationId, "validate", {
-        currentGeneration: generationNumber,
-        selectedResults: generation.selectedResults,
-        nextAction: "validate immutable candidate generation",
-      }, owner);
+      const advanced = await this.#advanceComposed(operation, generation, owner);
       await this.#discardSupersededFailedValidation(operation);
       return advanced;
     } catch (error) {
@@ -985,14 +1016,27 @@ export class ReleaseOperationService {
         await this.#persist(operation.operationId, owner, "owner-read", () => this.#assertOwner(operation.operationId, owner));
         await this.#finishStep(started.receipt, { status: "applied",
           effect: { identitySha256: saved.identitySha256 }, expectedOwner: owner });
-        return this.#advance(operation.operationId, "validate", { currentGeneration: generationNumber,
-          selectedResults: saved.selectedResults, nextAction: "validate immutable candidate generation" }, owner);
+        return this.#advanceComposed(operation, saved, owner);
       }
       await this.#finishStep(started.receipt, {
         status: ["AWAIT_PREPARATION_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN"].includes(error?.code) ? "unknown" : "failed",
         error, expectedOwner: owner });
       throw error;
     }
+  }
+
+  async #advanceComposed(operation, generation, owner) {
+    const candidate = { currentGeneration: generation.generation, selectedResults: generation.selectedResults };
+    const advance = () => this.#advance(operation.operationId, "validate", {
+      ...candidate, nextAction: "validate immutable candidate generation",
+    }, owner);
+    if (!operation.firstComposeRecovery || operation.currentGeneration !== 0) return advance();
+    return this.reservePublication({ operation, generation, reserve: advance,
+      recompose: () => this.#advance(operation.operationId, "waiting", { ...candidate,
+        resumeState: "compose", waitReason: { code: "release_inputs_changed",
+          message: "Accepted inputs changed after the recovered frozen first generation" },
+        nextAction: "amend this original release with the corrected whole accepted set and metadata",
+      }, owner) });
   }
 
   async #validate(operation, owner) {

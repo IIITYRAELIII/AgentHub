@@ -1033,7 +1033,7 @@ export class HubMcpService {
         task_ids: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string" } },
         task_scope: { type: "string", enum: ["all_await"], description: "Explicitly authorize the whole current prepared Await set for this same original release; task_ids, if supplied, is an exact membership assertion." },
         expected_revision: { type: "integer", minimum: 1 },
-        expected_generation: { type: "integer", minimum: 1 },
+        expected_generation: { type: "integer", minimum: 0 },
         reviewed_main: { type: "object", additionalProperties: false, required: ["expectedRevision", "approvedRepositories"], properties: {
           expectedRevision: { type: "integer", minimum: 1 },
           approvedRepositories: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false,

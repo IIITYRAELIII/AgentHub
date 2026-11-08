@@ -246,6 +246,38 @@ export function failedComposeRecoveryEligible(operation) {
     && operation.currentGeneration > 0 && operation.lastError?.step === "compose";
 }
 
+export function failedFirstComposeRecovery({ operation, receipts = [], generations = [] }) {
+  if (operation?.state !== "failed" || operation.owner != null || operation.currentGeneration !== 0
+      || operation.lastError?.step !== "compose" || operation.selectedResults.length
+      || Object.keys(operation.publicationEffects).length || generations.length || !receipts.length) return null;
+  const inputSha256 = releaseIdentitySha256(releaseCompositionInput(operation));
+  const ordered = [...receipts].sort((left, right) => left.attempt - right.attempt);
+  if (ordered.some((receipt, index) => receipt.operationId !== operation.operationId
+      || receipt.stepId !== "compose" || receipt.generation !== 1 || receipt.attempt !== index + 1
+      || receipt.status !== "failed" || receipt.effect != null || !receipt.error
+      || receipt.inputSha256 !== inputSha256 || releaseIdentitySha256(receipt.input) !== inputSha256)
+      || ordered.at(-1).error !== operation.lastError.message) return null;
+  return { generation: 1, attempt: ordered.at(-1).attempt, inputSha256,
+    receiptSha256: releaseIdentitySha256(ordered.at(-1)) };
+}
+
+function normalizedFirstComposeRecovery(value, operation) {
+  const { identitySha256, ...contents } = value;
+  if (identitySha256 !== releaseIdentitySha256(contents) || !contents.requestId
+      || contents.operationId !== operation.operationId || contents.priorGeneration !== 0
+      || !Number.isSafeInteger(contents.priorRevision) || contents.priorRevision < 1
+      || contents.authorizationFingerprint !== operation.authorization.fingerprint
+      || contents.inputSha256 !== releaseIdentitySha256(contents.input)
+      || contents.input?.priorGeneration !== 0
+      || releaseIdentitySha256(contents.input?.authorization) !== releaseIdentitySha256(operation.authorization)
+      || !/^[a-f0-9]{64}$/u.test(contents.receiptSha256 ?? "")
+      || !Number.isSafeInteger(contents.attempt) || contents.attempt < 1
+      || !Array.isArray(contents.candidates) || !contents.candidates.length) {
+    throw new Error("First compose recovery does not bind its original frozen input");
+  }
+  return structuredClone(value);
+}
+
 // Reserve a fresh generation only from positive terminal compose receipts. The
 // amendment captures this proof; old partial directories and receipts stay put.
 export function failedCompositionRecovery({ operation, receipts = [], generations = [] }) {
@@ -333,6 +365,7 @@ export function createReleaseOperation({
   migration = null,
   reviewedMain = null,
   testSelectionAmendments = [],
+  firstComposeRecovery = null,
 } = {}) {
   const normalizedState = requiredText(state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(normalizedState)) {
@@ -369,6 +402,7 @@ export function createReleaseOperation({
   };
   if (testSelectionAmendments.length) operation.testSelectionAmendments = testSelectionAmendments.map(item => normalizeTestSelectionAmendment(item, operation));
   if (reviewedMain != null) operation.reviewedMain = normalizedReviewedMain(reviewedMain, operation);
+  if (firstComposeRecovery != null) operation.firstComposeRecovery = normalizedFirstComposeRecovery(firstComposeRecovery, operation);
   if (releaseOperationIsTerminal(operation)) operation.completedAt = operation.updatedAt;
   return operation;
 }
@@ -395,11 +429,20 @@ export function transitionReleaseOperation(current, patch = {}, {
   updatedAt = new Date().toISOString(),
   reviewedMainRecovery = null,
   testSelectionAmendment = null,
+  firstComposeRecovery = null,
 } = {}) {
   const operation = restoreReleaseOperation(current);
   if (!operation) throw new TypeError("valid current release operation is required");
   if (expectedRevision !== operation.revision) return { operation, applied: false, reason: "stale-revision" };
   const recovery = reviewedMainRecovery == null ? null : normalizedReviewedMain(reviewedMainRecovery, operation);
+  const firstRecovery = firstComposeRecovery == null ? null : normalizedFirstComposeRecovery(firstComposeRecovery, operation);
+  if (firstRecovery && (operation.state !== "failed" || operation.owner != null || operation.currentGeneration !== 0
+      || operation.lastError?.step !== "compose" || patch.state !== "compose"
+      || firstRecovery.priorRevision !== operation.revision
+      || firstRecovery.inputSha256 !== releaseIdentitySha256(releaseCompositionInput(operation))
+      || releaseIdentitySha256(firstRecovery.priorFailure) !== releaseIdentitySha256({ completedAt: operation.completedAt, error: operation.lastError }))) {
+    throw new Error("First compose recovery changed its original failed boundary");
+  }
   if (recovery && (!failedComposeRecoveryEligible(operation) || recovery.priorRevision !== operation.revision
       || recovery.priorGeneration !== operation.currentGeneration
       || releaseIdentitySha256(recovery.priorFailure) !== releaseIdentitySha256({ completedAt: operation.completedAt, error: operation.lastError })
@@ -411,7 +454,8 @@ export function transitionReleaseOperation(current, patch = {}, {
       || releaseIdentitySha256(amendment.priorWaitReason) !== releaseIdentitySha256(operation.waitReason)
       || amendment.priorResumeState !== operation.resumeState || releaseIdentitySha256(amendment.priorFailure) !== releaseIdentitySha256({ state: operation.state, completedAt: operation.completedAt, error: operation.lastError }))) throw new Error("Test selection amendment changed its original boundary");
   if (patch.testSelectionAmendments !== undefined) throw new Error("testSelectionAmendments requires its amendment boundary");
-  if (releaseOperationIsTerminal(operation) && !recovery && !amendment) return { operation, applied: false, reason: "terminal" };
+  if (patch.firstComposeRecovery !== undefined) throw new Error("firstComposeRecovery requires its recovery boundary");
+  if (releaseOperationIsTerminal(operation) && !recovery && !amendment && !firstRecovery) return { operation, applied: false, reason: "terminal" };
   if (patch.reviewedMain !== undefined) throw new Error("reviewedMain requires its recovery boundary");
   for (const name of ["operationId", "requestId", "workspaceId", "streamId", "threadId", "authorization", "runnerVersion"]) {
     if (patch[name] !== undefined && releaseIdentitySha256(patch[name]) !== releaseIdentitySha256(operation[name])) {
@@ -420,7 +464,7 @@ export function transitionReleaseOperation(current, patch = {}, {
   }
   const state = requiredText(patch.state ?? operation.state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(state)) throw new TypeError(`unsupported release operation state: ${state}`);
-  if (state !== operation.state && !recovery && !amendment && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
+  if (state !== operation.state && !recovery && !amendment && !firstRecovery && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
     return { operation, applied: false, reason: "invalid-transition" };
   }
   const next = {
@@ -441,6 +485,7 @@ export function transitionReleaseOperation(current, patch = {}, {
     revision: operation.revision + 1,
     updatedAt: timestamp(updatedAt),
     ...(recovery ? { reviewedMain: recovery, completedAt: null } : {}),
+    ...(firstRecovery ? { firstComposeRecovery: firstRecovery, completedAt: null } : {}),
     ...(amendment ? { testSelectionAmendments: [...(operation.testSelectionAmendments ?? []), amendment], completedAt: null } : {}),
   };
   if (state !== RELEASE_OPERATION_STATES.WAITING) {

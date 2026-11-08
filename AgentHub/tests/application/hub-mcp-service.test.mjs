@@ -2227,6 +2227,57 @@ test("HubMcpService forwards original-addressed reviewed-main recovery through t
   assert.deepEqual(calls, [["original", { requestId: input.request_id, reviewedMain }]]);
 });
 
+test("public first compose continuation advertises generation zero and keeps its failed receipt", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-first-compose-public-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const store = new ReleaseOperationStore({ dataDir: root });
+  const scheduled = [];
+  let recoveries = 0;
+  const forbidden = async () => assert.fail("changed membership must wait before validation or publication");
+  const operations = new ReleaseOperationService({ store, schedule: callback => scheduled.push(callback),
+    processAlive: pid => pid === process.pid,
+    compose: async () => { throw new Error("first frozen readback failed"); },
+    inspectFirstCompose: async () => [{ repositoryRoot: "D:/repo", commit: "frozen", tree: "tree",
+      manifestHash: "manifest", releaseVersion: "2.1.5", runtimeReleaseVersion: "2.1.5+build.29901174" }],
+    recoverFirstCompose: async ({ validateBeforeCommit }) => {
+      await validateBeforeCommit(); recoveries++;
+      return { repositoryBases: [{ repositoryRoot: "D:/repo", baseCommit: "base" }],
+        selectedResults: [{ taskId: "task-current", resultCommit: "result", acceptanceRevision: 1 }],
+        candidates: [{ repositoryRoot: "D:/repo", releaseRoot: "D:/frozen", commit: "frozen", tree: "tree", manifestHash: "manifest" }] };
+    },
+    reservePublication: ({ recompose }) => recompose(),
+    validate: forbidden, publishTarget: forbidden, readTarget: forbidden, finalize: forbidden,
+  });
+  const { service, token, taskBoard, tasks } = await fixture(context, { releaseOperations: operations });
+  tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  taskBoard.releaseTasks = () => [tasks.get("task-current")];
+  const schema = service.tools().find(tool => tool.name === "hub_release_continue").inputSchema;
+  assert.equal(schema.properties.expected_generation.minimum, 0);
+  const ack = await service.call("hub_release_run", { context_token: token, request_id: "public-first-compose",
+    task_ids: ["task-current"], validation_mode: "full",
+    approved_targets: [{ targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" }] });
+  scheduled.shift()();
+  const failed = await operations.drain(ack.operationId);
+  assert.equal(failed.operation.state, "failed");
+  const first = structuredClone(failed.receipts[0]);
+  const args = { context_token: token, operation_id: ack.operationId, request_id: "public-first-continue",
+    expected_revision: failed.operation.revision, expected_generation: 0 };
+  assert.equal((await service.call("hub_release_continue", args)).accepted, true);
+  assert.equal((await service.call("hub_release_continue", args)).accepted, true);
+  assert.equal(scheduled.length, 1, "same request does not admit another worker");
+  scheduled.shift()();
+  const recovered = await operations.drain(ack.operationId);
+  assert.equal(recoveries, 1);
+  assert.equal(recovered.operation.currentGeneration, 1);
+  assert.equal(recovered.operation.waitReason.code, "release_inputs_changed");
+  assert.deepEqual(recovered.receipts.find(receipt => receipt.attempt === 1), first);
+  assert.equal(recovered.receipts.find(receipt => receipt.attempt === 2).status, "applied");
+  const ordinary = await service.call("hub_release_continue", { context_token: token,
+    operation_id: ack.operationId, request_id: "public-first-unamended" });
+  assert.equal(ordinary.reason, "test-selection-required");
+  assert.equal(scheduled.length, 0);
+});
+
 test("manual public version reaches the same durable release admission and survives original readback", async context => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-manual-version-"));
   context.after(() => rm(root, { recursive: true, force: true }));

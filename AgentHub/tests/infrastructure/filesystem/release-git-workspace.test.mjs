@@ -442,6 +442,49 @@ test("partial generation transport is preserved on failure and is never overwrit
   }
 });
 
+test("first frozen generation recovery preserves its input and the corrected next artifact version", async context => {
+  const f = await fixture(context);
+  const service = new ReleaseGitWorkspaceService({ dataDir: f.dataDir,
+    environment: { ...process.env, LOCALAPPDATA: path.join(f.root, "local"), XDG_STATE_HOME: path.join(f.root, "local") } });
+  const selected = await taskResult(f, context, { branch: "HUB-first-frozen", file: "selected.txt" });
+  const frozenTasks = [{ taskId: "first-frozen", taskRevision: 2, resultCommit: selected }];
+  const input = { projectRoot: f.primary, workspaceId: "workspace", planRevision: "first-frozen-plan",
+    approvedBaseCommit: f.baseCommit, frozenTasks };
+  await service.prepareCandidate(input);
+  const request = { ...input, operationId: "first-frozen-operation", generation: 1,
+    changelogContent: Buffer.from("original notes\n"), releaseVersion: "2.1.5" };
+  const first = await service.prepareGeneration(request);
+  const checkpoint = await readFile(first.checkpointFile);
+  const manifest = await readFile(first.manifestFile);
+  const recovery = { operationId: request.operationId, projectRoot: f.primary, workspaceId: "workspace",
+    taskIds: ["first-frozen"], releaseVersion: "2.1.5", changelogContent: request.changelogContent,
+    approvedLocalMainCommit: f.baseCommit, approvedOriginMainCommit: f.baseCommit };
+  const preview = await service.firstFrozenGeneration({ ...recovery, inspectOnly: true });
+  assert.equal(preview.binding.commit, first.preReleaseHead);
+  await assert.rejects(service.firstFrozenGeneration({ ...recovery, inspectOnly: true,
+    changelogContent: Buffer.from("changed\n") }), /input or payload changed/u);
+  await assert.rejects(service.firstFrozenGeneration({ ...recovery, inspectOnly: true,
+    taskIds: ["foreign-task"] }), /authorization or prepared/u);
+  await assert.rejects(service.firstFrozenGeneration({ ...recovery,
+    expectedBinding: { ...preview.binding, tree: "changed" } }), /changed after recovery admission/u);
+  const recovered = await service.firstFrozenGeneration({ ...recovery, expectedBinding: preview.binding });
+  assert.equal(recovered.candidate.preReleaseHead, first.preReleaseHead);
+  assert.deepEqual(await readFile(first.checkpointFile), checkpoint);
+  assert.deepEqual(await readFile(first.manifestFile), manifest);
+  const correction = await taskResult(f, context, { branch: "HUB-first-correction", file: "correction.txt" });
+  const correctedTasks = [...frozenTasks, { taskId: "first-correction", taskRevision: 2, resultCommit: correction }];
+  await service.prepareCandidate({ ...input, planRevision: "corrected-plan", frozenTasks: correctedTasks });
+  const next = await service.prepareGeneration({ ...request, generation: 2, planRevision: "corrected-plan",
+    frozenTasks: correctedTasks, changelogContent: Buffer.from("original notes\ncorrection\n"),
+    expectedRuntimeVersion: first.manifest.publication.runtimeReleaseVersion });
+  assert.equal(next.manifest.publication.releaseVersion, "2.1.5");
+  assert.equal(next.manifest.publication.runtimeReleaseVersion, first.manifest.publication.runtimeReleaseVersion);
+  assert.equal(await readFile(path.join(next.releaseRoot, "selected.txt"), "utf8"), "feature\n");
+  assert.equal(await readFile(path.join(next.releaseRoot, "correction.txt"), "utf8"), "feature\n");
+  assert.deepEqual(await readFile(first.checkpointFile), checkpoint);
+  assert.deepEqual(await readFile(first.manifestFile), manifest);
+});
+
 test("new permanent release captures keep exact selected history without unrelated refs or object payloads", async context => {
   const f = await fixture(context);
   const selected = await taskResult(f, context, { branch: "HUB-selected-transport", file: "selected.txt" });

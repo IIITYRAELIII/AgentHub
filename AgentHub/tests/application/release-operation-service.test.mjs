@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
-import { createCandidateGeneration } from "../../src/domain/release-operation.mjs";
+import { createCandidateGeneration, failedFirstComposeRecovery } from "../../src/domain/release-operation.mjs";
 import { resolveTestSelection } from "../../src/domain/test-selection.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
@@ -338,6 +338,106 @@ test(`stale prepared candidate waits for normal preparation on the original oper
   assert.equal(start(f.service).operationId, ack.operationId);
 });
 }
+
+test("first frozen compose recovery keeps failed attempt and amends the same release", async t => {
+  const selected = [...taskIds, "task-c"].map(taskId => ({ taskId, resultCommit: `${taskId}-r1`,
+    tree: `${taskId}-tree`, acceptanceRevision: 2 }));
+  let composeCalls = 0, inspections = 0, recoveries = 0, validations = 0;
+  const frozenBinding = { repositoryRoot: "D:/repo", commit: "frozen-one", manifestHash: "frozen-manifest",
+    releaseVersion: "2.1.5", runtimeReleaseVersion: "2.1.5+build.29901174" };
+  const f = await fixture(t, {
+    compose: async input => {
+      composeCalls += 1;
+      if (input.generation === 1) throw new Error("frozen readback failed");
+      assert.deepEqual(input.operation.firstComposeRecovery.candidates, [frozenBinding]);
+      return generation(selected);
+    },
+    inspectFirstCompose: async () => { inspections += 1; return [frozenBinding]; },
+    recoverFirstCompose: async ({ generation: number, validateBeforeCommit }) => {
+      recoveries += 1;
+      assert.equal(number, 1);
+      await validateBeforeCommit();
+      return generation();
+    },
+    reservePublication: ({ generation: value, reserve, recompose }) => value.generation === 1 ? recompose() : reserve(),
+    validate: async () => { validations += 1; return { status: "passed" }; },
+    withTaskSelection: ({ commit }) => commit(selected, async () => {}),
+    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({
+      repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection, ["tests/affected.test.mjs"]),
+    })),
+  });
+  const ack = start(f.service, "first-frozen-original");
+  const failed = await f.service.drain(ack.operationId);
+  assert.equal(failed.operation.state, "failed");
+  assert.equal(failed.operation.currentGeneration, 0);
+  const firstReceipt = structuredClone(failed.receipts[0]);
+  const stale = await f.service.continue(ack.operationId, { requestId: "stale", expectedRevision: 1, expectedGeneration: 0 });
+  assert.equal(stale.accepted, false);
+  assert.equal(inspections, 0);
+  const admitted = await f.service.continue(ack.operationId, { requestId: "recover-frozen-first",
+    expectedRevision: failed.operation.revision, expectedGeneration: 0 });
+  assert.equal(admitted.accepted, true);
+  const recovered = await f.service.drain(ack.operationId);
+  assert.equal(recovered.operation.state, "waiting");
+  assert.equal(recovered.operation.waitReason.code, "release_inputs_changed");
+  assert.equal(recovered.operation.currentGeneration, 1);
+  assert.deepEqual(recovered.receipts.find(item => item.stepId === "compose" && item.attempt === 1), firstReceipt);
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").attempt, 2);
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "applied");
+  assert.equal(validations, 0);
+  assert.deepEqual([composeCalls, inspections, recoveries], [1, 1, 1]);
+  const unamended = await f.service.continue(ack.operationId, { requestId: "no-implicit-first-amendment" });
+  assert.equal(unamended.accepted, false);
+  assert.equal(unamended.reason, "test-selection-required");
+  assert.equal(f.store.get(ack.operationId).currentGeneration, 1);
+  const frozenGeneration = structuredClone(recovered.generations[0]);
+  const amendment = await f.service.continue(ack.operationId, { requestId: "include-correction",
+    expectedRevision: recovered.operation.revision, expectedGeneration: 1,
+    taskIds: selected.map(item => item.taskId), testSelection: { mode: "all", ids: [] } });
+  assert.equal(amendment.accepted, true);
+  const done = await f.service.drain(ack.operationId);
+  assert.equal(done.operation.state, "done", JSON.stringify(done.operation.lastError));
+  assert.equal(done.operation.currentGeneration, 2);
+  assert.deepEqual(done.generations[0], frozenGeneration);
+  assert.equal(done.operation.authorization.fingerprint, failed.operation.authorization.fingerprint);
+  assert.deepEqual(done.receipts.find(item => item.generation === 1 && item.attempt === 1 && item.stepId === "compose"), firstReceipt);
+});
+
+test("first frozen compose recovery refuses unknown and changed receipt inputs", async t => {
+  let f;
+  f = await fixture(t, {
+    compose: async () => { throw new Error("frozen readback failed"); },
+    inspectFirstCompose: async () => {
+      const db = new DatabaseSync(path.join(f.root, "runtime.sqlite"));
+      try {
+        const receipt = f.store.latestStep("operation-1", 1, "compose");
+        receipt.status = "unknown";
+        db.prepare("UPDATE release_step_receipts SET status='unknown', receipt_json=? WHERE operation_id=? AND generation=1 AND step_id='compose'")
+          .run(JSON.stringify(receipt), "operation-1");
+      } finally { db.close(); }
+      return [{ repositoryRoot: "D:/repo" }];
+    },
+    recoverFirstCompose: () => assert.fail("no recovery effect"),
+  });
+  const ack = start(f.service, "first-frozen-refusals");
+  const failed = await f.service.drain(ack.operationId);
+  assert.ok(failedFirstComposeRecovery(failed));
+  for (const change of [
+    value => { value.receipts[0].status = "unknown"; },
+    value => { value.receipts[0].input.priorGeneration = 2; },
+    value => { value.receipts[0].effect = { status: "partial" }; },
+    value => { value.receipts.push({ ...value.receipts[0], stepId: "publish:git" }); },
+    value => { value.generations.push({ generation: 1 }); },
+  ]) {
+    const invalid = structuredClone(failed);
+    change(invalid);
+    assert.equal(failedFirstComposeRecovery(invalid), null);
+  }
+  await assert.rejects(f.service.continue(ack.operationId, { requestId: "changed-during-inspection",
+    expectedRevision: failed.operation.revision, expectedGeneration: 0 }), /failed receipt changed/u);
+  assert.equal(f.store.get(ack.operationId).state, "failed");
+  assert.equal(f.store.snapshot(ack.operationId).generations.length, 0);
+});
 
 test("definite preparation refusal continues the same release without replaying completed steps", async t => {
   let ready = false, composeCalls = 0;

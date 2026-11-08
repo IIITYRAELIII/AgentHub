@@ -1238,3 +1238,14 @@ HTTP acknowledgement. Its local join validates the original receipt and awaits
 only the already existing promise; it does not invoke a mutation or settle it.
 Worker/persistence/readback exceptions remain observable before stores close.
 Credentials remain separate from business JSON and exported tool/package data.
+
+## First frozen compose continuation (HUB-424)
+
+The existing release continue arguments and original actor/authorization/CAS
+remain authoritative. A positively proven failed FIRST compose at generation
+zero may admit recovery of its already frozen local generation one through the
+same durable owner. Its failed receipt stays unchanged; a new attempt is appended.
+No client repair parameters, new API, release original or UNKNOWN conversion are
+introduced. Changed accepted membership waits for the existing explicit amendment
+before validation/publication of the corrected next generation. See REL-001 and
+ADR-HUB-424-first-freeze-recovery.
