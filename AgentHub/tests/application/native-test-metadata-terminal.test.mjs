@@ -12,8 +12,6 @@ import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskGitWorkspaceService, runTaskGitCommand } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
 import { TaskOperationReconciliationService } from "../../src/application/task-operation-reconciliation-service.mjs";
-import { createNativeMergeReviewVerifier } from "../../src/application/native-merge-review.mjs";
-import { interstreamAuditContentHash } from "../../src/domain/interstream-message.mjs";
 import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 
 const exec = promisify(execFile);
@@ -120,7 +118,7 @@ test("original native Test metadata recovery is terminal-only, fenced and idempo
   assert.deepEqual(await readFile(nativeFile), nativeBytes);
 });
 
-test("CAS-bound reviewed native Test recovers its original terminal after presentation edits", async (t) => {
+test("CAS-bound ordinary native Test recovers its original terminal without review after presentation edits", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-reviewed-terminal-"));
   const primary = path.join(root, "primary"), dataDir = path.join(root, "data");
   await mkdir(primary); await git(primary, "init", "--initial-branch=main");
@@ -152,7 +150,7 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
     taskGit = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication, recordTiming: () => {},
       runCommand: (args, options) => args[0] === "ls-remote"
         ? Promise.resolve(`${published}\trefs/heads/main`) : runTaskGitCommand(args, options),
-      verifyNativeResolutionReview: createNativeMergeReviewVerifier({ workspaceCatalog: catalog, taskBoard: board }) });
+    });
     lifecycle = new TaskLifecycleService({ taskBoard: board, workspaceCatalog: catalog, taskGitWorkspaces: taskGit,
       releasePreflight: { withAwaitTransition: (_id, op) => op() } });
   };
@@ -190,22 +188,11 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
   await writeFile(path.join(stage, "compatibility.txt"), "independently reviewed correction\n");
   await git(stage, "add", ".");
   await git(stage, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", "resolve with compatibility correction");
-  let binding;
-  await assert.rejects(lifecycle.updateWorkflowStatus({ taskId: task.id, status: "testing", operationId: "capture-review-binding" }), error => {
-    assert.equal(error.code, "RELEASE_NATIVE_REVIEW_REQUIRED"); binding = error.binding; return true;
-  });
-  const review = { requestId: "independent-native-review", text: `<native-merge-review>${JSON.stringify({
-    kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>` };
-  const origin = { workspaceId: workspace.id, streamId: reviewer.id, provider: "codex", sourceThreadId: "review-fixture", requestId: review.requestId };
-  await catalog.runMutation(() => {
-    catalog.beginMcpOperation({ requestId: review.requestId, workspaceId: workspace.id, streamId: reviewer.id,
-      provider: "codex", threadId: "review-fixture", toolName: "hub_stream_message_send", argumentsHash: mcpArgumentsHash({ review }) });
-    catalog.bindMcpOperationInterstreamContentHash(review.requestId, interstreamAuditContentHash(review.text, { origin }));
-    catalog.completeMcpOperation(review.requestId, { target: { streamId: rmStream.id }, delivery: { accepted: true } });
-  });
-  const operationId = "original-cas-reviewed-test", originalRevision = board.task(task.id).revision;
+  const resolutionHead = await git(stage, "rev-parse", "HEAD");
+  const resultCommit = await git(source.projectRoot, "rev-parse", "HEAD");
+  const operationId = "original-cas-owned-test", originalRevision = board.task(task.id).revision;
   const args = { request_id: operationId, status: "testing", task_id: task.id,
-    expected_task_revision: originalRevision, expected_workflow_status: "in_progress", native_resolution_review: review };
+    expected_task_revision: originalRevision, expected_workflow_status: "in_progress" };
   await catalog.runMutation(() => catalog.beginMcpOperation({ requestId: operationId, workspaceId: workspace.id, streamId: rmStream.id,
     provider: "codex", threadId: "rm-fixture", toolName: "hub_task_status_update", argumentsHash: mcpArgumentsHash(args) }));
   const commit = board.commitWorkflowTransition.bind(board);
@@ -214,11 +201,11 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
     return commit(payload);
   };
   await assert.rejects(lifecycle.updateWorkflowStatus({ taskId: task.id, status: "testing", operationId,
-    expectedRevision: originalRevision, expectedWorkflowStatus: "in_progress", operationEvidence: { nativeResolutionReview: review } }), /original readback/u);
+    expectedRevision: originalRevision, expectedWorkflowStatus: "in_progress" }), /original readback/u);
   board.commitWorkflowTransition = commit;
   await catalog.runMutation(() => catalog.markMcpOperationUnknown(operationId, new Error("lost terminal after metadata CAS")));
   const devHead = await git(primary, "rev-parse", "dev");
-  assert.equal(devHead, binding.commit);
+  assert.equal(devHead, resolutionHead);
   const { readdir } = await import("node:fs/promises");
   const key = (await readdir(path.join(dataDir, "task-native-integrations", task.id)))[0];
   const nativeFile = path.join(dataDir, "task-native-integrations", task.id, key, createHash("sha256").update(operationId).digest("hex") + ".json");
@@ -256,13 +243,13 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
   for (const method of ["prepareOwned", "snapshotAndMergeOwned"]) taskGit[method] = () => assert.fail(method + " replayed");
   const reconciliation = new TaskOperationReconciliationService({ workspaceCatalog: catalog, taskBoard: board, taskLifecycle: lifecycle });
   const input = { workspaceId: workspace.id, taskId: task.id, operationRequestId: operationId, projectRoot: primary,
-    expectedTaskRevision: originalRevision, expectedWorkflowStatus: "in_progress", nativeResolutionReview: review };
+    expectedTaskRevision: originalRevision, expectedWorkflowStatus: "in_progress" };
   const publishedContext = publication;
   publication = { ...publication, generation: "foreign-publication-generation" };
   assert.equal((await reconciliation.reconcileUnknownWorkflow(input)).resolved, false);
   publication = publishedContext;
   for (const delta of [{ expectedTaskRevision: originalRevision + 1 }, { expectedWorkflowStatus: "testing" },
-    { nativeResolutionReview: { ...review, text: review.text + "changed" } }]) {
+    { nativeResolutionReview: { requestId: "not-original", text: "inert extra argument" } }]) {
     await assert.rejects(reconciliation.reconcileUnknownWorkflow({ ...input, ...delta }));
     assert.equal(board.lifecycleOutcome(operationId), null);
   }
@@ -281,8 +268,6 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
   const receiptRead = catalog.mcpOperation.bind(catalog);
   catalog.mcpOperation = id => id === laterId ? { ...receiptRead(id), receiptState: "unknown" } : receiptRead(id);
   assert.equal((await reconciliation.reconcileUnknownWorkflow(input)).resolved, false);
-  catalog.mcpOperation = id => id === review.requestId ? { ...receiptRead(id), interstreamContentHash: "0".repeat(64) } : receiptRead(id);
-  assert.equal((await reconciliation.reconcileUnknownWorkflow(input)).resolved, false);
   catalog.mcpOperation = receiptRead;
   const savedCommit = board.commitWorkflowTransition.bind(board);
   board.commitWorkflowTransition = payload => {
@@ -297,7 +282,7 @@ test("CAS-bound reviewed native Test recovers its original terminal after presen
   assert.equal(board.task(task.id).title, "Newest title");
   assert.equal(board.task(task.id).description, "racing description preserved");
   assert.equal(board.task(task.id).workflowStatus, "testing");
-  assert.equal(board.task(task.id).gitReferences[0].resultCommit, binding.parents[1]);
+  assert.equal(board.task(task.id).gitReferences[0].resultCommit, resultCommit);
   const outcome = JSON.stringify(board.lifecycleOutcome(operationId));
   const revision = board.task(task.id).revision;
   assert.equal((await reconciliation.reconcileUnknownWorkflow(input)).outcome, "succeeded");

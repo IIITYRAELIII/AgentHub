@@ -50,7 +50,6 @@ import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparation
 import { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash,
   validatePreparationForward, inspectPreparationForwardCustody } from "./release-preparation-forward.mjs";
 
-import { normalizedNativeResolution } from "../domain/native-resolution-input.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -843,7 +842,6 @@ export class HubMcpService {
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
         selected_absorption_handoff: { type: "object", description: "Authenticated saved/stopped handoff for ordinary native Test, bound to exact Task CAS and the original receipt." },
-        native_resolution_review: { type: "object", description: "Exact independent inter-Stream verdict, or {bundlePath,bundleSha256,reviews} for reviewed Await prefixes. The existing sequencer authenticates every exact binding." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -966,7 +964,6 @@ export class HubMcpService {
       tool("hub_release_prepare_resume", "Continue the SAME preparation from its saved owner stage, or its already established isolated forward custody. The owner checks fresh leases, source, selection and actual Git; an untransferred legacy UNKNOWN cannot resume.", {
         expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
         expected_preparation_revision: { type: "integer", minimum: 0 },
-        native_resolution_review: { type: "object", description: "Optional exact reviewed resolution bundle for an already isolated legacy forward original; does not replace original arguments." },
       }, ["expected_arguments_hash", "expected_preparation_revision"]),
       tool("hub_release_run", "Authorize the whole current prepared Await/PreRelease set and return one durable release operation id. Optional task_ids asserts that entire membership; release captures the existing prepared candidate without recomposing Task branches.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
@@ -1001,7 +998,6 @@ export class HubMcpService {
               environment: { type: "string" },
               approvedLocalMainCommit: { type: "string" },
               approvedOriginMainCommit: { type: "string" },
-              nativeResolutionReview: { type: "object", description: "Exact authenticated review, or {bundlePath,bundleSha256,reviews} for already reviewed native resolutions. The sequencer verifies each binding before checkout." },
             },
             required: ["targetId", "kind"],
           },
@@ -1016,7 +1012,6 @@ export class HubMcpService {
           description: "Exclusive published-finalization recovery. Prepares/applies only the original native dev synchronization; does not wake release work.",
           required: ["projectRoot", "expectedDevCommit"], properties: {
             projectRoot: { type: "string" }, expectedDevCommit: { type: "string", pattern: "^[a-f0-9]{40}$" },
-            nativeResolutionReview: { type: "object" },
           } },
         test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
           mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
@@ -2274,7 +2269,6 @@ export class HubMcpService {
     selected_preview_request_id: selectedPreviewRequestId = null,
     expected_selected_preview_hash: expectedSelectedPreviewHash = null,
     initial_native_test: initialNativeTest = null,
-    native_resolution_review: nativeResolutionReview = null,
   } = {}, { source = null } = {}) {
     const validationStarted = performance.now();
     let workflowStatus;
@@ -2296,19 +2290,6 @@ export class HubMcpService {
       throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
     }
     const task = this.#task(context, taskId);
-    if (nativeResolutionReview != null) {
-      if (!this.#isReleaseManager(context)
-          || !["testing", "awaiting_implementation"].includes(status)
-          || expectedRevision == null || expectedWorkflowStatus == null) {
-        throw new TaskInputValidationError("Native resolution review requires exact RM Test/Await CAS and authenticated verdict");
-      }
-      try {
-        const review = normalizedNativeResolution(nativeResolutionReview);
-        if (review.reviews && status !== "awaiting_implementation") {
-          throw new TypeError("Native resolution bundles require Await");
-        }
-      } catch (error) { throw new TaskInputValidationError(error.message); }
-    }
     const squashValues = [
       squashSourceTaskId, squashSourceTaskRevision, squashBaselineResultCommit,
       squashNewResultCommit, squashDevAfterTree,
@@ -2431,7 +2412,6 @@ export class HubMcpService {
       admissionReceipt: context.admissionReceipt ?? null,
 
       selectedAbsorptionHandoff,
-      operationEvidence: nativeResolutionReview ? { nativeResolutionReview } : null,
     };
     const result = source?.kind === "initial-native-test"
       ? await this.taskLifecycle.updateWorkflowStatusFromInitialSource(options, source)
@@ -2537,7 +2517,7 @@ export class HubMcpService {
 
   async #resumePreparation(context, args) {
     if (Object.keys(args).some(key => !["context_token", "request_id", "expected_arguments_hash",
-      "expected_preparation_revision", "native_resolution_review"].includes(key))
+      "expected_preparation_revision"].includes(key))
         || !Number.isSafeInteger(args.expected_preparation_revision) || args.expected_preparation_revision < 0) {
       throw new ReleasePreparationRejectedError("Unexpected preparation recovery argument");
     }
@@ -2558,10 +2538,6 @@ export class HubMcpService {
         throw new ReleasePreparationRejectedError("Original preparation has no established resumable isolated custody");
       }
       const preparation = structuredClone(forward.envelope);
-      if (args.native_resolution_review != null) {
-        if (preparation.repositories.length !== 1) throw new ReleasePreparationRejectedError("Native review requires one exact forward repository");
-        preparation.repositories[0].nativeResolutionReview = args.native_resolution_review;
-      }
       // The one-time observer already transferred future-effect custody. Reuse
       // that proof only after the normal leased owner regenerates the SAME
       // isolation plan. No new serialized proof, force flag or historical
@@ -2581,7 +2557,6 @@ export class HubMcpService {
         },
       });
     }
-    if (args.native_resolution_review != null) throw new ReleasePreparationRejectedError("Native forward review cannot change an ordinary original envelope");
     if (!["pending", "unknown"].includes(record.status) || !record.preparationState
         || !Number.isSafeInteger(args.expected_preparation_revision)
         || args.expected_preparation_revision !== record.preparationState.revision
@@ -2805,14 +2780,6 @@ export class HubMcpService {
 
   #runReleaseOperation(context, args) {
     const workspaceId = this.#workspace(context, args.workspace_id).id;
-    // This validation is before ReleaseOperation.start and cannot have a
-    // release effect. Do not turn a malformed review input into UNKNOWN.
-    for (const target of Array.isArray(args.approved_targets) ? args.approved_targets : []) {
-      if (target?.nativeResolutionReview != null) {
-        try { normalizedNativeResolution(target.nativeResolutionReview); }
-        catch (cause) { throw new ReleasePreparationRejectedError(cause.message); }
-      }
-    }
     const authorization = {
       validationMode: requiredText(args.validation_mode, "validation mode", 32),
       approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
@@ -2846,16 +2813,13 @@ export class HubMcpService {
       }
       const input = args.published_dev_sync;
       if (!input || typeof input !== "object" || Array.isArray(input)
-          || Object.keys(input).some(key => !["projectRoot", "expectedDevCommit", "nativeResolutionReview"].includes(key))
+          || Object.keys(input).some(key => !["projectRoot", "expectedDevCommit"].includes(key))
           || typeof input.projectRoot !== "string" || !input.projectRoot.trim()
           || !/^[a-f0-9]{40}$/u.test(input.expectedDevCommit ?? "")
           || !Number.isSafeInteger(args.expected_revision) || !Number.isSafeInteger(args.expected_generation)) {
         throw new ReleasePreparationRejectedError("Published dev sync requires exact repository/dev and original revision/generation CAS");
       }
-      if (input.nativeResolutionReview != null) {
-        try { normalizedNativeResolution(input.nativeResolutionReview); }
-        catch (cause) { throw new ReleasePreparationRejectedError(cause.message); }
-      }
+
     }
     return this.#releaseOperation().continue(operationId, {
       requestId: args.request_id, reviewedMain: args.reviewed_main,

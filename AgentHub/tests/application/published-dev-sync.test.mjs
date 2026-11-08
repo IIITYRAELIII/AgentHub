@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
-import { createNativeMergeReviewVerifier } from "../../src/application/native-merge-review.mjs";
 import { ReleaseOperationFinalization } from "../../src/application/release-operation-finalization.mjs";
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
@@ -62,7 +61,6 @@ async function fixture(t, { multipleBases = false } = {}) {
   const selected = boardStore.create({ text: "Already published", bucket: "workspace", workspaceId: workspace.id });
   const publication = { generation: "durable-original-publication", repositories: [] };
   const taskGit = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication,
-    verifyNativeResolutionReview: createNativeMergeReviewVerifier({ workspaceCatalog: catalog, taskBoard: board }),
     recordTiming: () => {}, runCommand: async (args, options) => {
       const result = await runTaskGitCommand(args, options);
       const onDev = dev && path.resolve(options.cwd).toLowerCase() === path.resolve(dev.projectRoot).toLowerCase();
@@ -140,12 +138,11 @@ async function fixture(t, { multipleBases = false } = {}) {
   assert.equal(original.operation.resumeState, "finalize");
   assert.equal(original.generations.length, 1);
   let sequence = 0;
-  const request = async (nativeResolutionReview = null, overrides = {}) => {
+  const request = async (overrides = {}) => {
     const current = operations.get(ack.operationId).operation;
     return { operation_id: ack.operationId, request_id: `sync-${++sequence}`,
       expected_revision: current.revision, expected_generation: 1,
-      published_dev_sync: { projectRoot: primary, expectedDevCommit: before,
-        ...(nativeResolutionReview ? { nativeResolutionReview } : {}) }, ...overrides };
+      published_dev_sync: { projectRoot: primary, expectedDevCommit: before }, ...overrides };
   };
   const call = async input => {
     const requestFile = path.join(root, `request-${sequence}.json`);
@@ -156,13 +153,6 @@ async function fixture(t, { multipleBases = false } = {}) {
         drainAddressed: () => assert.fail("native recovery must not drain on a refusal"),
       }, close() {} }),
     });
-  };
-  const review = async binding => {
-    const requestId = `review-${++sequence}`;
-    const text = `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>`;
-    await hub.call("hub_stream_message_send", { context_token: hub.contextToken({ provider: "codex", threadId: "reviewer-thread" }),
-      request_id: requestId, stream_id: rmStream.id, text, confirm_send: true, mode: "steer" });
-    return { requestId, text };
   };
   const unchanged = async () => {
     assert.equal(await git(primary, "rev-parse", "HEAD"), base);
@@ -176,15 +166,15 @@ async function fixture(t, { multipleBases = false } = {}) {
     assert.equal(composed, 1); assert.equal(validated, 1); assert.equal(publishedCount, 1);
   };
   t.after(async () => { boardStore.close(); catalog.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
-  return { primary, dev, before, published, common, base, publication, operations, hub, catalog, token, ack, request, call, review,
+  return { primary, dev, before, published, common, base, publication, operations, hub, catalog, token, ack, request, call,
     unchanged, taskGit, counters: () => ({ nativeEffects, primaryChecks, deliveries }), fault: value => { fault = value; }, callbacks };
 }
 
-async function reviewedRecovery(t, options) {
+async function ordinaryRecovery(t, options) {
   const f = await fixture(t, options);
-  await assert.rejects(f.call(await f.request(null, { expected_revision: 0 })), /CAS/u);
-  await assert.rejects(f.call(await f.request(null, { expected_generation: 2 })), /applied original/u);
-  await assert.rejects(f.call(await f.request(null, { test_selection: { mode: "none", ids: [] } })), /exclusive/u);
+  await assert.rejects(f.call(await f.request({ expected_revision: 0 })), /CAS/u);
+  await assert.rejects(f.call(await f.request({ expected_generation: 2 })), /applied original/u);
+  await assert.rejects(f.call(await f.request({ test_selection: { mode: "none", ids: [] } })), /exclusive/u);
   const foreignInput = await f.request();
   await assert.rejects(f.hub.call("hub_release_continue", { ...foreignInput,
     context_token: f.hub.contextToken({ provider: "codex", threadId: "reviewer-thread" }) }), /Release Manager/u);
@@ -228,30 +218,27 @@ async function reviewedRecovery(t, options) {
   }
   await writeFile(path.join(nativeRoot, "shared.txt"), "later Test\npublished\n");
   await commit(nativeRoot, "reviewable complete conflict union");
-  const pending = await f.call(await f.request());
-  assert.equal(pending.devSynchronization.code, "RELEASE_NATIVE_REVIEW_REQUIRED");
-  assert.equal(pending.devSynchronization.binding.parents.join(" "), `${f.before} ${f.published}`);
-  const acceptedReview = await f.review(pending.devSynchronization.binding);
-  const wrong = { ...acceptedReview, text: acceptedReview.text.replace("ACCEPT", "RETURN") };
-  await assert.rejects(f.call(await f.request(wrong)), /review receipt/u);
-  assert.equal(await git(f.primary, "rev-parse", "dev"), f.before);
   const generation = f.publication.generation;
   f.publication.generation = "unrelated-publication";
-  await assert.rejects(f.call(await f.request(acceptedReview)), /recovery owner|identity|journal|publication|checkout|dev/i);
+  const changedPublication = await f.call(await f.request());
+  t.diagnostic(JSON.stringify({ changedPublication: changedPublication.devSynchronization }));
+  assert.equal(changedPublication.devSynchronization.integrated, false);
+  assert.equal(changedPublication.devSynchronization.code, "RELEASE_NATIVE_MERGE_CONFLICT");
+  assert.equal(await git(f.primary, "rev-parse", "dev"), f.before);
   f.publication.generation = generation;
   const originalRead = f.taskGit.readPublication;
   let reads = 0;
   f.taskGit.readPublication = async () => ++reads < 3 ? f.publication : { ...f.publication, generation: "late-drift" };
-  await assert.rejects(f.call(await f.request(acceptedReview)), /publication provenance changed/u);
+  await assert.rejects(f.call(await f.request()), /publication provenance changed/u);
   f.taskGit.readPublication = originalRead;
   assert.equal(await git(f.primary, "rev-parse", "dev"), f.before);
   await writeFile(path.join(f.dev.projectRoot, "foreign.txt"), "keep\n");
-  await assert.rejects(f.call(await f.request(acceptedReview)), /dirty|changed|unsaved/u);
+  await assert.rejects(f.call(await f.request()), /dirty|changed|unsaved/u);
   await rm(path.join(f.dev.projectRoot, "foreign.txt")); // retire only this fixture's own foreign file
   // The normal pre-existing dirty guard leaves a diagnostic block; recover it
   // through its existing normal owner, never by deleting the block ourselves.
   await f.taskGit.prepareDev(f.primary);
-  const successfulInput = await f.request(acceptedReview);
+  const successfulInput = await f.request();
   const result = await f.call(successfulInput);
   assert.equal(result.devSynchronization.integrated, true);
   const target = result.devSynchronization.headCommit;
@@ -277,10 +264,10 @@ async function reviewedRecovery(t, options) {
   assert.equal(f.counters().deliveries, 2);
 }
 
-test("published original native recovery requires exact RM review, preserves later Test and completes only same finalize",
-  { timeout: 120_000 }, t => reviewedRecovery(t));
-test("published five merge bases require native virtual base, exact RM review and original finalize",
-  { timeout: 120_000 }, t => reviewedRecovery(t, { multipleBases: true }));
+test("published original native recovery needs no review envelope and preserves later Test and original finalize",
+  { timeout: 120_000 }, t => ordinaryRecovery(t));
+test("published five merge bases retain their native virtual base without a review approval",
+  { timeout: 120_000 }, t => ordinaryRecovery(t, { multipleBases: true }));
 
 for (const [stage, multipleBases] of [["checkout", false], ["update-ref", false], ["symbolic-ref", false], ["update-ref", true]]) {
   test(`published native original recovers lost ${stage} reply with one dev CAS${multipleBases ? " and five bases" : ""}`, { timeout: 120_000 }, async t => {
@@ -289,22 +276,21 @@ for (const [stage, multipleBases] of [["checkout", false], ["update-ref", false]
     const root = refused.devSynchronization.nativeConflictRoot;
     await writeFile(path.join(root, "shared.txt"), "later Test\npublished\n");
     await commit(root, "exact union");
-    const pending = await f.call(await f.request());
-    const review = await f.review(pending.devSynchronization.binding);
+    const expectedCommit = await git(root, "rev-parse", "HEAD");
     f.fault(stage);
-    const lostInput = await f.request(review);
+    const lostInput = await f.request();
     await assert.rejects(f.call(lostInput), /original effect readback/u);
     const originalUnknown = structuredClone(f.catalog.mcpOperation(lostInput.request_id));
     assert.equal(originalUnknown.status, "unknown");
     await assert.rejects(f.taskGit.prepareDev(f.primary), /original native effect readback/u);
     if (stage === "checkout") {
       await writeFile(path.join(f.dev.projectRoot, "foreign-after-effect.txt"), "foreign bytes\n");
-      await assert.rejects(f.call(await f.request(review)), /foreign state retained/u);
+      await assert.rejects(f.call(await f.request()), /foreign state retained/u);
       assert.equal(await readFile(path.join(f.dev.projectRoot, "foreign-after-effect.txt"), "utf8"), "foreign bytes\n");
       await rm(path.join(f.dev.projectRoot, "foreign-after-effect.txt"));
     }
-    const result = await f.call(await f.request(review));
-    assert.equal(result.devSynchronization.headCommit, pending.devSynchronization.binding.commit);
+    const result = await f.call(await f.request());
+    assert.equal(result.devSynchronization.headCommit, expectedCommit);
     assert.equal(await git(f.dev.projectRoot, "symbolic-ref", "HEAD"), "refs/heads/dev");
     assert.equal(f.counters().nativeEffects, 1);
     assert.deepEqual(f.catalog.mcpOperation(lostInput.request_id), originalUnknown, "successful recovery cannot rewrite an old unknown receipt");

@@ -237,12 +237,10 @@ it neither repeats the mutation nor wakes other operations. `get` remains a read
 JSON record and caller-token checks preserve the public business argument contract
 without an additional CLI file-size restriction.
 
-An approved repository's optional `nativeResolutionReview` accepts the existing
-single review or `{bundlePath,bundleSha256,reviews}` for multiple already reviewed
-prefixes. The sequencer authenticates each receipt and selected identity before
-import, then verifies full Git parents/tree/diff before checkout. It executes all
-matching prefixes in one call and reads its saved intent/Git after response loss.
-A bundle does not adopt a private journal or grant new publication authority.
+Native resolution is ordinary Git work in the issued owner checkout. It needs
+no review envelope, approval receipt or review bundle. Auto-review remains the
+configured agent process, not a programmatic Test/Await/release permission.
+See ADR-HUB-416. Historical arguments and receipts keep their original identity.
 
 Definite preparation refusals persist failed step receipts while the same release
 waits for ordinary continuation. Explicit unknown candidate/acceptance effects
@@ -293,7 +291,7 @@ the same exact manifest and physical-byte proof.
 Forward effect inventory streams the digest of retained native merge journals:
 their complete index/automatic path inventories are not small checkpoint records.
 Regular-file identity and stable bytes are checked across the read; directories,
-links and changed files refuse. Native parsing, selected identity and reviewed
+links and changed files refuse. Native parsing, selected identity and Git
 resolution validation remain with the existing sequencer. Inventory alone never
 adopts a journal or repeats a completed candidate.
 
@@ -880,14 +878,13 @@ ADR-HUB-329-partial-git-publication-origin.
 Missing, substituted or changed pins refuse before promotion.
 
 The existing RM-only `hub_release_prepare` repository envelope may carry
-`localSourceBaseline` and `nativeResolutionReview`. Both participate in its
-original argument hash, source closure and existing terminal receipt. The
-former has exactly schemaVersion=1, kind=installed-local-source-v1,
+`localSourceBaseline`, with its exact schemaVersion=1, kind=installed-local-source-v1,
 publishedBaseCommit, agreedMainCommit, sourceBaseCommit, sourceBaseTree,
-sourcePatchSha256, installedReleaseId, installedManifestSha256, planRevision,
-selectionHash. The latter has only requestId/text and uses the existing exact
-authenticated native merge review verifier; it supplies no caller approval flag.
-Ordinary Await still accepts the exact reviewed Task through its existing owner.
+sourcePatchSha256, installedReleaseId, installedManifestSha256, planRevision and
+selectionHash. Its original hash, closure and receipt remain authoritative.
+Historical nativeResolutionReview metadata may remain in old envelopes; the
+composition owner neither authenticates nor uses it as permission.
+Ordinary Await accepts the exact Task through its existing owner.
 When selected ordinary adoption receipts coexist with installed local source,
 the existing Task owner returns their exact historical pins and the candidate
 owner derives the same full installed-source proof before composition. Await
@@ -1187,45 +1184,58 @@ A previous separate source dev integration is retained only when its side parent
 is covered by that source's bound returned result and the integration predates
 the combined Test's exact dev parent. Unproved separate integrations still refuse.
 
-Ordinary Test uses an isolated native merge from current dev and its exact Task
-result. A conflict leaves MERGE_HEAD, stages and automatic entries there; shared
-dev and the last accepted candidate remain intact. The executor uses normal
-Git add/commit. Continuation verifies exact ordered parents and a clean checkout.
-Necessary compatibility changes on automatically merged paths require the exact
-independent inter-Stream ACCEPT receipt, bound through the existing catalog to
-the complete reproducible merge diff, ordered selected inputs and final commit/tree.
-No path allowlist or caller flag authorizes extra bytes. Missing review, changed
-parents/selection/diff/tree or post-review amendments refuse. Ordinary resolutions
-without additional automatic-path changes keep their existing behavior. The same
-binding is retained and rechecked by native Test, Await, prepared generation and
-historical readback; old receipts remain unchanged. See ADR-0108.
+Normal manual resolution requires no native-merge-review-v1 message or
+interstream approval receipt. Reopen recomputes ordered parents, automatic tree,
+candidate tree and complete diff from Git objects for every completed prefix.
+Historical reviewedResolution is Git evidence only; its review text and receipt
+are not execution capabilities. Ordinary resolution and an undelivered final
+amendment use the same issued checkout and existing journal. Delivered history
+cannot be amended. New resolution evidence contains Git bindings, not approvals.
+That exact owned binding also carries compatibility corrections to clean context
+inside a real conflict file. Reopen recomputes this coverage; unrelated extra
+paths do not receive it. Whole-parent substitution, deleted clean code and
+restoration of the other parent's clean context still refuse composition.
+Inline removals from unique clean context require retained context on each
+changed line and a contiguous ordered token span from an incoming
+inline deletion, derived from Git's actual stage-1 blob. A shorthand caller may
+project the declaration's removed parameter without its default value; adjacent
+commas and wrapping at the start/end of a line do not change that span.
+The retained context must include a word token: punctuation-only residue such
+as the semicolon after a completely removed selected call supplies no evidence.
+Retaining a keyword alone also cannot justify removing its complete call; a
+removed call expression needs a retained enclosing parenthesized expression.
+Whole-line deletion, replacement or a combination
+of unrelated removals cannot account for losing a selected addition. Conflict
+additions cannot lend evidence to a mixed hunk that drops unique clean code.
+This structural check does not claim semantic equivalence of replacement code.
 
-An accepted commit being an ancestor does not prove that its changes still exist.
-After the complete selected set is merged, and on prepared-candidate readback,
-the native owner checks each selected delta against its original Task base using
-a counterfactual Git merge in objects only. Clean changes that would have to be
-reintroduced are a definite refusal before promotion/Task CAS or freeze. A later
-selected correction may restore an earlier contained regression before this
-final check. Genuine overlapping conflict choices retain native resolution
-authority; this check is not a claim of semantic equivalence of arbitrary code.
-An authenticated compatibility correction permits only the exact mode/blob
-afterimage bound by its verified merge diff, never another body at that path.
+After the complete selected set is merged, selected delta replay still checks
+for missing code, deletion and mode changes. Exact automatic context from an
+actual non-contained merge and retained verified conflict resolution are valid
+Git evidence without a waiver. Replay additions already present byte-for-byte
+are idempotent; nonblank replacements and binary/mode changes are not duplicate
+additions. This avoids reintroducing an already retained block or an obsolete
+Task-base context. A result merely contained in incoming ancestry gets no
+automatic-context exemption: a real inherited rollback still refuses.
 
-For unchanged automatic context, an additional `selected-content-compatibility-v1`
-binding in a new authenticated native review must match the owner's complete final
-replay obligations: ordered Task/base/result identities, final commit/tree, replay
-tree, expected and retained mode/type/OID or absence, and the exact prefix and real
-automatic entry. Only explicitly accepted obligations retaining that automatic
-entry are exempt. Every other missing effect still refuses. Original v1 reviews
-gain no authority; source/base/body/selection drift and stale proofs refuse.
-An undelivered capture retains its original v1 review and adds the separately
-authenticated compatibility review only after full validation, before delivery.
-Prepared and historical readback repeat both authentication and the full replay.
-Text conflict resolution also preserves Git's clean context outside its marker
-ranges; replacing a whole conflicted file does not grant permission to discard
-those bytes. Such extra changes use the existing exact compatibility-review
-boundary. No content overlay, new publisher, external path allowlist or ignored
-preservation failure is introduced. See ADR-HUB-329-selected-content-preservation.
+For an exact captured ordinary selection, the existing composition baseline may
+bound replay when Git proves both the older Task base is its ancestor and that
+baseline is an ancestor of this exact selected result. The captured policy,
+baseline and complete Task descriptor set must match; a foreign/unbound set or
+unproved ancestry retains its original replay range. This does not choose another
+base, infer publication from a moving ref or skip a path. It avoids reinserting
+already inherited published context at an old location while still checking the
+entire remaining selected delta, real missing code, deletion and mode changes.
+The separately bound ordinary Test publication and virtual merge-base policies
+remain unchanged.
+
+Completed automatic prefixes must retain automatic content. An ordinary owned
+resolution or undelivered amendment may add compatibility helpers, without a
+path approval. Selected replay still detects lost unique code; choosing a whole
+file does not bypass it. A preserved automatic entry
+or a legitimate resolution is not missing just because an independent message
+was not supplied. No additional approval service, flag or ledger is introduced.
+See ADR-HUB-416 and ADR-HUB-329-selected-content-preservation.
 
 After native selected composition completes, the existing first-party runtime
 relative-import closure is checked against that exact immutable Git tree before
@@ -1233,9 +1243,9 @@ PreRelease promotion/checkpoint or Task acceptance. It shares the canonical
 runtime source membership and import parser used by artifact preparation; it
 does not run providers, build/install a runtime or validate unrelated products.
 A missing module is a definite preparation refusal. The completed private native
-capture remains undelivered, so its existing exact independently reviewed final
+capture remains undelivered, so its existing exact final
 merge amendment can resume through normal Await. This does not waive history,
-selection, review, origin, metadata, lease or terminal CAS guards. Artifact/RC
+selection, origin, metadata, lease or terminal CAS guards. Artifact/RC
 closure checks still run at their existing later boundaries.
 
 A failed original remains
@@ -4029,8 +4039,8 @@ restore data or replay original unknown operations.
 ## Reviewed Test terminal persistence after presentation edits
 
 ADR-HUB-389 extends the existing ADR-0113 terminal-only recovery to exact
-original CAS and authenticated single-review Test requests. Original identity,
-review receiver, source, full native composition and process/lease guards are
+original CAS and historical single-review Test requests. Original argument identity,
+source, full native composition and process/lease guards are
 rechecked before the current-row terminal CAS. Presentation is preserved; no
 merge or admission is replayed. A later canonical Test descendant is preserved
 only with its committed outcome, successful receipt and original native capture

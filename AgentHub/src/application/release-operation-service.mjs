@@ -101,7 +101,6 @@ function classifiedFailure(error, state, now, retryDelayMs) {
   switch (details.code) {
     case "RELEASE_PREPARATION_REJECTED":
     case "RELEASE_NATIVE_MERGE_CONFLICT":
-    case "RELEASE_NATIVE_REVIEW_REQUIRED":
       return {
         state: "waiting", currentStep: "compose", resumeState: "compose",
         waitReason: { code: "preparation_refused", message: details.message, details },
@@ -411,7 +410,7 @@ export class ReleaseOperationService {
     try {
       const effect = await this.synchronizePublishedDevEffect({ operation, generation,
         projectRoot: publishedDevSync.projectRoot, expectedDevCommit: publishedDevSync.expectedDevCommit,
-        nativeResolutionReview: publishedDevSync.nativeResolutionReview ?? null, validate });
+        validate });
       await validate();
       return { operationId, generation: expectedGeneration, devSynchronization: effect };
     } finally {

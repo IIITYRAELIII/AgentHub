@@ -5,7 +5,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createHash } from "node:crypto";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
@@ -86,7 +85,7 @@ test("reopen rejects a forged completed native prefix even with exact merge pare
   await git(original.root, "checkout", "--detach", forged);
   const state = JSON.parse(bytes); state.head = forged; state.merges[0].commit = forged;
   await writeFile(stateFile, JSON.stringify(state));
-  await assert.rejects(mergeSelectedResults(request), { code: "RELEASE_NATIVE_REVIEW_REQUIRED" });
+  await assert.rejects(mergeSelectedResults(request), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
   assert.equal(await git(original.root, "rev-parse", "HEAD"), forged);
   assert.equal(await readFile(path.join(original.root, "foreign.txt"), "utf8"), "not selected\n");
   await git(original.root, "checkout", "--detach", original.head);
@@ -105,102 +104,34 @@ test("native runtime closure does not impose Agent Hub readiness on an unrelated
   assert.equal(await git(f.primary, "status", "--porcelain=v1"), "");
 });
 
-test("one native sequencer call consumes reviewed resolutions and reopens a lost journal reply", { timeout: 120000 }, async t => {
+test("ordinary issued resolutions survive a lost journal reply without review inputs", async t => {
   const f = await fixture(t);
   const a = await f.result("A", "shared.txt", "selected A\n");
   const b = await f.result("B", "shared.txt", "selected B\n");
-  await writeFile(path.join(f.primary, "shared.txt"), "new accepted main\n");
-  const baseCommit = await commit(f.primary, "new main");
-  const tasks = [a, b], identity = { baseCommit, tasks };
-  const proofRoot = path.join(f.root, "proof"), bindings = new Map();
-  const readJson = pathname => readFile(pathname, "utf8").then(JSON.parse, error => {
-    if (error.code === "ENOENT") return null; throw error;
-  });
-  const writeJson = (pathname, value) => writeFile(pathname, JSON.stringify(value));
-  const request = { root: proofRoot, sourceRoot: f.primary, baseCommit, tasks, identity,
-    gitAt: (cwd, args, options = {}) => runTaskGitCommand(args, { ...options, cwd }), readJson, writeJson,
-    verifyReview: async (review, binding) => {
-      const declaration = JSON.parse(/<native-merge-review>([^]*?)<\/native-merge-review>/u.exec(review.text)[1]);
-      assert.deepEqual(declaration.binding, binding);
-      bindings.set(review.requestId, binding);
-    } };
+  const root = path.join(f.root, "issued");
+  const request = { root, sourceRoot: f.primary, baseCommit: f.base, tasks: [a, b], identity: { tasks: [a, b] },
+    gitAt: (cwd, args, options = {}) => runTaskGitCommand(args, { ...options, cwd }),
+    readJson: pathname => readFile(pathname, "utf8").then(JSON.parse, error => {
+      if (error.code === "ENOENT") return null; throw error;
+    }), writeJson: (pathname, value) => writeFile(pathname, JSON.stringify(value)) };
   await assert.rejects(mergeSelectedResults(request), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
-  for (const [index, task] of tasks.entries()) {
-    await writeFile(path.join(proofRoot, "repository", "shared.txt"), `reviewed ${task.taskId}\n`);
-    const repository = path.join(proofRoot, "repository");
-    const resolved = await commit(repository, `resolve ${task.taskId}`);
-    const parents = (await git(repository, "show", "-s", "--format=%P", resolved)).split(" ");
-    const automatic = await execute("git", ["merge-tree", "--write-tree", "--name-only", "-z", ...parents],
-      { cwd: repository, windowsHide: true, encoding: "buffer" }).catch(error => {
-        assert.equal(error.code, 1); return { stdout: error.stdout };
-      });
-    const automaticTree = automatic.stdout.toString("utf8").split("\0")[0];
-    const tree = await git(repository, "rev-parse", `${resolved}^{tree}`);
-    const diff = (await execute("git", ["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree],
-      { cwd: repository, windowsHide: true, encoding: "buffer" })).stdout;
-    const binding = { identityHash: taskGitIdentityHash(identity), parents, commit: resolved, tree,
-      automaticTree, diffSha256: createHash("sha256").update(diff).digest("hex") };
-    const result = mergeSelectedResults({ ...request,
-      resolutionReview: { requestId: `review-${task.taskId}`,
-        text: `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>` } });
-    if (index === 0) await assert.rejects(result, { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
-    else await result;
-  }
-  const proof = await readJson(path.join(proofRoot, "merge.json"));
-  const bundlePath = path.join(f.root, "reviewed.bundle");
-  await git(path.join(proofRoot, "repository"), "update-ref", "refs/heads/accepted", proof.head);
-  await git(path.join(proofRoot, "repository"), "bundle", "create", bundlePath, "refs/heads/accepted");
-  const reviews = [...bindings].map(([requestId, binding]) => ({ requestId,
-    text: `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>` }));
-  const resolutionReview = { bundlePath,
-    bundleSha256: createHash("sha256").update(await readFile(bundlePath)).digest("hex"), reviews };
-  let loseReply = true, loseAbortReply = true;
-  const actual = { ...request, root: path.join(f.root, "actual"), resolutionReview,
-    gitAt: async (cwd, args, options = {}) => {
-      const result = await runTaskGitCommand(args, { ...options, cwd });
-      if (loseAbortReply && args[0] === "merge" && args[1] === "--abort") {
-        loseAbortReply = false;
-        throw new Error("lost conflict abort reply");
-      }
-      return result;
-    },
-    verifyReview: async (review, binding) => {
-      const declaration = JSON.parse(/<native-merge-review>([^]*?)<\/native-merge-review>/u.exec(review.text)[1]);
-      assert.deepEqual(declaration.binding, binding);
-    },
-    writeJson: async (pathname, value) => {
-      if (loseReply && value.next === 1 && value.merging === false) {
-        loseReply = false;
-        throw new Error("lost journal reply after reviewed checkout");
-      }
-      await writeJson(pathname, value);
-    } };
-  await assert.rejects(mergeSelectedResults({ ...actual, resolutionReview: null }), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
-  const issued = path.join(actual.root, "repository", "shared.txt");
-  const untouched = await readFile(issued);
-  await writeFile(issued, "executor unfinished resolution\n");
-  await assert.rejects(mergeSelectedResults(actual), /unsaved executor resolution/u);
-  assert.equal(await readFile(issued, "utf8"), "executor unfinished resolution\n");
-  await writeFile(issued, untouched);
-  await assert.rejects(mergeSelectedResults(actual), /lost conflict abort reply/u);
-  assert.equal(await git(path.join(actual.root, "repository"), "rev-parse", "HEAD"), baseCommit);
-  assert.equal((await readJson(path.join(actual.root, "merge.json"))).conflict.reviewedResolution.binding.commit, proof.merges[0].commit);
-  await assert.rejects(mergeSelectedResults(actual), /lost journal reply/u);
-  const interrupted = await readJson(path.join(actual.root, "merge.json"));
-  assert.equal(interrupted.next, 0);
-  assert.equal(interrupted.merging, true);
-  assert.equal(await git(path.join(actual.root, "repository"), "rev-parse", "HEAD"), proof.merges[0].commit);
-  const completed = await mergeSelectedResults(actual);
-  assert.equal(completed.head, proof.head);
-  assert.equal(completed.tree, await git(path.join(proofRoot, "repository"), "rev-parse", "HEAD^{tree}"));
-  assert.equal(completed.merges.length, 2);
-  const reflog = await git(completed.root, "reflog", "--format=%H");
-  assert.equal((await mergeSelectedResults(actual)).head, completed.head);
-  assert.equal(await git(completed.root, "reflog", "--format=%H"), reflog);
-  const tampered = { ...actual, resolutionReview: { ...resolutionReview, bundleSha256: "0".repeat(64) } };
-  await assert.rejects(mergeSelectedResults(tampered), /digest changed/u);
-  assert.equal(await git(completed.root, "reflog", "--format=%H"), reflog);
-  assert.equal(await git(f.primary, "rev-parse", "HEAD"), baseCommit);
+  const repository = path.join(root, "repository");
+  await writeFile(path.join(repository, "shared.txt"), "selected A+B\n");
+  const head = await commit(repository, "owned union");
+  let lost = false;
+  const interrupt = { ...request, writeJson: async (pathname, value) => {
+    if (!lost && value.next === 2) { lost = true; throw Error("lost journal reply"); }
+    return request.writeJson(pathname, value);
+  } };
+  await assert.rejects(mergeSelectedResults(interrupt), /lost journal reply/u);
+  const value = await mergeSelectedResults(request);
+  assert.equal(value.head, head);
+  assert.equal((await mergeSelectedResults(request)).head, head);
+  assert.equal(await git(repository, "show", "HEAD:shared.txt"), "selected A+B");
+  const before = await readFile(path.join(root, "merge.json"));
+  await assert.rejects(mergeSelectedResults({ ...request, identity: { foreign: true } }),
+    { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
+  assert.deepEqual(await readFile(path.join(root, "merge.json")), before);
 });
 
 test("manual public version freezes all three numbers and reopens its original interrupted intent", { timeout: 120000 }, async t => {

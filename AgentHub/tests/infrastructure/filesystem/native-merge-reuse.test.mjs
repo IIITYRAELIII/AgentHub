@@ -113,6 +113,30 @@ test("identical whole conflict context reuses marker resolution while retaining 
   assert.equal(await git(f.source, "status", "--porcelain=v1"), "");
 });
 
+test("reuse preserves compatibility helpers or leaves their real conflict unresolved", async t => {
+  const f = await fixture(t);
+  const a = await f.result("A", "shared.txt", "A\n"), b = await f.result("B", "shared.txt", "B\n");
+  const first = f.request([a, b], "helper-one");
+  await assert.rejects(f.run(first), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  const checkout = path.join(first.root, "repository");
+  await writeFile(path.join(checkout, "shared.txt"), "A+B\n");
+  await writeFile(path.join(checkout, "compatibility.mjs"), "export const combined = true;\n");
+  await f.commit(checkout, "owned helper and resolution");
+  const original = await f.run(first);
+  const journal = await readFile(path.join(first.root, "merge.json"));
+  const c = await f.result("C", "extra.txt", "third result\n");
+  const whole = await f.run(f.request([a, b, c], "helper-prefix"));
+  assert.equal(whole.merges[1].commit, original.head);
+  assert.equal(await git(whole.root, "show", "HEAD:compatibility.mjs"), "export const combined = true;");
+  const changedB = await f.result("B", "new.txt", "new automatic bytes\n");
+  const changed = f.request([a, changedB], "helper-changed");
+  await assert.rejects(f.run(changed), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  const state = await changed.readJson(path.join(changed.root, "merge.json"));
+  assert.ok(state.conflict);
+  assert.equal(state.next, 1);
+  assert.deepEqual(await readFile(path.join(first.root, "merge.json")), journal);
+});
+
 test("middle correction, removal, reordering and full Task entry drift never retain an old suffix", async t => {
   const f = await fixture(t);
   const a = await f.result("A", "A.txt", "a\n"), b = await f.result("B", "B.txt", "b\n"), c = await f.result("C", "C.txt", "c\n");

@@ -156,15 +156,17 @@ export async function verifiedNativePrefix({ root, repository, candidates, tasks
         const step = candidate.state.merges[i], task = tasks[i];
         if (step.taskId !== task.taskId || step.resultCommit !== task.resultCommit) break;
         try {
-          // No review argument is supplied. Extra bytes/compatibility need a
-          // fresh current binding and therefore cannot cross this boundary.
-          if (await verify(before, task.resultCommit, step.commit)) break;
+          // Verify the exact Git resolution again; no old approval capability
+          // participates in reuse of the retained objects.
+          await verify(before, task.resultCommit, step.commit, step);
         } catch (error) {
-          if (error.code?.startsWith("RELEASE_NATIVE_")) break;
+          if (error.code?.startsWith("RELEASE_NATIVE_") || error.code === "RELEASE_SELECTED_CONTENT_MISSING") break;
           throw error;
         }
         merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: step.commit,
-          ...(step.resolved ? { resolved: true } : {}), ...(step.contained ? { contained: true } : {}) });
+          ...(step.resolved ? { resolved: true } : {}), ...(step.contained ? { contained: true } : {}),
+          ...(step.resolution ? { resolution: step.resolution } : {}),
+          ...(step.reviewedResolution ? { reviewedResolution: step.reviewedResolution } : {}) });
         before = step.commit;
       }
       if (merges.length > (best?.merges.length ?? 0) && await candidate.unchanged()) {
@@ -257,6 +259,12 @@ export async function retainedNativeConflict({ root, repository, candidates, sta
           ["merge-tree", "--write-tree", "-z", before, step.resultCommit], { rawOutput: true, acceptableExitCodes: [1] }));
         if (!old || taskGitIdentityHash(old.stages) !== taskGitIdentityHash(stages)) continue;
         const selected = await treeEntries(git, `${step.commit}^{tree}`, true), replacements = new Map();
+        const previousAutomatic = await treeEntries(git, old.tree, true);
+        // Partial conflict reuse must not silently drop a compatibility helper
+        // or another manual afterimage outside the copied conflict paths. Whole
+        // prefix reuse retains those bytes; otherwise keep the real conflict.
+        if ([...new Set([...previousAutomatic.keys(), ...selected.keys()])].some(file =>
+          !state.conflict.paths.includes(file) && previousAutomatic.get(file) !== selected.get(file))) continue;
         for (const file of state.conflict.paths) {
           const entry = selected.get(file);
           if (!/^(100644|100755) blob [a-f0-9]{40}$/u.test(entry ?? "")) break;
@@ -266,9 +274,9 @@ export async function retainedNativeConflict({ root, repository, candidates, sta
         const tree = await replaceConflictEntries(git, current.tree, replacements);
         const commit = String(await git(["-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
           "commit-tree", tree, "-p", state.head, "-p", task.resultCommit, "-m", "Reuse exact retained native conflict context"]));
-        try { if (await verify(state.head, task.resultCommit, commit)) continue; }
+        try { await verify(state.head, task.resultCommit, commit); }
         catch (error) {
-          if (error.code?.startsWith("RELEASE_NATIVE_")) continue;
+          if (error.code?.startsWith("RELEASE_NATIVE_") || error.code === "RELEASE_SELECTED_CONTENT_MISSING") continue;
           throw error;
         }
         if (!await candidate.unchanged()) continue;

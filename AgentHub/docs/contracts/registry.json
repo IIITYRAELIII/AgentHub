@@ -533,7 +533,6 @@
         "docs/decisions/ADR-0130-original-preparation-stage-recovery.md",
         "tests/infrastructure/persistence/preparation-stage-checkpoint.test.mjs",
         "src/composition/release-operation-composition.mjs",
-        "src/domain/native-resolution-input.mjs",
         "release.mjs",
         "docs/decisions/ADR-0132-normal-release-continuation.md",
         "docs/decisions/ADR-HUB-329-partial-git-publication-origin.md",
@@ -601,7 +600,8 @@
         "docs/decisions/ADR-HUB-415-release-membership-reference.md",
         "src/domain/task-checklist.mjs",
         "src/infrastructure/persistence/task-checklist-repository.mjs",
-        "tests/infrastructure/persistence/task-release-reference.test.mjs"
+        "tests/infrastructure/persistence/task-release-reference.test.mjs",
+        "docs/decisions/ADR-HUB-416-native-resolution-without-approval-token.md"
       ]
     },
     {
@@ -670,7 +670,8 @@
         "tests/application/task-direct-published-cleanup.test.mjs",
         "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
         "src/infrastructure/filesystem/cleanup-preservation.mjs",
-        "docs/decisions/ADR-HUB-415-release-membership-reference.md"
+        "docs/decisions/ADR-HUB-415-release-membership-reference.md",
+        "docs/decisions/ADR-HUB-416-native-resolution-without-approval-token.md"
       ]
     },
     {

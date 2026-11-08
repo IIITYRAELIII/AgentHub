@@ -635,7 +635,7 @@ export class TaskGitWorkspaceService {
     readSystemBootIdentity = readTrustedSystemBootIdentity,
     removeProcessGuard = unlink,
     contourExternalEffects = null,
-    verifyNativeResolutionReview = null,
+
     readClaimCustodyNamespace = () => null,
     recordTiming = (event) => console.info(`[task-operation-timing] ${JSON.stringify(event)}`),
   } = {}) {
@@ -650,7 +650,7 @@ export class TaskGitWorkspaceService {
     this.readSystemBootIdentity = readSystemBootIdentity;
     this.removeProcessGuard = removeProcessGuard;
     this.recordTiming = recordTiming;
-    this.verifyNativeResolutionReview = verifyNativeResolutionReview;
+
     this.readClaimCustodyNamespace = readClaimCustodyNamespace;
   }
 
@@ -2686,7 +2686,7 @@ export class TaskGitWorkspaceService {
   }
 
   async synchronizeMainIntoDev({ projectRoot, publishedRevision = null,
-    publishedSync = null, nativeResolutionReview = null, validatePublishedSync = null } = {}) {
+    publishedSync = null, validatePublishedSync = null } = {}) {
     this.#assertAvailable("synchronizeMainIntoDev");
     const expectedMainCommit = exactCommitId(publishedRevision, "published revision");
     const repoRoot = await repositoryRoot(projectRoot);
@@ -2716,9 +2716,8 @@ export class TaskGitWorkspaceService {
       }
       if (publishedSync) {
         return this.#synchronizePublishedMainOwned({ repoRoot, expectedMainCommit, currentLocalMain,
-          publishedSync, nativeResolutionReview, validatePublishedSync, verifySynchronization, lease });
+          publishedSync, validatePublishedSync, verifySynchronization, lease });
       }
-      if (nativeResolutionReview) throw new Error("Published native review requires exact original finalization identity");
       return this.#synchronizeMainIntoDevOwned({
         repoRoot,
         expectedMainCommit,
@@ -2730,7 +2729,7 @@ export class TaskGitWorkspaceService {
   }
 
   async #synchronizePublishedMainOwned({ repoRoot, expectedMainCommit, currentLocalMain,
-    publishedSync, nativeResolutionReview, validatePublishedSync, verifySynchronization, lease }) {
+    publishedSync, validatePublishedSync, verifySynchronization, lease }) {
     if (typeof validatePublishedSync !== "function" || !publishedSync.operationId
         || !publishedSync.workspaceId || !Number.isSafeInteger(publishedSync.generation)
         || publishedSync.generation < 1 || !/^[a-f0-9]{64}$/u.test(publishedSync.candidateIdentity)
@@ -2794,7 +2793,7 @@ export class TaskGitWorkspaceService {
     return this.withOperationTrace({ operationId: publishedSync.operationId }, () =>
       measureTaskOperation("published-dev-sync", () => synchronizePublishedDev({
         root, sourceRoot: repoRoot, devRoot, devBranch: this.devBranch, identity, readJson, writeJson,
-        resolutionReview: nativeResolutionReview, verifyReview: this.verifyNativeResolutionReview, fence,
+        fence,
         gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
           guardRepositoryRoot: repoRoot, timeoutMs: 300_000 }),
         beforeDelivery: async () => {
@@ -2813,7 +2812,7 @@ export class TaskGitWorkspaceService {
           await unlink(blockFile);
         },
       }))).catch(error => {
-        if (!["RELEASE_NATIVE_MERGE_CONFLICT", "RELEASE_NATIVE_REVIEW_REQUIRED"].includes(error.code)) throw error;
+        if (error.code !== "RELEASE_NATIVE_MERGE_CONFLICT") throw error;
         return { status: "review_required", integrated: false, code: error.code, reason: error.message,
           nativeConflictRoot: error.conflictRoot ?? path.join(root, "repository"),
           ...(error.binding ? { binding: error.binding, diffPath: error.diffPath } : {}) };
@@ -3926,8 +3925,7 @@ export class TaskGitWorkspaceService {
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
       const original = await this.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease: ownedLease });
       if (!original?.target || original.nativeAbsorptionInput || original.nativeAbsorptionHistory
-          || original.initialNativeTest
-          || JSON.stringify(original.nativeResolutionReview ?? null) !== JSON.stringify(nativeResolutionReview)) {
+          || original.initialNativeTest) {
         throw new Error("Applied ordinary native Test intent is required");
       }
       let preservedDevCommit = null;
@@ -3962,13 +3960,12 @@ export class TaskGitWorkspaceService {
           if (!samePath(successor.stageRoot, path.join(staging.root, "repository"))
               || JSON.stringify(captured.identity) !== JSON.stringify(staging.identity)
               || captured.next !== 1 || captured.head !== tip || captured.conflict || captured.merging
-              || (successor.nativeResolutionReview && JSON.stringify(captured.merges?.[0]?.reviewedResolution?.review)
-                !== JSON.stringify(successor.nativeResolutionReview))) throw new Error("Native Test successor capture changed");
+) throw new Error("Native Test successor capture changed");
           await assertNativePreparedComposition({
             git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: successor.stageRoot, lease: ownedLease }),
             baseCommit: successor.before, tasks: [{ taskId: proof.taskId, baseCommit: successor.snapshot.baseCommit,
               resultCommit: proof.resultCommit }], merges: captured.merges, head: tip, tree: successor.targetTree,
-            identity: staging.identity, verifyReview: this.verifyNativeResolutionReview, historyAuthority,
+            identity: staging.identity, historyAuthority,
           });
           await this.#nativeHistoryOrigin(successor.snapshot, successor.nativeHistoryAuthority, ownedLease);
           tip = successor.before;
@@ -4006,10 +4003,7 @@ export class TaskGitWorkspaceService {
             throw new Error("Applied native Test materialization changed");
           }
         }
-        if (nativeResolutionReview) {
-          if (JSON.stringify(capture.merges[0].reviewedResolution?.review) !== JSON.stringify(nativeResolutionReview)) {
-            throw new Error("Applied native Test original review changed");
-          }
+
           // Existing read-only composition verifier authenticates the original
           // receipt and recomputes parents/tree/full diff. Never resume merge.
           await assertNativePreparedComposition({
@@ -4017,9 +4011,8 @@ export class TaskGitWorkspaceService {
             baseCommit: record.before,
             tasks: [{ taskId, baseCommit: s.baseCommit, resultCommit: s.headCommit }],
             merges: capture.merges, head: record.target, tree: record.targetTree,
-            identity, verifyReview: this.verifyNativeResolutionReview, historyAuthority,
+            identity, historyAuthority,
           });
-        }
         await this.#nativeHistoryOrigin(s, record.nativeHistoryAuthority, ownedLease);
         await ownedLease.assertOwned();
       };
@@ -4319,8 +4312,8 @@ export class TaskGitWorkspaceService {
     }
     const composition = await mergeSelectedResults({ root, sourceRoot: snapshot.repositoryRoot,
       baseCommit: record.before, tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit }], identity,
-      resolutionReview: record.nativeResolutionReview ?? null,
-      verifyReview: this.verifyNativeResolutionReview,
+
+
       deliveredHead: record.target ?? null,
       provisionNativeObjects: objectStore ? input => objectStore.provision(input) : null,
       gitAt: ownedGitAt,
@@ -4428,7 +4421,7 @@ export class TaskGitWorkspaceService {
 
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,
     nativeAbsorptionHistory = null, expectedTaskRevision = null, validateAbsorption = null,
-    initialNativeTest = null, validateInitialNativeTest = null, nativeResolutionReview = null }) {
+    initialNativeTest = null, validateInitialNativeTest = null }) {
     this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
@@ -4443,9 +4436,6 @@ export class TaskGitWorkspaceService {
       let dev;
       if (initialNativeTest) await validateInitialNativeTest({ record });
       if (record) {
-        if (JSON.stringify(record.nativeResolutionReview ?? null) !== JSON.stringify(nativeResolutionReview)) {
-          throw new Error("Native Test original reviewed resolution changed");
-        }
         if (JSON.stringify(record.initialNativeTest ?? null) !== JSON.stringify(initialNativeTest)) throw new Error("Initial native Test original Git binding changed");
         if (JSON.stringify(record.nativeAbsorptionInput ?? null) !== JSON.stringify(nativeAbsorptionInput)
             || JSON.stringify(record.nativeAbsorptionHistory ?? null) !== JSON.stringify(nativeAbsorptionHistory)
@@ -4483,7 +4473,6 @@ export class TaskGitWorkspaceService {
           snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
           objectStorage: nativeObjectStorageDescriptor(),
           nativeHistoryAuthority: historyAuthority.binding,
-          ...(nativeResolutionReview ? { nativeResolutionReview } : {}),
           ...(initialNativeTest ? { initialNativeTest } : {}),
           ...(nativeAbsorptionInput || nativeAbsorptionHistory ? { expectedTaskRevision,
             ...(nativeAbsorptionInput ? { nativeAbsorptionInput } : {}),
@@ -4901,7 +4890,6 @@ export class TaskGitWorkspaceService {
       nativeAbsorptionInput: params.nativeAbsorptionInput, expectedTaskRevision: params.expectedTaskRevision,
       nativeAbsorptionHistory: params.nativeAbsorptionHistory,
       initialNativeTest: params.initialNativeTest, validateInitialNativeTest: params.validateInitialNativeTest,
-      nativeResolutionReview: params.nativeResolutionReview,
       validateAbsorption: params.validateAbsorption });
     if (integration.integrated) {
       await params.lease.assertOwned();
