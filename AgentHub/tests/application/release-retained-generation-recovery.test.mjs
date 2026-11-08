@@ -207,7 +207,7 @@ test("public retained recovery restores its original retired frozen checkout fro
   await f.service.drain(f.request.operationId);
   assert.equal(f.store.get(f.request.operationId).state, "done");
   assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "HEAD"), f.candidate.commit);
-  assert.equal(await git(f.candidate.releaseRoot, "status", "--porcelain=v1"), "");
+  assert.equal(await git(f.candidate.releaseRoot, "--no-optional-locks", "status", "--porcelain=v1"), "");
   assert.deepEqual(await readFile(path.join(f.candidate.releaseRoot, ".git/index")), index);
   assert.deepEqual(await readFile(path.join(f.candidate.releaseRoot, ".git/agent-hub-release-clone.json")), marker);
   assert.deepEqual(f.store.snapshot(f.request.operationId).generations, before.generations);

@@ -3628,7 +3628,7 @@ export class ReleaseGitWorkspaceService {
       identity: identityFile?.bytes.equals(ownerBytes),
       checkpoint: checkpoint?.bytes.equals(await readFile(path.join(archiveRoot, "checkpoint.json"))),
       manifestDigest: manifest && sha256(manifest.bytes) === candidate.manifestHash,
-      manifest: manifest && stableManifest(JSON.parse(manifest.bytes)) === stableManifest(candidate.manifest)
+      publication: manifest && stableManifest(JSON.parse(manifest.bytes).publication) === stableManifest(candidate.manifest.publication)
     };
     const changedMetadata = Object.keys(metadataChecks).filter(key => !metadataChecks[key]);
     if (changedMetadata.length) throw new Error("Archived frozen metadata changed: " + changedMetadata.join(","));
@@ -3792,7 +3792,7 @@ export class ReleaseGitWorkspaceService {
       gitMaybe(["symbolic-ref", "--short", "HEAD"], { cwd: marker.releaseRoot }),
       runGit(["rev-parse", "HEAD^{commit}"], { cwd: marker.releaseRoot }),
       runGit(["rev-parse", "HEAD^{tree}"], { cwd: marker.releaseRoot }),
-      runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: marker.releaseRoot, rawOutput: true })
+      runGit(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: marker.releaseRoot, rawOutput: true })
         .then(bytes => Buffer.from(bytes).toString("utf8")),
     ]);
     let authorizedNotes = false;
