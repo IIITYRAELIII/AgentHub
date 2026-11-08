@@ -225,10 +225,10 @@
   const TASK_STATUS_PRESENTATION = Object.freeze({
     en: Object.freeze({
       new: Object.freeze({ short: "New", full: "New" }),
-      in_progress: Object.freeze({ short: "InProg", full: "In progress" }),
+      in_progress: Object.freeze({ short: "Progress", full: "In progress" }),
       blocked: Object.freeze({ short: "Blocked", full: "Blocked" }),
-      testing: Object.freeze({ short: "Test", full: "Testing" }),
-      awaiting_implementation: Object.freeze({ short: "Await", full: "Awaiting implementation" }),
+      testing: Object.freeze({ short: "Testing", full: "Testing" }),
+      awaiting_implementation: Object.freeze({ short: "Awaiting", full: "Awaiting implementation" }),
       done: Object.freeze({ short: "Done", full: "Done" }),
     }),
     ru: Object.freeze({
