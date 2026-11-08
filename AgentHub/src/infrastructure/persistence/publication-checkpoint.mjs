@@ -47,19 +47,20 @@ export async function runPublicationSteps(steps, {
   journal = null,
 } = {}) {
   const executeStep = async step => {
-    let args = step.args;
+    let prepared = step;
     if (step.testSelectionPlan) {
+      const args = step.args;
       if (!identity?.testPlan || JSON.stringify(identity.testPlan) !== JSON.stringify(step.testSelectionPlan)
           || step.command !== process.execPath || args?.length !== 2
           || args[0] !== "test-suite.mjs" || args[1] !== "selected"
           || path.resolve(step.cwd) !== path.join(path.resolve(identity.worktreeRoot), "AgentHub")) {
         throw new Error("Selected-test step differs from its publication identity");
       }
-      args = [...args, ...await preparePublicationTestSelection(step.testSelectionPlan, {
+      prepared = { ...step, args: [...args, ...await preparePublicationTestSelection(step.testSelectionPlan, {
         repositoryRoot: identity.worktreeRoot, revision: identity.revision,
-      })];
+      })] };
     }
-    await run({ ...step, args, logFile: journal?.logFile ?? "" });
+    await run({ ...prepared, logFile: journal?.logFile ?? "" });
   };
   await journal?.start(identity, steps);
   if (!checkpoint) {
