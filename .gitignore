@@ -24,3 +24,6 @@ AgentHub/VSCodeExtension/*.vsix
 **/bin/
 **/obj/
 **/dist/
+
+# Existing dependency owner retains unique cache/work on compatibility changes.
+.agent-hub-dependency-retained/

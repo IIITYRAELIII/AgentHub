@@ -5,7 +5,6 @@ import { MaintenanceOperationStore } from "../persistence/maintenance-operation-
 import { nativeCaptureRetirementEvidence } from "../persistence/native-capture-retirement-evidence.mjs";
 import { inventoryNativeCapture } from "./native-capture-inventory.mjs";
 import { assertNativeTrackedCapture } from "./native-capture-content.mjs";
-import { OwnedNativeObjectStore } from "./owned-native-object-store.mjs";
 import { assertNativeCaptureNotSourcePinned } from "./native-capture-source-pins.mjs";
 import { retireSealedNativeCapture, measureNativeCaptureAllocation } from "./sealed-native-capture.mjs";
 import { withRuntimeInstallationLease } from "./runtime-installation-custody.mjs";
@@ -80,7 +79,7 @@ export class NativeCaptureRetirement {
       };
       const row = operationId ? this.store.getReadonly(operationId) : null;
       if (operationId && (!row || row.metadata.owner !== "native-merge-transport" || row.metadata.candidate?.id !== candidate.id)) throw new Error("Native capture original missing or foreign");
-      const objects = new OwnedNativeObjectStore({ dataDir: this.dataDir, gitAt: (cwd, args, options) => this.gitAt(cwd, args, { ...options, lease }), store: this.store, assertCurrent: resourceCurrent });
+      const objects = this.taskGitWorkspaces.createNativeObjectStore({ sourceRoot: repository, lease, store: this.store, assertCurrent: resourceCurrent });
       return action({ root, repository, state, stateHash: sha(raw), task, record, originalEvidence, publication, git, current, resourceCurrent, row, objects, lease });
     }), { timeoutMs: 250 });
   }

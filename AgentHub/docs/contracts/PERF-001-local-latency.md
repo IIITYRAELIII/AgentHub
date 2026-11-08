@@ -1005,3 +1005,20 @@ Summed latest samples are not a simultaneous exclusive decomposition of process
 RSS. Payload, paths, arbitrary names, stacks and provider data are not sampled.
 These observations do not authorize GC, heap dumps, inspector operations, cache
 clearing, retries, provider calls, restarts or a claim that a memory cause is fixed.
+
+## Input-scoped native production (HUB-411)
+
+New prefix transport excludes only verified receiver-owned history; new object
+consumers do not propagate disjoint archived objects. Pack selection reads index
+membership rather than decompressing unrelated payload. Fixture created/allocated
+bytes are reported separately from production disk reclamation or latency.
+No arbitrary product cap, new scan, dependency copy or skipped authority follows.
+See ADR-HUB-411-input-scoped-native-production.
+
+HUB-411 extends input-scoped production to the actual fresh Await caller, new
+generation clones, invocation validation and compatible Task dependencies. Record
+created logical bytes separately from physical allocations deduplicated by file
+identity; hardlinked byte counts are not new disk allocations. A disposable fixture
+measures these producer effects, not reclaimed production GB or provider latency.
+Existing repository/pool and exact dependency-key locks serialize only their own
+resources; an unknown process tree retains its original lifetime fence.

@@ -79,7 +79,7 @@ export async function nativeReuseCandidates({ root, identity, context, readLegac
   });
 }
 
-async function importCommit({ root, repository, candidate, commit, gitAt, beforeTransport }) {
+async function importCommit({ root, repository, candidate, commit, receiverInputs, gitAt, beforeTransport }) {
   if (!await candidate.unchanged()) return false;
   if (candidate.verifyInRepository) commit = candidate.state.head;
   const bundle = path.join(root, `retained-${commit}.bundle`);
@@ -91,7 +91,47 @@ async function importCommit({ root, repository, candidate, commit, gitAt, before
       if (!plain(existing) || !existing.isFile()) return false;
       try { await gitAt(repository, ["bundle", "verify", bundle]); }
       catch { return false; } // A partial hint is preserved, never overwritten.
-    } else await createSelectedGitBundle({ root, sourceRoot: candidate.repository, bundle, inputs: [commit], gitAt });
+    } else {
+      // New native consumers already own the complete base/selected input DAG.
+      // Export only the merge objects absent from that receiver, not another
+      // full copy of its history. Object presence grants no prefix authority:
+      // the existing verifier below still decides every exact merge step.
+      const receiver = await info(repository);
+      if (!plain(receiver) || !receiver.isDirectory()) return false;
+      const roots = [...new Set([
+        // Owned consumers are detached. Their newly recomposed HEAD can be
+        // absent from the donor even though both own these sealed input DAGs.
+        ...receiverInputs,
+        ...String(await gitAt(repository, ["for-each-ref", "--format=%(objectname)"])).split(/\r?\n/u),
+        String(await gitAt(repository, ["rev-parse", "HEAD^{commit}"])),
+      ].filter(Boolean))].sort();
+      if (roots.some(c => !/^[a-f0-9]{40}$/u.test(c))) throw new Error("Native receiver history roots changed");
+      const types = String(await gitAt(candidate.repository, ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        { input: roots.join("\n") + "\n" })).split(/\r?\n/u);
+      if (types.length !== roots.length) throw new Error("Native receiver history discovery is incomplete");
+      const required = roots.filter((c, i) => types[i] === `${c} commit`);
+      const changedHint = new Error("Retained native hint changed during transport");
+      const verifyPrerequisites = async () => {
+        if (!same(receiver, await info(repository))) throw new Error("Native receiver custody changed");
+        if (!await candidate.unchanged()) throw changedHint;
+        if (!required.length) return;
+        const closure = String(await gitAt(repository, ["rev-list", "--objects", "--no-object-names", "--missing=print", "--stdin"],
+          { input: required.join("\n") + "\n" })).split(/\r?\n/u).filter(Boolean);
+        if (!closure.length || closure.some(c => !/^[a-f0-9]{40}$/u.test(c))) {
+          throw new Error("Native receiver prerequisite history is incomplete");
+        }
+      };
+      try {
+        await createSelectedGitBundle({ root, sourceRoot: candidate.repository, bundle, inputs: [commit], gitAt,
+          prerequisites: required, verifyPrerequisites });
+      } catch (error) {
+        // A changed optional hint is discarded before fetch. Its original
+        // output remains retained; receiver/I/O/authority failures still throw.
+        if (error === changedHint) return false;
+        throw error;
+      }
+      await gitAt(repository, ["bundle", "verify", bundle]);
+    }
     const heads = String(await gitAt(repository, ["bundle", "list-heads", bundle])).split(/\r?\n/u);
     if (!heads.some(row => row.split(" ")[0] === commit)) return false;
     await gitAt(repository, ["fetch", "--no-tags", bundle, commit]);
@@ -108,7 +148,8 @@ export async function verifiedNativePrefix({ root, repository, candidates, tasks
     let best = null;
     for (const candidate of candidates) {
       if (!candidate.count || candidate.count <= (best?.merges.length ?? 0)) break;
-      if (!await importCommit({ root, repository, candidate, commit: candidate.state.merges[candidate.count - 1].commit, gitAt, beforeTransport })) continue;
+      if (!await importCommit({ root, repository, candidate, commit: candidate.state.merges[candidate.count - 1].commit,
+        receiverInputs: [baseCommit, ...tasks.map(task => task.resultCommit)], gitAt, beforeTransport })) continue;
       let before = baseCommit;
       const merges = [];
       for (let i = 0; i < candidate.count; i++) {
@@ -153,6 +194,31 @@ async function treeEntries(git, tree, recursive = false) {
       const tab = row.indexOf("\t"); return [row.slice(tab + 1), row.slice(0, tab)];
     }));
 }
+async function incompatibleIncomingSide({ candidate, step, before, task, stages, gitAt, git }) {
+  // Only a direct path mapping can prove incompatibility without importing the
+  // old merge. Rename/virtual-side cases fall through to the full stage check.
+  const bases = String(await gitAt(candidate.repository, ["merge-base", "--all", before, step.resultCommit]))
+    .split(/\r?\n/u).filter(Boolean);
+  if (bases.length !== 1) return false;
+  for (const [file, entry] of stages) {
+    if (!entry.endsWith(" 3")) continue;
+    const [mode, oid] = entry.split(" ");
+    const read = (repository, commit) => gitAt(repository,
+      ["--literal-pathspecs", "ls-tree", "-z", commit, "--", file], { rawOutput: true });
+    const expected = `${mode} blob ${oid}\t${file}\0`;
+    const current = String(await git(["--literal-pathspecs", "ls-tree", "-z", task.resultCommit, "--", file],
+      { rawOutput: true }));
+    if (current !== expected) continue;
+    const incoming = String(await read(candidate.repository, step.resultCommit));
+    if (incoming === expected) continue;
+    // An existing regular file in all three old trees cannot be a renamed-in
+    // or virtual-base side. Otherwise retain the full old merge-tree check.
+    const regular = value => /^(100644|100755) blob [a-f0-9]{40}\t[^\0]+\0$/u.test(value);
+    if (regular(incoming) && regular(String(await read(candidate.repository, bases[0])))
+        && regular(String(await read(candidate.repository, before)))) return true;
+  }
+  return false;
+}
 async function replaceConflictEntries(git, tree, replacements) {
   const entries = await treeEntries(git, tree), folders = new Map();
   for (const [file, value] of replacements) {
@@ -184,7 +250,9 @@ export async function retainedNativeConflict({ root, repository, candidates, sta
       for (const [i, step] of candidate.state.merges.entries()) {
         if (!step.resolved || step.taskId !== task.taskId || !await candidate.unchanged()) continue;
         const before = i ? candidate.state.merges[i - 1].commit : candidate.state.identity.baseCommit;
-        if (!await importCommit({ root, repository, candidate, commit: step.commit, gitAt, beforeTransport })) continue;
+        if (await incompatibleIncomingSide({ candidate, step, before, task, stages, gitAt, git })) continue;
+        if (!await importCommit({ root, repository, candidate, commit: step.commit,
+          receiverInputs: [identity.baseCommit, ...identity.tasks.map(task => task.resultCommit)], gitAt, beforeTransport })) continue;
         const old = stageRecords(await git(
           ["merge-tree", "--write-tree", "-z", before, step.resultCommit], { rawOutput: true, acceptableExitCodes: [1] }));
         if (!old || taskGitIdentityHash(old.stages) !== taskGitIdentityHash(stages)) continue;

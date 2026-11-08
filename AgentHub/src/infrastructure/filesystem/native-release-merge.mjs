@@ -500,7 +500,7 @@ export async function mergeSelectedResults({
   reuseContext = null,
   readLegacyReuseBinding = null,
   requireConflictReview = false,
-  provisionNativeObjects = null,
+  provisionNativeObjects = null, verifyNativeObjects = null,
 }) {
   const repository = path.join(root, "repository");
   const stateFile = path.join(root, "merge.json");
@@ -523,10 +523,15 @@ export async function mergeSelectedResults({
     throw failure("Native merge staging identity changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
   if (provisionNativeObjects !== null) {
-    if (identity.policy !== "native-dev-merge-v1" || identity.objectStorage?.kind !== "owned-immutable-git-objects-v1"
-        || typeof provisionNativeObjects !== "function") throw failure("Native object storage authority differs from capture");
+    const devStorage = identity.policy === "native-dev-merge-v1"
+      && identity.objectStorage?.kind === "owned-immutable-git-objects-v1";
+    const releaseStorage = identity.policy === NATIVE_RELEASE_POLICY && !identity.objectStorage;
+    if ((!devStorage && !releaseStorage) || typeof provisionNativeObjects !== "function") {
+      throw failure("Native object storage authority differs from capture");
+    }
     if (!state) {
-      state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null, provisioningObjects: true };
+      state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null, provisioningObjects: true,
+        ...(reuse ? { reuseContext: reuse } : {}) };
       await writeJson(stateFile, state); // Original intake BEFORE pool/consumer effects.
     }
     if (state.provisioningObjects) {
@@ -562,6 +567,10 @@ export async function mergeSelectedResults({
     state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null,
       ...(reuse ? { reuseContext: reuse } : {}) };
     await writeJson(stateFile, state);
+  }
+  if (state.objectStorage && typeof verifyNativeObjects === "function") {
+    await verifyNativeObjects({ repository, identityHash, storage: state.objectStorage,
+      inputs: [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])] });
   }
   const git = (args, options) => gitAt(repository, args, options);
   const beforeTransport = async binding => {

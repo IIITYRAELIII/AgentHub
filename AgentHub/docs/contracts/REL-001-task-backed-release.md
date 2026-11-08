@@ -461,6 +461,64 @@ Historical UNKNOWN operations are not retried or relabelled by this capability;
 their existing owner needs a separate supported disposition and fresh exact
 operational binding. See ADR-HUB-385-readonly-literal-transport.
 
+New verified native-prefix transport may exclude exact commit prerequisites
+whose complete history is already owned by the receiving repository. The same
+discovery includes the sealed base and selected results, even when a detached
+receiver's newly composed HEAD is absent from the retained donor. Donor object
+availability and complete receiver prerequisite closure remain required.
+A conflict-only hint may be rejected before transport when its regular incoming
+file provably differs from the current direct stage-3 side under a single old
+merge base. Ambiguous path/base mappings retain the complete old-stage check;
+usable hints still require the fresh current verifier and automatic outside.
+Receiver/source custody and connected prerequisite graph are checked before
+creation and after streaming; ordinary Git bundle verification precedes import.
+The existing journal intent, fresh native merge verification and selected-content
+authority still apply. Legacy full bundles remain unchanged; partial output is
+preserved and never overwritten. No alternate borrowing or history waiver is
+introduced. See ADR-HUB-411-input-scoped-native-production.
+
+New Await inputs use the same owned immutable object provisioner through the
+ReleaseGit caller. Physical consumer identity includes the destination repository;
+semantic plan, native history, current verifier and selected-content authority do
+not change. The existing TaskGit process-tree journal fences both repository work
+and the shared pool writer, including invocation-only validation math. Temporary
+math may borrow only while that pool lease is held; persistent native captures,
+frozen generations and installed release repositories have no alternates.
+On Windows a newly initialized consumer persists the existing long-path Git
+policy before object use. A local fetch's upload-pack child does not inherit
+the client's command-scoped policy; both must read the same complete input
+without shortening the owned path or changing global Git configuration.
+New generations do not manufacture a source bundle when exact inputs are already
+owned. Retained legacy bundles/partials keep their original identity and refusals.
+Generation retirement preserves complete Git graph/raw local work through the
+same object archive before sealed alias removal; nonrepository originals retain
+owned physical aliases rather than another full history copy. Unknown process
+lifetime or changed custody preserves the original and refuses deletion.
+
+For registry-only npm inputs without project install hooks/local links or project
+`.npmrc`, the Task
+dependency owner keys one installed payload by exact manifest/lock/expected package
+identities plus runtime/platform/architecture/ABI. Publication follows the existing
+owned npm runner and full installed-state validation. Compatible Tasks own separate
+plain directories, stamps and mutable root caches; immutable package/bin payload
+is hardlinked from the verified input. Partial install/attach and changed input
+custody refuse without another npm attempt. Project configuration presence is
+rechecked at shared publication/attachment boundaries; config contents and secrets
+are never copied or logged. Existing ordinary local trees are
+preserved; source-specific lifecycle/link inputs keep their local installation.
+On input changes, prior shared aliases and unique local cache/work move atomically
+into the same Task's ignored retained-dependency area for its existing cleanup;
+no package payload copy or shared-input overwrite occurs.
+
+
+New consumers of the existing owned immutable object store link only loose
+objects in their exact imported input closure and immutable pack families that
+intersect it. A necessary pack can contain additional objects; it is not rewritten
+or repacked. Disjoint archived packs/raw blobs do not propagate to new consumers.
+The same maintenance owner, input/closure binding, physical hardlink checks,
+connectivity verification and durable success receipt remain mandatory. Old
+consumers, pool objects, archives and original partial operations are unchanged.
+
 Legacy native merge transport contains exact selected base/result ancestry through
 private advertised bundle tips, including dangling accepted inputs, without
 copying all unrelated source refs or mutating source configuration/refs. Git
