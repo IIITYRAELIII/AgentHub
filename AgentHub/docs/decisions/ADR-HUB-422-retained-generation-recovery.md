@@ -58,3 +58,10 @@ consumer without changing either old receipt. Partial own restoration can resume
 only through the same identity and byte checks. Foreign destinations and altered
 archive metadata refuse. The source is then checked by the existing frozen reader
 before the complete test inventory is read and the recovery CAS can commit.
+
+An existing repository directory does not prove that restoration completed.
+The generation owner reads the same archive-bound maintenance original and
+re-enters a positively pending restoration even after its durable restore-paths
+checkpoint. That continuation repeats original archive/consumer and physical
+destination checks under the same leases. A complete ordinary clone receives no
+restoration writes, and foreign or changed destinations keep their refusal.

@@ -253,6 +253,55 @@ test("archived retained recovery refuses changed archive bindings, metadata and 
   assert.equal(await readFile(path.join(f.candidate.generationRoot, "foreign.txt"), "utf8"), "foreign work\n");
 });
 
+test("public continue resumes its owned partial restoration after the durable restore-paths checkpoint", async t => {
+  const f = await fixture(t);
+  const before = f.store.snapshot(f.request.operationId);
+  const index = await readFile(path.join(f.candidate.releaseRoot, ".git/index"));
+  const marker = await readFile(path.join(f.candidate.releaseRoot, ".git/agent-hub-release-clone.json"));
+  const refs = await git(f.candidate.releaseRoot, "for-each-ref", "--format=%(refname) %(objectname)");
+  await f.releaseGit.discardGenerationCandidate({ ...f.candidate, operationId: f.request.operationId, generation: 7 });
+  const originalRestore = OwnedNativeObjectStore.prototype.restoreArchive;
+  let injected = false, savedCheckpoint, restoreCalls = 0;
+  OwnedNativeObjectStore.prototype.restoreArchive = async function(input) {
+    restoreCalls++;
+    const originalCheckpoint = this.afterCheckpoint;
+    this.afterCheckpoint = async (phase, row) => {
+      await originalCheckpoint(phase, row);
+      if (phase === "restore-paths" && !injected) {
+        injected = true;
+        savedCheckpoint = structuredClone(row);
+        throw new Error("interruption after the durable owned restore-paths checkpoint");
+      }
+    };
+    try { return await originalRestore.call(this, input); }
+    finally { this.afterCheckpoint = originalCheckpoint; }
+  };
+  try {
+    await assert.rejects(() => f.command.continue(f.request), /interruption after the durable owned restore-paths checkpoint/u);
+    assert.equal(injected, true);
+    assert.deepEqual(f.store.snapshot(f.request.operationId), before);
+    assert.equal(savedCheckpoint.phase, "restore-paths");
+    const ack = await f.command.continue(f.request);
+    assert.equal(ack.accepted, true);
+    await f.service.drain(f.request.operationId);
+    assert.equal(restoreCalls, 2, "the second continuation enters the same restoration owner");
+    assert.equal(f.store.get(f.request.operationId).state, "done");
+    const objects = new OwnedNativeObjectStore({ dataDir: f.releaseGit.dataDir, gitAt: () => assert.fail("readonly custody observation") });
+    const completed = objects.store.getReadonly(savedCheckpoint.operationId);
+    assert.equal(completed.status, "succeeded");
+    assert.deepEqual(completed.metadata.objectStorage, savedCheckpoint.metadata.objectStorage);
+    assert.deepEqual(completed.metadata.physicalRepository, savedCheckpoint.metadata.physicalRepository);
+    assert.deepEqual(completed.metadata.physicalGit, savedCheckpoint.metadata.physicalGit);
+    assert.deepEqual(await readFile(path.join(f.candidate.releaseRoot, ".git/index")), index);
+    assert.deepEqual(await readFile(path.join(f.candidate.releaseRoot, ".git/agent-hub-release-clone.json")), marker);
+    assert.equal(await git(f.candidate.releaseRoot, "for-each-ref", "--format=%(refname) %(objectname)"), refs);
+    assert.deepEqual(f.store.snapshot(f.request.operationId).generations, before.generations);
+    for (const receipt of before.receipts) assert.deepEqual(f.store.snapshot(f.request.operationId).receipts.find(item =>
+      item.generation === receipt.generation && item.stepId === receipt.stepId && item.attempt === receipt.attempt), receipt);
+    assert.deepEqual(f.counts(), { publications: 1, compositions: 1 });
+  } finally { OwnedNativeObjectStore.prototype.restoreArchive = originalRestore; }
+});
+
 test("public continue reuses the original real Git frozen allocation after a terminal later compose failure", async t => {
   const f = await fixture(t);
   const before = f.store.snapshot(f.request.operationId);

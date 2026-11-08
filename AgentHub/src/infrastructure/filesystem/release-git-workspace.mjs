@@ -3554,7 +3554,10 @@ export class ReleaseGitWorkspaceService {
       generationLease => this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot, repositoryRoot: generationRoot },
         ({ lease, objects }) => withPreparationGitIsolation(this.dataDir, async () => {
         const releaseEntry = await lstat(candidate.releaseRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
-        if (!releaseEntry) await this.#restoreRetainedGeneration({ operationId, generation, sourceRoot, ownerHash, generationRoot, candidate, objects });
+        const archived = releaseEntry && await readJson(path.join(this.dataDir, "release-generation-evidence", ownerHash.slice(0, 24),
+          sha256(candidate.releaseRoot).slice(0, 24) + ".objects.json"));
+        const pendingRestore = archived && await objects.hasPendingRestoration({ archive: archived.archive, repository: candidate.releaseRoot });
+        if (!releaseEntry || pendingRestore) await this.#restoreRetainedGeneration({ operationId, generation, sourceRoot, ownerHash, generationRoot, candidate, objects });
         const ownerBytes = await readFile(path.join(generationRoot, "identity.json"));
         const owner = JSON.parse(ownerBytes);
         if (owner.operationId !== operationId || owner.generation !== generation || owner.identitySha256 !== ownerHash

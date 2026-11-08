@@ -513,34 +513,52 @@ export class OwnedNativeObjectStore {
     return "native-object-restore:" + digest(JSON.stringify({ repository: path.resolve(repository), consumerOperationId }));
   }
 
+  async #restorationBinding(stored, repository) {
+    const { archive } = stored;
+    const { manifest } = stored;
+    repository = path.resolve(repository);
+    if (manifest.binding.kind !== "release-generation-repository-v1"
+        || manifest.binding.repository !== repository || manifest.inventory.repository !== repository) {
+      throw fail("Restoration requires the original release generation repository");
+    }
+    const marker = manifest.files.find(file => file.path === ".git/agent-hub-release-clone.json");
+    if (!marker) throw fail("Archived release clone custody missing");
+    const markerBytes = Buffer.from(await this.#git(this.repository, ["cat-file", "blob", marker.blob], { rawOutput: true }));
+    if (digest(markerBytes) !== marker.identity.sha256) throw fail("Archived release clone marker changed");
+    const consumer = JSON.parse(markerBytes).objectStorage;
+    const consumerOperationId = consumer?.storage.operationId ?? archive.operationId;
+    if (consumer) {
+      const original = this.store.getReadonly(consumerOperationId);
+      const gitDirectory = manifest.inventory.directories.find(item => item.path === ".git");
+      if (original?.status !== "succeeded" || original.metadata.objectStorage.repository !== repository
+          || original.metadata.objectStorage.identityHash !== consumer.identityHash
+          || !equal(original.metadata.objectStorage.inputs, consumer.inputs)
+          || original.metadata.objectStorage.importOperationId !== consumer.storage.importOperationId
+          || !equal(original.metadata.physicalRepository, manifest.inventory.root)
+          || !equal(original.metadata.physicalGit, gitDirectory?.identity)) throw fail("Archived original consumer changed");
+    }
+    return { ...this.descriptor(), archive, repository, consumerOperationId };
+  }
+
+  async hasPendingRestoration({ archive, repository }) {
+    // Routing observation only. The actual continuation repeats this complete
+    // archive/binding proof under its original archive lease before any writes.
+    const stored = await this.readArchive(archive);
+    const binding = await this.#restorationBinding(stored, repository);
+    const row = this.store.getReadonly(this.#restoreId(binding.repository, binding.consumerOperationId));
+    return Boolean(row && ["running", "reconciling"].includes(row.status)
+      && equal(row.metadata.objectStorage, binding));
+  }
+
   // Rebuild only the original generation repository from its positively sealed
   // archive. Raw Git metadata is private; immutable history uses the same pool
   // linker as provision. Original archive/consumer receipts remain unchanged.
   restoreArchive({ archive, repository, assertCurrent, prepare }) {
     return measureTaskOperation("native-archive:restore", () => this.withArchiveLease(archive, async stored => {
       const { manifest } = stored;
-      repository = path.resolve(repository);
-      if (manifest.binding.kind !== "release-generation-repository-v1"
-          || manifest.binding.repository !== repository || manifest.inventory.repository !== repository) {
-        throw fail("Restoration requires the original release generation repository");
-      }
-      const marker = manifest.files.find(file => file.path === ".git/agent-hub-release-clone.json");
-      if (!marker) throw fail("Archived release clone custody missing");
-      const markerBytes = Buffer.from(await this.#git(this.repository, ["cat-file", "blob", marker.blob], { rawOutput: true }));
-      if (digest(markerBytes) !== marker.identity.sha256) throw fail("Archived release clone marker changed");
-      const consumer = JSON.parse(markerBytes).objectStorage;
-      const consumerOperationId = consumer?.storage.operationId ?? archive.operationId;
-      if (consumer) {
-        const original = this.store.getReadonly(consumerOperationId);
-        const gitDirectory = manifest.inventory.directories.find(item => item.path === ".git");
-        if (original?.status !== "succeeded" || original.metadata.objectStorage.repository !== repository
-            || original.metadata.objectStorage.identityHash !== consumer.identityHash
-            || !equal(original.metadata.objectStorage.inputs, consumer.inputs)
-            || original.metadata.objectStorage.importOperationId !== consumer.storage.importOperationId
-            || !equal(original.metadata.physicalRepository, manifest.inventory.root)
-            || !equal(original.metadata.physicalGit, gitDirectory?.identity)) throw fail("Archived original consumer changed");
-      }
-      const binding = { ...this.descriptor(), archive, repository, consumerOperationId };
+      const binding = await this.#restorationBinding(stored, repository);
+      const { consumerOperationId } = binding;
+      repository = binding.repository;
       const id = this.#restoreId(repository, consumerOperationId);
       let row = this.store.getReadonly(id);
       if (!row && !await absent(repository)) throw fail("Original restoration destination is occupied");
