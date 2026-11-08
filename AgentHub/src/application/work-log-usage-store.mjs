@@ -916,25 +916,29 @@ export class WorkLogUsageStore {
   }
 
   #workspaceResolver() {
-    return this.#workspaceCatalogStore
-      ? (reference) => {
-        const resolved = this.#workspaceCatalogStore.resolveThread(reference);
-        if (resolved) return resolved;
-        const key = `${String(reference?.provider ?? "").toLowerCase()}\0${String(reference?.threadId ?? "")}`;
-        if (!this.#workspaceAssignments.has(key)) {
-          const pending = this.#workspaceCatalogStore.assignUnknownThread(
-            reference,
-            { source: "discovered" },
-          );
-          if (!pending || typeof pending.then !== "function") return pending ?? null;
-          const assignment = Promise.resolve(pending).catch((error) => {
-            this.#logger?.warn?.(`Cannot assign journal Thread to Workspace: ${error.message}`);
-          }).finally(() => this.#workspaceAssignments.delete(key));
-          this.#workspaceAssignments.set(key, assignment);
-        }
-        return null;
+    if (!this.#workspaceCatalogStore) return null;
+    const resolve = (reference, resolved) => {
+      if (resolved) return resolved;
+      const key = `${String(reference?.provider ?? "").toLowerCase()}\0${String(reference?.threadId ?? "")}`;
+      if (!this.#workspaceAssignments.has(key)) {
+        const pending = this.#workspaceCatalogStore.assignUnknownThread(
+          reference,
+          { source: "discovered" },
+        );
+        if (!pending || typeof pending.then !== "function") return pending ?? null;
+        const assignment = Promise.resolve(pending).catch((error) => {
+          this.#logger?.warn?.(`Cannot assign journal Thread to Workspace: ${error.message}`);
+        }).finally(() => this.#workspaceAssignments.delete(key));
+        this.#workspaceAssignments.set(key, assignment);
       }
-      : null;
+      return null;
+    };
+    const resolver = reference => resolve(reference, this.#workspaceCatalogStore.resolveThread(reference));
+    if (typeof this.#workspaceCatalogStore.resolveThreads === "function") {
+      resolver.batch = references => this.#workspaceCatalogStore.resolveThreads(references)
+        .map((resolved, index) => resolve(references[index], resolved));
+    }
+    return resolver;
   }
 
   async #resolvedAccountFields(provider, supplied = {}) {
@@ -967,11 +971,13 @@ export class WorkLogUsageStore {
     projectRoot = this.#defaultProjectRoot,
     projectionProjectRoots,
     imageBackfillVersion = null,
+    traceCommandId = "",
   } = {}) {
     if (typeof this.#usageSyncStore?.projectJournal === "function" && !this.#beforeProjectionWrite) {
       return this.#coalescedWorkerProjection({
         includeClaudeUsage,
         imageBackfillVersion,
+        traceCommandId,
         projectRoots: Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
           ? projectionProjectRoots : [projectRoot],
       });
@@ -994,7 +1000,7 @@ export class WorkLogUsageStore {
     if (!lane.trailing) {
       let settle;
       const promise = new Promise((resolve, reject) => { settle = { resolve, reject }; });
-      lane.trailing = { promise, settle };
+      lane.trailing = { promise, settle, scope };
     }
     return lane.trailing.promise;
   }
@@ -1009,13 +1015,13 @@ export class WorkLogUsageStore {
         this.#journalProjections.delete(key);
         return;
       }
-      this.#startWorkerProjection(key, scope).then(trailing.settle.resolve, trailing.settle.reject);
+      this.#startWorkerProjection(key, trailing.scope).then(trailing.settle.resolve, trailing.settle.reject);
     };
     run.then(advance, advance);
     return run;
   }
 
-  #workerProjection({ includeClaudeUsage, projectRoots, imageBackfillVersion }) {
+  #workerProjection({ includeClaudeUsage, projectRoots, imageBackfillVersion, traceCommandId }) {
     return this.#repository.enqueue(() => undefined, { load: false, pointRead: true }).then(async () => {
       let projection;
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1026,7 +1032,7 @@ export class WorkLogUsageStore {
           imageBackfillVersion,
           localDeviceId: this.#usageSyncDeviceId,
           localDeviceLabel: this.#usageSyncDeviceLabel,
-        }, { workspaceResolver: this.#workspaceResolver() });
+        }, { workspaceResolver: this.#workspaceResolver(), traceCommandId });
         if (!projection.conflict && !projection.projectionDeferred) return projection;
       }
       const error = new Error("Journal projection could not commit after a journal revision conflict");

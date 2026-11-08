@@ -151,21 +151,45 @@ async function projectJournal(payload, id) {
   const bindings = new Map();
   const bindingKey = reference => `${reference.provider}\0${reference.threadId}`;
   const workspaceStartedAt = performance.now();
+  phases.workspaceReferenceCount = 0;
+  phases.workspaceBatchCount = 0;
   if (payload.resolveWorkspaces) {
     const references = [...new Map(Object.values(accounting).map(record => {
       const reference = { provider: record.provider, threadId: taskThreadId(record), projectRoot: record.projectRoot };
       return [bindingKey(reference), reference];
     })).values()];
-    for (let offset = 0; offset < references.length; offset += 128) {
-      const batch = references.slice(offset, offset + 128);
-      const resolved = await new Promise((resolve, reject) => {
-        workspaceRequests.set(id, { resolve, reject });
-        parentPort.postMessage({ id, type: "journal-workspaces", references: batch });
-      });
-      batch.forEach((reference, index) => bindings.set(bindingKey(reference), resolved[index] ?? null));
+    phases.workspaceReferenceCount = references.length;
+    try {
+      for (let offset = 0; offset < references.length; offset += 128) {
+        const batch = references.slice(offset, offset + 128);
+        phases.workspaceBatchCount += 1;
+        const resolved = await new Promise((resolve, reject) => {
+          workspaceRequests.set(id, { resolve, reject });
+          parentPort.postMessage({ id, type: "journal-workspaces", references: batch });
+        });
+        batch.forEach((reference, index) => bindings.set(bindingKey(reference), resolved[index] ?? null));
+      }
+    } catch (error) {
+      error.measurements = { ...phases, workspaceResolveMs: performance.now() - workspaceStartedAt,
+        durationMs: performance.now() - startedAt, workerThreadId: threadId };
+      throw error;
     }
   }
   phases.workspaceResolveMs = performance.now() - workspaceStartedAt;
+  // Workspace callbacks yield to other journal writers. A changed revision is
+  // already known to fail the final CAS: avoid reading all usage facts and
+  // rendering a journal which cannot be committed. The caller retains its
+  // existing bounded retry; the consuming transaction still checks again.
+  if (await measure("revisionCheckMs", () => journal.currentRevision()) !== expectedRevision) {
+    journalReuse = null;
+    return { projected: false, conflict: true, projectionDeferred: true, projectionReused: false,
+      reason: "stale-journal-revision", renderSkipped: true,
+      revision: input.revision, expectedRevision, recordCount: 0,
+      accountingRecordsRead: input.accountingRecordsRead, factsSourceRead: false,
+      accountingPointReads: input.accountingPointReads, accountingBulkRead: input.accountingBulkRead,
+      factsReadMs: 0, renderMs: 0, ...phases,
+      durationMs: performance.now() - startedAt, workerThreadId: threadId };
+  }
   // Callbacks may let another SQLite owner change markers without changing the
   // journal revision. Initial observations cannot authorize the consuming path.
   accountingVersionCurrent = await journal.pricingProjectionVersion()
@@ -221,6 +245,7 @@ async function projectJournal(payload, id) {
       projected: false, reason: "unchanged", projectionReused: true,
       version: current.version, revision: expectedRevision,
       recordCount: 0, accountingRecordsRead: input.accountingRecordsRead,
+      accountingPointReads: input.accountingPointReads, accountingBulkRead: input.accountingBulkRead,
       projectionMode: "days", changedDayCount: 0, invalidRecordCount: 0, invalidRecordReasonCounts: {},
       eventCount: reuseCandidate.eventCount, factsSourceRead: false,
       factsCacheBytes: reuseCandidate.factsCacheBytes, factsCacheRetained: reuseCandidate.factsCacheRetained,
@@ -302,6 +327,7 @@ async function projectJournal(payload, id) {
     ...(result.conflict ? { projectionDeferred: true, reason: "stale-journal-revision" } : {}),
     recordCount: Object.keys(turns).length,
     accountingRecordsRead: input.accountingRecordsRead,
+    accountingPointReads: input.accountingPointReads, accountingBulkRead: input.accountingBulkRead,
     projectionMode: full ? "full" : "days",
     changedDayCount: input.dirtyDates.length,
     invalidRecordCount: normalized.invalidRecords.length,
@@ -322,7 +348,8 @@ function serializedError(error, measurements = null) {
     code: error?.code,
     errcode: error?.errcode,
     stack: error?.stack,
-    ...(measurements ? { measurements } : {}),
+    ...((measurements || error?.measurements)
+      ? { measurements: { ...error?.measurements, ...measurements } } : {}),
   };
 }
 

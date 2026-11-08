@@ -182,6 +182,8 @@
       "title": "Restart and maintenance recovery",
       "document": "RST-001-restart-recovery.md",
       "paths": [
+        "docs/decisions/ADR-HUB-409-startup-journal-work.md",
+        "tests/runtime/startup-journal-cost.test.mjs",
         "src/interfaces/desktop/desktop-control-router.mjs",
         "tests/public/desktop-package-restart.test.mjs",
         "docs/decisions/ADR-HUB-396-desktop-package-input.md",
@@ -284,6 +286,8 @@
       "title": "Local command latency",
       "document": "PERF-001-local-latency.md",
       "paths": [
+        "docs/decisions/ADR-HUB-409-startup-journal-work.md",
+        "tests/runtime/startup-journal-cost.test.mjs",
         "docs/decisions/ADR-HUB-297-startup-inspection-phases.md",
         "claude-session-processes.ps1",
         "assets/web-app/connection-quality.js",
