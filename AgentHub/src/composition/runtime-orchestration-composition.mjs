@@ -384,6 +384,7 @@ export function createRuntimeOrchestrationComposition({
       backgroundJobStore,
       failedUpdateStore,
       stopCodexAppServerTree,
+      providerLogin,
       miniAppLifecycle,
       desktopAttachments,
       desktopControlServer,

@@ -12,6 +12,8 @@ import { TaskDiffStore } from "../../src/infrastructure/persistence/task-diff-st
 import { createCommandTraceComposition } from "../../src/composition/command-trace-composition.mjs";
 import { createRuntimeRestartWiring } from "../../src/composition/runtime-restart-wiring-composition.mjs";
 import { CommandTraceWorkerStore } from "../../src/infrastructure/persistence/command-trace-worker-store.mjs";
+import { ProviderLoginService } from "../../src/application/provider-login-service.mjs";
+import { EventEmitter } from "node:events";
 
 test("restart composition records the original through its trace service and closes the composition worker", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub398-restart-trace-"));
@@ -62,6 +64,49 @@ test("restart composition records the original through its trace service and clo
     await trace.close(); await reopened?.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("hub410 actual restart resources join own sign-in cleanup before closing provider transport", async () => {
+  let releaseCancel, cancelStarted;
+  const pendingCancel = new Promise(resolve => { releaseCancel = resolve; });
+  const cancelEntered = new Promise(resolve => { cancelStarted = resolve; });
+  const events = [], worker = new EventEmitter(); worker.pid = 4242;
+  worker.stdout = new EventEmitter(); worker.stderr = new EventEmitter(); worker.kill = () => events.push("own-login-kill");
+  const providerLogin = new ProviderLoginService({
+    sendRpc: async (method, params) => {
+      if (method === "account/login/start") return { loginId: "synthetic-login", authUrl: "https://auth.example/test" };
+      if (method === "account/login/cancel") { events.push(`cancel:${params.loginId}`); cancelStarted(); await pendingCancel; }
+      return {};
+    },
+    resolveClaudeInvocation: () => ({ command: "unused-cli" }), spawnProcess: () => worker,
+    stopProcessTree: async pid => { events.push(`stop:${pid}`); return true; },
+    readClaudeLoggedIn: async () => true, claudeUrlWaitMs: 0,
+    timers: { setTimeout: () => null, clearTimeout() {} }, logger: { error() {} },
+  });
+  const noop = async () => {}, store = { close: noop };
+  const { runtimeResources } = createRuntimeRestartComposition({
+    getRestartRequest: () => null, updateOffset: () => 0, hasBlockingWork: () => false,
+    setWaiting: noop, updateRestartMessage: noop, saveState: noop, beginStopping: () => true, stopRuntimeTimers: () => {},
+    providerLogin, stopCodexAppServerTree: async () => events.push("codex-transport-closed"),
+    miniAppLifecycle: { closeSharedDashboardBot: noop, closePublisher: noop, closeDirectGateway: noop, closeQuickTunnel: noop, closePublicServer: noop, closeLocalServer: noop },
+    desktopControlServer: () => store, desktopAttachments: store, runtimeCommandServer: store, hubMcpServer: store,
+    workLogUsageStore: store, rateLimitHistoryStore: store, providerTurnTelemetryStore: store, fileTransferService: store,
+    taskSyncStore: store, messagePins: store, workspaceCatalogStore: store, taskReadStateStore: store, commandTrace: store, runtimeStateStore: store,
+  });
+  try {
+    await providerLogin.start("codex"); await providerLogin.start("claude");
+    const closing = runtimeResources.close({ reason: "restart" });
+    await cancelEntered;
+    assert.equal(events.includes("codex-transport-closed"), false, "transport cannot close before its sign-in cancellation joins");
+    releaseCancel(); assert.equal((await closing).ok, true);
+    assert.deepEqual(providerLogin.snapshot().map(entry => entry.status), ["cancelled", "cancelled"]);
+    assert.ok(events.includes("stop:4242")); assert.equal(events.includes("stop:777"), false);
+    assert.ok(events.indexOf("cancel:synthetic-login") < events.indexOf("codex-transport-closed"));
+    providerLogin.resume(); assert.equal((await providerLogin.start("codex")).status, "pending");
+    await providerLogin.close();
+    assert.equal((await runtimeResources.finalize()).ok, true);
+    providerLogin.resume(); await assert.rejects(providerLogin.start("codex"), /останавливается/u);
+  } finally { releaseCancel(); providerLogin.dispose(); }
 });
 
 test("the existing restart drain persists the latest remembered diff before replacement", async () => {

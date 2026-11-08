@@ -66,6 +66,8 @@ export class ProviderLoginService {
   #queues = new Map();
   #attempt = 0;
   #disposed = false;
+  #paused = false;
+  #admissionEpoch = 0;
   #accounts = new Map();
   #accountReads = new Map();
   #accountEpochs = new Map();
@@ -119,10 +121,12 @@ export class ProviderLoginService {
    */
   start(providerName) {
     const provider = normalizedProvider(providerName);
+    const epoch = this.#admissionEpoch;
+    const paused = this.#paused;
     return this.#serialize(provider, async () => {
-      this.#assertNotDisposed();
+      this.#assertNotDisposed(epoch, paused);
       await this.#cancelPending(provider, "superseded");
-      this.#assertNotDisposed();
+      this.#assertNotDisposed(epoch, paused);
       const attempt = ++this.#attempt;
       const state = { provider, status: "pending", attempt, startedAt: new Date(this.#d.clock()).toISOString() };
       this.#states.set(provider, state);
@@ -155,8 +159,10 @@ export class ProviderLoginService {
   /** Forwards the manual `code#state` to the stdin of the exact running Claude sign-in. */
   submitCode(providerName, code, attemptId) {
     const provider = normalizedProvider(providerName);
+    const epoch = this.#admissionEpoch;
+    const paused = this.#paused;
     return this.#serialize(provider, async () => {
-      this.#assertNotDisposed();
+      this.#assertNotDisposed(epoch, paused);
       if (provider !== "claude") throw new Error("Код входа вводится только для Claude");
       const state = this.#states.get(provider);
       const worker = state.worker;
@@ -204,6 +210,26 @@ export class ProviderLoginService {
     }
   }
 
+  /** Reversible cutover admission fence; pending provider attempts stay owned. */
+  pause() {
+    if (!this.#paused) this.#admissionEpoch += 1;
+    this.#paused = true;
+  }
+
+  resume() {
+    if (this.#disposed || !this.#paused) return;
+    this.#paused = false;
+    for (const provider of PROVIDER_LOGIN_PROVIDERS) this.#refreshAccount(provider, true);
+  }
+
+  /** Drain and cancel own attempts before their provider transport is closed. */
+  async close() {
+    this.pause();
+    await Promise.all(PROVIDER_LOGIN_PROVIDERS.map(provider => (
+      this.#serialize(provider, () => this.#cancelPending(provider, "cancelled"))
+    )));
+  }
+
   /**
    * Synchronous Hub shutdown hook: closes only this service's own sign-in. The
    * Claude sign-in CLI is killed with its process tree so it cannot outlive Hub;
@@ -236,8 +262,10 @@ export class ProviderLoginService {
     }
   }
 
-  #assertNotDisposed() {
-    if (this.#disposed) throw new Error("Agent Hub останавливается: вход недоступен");
+  #assertNotDisposed(epoch = this.#admissionEpoch, paused = false) {
+    if (this.#disposed || this.#paused || paused || epoch !== this.#admissionEpoch) {
+      throw new Error("Agent Hub останавливается: вход недоступен");
+    }
   }
 
   async #cancelStartedAfterDispose(state) {
@@ -282,7 +310,7 @@ export class ProviderLoginService {
   }
 
   #refreshAccount(provider, invalidate = false) {
-    if (!this.#d.readAccount || this.#disposed) return;
+    if (!this.#d.readAccount || this.#disposed || this.#paused) return;
     if (invalidate) {
       this.#accountEpochs.set(provider, (this.#accountEpochs.get(provider) ?? 0) + 1);
       this.#accounts.delete(provider);

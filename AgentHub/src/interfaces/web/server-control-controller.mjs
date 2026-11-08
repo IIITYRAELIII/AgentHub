@@ -4,6 +4,7 @@ import {
   readAgentHubAutostart,
   readRootAgents,
   rootAgentsFile,
+  publicProviderAccounts,
   serverPageSnapshot,
   setAgentHubAutostart,
   updateRootAgents,
@@ -89,7 +90,7 @@ export class ServerControlController {
         ? "Claude Code открывает браузер: если вход не завершится сам, вставьте код со страницы входа"
         : "Завершите вход в открывшемся браузере",
       login,
-      snapshot: await this.desktopSnapshot(),
+      accounts: publicProviderAccounts(this.providerLogin.snapshot()),
     };
   }
 
@@ -100,7 +101,7 @@ export class ServerControlController {
       accepted: true,
       message: "Код передан Claude Code: дождитесь завершения входа",
       login,
-      snapshot: await this.desktopSnapshot(),
+      accounts: publicProviderAccounts(this.providerLogin.snapshot()),
     };
   }
 
@@ -110,7 +111,7 @@ export class ServerControlController {
       accepted: true,
       message: "Вход отменён",
       login,
-      snapshot: await this.desktopSnapshot(),
+      accounts: publicProviderAccounts(this.providerLogin.snapshot()),
     };
   }
 
