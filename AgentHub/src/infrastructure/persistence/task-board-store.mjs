@@ -1690,21 +1690,25 @@ export class TaskBoardStore {
 
   updateChecklist({
     id, operation, itemId = null, text = null, completed = null,
-    beforeItemId = null, linkedTaskId = null, expectedRevision, requestId, taskPrefix = "",
+    beforeItemId = null, linkedTaskId = null, releaseReference = null, validateReleaseReference = null,
+    expectedRevision, requestId, taskPrefix = "",
   } = {}) {
     const payload = {
       taskId: String(id ?? "").trim(), operation, itemId, text, completed,
-      beforeItemId, linkedTaskId, expectedRevision, requestId: String(requestId ?? "").trim(),
+      beforeItemId, linkedTaskId, releaseReference, expectedRevision, requestId: String(requestId ?? "").trim(),
     };
-    const outcome = this.#withChecklistWrite((database) => mutateTaskChecklist(database, payload, {
-      now: this.now,
-      idFactory: this.idFactory,
-      createExtractedTask: (target, extracted) => createExtractedChecklistTask(target, {
-        ...extracted,
-        taskPrefix,
+    const outcome = this.#withChecklistWrite((database) => {
+      validateReleaseReference?.();
+      return mutateTaskChecklist(database, payload, {
+        now: this.now,
         idFactory: this.idFactory,
-      }),
-    }));
+        createExtractedTask: (target, extracted) => createExtractedChecklistTask(target, {
+          ...extracted,
+          taskPrefix,
+          idFactory: this.idFactory,
+        }),
+      });
+    });
     return this.checklistRequestResult(payload, outcome);
   }
 
@@ -1742,6 +1746,7 @@ export class TaskBoardStore {
         completed: payload.completed,
         beforeItemId: payload.beforeItemId,
         linkedTaskId: payload.linkedTaskId,
+        releaseReference: payload.releaseReference,
         expectedRevision: payload.expectedRevision,
         requestId: payload.requestId,
       });

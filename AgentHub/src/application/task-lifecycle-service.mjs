@@ -1938,11 +1938,16 @@ export class TaskLifecycleService {
       if (!taskIds.length || new Set(taskIds).size !== taskIds.length) {
         throw new Error("Published release service checklist must select distinct Tasks");
       }
-      const selectedTasks = taskIds.map((id) => {
+      const selectedTasks = taskIds.map((id, index) => {
         const selected = this.#task(id);
         if (selected.workspaceId !== task.workspaceId || selected.status !== "done"
             || selected.workflowStatus !== "done") {
           throw new Error("Published release service checklist contains an unfinished Task");
+        }
+        const reference = checklist[index].releaseReference;
+        if (reference && JSON.stringify(normalizedTaskGitReferences(selected.gitReferences))
+            !== JSON.stringify(normalizedTaskGitReferences(reference.gitReferences))) {
+          throw new Error("Published release service reference result changed");
         }
         return selected;
       });
@@ -1952,7 +1957,7 @@ export class TaskLifecycleService {
       const cleanup = { taskId: task.id, workspaces: [], gitReferences: [], dirty: false,
         unpublished: [], deleting: [], preserving: releaseService.preserving, releaseService };
       const preview = confirmation(task, "complete", cleanup);
-      preview.warning = "Close only the verified published release service Task; preserve its managed worktree and history.";
+      preview.warning = "Close only the verified published release service Task; preserve all existing source and history.";
       if (confirmCleanup !== true) return preview;
       if (String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
         throw new Error("Published release service confirmation is stale");

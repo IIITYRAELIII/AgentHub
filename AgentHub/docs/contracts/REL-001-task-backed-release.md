@@ -1725,11 +1725,28 @@ Manager-only `completion_mode=published_release_service`. It may close only
 after every checklist Task is Done and its exact result matches the immutable
 manifest named by repository-scoped durable publication evidence. The owner
 hashes the manifest bytes, verifies its Workspace and plan, and proves the
-published commit remains in local and tracked main. Preview binds the
+published commit remains in tracked main. Local main must contain publication,
+or, for the exact completed original only, equal that original's approved local
+pin while both approved local/origin pins are ancestors of its publication.
+This does not update primary main or adopt newer tracked history. Preview binds the
 publication generation, manifest, selected result revisions and preserve-only
 cleanup plan; confirmation rechecks them. No result is fabricated and its clean
 managed worktree is retained. Publication, Task closure and cleanup remain
 separate facts.
+
+A metadata-only service with no managed source may use the same owner without
+creating a worktree. Its canonical Done members must name exactly one repository
+and one result each. The exact indexed completed original must positively match
+that complete selection, Workspace, immutable candidate tree, raw manifest,
+authorization and applied validation/publication/finalization receipts. Every
+selected result must be an ancestor of that publication. There is no legacy
+current-publication fallback for an absent source and no latest-release choice.
+The managed source root and all Task branch/custody refs must be absent, checked
+again before return; detached, dirty, unregistered or conflicting source remains
+an explicit refusal. A present source still requires its exact clean managed
+identity and published HEAD ancestry. Preview/confirmation bind the preserve-only
+or metadata-only plan and the same canonical original; no source result, Git
+write, deletion, new ledger or historical receipt mutation is manufactured.
 
 For a completed durable ReleaseOperation, the original indexed selected set,
 immutable generation identity, authorization and applied validation/publication/
@@ -3102,6 +3119,17 @@ not derive cleanup policy or publication authority, and cancellation sends no
 confirmed mutation.
 
 ## Workspace policy and Release Manager role
+
+Release membership is an explicit checklist reference, separate from decomposition
+ownership (ADR-HUB-415). It binds the target's exact accepted row revision and
+complete canonical Git results without replacing any archived link or assigning
+another parent. Only the same-Workspace Release Manager can create or modify this
+reference. Parent CAS, target CAS, Await/Done, complete result, cycle, receipt and
+Workspace guards remain authoritative. Current publication selection comes from
+the canonical plan/manifest; a checklist reference alone grants no membership,
+source acceptance, absorption or publication authority. Published service closure
+requires the referenced exact result to remain canonical, in addition to its
+existing completed-set and immutable publication proof.
 
 `settings.releaseWorkflowEnabled=true` activates Task release tracking and the
 built-in workflow rules. Release Manager authority is only

@@ -177,7 +177,8 @@
         "assets/web-app/stream-tabs-controller.js",
         "assets/web-app/styles.css",
         "assets/web-app/composer-shortcuts.js",
-        "docs/decisions/ADR-0109-personal-composer-shortcuts.md"
+        "docs/decisions/ADR-0109-personal-composer-shortcuts.md",
+        "docs/decisions/ADR-HUB-415-release-membership-reference.md"
       ]
     },
     {
@@ -593,7 +594,11 @@
         "tests/helpers/fixture-allocation.mjs",
         "tests/infrastructure/filesystem/native-object-consumer-production.test.mjs",
         "tests/infrastructure/filesystem/native-detached-reuse-production.test.mjs",
-        "tests/infrastructure/filesystem/selected-git-bundle.test.mjs"
+        "tests/infrastructure/filesystem/selected-git-bundle.test.mjs",
+        "docs/decisions/ADR-HUB-415-release-membership-reference.md",
+        "src/domain/task-checklist.mjs",
+        "src/infrastructure/persistence/task-checklist-repository.mjs",
+        "tests/infrastructure/persistence/task-release-reference.test.mjs"
       ]
     },
     {
@@ -661,7 +666,8 @@
         "src/infrastructure/filesystem/direct-task-publication.mjs",
         "tests/application/task-direct-published-cleanup.test.mjs",
         "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
-        "src/infrastructure/filesystem/cleanup-preservation.mjs"
+        "src/infrastructure/filesystem/cleanup-preservation.mjs",
+        "docs/decisions/ADR-HUB-415-release-membership-reference.md"
       ]
     },
     {

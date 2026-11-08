@@ -163,6 +163,10 @@ export class DesktopTaskBoardController {
   }
 
   checklist(params) {
+    if (params.releaseReference != null
+        || this.taskBoard.task(params.id).checklist?.find(item => item.id === params.itemId)?.releaseReference) {
+      throw new Error("Release references require the authenticated Release Manager tool");
+    }
     return this.#mutate(() => this.taskBoard.updateChecklist(params));
   }
 

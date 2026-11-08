@@ -81,7 +81,7 @@ export function readPublishedReleaseServiceGeneration({ dataDir, workspaceId, re
           || releaseIdentitySha256(published.effect) !== releaseIdentitySha256(operation.publicationEffects.targets[targets[0].targetId])) {
         throw new Error("Published release target receipt changed");
       }
-      matches.push({ ...proof, candidate });
+      matches.push({ ...proof, candidate, approvedTarget: targets[0] });
     }
     if (matches.length > 1) throw new Error("Published release service selection is ambiguous");
     return matches[0] ?? null;

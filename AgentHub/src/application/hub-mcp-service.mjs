@@ -22,6 +22,7 @@ import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-has
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../domain/claim-forward-custody.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
+import { normalizedReleaseReference } from "../domain/task-checklist.mjs";
 import {
   normalizedTaskDescription,
   normalizedTaskText,
@@ -779,6 +780,14 @@ export class HubMcpService {
         completed: { type: "boolean" },
         before_item_id: { type: "string" },
         linked_task_id: { type: "string" },
+        release_reference: { type: "object", description: "Release Manager-only membership reference; preserves decomposition ownership.",
+          additionalProperties: false, required: ["taskRevision", "gitReferences"], properties: {
+            taskRevision: { type: "integer", minimum: 1 },
+            gitReferences: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
+              required: ["projectRoot", "branch", "resultCommit"], properties: {
+                projectRoot: { type: "string" }, branch: { type: "string" }, resultCommit: { type: "string" },
+              } } },
+          } },
       }, ["task_id", "expected_task_revision", "operation"]),
       tool("hub_task_move", "Move or reorder any Dashboard task, optionally into any existing Workspace.", {
         task_id: { type: "string" },
@@ -1899,19 +1908,31 @@ export class HubMcpService {
     completed = null,
     before_item_id: beforeItemId = null,
     linked_task_id: linkedTaskId = null,
+    release_reference: releaseReference = null,
     request_id: requestId,
   } = {}) {
     const payload = this.#taskChecklistPayload(context, {
-      taskId, expectedRevision, operation, itemId, text, completed, beforeItemId, linkedTaskId, requestId,
+      taskId, expectedRevision, operation, itemId, text, completed, beforeItemId, linkedTaskId, releaseReference, requestId,
     });
     return this.#taskChecklistResult(await this.taskBoard.updateChecklist(payload));
   }
 
   #taskChecklistPayload(context, {
-    taskId, expectedRevision, operation, itemId, text, completed, beforeItemId, linkedTaskId, requestId,
+    taskId, expectedRevision, operation, itemId, text, completed, beforeItemId, linkedTaskId, releaseReference, requestId,
   }) {
     const current = this.#task(context, taskId);
     const normalizedOperation = requiredText(operation, "checklist operation", 30);
+    const existingReference = current.checklist?.find(item => item.id === itemId)?.releaseReference;
+    const assertReferenceActor = () => {
+      if (context.workspaceId !== current.workspaceId || !this.#isReleaseManager(context)
+          || this.#workspace(context).settings?.releaseWorkflowEnabled !== true) {
+        throw new Error("Release reference requires a Release Manager in the same release-enabled Workspace");
+      }
+    };
+    if (releaseReference != null || existingReference) {
+      assertReferenceActor();
+      if (releaseReference != null && normalizedOperation !== "link") throw new Error("Release reference is only valid for link");
+    }
     if (normalizedOperation === "toggle" && typeof completed !== "boolean") {
       throw new Error("toggle checklist operation requires explicit boolean completed");
     }
@@ -1923,6 +1944,8 @@ export class HubMcpService {
       completed: typeof completed === "boolean" ? completed : null,
       beforeItemId: optionalText(beforeItemId, 300),
       linkedTaskId: optionalText(linkedTaskId, 300),
+      ...(releaseReference == null ? {} : { releaseReference: normalizedReleaseReference(releaseReference) }),
+      ...(releaseReference == null && !existingReference ? {} : { validateReleaseReference: assertReferenceActor }),
       expectedRevision,
       requestId,
     };
@@ -1947,6 +1970,7 @@ export class HubMcpService {
       completed: args.completed,
       beforeItemId: args.before_item_id ?? null,
       linkedTaskId: args.linked_task_id ?? null,
+      releaseReference: args.release_reference ?? null,
       requestId: args.request_id,
     });
     const result = this.taskBoard.checklistRequestResult(payload);
@@ -3311,6 +3335,7 @@ export class HubMcpService {
         completed: args.completed,
         beforeItemId: args.before_item_id ?? null,
         linkedTaskId: args.linked_task_id ?? null,
+        releaseReference: args.release_reference ?? null,
         requestId: args.request_id,
       });
     }
