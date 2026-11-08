@@ -3485,6 +3485,17 @@ Affected checks: `tests/interfaces/release-progress-autostart.test.mjs` and the
 
 ## Explicit test selection (ADR-HUB-351)
 
+Frozen release inventory contains `check:release-candidate` and `check:worker`;
+it does not contain the rolling dev-only `check:contour`. The existing selected
+publication dispatcher runs the candidate contour with `--release-candidate`
+against the exact clean owned main checkout. Ordinary dev preview remains a
+separate source kind with its existing dev authority. All discovered core,
+profile, installer, syntax and extension checks retain their exact IDs and
+selection semantics; the complete pending suite is still required by `all`.
+An old or foreign inventory/plan is rejected by the existing frozen-plan
+verification rather than silently filtered or rewritten. See
+ADR-HUB-426-frozen-release-inventory.
+
 An explicit typed selection is `all`, `include`, `exclude`, or `none`, with exact
 inventory IDs. Omission retains prescribed focused/full/quick behavior. Selection
 is separate from immutable initial release authorization. The same RM continue
