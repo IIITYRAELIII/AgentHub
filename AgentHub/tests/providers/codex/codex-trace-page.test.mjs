@@ -14,6 +14,57 @@ const row = (index, text = `block-${index}`) => ({ type: "response_item", payloa
 } });
 const jsonl = rows => `${rows.map(value => JSON.stringify(value)).join("\n")}\n`;
 
+test("oversized compacted history cannot hide an exact current commentary source", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub237-trace-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const compacted = { type: "compacted", payload: { replacement_history: [{
+    role: "user", content: [{ type: "input_text", text: 'escaped \\" \u0001 🦊 '.repeat(400_000) }],
+  }] } };
+  try {
+    const user = { type: "response_item", payload: { type: "message", role: "user",
+      content: [{ type: "input_text", text: "user context ".repeat(400_000) }] } };
+    const source = jsonl([meta, compacted, user,
+      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      row(1, "Current exact commentary"), compacted, user, row(2),
+    ]);
+    await writeFile(file, source);
+    const page = await readCodexTracePageInWorker(file, { turnId, groupId: "commentary:analysis-1" });
+    assert.equal(page.groups[0].reasoning, "Current exact commentary");
+    assert.equal(page.groups.length, 1);
+    assert.equal(await readFile(file, "utf8"), source);
+    const stable = { ...page, groups: undefined, groupId: "commentary:analysis-1" };
+    await appendFile(file, jsonl([row(3)]));
+    assert.deepEqual((await readCodexTracePageInWorker(file, stable)).groups, page.groups);
+    await writeFile(file, source.replace("escaped", "changed"));
+    await assert.rejects(readCodexTracePageInWorker(file, stable), /prefix changed|source changed/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("compaction projection cannot admit oversized trace data or malformed records", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub237-trace-guards-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const huge = "x".repeat(4 * 1024 * 1024 + 100);
+  try {
+    for (const record of [
+      JSON.stringify(row(1, huge)),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: turnId, text: huge } }),
+      JSON.stringify({ type: "compacted", payload: { text: huge } }).slice(0, -1),
+      `{"type":"compacted","payload":{"text":"${huge}\\q"}}`,
+      `{"type":"compacted","payload":{"text":"${huge}"},"type":"response_item"}`,
+      `{"type":"compacted","payload":{"text":"${huge}\\u0G00"}}`,
+      `{"type":"compacted","${huge}":1}`,
+    ]) {
+      await writeFile(file, jsonl([meta]) + record + "\n" + jsonl([row(2)]));
+      await assert.rejects(readCodexTracePageInWorker(file, { turnId, groupId: "commentary:analysis-2" }),
+        /read budget|invalid record/);
+    }
+    await writeFile(file, jsonl([meta, row(1), { type: "compacted", payload: { text: huge } }, row(1)]));
+    await assert.rejects(readCodexTracePageInWorker(file, { turnId, groupId: "commentary:analysis-1" }), /ambiguous/);
+    await writeFile(file, jsonl([meta]) + `{"type":"compacted","payload":{"text":"${huge}`);
+    await assert.rejects(readCodexTracePageInWorker(file, { turnId }), /incomplete record/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("worker preview stays bounded; explicit pages recover every exact block without rewriting rollout", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub239-trace-"));
   const file = path.join(directory, "rollout.jsonl");

@@ -1022,6 +1022,51 @@ test("citation navigation materializes a deferred source before range lookup", a
   }
 });
 
+test("active commentary selection reads beyond old compaction and survives DOM replacement and reload", {timeout:25000}, async()=>{
+  const directory=await mkdtemp(path.join(os.tmpdir(),'hub237-active-source-'));
+  const file=path.join(directory,'rollout.jsonl');
+  const reasoning='Да. Поручу исправить **повторное использование** и применить его в текущем операторе.';
+  const native={type:'response_item',payload:{type:'message',id:'current-commentary',role:'assistant',phase:'commentary',content:[{type:'output_text',text:reasoning}],internal_chat_message_metadata_passthrough:{turn_id:'current-turn'}}};
+  const group=codexTraceEntry(native);
+  const page=await browser.newPage({viewport:{width:1366,height:850}});
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  try {
+    await writeFile(file,[{type:'session_meta',payload:{id:'thread-1'}},{type:'compacted',payload:{replacement_history:[{text:'x'.repeat(4*1024*1024+1)}]}},{type:'event_msg',payload:{type:'task_started',turn_id:'current-turn'}},native].map(x=>JSON.stringify(x)).join('\n')+'\n');
+    await page.exposeFunction('readCurrentTrace',request=>readCodexTracePageInWorker(file,request));
+    await openWebApp(page);await seedMessages(page,[],{running:true,status:'running'});
+    await page.evaluate(group=>{
+      const live={provider:'codex',threadId:'thread-1',turnId:'current-turn',itemId:'current-commentary',text:'',activityGroups:[group]};
+      window.__sourceLive=live;
+      window.AgentHub.on('history:trace-page',async({tracePage,resolve,reject})=>{
+        window.AgentHub.setLive('task-1',{...live,activityGroups:[group,{id:'commentary:next',reasoning:'Next stage',activities:[]}]});
+        try{resolve(await window.readCurrentTrace(tracePage));}catch(e){reject(e);}
+      });
+      window.AgentHub.setLive('task-1',live);
+    },group);
+    await page.locator('[data-live-trace] .turn-trace-reasoning').first().waitFor();
+    const result=await page.evaluate(async()=>{
+      const surface=document.querySelector('[data-live-trace] .turn-trace-reasoning');
+      const text=surface.textContent;const range=window.AgentHubMessageDisclosure.domRangeFromOffsets(surface,0,text.length);
+      getSelection().removeAllRanges();getSelection().addRange(range);
+      return {accepted:await addAnnotation(selectedQuotableSelection()),text,detached:!surface.isConnected};
+    });
+    assert.equal(result.accepted,true,'the real trace reader must resolve current commentary despite older compacted history');
+    assert.equal(result.detached,true,'exercise actual live DOM replacement while the source is pending');
+    assert.equal(await page.locator('[data-annotations] .annotation-quote').textContent(),result.text);
+    const draft=await page.evaluate(()=>composerDraftSnapshot('task-1'));
+    assert.equal(draft.annotations[0].source.itemId,'current-commentary');
+    const source={...await page.evaluate(()=>window.__sourceLive),id:'source',role:'agent',text:'Completed'};
+    const user={id:'quote',role:'user',text:'Проверить',responseAnnotations:draft.annotations.map(x=>({...x,text:x.quote}))};
+    await page.reload();await page.waitForFunction(()=>window.AgentHub);await seedMessages(page,[source,user]);
+    await page.evaluate(()=>window.AgentHub.on('history:trace-page',({tracePage,resolve,reject})=>window.readCurrentTrace(tracePage).then(resolve,reject)));
+    await page.locator('[data-message-id="quote"] [data-response-annotation-source]').click();
+    const highlighted=page.locator('[data-message-id="source"] .msg-source-citation-highlight');await highlighted.first().waitFor();
+    assert.equal((await highlighted.allTextContents()).join(''),result.text);
+    assert.equal(await page.title(),'Agent Hub');assert.equal(page.url(),'http://127.0.0.1/');assert.deepEqual(errors,[]);
+    if(process.env.AGENT_HUB_QA_SCREENSHOT)await page.screenshot({path:`${process.env.AGENT_HUB_QA_SCREENSHOT}-current-compaction.png`});
+  } finally {await page.close();await rm(directory,{recursive:true,force:true});}
+});
+
 test("active commentary quote survives an exact group rerender while full source read is pending",{timeout:25000},async()=>{
   const page=await browser.newPage({viewport:{width:1366,height:850}});
   try {
@@ -1146,4 +1191,124 @@ test("active quote refuses missing foreign changed and mismatched sources with b
     assert.ok(spans.every(x=>x.outcome==='failed'));
     assert.doesNotMatch(JSON.stringify(results.events),/Private selected|Changed private|dependency details/u);
   } finally {await page.close();}
+});
+
+test("managed quote survives persistence, receipt absence, API, UI reload and history reopen", { timeout: 40_000 }, async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { createHash } = await import("node:crypto");
+  const { tmpdir } = await import("node:os");
+  const { ManagedRunHistoryService } = await import("../../src/application/managed-run-history-service.mjs");
+  const { mergeActiveTaskHistory, mergeCompletedTaskHistory } = await import("../../src/application/task-history.mjs");
+  const { LocalTaskSyncStore } = await import("../../src/infrastructure/persistence/task-sync-store.mjs");
+  const { createDesktopTaskHistoryFactory } = await import("../../src/interfaces/desktop/desktop-task-history.mjs");
+  const directory = await mkdtemp(path.join(tmpdir(), "hub-quote-history-"));
+  const filePath = path.join(directory, "tasks.json");
+  const quote = "Изменения карточки отменены";
+  const hash = (text) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
+  const source = {
+    version: 1, provider: "codex", threadId: "thread-1", turnId: "source-turn", itemId: "source-item", role: "agent",
+    messageKey: "provider\u001fcodex\u001fthread-1\u001fsource-turn\u001fsource-item\u001fagent",
+    surfaceKind: "message-body", surfaceIndex: 0, start: 0, end: quote.length,
+    contentHash: hash(JSON.stringify({ version: 1, provider: "codex", threadId: "thread-1",
+      turnId: "source-turn", itemId: "source-item", role: "agent",
+      messageKey: "provider\u001fcodex\u001fthread-1\u001fsource-turn\u001fsource-item\u001fagent",
+      text: quote, reasoning: "", activityGroups: [] })),
+    surfaceHash: hash(quote), selectionHash: hash(quote),
+  };
+  const annotations = [{ text: quote, annotation: "чё?", source }];
+  const raw = `<response-annotations>${JSON.stringify(annotations)}</response-annotations>\n## My request for Codex:\n`;
+  const run = { provider: "codex", threadId: "thread-1", projectRoot: directory, turnId: "quoted-turn",
+    clientUserMessageId: "quoted-client", promptPreview: raw, responseText: "Готово",
+    userMessages: [{ role: "user", itemId: "quoted-user", clientUserMessageId: "quoted-client", text: raw }],
+    startedAt: "2026-09-13T21:14:11.537Z" };
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await store.load();
+    await store.recordHistory(run, [{ id: source.turnId, completed: true, active: false, status: "completed",
+      answer: quote, messages: [{ role: "agent", phase: "final", itemId: source.itemId, text: quote }] }]);
+    const service = new ManagedRunHistoryService({ taskSyncStore: store, mergeActiveHistory: mergeActiveTaskHistory,
+      receiptForMessage: () => null, nowIso: () => "2026-09-13T21:14:13.000Z", nowMs: () => 123, hubExecutionOwner: "hub" });
+    assert.equal((await service.persist(run, { active: false, status: "completed" })).failed, undefined);
+    // Cold store and API owners: no intake receipt or warmed browser/API cache can supply the quote.
+    const readHistory = async () => {
+      store.close();
+      store = new LocalTaskSyncStore({ filePath });
+      await store.load();
+      const api = createDesktopTaskHistoryFactory({
+        selection: { activeProvider: () => "codex", threadId: () => run.threadId, chatId: () => 42 },
+        catalog: { entries: () => [{ ...run, title: "Chat" }] },
+        historyReader: { read: async () => ({ history: store.history(run) }) },
+        runs: { forTask: () => null }, receipts: { forMessage: () => null, forTurn: () => null },
+        historyMerger: { mergeActive: mergeActiveTaskHistory, mergeCompleted: mergeCompletedTaskHistory },
+        responseBudget: { fit: (payload) => payload },
+      });
+      const history = await api({ provider: run.provider, threadId: run.threadId, includeActive: false });
+      const user = history.items.find((turn) => turn.id === run.turnId).messages.find((message) => message.role === "user");
+      assert.equal(user.clientUserMessageId, run.clientUserMessageId);
+      assert.equal(user.text, "чё?");
+      assert.deepEqual(user.responseAnnotations, annotations);
+      assert.equal(user.responseAnnotationRequest, "");
+      return history;
+    };
+    for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
+      const page = await browser.newPage({ viewport });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("console", (message) => {
+        if (message.text().includes("404 (Not Found)")
+          && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+        if (["error", "warning"].includes(message.type())) errors.push(message.text());
+      });
+      try {
+        await openWebApp(page);
+        assert.equal(page.url(), "http://127.0.0.1/");
+        assert.match(await page.title(), /Agent Hub/iu);
+        const showHistory = async () => {
+          const history = await readHistory();
+          const messages = await page.evaluate((payload) => payload.items.flatMap((turn) => (
+            window.AgentHubMessageLifecycle.historicalMessagesForDisplay(turn).map((message) => ({ ...message,
+              id: `${payload.provider}:${payload.threadId}:${turn.id}:${message.itemId}:${message.role}`,
+              provider: payload.provider, threadId: payload.threadId, turnId: turn.id,
+            }))
+          )), history);
+          await seedMessages(page, messages);
+          if (viewport.width < 600) await page.evaluate(() => window.AgentHub.showSelectedTask());
+          const user = page.locator('[data-message-id="codex:thread-1:quoted-turn:quoted-user:user"]');
+          await user.locator(".msg-annotation-quote").waitFor({ state: "visible" });
+          assert.equal(await user.locator(".msg-annotation-quote").textContent(), quote);
+          assert.equal(await user.locator(".msg-annotation-comment").textContent(), "чё?");
+          assert.equal(await user.locator(".msg-annotation-request").count(), 0);
+          assert.equal(await user.count(), 1);
+          assert.equal(await page.locator("vite-error-overlay, nextjs-portal").count(), 0);
+        };
+        await showHistory();
+        await page.reload({ waitUntil: "load" });
+        await showHistory();
+        // Existing terminal-ledger recovery retains the raw per-message envelope.
+        // Exercise that cold durable shape too, without a new recovery mechanism.
+        const retained = store.history(run);
+        const oldUser = retained.find((turn) => turn.id === run.turnId).messages.find((message) => message.role === "user");
+        oldUser.text = raw;
+        delete oldUser.responseAnnotations;
+        delete oldUser.responseAnnotationRequest;
+        await store.recordHistory(run, retained);
+        await page.evaluate(() => window.AgentHub.setMessages("task-1", []));
+        assert.equal(await page.locator(".msg-annotation-quote").count(), 0);
+        await showHistory();
+        if (process.env.AGENT_HUB_TEST_SCREENSHOT_DIR) {
+          await mkdir(process.env.AGENT_HUB_TEST_SCREENSHOT_DIR, { recursive: true });
+          await page.screenshot({ path: path.join(process.env.AGENT_HUB_TEST_SCREENSHOT_DIR, `quote-reopen-${viewport.width}.png`) });
+        }
+        await page.locator('[data-message-id="codex:thread-1:quoted-turn:quoted-user:user"] [data-response-annotation-source]').click();
+        await page.locator(".msg-source-citation-highlight").waitFor();
+        assert.equal(await page.locator(".msg-source-citation-highlight").textContent(), quote);
+        assert.deepEqual(errors, []);
+      } finally {
+        await page.close();
+      }
+    }
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

@@ -1820,3 +1820,50 @@ test("active history replays a cumulative incremental source observation once", 
     [first.sourceOccurrenceId, appended.sourceOccurrenceId],
   );
 });
+
+test("managed history extracts each supplied user's raw quote before display projection", () => {
+  const source = {
+    version: 1, provider: "codex", threadId: "source-thread", turnId: "source-turn", itemId: "source-item",
+    role: "agent", messageKey: "provider\u001fcodex\u001fsource-thread\u001fsource-turn\u001fsource-item\u001fagent",
+    surfaceKind: "message-body", surfaceIndex: 0, start: 203, end: 230,
+    contentHash: `sha256:${"a".repeat(64)}`, surfaceHash: `sha256:${"b".repeat(64)}`,
+    selectionHash: `sha256:${"c".repeat(64)}`,
+  };
+  const annotations = [{ text: "Изменения карточки отменены", annotation: "чё?", source }];
+  const raw = `<response-annotations>${JSON.stringify(annotations)}</response-annotations>\n## My request for Codex:\n`;
+  const history = [];
+  const observed = { active: true, turnId: "quote-turn", prompt: raw, clientUserMessageId: "root-client",
+    userMessages: [
+      { role: "user", clientUserMessageId: "root-client", text: raw },
+      { role: "user", clientUserMessageId: "steer-client", text: raw, responseAnnotations: [] },
+      { role: "user", clientUserMessageId: "plain-client", text: "чё?" },
+    ] };
+  mergeActiveTaskHistory(history, observed);
+  mergeActiveTaskHistory(history, observed);
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.deepEqual(users.map((message) => message.clientUserMessageId), ["root-client", "steer-client", "plain-client"]);
+  for (const user of users.slice(0, 2)) {
+    assert.equal(user.text, "чё?");
+    assert.deepEqual(user.responseAnnotations, annotations);
+    assert.equal(user.responseAnnotationRequest, "");
+  }
+  assert.equal(users[2].responseAnnotations, undefined);
+  assert.equal(observed.userMessages[0].responseAnnotations, undefined);
+});
+
+test("managed quote projection preserves explicit metadata and never invents malformed selections", () => {
+  const explicit = [{ text: "Сохранённая цитата", annotation: "Сохранённый комментарий" }];
+  const raw = '<response-annotations>[{"text":"Другая цитата","annotation":"Другой комментарий"}]</response-annotations>\n## My request:\nДругой запрос';
+  const history = [];
+  mergeActiveTaskHistory(history, { active: true, turnId: "metadata-turn", userMessages: [
+    { role: "user", clientUserMessageId: "explicit", text: raw, responseAnnotations: explicit, responseAnnotationRequest: "" },
+    { role: "user", clientUserMessageId: "malformed", text: '<response-annotations>{broken</response-annotations>\n## My request:\nЗапрос' },
+    { role: "user", clientUserMessageId: "invalid-source", text: '<response-annotations>[{"text":"Цитата","source":{"threadId":"guessed"}}]</response-annotations>' },
+  ] });
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.deepEqual(users[0].responseAnnotations, explicit);
+  assert.equal(users[0].responseAnnotationRequest, "");
+  assert.equal(users[1].text, "Запрос");
+  assert.equal(users[1].responseAnnotations, undefined);
+  assert.deepEqual(users[2].responseAnnotations, [{ text: "Цитата", annotation: "" }]);
+});
