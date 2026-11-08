@@ -145,9 +145,9 @@ test("publication launches an oversized whole selection through bounded argv and
     run: async step => {
       if (step.args[0] === "test-suite.mjs") {
         selectedLaunches += 1;
+        const result = await exec(step.command, step.args, { cwd: step.cwd, windowsHide: true, encoding: "utf8" });
         assert.equal(step.args.length, 4);
         assert.ok(step.args.every(arg => arg.length < 1024));
-        const result = await exec(step.command, step.args, { cwd: step.cwd, windowsHide: true, encoding: "utf8" });
         assert.equal(result.stderr, "");
         assert.deepEqual(JSON.parse(result.stdout), { count: coreSelection(f.plan).ids.length, digest: digest(JSON.stringify(coreSelection(f.plan))) });
         t.diagnostic(JSON.stringify({ legacyArgumentUtf16: legacyArgument.length,
