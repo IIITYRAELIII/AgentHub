@@ -12,6 +12,7 @@ import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspac
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { ReleaseOperationPublication } from "../../src/infrastructure/process/release-operation-publication.mjs";
+import { OwnedNativeObjectStore } from "../../src/infrastructure/filesystem/owned-native-object-store.mjs";
 import { buildArtifact } from "../../src/infrastructure/process/publication-artifacts.mjs";
 import { nextRuntimeReleaseVersion } from "../../src/infrastructure/filesystem/runtime-release-version.mjs";
 import { createReleaseOperation, createCandidateGeneration, releaseIdentitySha256 } from "../../src/domain/release-operation.mjs";
@@ -200,7 +201,13 @@ test("public retained recovery restores its original retired frozen checkout fro
   const before = f.store.snapshot(f.request.operationId);
   const index = await readFile(path.join(f.candidate.releaseRoot, ".git/index"));
   const marker = await readFile(path.join(f.candidate.releaseRoot, ".git/agent-hub-release-clone.json"));
+  const consumer = JSON.parse(marker).objectStorage;
+  const objects = new OwnedNativeObjectStore({ dataDir: f.releaseGit.dataDir, gitAt: () => assert.fail("consumer custody read needs no Git mutation") });
+  const originalConsumer = objects.store.getReadonly(consumer.storage.operationId);
   await f.releaseGit.discardGenerationCandidate({ ...f.candidate, operationId: f.request.operationId, generation: 7 });
+  const archiveRoot = path.join(path.dirname(path.dirname(f.candidate.generationRoot)), "release-generation-evidence", path.basename(f.candidate.generationRoot));
+  const archived = await json(path.join(archiveRoot, sha(f.candidate.releaseRoot).slice(0, 24) + ".objects.json"));
+  const originalArchive = objects.store.getReadonly(archived.archive.operationId);
   await assert.rejects(readFile(path.join(f.candidate.generationRoot, "identity.json")), { code: "ENOENT" });
   const ack = await f.command.continue(f.request);
   assert.equal(ack.accepted, true);
@@ -210,6 +217,9 @@ test("public retained recovery restores its original retired frozen checkout fro
   assert.equal(await git(f.candidate.releaseRoot, "--no-optional-locks", "status", "--porcelain=v1"), "");
   assert.deepEqual(await readFile(path.join(f.candidate.releaseRoot, ".git/index")), index);
   assert.deepEqual(await readFile(path.join(f.candidate.releaseRoot, ".git/agent-hub-release-clone.json")), marker);
+  await objects.assertConsumer({ repository: f.candidate.releaseRoot, ...consumer });
+  assert.deepEqual(objects.store.getReadonly(consumer.storage.operationId), originalConsumer);
+  assert.deepEqual(objects.store.getReadonly(archived.archive.operationId), originalArchive);
   assert.deepEqual(f.store.snapshot(f.request.operationId).generations, before.generations);
   for (const receipt of before.receipts) assert.deepEqual(f.store.snapshot(f.request.operationId).receipts.find(item =>
     item.generation === receipt.generation && item.stepId === receipt.stepId && item.attempt === receipt.attempt), receipt);
