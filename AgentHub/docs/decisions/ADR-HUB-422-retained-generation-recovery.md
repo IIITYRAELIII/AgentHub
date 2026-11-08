@@ -23,6 +23,14 @@ runtime must remain outside current, previous, running and retirement custody.
 Every target requires a fresh positive not-applied readback. Changed, partial,
 unknown or foreign evidence refuses.
 
+The publication owner holds that installation lease through asynchronous
+prelaunch readback, tool verification, output opens and its addressed launching
+intent. It repeats the retained comparison after that preparation immediately
+before synchronous spawn. The final proof binds the newly written launch intent
+to the positively observed original failed runner. A pre-spawn refusal records
+launch_failed and closes its handles without claiming an active child. The lease
+ends before waiting for child completion so the child can acquire its own lease.
+
 The release store repeats receipt and immutable-generation checks inside its
 existing SQLite transition transaction. Recovery is an append-only original-ID
 event and record. The old failed generation/compose/publication receipts remain

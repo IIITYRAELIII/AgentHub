@@ -122,18 +122,23 @@ async function fixture(t) {
       { label: "Установка runtime-релиза", status: "pending" }] };
   await writeJson(path.join(execution, "publication-status.json"), run);
   const runnerFile = path.join(root, "controlled-publication-runner.mjs");
+  const installationModule = new URL("../../src/infrastructure/filesystem/runtime-installation-custody.mjs", import.meta.url).href;
   await writeFile(runnerFile, `import {writeFile} from 'node:fs/promises';
     import path from 'node:path';
-    await writeFile(path.join(process.env.AGENT_HUB_RELEASE_EXECUTION_ROOT,'result.json'),JSON.stringify({
-      operationId:process.env.AGENT_HUB_RELEASE_OPERATION_ID,generation:Number(process.env.AGENT_HUB_RELEASE_GENERATION),
-      targetId:process.env.AGENT_HUB_RELEASE_TARGET_ID,candidate:process.env.AGENT_HUB_RELEASE_CANDIDATE_IDENTITY,
-      status:'applied',revision:${JSON.stringify(candidate.commit)},tool:${JSON.stringify(tool)}}));`);
+    import {withRuntimeInstallationLease} from ${JSON.stringify(installationModule)};
+    await withRuntimeInstallationLease(process.env.AGENT_HUB_RUNTIME_ROOT,async()=>{
+      await writeFile(path.join(process.env.AGENT_HUB_RELEASE_EXECUTION_ROOT,'result.json'),JSON.stringify({
+        operationId:process.env.AGENT_HUB_RELEASE_OPERATION_ID,generation:Number(process.env.AGENT_HUB_RELEASE_GENERATION),
+        targetId:process.env.AGENT_HUB_RELEASE_TARGET_ID,candidate:process.env.AGENT_HUB_RELEASE_CANDIDATE_IDENTITY,
+        status:'applied',leaseVerified:true,revision:${JSON.stringify(candidate.commit)},tool:${JSON.stringify(tool)}}));
+    });`);
   let selectedResults = selected, readback = "not_applied", publications = 0, compositions = 0;
   let childJoined = Promise.resolve();
   const publication = new ReleaseOperationPublication({ dataDir, runtimeRoot,
     runnerFile, readPublicationStateImpl: async () => null, gitRemoteHeadImpl: async () => baseCommit,
     spawnImpl: (...args) => {
-      const child = spawn(...args);
+      const [command, argsList, options] = args;
+      const child = spawn(command, argsList, { ...options, timeout: 30_000 });
       childJoined = new Promise(resolve => child.once("close", resolve));
       return child;
     },
@@ -186,6 +191,8 @@ test("public continue reuses the original real Git frozen allocation after a ter
   assert.equal(ack.accepted, true, "parent refused terminal instead of recovering the original prepared generation");
   await f.service.drain(f.request.operationId);
   assert.equal(f.store.get(f.request.operationId).state, "done");
+  assert.equal((await json(path.join(f.execution, "result.json"))).leaseVerified, true,
+    "the child acquires its own real installation lease before completing");
   assert.deepEqual(f.counts(), { publications: 1, compositions: 1 });
   const after = new ReleaseOperationStore({ dataDir: path.join(f.root, "journal") }).snapshot(f.request.operationId);
   assert.deepEqual(after.generations, before.generations);
@@ -202,6 +209,41 @@ test("public continue reuses the original real Git frozen allocation after a ter
   assert.deepEqual(f.counts(), { publications: 1, compositions: 1 });
   assert.throws(() => f.command.continue({ ...f.request, expectedRevision: f.request.expectedRevision + 1 }), /request changed/u);
 });
+
+for (const mutation of ["payload", "pointer"]) {
+  test(`retained publication rejects late ${mutation} mutation before spawning its child`, async t => {
+    const f = await fixture(t);
+    const before = f.store.snapshot(f.request.operationId);
+    let changed = false;
+    let spawned = 0;
+    const originalReadback = f.publication.readback.bind(f.publication);
+    const originalSpawn = f.publication.spawnImpl;
+    f.publication.spawnImpl = (...args) => { spawned++; return originalSpawn(...args); };
+    f.publication.readback = async input => {
+      if (!changed) {
+        changed = true;
+        if (mutation === "payload") await writeFile(path.join(f.body, "package.json"), "changed during prelaunch readback\n");
+        else await writeJson(path.join(path.dirname(f.body), "..", "current.json"), { current: f.releaseId });
+      }
+      return originalReadback(input);
+    };
+    const ack = await f.command.continue(f.request);
+    assert.equal(ack.accepted, true);
+    await f.service.drain(f.request.operationId);
+    assert.equal(changed, true);
+    assert.equal(spawned, 0, "the final retained proof refuses before spawn");
+    const after = f.store.snapshot(f.request.operationId);
+    assert.notEqual(after.operation.state, "done");
+    assert.equal(after.operation.currentGeneration, 7);
+    assert.deepEqual(after.generations, before.generations);
+    for (const receipt of before.receipts) assert.deepEqual(after.receipts.find(item => item.generation === receipt.generation
+      && item.stepId === receipt.stepId && item.attempt === receipt.attempt), receipt);
+    assert.equal((await json(path.join(f.execution, "runner.json"))).status, "launch_failed");
+    assert.equal((await originalReadback({ operation: after.operation, generation: f.generation,
+      target: after.operation.authorization.approvedTargets[0] })).status, "not_applied");
+    assert.equal(after.receipts.filter(item => item.stepId === "publish:publication").at(-1).status, "failed");
+  });
+}
 
 test("retained recovery refuses changed current inputs, payload, tool, effect, receipts and CAS", async t => {
   const f = await fixture(t);

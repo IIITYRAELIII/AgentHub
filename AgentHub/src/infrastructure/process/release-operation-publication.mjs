@@ -202,80 +202,120 @@ export class ReleaseOperationPublication {
     }
     const candidate = candidateFor(generation, target);
     const recovery = operation.retainedGenerationRecoveries?.at(-1);
-    if (recovery?.generation === generation.generation) {
-      await this.withRetainedGeneration({ operation, generation, commit: async evidence => {
-        if (releaseIdentitySha256(evidence) !== releaseIdentitySha256(recovery.evidence[0]?.artifacts)) {
-          throw new Error("Retained prepared runtime changed after recovery admission");
-        }
-      } });
-    }
     const layout = this.#layout(operation, generation, target);
-    await mkdir(layout.root, { recursive: true });
-    const current = await this.readback({ operation, generation, target });
-    if (["applied", "already_applied"].includes(current.status)) return current;
-    if (current.status === "unknown") {
-      const error = new Error(`publication runner for ${target.targetId} is still active or has an unknown effect`);
-      error.code = "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
+    // A retained launch keeps the existing installation lease through every
+    // awaited prelaunch step and the final proof, then returns the child without
+    // awaiting its completion so that child can acquire its own installation lease.
+    let pendingLaunch = null;
+    const launch = async (verifyBeforeSpawn = null) => {
+      await mkdir(layout.root, { recursive: true });
+      const current = await this.readback({ operation, generation, target });
+      if (["applied", "already_applied"].includes(current.status)) return { result: current };
+      if (current.status === "unknown") {
+        const error = new Error(`publication runner for ${target.targetId} is still active or has an unknown effect`);
+        error.code = "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
+        throw error;
+      }
+      const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
+        expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
+      const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
+      const previousRunner = await readJson(layout.stateFile);
+      if (previousRunner && JSON.stringify(previousRunner.tool) !== JSON.stringify(toolIdentity)) {
+        throw new Error("Original publication requires its recorded tool executor; use its retained caller without retargeting this generation");
+      }
+      await tool.assertUnchanged();
+      const runner = this.runnerFile;
+      const startedAt = this.now();
+      const runnerIdentity = {
+        schemaVersion: 1,
+        pid: null,
+        status: "launching",
+        operationId: operation.operationId,
+        generation: generation.generation,
+        targetId: target.targetId,
+        candidate: generation.identitySha256,
+        tool: toolIdentity,
+        startedAt,
+      };
+      let stdout;
+      let stderr;
+      let launchingWritten = false;
+      try {
+        stdout = await open(layout.stdoutFile, "a");
+        stderr = await open(layout.stderrFile, "a");
+        const environment = { ...this.environment };
+        // This worker is a publication, not a replacement startup. A completed
+        // parent restart intent must not authorize its validation child processes.
+        delete environment.AGENT_HUB_RESTART_OPERATION_ID;
+        delete environment.AGENT_HUB_RESTART_LAUNCHER_PID;
+        await writeFile(layout.stateFile, `${JSON.stringify(runnerIdentity, null, 2)}\n`, "utf8");
+        launchingWritten = true;
+        if (verifyBeforeSpawn) await verifyBeforeSpawn(runnerIdentity);
+        const child = this.spawnImpl(process.execPath, [runner], {
+          cwd: path.join(candidate.releaseRoot, "AgentHub"),
+          windowsHide: true,
+          detached: true,
+          stdio: ["ignore", stdout.fd, stderr.fd],
+          env: {
+            ...environment,
+            AGENT_HUB_DEPENDENCY_ROOT: environment.AGENT_HUB_DEPENDENCY_ROOT || path.dirname(runner),
+            AGENT_HUB_RELEASE_TOOLS_ROOT: tool.root,
+            AGENT_HUB_RELEASE_TOOLS_SHA256: tool.sha256,
+            AGENT_HUB_DATA_DIR: this.dataDir,
+            AGENT_HUB_RUNTIME_ROOT: this.runtimeRoot,
+            AGENT_HUB_RELEASE_OPERATION_ID: operation.operationId,
+            AGENT_HUB_RELEASE_GENERATION: String(generation.generation),
+            AGENT_HUB_RELEASE_TARGET_ID: target.targetId,
+            AGENT_HUB_RELEASE_EXECUTION_ROOT: layout.root,
+            AGENT_HUB_RELEASE_RUNNER_STARTED_AT: startedAt,
+            AGENT_HUB_RELEASE_CANDIDATE_IDENTITY: generation.identitySha256,
+          },
+        });
+        const completion = new Promise((resolve) => {
+          child.once("error", (error) => resolve({ error }));
+          child.once("exit", (code) => resolve({ exitCode: Number.isInteger(code) ? code : 1 }));
+        });
+        pendingLaunch = { child, completion, runnerIdentity, stdout, stderr };
+        await writeFile(layout.stateFile, `${JSON.stringify({ ...runnerIdentity,
+          pid: child.pid, status: "running" }, null, 2)}\n`, "utf8");
+        return pendingLaunch;
+      } catch (error) {
+        if (pendingLaunch) throw error;
+        try {
+          if (launchingWritten && releaseIdentitySha256(await readJson(layout.stateFile)) === releaseIdentitySha256(runnerIdentity)) {
+            await writeFile(layout.stateFile, `${JSON.stringify({ ...runnerIdentity, status: "launch_failed",
+              error: String(error.message), completedAt: this.now() }, null, 2)}\n`, "utf8");
+          }
+        } catch (persistenceError) {
+          throw new AggregateError([error, persistenceError], "Publication launch refusal could not be persisted", { cause: error });
+        } finally {
+          await Promise.all([stdout?.close(), stderr?.close()]);
+        }
+        throw error;
+      }
+    };
+    let started;
+    try {
+      started = recovery?.generation === generation.generation
+        ? await this.withRetainedGeneration({ operation, generation, commit: async (evidence, validate) => {
+          if (releaseIdentitySha256(evidence) !== releaseIdentitySha256(recovery.evidence[0]?.artifacts)) {
+            throw new Error("Retained prepared runtime changed after recovery admission");
+          }
+          return launch(validate);
+        } })
+        : await launch();
+    } catch (error) {
+      // The lease scope has ended before joining a child whose running receipt
+      // could not be written. Its actual publication outcome remains readback-owned.
+      if (pendingLaunch) {
+        await pendingLaunch.completion;
+        pendingLaunch.child.unref();
+        await Promise.all([pendingLaunch.stdout.close(), pendingLaunch.stderr.close()]);
+      }
       throw error;
     }
-    const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
-      expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
-    const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
-    const previousRunner = await readJson(layout.stateFile);
-    if (previousRunner && JSON.stringify(previousRunner.tool) !== JSON.stringify(toolIdentity)) {
-      throw new Error("Original publication requires its recorded tool executor; use its retained caller without retargeting this generation");
-    }
-    await tool.assertUnchanged();
-    const runner = this.runnerFile;
-    const startedAt = this.now();
-    const runnerIdentity = {
-      schemaVersion: 1,
-      pid: null,
-      status: "launching",
-      operationId: operation.operationId,
-      generation: generation.generation,
-      targetId: target.targetId,
-      candidate: generation.identitySha256,
-      tool: toolIdentity,
-      startedAt,
-    };
-    await writeFile(layout.stateFile, `${JSON.stringify(runnerIdentity, null, 2)}\n`, "utf8");
-    const stdout = await open(layout.stdoutFile, "a");
-    const stderr = await open(layout.stderrFile, "a");
-    const environment = { ...this.environment };
-    // This worker is a publication, not a replacement startup. A completed
-    // parent restart intent must not authorize its validation child processes.
-    delete environment.AGENT_HUB_RESTART_OPERATION_ID;
-    delete environment.AGENT_HUB_RESTART_LAUNCHER_PID;
-    const child = this.spawnImpl(process.execPath, [runner], {
-      cwd: path.join(candidate.releaseRoot, "AgentHub"),
-      windowsHide: true,
-      detached: true,
-      stdio: ["ignore", stdout.fd, stderr.fd],
-      env: {
-        ...environment,
-        AGENT_HUB_DEPENDENCY_ROOT: environment.AGENT_HUB_DEPENDENCY_ROOT || path.dirname(runner),
-        AGENT_HUB_RELEASE_TOOLS_ROOT: tool.root,
-        AGENT_HUB_RELEASE_TOOLS_SHA256: tool.sha256,
-        AGENT_HUB_DATA_DIR: this.dataDir,
-        AGENT_HUB_RUNTIME_ROOT: this.runtimeRoot,
-        AGENT_HUB_RELEASE_OPERATION_ID: operation.operationId,
-        AGENT_HUB_RELEASE_GENERATION: String(generation.generation),
-        AGENT_HUB_RELEASE_TARGET_ID: target.targetId,
-        AGENT_HUB_RELEASE_EXECUTION_ROOT: layout.root,
-        AGENT_HUB_RELEASE_RUNNER_STARTED_AT: startedAt,
-        AGENT_HUB_RELEASE_CANDIDATE_IDENTITY: generation.identitySha256,
-      },
-    });
-    const completion = new Promise((resolve) => {
-      child.once("error", (error) => resolve({ error }));
-      child.once("exit", (code) => resolve({ exitCode: Number.isInteger(code) ? code : 1 }));
-    });
-    await writeFile(layout.stateFile, `${JSON.stringify({
-      ...runnerIdentity,
-      pid: child.pid,
-      status: "running",
-    }, null, 2)}\n`, "utf8");
+    if (started.result) return started.result;
+    const { child, completion, runnerIdentity, stdout, stderr } = started;
     try {
       const outcome = await completion;
       await writeFile(layout.stateFile, `${JSON.stringify({
@@ -305,6 +345,7 @@ export class ReleaseOperationPublication {
       }).read().catch(() => null);
       throw publicationFailure(saved, exitCode, target.targetId);
     } finally {
+      await completion;
       child.unref();
       await Promise.all([stdout.close(), stderr.close()]);
     }
@@ -313,7 +354,8 @@ export class ReleaseOperationPublication {
   async withRetainedGeneration({ operation, generation, commit }) {
     return withRuntimeInstallationLease(this.runtimeRoot, async () => {
       const physicalRoot = await realpath(this.runtimeRoot);
-      const inspect = async () => {
+      const originalRunners = new Map();
+      const inspect = async (launchingRunner = null) => {
         const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
           expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
         const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
@@ -325,7 +367,16 @@ export class ReleaseOperationPublication {
           if (target.kind !== "agent-hub-publication") throw new Error("Retained generation target is unsupported");
           const candidate = candidateFor(generation, target);
           const layout = this.#layout(operation, generation, target);
-          const runner = await readJson(layout.stateFile);
+          const observedRunner = await readJson(layout.stateFile);
+          let runner = observedRunner;
+          if (launchingRunner?.targetId === target.targetId) {
+            if (launchingRunner.operationId !== operation.operationId || launchingRunner.generation !== generation.generation
+                || launchingRunner.candidate !== generation.identitySha256 || launchingRunner.status !== "launching"
+                || launchingRunner.pid !== null || releaseIdentitySha256(observedRunner) !== releaseIdentitySha256(launchingRunner)) {
+              throw new Error("Retained publication launch intent changed");
+            }
+            runner = originalRunners.get(target.targetId);
+          } else if (!originalRunners.has(target.targetId)) originalRunners.set(target.targetId, observedRunner);
           const saved = await this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment }).read();
           const plan = generation.testPlans?.find(item => path.resolve(item.repositoryRoot) === path.resolve(candidate.repositoryRoot))?.plan;
           const publicationIndex = saved?.steps?.findIndex(step => step.label === "Публикация Git") ?? -1;
@@ -409,8 +460,8 @@ export class ReleaseOperationPublication {
         return evidence;
       };
       const evidence = await inspect();
-      return commit(evidence, async () => {
-        if (releaseIdentitySha256(await inspect()) !== releaseIdentitySha256(evidence)) {
+      return commit(evidence, async (launchingRunner = null) => {
+        if (releaseIdentitySha256(await inspect(launchingRunner)) !== releaseIdentitySha256(evidence)) {
           throw new Error("Retained runtime custody changed before recovery CAS");
         }
       });
