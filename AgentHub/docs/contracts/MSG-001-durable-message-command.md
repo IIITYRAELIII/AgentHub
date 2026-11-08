@@ -233,8 +233,12 @@ effect.
 An exact Codex `task_started` without a terminal remains uncertain too, even
 when an idle/interrupt projection or elapsed grace hides it from the active
 display. The original managed run continues to own admission until exact
-terminal evidence or the current recovery interruption proven by TURN-001 and
-ADR-0125. That canonical terminal wakes the same queued command, with no resend
+terminal evidence, the current recovery interruption proven by TURN-001 and
+ADR-0125, or the local-only reboot disposition in ADR-HUB-392. The latter keeps
+the exact provider outcome UNKNOWN and accepted input unchanged; it releases only
+the proven old Hub execution after durable lifecycle recording. New input still
+passes fresh external/current activity checks. No PID, elapsed-time or idle
+projection alone proves old local execution loss. A canonical terminal wakes the same queued command, with no resend
 or identity replacement. A separate maintenance barrier is shown in the queue as
 the concrete `context-maintenance` wait reason. When a deferred command starts,
 its receipt clears the stale wait
@@ -275,6 +279,17 @@ eligibility has been claimed. A transient persistence failure rolls an
 attention-required transition back to the same pending object; timer-owned
 processing records a payload-free error and retries that exact owner with
 bounded backoff instead of leaking an unhandled rejection.
+An explicit cancel of an already read item must persist its exact command's
+future-Hub-dispatch fence before receipt projection or attachment cleanup.
+The existing command ledger compares deferred identity, active state and revision;
+dispatching/unknown provider acceptance, changed identity or a failed write refuses
+and retains the item. Local retirement alone never grants cancellation authority.
+After the actual controller releases processing, normal cancellation may commit
+`cancelled` with `cancellationScope=future-hub-dispatch` and past
+`providerEffectOutcome=unknown`; it does not claim a past provider no-effect.
+Cold reopen cannot resurrect that canonical command. Legacy items without a
+command row retain the existing snapshot persistence owner until ledger migration
+owns them; a canonical refusal never falls back to deleting a snapshot projection.
 Persisted queue errors contain only an allowlisted code and bounded generic
 message. Dependency output, command lines, session identifiers, payload and
 stack text never enter deferred diagnostics or client state.

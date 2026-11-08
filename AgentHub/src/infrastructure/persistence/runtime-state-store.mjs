@@ -394,6 +394,14 @@ export class RuntimeStateStore {
     return Promise.resolve(outcome);
   }
 
+  cancelDeferredInput(item) {
+    const outcome = this.#messageCommands.cancelQueuedInput(item);
+    if (outcome.owned && !outcome.duplicate) {
+      this.messageCommandRevision = (this.messageCommandRevision ?? 0) + 1;
+    }
+    return Promise.resolve(outcome);
+  }
+
   projectMessageReceipt(receipt) {
     return this.#messageCommands.projectReceipt(receipt);
   }

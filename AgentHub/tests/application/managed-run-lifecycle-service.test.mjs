@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { ManagedRunLifecycleService } from "../../src/application/managed-run-lifecycle-service.mjs";
 import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
-import { TaskRunRegistry } from "../../src/domain/task-runs.mjs";
+import { TaskRunRegistry, createManagedTaskRun, serializableTaskRun, markProviderTurnRequested,
+  markProviderTurnAccepted, localExecutionIdentity } from "../../src/domain/task-runs.mjs";
+import { ProviderRunTerminalStore } from "../../src/infrastructure/persistence/provider-run-terminal-store.mjs";
+import { restorePersistedTaskRun } from "../../src/composition/runtime-state-restoration-composition.mjs";
+import { CodexRecoveryService } from "../../src/providers/provider-recovery-services.mjs";
+import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
+import { createHubRuntimeSnapshot, restoreHubRuntimeSnapshot } from "../../src/application/hub-runtime-state-coordinator.mjs";
+import { TaskSelectionStore } from "../../src/application/task-selection-store.mjs";
 
 function harness({
   provider = "codex",
@@ -19,12 +29,18 @@ function harness({
   commandTrace = null,
   recordProviderTerminal = null,
   persistTaskDiff = null,
+  localRetirementStore = null,
+  readSystemBootIdentity = null,
+  afterLocalRetirement = null,
+  readProviderTerminal = null,
 } = {}) {
   const events = [];
   const taskRuns = new TaskRunRegistry();
   const service = new ManagedRunLifecycleService({
     taskRuns,
     commandTrace,
+    localRetirementStore, readSystemBootIdentity, afterLocalRetirement,
+    readProviderTerminal,
     currentTarget: currentTarget ?? (() => ({
       provider, projectRoot: "D:/Work", streamId: "stream-1", threadId: "thread-1", taskTitle: "Task", chatId: 7,
     })),
@@ -77,6 +93,413 @@ test("managed run lifecycle commits the exact prepared launch capability", async
 
   assert.equal(authorizedTarget.threadId, "thread-exact");
   assert.equal(committedRun, run);
+});
+
+async function localRetirementFixture(t, overrides = {}) {
+  const directory = await mkdtemp(path.join(tmpdir(), "hub392-local-retirement-"));
+  const closers = [];
+  t.after(async () => {
+    for (const close of closers.reverse()) await close();
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));
+    assert.match(path.basename(directory), /^hub392-local-retirement-/u);
+    await rm(directory, { recursive: true, force: true });
+  });
+  const store = new ProviderRunTerminalStore({ dataDir: directory });
+  const wakes = [];
+  const h = harness({
+    localRetirementStore: store,
+    readSystemBootIdentity: async () => ({
+      source: "Win32_OperatingSystem.LastBootUpTime", bootTime: "2021-01-01T00:00:00.000Z",
+    }),
+    afterLocalRetirement: run => wakes.push(run.id),
+    ...overrides,
+  });
+  const source = createManagedTaskRun({
+    provider: "codex", executionOwner: "hub", streamId: "stream-1",
+    threadId: "thread-1", projectRoot: "D:/Work", clientUserMessageId: "original-command",
+    rawPrompt: "retained original", userMessages: [{ clientUserMessageId: "original-command",
+      text: "retained original", annotations: [{ source: "original annotation" }],
+      attachments: [{ id: "attachment-original", path: "retained-file" }] }],
+  });
+  source.startedAt = "2020-01-01T00:00:00.000Z";
+  markProviderTurnRequested(source, { requestedAt: "2020-01-01T00:00:01.000Z" });
+  source.turnId = "turn-original";
+  markProviderTurnAccepted(source, { turnId: source.turnId, acceptedAt: "2020-01-01T00:00:02.000Z" });
+  source.activityUnknown = true;
+  const saved = structuredClone(serializableTaskRun(source));
+  const run = restorePersistedTaskRun(saved, 7, store);
+  h.taskRuns.addRestored(run, saved);
+  return { ...h, run, saved, store, directory, wakes, closers };
+}
+
+function localRetirementRuntimeContext(registry, store) {
+  const empty = { snapshot: () => ({}), restore: () => {} };
+  return {
+    chatId: 7, updateOffset: 0, restartRequest: null, codexHookReceipts: {},
+    getClientTaskSelections: () => [],
+    selectionStore: new TaskSelectionStore({ activeProvider: "codex", activeProjectRoot: "D:/Work" }),
+    findProject: root => ({ path: root }), taskMetadata: empty, preferences: empty,
+    taskRuns: registry, serializableTaskRun,
+    restoreTaskRun: (saved, chatId) => restorePersistedTaskRun(saved, chatId, store),
+    dismissedExternalTasks: { values: () => [], restore: () => {} },
+    cancelledManagedClaudeTasks: new Map(), pendingInputs: new Map(), queuedInputs: new Map(),
+    desktopMessageReceipts: { snapshot: () => [], restore: () => {} },
+    composerTransfers: { snapshot: () => [], restore: () => {} }, forwardBundles: new Map(),
+    runJournal: { lastMessageSnapshot: () => [], restoreLastMessages: () => {} },
+    lastSeenTaskTurnIds: new Map(), contextCompactions: empty, codexUsageTracker: empty,
+    codexTurnStarts: new Map(), codexTerminalAudit: empty,
+    turnEndNotifications: { snapshot: () => ({}), restore: () => ({}) },
+    statusMediaFileIds: new Map(), restoreDeferredInput: value => value, deferredInputOptions: {},
+    isRetryableDeferredLaunchError: () => false, updateDeferredDesktopReceipt: () => {},
+    restoreForwardBundle: value => value, forwardBundleAttachmentPaths: () => [],
+    removeFiles: async () => {}, maximumDeferredInputs: 10, deferredInputTtlMs: 60000,
+  };
+}
+
+test("local execution retirement persists before release and preserves exact UNKNOWN through reopen", async t => {
+  const f = await localRetirementFixture(t);
+  const original = structuredClone(serializableTaskRun(f.run));
+  let release;
+  let entered;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  let writes = 0;
+  const record = f.store.recordLocalExecutionRetirement.bind(f.store);
+  f.store.recordLocalExecutionRetirement = async value => {
+    writes += 1; entered(); await held; return record(value);
+  };
+  const pending = Promise.all([
+    f.service.retireLocalExecutionAfterReboot(f.run),
+    f.service.retireLocalExecutionAfterReboot(f.run),
+  ]);
+  await waiting;
+  assert.equal(f.taskRuns.forTask(f.run), f.run);
+  assert.equal(f.run.localExecutionRetirement, undefined);
+  assert.deepEqual(f.wakes, []);
+  release();
+  assert.deepEqual(await pending, [true, true]);
+  assert.equal(writes, 1);
+  assert.equal(f.taskRuns.forTask(f.run), null);
+  assert.equal(f.taskRuns.forEvent({ turnId: f.run.turnId }), f.run);
+  assert.deepEqual(f.taskRuns.values(), []);
+  assert.equal(f.taskRuns.retainedValues()[0], f.run);
+  assert.equal(f.taskRuns.size, 0);
+  assert.equal(f.taskRuns.add(f.run), f.run, "Duplicate late callback keeps the same retained entity");
+  assert.equal(f.taskRuns.forTask(f.run), null);
+  assert.throws(() => f.taskRuns.add({ ...f.run, localAdmissionReleased: false }), /retained local execution/u);
+  assert.equal(f.taskRuns.forTask(f.run), null);
+  assert.equal(f.run.status, "running");
+  assert.equal(f.run.activityUnknown, true);
+  assert.deepEqual(f.run.providerStart, original.providerStart);
+  assert.deepEqual(f.run.userMessages, original.userMessages);
+  assert.equal(f.run.rawPrompt, original.rawPrompt);
+  assert.equal(f.run.providerTerminalStatus, undefined);
+  assert.equal(f.store.get(f.run), null, "No provider terminal was manufactured");
+  assert.deepEqual(f.wakes, [f.run.id]);
+  assert.equal(f.events.includes("before"), false);
+  assert.equal(f.events.includes("after"), false);
+  assert.equal(f.events.includes("sync-complete"), false);
+
+  const snapshot = JSON.parse(JSON.stringify(createHubRuntimeSnapshot(
+    localRetirementRuntimeContext(f.taskRuns, f.store))));
+  assert.equal(snapshot.activeRuns.length, 1, "Actual snapshot owner retains the old original");
+  assert.equal(snapshot.activeRuns[0].localAdmissionReleased, undefined, "No copied flag is authority");
+  const reopenedStore = new ProviderRunTerminalStore({ dataDir: f.directory });
+  const registry = new TaskRunRegistry();
+  const next = createManagedTaskRun({ ...original, id: "new-run", turnId: "new-turn" });
+  registry.add(next);
+  await restoreHubRuntimeSnapshot(snapshot, localRetirementRuntimeContext(registry, reopenedStore));
+  const restored = registry.forEvent({ turnId: original.turnId });
+  assert.equal(registry.forTask(next), next, "Retained old UNKNOWN cannot replace current admission");
+  assert.equal(registry.forEvent({ turnId: original.turnId }), restored);
+  assert.equal(restored.localAdmissionReleased, true);
+  assert.equal(restored.status, original.status);
+  assert.deepEqual(restored.providerStart, original.providerStart);
+  assert.deepEqual(restored.userMessages, original.userMessages);
+  assert.equal(reopenedStore.get(original), null);
+  assert.equal(await f.service.retireLocalExecutionAfterReboot(f.run), true);
+  assert.deepEqual(f.wakes, [f.run.id], "Same original does not wake twice");
+});
+
+test("local execution retirement cannot be readmitted by a detached late callback", async t => {
+  const f = await localRetirementFixture(t);
+  assert.equal(await f.service.retireLocalExecutionAfterReboot(f.run), true);
+  f.taskRuns.remove(f.run);
+  assert.throws(() => f.taskRuns.add(f.run), /retained local execution/u);
+  assert.equal(f.taskRuns.forTask(f.run), null);
+});
+
+test("local execution retirement refuses missing same-boot ambiguous and foreign provenance", async t => {
+  for (const variant of ["same-boot", "future-boot", "missing-boot", "pid-reuse-only",
+    "not-restored", "foreign-owner", "missing-acceptance", "changed-original"]) {
+    const f = await localRetirementFixture(t, {
+      readSystemBootIdentity: async () => variant === "same-boot"
+        ? { source: "Win32_OperatingSystem.LastBootUpTime", bootTime: "2019-01-01T00:00:00Z" }
+        : variant === "future-boot"
+          ? { source: "Win32_OperatingSystem.LastBootUpTime", bootTime: "2099-01-01T00:00:00Z" }
+          : variant === "missing-boot" ? null
+            : variant === "pid-reuse-only" ? { source: "process-absent", pid: 17772, reused: true }
+              : { source: "Win32_OperatingSystem.LastBootUpTime", bootTime: "2021-01-01T00:00:00Z" },
+    });
+    if (variant === "not-restored") {
+      f.taskRuns.remove(f.run);
+      f.taskRuns.add(f.run);
+      // A fresh registry has no canonical saved-run provenance.
+      const fresh = new TaskRunRegistry([f.run]);
+      assert.equal(fresh.restoredLocalExecution(f.run), null);
+      // Use a genuinely fresh object, not the old restored object's provenance.
+      const replacement = structuredClone(f.run);
+      f.taskRuns.remove(f.run); f.taskRuns.add(replacement);
+      f.run = replacement;
+    }
+    if (variant === "foreign-owner") f.run.executionOwner = "desktop";
+    if (variant === "missing-acceptance") f.run.providerStart.state = "unconfirmed";
+    if (variant === "changed-original") f.run.clientUserMessageId = "new-command";
+    assert.equal(await f.service.retireLocalExecutionAfterReboot(f.run), false, variant);
+    assert.equal(f.taskRuns.forTask(f.run), f.run, variant);
+    assert.equal(f.run.localAdmissionReleased, false, variant);
+    assert.deepEqual(f.wakes, [], variant);
+  }
+});
+
+test("local execution retirement refuses an old display timestamp with postboot canonical acceptance", async t => {
+  for (const variant of ["postboot-request", "postboot-acceptance", "missing-canonical-start"]) {
+    const f = await localRetirementFixture(t);
+    f.taskRuns.remove(f.run);
+    const saved = structuredClone(f.saved);
+    // Display/history age alone is not evidence that this local execution predates boot.
+    saved.startedAt = "2013-10-13T00:00:00.000Z";
+    if (variant === "postboot-request") saved.providerStart.requestedAt = "2021-01-01T00:00:01.000Z";
+    if (variant !== "missing-canonical-start") saved.providerStart.acceptedAt = "2021-01-01T00:00:02.000Z";
+    else delete saved.providerStart.requestedAt;
+    const run = restorePersistedTaskRun(saved, 7, f.store);
+    f.taskRuns.addRestored(run, saved);
+    assert.equal(await f.service.retireLocalExecutionAfterReboot(run), false, variant);
+    assert.equal(f.taskRuns.forTask(run), run, variant);
+    assert.equal(run.localAdmissionReleased, false, variant);
+    assert.deepEqual(f.wakes, [], variant);
+  }
+});
+
+test("local execution retirement accepts canonical legacy Hub provenance without inventing provider status", async t => {
+  const f = await localRetirementFixture(t);
+  f.taskRuns.remove(f.run);
+  const saved = { ...f.saved, executionOwner: "telegram", providerTerminalStatus: "unknown" };
+  const run = restorePersistedTaskRun(saved, 7, f.store);
+  f.taskRuns.addRestored(run, saved);
+  assert.equal(await f.service.retireLocalExecutionAfterReboot(run), true);
+  assert.equal(run.providerTerminalStatus, "unknown");
+  assert.deepEqual(run.providerStart, saved.providerStart);
+  assert.equal(f.store.get(run), null);
+  assert.equal(f.taskRuns.forEvent({ turnId: run.turnId }), run);
+});
+
+test("local execution retirement refuses registry replacement and identity races across boot read", async t => {
+  for (const mode of ["registry", "turn", "command", "completion"]) {
+    let release;
+    const read = new Promise(resolve => { release = resolve; });
+    const f = await localRetirementFixture(t, { readSystemBootIdentity: () => read });
+    const pending = f.service.retireLocalExecutionAfterReboot(f.run);
+    if (mode === "registry") {
+      f.taskRuns.remove(f.run);
+      f.taskRuns.add({ ...f.run, id: "new-registration", turnId: "new-turn" });
+    }
+    if (mode === "turn") f.run.turnId = "new-turn";
+    if (mode === "command") f.run.clientUserMessageId = "new-command";
+    if (mode === "completion") f.run.completionPrepared = true;
+    release({ source: "Win32_OperatingSystem.LastBootUpTime", bootTime: "2021-01-01T00:00:00Z" });
+    assert.equal(await pending, false, mode);
+    assert.deepEqual(f.wakes, [], mode);
+    assert.equal(f.store.getLocalExecutionRetirement(localExecutionIdentity(f.saved)), null, mode);
+  }
+});
+
+test("local execution retirement persistence failure retains ownership and accepted payload", async t => {
+  const failure = new Error("held durable store failure");
+  const f = await localRetirementFixture(t);
+  const record = f.store.recordLocalExecutionRetirement.bind(f.store);
+  f.store.recordLocalExecutionRetirement = async () => { throw failure; };
+  await assert.rejects(f.service.retireLocalExecutionAfterReboot(f.run), error => error === failure);
+  assert.equal(f.taskRuns.forTask(f.run), f.run);
+  assert.equal(f.run.localExecutionRetirement, undefined);
+  assert.deepEqual(f.run.providerStart, f.saved.providerStart);
+  assert.deepEqual(f.wakes, []);
+  assert.equal(f.store.getLocalExecutionRetirement(localExecutionIdentity(f.saved)), null);
+  f.store.recordLocalExecutionRetirement = record;
+  assert.equal(await f.service.retireLocalExecutionAfterReboot(f.run), true);
+  assert.equal(f.taskRuns.forEvent({ turnId: f.run.turnId }), f.run);
+});
+
+test("local execution retirement never releases a replacement that wins during durable commit", async t => {
+  const f = await localRetirementFixture(t);
+  const record = f.store.recordLocalExecutionRetirement.bind(f.store);
+  const replacement = { ...f.run, id: "replacement-run", turnId: "replacement-turn" };
+  f.store.recordLocalExecutionRetirement = async value => {
+    const committed = await record(value);
+    f.taskRuns.remove(f.run);
+    f.taskRuns.add(replacement);
+    return committed;
+  };
+  assert.equal(await f.service.retireLocalExecutionAfterReboot(f.run), false);
+  assert.equal(f.taskRuns.forTask(replacement), replacement);
+  assert.equal(replacement.localAdmissionReleased, false);
+  assert.deepEqual(f.wakes, []);
+  assert.ok(f.store.getLocalExecutionRetirement(localExecutionIdentity(f.saved)));
+  assert.equal(f.store.get(f.saved), null);
+});
+
+test("local execution retirement ignores forged snapshot release flags without lifecycle evidence", async t => {
+  const f = await localRetirementFixture(t);
+  const forged = { ...f.saved, localAdmissionReleased: true,
+    localExecutionRetirement: { proof: { kind: "system-restart-after-local-execution" } } };
+  const run = restorePersistedTaskRun(forged, 7, f.store);
+  const registry = new TaskRunRegistry();
+  registry.addRestored(run, forged);
+  assert.equal(registry.forTask(run), run);
+  assert.equal(run.localAdmissionReleased, false);
+  assert.throws(() => f.store.recordLocalExecutionRetirement({
+    identity: localExecutionIdentity(f.saved),
+    proof: { kind: "system-restart-after-local-execution", source: "pid-reused" },
+  }), /boot proof/u);
+  assert.equal(f.store.getLocalExecutionRetirement(localExecutionIdentity(f.saved)), null);
+});
+
+test("local execution retirement content-free proof and persistence spans survive trace worker reopen", async t => {
+  const { CommandTraceService } = await import("../../src/application/command-trace-service.mjs");
+  const { CommandTraceWorkerStore } = await import("../../src/infrastructure/persistence/command-trace-worker-store.mjs");
+  const f = await localRetirementFixture(t);
+  let worker = new CommandTraceWorkerStore({ databaseFile: path.join(f.directory, "trace.sqlite") });
+  await worker.initialize();
+  f.closers.push(async () => { await worker.close(); });
+  const h = harness({
+    localRetirementStore: f.store,
+    readSystemBootIdentity: async () => ({
+      source: "Win32_OperatingSystem.LastBootUpTime", bootTime: "2021-01-01T00:00:00Z",
+    }),
+    commandTrace: new CommandTraceService({ store: worker }),
+  });
+  const run = restorePersistedTaskRun(f.saved, 7, f.store);
+  h.taskRuns.addRestored(run, f.saved);
+  f.store.recordLocalExecutionRetirement = async () => { throw new Error("write refused"); };
+  await assert.rejects(h.service.retireLocalExecutionAfterReboot(run), /write refused/u);
+  await worker.close();
+  worker = new CommandTraceWorkerStore({ databaseFile: path.join(f.directory, "trace.sqlite") });
+  await worker.initialize();
+  const rows = await worker.readCommandTimeline(run.clientUserMessageId);
+  assert.deepEqual(rows.filter(row => row.stage === "local-execution-boot-proof").map(row => row.outcome),
+    ["started", "succeeded"]);
+  assert.deepEqual(rows.filter(row => row.stage === "local-execution-retirement").map(row => row.outcome),
+    ["started", "failed"]);
+  assert.equal(JSON.stringify(rows).includes("retained original"), false);
+  assert.equal(JSON.stringify(rows).includes("retained-file"), false);
+  assert.equal(h.taskRuns.forTask(run), run);
+  await worker.close(); // Join before the fixture removes its owned directory.
+});
+
+test("local execution retirement durable commit survives interrupted snapshot save without replay", async t => {
+  const failure = new Error("runtime snapshot failure");
+  const f = await localRetirementFixture(t, { saveState: async () => { throw failure; } });
+  await assert.rejects(f.service.retireLocalExecutionAfterReboot(f.run), error => error === failure);
+  assert.equal(f.taskRuns.forTask(f.run), null, "Lifecycle disposition already durably committed");
+  const store = new ProviderRunTerminalStore({ dataDir: f.directory });
+  const restored = restorePersistedTaskRun(f.saved, 7, store); // Old pre-disposition snapshot.
+  const registry = new TaskRunRegistry();
+  registry.addRestored(restored, f.saved);
+  assert.equal(registry.forTask(restored), null);
+  assert.equal(registry.forEvent({ turnId: restored.turnId }), restored);
+  assert.deepEqual(restored.providerStart, f.saved.providerStart);
+  assert.equal(store.get(f.saved), null);
+});
+
+test("local execution retirement refuses missing foreign ambiguous and superseded late terminal", async t => {
+  for (const variant of ["missing", "foreign-run", "foreign-turn", "unknown", "missing-revision",
+    "registry-replacement", "changed-command"]) {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const f = await localRetirementFixture(t, { readProviderTerminal: () => held });
+    assert.equal(await f.service.retireLocalExecutionAfterReboot(f.run), true);
+    const terminal = { provider: f.run.provider, threadId: f.run.threadId, turnId: f.run.turnId,
+      status: "completed", terminalRevision: 1, committedAt: new Date().toISOString(),
+      payload: { completion: { runId: f.run.id } } };
+    if (variant === "foreign-run") terminal.payload.completion.runId = "other-run";
+    if (variant === "foreign-turn") terminal.turnId = "other-turn";
+    if (variant === "unknown") terminal.status = "unknown";
+    if (variant === "missing-revision") delete terminal.terminalRevision;
+    const pending = f.service.complete(f.run);
+    const persisted = serializableTaskRun(f.run);
+    assert.equal(Object.hasOwn(persisted, "completionPreparing"), false);
+    assert.equal(Object.hasOwn(persisted, "admissionReleasing"), false);
+    let replacement;
+    if (variant === "registry-replacement") {
+      f.taskRuns.remove(f.run);
+      replacement = { ...f.saved, id: "replacement", turnId: "replacement-turn" };
+      f.taskRuns.add(replacement);
+    }
+    if (variant === "changed-command") f.run.clientUserMessageId = "new-command";
+    release(variant === "missing" ? null : terminal);
+    await pending;
+    assert.equal(f.run.status, "running", variant);
+    assert.deepEqual(f.run.providerStart, f.saved.providerStart, variant);
+    assert.equal(f.run.providerTerminalStatus, undefined, variant);
+    assert.equal(f.events.includes("before"), false, variant);
+    assert.equal(f.events.includes("after"), false, variant);
+    assert.equal(f.events.includes("aborted"), false, variant);
+    assert.equal(f.events.includes("sync-complete"), false, variant);
+    if (replacement) assert.equal(f.taskRuns.forTask(replacement), replacement);
+    else assert.equal(f.taskRuns.forEvent({ turnId: f.saved.turnId }), f.run, variant);
+  }
+});
+
+test("local execution retirement precedes provider reads and current writer still fences new input", async t => {
+  const f = await localRetirementFixture(t);
+  let reads = 0;
+  let interrupts = 0;
+  const noEffect = async () => {};
+  const recovery = new CodexRecoveryService({
+    retireLocalExecutionAfterReboot: run => f.service.retireLocalExecutionAfterReboot(run),
+    transportRunning: () => true, readTaskSnapshot: noEffect, startTransport: noEffect,
+    initialize: noEffect, isCodex: () => true, finishInterrupted: noEffect,
+    readThread: async () => { reads += 1; }, autoApprove: () => false,
+    restartRequested: () => false, finishProgress: noEffect, completeRun: noEffect,
+    recoveredAnswer: () => "", setProgressStage: noEffect, launchTurn: async () => { interrupts += 1; },
+    reindexRun: noEffect, scheduleObservedRun: noEffect, startTyping: noEffect, saveState: noEffect,
+    telegram: noEffect, consumeTracker: noEffect, finalizeDelivery: noEffect,
+  });
+  await recovery.recover(f.run, { reconcileOnly: true });
+  assert.equal(reads, 0, "No Thread/history hydration or current provider interrupt");
+  assert.equal(interrupts, 0);
+  let activity = "active";
+  let starts = 0;
+  const deferred = [];
+  const coordinator = new RunCoordinator({
+    taskRuns: f.taskRuns, providers: { call: async () => assert.fail("Retirement cannot authorize a steer to the external writer") },
+    externalActivity: async () => ({ state: activity, executionOwner: "desktop" }),
+    repositoryConflict: async () => null,
+    deferInput: async (_input, _files, options) => {
+      deferred.push(options); return { item: { id: "queued-same-original" }, duplicate: false };
+    },
+    beginRun: async () => { starts += 1; return { id: "next-run" }; },
+    launchTurn: noEffect, rollbackAdmission: noEffect,
+  });
+  const target = { ...f.run, clientUserMessageId: "next-command" };
+  assert.equal((await coordinator.deferredOccupancy(target)).occupied, true);
+  await coordinator.start("next original", [], { target });
+  await assert.rejects(coordinator.steer({ input: "explicit current action", target,
+    clientUserMessageId: "next-steer-command" }), /another Codex runtime owns the writer/u);
+  await assert.rejects(coordinator.steer({ input: "old exact action", target: {
+    ...target, steerTargetRunId: f.run.id, steerTargetTurnId: f.run.turnId,
+  }, clientUserMessageId: "old-exact-command" }), /targeted managed turn is no longer active/u);
+  activity = "unknown";
+  await coordinator.start("next original", [], { target });
+  await assert.rejects(coordinator.steer({ input: "ambiguous external action", target,
+    clientUserMessageId: "unknown-steer-command" }), /another Codex runtime owns the writer/u);
+  assert.equal(starts, 0);
+  assert.deepEqual(deferred.map(value => value.conflictKind), ["task-running", "activity-unknown"]);
+  activity = "inactive";
+  assert.equal((await coordinator.deferredOccupancy(target)).occupied, false);
+  assert.equal((await coordinator.start("next original", [], { target })).started, true);
+  assert.equal(starts, 1);
+  assert.equal(f.taskRuns.forEvent({ turnId: f.run.turnId }), f.run);
 });
 
 test("admission propagates the exact diff fence failure and original command context before provider launch", async () => {

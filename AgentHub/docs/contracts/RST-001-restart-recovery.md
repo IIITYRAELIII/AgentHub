@@ -186,6 +186,31 @@ Ordinary UNKNOWN observation retries that owner's prechecks without a new timer;
 live/unknown evidence does not permanently suppress a later authoritative check.
 An accepted or uncertain interrupt is not repeated, and no ACK releases admission.
 A live external/current turn in the same Thread still blocks recovery.
+For a canonically accepted exact Hub-owned original, recovery reads fresh Thread
+metadata and its exact rollout snapshot without requiring paginated full history.
+An exact UNKNOWN snapshot grants eligibility only; missing/foreign snapshots,
+live/unknown provider or native activity still cannot settle or release the run.
+The existing tracer records the original recovery read start/outcome without payload.
+
+After a trusted later system boot, the existing canonical managed lifecycle has
+a separate local-only disposition (ADR-HUB-392). Only an exact Hub-owned accepted
+original restored from the canonical runtime snapshot, with unchanged run/command/
+Thread/turn and consistent admission/request/acceptance provenance before that
+boot, is eligible. Legacy providerStart without process birth is not repaired
+from a TaskGit guard, numeric PID, time proximity or Thread projection: missing
+canonical provenance refuses retirement. Canonical requested/accepted-start times
+must precede boot independently of display/history `startedAt`; an old display
+date cannot retire postboot ownership. The existing Win32 boot identity owner
+supplies the boot witness; current PID reuse supplies no authority.
+The existing lifecycle store persists exact local retirement before admission is
+released. No provider terminal, command settlement, history rewrite or provider
+interrupt follows. Retained original input and exact turn lookup survive reopen,
+including loss of the following runtime snapshot save. A changed registry/identity,
+same boot, unavailable proof or failed disposition write retains ownership.
+The same recovery entrypoint invokes it; there is no second reconciler or timer.
+Queue wake rechecks fresh external/current authority and cannot send concurrently
+to a live newer desktop writer. Payload-free proof/persistence trace spans reuse
+the original command identity and existing durable trace owner.
 
 ## Invariants
 
@@ -307,7 +332,9 @@ A live external/current turn in the same Thread still blocks recovery.
 - An exact Codex turn whose rollout has only `task_started` remains unknown
   across reconnect and restart, even after the promptless grace period or an
   App Server `interrupted` projection. The original run and queue lane remain
-  owned; no terminal, interruption or new provider effect is fabricated.
+  owned unless the separately proven local-only reboot disposition above releases
+  old Hub admission. UNKNOWN provider outcome remains; no terminal, interruption
+  or new provider effect is fabricated.
 - Before provider discovery finishes, the initial catalog resolves retained
   Threads against existing visible Workspace/Stream bindings read-only. It does
   not expose an unbound historical Thread as a synthetic Stream. Discovery

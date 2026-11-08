@@ -1134,7 +1134,12 @@ export class HubMcpService {
         || existing.toolName !== toolName || existing.argumentsHash !== argumentsHash(args)) {
         throw new Error("MCP request_id was already used for another operation");
       }
-      return this.#taskOperationReadback(context, { operation_request_id: requestId, expected_arguments_hash: argumentsHash(args) });
+      // Only the canonical interruption owner can continue its exact UNKNOWN
+      // cancellation. Other historical operations and any live worker are read-only.
+      if (toolName !== "hub_task_operation_cancel" || existing.status !== "unknown"
+        || this.#pendingMutations.has(requestId) || !this.taskOperationInterruption) {
+        return this.#taskOperationReadback(context, { operation_request_id: requestId, expected_arguments_hash: argumentsHash(args) });
+      }
     }
     let admitted;
     const admission = new Promise(resolve => { admitted = resolve; });

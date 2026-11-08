@@ -18,6 +18,17 @@ authenticated desktop user uses the same existing receipt owner. Caller scope
 and target Task scope remain distinct. Cancellation commands retain their own
 receipt; current original execution disposition is read independently.
 
+An exact repeated UNKNOWN `hub_task_operation_cancel` may re-enter only its
+existing interruption owner through normal public admission when that same
+service has no active worker for the cancel ID. Workspace/Stream/provider/audit
+Thread/actor kind, tool and canonical argument hash must still match the original
+cancel receipt. The owner rechecks original Task identity/CAS, execution fence,
+retirement evidence and recovery lease before any effect. A live same-ID worker
+is only read; all other UNKNOWN submissions remain read-only. This continues the
+cancel command, never the interrupted claim/Test/Await. Requested is not stopped;
+past effects and the interrupted UNKNOWN remain retained. No new ID, direct
+internal invocation or timeout-derived no-effect authority is introduced.
+
 The existing MCP ledger retains the exact original receipt snapshot, result,
 error and timestamps with separate requested/stopped execution metadata.
 UNKNOWN stays UNKNOWN; a known pending execution becomes failed execution only
@@ -1055,6 +1066,8 @@ phase, cancellation, error and terminal result. Same original caller or genuine
 RM authority is required; supplied original arguments/hash must match. Reading
 never resumes or settles an operation. Same-ID mutation submissions read the
 existing receipt without starting another worker; changed arguments refuse.
+The sole UNKNOWN-cancel continuation exception above uses the existing canonical
+interruption owner and its unchanged guards, not general mutation replay.
 
 Long valid work has no transport-derived terminal deadline. A disconnected
 caller reads the original ID instead of submitting another mutation. A real

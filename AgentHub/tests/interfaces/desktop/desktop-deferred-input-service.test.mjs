@@ -1,9 +1,160 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { RuntimeStateStore } from "../../../src/infrastructure/persistence/runtime-state-store.mjs";
+import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
+import { DeferredInputPresentationService } from "../../../src/interfaces/desktop/deferred-input-presentation-service.mjs";
 import { DesktopDeferredInputService } from "../../../src/interfaces/desktop/desktop-deferred-input-service.mjs";
+import { DeferredInputController } from "../../../src/application/deferred-input-controller.mjs";
 import { DeferredComposerTransferRegistry } from "../../../src/application/deferred-composer-transfer-registry.mjs";
 import { messageWithTaskReferences } from "../../../src/domain/task-board-task.mjs";
 import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
+
+test("a processing refusal can settle to a normal cancel without dispatching the read original", async () => {
+  const item = { id: "read-original", clientUserMessageId: "release:operation:1351:operation.waiting",
+    provider: "codex", projectRoot: "project", threadId: "thread-original",
+    conflictKind: "message-steer", steerTargetRunId: "same", steerTargetTurnId: "turn-original",
+    input: "already archived", temporaryFiles: ["archived-attachment"], persistentFiles: true };
+  const archived = structuredClone(item);
+  const queuedInputs = new Map([[item.id, item]]);
+  const pendingInputs = new Map();
+  const effects = [];
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
+  const controller = new DeferredInputController({
+    pendingInputs, queuedInputs,
+    occupancy: async () => { entered(); await hold; return { occupied: true, run: { id: "same", turnId: "turn-original" } }; },
+    isSteerDispatchBlocked: async () => true,
+    isBlocked: async () => true,
+    steer: async () => assert.fail("No provider steer for a cancelled read original"),
+    start: async () => assert.fail("No new provider run"),
+    persist: async () => {}, updateMessage: async () => {},
+    pendingKeyboard: () => null, notifyReturned: async () => {},
+    setTimeoutImpl: () => ({}), clearTimeoutImpl: () => {},
+  });
+  const service = createService(item, {
+    pendingInputs, queuedInputs, isProcessing: id => controller.isProcessing(id),
+    cancelSchedule: id => controller.cancelSchedule(id),
+    saveState: async () => effects.push("durable-cancel"),
+    updateReceipt: (value, status) => { assert.equal(value.clientUserMessageId, archived.clientUserMessageId); effects.push(status); },
+    cleanupFiles: async () => effects.push("cleanup-after-archive"),
+  });
+  const processing = controller.process(item.id);
+  await waiting;
+  await assert.rejects(service.handle({ id: item.id, action: "cancel" }), /отмена не подтверждена/u);
+  assert.equal(queuedInputs.get(item.id), item);
+  assert.equal(item.dispatchingAt, undefined);
+  assert.deepEqual(effects, []);
+  release();
+  await processing;
+  assert.equal(controller.isProcessing(item.id), false);
+  assert.equal(item.dispatchingAt, undefined);
+  const cancelled = await service.handle({ id: item.id, action: "cancel" });
+  assert.equal(cancelled.accepted, true);
+  assert.equal(queuedInputs.has(item.id), false);
+  assert.equal(pendingInputs.has(item.id), false);
+  assert.equal(controller.timers.size, 0);
+  assert.deepEqual(effects, ["durable-cancel", "cancelled", "cleanup-after-archive"]);
+  assert.equal(item.input, archived.input);
+  assert.deepEqual(item.temporaryFiles, archived.temporaryFiles);
+});
+
+test("normal cancel durably fences the read original before cleanup and cold reopen", async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), "hub392-cancel-fence-"));
+  let store = new RuntimeStateStore({ dataDir: directory });
+  t.after(async () => {
+    await store.close();
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));
+    assert.match(path.basename(directory), /^hub392-cancel-fence-/u);
+    await rm(directory, { recursive: true, force: true });
+  });
+  const item = { id: "already-read", clientUserMessageId: "release:fixture:1351:operation.waiting",
+    provider: "codex", threadId: "original-thread", streamId: "original-stream", projectRoot: directory,
+    input: "archived before cancellation", conflictKind: "message-steer", persistentFiles: true,
+    temporaryFiles: [], createdAt: new Date().toISOString() };
+  const original = structuredClone(item);
+  const receipts = new MessageReceiptRegistry();
+  receipts.reserve(item, "fixed-fixture-fingerprint", { id: item.id, accepted: true, deferred: true, queued: true });
+  const presentation = new DeferredInputPresentationService({ receipts, describeAttachments: () => [] });
+  const queuedInputs = new Map([[item.id, item]]), pendingInputs = new Map();
+  const oldUnknown = { id: "past-run", provider: "codex", threadId: item.threadId, turnId: "past-turn",
+    clientUserMessageId: "past-command", status: "running", activityUnknown: true,
+    providerStart: { state: "observed", turnId: "past-turn", clientUserMessageId: "past-command" } };
+  const snapshot = () => ({ queuedInputs: [...queuedInputs.values()], pendingInputs: [...pendingInputs.values()],
+    desktopMessageReceipts: receipts.snapshot(), activeRuns: [oldUnknown] });
+  await store.saveDeferredIntake({ item, destination: "queued", receipt: receipts.get(item) });
+  await store.save(snapshot());
+  let cleaned = 0;
+  const service = createService(item, {
+    pendingInputs, queuedInputs,
+    saveState: () => store.save(snapshot()),
+    persistCancellation: value => store.cancelDeferredInput(value),
+    updateReceipt: (...args) => presentation.updateDesktopReceipt(...args),
+    findReceiptByResultId: id => receipts.findByResultId(id),
+    cleanupFiles: async () => {
+      assert.equal(store.messageCommand(item.clientUserMessageId).state, "cancelled",
+        "Cleanup cannot precede the canonical durable future-send fence");
+      cleaned += 1;
+    },
+  });
+  assert.equal((await service.handle({ id: item.id, action: "cancel" })).accepted, true);
+  assert.equal(cleaned, 1);
+  assert.equal(queuedInputs.has(item.id), false);
+  await store.close();
+  store = new RuntimeStateStore({ dataDir: directory });
+  const restored = (await store.load()).value;
+  assert.equal(restored.queuedInputs.some(value => value.id === item.id), false);
+  assert.equal(store.messageCommand(item.clientUserMessageId).state, "cancelled");
+  assert.deepEqual(restored.activeRuns[0], oldUnknown, "Future-send cancellation is not provider terminal");
+  assert.deepEqual(item, original);
+});
+
+test("normal cancel refuses stale projection canonical dispatch and failed persistence", async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), "hub392-cancel-fence-"));
+  const store = new RuntimeStateStore({ dataDir: directory });
+  t.after(async () => {
+    await store.close();
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));
+    assert.match(path.basename(directory), /^hub392-cancel-fence-/u);
+    await rm(directory, { recursive: true, force: true });
+  });
+  for (const variant of ["dispatching", "unknown", "provider-accepted", "foreign-id", "write-failed"]) {
+    const item = { id: `read-${variant}`, clientUserMessageId: `release:fixture:${variant}`,
+      provider: "codex", threadId: "same-thread", streamId: "same-stream", input: "archived",
+      temporaryFiles: ["archived-copy"], persistentFiles: true };
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve(item, `fixture-fingerprint-${variant}`, { id: item.id, accepted: true, queued: true });
+    await store.saveDeferredIntake({ item, destination: "queued", receipt: receipts.get(item) });
+    if (["dispatching", "unknown"].includes(variant)) {
+      await store.transitionMessageCommand({ clientUserMessageId: item.clientUserMessageId,
+        state: variant, result: { id: item.id } });
+    }
+    if (variant === "provider-accepted") {
+      await store.transitionMessageCommand({ clientUserMessageId: item.clientUserMessageId,
+        state: "dispatching", result: { id: item.id, providerAccepted: true } });
+    }
+    if (variant === "foreign-id") item.id = "replacement-projection";
+    const queuedInputs = new Map([[item.id, item]]), pendingInputs = new Map();
+    const before = structuredClone(store.messageCommand(item.clientUserMessageId));
+    const effects = [];
+    const service = createService(item, { queuedInputs, pendingInputs,
+      persistCancellation: value => {
+        if (variant === "write-failed") throw new Error("held durable failure");
+        return store.cancelDeferredInput(value);
+      },
+      saveState: async () => assert.fail("Canonical refusal cannot fall back to snapshot deletion"),
+      updateReceipt: () => effects.push("receipt"), cleanupFiles: async () => effects.push("cleanup"),
+    });
+    await assert.rejects(service.handle({ id: item.id, action: "cancel" }),
+      variant === "write-failed" ? /held durable failure/u : /отмена не подтверждена/u, variant);
+    assert.equal(queuedInputs.get(item.id), item, variant);
+    assert.deepEqual(store.messageCommand(item.clientUserMessageId), before, variant);
+    assert.deepEqual(effects, [], variant);
+  }
+});
 
 function createService(item, overrides = {}) {
   const pendingInputs = overrides.pendingInputs ?? new Map([[item.id, item]]);

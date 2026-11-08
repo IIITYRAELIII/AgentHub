@@ -842,6 +842,7 @@ export class MessageCommandLedgerStore {
   transition({
     clientUserMessageId,
     expectedStates = ACTIVE_STATES,
+    expectedRevision = null,
     state,
     result = null,
     authoritativeTerminal = false,
@@ -854,6 +855,9 @@ export class MessageCommandLedgerStore {
     }
     const current = this.get(id);
     if (!current) return { changed: false, idempotent: false, conflict: false, record: null };
+    if (expectedRevision != null && current.revision !== expectedRevision) {
+      return { changed: false, idempotent: false, conflict: true, record: current };
+    }
     const incomingTerminalRevision = Number(result?.terminalRevision) || 0;
     const currentTerminalRevision = Number(current.result?.terminalRevision) || 0;
     const authoritativeUpdate = authoritativeTerminal === true
@@ -902,6 +906,30 @@ export class MessageCommandLedgerStore {
     }
     if (terminal) this.#archiveTerminalPayloads();
     return { changed: true, idempotent: false, conflict: false, record: this.get(id) };
+  }
+
+  cancelQueuedInput(item) {
+    const record = this.get(item?.clientUserMessageId);
+    if (!record) return { owned: false }; // Existing raw legacy snapshot owner.
+    const storedId = record.item?.id ?? record.result?.id ?? record.receipt?.result?.id;
+    const refuse = () => {
+      throw Object.assign(new Error("Сообщение уже отправляется; отмена не подтверждена"), {
+        code: "ERR_DEFERRED_CANCEL_UNCONFIRMED",
+      });
+    };
+    if (storedId !== item.id) return refuse();
+    if (record.state === "cancelled") return { owned: true, duplicate: true, record };
+    if (!["accepted", "queued", "attention-required"].includes(record.state)
+      || record.result?.providerAccepted === true || record.result?.steered === true) return refuse();
+    const outcome = this.transition({
+      clientUserMessageId: record.clientUserMessageId, expectedStates: [record.state],
+      expectedRevision: record.revision, state: "cancelled",
+      result: { ...record.result, id: item.id, clientUserMessageId: record.clientUserMessageId,
+        cancelled: true, deferred: false, queued: false, dispatching: false,
+        cancellationScope: "future-hub-dispatch", providerEffectOutcome: "unknown" },
+    });
+    if (outcome.conflict || (!outcome.changed && !outcome.idempotent)) return refuse();
+    return { owned: true, record: outcome.record };
   }
 
   expire({ isProtected, onExpired = () => {} } = {}) {
