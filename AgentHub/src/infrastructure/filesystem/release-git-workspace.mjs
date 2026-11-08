@@ -3557,7 +3557,9 @@ export class ReleaseGitWorkspaceService {
         if (owner.operationId !== operationId || owner.generation !== generation || owner.identitySha256 !== ownerHash
             || !samePath(owner.repositoryRoot, sourceRoot) || !owner.preparedCandidate) throw new Error("Retained generation custody changed");
         const reader = new ReleaseGitWorkspaceService({ dataDir: generationRoot,
-          contourExternalEffects: this.#contourExternalEffects, environment: this.#environment });
+          contourExternalEffects: this.#contourExternalEffects, environment: this.#environment,
+          readPreparationOriginal: this.#readPreparationOriginal });
+        reader.#publicationDataDir = this.#publicationDataDir;
         const actual = await reader.frozenCandidate(sourceRoot);
         const checkpointBytes = await readFile(actual.checkpointFile);
         const checkpoint = JSON.parse(checkpointBytes);
