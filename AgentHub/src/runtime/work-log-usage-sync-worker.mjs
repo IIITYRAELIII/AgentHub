@@ -30,9 +30,40 @@ const mutationRequests = new Map();
 // Restart, a failed rendering or any changed dependency requires reconstruction.
 let journalReuse = null;
 
-async function synchronizeTaskTitles(payload) {
+async function synchronizeTaskTitles(payload, measurements = {}) {
   const startedAt = performance.now();
-  const phases = { metadataReadMs: 0, recordReadMs: 0, normalizeMs: 0, commitMs: 0 };
+  const phases = Object.assign(measurements, { metadataReadMs: 0, recordReadMs: 0, normalizeMs: 0, commitMs: 0,
+    workerProcessId: process.pid, workerThreadId: threadId, sqlWriteAttempts: 0,
+    sqlRowPreparationMs: 0, sqlBeginMs: 0, sqlTransactionMs: 0, sqlTransactionCount: 0,
+    sqlFirstLockAtMs: 0, sqlFirstReleaseAtMs: 0, sqlLastLockAtMs: 0, sqlLastReleaseAtMs: 0, sqlUnreleasedTransactions: 0,
+    sqlQueueWaitMs: 0, sqlExecutionMs: 0, sqlRetries: 0, sqlExhausted: 0,
+    sqlBeginRefused: 0, sqlRolledBack: 0, sqlCommitted: 0, sqlRollbackRefused: 0 });
+  const recordMutationTiming = sample => {
+    phases.sqlWriteAttempts += 1;
+    phases.sqlRowPreparationMs += sample.rowPreparationMs;
+    phases.sqlBeginMs += sample.beginMs;
+    phases.sqlTransactionMs += sample.transactionMs;
+    phases.sqlBeginRefused += Number(sample.outcome === "begin-refused");
+    phases.sqlRolledBack += Number(sample.outcome === "rolled-back");
+    phases.sqlCommitted += Number(sample.outcome === "committed");
+    phases.sqlRollbackRefused += Number(sample.outcome === "rollback-refused");
+    if (sample.lockAcquiredAtMs !== null) {
+      phases.sqlTransactionCount += 1;
+      if (!phases.sqlFirstLockAtMs) {
+        phases.sqlFirstLockAtMs = sample.lockAcquiredAtMs;
+        phases.sqlFirstReleaseAtMs = sample.lockReleasedAtMs ?? 0;
+      }
+      phases.sqlLastLockAtMs = sample.lockAcquiredAtMs;
+      phases.sqlLastReleaseAtMs = sample.lockReleasedAtMs ?? 0;
+      phases.sqlUnreleasedTransactions += Number(sample.lockReleasedAtMs === null);
+    }
+  };
+  const recordQueueTiming = sample => {
+    phases.sqlQueueWaitMs += sample.queueWaitMs;
+    phases.sqlExecutionMs += sample.executionMs;
+    phases.sqlRetries += sample.retries;
+    phases.sqlExhausted += Number(sample.exhausted);
+  };
   const measure = async (name, operation) => {
     const start = performance.now();
     try { return await operation(); }
@@ -70,7 +101,8 @@ async function synchronizeTaskTitles(payload) {
     }
     try {
       const result = records.length
-        ? await measure("commitMs", () => journalOperations.run(() => journal.upsertRecords(records, { expectedRevision })))
+        ? await measure("commitMs", () => journalOperations.run(() => journal.upsertRecords(records,
+          { expectedRevision, recordMutationTiming }), { recordMutationTiming: recordQueueTiming }))
         : { revision: expectedRevision };
       return {
         updated: records.length, revision: result.revision,
@@ -284,12 +316,13 @@ async function projectJournal(payload, id) {
   };
 }
 
-function serializedError(error) {
+function serializedError(error, measurements = null) {
   return {
     message: String(error?.message ?? error),
     code: error?.code,
     errcode: error?.errcode,
     stack: error?.stack,
+    ...(measurements ? { measurements } : {}),
   };
 }
 
@@ -368,7 +401,8 @@ async function handle(message) {
         const result = await synchronizeTurnMetadata(journal, journalOperations, message.payload);
         return { ...result, workerThreadId: threadId, queueWaitMs: message.queueWaitMs };
       }
-      return { ...await synchronizeTaskTitles(message.payload), queueWaitMs: message.queueWaitMs };
+      message.measurements = { queueWaitMs: message.queueWaitMs };
+      return { ...await synchronizeTaskTitles(message.payload, message.measurements), queueWaitMs: message.queueWaitMs };
     }
     case "usage-sync-snapshot": return usageSyncSnapshot(message.payload);
     case "usage-sync-state": return store.usageSyncState();
@@ -404,7 +438,7 @@ parentPort.on("message", (message) => {
       parentPort.postMessage({ id: message.id, value });
       if (message.type === "close") parentPort.close();
     } catch (error) {
-      parentPort.postMessage({ id: message.id, error: serializedError(error) });
+      parentPort.postMessage({ id: message.id, error: serializedError(error, message.measurements) });
       if (message.type === "close") parentPort.close();
     }
   });

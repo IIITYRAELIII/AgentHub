@@ -63,6 +63,27 @@ export class TaskOperationInterruption {
       throw Object.assign(new Error("Task operation stop is not confirmed; continue its cancellation first"), { code: "TASK_OPERATION_STOP_PENDING" });
     }
   }
+  assertValidationIdle(receipt) {
+    const binding = receipt?.taskExecution;
+    if (binding?.protocol !== "task-operation-interruption-v1" || !binding.ownerId
+        || binding.cancellation || this.#live.has(receipt.requestId)) {
+      throw new Error("Original validation worker is not positively drained");
+    }
+  }
+  async validationRetirement(receipt, { runtimeWitness = null } = {}) {
+    this.assertValidationIdle(receipt);
+    if (receipt.taskExecution.ownerId === this.#instance) {
+      return { kind: "joined-local-validation-worker", ownerId: this.#instance };
+    }
+    if (!this.runtime?.capture || !this.runtime?.assertRetired
+        || (this.runtime.requiresRetainedWitness && !runtimeWitness)) {
+      throw new Error("Previous validation runtime requires its exact native retirement witness");
+    }
+    const cohort = await this.runtime.capture({ original: receipt, witness: runtimeWitness });
+    const retirement = await this.runtime.assertRetired(cohort);
+    if (retirement?.retired !== true) throw new Error("Previous validation runtime is not retired");
+    return { ...retirement, ownerId: receipt.taskExecution.ownerId };
+  }
   list(taskId) {
     return this.catalog.taskOperationExecutions(taskId).map(row => ({
       requestId: row.requestId, toolName: row.toolName, argumentsHash: row.argumentsHash,

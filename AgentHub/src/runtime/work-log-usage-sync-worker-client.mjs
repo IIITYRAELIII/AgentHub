@@ -7,6 +7,10 @@ const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
 const SNAPSHOT_INPUT_MEASUREMENTS = ["selectedJournalRecords", "materializedRecordJsonBytes", "journalSelectionMode"];
 const TRACE_MEASUREMENTS = [
   ...SNAPSHOT_INPUT_MEASUREMENTS,
+  "workerProcessId", "sqlWriteAttempts", "sqlRowPreparationMs", "sqlBeginMs", "sqlTransactionMs", "sqlTransactionCount",
+  "sqlFirstLockAtMs", "sqlFirstReleaseAtMs", "sqlLastLockAtMs", "sqlLastReleaseAtMs", "sqlUnreleasedTransactions",
+  "sqlQueueWaitMs", "sqlExecutionMs", "sqlRetries", "sqlExhausted",
+  "sqlBeginRefused", "sqlRolledBack", "sqlCommitted", "sqlRollbackRefused",
   "queueWaitMs", "durationMs", "recordCount", "invalidRecordCount", "eventCount", "factCount",
   "workerThreadId", "accountingRecordsRead", "changedDayCount", "inspected", "candidateCount", "updated", "revisionReadMs", "projectionReadMs", "ledgerReadMs", "normalizeMs",
   "metadataReadMs", "recordReadMs",
@@ -97,6 +101,9 @@ export class WorkLogUsageSyncWorkerStore {
       request.trace?.finish({
         outcome, queueDepth: request.queueDepth,
         metadata: {
+          ...(["ERR_SQLITE_ERROR", "SQLITE_BUSY", "SQLITE_LOCKED"].includes(value?.code)
+            ? { sqliteErrorCode: value.code } : {}),
+          ...(Number.isSafeInteger(value?.errcode) && value.errcode >= 0 ? { sqliteNativeCode: value.errcode } : {}),
           ...Object.fromEntries(TRACE_MEASUREMENTS
             .filter((key) => Number.isFinite(source?.[key]) && source[key] >= 0)
             .map((key) => [key, source[key]])),
@@ -316,7 +323,7 @@ export class WorkLogUsageSyncWorkerStore {
     this.#pending.delete(message.id);
     const failed = message.error || message.value?.conflict === true
       || message.value?.projectionDeferred === true;
-    this.#finishTrace(request, failed ? "failed" : "succeeded", message.value);
+    this.#finishTrace(request, failed ? "failed" : "succeeded", message.error ?? message.value);
     if (message.error) request.reject(workerError(message.error));
     else request.resolve(message.value);
     if (!this.#pending.size) this.#worker?.unref?.();

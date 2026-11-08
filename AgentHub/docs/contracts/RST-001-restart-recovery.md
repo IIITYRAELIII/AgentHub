@@ -275,8 +275,18 @@ the original command identity and existing durable trace owner.
   or pause. User Stop/pause retains its authority (ADR-0127).
 - One durable restart launches one owned RuntimeHost tree. Windows restart never
   submits an escaping WMI start, retries an ownership timeout or adds a fallback
-  launch. The controlled path uses a direct detached host and retains exact
-  cleanup ownership until lock/ready proof. Cold `--spawn-independent` uses
+  launch. The controlled Windows path uses the existing Host's pipe-connected
+  `--spawn-replacement` entry. It creates one suspended child through the same
+  verified external desktop parent, proves that child outside inherited Jobs,
+  and assigns a fresh per-Host Job before resuming. An existing same-name Job
+  refuses without changing that Job. The launcher retains the exact child and
+  Job handles until the original caller proves operation/release/instance Ready
+  and the native owner confirms that Ready Node belongs to the new Job. The
+  caller joins the launcher's commit before returning, leaving no relay in the
+  old cohort. Abort/EOF cleans only that exact new Job and confirms zero before
+  recovery; missing replies or unjoined cleanup remain unknown, without retry.
+  No live old writer is subtracted from historical Job retirement.
+  Cold `--spawn-independent` uses
   synchronous native process creation with the pinned actual desktop shell as
   explicit parent. A suspended child must be outside every Job, have that exact
   parent and the same effective security context before Resume. Missing or

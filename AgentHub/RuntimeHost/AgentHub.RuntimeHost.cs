@@ -229,6 +229,12 @@ namespace AgentHub.RuntimeHost
         private static ProcessInformation CreateIndependentProcess(string executable, string arguments,
             string directory, out uint parentPid)
         {
+            return CreateIndependentProcessCore(executable, arguments, directory, out parentPid, null);
+        }
+
+        private static ProcessInformation CreateIndependentProcessCore(string executable, string arguments,
+            string directory, out uint parentPid, Action<ProcessInformation> beforeResume)
+        {
             IntPtr shell = GetShellWindow();
             if (shell == IntPtr.Zero || GetWindowThreadProcessId(shell, out parentPid) == 0)
                 throw new InvalidOperationException("Interactive desktop shell is unavailable");
@@ -266,6 +272,7 @@ namespace AgentHub.RuntimeHost
                     StringComparison.Ordinal))
                     throw new InvalidOperationException("New RuntimeHost security context differs from its requesting owner");
                 VerifyShellParent(parent, parentPid);
+                if (beforeResume != null) beforeResume(child);
                 if (ResumeThread(child.Thread) != 1) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot resume owned RuntimeHost");
                 resumed = true;
                 return child;
@@ -494,6 +501,10 @@ namespace AgentHub.RuntimeHost
                 if (args.Length == 1 && args[0] == "--spawn-independent")
                 {
                     return StartIndependent(runtimeRoot);
+                }
+                if (args.Length == 1 && args[0] == "--spawn-replacement")
+                {
+                    return StartOwnedReplacement(runtimeRoot);
                 }
 
                 bool checkOnly = args.Length == 1 && args[0] == "--check";
@@ -881,6 +892,99 @@ namespace AgentHub.RuntimeHost
             return 0;
         }
 
+        // The old owner retains this pipe-connected launcher until its existing
+        // exact ready proof commits, or until native cleanup has proved zero.
+        // Only the newly created suspended child is assigned to this fresh Job.
+        private static int StartOwnedReplacement(string runtimeRoot)
+        {
+            string operation = Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID");
+            Guid parsed;
+            if (!Guid.TryParse(operation, out parsed))
+                throw new InvalidOperationException("Managed replacement requires its restart operation identity");
+            ProcessInformation child = new ProcessInformation();
+            IntPtr job = IntPtr.Zero;
+            bool committed = false;
+            try
+            {
+                uint parentPid;
+                child = CreateIndependentProcessCore(Assembly.GetExecutingAssembly().Location, "", runtimeRoot,
+                    out parentPid, delegate(ProcessInformation suspended) {
+                        IntPtr created = CreateJobObject(IntPtr.Zero, "Local\\IIITYRAELIII.AgentHub." + suspended.ProcessId);
+                        int error = Marshal.GetLastWin32Error();
+                        if (created == IntPtr.Zero) throw new Win32Exception(error);
+                        if (error == 183)
+                        {
+                            CloseHandle(created);
+                            throw new InvalidOperationException("Replacement Job name already exists; no fresh ownership");
+                        }
+                        job = created;
+                        if (!AssignProcessToJobObject(job, suspended.Process))
+                            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot own suspended replacement Job");
+                    });
+                bool inherited;
+                if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inherited)) inherited = true;
+                WriteLifetime(runtimeRoot, "replacement-created", (int)child.ProcessId, null, inherited, parentPid, true);
+                Console.WriteLine(new JavaScriptSerializer().Serialize(new {
+                    kind = "agent-hub-owned-replacement-v1", operationId = operation, hostPid = child.ProcessId
+                }));
+                Console.Out.Flush();
+                // Read a bounded control line. EOF/invalid input is abort, never
+                // a detached successful launch or permission for another start.
+                StringBuilder command = new StringBuilder();
+                for (int value; command.Length <= 128 && (value = Console.Read()) >= 0 && value != '\n'; )
+                    command.Append((char)value);
+                string prefix = "AGENT_HUB_REPLACEMENT_READY ";
+                int nodePid;
+                if (command.Length <= 128 && command.ToString().StartsWith(prefix, StringComparison.Ordinal)
+                    && Int32.TryParse(command.ToString().Substring(prefix.Length), out nodePid) && nodePid > 0)
+                {
+                    IntPtr node = OpenProcess(0x00100000 | 0x1000, false, (uint)nodePid);
+                    try
+                    {
+                        bool member;
+                        if (node == IntPtr.Zero || WaitForSingleObject(child.Process, 0) != 258
+                            || WaitForSingleObject(node, 0) != 258
+                            || !IsProcessInJob(node, job, out member) || !member)
+                            throw new InvalidOperationException("Ready Node does not belong to the exact new replacement Job");
+                        committed = true;
+                        Console.WriteLine("AGENT_HUB_REPLACEMENT_COMMITTED");
+                        Console.Out.Flush();
+                    }
+                    finally { if (node != IntPtr.Zero) CloseHandle(node); }
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (!committed && job != IntPtr.Zero)
+                    {
+                        if (!TerminateJobObject(job, 1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+                        for (;;)
+                        {
+                            JobAccounting accounting;
+                            if (!QueryInformationJobObject(job, 1, out accounting,
+                                (uint)Marshal.SizeOf(typeof(JobAccounting)), IntPtr.Zero))
+                                throw new Win32Exception(Marshal.GetLastWin32Error());
+                            if (accounting.ActiveProcesses == 0) break;
+                            if (DateTime.UtcNow >= deadline) throw new InvalidOperationException("Owned replacement cleanup remains unknown");
+                            Thread.Sleep(20);
+                        }
+                        Console.WriteLine("AGENT_HUB_REPLACEMENT_ABORTED");
+                        Console.Out.Flush();
+                    }
+                }
+                finally
+                {
+                    if (child.Thread != IntPtr.Zero) CloseHandle(child.Thread);
+                    if (child.Process != IntPtr.Zero) CloseHandle(child.Process);
+                    if (job != IntPtr.Zero) CloseHandle(job);
+                }
+            }
+            return 0;
+        }
+
         private static void WriteLifetime(string runtimeRoot, string stage, int childPid, int? exitCode, bool inJob,
             uint? externalParentPid = null, bool? childInJobBeforeResume = null)
         {
@@ -895,6 +999,9 @@ namespace AgentHub.RuntimeHost
                 };
                 if (externalParentPid.HasValue) record["externalParentPid"] = externalParentPid.Value;
                 if (childInJobBeforeResume.HasValue) record["childInJobBeforeResume"] = childInJobBeforeResume.Value;
+                Guid operation;
+                string original = Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID");
+                if (Guid.TryParse(original, out operation)) record["operationId"] = original;
                 File.AppendAllText(Path.Combine(directory, "runtime-host-lifetime.jsonl"),
                     new JavaScriptSerializer().Serialize(record) + Environment.NewLine, new UTF8Encoding(false));
             }
@@ -1184,6 +1291,8 @@ namespace AgentHub.RuntimeHost
             }
             try
             {
+                bool member;
+                if (IsProcessInJob(GetCurrentProcess(), job, out member) && member) return job;
                 if (!AssignProcessToJobObject(job, GetCurrentProcess()))
                 {
                     if (acceptanceName != null) throw new InvalidOperationException("Acceptance launcher could not join its owned process job");

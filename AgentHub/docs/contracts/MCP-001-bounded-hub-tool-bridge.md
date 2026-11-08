@@ -27,6 +27,43 @@ identity is introduced. Desktop/UI callers distinguish these results from a
 completed Task and never resubmit mutations merely because readback is missing.
 See ADR-HUB-407.
 
+## Workflow enum validation and original settlement
+
+The MCP status owner validates the workflow enum synchronously before calling
+the lifecycle owner. Its private input error terminalizes the existing admitted
+receipt as failed; identical replay returns that failure without dispatch.
+A downstream error with similar text/name remains potentially partial/unknown.
+
+The existing RM reconciliation owner has a finite protocol-v1 compatibility
+boundary for an ordinary malformed status original: exactly request/Task/status
+and both original CAS fields, with an invalid nonempty enum and no special
+cutover, selected, squash or review arguments. The stored execution binding and
+arguments hash, original actor, configured root and unchanged Task CAS must all
+match. Missing transition/outcome rows are necessary but never sufficient.
+Under existing Task/repository/Await leases the owner also requires no process
+guard and either a joined local execution or the existing trusted exact native
+retirement witness for a previous runtime. It never stops a worker itself.
+
+The existing receipt failure transaction rechecks exact identity, Task CAS and
+lifecycle absence before settlement. This records workflow_input_validation,
+preserves original arguments/execution binding and previous diagnostic, and
+creates no lifecycle outcome, cancellation, global NO_EFFECT proof or replay
+permission. Changed/missing/foreign/undrained evidence stays unknown. Receipt
+persistence failure stays ambiguous. Remove this historical branch only after
+all addressed protocol-v1 malformed originals are terminal and migrated.
+The existing local operation-reconcile CLI accepts --reconcile-arguments for
+the same authenticated RM tool; it grants no separate writer authority.
+See ADR-HUB-408-malformed-workflow-status.md.
+
+The existing retained native witness may read a primary lock while the instance
+keeps its write handle. This observer has read access only and permits existing
+read/write/delete sharing; it does not unlock or replace the owner's file. The
+bounded complete hash and stable volume/file/creation/size/write identity must
+match the original snapshot, with same-handle and fresh named-path checks and
+no reparse following. Drift, oversized or nonregular input refuses before the
+witness manifest is published; every read handle closes. Existing exact native
+Host/Node/job continuity, current-user pipe, nonce and source hash checks remain.
+
 `hub_stream_message_send` with ordinary `mode=steer` addresses the destination
 Stream. The common durable message owner resolves its current active managed
 turn or retains that same command in the normal queue. A definitively ended
@@ -65,6 +102,16 @@ late queued callbacks cannot write. A legacy UNKNOWN requires positive retiremen
 of its whole prior runtime cohort through the existing native witness owner.
 PID absence, error text and elapsed time do not suffice. No original claim/Git
 replay, dirty-source removal or NO_EFFECT inference is authorized.
+
+For an exact UNKNOWN/STOPPED workflow with a failed lifecycle transition, the
+existing RM reconciliation owner reports a read-only stopped disposition under
+the existing Task/repository/Await leases and process guard. It rechecks original
+arguments/CAS/root, the whole retained receipt snapshot and bound stopped
+retirement metadata. The original receipt, error, result, timestamps and stop
+history remain immutable; failed lifecycle does not make its effects known.
+The separate reconciliation command can succeed with outcome stopped and
+effects retained_unknown. A later explicit workflow uses normal fresh guards;
+neither this response nor replay executes the stopped original again.
 
 The existing operation-reconcile CLI exposes the same cancel command via
 `--cancel-arguments <json>` with local provider/thread/Stream identity. A first
@@ -1084,6 +1131,39 @@ The existing Desktop controller and cancellation owner read and stop this exact
 operation before the next ordinary action, without changing Task assignment.
 
 ## Task admission and original result readback
+
+A local live invocation is reported as active, an explicit UNKNOWN receipt as
+unknown, and a nonterminal receipt without observed local execution as unresolved.
+Receipt presence and a missing worker never prove queue membership or completion;
+the submission result trace must not label every nonterminal response queued.
+This observation does not replace the canonical receipt status or effect authority.
+
+If writing a failure/UNKNOWN receipt fails, the completion owner preserves both
+bounded errors as diagnostic metadata in the existing execution binding, under
+the exact receipt/actor/hash/current-owner CAS. No new ledger or work queue is
+created. STOPPED history and terminal winners cannot be changed. This finite
+diagnostic write neither reruns effects nor certifies NO_EFFECT. Reopen and exact
+same-ID submission return the retained diagnostics without another worker.
+Original-ID trace spans contain only error codes/hashes and persistence outcome,
+never arbitrary error text. If diagnostic persistence also fails, those existing
+best-effort trace records are the fallback observation; an unavailable trace or
+diagnostic write cannot be represented as durable success. Historical pending
+claims without positive execution/preparation/custody evidence remain unresolved.
+
+The same diagnostic preserves a failure of lifecycle failure persistence inside
+the admitted operation, even if the outer UNKNOWN receipt is written successfully.
+The original operation error and that inner persistence exception retain their
+identities through the existing exception chain. If outer persistence also fails,
+it does not replace the first failure pair. Lease loss still prevents lifecycle
+writes; these diagnostics confer no terminal outcome or replay authority.
+
+A failed lifecycle BEGIN also retains its original exception if a follow-up
+Task read is unavailable. Completion classification reads use the same bounded
+failure diagnostic as completion writes: a second failed read preserves both
+errors without inventing a lifecycle row, terminal receipt or NO_EFFECT result.
+Same-original reopen remains read-only. An explicit supported cancellation may
+fence an aware execution with no lifecycle row under its existing recovery lease
+and process guard; only its positive STOPPED result establishes that disposition.
 
 Public MCP Task mutations return a `taskOperation` admission/readback envelope
 from the existing MCP ledger once the same worker is registered. Admission is

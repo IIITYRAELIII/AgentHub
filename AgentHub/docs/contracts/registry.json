@@ -550,6 +550,8 @@
         "src/infrastructure/persistence/workspace-catalog-store.mjs",
         "src/application/task-operation-reconciliation-service.mjs",
         "src/domain/mcp-arguments-hash.mjs",
+        "tests/application/hub-mcp-invalid-status.test.mjs",
+        "docs/decisions/ADR-HUB-408-malformed-workflow-status.md",
         "src/domain/task-selected-composition.mjs",
         "src/infrastructure/filesystem/selected-composition-proof.mjs",
         "task-operation-reconcile.mjs",

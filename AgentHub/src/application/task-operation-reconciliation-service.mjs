@@ -6,12 +6,13 @@ import { normalizedTaskGitReferences, normalizedInitialNativeTest } from "../dom
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
-import { TaskLifecycleNoEffectError, TaskOperationReconciliationRefusedError,
+import { normalizedTaskWorkflowStatus, TaskLifecycleNoEffectError, TaskOperationReconciliationRefusedError,
   workflowAdmissionNoEffectEvidence } from "../domain/task-board-task.mjs";
 
 import { normalizePublishedResolution } from "../domain/published-resolution.mjs";
 import { selectedAbsorptionHandoff } from "../domain/task-selected-composition.mjs";
 import { sameTaskWorkflowState as sameTaskState, nativeTestMetadataDrift } from "../domain/native-test-terminal-recovery.mjs";
+import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -38,6 +39,64 @@ function samePath(left, right) {
 }
 
 const WORKFLOW_STATUSES = new Set(["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"]);
+
+// Protocol-v1 ordinary status has no alternate effect family. Its malformed
+// enum is rejected before lifecycle mutation; error text is not this proof.
+function malformedWorkflowArguments(receipt) {
+  const execution = receipt?.taskExecution, args = execution?.arguments;
+  const keys = ["request_id", "task_id", "status", "expected_task_revision", "expected_workflow_status"];
+  if (execution?.version !== 1 || execution.protocol !== "task-operation-interruption-v1"
+      || Object.keys(execution).some(key => !["version", "protocol", "taskId", "taskWorkspaceId", "ownerId", "arguments"].includes(key))
+      || typeof execution.ownerId !== "string" || !execution.ownerId || execution.cancellation
+      || !args || Object.keys(args).length !== keys.length || Object.keys(args).some(key => !keys.includes(key))
+      || args.request_id !== receipt.requestId || args.task_id !== execution.taskId
+      || typeof args.status !== "string" || !args.status.trim() || args.status.length > 40 || args.status.includes("\0")
+      || !Number.isSafeInteger(args.expected_task_revision) || args.expected_task_revision < 1
+      || !WORKFLOW_STATUSES.has(args.expected_workflow_status)
+      || mcpArgumentsHash(args) !== receipt.argumentsHash) return null;
+  try {
+    normalizedTaskWorkflowStatus(args.status);
+    return null;
+  } catch {
+    return args;
+  }
+}
+
+function validationReceiptIdentity(receipt) {
+  return canonicalValue(Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId",
+    "toolName", "argumentsHash", "createdAtMs", "taskExecution"].map(key => [key, receipt[key]])));
+}
+
+// STOPPED is a durable execution disposition, not authority to rewrite past
+// effects. Compare the entire retained receipt before reporting it read-only.
+function stoppedWorkflowReceipt(receipt, task) {
+  const execution = receipt.taskExecution, stop = execution?.cancellation;
+  if (!stop) return false;
+  const { taskExecution: priorExecution, ...prior } = stop.original ?? {};
+  const { taskExecution: currentExecution, ...current } = receipt;
+  const { cancellation, ...binding } = currentExecution;
+  const same = (a, b) => JSON.stringify(canonicalValue(a)) === JSON.stringify(canonicalValue(b));
+  const aware = binding.protocol === "task-operation-interruption-v1" && typeof binding.ownerId === "string" && binding.ownerId;
+  const retirement = stop.retirement;
+  const retired = aware
+    ? ["joined-local-worker", "durable-execution-fence-and-owned-task-lease"].includes(retirement?.kind)
+      && retirement.ownerId === binding.ownerId
+    : retirement?.retired === true && Boolean(stop.cohort);
+  if (stop.phase !== "stopped" || stop.effects !== "retained_unknown"
+      || stop.requestId !== receipt.requestId || stop.taskId !== task.id || stop.targetWorkspaceId !== task.workspaceId
+      || !Number.isSafeInteger(stop.requestedAtMs) || !Number.isSafeInteger(stop.stoppedAtMs)
+      || stop.stoppedAtMs < stop.requestedAtMs || !stop.cancellationRequestId || !retired
+      || execution.version !== 1 || execution.taskId !== task.id
+      || (execution.taskWorkspaceId != null && execution.taskWorkspaceId !== task.workspaceId)
+      || binding.arguments?.request_id !== receipt.requestId || binding.arguments?.task_id !== task.id
+      || mcpArgumentsHash(binding.arguments) !== receipt.argumentsHash
+      || !same(current, prior)
+      || (priorExecution ? !same(binding, priorExecution)
+        : !same(binding, { version: 1, taskId: task.id, arguments: binding.arguments }))) {
+    throw new Error("Stopped workflow receipt or retained retirement identity differs");
+  }
+  return true;
+}
 
 function supplied(value) {
   return value != null && String(value).trim() !== "";
@@ -304,7 +363,7 @@ function exactCommittedEvidence(committed, evidence, projectRoot, targetWorkflow
 }
 
 export class TaskOperationReconciliationService {
-  constructor({ workspaceCatalog, taskBoard, taskLifecycle } = {}) {
+  constructor({ workspaceCatalog, taskBoard, taskLifecycle, taskExecution = null, record = () => {} } = {}) {
     for (const name of [
       "workspace", "stream", "mcpOperation", "completeUnknownMcpOperation", "failUnknownMcpOperation",
     ]) requiredMethod(workspaceCatalog, name);
@@ -314,6 +373,8 @@ export class TaskOperationReconciliationService {
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
     this.taskLifecycle = taskLifecycle;
+    this.taskExecution = taskExecution;
+    this.record = record;
   }
 
   #identity(options = {}) {
@@ -351,6 +412,27 @@ export class TaskOperationReconciliationService {
       workspace,
       stream: task.streamId ? this.workspaceCatalog.stream(task.streamId) : null,
     });
+    const malformed = malformedWorkflowArguments(receipt);
+    if (malformed) {
+      const stream = this.workspaceCatalog.stream(receipt.streamId);
+      if (transition || outcome || receipt.result != null || receipt.preparationState || receipt.claimCustody
+          || receipt.interstreamContentHash || receipt.workspaceId !== workspace.id
+          || receipt.toolName !== "hub_task_status_update" || receipt.operationStatus !== "pending"
+          || receipt.receiptState !== "unknown" || !Number.isSafeInteger(receipt.createdAtMs)
+          || receipt.taskExecution.taskWorkspaceId !== workspace.id || malformed.task_id !== task.id
+          || !stream || stream.workspaceId !== workspace.id || !["codex", "claude"].includes(receipt.provider)
+          || typeof receipt.threadId !== "string" || !receipt.threadId || receipt.actorKind
+          || options.expectedArgumentsHash !== receipt.argumentsHash
+          || !root || !taskRoot || !samePath(root, taskRoot) || exactGuardId
+          || squash || selected || initial || cutover || options.nativeResolutionReview != null
+          || workflowCas?.expected_task_revision !== malformed.expected_task_revision
+          || workflowCas?.expected_workflow_status !== malformed.expected_workflow_status
+          || task.revision !== malformed.expected_task_revision || task.workflowStatus !== malformed.expected_workflow_status) {
+        throw new Error("Malformed workflow original identity, effects or Task CAS differs");
+      }
+      return { workspace, task, receipt, transition, outcome, operationId, projectRoot: root,
+        state: "invalid_input", malformed, validationIdentity: validationReceiptIdentity(receipt) };
+    }
     if (outcome?.result?.noEffect) {
       const proof = !transition && workflowAdmissionNoEffectEvidence(outcome, receipt);
       if (!proof || proof.taskId !== task.id || proof.workspaceId !== workspace.id
@@ -538,6 +620,10 @@ export class TaskOperationReconciliationService {
     if (!state) {
       throw new Error("Unknown workflow operation has no exact recoverable or terminal durable state");
     }
+    if (stoppedWorkflowReceipt(receipt, task)) {
+      if (state !== "failed" || outcome) throw new Error("Stopped workflow has no exact failed transition disposition");
+      state = "stopped";
+    }
     return {
       workspace,
       task,
@@ -566,6 +652,12 @@ export class TaskOperationReconciliationService {
   }
 
   async #settle(identity, { recovery = null } = {}) {
+    if (identity.state === "stopped") {
+      return { resolved: true, outcome: "stopped", receipt: identity.receipt, reconciliation: {
+        durableState: "stopped_failed_transition", workflowOutcome: "failed", effects: "retained_unknown",
+        originalReceiptPreserved: true, taskId: identity.task.id, projectRoot: identity.projectRoot,
+      } };
+    }
     if (identity.state === "no_effect") {
       const reconciliation = { outcome: "NO_EFFECT", durableState: "workflow_admission_refusal", evidence: identity.noEffect };
       const receipt = await this.workspaceCatalog.failUnknownMcpOperation(identity.operationId, {
@@ -624,10 +716,67 @@ export class TaskOperationReconciliationService {
     return { resolved: true, outcome: "failed", receipt, reconciliation };
   }
 
+  #validationTrace(operationId, stage, started, outcome) {
+    try {
+      const pending = this.record({ commandId: operationId, transport: "task-operation", stage, outcome,
+        monotonicDurationMs: performance.now() - started, metadata: { malformed: 1 } });
+      pending?.catch?.(() => {});
+    } catch {}
+  }
+
+  async #settleMalformed(identity, options, lease, onSettle) {
+    requiredMethod(this.taskLifecycle, "assertMalformedWorkflowIdleOwned");
+    requiredMethod(this.taskExecution, "validationRetirement");
+    requiredMethod(this.taskExecution, "assertValidationIdle");
+    await this.taskLifecycle.assertMalformedWorkflowIdleOwned({ taskId: identity.task.id,
+      operationId: identity.operationId, lease });
+    const started = performance.now();
+    let retirement;
+    try {
+      retirement = await this.taskExecution.validationRetirement(identity.receipt, { runtimeWitness: options.runtimeWitness });
+      this.#validationTrace(identity.operationId, "task-workflow-invalid-retirement", started, "succeeded");
+    } catch (error) {
+      this.#validationTrace(identity.operationId, "task-workflow-invalid-retirement", started, "failed");
+      throw error;
+    }
+    await lease.assertOwned();
+    const expected = JSON.stringify(identity.validationIdentity);
+    const check = receipt => {
+      const fresh = this.#identity(options);
+      if (fresh.state !== "invalid_input" || JSON.stringify(fresh.validationIdentity) !== expected
+          || JSON.stringify(validationReceiptIdentity(receipt)) !== expected) {
+        throw new Error("Malformed workflow original changed before receipt settlement");
+      }
+      this.taskExecution.assertValidationIdle(receipt);
+    };
+    check(this.workspaceCatalog.mcpOperation(identity.operationId));
+    const reconciliation = { outcome: "failed", durableState: "workflow_input_validation",
+      validation: { version: 1, kind: "ordinary-workflow-invalid-enum-v1", code: "TASK_WORKFLOW_STATUS_INVALID",
+        taskId: identity.task.id, taskRevision: identity.task.revision, argumentsHash: identity.receipt.argumentsHash },
+      executionRetirement: retirement,
+      previousReceipt: { receiptState: identity.receipt.receiptState, completedAtMs: identity.receipt.completedAtMs,
+        error: identity.receipt.error } };
+    const settleStarted = performance.now();
+    onSettle();
+    try {
+      const receipt = await this.workspaceCatalog.failUnknownMcpOperation(identity.operationId, {
+        workspaceId: identity.workspace.id, toolName: "hub_task_status_update", error: new Error("Неизвестный статус Task"),
+        reconciliation, beforeSettle: check });
+      this.#validationTrace(identity.operationId, "task-workflow-invalid-settlement", settleStarted, "failed");
+      return { resolved: true, outcome: "failed", receipt, reconciliation };
+    } catch (error) {
+      this.#validationTrace(identity.operationId, "task-workflow-invalid-settlement", settleStarted, "unknown");
+      throw error;
+    }
+  }
+
   async reconcileUnknownWorkflow(options = {}) {
     let initial;
+    const validationStarted = performance.now();
     try {
       initial = this.#identity(options);
+      if (initial.state === "invalid_input") this.#validationTrace(initial.operationId,
+        "task-workflow-invalid-validation", validationStarted, "succeeded");
       if (initial.state !== "no_effect" && initial.workspace.settings?.releaseWorkflowEnabled !== true) {
         throw new Error("Unknown workflow reconciliation requires an enabled release workflow");
       }
@@ -639,7 +788,10 @@ export class TaskOperationReconciliationService {
     // the terminal outcome already fences any later lifecycle admission.
     // Settlement errors remain ambiguous, not a new pre-effect certificate.
     if (initial.state === "no_effect") return this.#settle(initial);
-    return this.taskLifecycle.withUnknownWorkflowReconciliationLock({
+    const lockStarted = performance.now();
+    let lockEntered = false;
+    try {
+    return await this.taskLifecycle.withUnknownWorkflowReconciliationLock({
       taskId: requiredText(options.taskId, "task id", 200),
       sourceTaskId: options.squashSourceTaskId
         ? requiredText(options.squashSourceTaskId, "squash source task id", 200)
@@ -647,9 +799,24 @@ export class TaskOperationReconciliationService {
       operationId: requiredText(options.operationRequestId, "operation request id", 300),
       projectRoot: path.resolve(requiredText(options.projectRoot, "project root")),
     }, async (lease) => {
+      lockEntered = true;
+      if (initial.state === "invalid_input") this.#validationTrace(initial.operationId,
+        "task-workflow-invalid-lock-wait", lockStarted, "succeeded");
       let effectsStarted = false;
       try {
       let identity = this.#identity(options);
+      if (identity.state === "invalid_input") {
+        return await this.#settleMalformed(identity, options, lease, () => { effectsStarted = true; });
+      }
+      if (identity.state === "stopped") {
+        requiredMethod(this.taskLifecycle, "assertStoppedWorkflowIdleOwned");
+        await this.taskLifecycle.assertStoppedWorkflowIdleOwned({ taskId: identity.task.id,
+          operationId: identity.operationId, lease });
+        await lease.assertOwned();
+        identity = this.#identity(options);
+        if (identity.state !== "stopped") throw new Error("Stopped workflow disposition changed under its lease");
+        return this.#settle(identity);
+      }
       const needsRecovery = identity.state === "pending" || identity.withdrawal;
       if (identity.state === "pending" && !identity.guardId && !identity.withdrawal
           && !identity.squash && !identity.selected) {
@@ -729,5 +896,10 @@ export class TaskOperationReconciliationService {
         throw error;
       }
     });
+    } catch (error) {
+      if (!lockEntered && initial.state === "invalid_input") this.#validationTrace(initial.operationId,
+        "task-workflow-invalid-lock-wait", lockStarted, "failed");
+      throw error;
+    }
   }
 }
