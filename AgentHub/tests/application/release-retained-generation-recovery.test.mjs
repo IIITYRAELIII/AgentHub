@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -121,8 +121,22 @@ async function fixture(t) {
     steps: [{ label: "Подготовка артефактов публикации", status: "failed" }, { label: "Публикация Git", status: "pending" },
       { label: "Установка runtime-релиза", status: "pending" }] };
   await writeJson(path.join(execution, "publication-status.json"), run);
+  const runnerFile = path.join(root, "controlled-publication-runner.mjs");
+  await writeFile(runnerFile, `import {writeFile} from 'node:fs/promises';
+    import path from 'node:path';
+    await writeFile(path.join(process.env.AGENT_HUB_RELEASE_EXECUTION_ROOT,'result.json'),JSON.stringify({
+      operationId:process.env.AGENT_HUB_RELEASE_OPERATION_ID,generation:Number(process.env.AGENT_HUB_RELEASE_GENERATION),
+      targetId:process.env.AGENT_HUB_RELEASE_TARGET_ID,candidate:process.env.AGENT_HUB_RELEASE_CANDIDATE_IDENTITY,
+      status:'applied',revision:${JSON.stringify(candidate.commit)},tool:${JSON.stringify(tool)}}));`);
   let selectedResults = selected, readback = "not_applied", publications = 0, compositions = 0;
+  let childJoined = Promise.resolve();
   const publication = new ReleaseOperationPublication({ dataDir, runtimeRoot,
+    runnerFile, readPublicationStateImpl: async () => null, gitRemoteHeadImpl: async () => baseCommit,
+    spawnImpl: (...args) => {
+      const child = spawn(...args);
+      childJoined = new Promise(resolve => child.once("close", resolve));
+      return child;
+    },
     processAliveImpl: () => false, readToolPackage: async () => ({ ...tool, assertUnchanged: async () => {} }),
     publicationRunStoreFactory: () => ({ read: () => json(path.join(execution, "publication-status.json")) }) });
   const preflight = { releaseGitWorkspaces: releaseGit, withAwaitTransition: async (_id, callback) => callback(),
@@ -141,9 +155,10 @@ async function fixture(t) {
     }, validate: async () => assert.fail("the original applied validation is reused"),
     readTarget: async () => typeof readback === "function" ? readback() : { status: readback },
     publishTarget: async input => {
-      await publication.withRetainedGeneration({ ...input, commit: async () => {} });
+      const effect = await publication.publish(input);
+      await childJoined;
       publications++;
-      return { status: "applied", revision: candidate.commit };
+      return effect;
     }, finalize: async () => ({ status: "complete" }) });
   const command = new ReleaseOperationCommandService({ releaseOperations: service,
     workspaceCatalog: { workspace() {}, hierarchy() {} }, taskBoard: { task() {}, releaseTasks() {} } });
