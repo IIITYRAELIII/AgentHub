@@ -451,13 +451,112 @@ digest: an old alias-bearing receipt can require a corrected later generation.
 
 ## Native transport retirement (ADR-0126)
 
-New native merge transport contains exact selected base/result ancestry through
+The existing sealed literal-transport sink can retire an eligible read-only Git
+pack through its SAME verified native handle, using the runtime/capture owners'
+existing extended disposition pattern. It never clears attributes by pathname,
+falls back to legacy disposition, or broadens transport authority. Complete
+identity, size/hash, stream/link/reparse and exclusive-writer checks still precede
+disposition; unsupported/native errors remain errors after the child joins.
+Historical UNKNOWN operations are not retried or relabelled by this capability;
+their existing owner needs a separate supported disposition and fresh exact
+operational binding. See ADR-HUB-385-readonly-literal-transport.
+
+Legacy native merge transport contains exact selected base/result ancestry through
 private advertised bundle tips, including dangling accepted inputs, without
 copying all unrelated source refs or mutating source configuration/refs. Git
 streams its complete pack into an already-owned output descriptor; no bare pool
 or recursive temporary-directory deletion is used. A failed/partial output and
 any plain/reparse replacement are preserved. The consuming clone has no
 alternates and remains independent.
+
+New Task-native integration intents use ADR-HUB-385-owned-native-objects. They
+bind an explicit owned-immutable-git-objects-v1 descriptor without rewriting the
+shape/hash of a legacy intent. One maintenance-owned bare object store imports
+only missing exact objects. Independent captures hardlink immutable object files;
+HEAD/index/config/refs/workfiles stay private, with no alternates or source ref
+mutation. Pool GC/unlink cannot remove another consumer's physical object link.
+Available cached objects confer no selection, history, review or dev-CAS authority.
+Release candidates and published-dev-sync retain their existing standalone
+provisioning; this is not permission to use linked release worktrees.
+
+The same native-merge-transport owner also exposes a distinct :repository
+resource. Only a completed, durably published Task, known terminal original,
+completed native capture and fresh Task/process/installation custody can admit
+it. All local Git objects, including dangling commits/tags/trees/blobs, plus raw
+Git metadata and exact clean working bytes are verified and anchored in the
+owned store BEFORE the first deletion. The original merge journal, integration
+intent, Task results/branches, receipts and reviews stay at their original
+identities. A raw pack's encoding may retire only after preserving its complete
+object identities/content; it is not substituted for publication authority.
+Ignored/untracked/dirty data, missing/UNKNOWN originals, ambiguous or changed
+source custody and active/current/rollback/prepared source/alternate ODB pins
+remain retained. Legacy source.bundle must retire through its existing owner
+first; this repository resource does not silently broaden a bundle grant.
+
+Several original intake records may name the same immutable native capture.
+Retirement still requires exactly one completed record bound to the capture's
+head/tree/staging identity. Earlier prepared/failed records without any target,
+tree or stage root are retained with their exact raw hashes, only after each
+has genuine canonical terminal Task custody. A missing/UNKNOWN original, changed
+prior record, incomplete target tuple or multiple completed records refuses.
+No earlier failure is rewritten or interpreted as no effect; all original
+records remain outside the retired repository (ADR-HUB-385-prior-native-intakes).
+
+Archive intake and pruning intent live in the existing maintenance original.
+If an admitted original has no confirmed archive or archive intent, recovery
+may continue that SAME deterministic intake only after the complete live source
+passes its original full inventory/binding and all current custody checks.
+Missing intent does not establish no effect. Changed or incomplete source stays
+UNKNOWN; recovery never replaces the child, invents a new binding or deletes
+before its verified archive and original pruning intent. A lost durable intent
+reply is recovered from that same canonical row.
+Storage retirement reuses that same admitted original to prove full original
+object/tag/raw preservation and the complete native graph/review. Its canonical
+row, deterministic archive intent, complete binding, raw integration record and
+completed Task evidence must still agree. It does not recertify an old result
+using today's selected-content replay. A historical automatic merge may preserve
+all original data while a newer forced-base replay demands a duplicate suffix;
+that refusal still applies to ordinary current Test/Await and historical Task
+result certification. A changed/unreviewed native graph, foreign original,
+changed raw record or incomplete archive still refuses retirement. This route
+confers no Task acceptance, publication or selected-content review credit.
+See ADR-HUB-385-historical-capture-preservation.
+
+Partial deletion and lost reply reconcile only that child and exact archive;
+there is no replacement ID, guessed no-effect, forced process stop or SQL/ref
+repair. The handle-bound allowlist refuses changed files, foreign links,
+reparse/ADS and late data. Intentional immutable object hardlinks are unlinked
+without clearing shared attributes. Historical evidence uses the SAME pure
+native graph/content verifier and existing separate history authority; a retired
+capture cannot resume a live Test effect. Invocation-only mathematical scratch
+may borrow the archive ODB while its pool lease is held and is cleaned through
+the sealed boundary; it never writes proof objects into the immutable archive.
+Exact selected-root allocation is measured with FileStandardInfo and file-ID
+deduplication, including newly allocated pool data; volume free-space deltas and
+cumulative scheduler counters are not reclaimed-byte proof.
+
+A persisted capture archive is carried as its unchanged descriptor to the SAME
+object-store lease. Immediately before retirement that lease performs the full
+fresh original/ref/tree/manifest/tag/object/type/reachability proof and exact
+retirement/state binding checks. Eliminating a preliminary unleased duplicate
+read does not eliminate that proof, initial intake or historical graph review.
+Finite producer reuse changes process lifetime only: every batch retains fresh
+Task/publication/source/current checks and the complete native remaining-tree,
+identity/hash/ADS/reparse/link checks and original partial bounds. Bounded timing
+metadata on that original is diagnostic and grants no retirement/retry authority.
+See ADR-HUB-385-native-capture-executor.
+
+For transport retention only, an exact immutable superseded generation may use
+its SAME original's completed successor proof. Every canonical generation on
+the strictly decreasing supersedes chain must verify its original identity,
+and the current final generation still needs its full validated/published/
+finalization evidence. The retention receipt keeps the OLD candidate, tree,
+manifest and generation pins, with a separate completed-successor identity;
+it does not claim that the old generation published or substitute latest bytes.
+Missing/changed/foreign/skipped chain, nonterminal/UNKNOWN finalization or a
+changed clone remains retained. Repository/worktree/evidence retirement is not
+broadened by this redundant-transport proof. See
+ADR-HUB-385-superseded-generation-transport.
 
 New permanent release-generation transport likewise streams only exact local
 main, approved base and selected result ancestry. Its advertised main alias is
@@ -497,6 +596,25 @@ an accepted retirement proof. Current/running/rollback/prepared runtime/source
 roots, release generations, legacy archives and persistent evidence receive no
 new deletion authority from the storage scheduler.
 
+For a wide advertised-root list, the same transport maintenance child may hold
+the complete canonical JSON list as gzip-json-v1 plus its count and SHA-256.
+The 4096-root count, 32 KiB encoded proof and 4 MiB decoded ceiling are bounded;
+no root is truncated. Legacy small-array bindings keep their exact shape. Fresh
+preview equality, full object verification and the existing sealed-file custody
+still precede deletion. Newly admitted wide native lists additionally require
+original commit/tag roots anchored in retained refs/HEAD without borrowed,
+rewritten or ambient object history, rechecked before effect. This is not
+repository/WIP/dependency retirement. See ADR-HUB-385-wide-transport-proof.
+
+Cleanup publication evidence is repository-specific. For a multi-repository
+record, only the matching canonical repository entry supplies its published
+revision; another repository's top-level revision is not a fallback. A later
+origin/main may descend from that durable published revision, but cleanup still
+checks the Task result and current branch/worktree against the recorded published
+revision, never the later unapproved tip. Missing generation, missing matching
+entry, unavailable or divergent origin, dirty/ignored work and stale preview
+remain refusals. See ADR-HUB-385.
+
 The runtime installation owner separately supplies policy v2 exact retirement
 custody in its existing current.json pointer. Installation preserves unrelated
 prepared bodies and defers deletion. Only known selected custody that leaves
@@ -507,6 +625,23 @@ pinned before each native batch. The existing maintenance child is recorded in
 that retired binding before effects, and known partial work resumes only that
 original operation/root/manifest. Unknown data or custody stays retained; no
 recursive directory-removal fallback or Task-publication effect is granted.
+
+For historical Whisper runtimes only, the same owner may retire one undeclared
+`__pycache__/whisper_runtime.cpython-<version>.pyc` after the configured existing
+Python compiler reproduces its ENTIRE bytes from manifest-bound
+`whisper_runtime.py`, without importing/executing that source. The proof binds
+the original physical cache and root/manifest, is rechecked by the native sink,
+and grants no directory-wide exclusion. Cache retires first while a verified
+source handle is held, within the existing batch bounds. Before that unlink,
+the existing original pruning record persists the exact cache-directory and
+compile proof. Native deletion removes that directory before other assets.
+A lost reply between cache/directory unlink may consume only that original
+directory identity with the exact manifest/source rechecked, never a new empty
+directory by name. Lost reply resumes the SAME original; changed cache/source,
+unknown interpreter, extra WIP/links/streams
+or missing source refuses. Immutable manifests are never amended. New voice
+transcription invokes Python with `-B` to avoid generating further bytecode.
+See ADR-HUB-385-generated-runtime-cache.
 
 Policy v3 may retire only a redundant generation source.bundle after the original
 ReleaseOperation proves its exact current generation done, applied validate/finalize
@@ -3830,3 +3965,25 @@ compatibility approval. Task base, native identity/journal, history/metadata
 admission, ordinary release/Await and published multi-base sync rules do not
 change. Missing publication context and any other merge-base shape retain the
 existing replay policy. See ADR-HUB-400-published-test-content-boundary.
+
+## Retained source after completed generation retirement (ADR-HUB-385)
+
+A runtime/prepared source remains pinned by its declared and physical path and
+by every actual Git/commondir/recursive alternate object store. If the generation
+owner has removed its live identity and Git metadata but left source files,
+absence of Git alone is not custody proof. Only the exact existing generation
+archive, stable plain identity/checkpoint/raw manifest, deterministic original
+generation/repository paths and the SAME canonical completed-generation reader
+may establish that this remainder has no Git object-store borrower. Its exact
+completed candidate must match the runtime publicationRevision and sourceRoot.
+This proof keeps the whole source remainder, WIP, prepared body and original
+archive; it authorizes no source deletion or UNKNOWN settlement.
+
+Missing/changed/nonterminal/foreign/superseded proof, redirected paths and ambient
+Git history/storage inputs refuse. A restored Git marker/alternate borrower or
+late ambient input invalidates the proof at the fresh boundary. Reads retain
+the existing installation custody and exact per-generation lease with bounded
+250ms admission; there is no global reservation, new ledger, cap or deadline.
+The existing canonical readGeneration port passes through the same native owner
+registry. No public tool argument, release receipt, publication identity or
+runtime manifest is rewritten. See ADR-HUB-385-retired-generation-source-custody.

@@ -228,6 +228,8 @@
         "agent-hub-main.mjs",
         "src/composition/contour-selection-recovery.mjs",
         "src/infrastructure/persistence/maintenance-operation-store.mjs",
+        "src/infrastructure/persistence/native-capture-retirement-evidence.mjs",
+        "docs/decisions/ADR-HUB-385-owned-native-objects.md",
         "assets/web-app/startup-screen-model.js",
         "assets/web-app/connection-banner.js",
         "src/application/restart-failure-notice.mjs",
@@ -243,6 +245,8 @@
         "docs/decisions/ADR-HUB-363-source-free-runtime-pins.md",
         "src/infrastructure/filesystem/runtime-release-retention*.mjs",
         "src/infrastructure/filesystem/sealed-runtime-release.*",
+      "src/infrastructure/filesystem/sealed-runtime-executor.mjs",
+      "docs/decisions/ADR-HUB-385-runtime-native-executor.md",
         "tests/infrastructure/filesystem/runtime-release-retention*.test.mjs",
         "tests/infrastructure/filesystem/sealed-runtime-release.test.mjs",
         "distribution/install-prepared.mjs",
@@ -278,7 +282,8 @@
         "distribution/whole-update-*.mjs",
         "distribution/whole-update-transport.py",
         "distribution/prepare-whole-update.mjs",
-        "distribution/whole-update-resources.ps1"
+        "distribution/whole-update-resources.ps1",
+        "docs/decisions/ADR-HUB-385-retired-generation-source-custody.md"
       ]
     },
     {
@@ -320,6 +325,8 @@
         "src/infrastructure/filesystem/runtime-installation-custody.mjs",
         "src/infrastructure/filesystem/runtime-release-retention*.mjs",
         "src/infrastructure/filesystem/sealed-runtime-release.*",
+      "src/infrastructure/filesystem/sealed-runtime-executor.mjs",
+      "docs/decisions/ADR-HUB-385-runtime-native-executor.md",
         "tests/infrastructure/filesystem/runtime-release-retention*.test.mjs",
         "tests/infrastructure/filesystem/sealed-runtime-release.test.mjs",
         "src/application/runtime-performance-sampler.mjs",
@@ -349,7 +356,20 @@
         "tests/infrastructure/persistence/runtime-update-backup-retention.test.mjs",
         "docs/decisions/ADR-HUB-383-update-backup-retention.md",
         "src/application/runtime-worker-memory.mjs",
-        "tests/application/runtime-worker-memory.test.mjs"
+        "tests/application/runtime-worker-memory.test.mjs",
+        "src/infrastructure/filesystem/retained-bundle-heads.mjs",
+        "src/infrastructure/filesystem/release-generation-transport-retention.mjs",
+        "tests/infrastructure/filesystem/retained-bundle-heads.test.mjs",
+        "tests/infrastructure/filesystem/native-merge-transport-retention.test.mjs",
+        "tests/infrastructure/filesystem/release-generation-transport-retention.test.mjs",
+        "docs/decisions/ADR-HUB-385-wide-transport-proof.md",
+        "src/infrastructure/filesystem/owned-native-object-store.mjs",
+        "src/infrastructure/filesystem/native-capture-*.mjs",
+        "src/infrastructure/filesystem/sealed-native-capture.*",
+        "src/infrastructure/persistence/native-capture-retirement-evidence.mjs",
+        "tests/infrastructure/filesystem/owned-native-object-store.test.mjs",
+        "tests/infrastructure/filesystem/native-capture-*.test.mjs",
+        "docs/decisions/ADR-HUB-385-owned-native-objects.md"
       ]
     },
     {
@@ -479,10 +499,14 @@
         "src/infrastructure/filesystem/native-merge-transport-retention.mjs",
         "src/infrastructure/filesystem/selected-git-bundle.mjs",
         "src/infrastructure/filesystem/sealed-transport-delete.*",
+    "tests/infrastructure/filesystem/sealed-transport-delete.test.mjs",
+    "docs/decisions/ADR-HUB-385-readonly-literal-transport.md",
         "src/runtime/runtime-manager.mjs",
         "src/infrastructure/filesystem/runtime-installation-custody.mjs",
         "src/infrastructure/filesystem/runtime-release-retention*.mjs",
         "src/infrastructure/filesystem/sealed-runtime-release.*",
+      "src/infrastructure/filesystem/sealed-runtime-executor.mjs",
+      "docs/decisions/ADR-HUB-385-runtime-native-executor.md",
         "tests/infrastructure/filesystem/runtime-release-retention*.test.mjs",
         "tests/infrastructure/filesystem/sealed-runtime-release.test.mjs",
         "distribution/**",
@@ -529,7 +553,23 @@
         "src/infrastructure/filesystem/runtime-package-target.mjs",
         "tests/domain/runtime-package-identity.test.mjs",
         "tests/runtime/runtime-package-handoff.test.mjs",
-        "docs/decisions/ADR-HUB-376-public-package-handoff.md"
+        "docs/decisions/ADR-HUB-376-public-package-handoff.md",
+        "src/infrastructure/filesystem/retained-bundle-heads.mjs",
+        "src/infrastructure/filesystem/release-generation-transport-retention.mjs",
+        "tests/infrastructure/filesystem/retained-bundle-heads.test.mjs",
+        "tests/infrastructure/filesystem/native-merge-transport-retention.test.mjs",
+        "tests/infrastructure/filesystem/release-generation-transport-retention.test.mjs",
+        "docs/decisions/ADR-HUB-385-wide-transport-proof.md",
+        "src/infrastructure/filesystem/owned-native-object-store.mjs",
+        "src/infrastructure/filesystem/native-capture-*.mjs",
+        "src/infrastructure/filesystem/sealed-native-capture.*",
+        "src/infrastructure/persistence/native-capture-retirement-evidence.mjs",
+        "tests/infrastructure/filesystem/owned-native-object-store.test.mjs",
+        "tests/infrastructure/filesystem/native-capture-*.test.mjs",
+        "docs/decisions/ADR-HUB-385-owned-native-objects.md",
+        "docs/decisions/ADR-HUB-385-retired-generation-source-custody.md",
+        "docs/decisions/ADR-HUB-385-historical-capture-preservation.md",
+        "tests/fixtures/native-historical-replay-lines.json"
       ]
     },
     {

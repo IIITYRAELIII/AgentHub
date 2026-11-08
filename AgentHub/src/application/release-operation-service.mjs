@@ -285,9 +285,37 @@ export class ReleaseOperationService {
     const operation = this.store.get(operationId);
     const generation = this.store.generation(operationId, number);
     if (!generation || generation.operationId !== operationId || generation.generation !== number) return null;
-    return completedReleaseGenerationEvidence({ operation, generation,
-      validation: this.store.latestStep(operationId, number, "validate"),
-      finalization: this.store.latestStep(operationId, number, "finalize") });
+    const completedNumber = operation?.currentGeneration;
+    const completedGeneration = completedNumber === number ? generation : this.store.generation(operationId, completedNumber);
+    const completed = completedReleaseGenerationEvidence({ operation, generation: completedGeneration,
+      validation: this.store.latestStep(operationId, completedNumber, "validate"),
+      finalization: this.store.latestStep(operationId, completedNumber, "finalize") });
+    if (!completed || completedNumber === number) return completed;
+    if (!Number.isSafeInteger(number) || number < 1 || number >= completedNumber) return null;
+    // Retention only: an exact immutable predecessor is obsolete after this
+    // SAME original completed its verified successor. It was not itself
+    // published; preserve its own candidate/manifest identity, never latest's.
+    const chain = [];
+    let current = completedGeneration;
+    for (;;) {
+      if (current?.operationId !== operationId || !Number.isSafeInteger(current.generation)
+          || !current.candidates?.length || current.candidates.length > 32) return null;
+      const { identitySha256, ...contents } = current;
+      if (releaseIdentitySha256(contents) !== identitySha256) return null;
+      chain.push({ generation: current.generation, identitySha256 });
+      if (current.generation === number) break;
+      const predecessor = current.supersedesGeneration;
+      if (!Number.isSafeInteger(predecessor) || predecessor < number || predecessor >= current.generation) return null;
+      current = this.store.generation(operationId, predecessor);
+      if (current?.generation !== predecessor) return null;
+    }
+    if (current.identitySha256 !== generation.identitySha256) return null;
+    return { kind: "superseded-release-generation-retention-v1", operationId, generation: number,
+      operationRevision: operation.revision, completedAt: completed.completedAt,
+      identitySha256: generation.identitySha256, completedGeneration: completedNumber,
+      completedIdentitySha256: completed.identitySha256, supersedesChain: chain,
+      candidates: generation.candidates.map(({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash }) =>
+        ({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash })) };
   }
 
   continue(operationId, options = {}) {

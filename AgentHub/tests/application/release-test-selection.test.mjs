@@ -727,3 +727,51 @@ test("sparse recovery same-original continuation settles its candidate before an
   assert.deepEqual(f.store.generation("original", 3), f.candidate);
   assert.deepEqual(f.store.latestStep("original", 3, "compose"), receipt);
 });
+
+test("retention preserves the exact superseded generation identity after SAME original publishes a successor", async t => {
+  let validations = 0;
+  const f = await fixture(t, {
+    validate: async () => { if (++validations === 1) throw Object.assign(Error("first validation failed"), { code: "RELEASE_VALIDATION_FAILED" }); return { status: "passed" }; },
+    publishTarget: async () => ({ status: "applied", revision: "published-successor" }),
+  });
+  const first = f.store.generation("original", 1);
+  assert.equal(f.service.retentionGeneration("original", 1), null, "unfinished original remains retained");
+  const waiting = f.store.get("original");
+  assert.equal((await f.service.continue("original", { requestId: "explicit-successor", testSelection: selection("none"),
+    expectedRevision: waiting.revision, expectedGeneration: 1 })).accepted, true);
+  f.scheduled.shift()(); await f.service.drain("original");
+  const before = f.store.snapshot("original"), latest = f.service.retentionGeneration("original", 2);
+  assert.equal(before.operation.state, "done");
+  const retained = f.service.retentionGeneration("original", 1);
+  assert.ok(retained, "completed original's exact superseded generation still has a transport owner");
+  assert.equal(retained.kind, "superseded-release-generation-retention-v1");
+  assert.equal(retained.generation, 1); assert.equal(retained.identitySha256, first.identitySha256);
+  assert.equal(retained.completedGeneration, 2); assert.equal(retained.completedIdentitySha256, latest.identitySha256);
+  assert.deepEqual(retained.candidates.map(x => x.commit), first.candidates.map(x => x.commit));
+  assert.deepEqual(f.store.snapshot("original"), before, "proof reads must not rewrite generation, receipt, publication or Task state");
+  const get = f.store.get.bind(f.store), generation = f.store.generation.bind(f.store), step = f.store.latestStep.bind(f.store);
+  for (const state of ["waiting", "failed", "finalize"]) {
+    f.store.get = id => ({ ...get(id), state });
+    assert.equal(f.service.retentionGeneration("original", 1), null);
+  }
+  f.store.get = get;
+  for (const mutate of [g => ({ ...g, supersedesGeneration: null }), g => ({ ...g, supersedesGeneration: 2 }),
+    g => ({ ...g, operationId: "foreign" }), g => ({ ...g, identitySha256: "0".repeat(64) })]) {
+    f.store.generation = (id, n) => n === 2 ? mutate(generation(id, n)) : generation(id, n);
+    assert.equal(f.service.retentionGeneration("original", 1), null);
+  }
+  f.store.generation = (id, n) => n === 1 ? null : generation(id, n);
+  assert.equal(f.service.retentionGeneration("original", 1), null);
+  f.store.generation = generation;
+  // A correctly hashed different generation cannot masquerade as the requested
+  // predecessor row or create a nondecreasing traversal.
+  let predecessorReads = 0;
+  f.store.generation = (id, n) => n === 1 && ++predecessorReads > 1 ? generation(id, 2) : generation(id, n);
+  assert.equal(f.service.retentionGeneration("original", 1), null);
+  f.store.generation = generation;
+  f.store.latestStep = (id, n, name) => name === "finalize" ? { ...step(id, n, name), status: "unknown" } : step(id, n, name);
+  assert.equal(f.service.retentionGeneration("original", 1), null);
+  f.store.latestStep = step;
+  assert.deepEqual(f.service.retentionGeneration("original", 1), retained);
+  assert.deepEqual(f.store.snapshot("original"), before);
+});

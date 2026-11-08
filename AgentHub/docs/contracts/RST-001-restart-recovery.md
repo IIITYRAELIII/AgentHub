@@ -95,8 +95,15 @@ cleanup owners. Active user work defers admission. Storage maintenance reuses th
 existing maintenance-operation store in its own runtime scope; it is neither a
 user turn, a dispatch reservation nor a restart UI marker.
 
-Bounded owner discovery and previews precede durable artifact admission. A lost
-reply remains with the SAME original child and is reconciled, never replayed as a
+Bounded owner discovery and previews precede durable artifact admission. An
+eligible preview whose pass budget is spent may persist on the SAME canonical
+unadmitted child and bounded parent pending list. It is reusable only for the
+same runtime release, exact candidate and approved binding. It never replaces
+the artifact owner's fresh prune validation or grants authority after the
+cooperative admission budget. Restart recovers that child through the existing
+store; release drift requires a new preview on that SAME unadmitted identity.
+An admitted or uncertain effect still follows original-owner reconciliation.
+A lost reply remains with the SAME original child and is reconciled, never replayed as a
 new delete. Unknown resources do not starve every other owner. Shutdown stops new
 admission and drains the actual effect before closing stores or releasing the
 instance lock; a timeout does not prove the child stopped. Policy v1 owns
@@ -109,7 +116,32 @@ current/rollback custody. Explicit invalid sourceRoot values, changed bindings
 and unselected/prepared source-free bodies remain unknown and block retirement.
 No whole-body rehash is added before each batch; installed custody, bounded
 manifest reads and the existing native per-batch content guards remain owners.
-See ADR-HUB-363-source-free-runtime-pins. The reviewed owner-list append
+An active lease may reuse its verified runtime native producer between batches,
+without retaining target handles or target verification. Each reply identifies
+one invocation; it is not a maintenance original, retry or replacement ID.
+Missing/invalid replies remain unknown and join the real child before rejection.
+A failed binding cannot restart within that scope, including after another
+resource runs. Other independently admitted resources retain their existing
+guards. Shutdown closes the bounded producer lifetime before releasing the
+owning lease; no process timeout or abort abandons native work. See
+ADR-HUB-385-runtime-native-executor.
+The same finite producer scope covers native-capture retirement without caching
+target handles or checks. A failed capture binding cannot restart inside that
+scope; producer failure drains/joins before rejection. The existing maintenance
+original preserves its batch sequence/latest bounded timing summary, while the
+existing rotating Task timing recorder flushes failure and final producer-join
+observations under that original. Process reopen creates no retry authority;
+original-owner reconciliation and full fresh leased archive proof still apply.
+See ADR-HUB-385-native-capture-executor.
+See ADR-HUB-363-source-free-runtime-pins. The same owner also permits only
+the exact compile-proven historical Whisper cache described
+by REL-001/ADR-HUB-385-generated-runtime-cache. It retires before its manifest
+source in the SAME original batch. The existing pruning record retains exact
+pre-unlink directory custody to reconcile cache/directory reply loss; it grants
+no name-based empty-directory waiver or separate ledger.
+The manifest, pointer custody, UNKNOWN interpretation and native batch bounds
+remain unchanged. Unknown or foreign generated data still refuses.
+The reviewed owner-list append
 preserves v1 pending intents. Partial batches remain
 attached to the same admitted child; unknown outcomes are not replayed as new
 deletion. An older or unknown registry/version defers without clearing state.
@@ -124,6 +156,19 @@ recursive generation deletion or age-based legacy adoption follows from this pol
 Other persistent artifacts
 remain under their existing cleanup contracts and are preserved until those
 owners supply their own verified eligibility/effect adapters.
+
+ADR-HUB-385 extends the existing native-merge-transport owner with a distinct
+native-capture-retirement-v1 :repository resource. Its legacy bundle IDs and
+pending originals retain their meaning. The new resource archives every local
+Git object and raw non-object file in the owned immutable object store before
+admitting handle-bound repository retirement. Exact terminal Task/MCP evidence,
+publication, source/alternate pins and original native composition verification
+remain required. Archive intent and pruning intent precede their effects; partial
+or lost replies retain the SAME child. Historical readers consume its verified
+archive, while live integration refuses to reconstruct a retired capture. New
+native provisioning shares only immutable object files with independent metadata;
+existing release holders remain standalone. No new database, maintenance registry,
+Task closure, UNKNOWN settlement or generic directory scavenger is introduced.
 
 An allocation evidence read may open the existing maintenance store read-only,
 without schema initialization, migration or a writer reservation. It verifies
@@ -227,6 +272,11 @@ the original command identity and existing durable trace owner.
   required companion refuses preparation before current-pointer publication;
   older sources without the owning module do not require it. This does not grant
   authority to rewrite an already installed immutable runtime manifest.
+  The sealed native capture module likewise requires its exact declared C#
+  companion in normal preparation, source selection and import-closure checks.
+  Its producer hashes it into the immutable manifest; missing companion refuses
+  before dependency work. Unrelated C# sources remain excluded. A rejected old
+  artifact stays immutable; the corrected producer creates a new target.
 
 - Native candidate membership and immutable module reads include the same six
   declared release-progress viewer assets as runtime preparation. Their shared
@@ -666,3 +716,25 @@ still required. A lost modern request never falls back to legacy stop. Remove
 this compatibility branch when non-protocol public versions cease to be
 supported update sources. Runtime-root/data layout and an interactive same-user
 security context are explicit v1 bounds; other layouts/authority refuse.
+
+## Retained source after completed generation retirement (ADR-HUB-385)
+
+A runtime/prepared source remains pinned by its declared and physical path and
+by every actual Git/commondir/recursive alternate object store. If the generation
+owner has removed its live identity and Git metadata but left source files,
+absence of Git alone is not custody proof. Only the exact existing generation
+archive, stable plain identity/checkpoint/raw manifest, deterministic original
+generation/repository paths and the SAME canonical completed-generation reader
+may establish that this remainder has no Git object-store borrower. Its exact
+completed candidate must match the runtime publicationRevision and sourceRoot.
+This proof keeps the whole source remainder, WIP, prepared body and original
+archive; it authorizes no source deletion or UNKNOWN settlement.
+
+Missing/changed/nonterminal/foreign/superseded proof, redirected paths and ambient
+Git history/storage inputs refuse. A restored Git marker/alternate borrower or
+late ambient input invalidates the proof at the fresh boundary. Reads retain
+the existing installation custody and exact per-generation lease with bounded
+250ms admission; there is no global reservation, new ledger, cap or deadline.
+The existing canonical readGeneration port passes through the same native owner
+registry. No public tool argument, release receipt, publication identity or
+runtime manifest is rewritten. See ADR-HUB-385-retired-generation-source-custody.

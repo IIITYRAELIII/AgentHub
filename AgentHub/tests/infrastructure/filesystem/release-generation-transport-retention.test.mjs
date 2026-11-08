@@ -9,6 +9,10 @@ import test from "node:test";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
+import { ReleaseOperationService } from "../../../src/application/release-operation-service.mjs";
+import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
+import { resolveTestSelection } from "../../../src/domain/test-selection.mjs";
+import { readBundleHeads } from "../../../src/infrastructure/filesystem/retained-bundle-heads.mjs";
 
 const exec = promisify(execFile);
 const sha = value => createHash("sha256").update(value).digest("hex");
@@ -291,4 +295,85 @@ test("a hardlinked transport and substituted generation junction retain every fo
     await rename(saved, f.generationRoot);
   }
   assert.equal(sha(await readFile(f.bundle)), before);
+});
+
+test("wide completed generation transport preserves every advertised head in its existing proof", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t);
+  await git(f.source, ["update-ref", "--stdin"], { input: Array.from({ length: 700 }, (_, i) =>
+    `update refs/agent-hub/retained/${String(i).padStart(5, "0")}/${"x".repeat(60)} ${f.commit}\n`).join("") });
+  await rm(f.bundle); await git(f.source, ["bundle", "create", f.bundle, "--all"]);
+  const heads = (await git(f.repository, ["bundle", "list-heads", f.bundle])).split(/\r?\n/u);
+  assert.ok(Buffer.byteLength(JSON.stringify(heads)) > 32 * 1024);
+  const refs = await git(f.repository, ["show-ref"]), checkpoint = await readFile(path.join(f.ownerRoot, "checkpoint.json"));
+  const preview = await f.retention.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  assert.deepEqual(readBundleHeads(preview.binding), heads);
+  assert.equal((await f.retention.prune({ candidate: f.candidate, binding: preview.binding })).status, "removed");
+  assert.equal((await f.retention.reconcile({ candidate: f.candidate, binding: preview.binding })).status, "already-removed");
+  assert.equal(await git(f.repository, ["show-ref"]), refs);
+  assert.deepEqual(await readFile(path.join(f.ownerRoot, "checkpoint.json")), checkpoint);
+  assert.equal(await git(f.repository, ["rev-parse", "HEAD"]), f.commit);
+});
+
+test("real SQLite completed successor retires only predecessor bundle through the existing Git owner", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), scheduled = [], store = new ReleaseOperationStore({ dataDir: f.dataDir, idFactory: () => "fixture-operation" });
+  let validations = 0;
+  const service = new ReleaseOperationService({ store, processAlive: () => false, schedule: fn => scheduled.push(fn),
+    compose: async () => ({ repositoryBases: [{ repositoryRoot: f.source, baseCommit: f.commit }],
+      selectedResults: [{ taskId: "fixture", resultCommit: f.commit, tree: await git(f.source, ["rev-parse", "HEAD^{tree}"]) }],
+      candidates: [{ repositoryRoot: f.source, releaseRoot: f.repository, generationRoot: f.generationRoot,
+        commit: f.commit, tree: await git(f.source, ["rev-parse", "HEAD^{tree}"]), manifestHash: f.checkpoint.manifestHash }] }),
+    validate: async () => { if (++validations === 1) throw Object.assign(Error("old validation failed"), { code: "RELEASE_VALIDATION_FAILED" }); return { status: "passed" }; },
+    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot,
+      plan: resolveTestSelection(selection, ["tests/fixture.test.mjs"]) })),
+    publishTarget: async () => { await git(f.source, ["update-ref", "refs/heads/published", f.commit]); return { status: "applied", revision: f.commit }; },
+    readTarget: async () => ({ status: await git(f.source, ["rev-parse", "--verify", "refs/heads/published"]).catch(() => null) === f.commit ? "applied" : "not_applied" }),
+    finalize: async () => ({ closed: ["fixture"] }),
+  });
+  const ack = service.start({ requestId: "original-release", workspaceId: "fixture-workspace", streamId: "fixture-stream", threadId: "fixture-thread",
+    authorization: { taskIds: ["fixture"], validationMode: "full", approvedTargets: [{ targetId: "git", kind: "git", repositoryRoot: f.source }] } });
+  scheduled.shift()(); await service.drain(ack.operationId);
+  f.retention.readGeneration = (id, n) => service.retentionGeneration(id, n);
+  assert.equal((await f.retention.preview({ candidate: f.candidate })).reason, "release-not-completed-published");
+  const waiting = store.get(ack.operationId);
+  assert.equal((await service.continue(ack.operationId, { requestId: "explicit-new-generation", testSelection: { mode: "none", ids: [] },
+    expectedRevision: waiting.revision, expectedGeneration: 1 })).accepted, true);
+  scheduled.shift()(); await service.drain(ack.operationId);
+  const before = store.snapshot(ack.operationId), refs = await git(f.repository, ["show-ref"]), manifest = await readFile(path.join(f.ownerRoot, "evidence", f.checkpoint.manifestHash + ".json"));
+  assert.equal(before.operation.state, "done");
+  const proof = service.retentionGeneration(ack.operationId, 1);
+  assert.equal(proof.kind, "superseded-release-generation-retention-v1");
+  assert.equal(proof.identitySha256, before.generations[0].identitySha256);
+  assert.equal(proof.completedIdentitySha256, before.generations[1].identitySha256);
+  const preview = await f.retention.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  assert.equal(preview.binding.generation, 1);
+  const result = await f.retention.prune({ candidate: f.candidate, binding: preview.binding, operationId: "exact-predecessor-transport-child" });
+  assert.equal(result.status, "removed");
+  await assert.rejects(lstat(f.bundle), { code: "ENOENT" });
+  assert.equal(await git(f.repository, ["rev-parse", "HEAD"]), f.commit);
+  assert.equal(await git(f.repository, ["show-ref"]), refs);
+  assert.deepEqual(await readFile(path.join(f.ownerRoot, "evidence", f.checkpoint.manifestHash + ".json")), manifest);
+  assert.deepEqual(store.snapshot(ack.operationId), before);
+  assert.equal((await f.retention.reconcile({ candidate: f.candidate, binding: preview.binding })).status, "already-removed");
+});
+
+test("external graft input refuses generation preview and a previously eligible transport effect", async t => {
+  const f = await fixture(t), before = await readFile(f.bundle);
+  const preview = await f.retention.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  const graft = path.join(f.root, "external-graft"); await writeFile(graft, f.commit + "\n");
+  const previous = process.env.GIT_GRAFT_FILE;
+  let deletes = 0; const remove = f.retention.deleteTransport;
+  f.retention.deleteTransport = async (...args) => { deletes++; return remove(...args); };
+  try {
+    process.env.GIT_GRAFT_FILE = graft;
+    assert.equal((await f.retention.preview({ candidate: f.candidate })).status, "retained");
+    await assert.rejects(f.retention.prune({ candidate: f.candidate, binding: preview.binding }), /ordinary local Git/u);
+    assert.equal(deletes, 0);
+    assert.deepEqual(await readFile(f.bundle), before);
+  } finally {
+    if (previous === undefined) delete process.env.GIT_GRAFT_FILE; else process.env.GIT_GRAFT_FILE = previous;
+  }
+  assert.equal((await f.retention.preview({ candidate: f.candidate })).status, "eligible");
 });

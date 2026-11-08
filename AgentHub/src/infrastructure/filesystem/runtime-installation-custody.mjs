@@ -4,6 +4,7 @@ import path from "node:path";
 import { runtimeLayout } from "./runtime-layout.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { writeTextAtomic } from "../persistence/state-store.mjs";
+import { withSealedRuntimeExecutor } from "./sealed-runtime-executor.mjs";
 
 export const MAX_RUNTIME_MANIFEST_BYTES = 4 * 1024 * 1024;
 
@@ -25,7 +26,8 @@ export async function withRuntimeInstallationLease(runtimeRoot, operation) {
   const physical = await realpath(runtimeRoot);
   // Preparing a first release must not precreate data/: explicit activation
   // owns migration into that directory and refuses an incomplete existing body.
-  return withInterprocessLocks([path.join(physical, ".runtime-installation")], operation);
+  return withInterprocessLocks([path.join(physical, ".runtime-installation")],
+    lease => withSealedRuntimeExecutor(() => operation(lease)));
 }
 
 export async function readRuntimePointer(runtimeRoot) {

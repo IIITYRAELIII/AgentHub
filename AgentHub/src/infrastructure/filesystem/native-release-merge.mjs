@@ -456,6 +456,13 @@ async function verifyMergeStep(git, before, result, target, { identity, review =
 export async function assertNativePreparedComposition({ git, baseCommit, tasks, merges, head, tree,
   identity = { policy: NATIVE_RELEASE_POLICY, baseCommit, tasks }, verifyReview = null, historyAuthority = null }) {
   await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
+  return assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree, identity, verifyReview });
+}
+
+// Shared native graph/review proof. Storage preservation uses this proof;
+// current result and historical Task certification add selected content below.
+export async function assertNativeMergeGraph({ git, baseCommit, tasks, merges, head, tree,
+  identity, verifyReview = null }) {
   if (!Array.isArray(merges) || merges.length !== tasks.length) throw failure("Prepared native selection changed");
   let prefix = baseCommit;
   const resolutions = [];
@@ -473,6 +480,12 @@ export async function assertNativePreparedComposition({ git, baseCommit, tasks, 
   if (prefix !== head || String(await git(["rev-parse", `${head}^{tree}`])) !== tree) {
     throw failure("Prepared native head or tree changed");
   }
+  return resolutions;
+}
+
+export async function assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree,
+  identity, verifyReview = null }) {
+  const resolutions = await assertNativeMergeGraph({ git, baseCommit, tasks, merges, head, tree, identity, verifyReview });
   await assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges });
 }
 
@@ -487,6 +500,7 @@ export async function mergeSelectedResults({
   reuseContext = null,
   readLegacyReuseBinding = null,
   requireConflictReview = false,
+  provisionNativeObjects = null,
 }) {
   const repository = path.join(root, "repository");
   const stateFile = path.join(root, "merge.json");
@@ -507,6 +521,28 @@ export async function mergeSelectedResults({
   let state = await readJson(stateFile);
   if (state && JSON.stringify(state.identity) !== JSON.stringify(identity)) {
     throw failure("Native merge staging identity changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  if (provisionNativeObjects !== null) {
+    if (identity.policy !== "native-dev-merge-v1" || identity.objectStorage?.kind !== "owned-immutable-git-objects-v1"
+        || typeof provisionNativeObjects !== "function") throw failure("Native object storage authority differs from capture");
+    if (!state) {
+      state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null, provisioningObjects: true };
+      await writeJson(stateFile, state); // Original intake BEFORE pool/consumer effects.
+    }
+    if (state.provisioningObjects) {
+      assertCurrentInputs();
+      state.objectStorage = await provisionNativeObjects({ repository, sourceRoot,
+        inputs: [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])], identityHash });
+      assertCurrentInputs();
+      for (const commit of [baseCommit, ...tasks.map(task => task.resultCommit)]) {
+        await gitAt(repository, ["cat-file", "-e", commit + "^{commit}"]);
+      }
+      await gitAt(repository, ["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);
+      delete state.provisioningObjects;
+      await writeJson(stateFile, state);
+    }
+  } else if (identity.objectStorage || state?.provisioningObjects) {
+    throw failure("Native object storage capture requires its original provisioner");
   }
   if (!state) {
     // Transport only Git objects/refs. Direct upload-pack from a repository with

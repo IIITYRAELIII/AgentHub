@@ -1059,6 +1059,53 @@ test("cleanup preserves ignored WIP despite clean status and explicit dirty perm
   }
 });
 
+test("cleanup binds each repository's durable publication after origin advances", async (context) => {
+  const root = await repository(context);
+  const foreignRoot = await repository(context);
+  const original = await git(root, "rev-parse", "HEAD");
+  await writeFile(path.join(root, "published.txt"), "published result\n");
+  await git(root, "add", "published.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "published result");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "branch", "HUB-905", published);
+  await writeFile(path.join(root, "later.txt"), "later unapproved origin change\n");
+  await git(root, "add", "later.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "later origin");
+  const advanced = await git(root, "rev-parse", "HEAD");
+  await git(root, "update-ref", "refs/remotes/origin/main", advanced);
+  const foreign = await git(foreignRoot, "rev-parse", "HEAD");
+  const entries = [{ root: foreignRoot, revision: foreign }, { root, revision: published }];
+  let publication = { revision: foreign, generation: "multi-repository-publication", repositories: entries };
+  const dataDir = path.join(root, "..", `${path.basename(root)}-multi-cleanup`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const taskId = "30303030-3030-4030-8030-303030303035";
+  const references = [{ projectRoot: root, branch: "HUB-905", resultCommit: published }];
+  const preview = () => service.cleanupPreview(taskId, { gitReferences: references });
+  let result = (await preview()).gitReferences[0];
+  assert.equal(result.published, true);
+  assert.equal(result.publishedRevision, published);
+  assert.equal(result.branchPublished, true);
+  assert.equal(result.publicationGeneration, "multi-repository-publication");
+
+  // A global matching OID cannot substitute for a missing repository entry.
+  publication = { revision: published, generation: "g", repositories: entries.slice(0, 1) };
+  assert.equal((await preview()).gitReferences[0].published, false);
+  publication = { revision: published, repositories: entries };
+  assert.equal((await preview()).gitReferences[0].published, false);
+  publication = { revision: foreign, generation: "g", repositories: entries };
+  await git(root, "update-ref", "refs/remotes/origin/main", original);
+  assert.equal((await preview()).gitReferences[0].published, false);
+  await git(root, "update-ref", "refs/remotes/origin/main", advanced);
+  await git(root, "update-ref", "refs/heads/HUB-905", advanced, published);
+  result = (await preview()).gitReferences[0];
+  assert.equal(result.published, true);
+  assert.equal(result.publishedRevision, published);
+  assert.equal(result.branchPublished, false);
+  assert.equal(await git(root, "rev-parse", "HEAD"), advanced);
+  assert.equal(await git(root, "rev-parse", "refs/heads/HUB-905"), advanced);
+});
+
 test("cleanup publication authority requires durable evidence matching origin main", async (context) => {
   const root = await repository(context);
   const revision = await git(root, "rev-parse", "HEAD");

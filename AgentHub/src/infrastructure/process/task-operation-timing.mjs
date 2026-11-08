@@ -5,6 +5,8 @@ const context = new AsyncLocalStorage();
 const MAX_DETAIL_SPANS = 512;
 // Fixed diagnostic classes only; no argv, paths or caller-provided stage labels.
 const AGGREGATE_STAGES = new Set(["git-child", "owned-command", "lease-assert", "process-guard",
+  "native-retire:owned-setup", "native-retire:current", "native-retire:source-pins", "native-retire:archive-read",
+  "native-retire:archive-lease-wait", "native-retire:archive-intake", "native-retire:archive-verification", "native-retire:native-call",
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
   "release:integration-evidence", "native:history-authority", "native:task-histories",
   "native:cutover", "native:promotion-authority", "lock-native-bootstrap", "lock-native-publish",

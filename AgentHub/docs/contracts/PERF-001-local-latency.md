@@ -64,12 +64,21 @@ This is not a claim that any historical BITS/Edge holder has been identified.
 
 Policy v1 admits at most three artifact units per pass and checks a cooperative
 20-second budget between units, with bounded metadata/head lists/file size and
-persisted discovery progress. It does not abandon an in-flight destructive child
+persisted discovery progress. It does not discard a completed eligible preview merely because admission's pass budget
+expired. The existing canonical child may retain that preview as unadmitted
+intake progress for the next bounded pass; the artifact owner still performs
+fresh exact validation before its effect. No deadline is increased or bypassed.
+It does not abandon an in-flight destructive child
 or claim that hashing a large admitted transport has a hard 20-second deadline.
 Owner discovery reads a flat artifact directory; no per-turn recursive scan of
 archives, history or user work is introduced. Runtime health exposes cached
 status only. Filesystem free-space observations remain distinct from logical
 byte counts and can include concurrent allocations. See ADR-0126.
+
+Wide transport-head proofs retain the complete list within the same 32 KiB
+encoded metadata budget, with at most 4096 roots and a 4 MiB decompression
+ceiling. They do not widen discovery, artifact-size, pass-unit or cooperative
+time budgets, and do not promise a hard deadline for an already admitted hash.
 
 Policy v2 runtime-body batches remove at most 64 files/256 MiB and check a
 cooperative ten-second deletion budget after bounded metadata preflight. Asset
@@ -78,6 +87,44 @@ there is no repeated whole-body hash before every batch. The original partial
 operation remains pending between batches, and shutdown drains its actual child.
 The shared installation lease is scoped to the physical runtime root, outside
 ordinary provider/message admission. Install no longer sweeps prepared bodies.
+
+The existing physical installation and storage-maintenance lease callbacks may
+share a producer across normal foreground runApproved passes only when the
+finite outer series acquires `withStorageRetentionLease` from the composition;
+the SAME real token is delegated to each pass and each installation guard stays
+fresh. Old external direct-lock callers do not gain reuse implicitly. Separate
+background lease admissions close their producer independently. Those callbacks
+reuse one verified native runtime producer for consecutive batches of the same
+target/binding (ADR-HUB-385-runtime-native-executor). C# source bytes are bound at
+first native use and rechecked before each request; target metadata, content, ADS,
+reparse/link, original admission and lease checks are never cached. The unchanged
+C# method returns only after disposing that invocation's native handles, with a
+fresh 64-file/256-MiB/ten-second batch. A different resource joins the prior
+producer before starting another; a failed binding cannot restart in that scope.
+Scope exit drains and joins the producer before releasing its real lease. There
+is no disk assembly cache, new admission lane or daemon outside that lifetime.
+Producer-start and bounded-fixture timings establish only the measured native
+subpath; unchanged source/owner checks and production elapsed time stay separate.
+
+The same finite scope also serves sealed native captures. Runtime and capture
+protocols bind their own exact source bytes; switching resource or protocol joins
+the prior producer, with at most one live child. Capture continuation retains
+one complete fresh archive proof inside its existing archive lease. A persisted
+descriptor does not require an additional unleased proof before that fence.
+Initial archival, all-object/tag/raw preservation and original graph checks stay
+unchanged. No target verification, remaining-tree walk or native limit is cached.
+
+Capture diagnostics use the existing Task-operation timing recorder and SAME
+maintenance original, candidate hash and durable batch sequence. They distinguish
+owned setup/current/source checks, archive-lease wait/full read, producer startup
+and compilation, request round trip, native plan/prevalidation/hash-unlink/directory
+cleanup, and final joined child lifetime. Numeric counts/durations and source
+digests contain no paths, file/message contents or argv. The original retains a
+bounded latest-batch summary across reopen; the existing rotating timing log
+retains failure and producer-join events. A diagnostic failure never replaces an
+effect error or changes authority. Nested durations are inclusive, not additive;
+reduced starts/proof counts alone do not establish a production wall-time gain.
+See ADR-HUB-385-native-capture-executor.
 
 Repeated journal projection may reuse a verified rendering only within the
 existing usage worker lifetime. Its bounded scalar receipt is not source

@@ -9,6 +9,8 @@ import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/
 import { StorageRetentionService } from "../../../src/application/storage-retention-service.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { NativeMergeTransportRetention } from "../../../src/infrastructure/filesystem/native-merge-transport-retention.mjs";
+import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
+import { readBundleHeads } from "../../../src/infrastructure/filesystem/retained-bundle-heads.mjs";
 
 function gitAt(cwd, args, { input = null } = {}) {
   return new Promise((resolve, reject) => {
@@ -22,7 +24,7 @@ function gitAt(cwd, args, { input = null } = {}) {
   });
 }
 
-async function fixture(t) {
+async function fixture(t, wide = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-transport-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const source = path.join(root, "primary"), dataDir = path.join(root, "data");
@@ -34,6 +36,11 @@ async function fixture(t) {
   const commit = await gitAt(source, ["rev-parse", "HEAD"]);
   const blob = await gitAt(source, ["rev-parse", "HEAD:text"]);
   await gitAt(source, ["update-ref", "refs/agent-hub/fixture-evidence", blob]);
+  if (wide) {
+    await gitAt(source, ["update-ref", "-d", "refs/agent-hub/fixture-evidence"]);
+    await gitAt(source, ["update-ref", "--stdin"], { input: Array.from({ length: 700 }, (_, i) =>
+      `update refs/agent-hub/retained/${String(i).padStart(5, "0")}/${"x".repeat(60)} ${commit}\n`).join("") });
+  }
   await gitAt(source, ["update-ref", "refs/remotes/origin/main", commit]);
   const taskId = "11111111-1111-4111-8111-111111111111";
   const identity = { policy: "native-dev-merge-v1", taskId, resultCommit: commit, before: commit, mainCommit: commit };
@@ -87,6 +94,39 @@ test("configured logical root alias retires only the verified physical transport
   assert.equal(await readFile(path.join(f.repository, "text"), "utf8"), "valuable tracked data");
 });
 
+test("repository-bound publication retires redundant transport after unrelated origin advancement", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.source, "later"), "not part of the durable publication");
+  await gitAt(f.source, ["add", "later"]);
+  await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "later origin"]);
+  const advanced = await gitAt(f.source, ["rev-parse", "HEAD"]);
+  await gitAt(f.source, ["update-ref", "refs/remotes/origin/main", advanced]);
+  f.setPublication({ revision: "f".repeat(40), generation: "multi-repository-generation", repositories: [
+    { root: path.join(f.root, "other-repository"), revision: "f".repeat(40) },
+    { root: f.source, revision: f.commit },
+  ] });
+  const refs = await gitAt(f.source, ["show-ref"]), journal = await readFile(f.stateFile);
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  assert.equal(preview.binding.publication.gitReferences[0].publishedRevision, f.commit);
+  const bytes = (await lstat(f.bundle)).size;
+  const store = new MaintenanceOperationStore({ dataDir: f.dataDir });
+  const service = new StorageRetentionService({ store, owners: [f.owner],
+    readContext: async () => ({ ready: true, releaseId: "fixed-current" }),
+    withLease: fn => withInterprocessLocks([path.join(f.dataDir, "storage-retention")], fn) });
+  const result = await service.runApproved([
+    { ownerId: f.owner.id, candidate: f.candidate, binding: preview.binding },
+  ]);
+  assert.equal(result.removed, 1);
+  assert.equal(result.logicalBytes, bytes);
+  assert.deepEqual(store.get("storage-retention:v1").metadata.pending, []);
+  await assert.rejects(readFile(f.bundle), { code: "ENOENT" });
+  assert.equal(await gitAt(f.source, ["show-ref"]), refs);
+  assert.deepEqual(await readFile(f.stateFile), journal);
+  assert.equal(await gitAt(f.repository, ["rev-parse", "HEAD"]), f.commit);
+  assert.equal(await readFile(path.join(f.source, "later"), "utf8"), "not part of the durable publication");
+});
+
 test("active/unpublished/dirty captures and changed admission are retained", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t);
   f.task.status = "started";
@@ -127,4 +167,100 @@ test("lost native deletion reply reconciles the original intent without a second
   assert.equal(attempts, 1);
   assert.equal(recovered.status().removed, 0);
   assert.equal(recovered.status().alreadyRemoved, 1);
+});
+
+test("wide advertised heads retain complete canonical SQLite proof and reconcile the same native deletion once", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, true);
+  const heads = (await gitAt(f.repository, ["bundle", "list-heads", f.bundle])).split(/\r?\n/u);
+  assert.ok(Buffer.byteLength(JSON.stringify(heads)) > 32 * 1024);
+  const journal = await readFile(f.stateFile), refs = await gitAt(f.repository, ["show-ref"]);
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  assert.deepEqual(readBundleHeads(preview.binding), heads);
+  assert.ok(Buffer.byteLength(JSON.stringify(preview.binding)) < 64 * 1024);
+  const store = new MaintenanceOperationStore({ dataDir: f.dataDir });
+  const effect = f.owner.deleteTransport;
+  let effects = 0;
+  f.owner.deleteTransport = async (...args) => { effects++; await effect(...args); throw new Error("lost wide reply"); };
+  const make = () => new StorageRetentionService({ store, owners: [f.owner],
+    readContext: async () => ({ ready: true, releaseId: "wide-current" }),
+    withLease: fn => withInterprocessLocks([path.join(f.dataDir, "storage-retention")], fn) });
+  const approved = [{ ownerId: f.owner.id, candidate: f.candidate, binding: preview.binding }];
+  await make().runApproved(approved);
+  const original = store.get("storage-retention:v1").metadata.pending[0].operationId;
+  assert.equal(store.get(original).status, "reconciling");
+  assert.deepEqual(readBundleHeads(store.get(original).metadata.binding), heads);
+  await make().runApproved(approved);
+  assert.equal(store.get(original).status, "succeeded");
+  assert.equal(store.get(original).metadata.result.status, "already-removed");
+  assert.equal(effects, 1);
+  await assert.rejects(lstat(f.bundle), { code: "ENOENT" });
+  assert.deepEqual(await readFile(f.stateFile), journal);
+  assert.equal(await gitAt(f.repository, ["show-ref"]), refs);
+  assert.equal(await readFile(path.join(f.repository, "text"), "utf8"), "valuable tracked data");
+});
+
+test("wide heads do not retire present but unanchored history", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, true);
+  const tree = await gitAt(f.source, ["rev-parse", "HEAD^{tree}"]);
+  const extra = await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit-tree", tree, "-p", f.commit], { input: "keep dangling history\n" });
+  await gitAt(f.source, ["update-ref", "refs/agent-hub/unanchored", extra]);
+  await gitAt(f.repository, ["fetch", "--no-write-fetch-head", f.source, extra]);
+  await rm(f.bundle); await gitAt(f.source, ["bundle", "create", f.bundle, "--all"]);
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).reason, "bundle-roots-unanchored");
+  assert.ok((await lstat(f.bundle)).size > 0);
+});
+
+test("ambient graft cannot authorize wide unanchored roots or delete their transport", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, true), journal = await readFile(f.stateFile);
+  const tree = await gitAt(f.source, ["rev-parse", "HEAD^{tree}"]);
+  const extra = await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit-tree", tree], { input: "parentless original proof\n" });
+  await gitAt(f.source, ["update-ref", "refs/agent-hub/graft-proof", extra]);
+  await gitAt(f.repository, ["fetch", "--no-write-fetch-head", f.source, extra]);
+  await rm(f.bundle); await gitAt(f.source, ["bundle", "create", f.bundle, "--all"]);
+  assert.equal((await f.owner.preview({ candidate: f.candidate })).reason, "bundle-roots-unanchored");
+  const graft = path.join(f.root, "external-grafts");
+  await writeFile(graft, `${f.commit} ${extra}\n`);
+  const prior = process.env.GIT_GRAFT_FILE;
+  try {
+    process.env.GIT_GRAFT_FILE = graft;
+    assert.equal(await gitAt(f.repository, ["--no-replace-objects", "rev-list", "--max-count=1", "--stdin", "--not", "--all"], { input: extra + "\n" }), "",
+      "actual Git consumes external graft even with --no-replace-objects");
+    const preview = await f.owner.preview({ candidate: f.candidate });
+    assert.equal(preview.reason, "bundle-roots-unanchored", JSON.stringify(preview));
+    assert.equal((await f.owner.prune({ candidate: f.candidate, binding: preview.binding })).status, "retained");
+    assert.ok((await lstat(f.bundle)).size > 0);
+  } finally {
+    if (prior === undefined) delete process.env.GIT_GRAFT_FILE; else process.env.GIT_GRAFT_FILE = prior;
+  }
+  assert.equal(await gitAt(f.repository, ["rev-list", "--max-count=1", "--stdin", "--not", "--all"], { input: extra + "\n" }), extra);
+  assert.deepEqual(await readFile(f.stateFile), journal);
+});
+
+test("before-effect graft environment drift refuses an already approved wide preview", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t, true);
+  const preview = await f.owner.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  const graft = path.join(f.root, "external-grafts"); await writeFile(graft, "");
+  const prior = process.env.GIT_GRAFT_FILE, actualGit = f.owner.gitAt, actualDelete = f.owner.deleteTransport;
+  let rootsRead = false, armedAtFinalFence = false, effects = 0;
+  f.owner.gitAt = async (root, args, options) => {
+    const result = await actualGit(root, args, options);
+    if (args.includes("rev-list")) rootsRead = true;
+    return result;
+  };
+  f.owner.isStopping = () => {
+    if (rootsRead) { process.env.GIT_GRAFT_FILE = graft; armedAtFinalFence = true; }
+    return false;
+  };
+  f.owner.deleteTransport = async (...args) => { effects++; return actualDelete(...args); };
+  try {
+    const result = await f.owner.prune({ candidate: f.candidate, binding: preview.binding });
+    assert.equal(armedAtFinalFence, true);
+    assert.equal(result.reason, "bundle-roots-unanchored", JSON.stringify(result));
+    assert.equal(effects, 0);
+    assert.ok((await lstat(f.bundle)).size > 0);
+  } finally {
+    if (prior === undefined) delete process.env.GIT_GRAFT_FILE; else process.env.GIT_GRAFT_FILE = prior;
+  }
 });
