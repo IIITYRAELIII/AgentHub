@@ -449,10 +449,12 @@ test("metadata-only replay is recognized before ordinary/reviewed continuation d
   assert.deepEqual(f.store.snapshot("original"), before);
   assert.equal(f.scheduled.length, queued);
   assert.equal(observed.length, observations, "changed/exact replay cannot observe or schedule the operation");
-  assert.equal(command.continue({ operationId: "original" }).accepted, true, "ordinary unaddressed continuation stays supported");
-  assert.equal(f.scheduled.length, queued + 1);
-  f.scheduled.shift()();
-  await f.service.drain("original");
+  const unamended = command.continue({ operationId: "original" });
+  assert.equal(unamended.accepted, false, "another failed validation retains its amendment boundary");
+  assert.equal(unamended.reason, "test-selection-required");
+  assert.equal(f.scheduled.length, queued);
+  assert.equal(observed.length, observations + 1, "ordinary continue can observe without resuming");
+  assert.deepEqual(f.store.snapshot("original"), before);
 });
 
 

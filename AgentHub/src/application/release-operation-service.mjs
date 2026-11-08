@@ -13,6 +13,7 @@ import {
   releaseCompositionInput,
   releaseApprovedTargets,
   effectiveTestSelection,
+  effectiveReleaseMetadata,
   effectiveReleaseTaskIds,
   effectiveReleaseTaskScope,
   normalizeReleaseTaskScope,
@@ -65,6 +66,28 @@ function ownsRelease(operation, owner) {
     && operation?.owner?.epoch === owner?.epoch;
 }
 
+function waitingForExplicitAmendment(operation) {
+  return operation.state === "waiting"
+    && ["validation_failed", "release_inputs_changed"].includes(operation.waitReason?.code);
+}
+
+function changedAmendedInputs(operation) {
+  return operation.testSelectionAmendments?.length > 0;
+}
+
+function waitingForChangedInputs(operation) {
+  return operation.state === "waiting" && operation.waitReason?.code === "release_inputs_changed";
+}
+
+function amendedInputsWait() {
+  return {
+    state: "waiting", currentStep: "compose", resumeState: "compose",
+    waitReason: { code: "release_inputs_changed", message: "Accepted release inputs changed after an explicit amendment" },
+    nextAction: "amend this original release with fresh whole Task membership, test selection and current release metadata",
+    lastError: null,
+  };
+}
+
 function normalizeReadback(value) {
   const status = String(value?.status ?? "unknown").trim();
   if (!["applied", "already_applied", "partial", "not_applied", "unknown"].includes(status)) {
@@ -105,7 +128,7 @@ function classifiedFailure(error, state, now, retryDelayMs) {
       return {
         state: "waiting", currentStep: "validate", resumeState: "compose",
         waitReason: { code: "validation_failed", message: details.message, details },
-        nextAction: "accept a corrected selected result and compose the next candidate generation",
+        nextAction: "amend this original release with the exact failed and affected test selection and current release metadata",
         lastError: { ...details, step: "validate" },
       };
     case "RELEASE_CORRECTION_REQUIRED":
@@ -280,6 +303,9 @@ export class ReleaseOperationService {
     // external condition. It neither resumes nor publishes that condition.
     this.#observe(current.operationId);
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
+    if (waitingForExplicitAmendment(current)) {
+      return { accepted: false, operation: current, reason: "test-selection-required" };
+    }
     let operation = current;
     if (current.state === RELEASE_OPERATION_STATES.WAITING) {
       const resumeState = String(current.resumeState ?? "").trim();
@@ -410,6 +436,17 @@ export class ReleaseOperationService {
     if (current.owner || !["waiting", "failed"].includes(current.state) || current.currentGeneration < 1) {
       return { accepted: false, reason: "ineligible", operation: current };
     }
+    if (current.waitReason?.code === "release_inputs_changed"
+        && (taskIds == null || testSelection == null || effectiveReleaseMetadata(current) != null && releaseMetadata == null)) {
+      return { accepted: false, reason: "release-inputs-required", operation: current };
+    }
+    if (waitingForChangedInputs(current)) {
+      const future = this.store.latestStep(operationId, current.currentGeneration + 1, "compose");
+      if (future && future.status !== "failed"
+          || this.store.generation(operationId, current.currentGeneration + 1)) {
+        return { accepted: false, reason: "preparation-effect-unknown", operation: current };
+      }
+    }
     const generation = this.store.generation(operationId, current.currentGeneration);
     if (!generation) throw new Error("Original generation is missing");
     const scope = taskScope == null ? effectiveReleaseTaskScope(current) : requestArguments.taskScope;
@@ -493,7 +530,7 @@ export class ReleaseOperationService {
     const operations = this.store.forTask(selectedTaskId, { workspaceId });
     for (const operation of operations) {
       if (releaseOperationIsTerminal(operation)) continue;
-      if (operation.state === "waiting" && ["validation_failed", "correction_required"].includes(operation.waitReason?.code)) {
+      if (operation.state === "waiting" && operation.waitReason?.code === "correction_required") {
         const resumed = this.continue(operation.operationId);
         if (resumed.accepted && !accepted.includes(operation.operationId)) accepted.push(operation.operationId);
       }
@@ -508,20 +545,26 @@ export class ReleaseOperationService {
       if (releaseOperationIsTerminal(operation)) continue;
       let current = operation;
       for (;;) {
+        // Acceptance proves neither a failed test's correction nor its affected
+        // inputs. Preserve the idle original for its existing RM amendment.
+        if (waitingForExplicitAmendment(current)) break;
         if (current.publicationEffects?.publishStarted) {
           prepared.push({ operationId: current.operationId, generation: current.currentGeneration, preserved: true });
           break;
         }
         if (!["validate", "publish", "waiting", "compose"].includes(current.state)) break;
         if (current.state === "waiting"
-            && !["validation_failed", "correction_required"].includes(current.waitReason?.code)) break;
+            && current.waitReason?.code !== "correction_required") break;
+        const requiresAmendment = changedAmendedInputs(current);
         const revokedOwner = current.owner ? {
           ...current.owner,
           epoch: current.owner.epoch + 1,
           heartbeatAt: this.now(),
           leaseExpiresAt: this.now(),
         } : null;
-        const transitioned = this.store.transition(current.operationId, {
+        // Fence progression while the existing owner settles its original local
+        // receipt and releases normally. No replacement owner or epoch is needed.
+        const transitioned = this.store.transition(current.operationId, requiresAmendment ? amendedInputsWait() : {
           state: "compose",
           currentStep: "compose",
           owner: revokedOwner,
@@ -533,8 +576,10 @@ export class ReleaseOperationService {
           event: { operationId: current.operationId, taskId: String(taskId), priorGeneration: current.currentGeneration },
         });
         if (transitioned.applied) {
-          this.#schedule(current.operationId);
-          prepared.push({ operationId: current.operationId, generation: current.currentGeneration + 1, recomposed: true });
+          if (!requiresAmendment) this.#schedule(current.operationId);
+          prepared.push(requiresAmendment
+            ? { operationId: current.operationId, generation: current.currentGeneration, amendmentRequired: true }
+            : { operationId: current.operationId, generation: current.currentGeneration + 1, recomposed: true });
           break;
         }
         if (transitioned.reason !== "stale-revision") {
@@ -690,7 +735,7 @@ export class ReleaseOperationService {
         } catch (error) {
           if (this.store.isContentionError(error)) throw error;
           const latest = await this.#persist(operationId, null, "failure-owner-read", () => this.store.get(operationId)) ?? operation;
-          if (!ownsRelease(latest, owner)) break;
+          if (!ownsRelease(latest, owner) || waitingForChangedInputs(latest)) break;
           if (error?.code === "RELEASE_RESULT_LINEAGE_MISMATCH" && this.requestCorrection) {
             try {
               const correction = await this.requestCorrection({ operation: latest, error });
@@ -985,7 +1030,7 @@ export class ReleaseOperationService {
         }, {
           emitEvent: false,
         }),
-        recompose: () => transitionBoundary({
+        recompose: () => transitionBoundary(changedAmendedInputs(latest) ? amendedInputsWait() : {
           state: "compose",
           currentStep: "compose",
           nextAction: "compose the accepted selection before publication",
@@ -996,7 +1041,7 @@ export class ReleaseOperationService {
       });
       if (!boundary.applied) throw new Error(`release publication reservation failed: ${boundary.reason}`);
       latest = boundary.operation;
-      if (latest.state === "compose") return latest;
+      if (["compose", "waiting"].includes(latest.state)) return latest;
     }
     let effects = targetEffects(latest);
     for (const target of releaseApprovedTargets(latest)) {
@@ -1141,6 +1186,16 @@ export class ReleaseOperationService {
     // Every write still uses the original owner epoch and a fresh row CAS.
     return this.#persist(operationId, null, "advance", () => {
     const current = this.store.get(operationId);
+    if (waitingForChangedInputs(current)) {
+      if (state !== "validate" || patch.currentGeneration == null || patch.currentGeneration <= current.currentGeneration) return current;
+      // A compose already in flight may freeze its original outcome, but never
+      // validate/publish it. Join that immutable evidence before idle amendment.
+      const settled = this.store.transition(operationId, {
+        currentGeneration: patch.currentGeneration, selectedResults: patch.selectedResults,
+      }, { expectedRevision: current.revision, expectedOwner: owner, emitEvent: false });
+      if (!settled.applied) throw new Error(`release composition could not settle: ${settled.reason}`);
+      return settled.operation;
+    }
     if (current.state === state && Object.entries(patch).every(([key, value]) =>
       value === undefined || releaseIdentitySha256(current[key]) === releaseIdentitySha256(value))) return current;
     const result = this.store.transition(operationId, {

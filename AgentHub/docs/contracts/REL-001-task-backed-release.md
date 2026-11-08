@@ -3485,6 +3485,46 @@ Affected checks: `tests/interfaces/release-progress-autostart.test.mjs` and the
 
 ## Explicit test selection (ADR-HUB-351)
 
+### Failed validation and Task acceptance (ADR-HUB-391)
+
+An existing `waiting(validation_failed)` operation remains idle through Task
+acceptance, including a new unrelated Task, the same result, descriptive edits
+and a genuinely corrected selected result. Acceptance alone proves neither the
+failed test's correction nor its affected inputs. Neither pre-acceptance
+preparation, post-acceptance wake nor ordinary unamended continue may transition
+that original back to compose. Its wait, error, immutable generations, successful
+file checkpoints and publication evidence remain unchanged.
+
+The already authorized RM uses the existing request-addressed test-selection /
+membership / release-metadata amendment below with exact failed and affected
+coverage and current whole-set notes. No new user approval, API or retry ledger
+is introduced. Existing idle-owner, target not-applied readbacks, current source,
+selection and revision/generation CAS still decide admission. A corrected result
+can enter Await normally; its next release generation follows that explicit
+amendment. Initial release progression, pre-effect active-selection fencing,
+lineage correction and already-started publication keep their existing owners.
+Uncertain effects never acquire retry or successful-cache credit.
+
+After an explicit amendment, a pre-effect Task acceptance or a selection drift
+found at the existing publication reservation boundary must not recompose using
+that amendment's old exact coverage and whole notes. The existing original enters
+`waiting(release_inputs_changed)` before a new publication intent/effect. Its CAS
+fences progression while the same owner settles already-started local receipts
+and releases its lease normally. A completed in-flight compose may join only its
+original immutable generation; late validation cannot advance the wait. Unknown
+future compose evidence cannot be overwritten by an amendment. Repeated pre/post
+acceptance callbacks neither clear it nor schedule
+another generation. Ordinary acceptance and the Await set remain available.
+
+This idle wait uses the same RM amendment boundary: explicit current whole
+`taskIds` and `testSelection` are required, and existing effective notes require
+explicit fresh `releaseMetadata`. Omitted stale inputs refuse with
+`release-inputs-required`. Exact saved amendment replay is handled first and
+cannot clear the wait. Existing idle-owner, not-applied/UNKNOWN readback,
+membership/source checks and revision/generation CAS remain unchanged. Initial
+progression, unamended result/lineage correction and already-started publication
+are preserved; no acceptance event infers affected coverage or writes notes.
+
 An explicit typed selection is `all`, `include`, `exclude`, or `none`, with exact
 inventory IDs. Omission retains prescribed focused/full/quick behavior. Selection
 is separate from immutable initial release authorization. The same RM continue

@@ -621,7 +621,11 @@ state, revision}` before long work. Same-ID replay with identical authorization
 returns the same operation; changed identity fails closed. `hub_release_get`
 returns the operation, immutable generations, receipts and target effects without
 writing. `hub_release_continue` only wakes the same waiting operation; automatic
-Task acceptance and durable retry timers normally perform that wakeup.
+Task acceptance and durable retry timers normally perform that wakeup. A
+`validation_failed` wait is the ADR-HUB-391 exception: Task acceptance and
+unamended continue preserve it without scheduling. The existing RM amendment
+below supplies the exact retry scope/current metadata under its original guards;
+this is not another user approval or public method.
 
 The former public `hub_release_preflight`, `hub_release_preflight_reconcile` and
 `hub_release_complete` writers are removed at cutover rather than retained as a
@@ -1084,3 +1088,12 @@ proof, never new prepare/assignment or an execution owner transfer. Missing or
 changed committed proof refuses. Shared execution context is a port capability
 observed by both application and process/SQL adapters, with one async-local
 instance; application code does not import a process implementation.
+
+When the same original is waiting with `release_inputs_changed` after an
+explicit amendment, ordinary unamended continue remains readback-only with
+`test-selection-required`. The existing amendment must explicitly supply whole
+`task_ids`, `test_selection` and, when prior effective notes exist,
+`release_metadata`; otherwise it returns `release-inputs-required`. Exact captured
+request replay is resolved first and never resumes the stale-input wait. This
+adds no tool, approval, ledger or automatic coverage policy; all existing idle,
+original readback, membership/source and CAS guards still apply.
