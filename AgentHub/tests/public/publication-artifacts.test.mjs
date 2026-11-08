@@ -152,10 +152,11 @@ test("relocated artifact owner supplies physical receipt and body to the unchang
   const original = await readFile(prepared.receiptFile);
   const license = path.join(f.root, "LICENSE"), notices = path.join(f.root, "NOTICES");
   await writeFile(license, "synthetic license"); await writeFile(notices, "synthetic notices");
-  const script = "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import build_release as b; i,p,r=b._inputs(Path(sys.argv[2]),sys.argv[3],sys.argv[4],sys.argv[5],Path(sys.argv[6]),Path(sys.argv[7])); print(i['preparedReceiptSha256'])";
+  const script = "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import build_release as b; i,p,r=b._inputs(Path(sys.argv[2]),sys.argv[3],sys.argv[4],sys.argv[5],Path(sys.argv[6]),Path(sys.argv[7]),Path(sys.argv[8])); print(i['preparedReceiptSha256'])";
   const checkInput = () => promisify(execFile)(process.platform === "win32" ? "python.exe" : "python3", [
-    "-X", "utf8", "-c", script, path.resolve(import.meta.dirname, "../../distribution"), prepared.receiptFile,
+    "-X", "utf8", "-c", script, path.join(process.env.AGENT_HUB_RELEASE_TOOLS_ROOT, "python"), prepared.receiptFile,
     prepared.receiptSha256, frozenRuntime.sourceCommit, frozenRuntime.version, license, notices,
+    path.resolve(import.meta.dirname, "../../distribution"),
   ], { encoding: "utf8", windowsHide: true, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
   const { stdout } = await checkInput();
   assert.equal(stdout.trim(), prepared.receiptSha256);

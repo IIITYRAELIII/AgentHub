@@ -278,6 +278,15 @@ export class ReleaseOperationService {
     return snapshot;
   }
 
+  getByRequest(workspaceId, requestId) {
+    const operation = this.store.getByRequest(requiredText(workspaceId, "workspaceId"), requiredText(requestId, "requestId"));
+    return operation ? this.get(operation.operationId) : null;
+  }
+
+  hasLocalWork(operationId) {
+    return this.#scheduled.has(operationId) || this.#running.has(operationId) || this.#ownedRetries.has(operationId);
+  }
+
   // Read-only eligibility from this original release owner. Directory age or a
   // local Git head is never evidence that a release finished publication.
   retentionGeneration(operationId, number) {

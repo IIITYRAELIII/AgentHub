@@ -1221,3 +1221,20 @@ explicit amendment, ordinary unamended continue remains readback-only with
 request replay is resolved first and never resumes the stale-input wait. This
 adds no tool, approval, ledger or automatic coverage policy; all existing idle,
 original readback, membership/source and CAS guards still apply.
+
+## External release client (ADR-HUB-419)
+
+The independent release CLI calls the existing HTTP MCP service; it does not
+open stores or create another lifecycle owner. `hub_release_get` retains its
+operation-ID read and additionally accepts an exclusive original run/continue
+request ID plus exact original business arguments. Workspace/caller authority
+and the stored command argument hash must agree. Lookup uses the original
+release store's existing unique Workspace/request index, creates no operation,
+and leaves its MCP status/error/receipts unchanged even if release state is
+already readable. A missing original row grants no no-effect or replay credit.
+
+A coherent Hub source API host retains addressed local worker lifetime after
+HTTP acknowledgement. Its local join validates the original receipt and awaits
+only the already existing promise; it does not invoke a mutation or settle it.
+Worker/persistence/readback exceptions remain observable before stores close.
+Credentials remain separate from business JSON and exported tool/package data.

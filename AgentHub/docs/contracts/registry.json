@@ -602,7 +602,18 @@
         "src/domain/task-checklist.mjs",
         "src/infrastructure/persistence/task-checklist-repository.mjs",
         "tests/infrastructure/persistence/task-release-reference.test.mjs",
-        "docs/decisions/ADR-HUB-416-native-resolution-without-approval-token.md"
+        "docs/decisions/ADR-HUB-416-native-resolution-without-approval-token.md",
+        "release-api.mjs",
+        "build-runtime.mjs",
+        "src/composition/release-api-runtime.mjs",
+        "src/composition/release-tooling-composition.mjs",
+        "src/infrastructure/process/release-tool-package.mjs",
+        "src/infrastructure/process/release-tool-launcher.mjs",
+        "src/interfaces/mcp/release-api-host.mjs",
+        "tests/interfaces/mcp/external-release-client.test.mjs",
+        "tests/public/external-release-tool-package.test.mjs",
+        "docs/building.md",
+        "docs/decisions/ADR-HUB-419-independent-release-tools.md"
       ]
     },
     {
@@ -672,7 +683,11 @@
         "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
         "src/infrastructure/filesystem/cleanup-preservation.mjs",
         "docs/decisions/ADR-HUB-415-release-membership-reference.md",
-        "docs/decisions/ADR-HUB-416-native-resolution-without-approval-token.md"
+        "docs/decisions/ADR-HUB-416-native-resolution-without-approval-token.md",
+        "release-api.mjs",
+        "src/composition/release-api-runtime.mjs",
+        "src/interfaces/mcp/release-api-host.mjs",
+        "tests/interfaces/mcp/external-release-client.test.mjs"
       ]
     },
     {

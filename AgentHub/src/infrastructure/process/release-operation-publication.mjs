@@ -11,6 +11,7 @@ import { publicationRunStore, failedFrozenPublicationEvidence } from "../persist
 import { readPublicationCheckpoint } from "../persistence/publication-checkpoint.mjs";
 import { releaseIdentitySha256 } from "../../domain/release-operation.mjs";
 import { releasePublicationBaseCommit } from "../../domain/release-base-provenance.mjs";
+import { readReleaseToolPackage } from "./release-tool-package.mjs";
 
 function identity(value) {
   return createHash("sha256").update(String(value)).digest("hex");
@@ -152,6 +153,7 @@ export class ReleaseOperationPublication {
     gitRemoteHeadImpl = gitRemoteHead,
     candidateAbsentFromRemoteImpl = candidateAbsentFromRemote,
     readPublicationCheckpointImpl = readPublicationCheckpoint,
+    readToolPackage = readReleaseToolPackage,
     runnerFile = path.join(import.meta.dirname, "../../../release-operation-publication-runner.mjs"),
     now = () => new Date().toISOString(),
     launchGraceMs = 30_000,
@@ -168,6 +170,7 @@ export class ReleaseOperationPublication {
     this.gitRemoteHead = gitRemoteHeadImpl;
     this.candidateAbsentFromRemote = candidateAbsentFromRemoteImpl;
     this.readPublicationCheckpoint = readPublicationCheckpointImpl;
+    this.readToolPackage = readToolPackage;
     this.runnerFile = path.resolve(runnerFile);
     this.now = now;
     this.launchGraceMs = Math.max(1_000, Number(launchGraceMs) || 30_000);
@@ -204,6 +207,14 @@ export class ReleaseOperationPublication {
       error.code = "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
       throw error;
     }
+    const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
+      expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
+    const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
+    const previousRunner = await readJson(layout.stateFile);
+    if (previousRunner && JSON.stringify(previousRunner.tool) !== JSON.stringify(toolIdentity)) {
+      throw new Error("Original publication requires its recorded tool executor; use its retained caller without retargeting this generation");
+    }
+    await tool.assertUnchanged();
     const runner = this.runnerFile;
     const startedAt = this.now();
     const runnerIdentity = {
@@ -214,6 +225,7 @@ export class ReleaseOperationPublication {
       generation: generation.generation,
       targetId: target.targetId,
       candidate: generation.identitySha256,
+      tool: toolIdentity,
       startedAt,
     };
     await writeFile(layout.stateFile, `${JSON.stringify(runnerIdentity, null, 2)}\n`, "utf8");
@@ -232,6 +244,8 @@ export class ReleaseOperationPublication {
       env: {
         ...environment,
         AGENT_HUB_DEPENDENCY_ROOT: environment.AGENT_HUB_DEPENDENCY_ROOT || path.dirname(runner),
+        AGENT_HUB_RELEASE_TOOLS_ROOT: tool.root,
+        AGENT_HUB_RELEASE_TOOLS_SHA256: tool.sha256,
         AGENT_HUB_DATA_DIR: this.dataDir,
         AGENT_HUB_RUNTIME_ROOT: this.runtimeRoot,
         AGENT_HUB_RELEASE_OPERATION_ID: operation.operationId,
@@ -302,7 +316,12 @@ export class ReleaseOperationPublication {
         && result?.candidate === generation.identitySha256
         && result?.status === "applied"
         && (target.environment !== "github-release"
-          || result.deploymentProfile === "github-release" && result.distribution?.sourceCommit === candidate.commit)) return result;
+          || result.deploymentProfile === "github-release" && result.distribution?.sourceCommit === candidate.commit)) {
+      if (runner?.tool && JSON.stringify(result.tool) !== JSON.stringify(runner.tool)) return {
+        status: "unknown", cursor: { reason: "publication result differs from its original tool pin" },
+      };
+      return result;
+    }
     const publication = await this.readPublicationState().catch(() => null);
     const published = publication?.revision === candidate.commit
       || publication?.repositories?.some((repository) => (

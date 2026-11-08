@@ -564,6 +564,12 @@ export class ReleaseOperationStore {
     ).get(id)));
   }
 
+  getByRequest(workspaceId, requestId) {
+    return this.#withDatabase(database => operationFromRow(database.prepare(
+      "SELECT operation_json FROM release_operations WHERE workspace_id = ? AND request_id = ?",
+    ).get(workspaceId, requestId)));
+  }
+
   snapshot(operationId) {
     const operation = this.get(operationId);
     if (!operation) return null;

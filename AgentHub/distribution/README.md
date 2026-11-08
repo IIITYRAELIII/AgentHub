@@ -107,7 +107,7 @@ The tracked offline packaging checkpoint is the normal interface for the release
 owner after canonical preparation:
 
 ```powershell
-python AgentHub/distribution/build_release.py --prepared-receipt <owner-prepared.json> --receipt-sha256 <receipt-sha256> --source-commit <exact-reviewed-export-OID> --version <frozen-artifact-version> --license <confirmed-LICENSE> --notices <actual-shipped-notices> --output-root <private-build-root>
+node <release-tool>/bin/release.mjs package --prepared-receipt <owner-prepared.json> --receipt-sha256 <receipt-sha256> --source-commit <exact-reviewed-export-OID> --version <frozen-artifact-version> --license <confirmed-LICENSE> --notices <actual-shipped-notices> --output-root <private-build-root> --recipient-root <candidate/AgentHub/distribution>
 ```
 
 The existing release/build owner supplies those arguments from its saved exact
@@ -199,7 +199,7 @@ install, update, rollback and managed cutover remain separate completion evidenc
 The publisher's prepared runtime is an input, not a trigger for another build:
 
 ```powershell
-python AgentHub/distribution/build_package.py --prepared-runtime <verified-release-directory> --source-commit <reviewed-exported-commit> --license <confirmed-license-file> --notices <complete-notices-file> --output <new-versioned-zip>
+python <release-tool>/python/build_package.py --prepared-runtime <verified-release-directory> --source-commit <reviewed-exported-commit> --license <confirmed-license-file> --notices <complete-notices-file> --output <new-versioned-zip> --recipient-root <candidate/AgentHub/distribution>
 ```
 
 The resulting ZIP and its adjacent checksum JSON are new artifact identities.
@@ -253,7 +253,7 @@ Focused preparation checks, with `AGENT_HUB_TEST_TEMP` on the intended volume:
 
 ```powershell
 python -m unittest discover -s AgentHub/distribution -p package_test.py -v
-python -m unittest discover -s AgentHub/distribution -p build_release_test.py -v
+python -B -m unittest discover -s <release-tool>/tests -p test_build_release.py -v
 python -m unittest discover -s AgentHub/distribution -p semantic_package_test.py -v
 python -m unittest discover -s AgentHub/distribution -p release_source_test.py -v
 python -m unittest discover -s AgentHub/distribution -p installed_package_test.py -v

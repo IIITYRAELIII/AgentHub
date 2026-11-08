@@ -16,6 +16,10 @@ export const RELEASE_PROGRESS_RUNTIME_ASSETS = Object.freeze([
   "release-progress/index.html", "release-progress/app.js", "release-progress/style.css",
 ]);
 const RELEASE_PROGRESS_RUNTIME_FILES = new Set(RELEASE_PROGRESS_RUNTIME_ASSETS);
+const SOURCE_OPERATOR_FILES = new Set([
+  "release.mjs", "publish-all.mjs", "publish-changed.mjs", "release-api.mjs", "build-runtime.mjs",
+  "src/composition/release-api-runtime.mjs", "src/interfaces/mcp/release-api-host.mjs",
+]);
 
 const RUNTIME_TOP_LEVEL_FILES = new Set([
   "AGENT_HUB_GUIDE.md",
@@ -44,6 +48,7 @@ function normalizedRelative(value) {
 // assets are copied recursively; src and top-level modules exclude test tools.
 export function isRuntimeSourceModule(relative) {
   const file = normalizedRelative(relative);
+  if (SOURCE_OPERATOR_FILES.has(file)) return false;
   const name = path.posix.basename(file);
   if (file.startsWith("assets/") || RELEASE_PROGRESS_RUNTIME_FILES.has(file)) return MODULE_FILE_PATTERN.test(name);
   return /\.(?:cjs|mjs)$/u.test(name) && ((!file.includes("/") || file.startsWith("src/"))

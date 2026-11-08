@@ -19,7 +19,7 @@ import tempfile
 import time
 import unittest
 
-from build_package import build_package
+from release_tool_test_support import build_package
 
 ROOT = Path(__file__).resolve().parent
 

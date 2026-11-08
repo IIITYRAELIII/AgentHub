@@ -1,0 +1,113 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { openTaskAwaitCutoverRuntime } from "../../task-await-cutover.mjs";
+import { createReleaseOperationServices } from "./release-operation-composition.mjs";
+import { createCommandTraceComposition } from "./command-trace-composition.mjs";
+import { createReleaseCorrectionRequester } from "./infrastructure-composition.mjs";
+import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
+
+const tools = { run: "hub_release_run", continue: "hub_release_continue", get: "hub_release_get",
+  accept: "hub_task_status_update" };
+
+export function parseReleaseArguments(argv) {
+  const [action, ...rest] = argv;
+  if (!Object.hasOwn(tools, action)) throw new Error("Expected release action: run, continue, get or accept");
+  const values = {};
+  for (let index = 0; index < rest.length; index += 2) {
+    const name = rest[index], value = rest[index + 1];
+    if (!["--provider", "--thread", "--stream", "--request-file"].includes(name)
+        || Object.hasOwn(values, name) || !value || value.startsWith("--")) throw new Error("Invalid release argument");
+    values[name] = value;
+  }
+  if (Object.keys(values).length !== 4) throw new Error("Release requires provider, thread, stream and request-file");
+  return { action, provider: values["--provider"], threadId: values["--thread"], streamId: values["--stream"],
+    requestFile: path.resolve(values["--request-file"]) };
+}
+
+export async function openReleaseRuntime({
+  openTaskRuntime = openTaskAwaitCutoverRuntime,
+  createServices = createReleaseOperationServices,
+  createTrace = createCommandTraceComposition,
+  enablePersistenceTrace = true,
+} = {}) {
+  const runtime = await openTaskRuntime();
+  let trace = null;
+  try {
+    const { service, config, taskBoard, workspaceCatalog } = runtime;
+    if (enablePersistenceTrace) {
+      try {
+        trace = createTrace({ dataDir: config.dataDir });
+        await trace.initialize();
+      } catch { console.warn("Release persistence trace unavailable"); }
+    }
+    const { operations } = createServices({
+      dataDir: config.dataDir, runtimeRoot: path.dirname(config.dataDir),
+      taskBoard, taskLifecycle: service.taskLifecycle, workspaceCatalog,
+      releasePreflight: service.releasePreflight,
+      taskGitWorkspaces: service.taskGitWorkspaces, releaseGitWorkspaces: service.releasePreflight.releaseGitWorkspaces,
+      requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle: service.taskLifecycle }),
+      runnerVersion: AGENT_HUB_VERSION,
+      recordCommandTrace: span => trace?.service?.recordBestEffort?.(span) ?? false,
+    });
+    service.releaseOperations = operations;
+    return { ...runtime, operations, async close() {
+      try { await trace?.close?.(); }
+      catch { console.warn("Release persistence trace shutdown unavailable"); }
+      finally { await runtime.close(); }
+    } };
+  } catch (error) {
+    try { await trace?.close?.(); } catch {}
+    await runtime.close();
+    throw error;
+  }
+}
+
+export async function executeRelease(input, {
+  openRuntime = openReleaseRuntime,
+  onAccepted = () => {},
+} = {}) {
+  if (!Object.hasOwn(tools, input.action)) throw new Error("Unsupported release action");
+  const bytes = await readFile(input.requestFile);
+  const request = JSON.parse(bytes.toString("utf8"));
+  if (!request || typeof request !== "object" || Array.isArray(request) || Object.hasOwn(request, "context_token")) {
+    throw new Error("Release request must contain business arguments, not a caller token");
+  }
+  if (request.published_dev_sync != null && input.action !== "continue") throw new Error("Published dev sync is an addressed continuation only");
+  if (input.action === "accept" && (request.status !== "awaiting_implementation"
+      || typeof request.task_id !== "string" || !request.task_id.trim())) {
+    throw new Error("Release acceptance requires an addressed Task Await request");
+  }
+  const addressedTaskId = input.action === "accept" ? request.task_id.trim() : null;
+  const runtime = await openRuntime({ enablePersistenceTrace: input.action !== "get" });
+  try {
+    const token = runtime.service.contextToken({ provider: input.provider, threadId: input.threadId, streamId: input.streamId });
+    let result;
+    try {
+      result = await runtime.service.call(tools[input.action], { ...request, context_token: token });
+    } catch (error) {
+      if (input.action !== "get" && !request.published_dev_sync) {
+        // The public MCP receipt can fail after durable release admission.
+        // Wait for only addressed local work (including normal Task wakes); do not replay the call or
+        // settle its unknown receipt from a successful release readback.
+        await runtime.operations.drainAddressed({
+          ...(input.action === "accept" ? { taskId: addressedTaskId }
+            : input.action === "run" ? { requestId: request.request_id } : { operationId: request.operation_id }),
+        });
+      }
+      throw error;
+    }
+    if (input.action === "get" || result.accepted === false || request.published_dev_sync) return result;
+    // The durable acknowledgement is visible before waiting; a lost client
+    // response is read through the same public get, never a fresh release ID.
+    let replyError = null;
+    try { onAccepted(result); } catch (error) { replyError = error; }
+    let snapshot;
+    if (input.action === "accept") {
+      await runtime.operations.drainAddressed({ taskId: addressedTaskId });
+      snapshot = result;
+    } else snapshot = await runtime.operations.drain(result.operationId);
+    if (replyError) throw replyError;
+    return snapshot;
+  } finally { await runtime.close(); }
+}

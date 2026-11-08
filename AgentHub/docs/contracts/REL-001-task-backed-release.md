@@ -219,23 +219,38 @@ Old amendments, generations and reviewed-main membership stay at their own
 historical boundary. This is no new tool, ledger, approval or publication lane.
 Changed code receives new validation, never a claimed old PASS.
 
-The source/default `node release.mjs run|continue|get|accept --provider <provider>
---thread <thread> --stream <stream> --request-file <JSON>` consumes ordinary
-public tool business arguments. It connects the same release composition used
-by the running Hub to the existing authority-aware local default Git/SQLite
-runtime; it does not redirect to an older desktop endpoint or start another Hub.
-The generated caller capability is never read from that JSON. `continue` forwards
-`reviewed_main` and its request ID through the authenticated public method before
-terminal refusal, preserving the original operation's recovery semantics. The
-normal owner emits its durable acknowledgement and runs to its saved wait/terminal
-boundary without a pipeline execution timeout. It does not recover unrelated
-operations. No separate entry/driver/config is generated per transition.
-If the public MCP receipt fails after release admission, the consumer reads the
-durable identity of its addressed local pending work and drains that owner before
-closing stores. It rethrows the original failure and retains the unknown receipt;
-it neither repeats the mutation nor wakes other operations. `get` remains a read.
-JSON record and caller-token checks preserve the public business argument contract
-without an additional CLI file-size restriction.
+The independent `AgentHub-ReleaseTools` operator consumes the same public MCP
+business arguments. It carries an existing caller capability separately from
+request JSON and opens no Hub database or internal runtime. Hub remains the
+single authority for admission, Task CAS, source/current/candidate/publication
+integrity, original IDs, workers, receipts and finalization. The Hub-side source
+API adapter may expose that same owner from an explicitly reviewed coherent
+source checkout; its close joins its own exact submitted Task promises and
+addressed local release work before closing stores. Joining is not replay,
+reconciliation, cancellation or a wake of unrelated work.
+
+The external operator emits its durable acknowledgement before waiting. A lost
+Task response reads the original Task receipt. Release readback can address an
+exact run/continue request with its original arguments, resolving the existing
+indexed release operation without changing an UNKNOWN MCP command receipt.
+Older endpoints without this read-only extension remain explicitly incompatible
+with request-addressed release recovery; no replacement mutation is inferred.
+The existing operation-ID read remains unchanged. Waiting and inactive unknown
+results are owner boundaries, not automatic continuation permission.
+
+Publication execution order, artifact orchestration, archive packaging and
+GitHub effects are supplied by the independently pinned external tool to the
+existing Hub state/domain ports. The existing runner intent binds tool
+name/version/digest separately from its immutable application generation and
+candidate before launch. Tool updates happen between joined consumers. A saved
+runner cannot acquire a different tool, and a historical runner without that
+binding retains its original executor. Applied historical readbacks remain
+unchanged. The existing package checkpoint binds the external tool and explicit
+recipient files, never modifies the prepared source manifest and never becomes
+an orchestration ledger. Source-only operators and the tool package are excluded
+from the runtime artifact; Hub retains its minimal independent self-build API.
+See ADR-HUB-419-independent-release-tools. Legacy in-process exported helpers are
+Hub owner adapters for retained callers, not an external CLI importing Hub.
 
 Native resolution is ordinary Git work in the issued owner checkout. It needs
 no review envelope, approval receipt or review bundle. Auto-review remains the
