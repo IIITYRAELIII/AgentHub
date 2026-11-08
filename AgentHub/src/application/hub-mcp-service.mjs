@@ -41,6 +41,7 @@ import { TaskLifecycleService, TaskIntegrationConflictError, TaskAwaitIntegratio
 import { TaskOperationReconciliationService } from "./task-operation-reconciliation-service.mjs";
 import { TaskIntegrationRejectedError } from "./task-lifecycle-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
+import { McpAdmissionContentionError } from "../domain/mcp-admission-contention.mjs";
 
 import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparationRejectedError,
   validatePreparationEnvelope, preparationSourceRoot } from "./release-preparation-admission.mjs";
@@ -1090,7 +1091,16 @@ export class HubMcpService {
     original_arguments: originalArguments, task_id: taskId } = {}) {
     const id = requiredText(operationId, "original operation id", 200);
     const row = this.workspaceCatalog.mcpOperation(id);
-    if (!row || !this.taskOperationCanSubmit(row.toolName)
+    if (!row) {
+      // A fresh authenticated point-read is not historical admission/effect
+      // authority. Never fabricate FAILED, UNKNOWN, NO_EFFECT or replay rights.
+      if (originalArguments != null && originalArguments.request_id !== id) {
+        throw new Error("Task operation original arguments differ");
+      }
+      return { taskOperation: null, result: null,
+        lookup: { version: 1, requestId: id, status: "not_found", canonicalOutcome: null } };
+    }
+    if (!this.taskOperationCanSubmit(row.toolName)
       || (actor.actorKind !== "authenticated-user" && (actor.workspaceId !== row.workspaceId
         || (!this.#isReleaseManager(actor) && (actor.streamId !== row.streamId || actor.provider !== row.provider))))) {
       throw new Error("Task operation readback identity or authority differs");
@@ -1161,7 +1171,25 @@ export class HubMcpService {
     const completion = invoke(onAdmission).then(() => record("task-operation-result", read()), error => {
       // The durable receipt, including a real UNKNOWN or cancellation, is the
       // result. A pre-admission failure has no receipt and still rejects.
-      if (!this.workspaceCatalog.mcpOperation(requestId)) throw error;
+      if (!this.workspaceCatalog.mcpOperation(requestId)) {
+        const identity = error instanceof McpAdmissionContentionError ? error.admissionIdentity : null;
+        if (!identity || identity.requestId !== requestId || identity.toolName !== toolName
+            || identity.argumentsHash !== argumentsHash(args) || identity.workspaceId !== context.workspaceId
+            || identity.streamId !== context.streamId || identity.provider !== context.provider
+            || identity.threadId !== context.auditThreadId
+            || identity.actorKind !== (context.actorKind ?? "provider")) throw error;
+        // Only this invocation's actual failed BEGIN is classified. Other
+        // queued submissions of this ID and all historical effects stay unknown.
+        const response = { taskOperation: null, result: null, admission: { version: 1,
+          ...identity, status: "not_admitted", scope: "this_invocation",
+          reason: "sqlite_begin_contention", canonicalOutcome: null } };
+        try { this.recordCommandTrace({ commandId: requestId, transport: "task-operation",
+          stage: "task-operation-not-admitted", outcome: "rejected",
+          monotonicDurationMs: performance.now() - startedAt,
+          metadata: { toolName, reason: "sqlite_begin_contention" } }); }
+        catch { /* Diagnostics never change the response. */ }
+        return response;
+      }
       return record("task-operation-result", read());
     });
     return Promise.race([admission, completion]);
@@ -3240,6 +3268,12 @@ export class HubMcpService {
       ...(context.actorKind ? { actorKind: context.actorKind } : {}),
       toolName,
       argumentsHash: argumentsHash(args),
+      ...(this.taskOperationCanSubmit(toolName) ? { recordAdmissionTiming: metadata => {
+        try { this.recordCommandTrace({ commandId: requestId, transport: "task-operation",
+          stage: "task-operation-admission-sqlite", outcome: metadata.outcome === "ok" ? "succeeded" : "rejected",
+          metadata: { toolName, ...metadata } }); }
+        catch { /* Diagnostics cannot alter the SQL transaction. */ }
+      } } : {}),
       ...(this.taskOperationInterruption && (context.actorKind === "authenticated-user"
           || (this.taskOperationCanSubmit(toolName) && !["hub_task_operation_cancel", "hub_task_operation_reconcile"].includes(toolName)))
         ? { taskExecution: this.taskOperationInterruption.binding(args) } : {}),

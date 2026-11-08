@@ -101,7 +101,9 @@ test("ensure preparation keeps one worker and original-root admission/result dia
   assert.equal(f.catalog.mcpOperation(args.request_id).status, "succeeded");
   assert.equal(preparations, 1);
   const stages = spans.filter(s => s.commandId === args.request_id);
-  assert.deepEqual(stages.map(s => s.stage), ["task-operation-admitted", "task-operation-result"]);
+  assert.deepEqual(stages.filter(s => s.stage !== "task-operation-admission-sqlite").map(s => s.stage),
+    ["task-operation-admitted", "task-operation-result"]);
+  assert.equal(stages.filter(s => s.stage === "task-operation-admission-sqlite").length, 2);
   assert.ok(stages.every(s => !JSON.stringify(s).includes(f.successorToken) && !Object.hasOwn(s.metadata, "arguments")));
 });
 

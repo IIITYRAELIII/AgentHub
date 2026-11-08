@@ -3,7 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
+import { McpAdmissionContentionError } from "../../domain/mcp-admission-contention.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { readClaimCustodyFence, readClaimCustodySuccessor, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
   claimCustodyNamespaces, claimCustodyTaskSnapshot, assertNoPendingClaimCustodyWriters } from "./claim-custody-fence.mjs";
@@ -979,7 +980,12 @@ export class WorkspaceCatalogStore {
     const normalizedThreadId = user ? null : safeIdentifier(threadId, "thread id");
     const tool = safeIdentifier(toolName, "MCP tool name");
     const hash = safeIdentifier(argumentsHash, "MCP arguments hash");
-    this.#database.exec("BEGIN IMMEDIATE");
+    try { this.#database.exec("BEGIN IMMEDIATE"); }
+    catch (error) {
+      if (!sqliteContention(error)) throw error;
+      throw new McpAdmissionContentionError({ requestId: id, workspaceId: workspace, streamId: stream,
+        provider: normalizedProvider, threadId: normalizedThreadId, toolName: tool, argumentsHash: hash, actorKind }, error);
+    }
     try {
     if (taskExecution && ["hub_task_claim", "hub_task_status_update"].includes(tool)) {
       assertNoPendingTaskInterruption(this.#database, taskExecution.taskId);
@@ -1032,7 +1038,10 @@ export class WorkspaceCatalogStore {
   }
 
   runMutation(operation, options = {}) {
-    return this.#mutations.run(operation, options);
+    return this.#mutations.run(operation, { ...options,
+      ...(options.method === "beginMcpOperation"
+        ? { onTiming: options.args?.[0]?.recordAdmissionTiming } : {}),
+    });
   }
 
   mutationDiagnostics() {

@@ -1,5 +1,32 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Bounded Task intake before a durable receipt
+
+Task submission retains the existing catalog queue and its unchanged contention
+bound. Only an actual SQLite contention failure at `beginMcpOperation`'s initial
+`BEGIN IMMEDIATE`, before this invocation enters its transaction, can produce a
+typed `admission.status=not_admitted` response. It has `taskOperation=null`,
+`result=null`, `scope=this_invocation`, `canonicalOutcome=null` and exact
+request/tool/arguments/caller identity. The authenticated submission owner first
+checks for an existing receipt; that receipt and its ordinary authority/hash
+checks always take precedence. Transaction-body, commit, reply or business
+failures cannot receive this classification. This response is not a persisted
+FAILED/UNKNOWN/NO_EFFECT receipt and grants no historical no-effect or replay
+authority. No delayed automatic admission is scheduled after refusal.
+
+An authenticated exact receipt point-read with no row returns
+`lookup.status=not_found`, `taskOperation=null`, `canonicalOutcome=null`. This is
+only a current lookup observation, not proof of historical non-admission, empty
+effects or permission to replay. Existing rows retain all actor/Task/hash guards,
+including UNKNOWN and cancellation state. SQLite read failures still propagate.
+The existing in-transaction declared-successor namespace and interruption guards
+are never bypassed by an early successful admission path. Explicit later intake
+keeps the same original request and immutable arguments and rechecks current
+Task CAS; no second ledger, timeout increase, reconciliation route or retry
+identity is introduced. Desktop/UI callers distinguish these results from a
+completed Task and never resubmit mutations merely because readback is missing.
+See ADR-HUB-407.
+
 `hub_stream_message_send` with ordinary `mode=steer` addresses the destination
 Stream. The common durable message owner resolves its current active managed
 turn or retains that same command in the normal queue. A definitively ended

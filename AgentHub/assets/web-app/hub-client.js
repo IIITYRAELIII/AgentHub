@@ -1837,7 +1837,7 @@ async function waitTaskOperationResult(admission, params) {
         operationRequestId: original.requestId, argumentsHash: original.argumentsHash,
         clientTraceId: original.requestId });
       receipt = value.operation;
-      if (!receipt || receipt.taskOperation.requestId !== original.requestId
+      if (!receipt?.taskOperation || receipt.taskOperation.requestId !== original.requestId
           || receipt.taskOperation.argumentsHash !== original.argumentsHash) throw new Error("Ответ относится к другой операции задачи");
       if (receipt.taskOperation.terminal || receipt.taskOperation.status === "unknown"
           || receipt.taskOperation.cancellation?.phase === "stopped") break;
@@ -1889,8 +1889,15 @@ async function control(action, params = {}) {
             await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
           }
         }
-        if (read.operation?.taskOperation.requestId !== taskOperationId) throw error;
+        if (read.operation?.lookup?.status === "not_found") {
+          throw new Error(`Квитанция операции ${taskOperationId} не найдена. Её исход не подтверждён; запрос не повторён.`);
+        }
+        if (read.operation?.taskOperation?.requestId !== taskOperationId) throw error;
         result = read.operation;
+      }
+      if (result?.admission?.status === "not_admitted") {
+        throw Object.assign(new Error(`Не удалось принять запрос: хранилище занято. Проверь исходную операцию ${result.admission.requestId} перед повтором.`),
+          { admission: result.admission });
       }
       reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
       transportAcknowledged = true;
