@@ -1585,6 +1585,7 @@ const state = {
   selectedId: null,
   messages: new Map(),   // taskId -> message[]
   messageRenderLimits: new Map(), // taskId -> visible newest-message count
+  messageScrollStates: new Map(), // scalar position, evicted with its canonical page
   taskDiffs: new Map(),  // taskId -> { text, open }
   historyPagination: new Map(), // taskId -> { hasOlder, loading }
   live: new Map(),       // taskId -> live | null
@@ -3541,6 +3542,7 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false, pr
     return;
   }
   const fallback = representativeStreamTask(streams.find((value) => value.id === next[0]));
+  emit("history:close", { id: target.id });
   if (fallback) selectTaskFromUi(fallback.id, { preserveStreamTabs: preserveClickTarget });
 }
 
@@ -5746,6 +5748,7 @@ function selectTaskFromUi(id, {
 /* ================================================================== чат */
 
 let activeChatId = null;
+let activeChatHistoryBinding = "";
 const INITIAL_MESSAGE_RENDER_LIMIT = 40;
 const MESSAGE_RENDER_PAGE_SIZE = 40;
 
@@ -5987,6 +5990,7 @@ function renderChat({ preserveStreamTabs = false } = {}) {
 
 function renderChatContent({ preserveStreamTabs = false } = {}) {
   const task = currentTask();
+  const historyBinding = JSON.stringify([workspaceKey(task), streamKey(task), task?.provider, task?.threadId]);
   const hasTask = Boolean(task);
   if (!hasTask) {
     chatEmpty.hidden = false;
@@ -5995,6 +5999,7 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
     streamTabs.replaceChildren();
     chatPane.hidden = true;
     activeChatId = null;
+    activeChatHistoryBinding = "";
     renderedStreamChatDeckKey = "";
     streamChatColumns?.replaceChildren(chatPane);
     streamChatColumns.hidden = true;
@@ -6011,7 +6016,18 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   // a real task switch so the next render self-heals instead of preserving the
   // previous Stream forever.
   const taskChanged = activeChatId !== task.id
+    || activeChatHistoryBinding !== historyBinding
     || String(chatLog.dataset.messageOwnerKey ?? "") !== String(task.id ?? "");
+  if (taskChanged && activeChatId && state.messages.has(activeChatId)
+    && String(chatLog.dataset.messageOwnerKey ?? "") === activeChatId) {
+    state.messageScrollStates.set(activeChatId, {
+      binding: activeChatHistoryBinding,
+      anchor: captureChatAnchor(),
+      distance: Math.max(0, chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop),
+      pinned: scrollContainerIsNearBottom(chatScroll),
+    });
+  }
+  if (taskChanged) chatScrollControllers.get(chatScroll)?.noteUserIntent();
 
   renderDialogSettings();
   renderStreamChatHeader(task);
@@ -6031,8 +6047,11 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
 
   if (taskChanged) {
     activeChatId = task.id;
-    state.messageRenderLimits.set(task.id, INITIAL_MESSAGE_RENDER_LIMIT);
-    renderMessages({ forceBottom: true });
+    activeChatHistoryBinding = historyBinding;
+    if (!state.messageRenderLimits.has(task.id)) state.messageRenderLimits.set(task.id, INITIAL_MESSAGE_RENDER_LIMIT);
+    const savedScroll = state.messageScrollStates.get(task.id);
+    const restoredScroll = savedScroll?.binding === historyBinding ? savedScroll : null;
+    renderMessages({ forceBottom: !restoredScroll, restoredScroll });
   }
   renderLive();
   renderApprovals();
@@ -6182,8 +6201,12 @@ function chatIsNearBottom() {
 
 function pinChatToBottom() {
   const controller = chatScrollControllers.get(chatScroll);
+  const owner = chatLog.dataset.messageOwnerKey;
+  let generation = controller?.animationGeneration;
   const apply = () => {
+    if (chatLog.dataset.messageOwnerKey !== owner || controller?.animationGeneration !== generation) return;
     controller?.pinNow();
+    generation = controller?.animationGeneration;
   };
   apply();
   // Финальная карточка нередко приходит одновременно с удалением live-блока.
@@ -6566,6 +6589,28 @@ function restoreChatAnchor(anchor) {
   window.requestAnimationFrame(apply);
 }
 
+function restoreRetainedChatScroll(snapshot) {
+  const controller = chatScrollControllers.get(chatScroll);
+  const owner = chatLog.dataset.messageOwnerKey;
+  const generation = controller?.animationGeneration;
+  const apply = () => {
+    if (chatLog.dataset.messageOwnerKey !== owner || activeChatHistoryBinding !== snapshot.binding
+      || controller?.animationGeneration !== generation) return;
+    const anchor = snapshot.anchor;
+    const message = [...chatLog.querySelectorAll("[data-message-id]")]
+      .find((node) => node.dataset.messageId === anchor?.id);
+    // Keep the same visible message across append/prepend. If it disappeared,
+    // retain the old top position instead of following an unrelated new tail.
+    if (message) {
+      chatScroll.scrollTop += message.getBoundingClientRect().top
+        - chatScroll.getBoundingClientRect().top - anchor.offset;
+    } else chatScroll.scrollTop = anchor?.scrollTop ?? 0;
+    controller?.afterMutation({ pinned: false });
+  };
+  apply();
+  window.requestAnimationFrame(apply);
+}
+
 function renderedMessageTarget({ turnId, itemId } = {}) {
   return [...chatLog.querySelectorAll("[data-item-id]")].find((node) => (
     String(node.dataset.turnId ?? "") === String(turnId ?? "")
@@ -6850,14 +6895,15 @@ function renderMessagesContent({
   prependedCount = 0,
   tailLimit = 0,
   exactNavigation = null,
+  restoredScroll = null,
 } = {}) {
   const task = currentTask();
   const taskId = String(task?.id ?? "");
   renderStreamChatHeader(task);
   const scrollController = chatScrollControllers.get(chatScroll);
-  const scrollSnapshot = exactNavigation ? null : scrollController?.capture();
+  const scrollSnapshot = exactNavigation ? null : restoredScroll ?? scrollController?.capture();
   const stickToBottom = !exactNavigation
-    && (forceBottom || scrollSnapshot?.pinned || chatIsNearBottom());
+    && (forceBottom || scrollSnapshot?.pinned || (!restoredScroll && chatIsNearBottom()));
   // Обновление истории после финального ответа использует preserveTop. У низа
   // якорь первого видимого сообщения оставлял зазор после новой карточки.
   // Якорь нужен только читателю, который уже ушёл выше по истории.
@@ -6893,6 +6939,7 @@ function renderMessagesContent({
     if (exactNavigation) focusRenderedMessage(exactNavigation, { behavior: "auto" });
     else if (anchor) restoreChatAnchor(anchor);
     else if (stickToBottom) pinChatToBottom();
+    else if (restoredScroll) restoreRetainedChatScroll(restoredScroll);
     else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
     scheduleUnderfilledHistoryLoad();
     return;
@@ -6948,6 +6995,7 @@ function renderMessagesContent({
     scrollController?.addUnread(newTailMessages);
   }
   else if (stickToBottom) pinChatToBottom();
+  else if (restoredScroll) restoreRetainedChatScroll(restoredScroll);
   else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, {
     preserveDistance: true,
     newItemsCount: newTailMessages,
@@ -8339,19 +8387,25 @@ function renderLive() {
   // Иначе большой очередной фрагмент уже отодвинет низ дальше порога.
   const scrollController = chatScrollControllers.get(chatScroll);
   const scrollSnapshot = scrollController?.capture();
+  const owner = chatLog.dataset.messageOwnerKey;
+  const generation = scrollController?.animationGeneration;
+  const restoreScroll = () => {
+    if (chatLog.dataset.messageOwnerKey !== owner || scrollController?.animationGeneration !== generation) return;
+    scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true });
+  };
   const stickToBottom = scrollSnapshot?.pinned || chatIsNearBottom();
   const live = state.live.get(state.selectedId);
   if (!liveCardHasContent(live)) {
     chatLive.hidden = true;
     if (stickToBottom) pinChatToBottom();
-    else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
+    else window.requestAnimationFrame(restoreScroll);
     scheduleUnderfilledHistoryLoad();
     return;
   }
   chatLive.hidden = false;
   populateLiveCard(chatLive, live);
   if (stickToBottom) pinChatToBottom();
-  else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
+  else window.requestAnimationFrame(restoreScroll);
   scheduleUnderfilledHistoryLoad();
 }
 
@@ -11797,6 +11851,7 @@ const AgentHub = {
     state.messages.delete(taskId);
     state.historyPagination.delete(taskId);
     state.messageRenderLimits.delete(taskId);
+    state.messageScrollStates.delete(taskId);
     return true;
   },
   setMessagesForExactNavigation(taskId, messages, exactNavigation) {

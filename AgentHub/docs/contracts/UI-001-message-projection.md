@@ -18,6 +18,32 @@ Refreshing the operation panel reads canonical disposition and does not replay
 the original action. Legacy rows without a Task binding require exact operator
 arguments through the supported owner, never guessed association by timestamp.
 
+## Retained chat switching
+
+Ordinary selection can replace a single-column layout without immediately
+discarding its loaded canonical page. The same existing history maps retain a
+four-page recent working set, matching the existing four-column layout size;
+visible/open Workspace pages remain protected separately. This is disposable
+projection reuse, not another history store or a limit on available chats.
+Explicit column close removes its reuse eligibility. Older inactive windows
+are evicted with their scalar scroll/render state and invalidate late reads.
+Durable history, outgoing commands, receipts and unresolved read ACKs are not
+evicted by that projection policy (ADR-HUB-414).
+
+A matching provider/Thread/Stream page renders before selection or history I/O.
+The ordinary selection mutation and known-version background history read keep
+their existing owners. A changed binding or exact historical navigation cannot
+reuse another page's authority. Loaded older pages and scroll position survive
+ordinary switching; queued bottom-pinning cannot override another page or newer
+user scroll intent. An unpinned retained page restores its first visible message
+and offset across inactive append/prepend, with its prior top position as the
+fallback if that message disappeared. The anchor contains only scalar identity
+and coordinates, has the same bounded lifetime as the page, and cannot cross a
+Workspace/Stream/provider/Thread replacement. Only a previously pinned reader
+follows the new bottom. Only the exact displayed final after paint can admit a read
+ACK, and only its durable confirmed receipt can clear the ready badge. Reusing
+an older page never acknowledges an unseen newer final.
+
 The Server page exposes the private sync endpoint through its existing
 configuration save/cancel flow. Only HTTP(S) URLs without embedded credentials,
 query or fragment are admitted. A pending edit does not change the effective

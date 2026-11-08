@@ -827,6 +827,20 @@ so a busy transition does not serialize unrelated Thread processing.
 
 ## Navigation responsiveness
 
+Retained chat selection paints its canonical window before the ordered
+selection response or conditional background history response. The existing
+history-page-paint and control measurements share that selection's client trace
+identity and fixed loaded-asset marker. The read ACK retains its own original
+identity and existing paint/receipt/marker-clear spans; exact final identity
+correlates it with displayed history without turning a click into read evidence.
+An unchanged repeated selection uses the existing select-task mutation plus
+known-version task-history read instead of another full open-task history page.
+Layout notification yields to the synchronous selection intent before starting
+optional column hydration, avoiding a second cold read of the selected page.
+These spans and gated browser measurements distinguish removed I/O dependencies
+from actual production server/SQLite latency; they do not establish a universal
+latency percentage or a deployed improvement before installation and observation.
+
 Leaving Chat for Dashboard must not expand the hidden conversation's DOM. A
 zero-sized history viewport is not underfilled; automatic paging rechecks the
 currently visible owner before each page and resumes when Chat becomes visible.
