@@ -40,6 +40,8 @@ export function createReleaseOperationServices({
     synchronizePublishedDev: input => finalization.synchronizePublishedDev(input),
     reservePublication: input => adapter.reservePublication(input),
     withReviewedMainRecovery: input => adapter.withReviewedMainRecovery(input),
+    inspectFirstCompose: input => adapter.inspectFirstCompose(input),
+    recoverFirstCompose: input => adapter.recoverFirstCompose(input),
     requestCorrection,
     cleanupGeneration: input => adapter.cleanupGeneration(input),
     processAlive: processIsAlive,

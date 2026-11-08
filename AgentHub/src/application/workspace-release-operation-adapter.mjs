@@ -21,18 +21,13 @@ async function releaseMetadataBytes(metadata) {
   return bytes;
 }
 function approvedRepositories(operation) {
-  if (operation.reviewedMain) return operation.reviewedMain.approvedRepositories.map(repository => {
-    const input = operation.authorization.approvedTargets.find(target => target.repositoryRoot === repository.projectRoot
-      && target.nativeResolutionReview)?.nativeResolutionReview;
-    return { ...repository, ...(input ? { nativeResolutionReview: input } : {}) };
-  });
+  if (operation.reviewedMain) return operation.reviewedMain.approvedRepositories;
   return operation.authorization.approvedTargets.flatMap((target) => (
     target.repositoryRoot && target.approvedLocalMainCommit && target.approvedOriginMainCommit
       ? [{
           projectRoot: target.repositoryRoot,
           approvedLocalMainCommit: target.approvedLocalMainCommit,
           approvedOriginMainCommit: target.approvedOriginMainCommit,
-          ...(target.nativeResolutionReview ? { nativeResolutionReview: target.nativeResolutionReview } : {}),
         }]
       : []
   ));
@@ -69,18 +64,37 @@ export class WorkspaceReleaseOperationAdapter {
       generation,
       ...(effectiveReleaseTaskScope(operation) === "all_await" ? {} : { taskIds: effectiveReleaseTaskIds(operation) }),
       previousSelectedResults: operation.selectedResults,
+      ...(operation.firstComposeRecovery ? { frozenVersions: operation.firstComposeRecovery.candidates } : {}),
       approvedRepositories: approvedRepositories(operation),
       ...(operation.authorization.releaseVersion !== undefined ? { releaseVersion: operation.authorization.releaseVersion } : {}),
       ...(changelogContent ? { changelogContent } : {}),
       ...(operation.authorization.releaseVersion !== undefined ? { releaseVersion: operation.authorization.releaseVersion } : {}),
     });
+    return this.#composed(operation, prepared);
+  }
+
+  async inspectFirstCompose({ operation, generation }) {
+    const result = await this.releasePreflight.firstOperationGeneration({ workspaceId: operation.workspaceId,
+      operationId: operation.operationId, generation, taskIds: operation.authorization.taskIds,
+      approvedRepositories: approvedRepositories(operation), inspectOnly: true,
+      changelogContent: await releaseMetadataBytes(effectiveReleaseMetadata(operation)),
+      releaseVersion: operation.authorization.releaseVersion });
+    return result.releaseCandidates.map(item => item.binding);
+  }
+
+  async recoverFirstCompose({ operation, generation, recovery, validateBeforeCommit }) {
+    const prepared = await this.releasePreflight.firstOperationGeneration({ workspaceId: operation.workspaceId,
+      operationId: operation.operationId, generation, taskIds: operation.authorization.taskIds,
+      approvedRepositories: approvedRepositories(operation), expectedBindings: recovery.candidates,
+      changelogContent: await releaseMetadataBytes(effectiveReleaseMetadata(operation)),
+      releaseVersion: operation.authorization.releaseVersion, validateBeforeCommit });
+    return this.#composed(operation, prepared);
+  }
+
+  #composed(operation, prepared) {
     const selectedResults = prepared.releaseCandidates.flatMap((candidate) => (
-      candidate.frozenTasks.map((task) => ({
-        taskId: task.taskId,
-        resultCommit: task.resultCommit,
-        ...selectedCompositionFields(task),
-        acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision,
-      }))
+      candidate.frozenTasks.map((task) => ({ taskId: task.taskId, resultCommit: task.resultCommit,
+        ...selectedCompositionFields(task), acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision }))
     ));
     return {
       repositoryBases: prepared.releaseCandidates.map((candidate) => ({
