@@ -3624,9 +3624,14 @@ export class ReleaseGitWorkspaceService {
     const identityFile = metadata.find(item => item.relative === "identity.json");
     const checkpoint = metadata.find(item => item.relative === path.join(child, "checkpoint.json"));
     const manifest = metadata.find(item => item.relative === path.join(child, "evidence", candidate.manifestHash + ".json"));
-    if (!identityFile?.bytes.equals(ownerBytes) || !checkpoint || !manifest || sha256(manifest.bytes) !== candidate.manifestHash
-        || !checkpoint.bytes.equals(await readFile(path.join(archiveRoot, "checkpoint.json")))
-        || stableManifest(JSON.parse(manifest.bytes)) !== stableManifest(candidate.manifest)) throw new Error("Archived frozen metadata changed");
+    const metadataChecks = {
+      identity: identityFile?.bytes.equals(ownerBytes),
+      checkpoint: checkpoint?.bytes.equals(await readFile(path.join(archiveRoot, "checkpoint.json"))),
+      manifestDigest: manifest && sha256(manifest.bytes) === candidate.manifestHash,
+      manifest: manifest && stableManifest(JSON.parse(manifest.bytes)) === stableManifest(candidate.manifest)
+    };
+    const changedMetadata = Object.keys(metadataChecks).filter(key => !metadataChecks[key]);
+    if (changedMetadata.length) throw new Error("Archived frozen metadata changed: " + changedMetadata.join(","));
     const physical = info => ({ dev: String(info.dev), ino: String(info.ino), birthtimeNs: String(info.birthtimeNs) });
     await objects.restoreArchive({ archive: receipt.archive, repository, assertCurrent: assertPreparationProcessOwned,
       prepare: async ({ metadata: state, checkpoint: save }) => {
