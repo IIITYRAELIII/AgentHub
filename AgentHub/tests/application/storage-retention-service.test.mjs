@@ -3,9 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { StorageRetentionService, STORAGE_RETENTION_POLICY_VERSION } from "../../src/application/storage-retention-service.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { restartRequestProjection } from "../../src/domain/maintenance-operation.mjs";
+import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 
 async function setup(t, options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-retention-test-"));
@@ -46,6 +48,164 @@ test("after-ready work is bounded, durable before effect, and has no restart pro
   assert.deepEqual(f.store.get("storage-retention:v1").metadata.pending, []);
   assert.equal(service.status().removed, 3);
   assert.equal(f.store.activeFor({ kind: "restart", streamId: "agent-hub-runtime", threadId: "agent-hub-runtime" }), null);
+});
+
+test("SQLite contention waits for SAME retention intent without repeating artifact work", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  const writer = new DatabaseSync(runtimeDatabasePath(f.root));
+  let held = false, timer;
+  const attempts = [];
+  const create = f.store.create.bind(f.store);
+  f.store.create = input => {
+    if (input.operationId !== "storage-retention:v1") attempts.push(input.operationId);
+    return create(input);
+  };
+  const preview = f.owner.preview;
+  f.owner.preview = async input => {
+    const result = await preview(input);
+    writer.exec("BEGIN IMMEDIATE"); held = true;
+    timer = setTimeout(() => { writer.exec("COMMIT"); held = false; }, 50);
+    return result;
+  };
+  const service = f.make();
+  try {
+    const result = await service.runApproved([{ ownerId: f.owner.id,
+      candidate: { id: "a", cursor: "a" }, binding: { id: "a" } }]);
+    assert.equal(result.removed, 1);
+    assert.equal(f.calls.length, 1);
+    assert.ok(attempts.length > 1);
+    assert.ok(attempts.every(id => id === f.calls[0].operationId));
+    const original = f.store.get(f.calls[0].operationId);
+    assert.equal(original.status, "succeeded");
+    assert.equal(original.metadata.result.status, "removed");
+    assert.deepEqual(f.store.get("storage-retention:v1").metadata.pending, []);
+  } finally {
+    await service.close(); clearTimeout(timer);
+    if (held) writer.exec("ROLLBACK");
+    writer.close();
+  }
+});
+
+test("SQLite settlement waits never replay effects and delayed admission rechecks release and lease", async t => {
+  for (const mode of ["settlement", "release", "lease"]) {
+    const f = await setup(t, { maxUnits: 1 });
+    const writer = new DatabaseSync(runtimeDatabasePath(f.root));
+    let held = false, timer, fenced = false, settlementAttempts = 0;
+    const hold = () => {
+      writer.exec("BEGIN IMMEDIATE"); held = true;
+      timer = setTimeout(() => {
+        writer.exec("COMMIT"); held = false;
+        if (mode === "release") f.context.releaseId = "replacement";
+        if (mode === "lease") fenced = true;
+      }, 50);
+    };
+    const preview = f.owner.preview, prune = f.owner.prune;
+    f.owner.preview = async input => {
+      const result = await preview(input);
+      if (mode !== "settlement") hold();
+      return result;
+    };
+    f.owner.prune = async input => {
+      const result = await prune(input);
+      if (mode === "settlement") hold();
+      return result;
+    };
+    const settle = f.store.settle.bind(f.store);
+    f.store.settle = (...args) => { settlementAttempts++; return settle(...args); };
+    f.lease.assertOwned = async () => { if (fenced) throw new Error("lost lease after SQL wait"); };
+    const service = f.make();
+    try {
+      const attempt = service.runApproved([{ ownerId: f.owner.id,
+        candidate: { id: "a", cursor: "a" }, binding: { id: "a" } }]);
+      if (mode === "lease") {
+        await assert.rejects(attempt, /lost lease after SQL wait/u);
+        assert.equal(f.calls.length, 0);
+      } else {
+        const result = await attempt;
+        assert.equal(f.calls.length, mode === "settlement" ? 1 : 0);
+        if (mode === "settlement") {
+          assert.equal(result.removed, 1);
+          assert.ok(settlementAttempts > 1);
+          assert.equal(f.store.get(f.calls[0].operationId).status, "succeeded");
+        } else {
+          assert.equal(result.removed, 0);
+          const pending = f.store.get("storage-retention:v1").metadata.pending;
+          assert.equal(pending.length, 1);
+          const original = f.store.get(pending[0].operationId);
+          assert.equal(original.metadata.admitted, true);
+          assert.notEqual(original.status, "succeeded");
+        }
+      }
+    } finally {
+      await service.close().catch(() => {}); clearTimeout(timer);
+      if (held) writer.exec("ROLLBACK");
+      writer.close();
+    }
+  }
+});
+
+test("approved owner previews preserve discovery cursor and unrelated pending originals", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  f.owner.prune = async () => ({ status: "unknown", reason: "original-unknown" });
+  await f.make().runOnce();
+  const before = f.store.get("storage-retention:v1");
+  const pending = before.metadata.pending[0].operationId;
+  const original = f.store.get(pending);
+  f.owner.list = async () => { throw new Error("approved cleanup must not discover more artifacts"); };
+  f.owner.reconcile = async () => { throw new Error("unrelated original must remain untouched"); };
+  f.owner.prune = async input => {
+    assert.equal(input.candidate.id, "chosen");
+    assert.ok(f.store.get("storage-retention:v1").metadata.pending.some(p => p.operationId === input.operationId));
+    assert.equal(f.store.get(input.operationId).metadata.admitted, true);
+    f.calls.push(input);
+    return { status: "removed", logicalBytes: 23 };
+  };
+  await f.make().runApproved([{ ownerId: f.owner.id, candidate: { id: "chosen", cursor: "chosen" }, binding: { id: "chosen" } }]);
+  assert.equal(f.calls.length, 1);
+  const after = f.store.get("storage-retention:v1");
+  assert.equal(after.metadata.cursor, before.metadata.cursor);
+  assert.equal(after.metadata.ownerIndex, before.metadata.ownerIndex);
+  assert.equal(after.metadata.cycle, before.metadata.cycle);
+  assert.deepEqual(after.metadata.pending, before.metadata.pending);
+  assert.deepEqual(f.store.get(pending), original);
+});
+
+test("approved cleanup refuses stale previews and preserves readiness and budget checks", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  const approval = { ownerId: f.owner.id, candidate: { id: "a", cursor: "a" }, binding: { id: "stale" } };
+  const service = f.make();
+  assert.throws(() => service.runApproved([]), /bounded nonempty/u);
+  assert.throws(() => service.runApproved([approval, approval]), /bounded nonempty/u);
+  assert.throws(() => service.runApproved([{ ...approval, ownerId: "foreign-owner" }]), /Invalid approved/u);
+  await service.runApproved([approval]);
+  assert.equal(f.calls.length, 0);
+  assert.equal(service.status().reasons["approved-preview-changed"], 1);
+  for (const blocked of [{ busy: true }, { isolated: true }, { ready: false }]) {
+    const result = await f.make({ readContext: async () => ({ ...f.context, ...blocked }) }).runApproved([
+      { ...approval, binding: { id: "a" } },
+    ]);
+    assert.equal(result.state, "deferred");
+  }
+  assert.equal(f.calls.length, 0);
+});
+
+test("approved lost reply reconciles SAME exact original and refuses a replacement binding", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  let effects = 0, reconciles = 0;
+  f.owner.prune = async () => { effects++; return { status: "unknown", reason: "lost-reply" }; };
+  const approval = { ownerId: f.owner.id, candidate: { id: "a", cursor: "a" }, binding: { id: "a" } };
+  await f.make().runApproved([approval]);
+  const original = f.store.get("storage-retention:v1").metadata.pending[0].operationId;
+  f.owner.reconcile = async input => { reconciles++; assert.equal(input.operationId, original); return { status: "already-removed" }; };
+  await f.make().runApproved([{ ...approval, binding: { id: "replacement" } }]);
+  assert.equal(reconciles, 0);
+  assert.equal(f.store.get(original).status, "reconciling");
+  await f.make().runApproved([approval]);
+  assert.equal(effects, 1);
+  assert.equal(reconciles, 1);
+  assert.equal(f.store.get(original).status, "succeeded");
+  assert.equal(f.store.get(original).metadata.result.status, "already-removed");
+  assert.deepEqual(f.store.get("storage-retention:v1").metadata.pending, []);
 });
 
 test("known partial batches continue SAME admitted child and keep observations distinct from completion", async t => {
@@ -237,4 +397,82 @@ test("coalesced run and shutdown wait for in-flight owner; stop admits no next a
   assert.equal(closed, false);
   release(); await close; await first;
   assert.equal(f.calls.length, 1);
+});
+
+test("slow approved preview keeps a SAME durable unadmitted intent for the next bounded pass", async t => {
+  let clock = 0, previews = 0;
+  const f = await setup(t, { clock: () => clock, maxUnits: 1 });
+  f.owner.preview = async ({ candidate }) => { previews++; clock += 20_001; return { status: "eligible", binding: { id: candidate.id } }; };
+  const input = [{ ownerId: f.owner.id, candidate: { id: "slow", cursor: "slow" }, binding: { id: "slow" } }];
+  const first = f.make(); await first.runApproved(input); await first.close();
+  assert.equal(f.calls.length, 0, "elapsed admission budget still forbids an effect in the first pass");
+  const pending = f.store.get("storage-retention:v1").metadata.pending;
+  assert.equal(pending.length, 1, "completed preview must survive its spent budget instead of restarting forever");
+  const original = f.store.get(pending[0].operationId);
+  assert.equal(original.metadata.admitted, false); assert.equal(original.metadata.previewCompleted, true);
+  const restarted = new MaintenanceOperationStore({ dataDir: f.root });
+  const second = f.make({ store: restarted }); await second.runApproved(input); await second.close();
+  assert.equal(previews, 1, "only the owning prune performs its fresh final validation after durable preview");
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].operationId, original.operationId);
+  assert.equal(f.store.get(original.operationId).status, "succeeded");
+});
+
+test("prepared retention intent still refuses lost readiness, changed approval and fresh owner drift", async t => {
+  for (const mode of ["unready", "approval", "owner"]) {
+    let clock = 0;
+    const f = await setup(t, { clock: () => clock, maxUnits: 1 });
+    f.owner.preview = async ({ candidate }) => { clock += 20_001; return { status: "eligible", binding: { id: candidate.id } }; };
+    const input = [{ ownerId: f.owner.id, candidate: { id: "slow", cursor: "slow" }, binding: { id: "slow" } }];
+    await f.make().runApproved(input);
+    const originalId = f.store.get("storage-retention:v1").metadata.pending[0].operationId;
+    if (mode === "unready") f.context.ready = false;
+    if (mode === "approval") input[0].binding = { id: "foreign" };
+    if (mode === "owner") f.owner.prune = async () => ({ status: "retained", reason: "fresh-owner-source-changed" });
+    await f.make().runApproved(input);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.store.latestStorageArtifactReadonly(f.owner.id, "slow").operationId, originalId);
+  }
+});
+
+test("preview intake recovers child-before-parent reply loss and re-previews release drift on SAME identity", async t => {
+  for (const mode of ["reply", "release", "background"]) {
+    let clock = 0, previews = 0, creates = 0;
+    const f = await setup(t, { clock: () => clock, maxUnits: 1 });
+    f.owner.preview = async ({ candidate }) => {
+      previews++; clock += 20_001;
+      return { status: "eligible", binding: { id: candidate.id } };
+    };
+    const input = [{ ownerId: f.owner.id, candidate: { id: "a", cursor: "a" }, binding: { id: "a" } }];
+    const create = f.store.create.bind(f.store);
+    f.store.create = value => { if (value.operationId !== "storage-retention:v1") creates++; return create(value); };
+    const transition = f.store.transition.bind(f.store);
+    let lost = false;
+    f.store.transition = (id, patch, options) => {
+      if (mode === "reply" && !lost && id === "storage-retention:v1" && patch.metadata?.pending?.length) {
+        lost = true; throw Error("lost before parent checkpoint");
+      }
+      return transition(id, patch, options);
+    };
+    const first = f.make();
+    const run = service => mode === "background" ? service.runOnce() : service.runApproved(input);
+    if (mode === "reply") await assert.rejects(run(first), /lost before parent/u);
+    else await run(first);
+    await first.close();
+    assert.equal(f.calls.length, 0);
+    const original = f.store.latestStorageArtifactReadonly(f.owner.id, "a");
+    assert.equal(original.metadata.admitted, false);
+    if (mode === "release") f.context.releaseId = "replacement";
+    const restored = new MaintenanceOperationStore({ dataDir: f.root });
+    const second = f.make({ store: restored });
+    await run(second); await second.close();
+    if (mode === "release") {
+      assert.equal(f.calls.length, 0, "fresh preview spent the new release's pass budget");
+      const third = f.make({ store: restored }); await run(third); await third.close();
+    }
+    assert.equal(previews, mode === "release" ? 2 : 1);
+    assert.equal(creates, 1);
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].operationId, original.operationId);
+    assert.equal(restored.get(original.operationId).status, "succeeded");
+  }
 });

@@ -11,11 +11,12 @@ parentPort.on("message", async ({ id, requestedAt }) => {
     const readFinishedAt = performance.now();
     // The wire protocol binds its ID to these compressed bytes. A lower gzip
     // level produces a new valid sync ID, never different bytes under an old ID.
-    const { syncId, chunks } = await compressedJournalChunks(payload, { level: 1 });
+    const { syncId, chunks, measurements } = await compressedJournalChunks(payload, { level: 1 });
     const compressed = Uint8Array.from(Buffer.concat(chunks));
     parentPort.postMessage({ id, result: {
       syncId, compressed, version: payload.version, updatedAt: payload.updatedAt,
       measurements: {
+        ...measurements,
         queueWaitMs: startedAt - requestedAt,
         snapshotReadMs: readFinishedAt - startedAt,
         encodeCompressMs: performance.now() - readFinishedAt,

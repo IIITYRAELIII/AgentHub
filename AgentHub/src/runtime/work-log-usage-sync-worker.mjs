@@ -30,9 +30,40 @@ const mutationRequests = new Map();
 // Restart, a failed rendering or any changed dependency requires reconstruction.
 let journalReuse = null;
 
-async function synchronizeTaskTitles(payload) {
+async function synchronizeTaskTitles(payload, measurements = {}) {
   const startedAt = performance.now();
-  const phases = { metadataReadMs: 0, recordReadMs: 0, normalizeMs: 0, commitMs: 0 };
+  const phases = Object.assign(measurements, { metadataReadMs: 0, recordReadMs: 0, normalizeMs: 0, commitMs: 0,
+    workerProcessId: process.pid, workerThreadId: threadId, sqlWriteAttempts: 0,
+    sqlRowPreparationMs: 0, sqlBeginMs: 0, sqlTransactionMs: 0, sqlTransactionCount: 0,
+    sqlFirstLockAtMs: 0, sqlFirstReleaseAtMs: 0, sqlLastLockAtMs: 0, sqlLastReleaseAtMs: 0, sqlUnreleasedTransactions: 0,
+    sqlQueueWaitMs: 0, sqlExecutionMs: 0, sqlRetries: 0, sqlExhausted: 0,
+    sqlBeginRefused: 0, sqlRolledBack: 0, sqlCommitted: 0, sqlRollbackRefused: 0 });
+  const recordMutationTiming = sample => {
+    phases.sqlWriteAttempts += 1;
+    phases.sqlRowPreparationMs += sample.rowPreparationMs;
+    phases.sqlBeginMs += sample.beginMs;
+    phases.sqlTransactionMs += sample.transactionMs;
+    phases.sqlBeginRefused += Number(sample.outcome === "begin-refused");
+    phases.sqlRolledBack += Number(sample.outcome === "rolled-back");
+    phases.sqlCommitted += Number(sample.outcome === "committed");
+    phases.sqlRollbackRefused += Number(sample.outcome === "rollback-refused");
+    if (sample.lockAcquiredAtMs !== null) {
+      phases.sqlTransactionCount += 1;
+      if (!phases.sqlFirstLockAtMs) {
+        phases.sqlFirstLockAtMs = sample.lockAcquiredAtMs;
+        phases.sqlFirstReleaseAtMs = sample.lockReleasedAtMs ?? 0;
+      }
+      phases.sqlLastLockAtMs = sample.lockAcquiredAtMs;
+      phases.sqlLastReleaseAtMs = sample.lockReleasedAtMs ?? 0;
+      phases.sqlUnreleasedTransactions += Number(sample.lockReleasedAtMs === null);
+    }
+  };
+  const recordQueueTiming = sample => {
+    phases.sqlQueueWaitMs += sample.queueWaitMs;
+    phases.sqlExecutionMs += sample.executionMs;
+    phases.sqlRetries += sample.retries;
+    phases.sqlExhausted += Number(sample.exhausted);
+  };
   const measure = async (name, operation) => {
     const start = performance.now();
     try { return await operation(); }
@@ -70,7 +101,8 @@ async function synchronizeTaskTitles(payload) {
     }
     try {
       const result = records.length
-        ? await measure("commitMs", () => journalOperations.run(() => journal.upsertRecords(records, { expectedRevision })))
+        ? await measure("commitMs", () => journalOperations.run(() => journal.upsertRecords(records,
+          { expectedRevision, recordMutationTiming }), { recordMutationTiming: recordQueueTiming }))
         : { revision: expectedRevision };
       return {
         updated: records.length, revision: result.revision,
@@ -119,21 +151,45 @@ async function projectJournal(payload, id) {
   const bindings = new Map();
   const bindingKey = reference => `${reference.provider}\0${reference.threadId}`;
   const workspaceStartedAt = performance.now();
+  phases.workspaceReferenceCount = 0;
+  phases.workspaceBatchCount = 0;
   if (payload.resolveWorkspaces) {
     const references = [...new Map(Object.values(accounting).map(record => {
       const reference = { provider: record.provider, threadId: taskThreadId(record), projectRoot: record.projectRoot };
       return [bindingKey(reference), reference];
     })).values()];
-    for (let offset = 0; offset < references.length; offset += 128) {
-      const batch = references.slice(offset, offset + 128);
-      const resolved = await new Promise((resolve, reject) => {
-        workspaceRequests.set(id, { resolve, reject });
-        parentPort.postMessage({ id, type: "journal-workspaces", references: batch });
-      });
-      batch.forEach((reference, index) => bindings.set(bindingKey(reference), resolved[index] ?? null));
+    phases.workspaceReferenceCount = references.length;
+    try {
+      for (let offset = 0; offset < references.length; offset += 128) {
+        const batch = references.slice(offset, offset + 128);
+        phases.workspaceBatchCount += 1;
+        const resolved = await new Promise((resolve, reject) => {
+          workspaceRequests.set(id, { resolve, reject });
+          parentPort.postMessage({ id, type: "journal-workspaces", references: batch });
+        });
+        batch.forEach((reference, index) => bindings.set(bindingKey(reference), resolved[index] ?? null));
+      }
+    } catch (error) {
+      error.measurements = { ...phases, workspaceResolveMs: performance.now() - workspaceStartedAt,
+        durationMs: performance.now() - startedAt, workerThreadId: threadId };
+      throw error;
     }
   }
   phases.workspaceResolveMs = performance.now() - workspaceStartedAt;
+  // Workspace callbacks yield to other journal writers. A changed revision is
+  // already known to fail the final CAS: avoid reading all usage facts and
+  // rendering a journal which cannot be committed. The caller retains its
+  // existing bounded retry; the consuming transaction still checks again.
+  if (await measure("revisionCheckMs", () => journal.currentRevision()) !== expectedRevision) {
+    journalReuse = null;
+    return { projected: false, conflict: true, projectionDeferred: true, projectionReused: false,
+      reason: "stale-journal-revision", renderSkipped: true,
+      revision: input.revision, expectedRevision, recordCount: 0,
+      accountingRecordsRead: input.accountingRecordsRead, factsSourceRead: false,
+      accountingPointReads: input.accountingPointReads, accountingBulkRead: input.accountingBulkRead,
+      factsReadMs: 0, renderMs: 0, ...phases,
+      durationMs: performance.now() - startedAt, workerThreadId: threadId };
+  }
   // Callbacks may let another SQLite owner change markers without changing the
   // journal revision. Initial observations cannot authorize the consuming path.
   accountingVersionCurrent = await journal.pricingProjectionVersion()
@@ -189,6 +245,7 @@ async function projectJournal(payload, id) {
       projected: false, reason: "unchanged", projectionReused: true,
       version: current.version, revision: expectedRevision,
       recordCount: 0, accountingRecordsRead: input.accountingRecordsRead,
+      accountingPointReads: input.accountingPointReads, accountingBulkRead: input.accountingBulkRead,
       projectionMode: "days", changedDayCount: 0, invalidRecordCount: 0, invalidRecordReasonCounts: {},
       eventCount: reuseCandidate.eventCount, factsSourceRead: false,
       factsCacheBytes: reuseCandidate.factsCacheBytes, factsCacheRetained: reuseCandidate.factsCacheRetained,
@@ -270,6 +327,7 @@ async function projectJournal(payload, id) {
     ...(result.conflict ? { projectionDeferred: true, reason: "stale-journal-revision" } : {}),
     recordCount: Object.keys(turns).length,
     accountingRecordsRead: input.accountingRecordsRead,
+    accountingPointReads: input.accountingPointReads, accountingBulkRead: input.accountingBulkRead,
     projectionMode: full ? "full" : "days",
     changedDayCount: input.dirtyDates.length,
     invalidRecordCount: normalized.invalidRecords.length,
@@ -284,12 +342,14 @@ async function projectJournal(payload, id) {
   };
 }
 
-function serializedError(error) {
+function serializedError(error, measurements = null) {
   return {
     message: String(error?.message ?? error),
     code: error?.code,
     errcode: error?.errcode,
     stack: error?.stack,
+    ...((measurements || error?.measurements)
+      ? { measurements: { ...error?.measurements, ...measurements } } : {}),
   };
 }
 
@@ -368,7 +428,8 @@ async function handle(message) {
         const result = await synchronizeTurnMetadata(journal, journalOperations, message.payload);
         return { ...result, workerThreadId: threadId, queueWaitMs: message.queueWaitMs };
       }
-      return { ...await synchronizeTaskTitles(message.payload), queueWaitMs: message.queueWaitMs };
+      message.measurements = { queueWaitMs: message.queueWaitMs };
+      return { ...await synchronizeTaskTitles(message.payload, message.measurements), queueWaitMs: message.queueWaitMs };
     }
     case "usage-sync-snapshot": return usageSyncSnapshot(message.payload);
     case "usage-sync-state": return store.usageSyncState();
@@ -404,7 +465,7 @@ parentPort.on("message", (message) => {
       parentPort.postMessage({ id: message.id, value });
       if (message.type === "close") parentPort.close();
     } catch (error) {
-      parentPort.postMessage({ id: message.id, error: serializedError(error) });
+      parentPort.postMessage({ id: message.id, error: serializedError(error, message.measurements) });
       if (message.type === "close") parentPort.close();
     }
   });

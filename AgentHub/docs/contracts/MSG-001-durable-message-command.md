@@ -233,8 +233,12 @@ effect.
 An exact Codex `task_started` without a terminal remains uncertain too, even
 when an idle/interrupt projection or elapsed grace hides it from the active
 display. The original managed run continues to own admission until exact
-terminal evidence or the current recovery interruption proven by TURN-001 and
-ADR-0125. That canonical terminal wakes the same queued command, with no resend
+terminal evidence, the current recovery interruption proven by TURN-001 and
+ADR-0125, or the local-only reboot disposition in ADR-HUB-392. The latter keeps
+the exact provider outcome UNKNOWN and accepted input unchanged; it releases only
+the proven old Hub execution after durable lifecycle recording. New input still
+passes fresh external/current activity checks. No PID, elapsed-time or idle
+projection alone proves old local execution loss. A canonical terminal wakes the same queued command, with no resend
 or identity replacement. A separate maintenance barrier is shown in the queue as
 the concrete `context-maintenance` wait reason. When a deferred command starts,
 its receipt clears the stale wait
@@ -275,6 +279,17 @@ eligibility has been claimed. A transient persistence failure rolls an
 attention-required transition back to the same pending object; timer-owned
 processing records a payload-free error and retries that exact owner with
 bounded backoff instead of leaking an unhandled rejection.
+An explicit cancel of an already read item must persist its exact command's
+future-Hub-dispatch fence before receipt projection or attachment cleanup.
+The existing command ledger compares deferred identity, active state and revision;
+dispatching/unknown provider acceptance, changed identity or a failed write refuses
+and retains the item. Local retirement alone never grants cancellation authority.
+After the actual controller releases processing, normal cancellation may commit
+`cancelled` with `cancellationScope=future-hub-dispatch` and past
+`providerEffectOutcome=unknown`; it does not claim a past provider no-effect.
+Cold reopen cannot resurrect that canonical command. Legacy items without a
+command row retain the existing snapshot persistence owner until ledger migration
+owns them; a canonical refusal never falls back to deleting a snapshot projection.
 Persisted queue errors contain only an allowlisted code and bounded generic
 message. Dependency output, command lines, session identifiers, payload and
 stack text never enter deferred diagnostics or client state.
@@ -398,6 +413,13 @@ work-log storage retain the raw root prompt and its separately bounded
 ## Remote attachment transport
 
 The shared Dashboard bot's queue notice confirms remote queue admission only.
+The existing paired Hub service signature also permits bounded read-only
+`POST /api/dashboard-bot/inspect`: one exact UUID, or pages of twenty retained
+records filtered by a creation interval of at most twenty-four hours. It exposes
+only original command/bundle/item/attachment identities, scalar state/times and
+receipt-delivery state. It never claims, cleans up, migrates registration,
+renews a lease/expiry, publishes a result or sends a notification. Missing state,
+unavailable inspection and a delivery timeout are distinct observations.
 Its accepted/failed notice follows the local Hub's durable command result. The
 same remote control command owns the pending Telegram receipt and its delivery
 state; an indexed alarm only addresses that record. Committing a terminal result
@@ -428,6 +450,16 @@ the local file visible to the command handler.
 Transport timeout or an incomplete chunk leaves the durable command available
 for a later poll with the same command and attachment identities. The client
 does not create an immediate retry loop to make a stalled body appear reliable.
+Known allowlisted transport codes in an existing error cause remain retryable
+without relying on English error text. A sibling's failure cannot delete
+already finalized command-owned files, including files whose intake result
+reply was lost. A later same-ID poll first revalidates the complete remote
+manifest, then verifies the existing local file's exact size, final SHA-256 and
+image type before skipping its chunk bodies. A different command never borrows
+those paths; mismatched local bytes fail closed without overwrite. This reuses
+the existing final file and its attachment/history lifetime, not a second cache
+or a new expiry owner. Private partial cleanup and canonical intake idempotency
+remain unchanged. See ADR-HUB330-relay-finalized-retry.
 
 A rejected Dashboard poll cannot leave its command workers running into the
 next attempt. The first failure stops assignment in both text and attachment

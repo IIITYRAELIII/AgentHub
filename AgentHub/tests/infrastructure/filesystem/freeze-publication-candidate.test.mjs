@@ -12,6 +12,7 @@ import { prepareCommittedAgentHubReleaseVersion } from "../../../src/infrastruct
 import { freezePreparedPublication } from "../../../publish-changed.mjs";
 import { releaseOperationRuntimePublicationInput } from "../../../release-operation-publication-runner.mjs";
 import { ReleaseGitWorkspaceService, assertReleaseCandidateContourSource } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { withPreparationGitIsolation } from "../../../src/infrastructure/filesystem/preparation-git-isolation.mjs";
 
 const execute = promisify(execFile);
 const git = async (cwd, ...args) => String((await execute("git", args, { cwd, windowsHide: true, encoding: "utf8" })).stdout).trimEnd();
@@ -43,7 +44,7 @@ async function fixture(t, {
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
   const candidate = await service.prepareCandidate({ projectRoot: primary, workspaceId: "workspace", planRevision: "plan", frozenTasks: [],
     approvedBaseCommit: await git(primary, "rev-parse", "main") });
-  await git(candidate.releaseRoot, "config", "core.autocrlf", releaseAutoCrlf);
+  if (releaseAutoCrlf !== null) await git(candidate.releaseRoot, "config", "core.autocrlf", releaseAutoCrlf);
   const checkpointFile = path.join(candidate.releaseRoot, "..", "checkpoint.json");
   const freeze = (options = {}) => service.freezePublicationCandidate({ projectRoot: primary, workspaceId: "workspace",
     expectedPlanRevision: "plan", expectedPreparedHead: candidate.preReleaseHead,
@@ -60,6 +61,28 @@ const freezeThroughPublicWrapper = (fixture, options = {}) => freezePreparedPubl
   ...options,
 });
 
+test("freeze writer and readback share isolated system Git policy", async t => {
+  const f = await fixture(t, { releaseAutoCrlf: null, attributes: null });
+  const root = path.dirname(f.primary);
+  const systemConfig = path.join(root, "system-gitconfig");
+  await writeFile(systemConfig, "[core]\n\tautocrlf = true\n");
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const previous = process.env.GIT_CONFIG_SYSTEM;
+  process.env.GIT_CONFIG_SYSTEM = systemConfig;
+  try {
+    await withPreparationGitIsolation(path.join(root, "isolated"), async () => {
+      const frozen = await f.freeze();
+      const actual = await f.service.frozenCandidate(f.primary);
+      assert.equal(actual.preReleaseHead, frozen.preReleaseHead);
+      assert.equal(actual.checkpointPhase, "frozen");
+      assert.equal(actual.manifestHash, frozen.manifestHash);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+    else process.env.GIT_CONFIG_SYSTEM = previous;
+  }
+});
+
 test("manual public version uses the existing freeze and refuses replacing its saved expectation", async t => {
   const f = await fixture(t, { publicVersion: "2.0.3" });
   await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
@@ -70,6 +93,62 @@ test("manual public version uses the existing freeze and refuses replacing its s
   const repeated = await f.freeze({ expectedVersion: "3.7.9" });
   assert.equal(repeated.manifestHash, frozen.manifestHash);
   assert.deepEqual(JSON.parse(await readFile(repeated.manifestFile, "utf8")).publication, original);
+});
+
+test("frozen metadata recovery retains the original and refuses other bytes", async t => {
+  const f = await fixture(t, { releaseAutoCrlf: null, attributes: null });
+  const root = path.dirname(f.primary);
+  const systemConfig = path.join(root, "system-gitconfig");
+  await writeFile(systemConfig, "[core]\n\tautocrlf = true\n");
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const previous = process.env.GIT_CONFIG_SYSTEM;
+  process.env.GIT_CONFIG_SYSTEM = systemConfig;
+  try {
+    const frozen = await f.freeze();
+    const checkpointBytes = await readFile(f.checkpointFile);
+    const metadataFile = path.join(f.candidate.releaseRoot, "CHANGELOG.md");
+    const originalBytes = await readFile(metadataFile);
+    assert.ok(originalBytes.includes(Buffer.from("\r\n")));
+    await withPreparationGitIsolation(path.join(root, "isolated"), async () => {
+      await assert.rejects(f.service.frozenCandidate(f.primary), /exact clean main/u);
+      await writeFile(metadataFile, Buffer.concat([originalBytes, Buffer.from("changed\r\n")]));
+      await assert.rejects(f.freeze({ recoverMetadataMaterialization: true }), /CRLF-only/u);
+      await writeFile(metadataFile, originalBytes);
+      const unrelated = path.join(f.candidate.releaseRoot, "unique-work.txt");
+      await writeFile(unrelated, "keep\n");
+      await assert.rejects(f.freeze({ recoverMetadataMaterialization: true }), /only frozen release metadata/u);
+      assert.equal(await readFile(unrelated, "utf8"), "keep\n");
+      await rm(unrelated);
+      const recovered = await f.freeze({ recoverMetadataMaterialization: true });
+      const actual = await f.service.frozenCandidate(f.primary);
+      assert.equal(recovered.reused, true);
+      assert.equal(actual.preReleaseHead, frozen.preReleaseHead);
+      assert.equal(actual.manifestHash, frozen.manifestHash);
+      assert.deepEqual(await readFile(f.checkpointFile), checkpointBytes);
+      assert.deepEqual(recovered.publicationFreeze, frozen.publicationFreeze);
+      assert.deepEqual(await readFile(metadataFile), f.changelogContent);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+    else process.env.GIT_CONFIG_SYSTEM = previous;
+  }
+});
+
+test("retained first-freeze build refuses an actual runtime allocation collision", async t => {
+  const f = await fixture(t);
+  const runtimeRoot = path.join(path.dirname(f.primary), "occupied-runtime");
+  const allocated = path.join(runtimeRoot, "releases", "occupied");
+  await mkdir(allocated, { recursive: true });
+  await writeFile(path.join(allocated, "runtime-manifest.json"), JSON.stringify({
+    releaseId: "occupied", version: "2.1.5", releaseVersion: "2.1.5+build.42", files: [],
+    versionScheme: "semver-build-v1", publicVersion: "2.1.5", buildNumber: 42,
+  }));
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const checkpoint = await readFile(f.checkpointFile);
+  await assert.rejects(f.freeze({ runtimeRoot, expectedVersion: "2.1.5",
+    expectedRuntimeVersion: "2.1.5+build.42" }), /runtime version is no longer available/u);
+  assert.deepEqual(await readFile(f.checkpointFile), checkpoint);
+  assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "HEAD"), f.candidate.preReleaseHead);
 });
 
 test("freeze pins the artifact version separately and retry never reallocates it", async (t) => {

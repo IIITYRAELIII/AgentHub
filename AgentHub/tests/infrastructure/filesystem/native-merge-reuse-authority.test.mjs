@@ -42,7 +42,7 @@ const treeEntries = async (repository, tree) => new Map((await gitAt(repository,
   const i = row.indexOf("\t"); return [row.slice(i + 1), row.slice(0, i)];
 }));
 
-test("old outside-marker native-v1 review never authorizes a new identity with equal conflict stages", async t => {
+test("retained compatibility context needs no message approval under a new selected identity", async t => {
   const scratchParent = await mkdtemp(path.join(os.tmpdir(), "native-authority-"));
   const root = await mkdtemp(path.join(scratchParent, `${variant}-`));
   t.after(async () => {
@@ -96,55 +96,36 @@ test("old outside-marker native-v1 review never authorizes a new identity with e
   await run(original, "RELEASE_NATIVE_MERGE_CONFLICT");
   const oldState = await jsonRead(path.join(original.root, "merge.json"));
   const repository = path.join(original.root, "repository");
-  const reviewedBytes = `${prefix.replace("automatic header", "reviewed outside-marker header")}A\nB\n${suffix}`;
-  await writeFile(path.join(repository, "shared.txt"), reviewedBytes);
+  const resolvedBytes = `${prefix.replace("automatic header", "owned outside-marker header")}A\nB\n${suffix}`;
+  await writeFile(path.join(repository, "shared.txt"), resolvedBytes);
   const oldResolution = await commit(repository, "resolve marker and intentional independently reviewed clean-context change");
-  const refusal = await run(original, "RELEASE_NATIVE_REVIEW_REQUIRED");
-  assert.ok(refusal.extraPaths.includes("shared.txt"));
-  assert.equal(refusal.binding.commit, oldResolution);
-  const envelope = { kind: "native-merge-review-v1", verdict: "ACCEPT", binding: refusal.binding };
-  const review = { requestId: "controlled-old-review", text: `<native-merge-review>\n${JSON.stringify(envelope)}\n</native-merge-review>` };
-  let oldReviewCalls = 0;
-  const verifier = async (supplied, actual, identity) => {
-    // Controlled verification port: proves exact binding/identity propagation,
-    // not authentication by a production catalog or a genuine review receipt.
-    oldReviewCalls++;
-    assert.deepEqual(supplied, review); assert.deepEqual(actual, envelope.binding);
-    assert.deepEqual(identity, original.identity);
-  };
-  const accepted = await run({ ...original, resolutionReview: review, verifyReview: verifier });
-  assert.ok(oldReviewCalls > 0);
+  const accepted = await run(original);
   assert.equal(accepted.head, oldResolution);
   const oldJournal = await readFile(path.join(original.root, "merge.json"));
-  assert.deepEqual(JSON.parse(oldJournal).merges[1].reviewedResolution.binding, envelope.binding);
+  assert.equal(JSON.parse(oldJournal).merges[1].resolution.binding.commit, oldResolution);
 
   await writeFile(path.join(b.folder, "automatic.txt"), "new B automatic contribution\n");
   const corrected = { ...b.entry, taskRevision: 2, resultCommit: await commit(b.folder, "correct B outside conflicted file") };
   const next = request([a.entry, corrected], "new-no-review");
   assert.notDeepEqual(next.identity, original.identity);
-  let leakedReviewCalls = 0;
-  await run({ ...next, verifyReview: async () => { leakedReviewCalls++; throw new Error("old authority was forwarded"); } },
-    "RELEASE_NATIVE_MERGE_CONFLICT");
-  assert.equal(leakedReviewCalls, 0);
+  const result = await run(next);
   const current = await jsonRead(path.join(next.root, "merge.json"));
-  assert.deepEqual(conflictStages(current), conflictStages(oldState), "same exact stages make the reuse candidate eligible for this negative boundary");
-  assert.equal(current.next, 1); assert.equal(current.conflict.retainedResolution, undefined);
+  assert.equal(current.next, 2);
+  assert.equal(current.conflict, null);
   assert.equal(current.merges.some(step => step.reviewedResolution), false);
   const currentRepo = path.join(next.root, "repository");
-  assert.equal(await gitAt(currentRepo, ["rev-parse", "MERGE_HEAD"]), corrected.resultCommit);
-  assert.equal(await gitAt(currentRepo, ["show", "HEAD:shared.txt"]), `${prefix}A\n${suffix}`.trim());
-  const workBytes = await readFile(path.join(currentRepo, "shared.txt"), "utf8");
-  assert.ok(workBytes.includes("<<<<<<< HEAD\n"));
-  assert.ok(!workBytes.includes("reviewed outside-marker header"));
+  assert.equal(await gitAt(currentRepo, ["show", "HEAD:shared.txt"]), resolvedBytes.trim());
   assert.equal(await readFile(path.join(currentRepo, "automatic.txt"), "utf8"), "new B automatic contribution\n");
-  const automaticTree = (await gitAt(currentRepo, ["merge-tree", "--write-tree", "-z", current.head, corrected.resultCommit],
+  assert.deepEqual((await gitAt(currentRepo, ["show", "-s", "--format=%P", result.head])).split(" "),
+    [current.merges[0].commit, corrected.resultCommit]);
+  const automaticTree = (await gitAt(currentRepo, ["merge-tree", "--write-tree", "-z", current.merges[0].commit, corrected.resultCommit],
     { rawOutput: true, acceptableExitCodes: [1] })).split("\0")[0];
   const automaticEntries = await treeEntries(currentRepo, automaticTree);
-  for (const [file, entry] of current.conflict.automatic) {
-    assert.equal(`${entry.slice(0, -2).split(" ")[0]} blob ${entry.split(" ")[1]}`, automaticEntries.get(file));
-    assert.equal(await gitAt(currentRepo, ["hash-object", `--path=${file}`, file]), entry.split(" ")[1]);
+  const actualEntries = await treeEntries(currentRepo, result.head);
+  for (const file of new Set([...automaticEntries.keys(), ...actualEntries.keys()])) {
+    if (file !== "shared.txt") assert.equal(actualEntries.get(file), automaticEntries.get(file));
   }
   assert.deepEqual(await readFile(path.join(original.root, "merge.json")), oldJournal);
   assert.equal(await git(["status", "--porcelain=v1"]), "");
-  t.diagnostic(JSON.stringify({ variant, observations, oldReviewCalls, leakedReviewCalls }));
+  t.diagnostic(JSON.stringify({ variant, observations }));
 });

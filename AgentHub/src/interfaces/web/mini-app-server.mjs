@@ -904,8 +904,21 @@ export class MiniAppServer {
 
   async #authorize(request, response) {
     const authorization = String(request.headers.authorization ?? "");
-    // An explicit Authorization header always wins; the HttpOnly cookie keeps the
-    // device session out of page JavaScript for clients that stay same-origin.
+    const local = !this.#requestNeedsTelegramAuth(request);
+    const webviewToken = authorization.startsWith("webview ") ? authorization.slice(8).trim() : "";
+    const cookie = cookieValue(request, LOCAL_SESSION_COOKIE);
+    let localAccessSecret = this.#localAccessSecret;
+    // A valid protected local proof is stronger than a coexisting device session.
+    // Loopback alone never promotes device authority to a local-only command.
+    if (local && localAccessSecret && (webviewToken || cookie)) {
+      if (!validLocalWebviewSession(webviewToken, localAccessSecret)
+          && !validLocalSession(cookie, localAccessSecret)) {
+        localAccessSecret = await this.#refreshLocalAccessSecret();
+      }
+      if (validLocalWebviewSession(webviewToken, localAccessSecret)) return { source: "local-vscode-webview" };
+      if (validLocalSession(cookie, localAccessSecret)) return { source: "local-mini-app" };
+    }
+    // Device headers retain precedence over device cookies, including remotely.
     const cookieToken = cookieValue(request, DEVICE_SESSION_COOKIE);
     const deviceToken = authorization.startsWith("device ")
       ? authorization.slice(7).trim()
@@ -923,25 +936,8 @@ export class MiniAppServer {
         return false;
       }
     }
-    if (!this.#requestNeedsTelegramAuth(request)) {
-      if (!this.#localAccessSecret) return { source: "local-mini-app" };
-      const webviewToken = authorization.startsWith("webview ")
-        ? authorization.slice(8).trim()
-        : "";
-      const cookie = cookieValue(request, LOCAL_SESSION_COOKIE);
-      let localAccessSecret = this.#localAccessSecret;
-      if (
-        !validLocalWebviewSession(webviewToken, localAccessSecret)
-        && !validLocalSession(cookie, localAccessSecret)
-      ) {
-        localAccessSecret = await this.#refreshLocalAccessSecret();
-      }
-      if (validLocalWebviewSession(webviewToken, localAccessSecret)) {
-        return { source: "local-vscode-webview" };
-      }
-      if (validLocalSession(cookie, localAccessSecret)) {
-        return { source: "local-mini-app" };
-      }
+    if (local) {
+      if (!localAccessSecret) return { source: "local-mini-app" };
       json(response, 401, { error: "Откройте локальный Agent Hub через защищённый ярлык." });
       return false;
     }

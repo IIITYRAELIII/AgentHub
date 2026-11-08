@@ -207,6 +207,46 @@ test("manual public version survives the actual preflight generation boundary", 
   assert.equal(Object.hasOwn(calls[1], "releaseVersion"), false);
 });
 
+test("first compose preflight fences whole original bindings before recovery and retains artifact version", async () => {
+  const f = localSourceFixture();
+  const calls = [];
+  const binding = { repositoryRoot: f.projectRoot, commit: "original-frozen", releaseVersion: "2.1.5",
+    runtimeReleaseVersion: "2.1.5+build.29901174" };
+  const candidate = { ...f.candidate, manifest: { ...f.candidate.manifest, taskIds: ["task-current"] } };
+  let effects = 0;
+  f.service.releaseGitWorkspaces.firstFrozenGeneration = async input => {
+    calls.push(input);
+    if (!input.inspectOnly) { await input.validateBeforeCommit(); effects++; }
+    return { binding, candidate };
+  };
+  const input = { workspaceId: "workspace-1", operationId: "same-original", generation: 1,
+    taskIds: ["task-current"], releaseVersion: "2.1.5", approvedRepositories: [{ projectRoot: f.projectRoot,
+      approvedLocalMainCommit: f.p.agreedMainCommit, approvedOriginMainCommit: f.p.publishedBaseCommit }] };
+  const preview = await f.service.firstOperationGeneration({ ...input, inspectOnly: true });
+  assert.deepEqual(preview.releaseCandidates[0].binding, binding);
+  await assert.rejects(f.service.firstOperationGeneration({ ...input, expectedBindings: [{ ...binding, commit: "changed" }] }), /binding changed/);
+  await assert.rejects(f.service.firstOperationGeneration({ ...input, taskIds: ["extra-task"], expectedBindings: [binding] }), /whole selection/);
+  assert.equal(effects, 0);
+  let checks = 0;
+  const recovered = await f.service.firstOperationGeneration({ ...input, expectedBindings: [binding],
+    validateBeforeCommit: async () => { checks++; } });
+  assert.equal(effects, 1);
+  assert.equal(checks, 3);
+  assert.equal(recovered.releaseCandidates[0], candidate);
+  assert.deepEqual(calls.at(-1).expectedBinding, binding);
+  const versions = [];
+  f.service.releaseGitWorkspaces.prepareGeneration = async input => {
+    await input.validateBeforeCommit(); versions.push(input); return f.candidate;
+  };
+  await f.service.prepareOperationGeneration({ workspaceId: "workspace-1", operationId: "same-original",
+    generation: 2, taskIds: ["task-current"], frozenVersions: [binding] });
+  assert.equal(versions[0].releaseVersion, binding.releaseVersion);
+  assert.equal(versions[0].expectedRuntimeVersion, binding.runtimeReleaseVersion);
+  await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1", operationId: "same-original",
+    generation: 3, taskIds: ["task-current"], frozenVersions: [binding], releaseVersion: "2.1.6" }), /version binding changed/);
+  assert.equal(versions.length, 1);
+});
+
 test("installed local source generation reuses the sealed exact selection without changing agreed main", async () => {
   const f = localSourceFixture();
   let generationCalls = 0;

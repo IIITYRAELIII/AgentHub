@@ -1,3 +1,4 @@
+import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
 import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import { Worker } from "node:worker_threads";
 
@@ -11,6 +12,7 @@ function scanRolloutInWorker(workerData, {
       workerData,
       resourceLimits: { maxOldGenerationSizeMb: 512 },
     });
+    observeRuntimeWorkerMemory("historicalBackfill", worker);
     let settled = false;
     worker.once("message", (message) => {
       settled = true;

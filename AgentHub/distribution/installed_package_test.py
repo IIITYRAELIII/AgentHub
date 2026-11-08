@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 from install_release import extract_verified, file_hash
-from build_package import build_package
+from release_tool_test_support import build_package
 
 ROOT = Path(__file__).resolve().parent
 
@@ -123,10 +123,10 @@ class InstalledPackageTests(unittest.TestCase):
                     "version": native_manifest["releaseVersion"], "releaseRoot": str(prepared),
                     "manifestSha256": file_hash(prepared/"runtime-manifest.json")}), encoding="utf-8")
                 checkpoint = root/f"package-checkpoint-{i}"
-                build = [sys.executable, "-X", "utf8", "-B", str(ROOT/"build_release.py"),
+                build = [sys.executable, "-X", "utf8", "-B", str(Path(os.environ["AGENT_HUB_RELEASE_TOOLS_ROOT"])/"python/build_release.py"),
                          "--prepared-receipt", str(receipt), "--receipt-sha256", file_hash(receipt),
                          "--source-commit", str(i)*40, "--version", native_manifest["releaseVersion"],
-                         "--license", str(license_file), "--notices", str(notices), "--output-root", str(checkpoint)]
+                         "--license", str(license_file), "--notices", str(notices), "--output-root", str(checkpoint), "--recipient-root", str(ROOT)]
                 first = json.loads(run(build).stdout)
                 namespace = checkpoint/native_manifest["releaseVersion"]
                 before = {str(p.relative_to(namespace)): (p.read_bytes(), p.stat().st_mtime_ns)

@@ -18,6 +18,32 @@ Refreshing the operation panel reads canonical disposition and does not replay
 the original action. Legacy rows without a Task binding require exact operator
 arguments through the supported owner, never guessed association by timestamp.
 
+## Retained chat switching
+
+Ordinary selection can replace a single-column layout without immediately
+discarding its loaded canonical page. The same existing history maps retain a
+four-page recent working set, matching the existing four-column layout size;
+visible/open Workspace pages remain protected separately. This is disposable
+projection reuse, not another history store or a limit on available chats.
+Explicit column close removes its reuse eligibility. Older inactive windows
+are evicted with their scalar scroll/render state and invalidate late reads.
+Durable history, outgoing commands, receipts and unresolved read ACKs are not
+evicted by that projection policy (ADR-HUB-414).
+
+A matching provider/Thread/Stream page renders before selection or history I/O.
+The ordinary selection mutation and known-version background history read keep
+their existing owners. A changed binding or exact historical navigation cannot
+reuse another page's authority. Loaded older pages and scroll position survive
+ordinary switching; queued bottom-pinning cannot override another page or newer
+user scroll intent. An unpinned retained page restores its first visible message
+and offset across inactive append/prepend, with its prior top position as the
+fallback if that message disappeared. The anchor contains only scalar identity
+and coordinates, has the same bounded lifetime as the page, and cannot cross a
+Workspace/Stream/provider/Thread replacement. Only a previously pinned reader
+follows the new bottom. Only the exact displayed final after paint can admit a read
+ACK, and only its durable confirmed receipt can clear the ready badge. Reusing
+an older page never acknowledges an unseen newer final.
+
 The Server page exposes the private sync endpoint through its existing
 configuration save/cancel flow. Only HTTP(S) URLs without embedded credentials,
 query or fragment are admitted. A pending edit does not change the effective
@@ -77,6 +103,14 @@ hashes. The selected preview must render as an exact prefix of that source, with
 the same selected text at the same UTF-16 offsets; otherwise creation fails
 visibly rather than guessing offsets. All three hashes remain mandatory on
 navigation. Legacy citations already bound to shortened content are not rewritten.
+
+Large compaction snapshots and user-input records do not become agent trace
+items. Exact source reads validate their complete JSON structure with bounded
+memory while retaining their original bytes in the source hash. Agent trace
+records, lifecycle identity, malformed data and transport bounds remain strict.
+This is the exact-detail raw-record exception and retained-representation bound
+specified by PERF-001 and ADR-HUB-237-exact-trace-record-bounds, not permission
+to truncate or infer an annotation source.
 
 ## Invariants
 
@@ -267,6 +301,17 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   their existing parent-item/group identity and hash interpretation. This
   compatibility is removable only after authoritative retained projections
   supply actual native group-item provenance; no local text-based backfill.
+
+Managed history extracts each user's response annotations from its raw envelope
+before projecting the display body; a supplied root or steer message must retain
+its own quote, comment and exact validated source. Explicit structured metadata
+takes precedence. History API compatibility applies only to retained raw
+`response-annotations` envelopes without structured annotations, including the
+existing terminal-ledger recovery projection. It uses the same annotation parser
+on that exact message, not another message's prompt or an inferred source. This
+read-only compatibility may be removed after those retained raw rows have been
+canonically reprojected or retired. Missing or malformed data is never invented;
+opening history adds no scan, provider call or second persistence owner.
 
 User-selected quote text has no independent length cap. Selection, composer
 draft persistence, submission and history retain the complete selected text;
@@ -858,3 +903,16 @@ and final snapshot follow canonical success only. Preview/confirmation keep
 their existing token and separate explicit command identities. A transport ACK
 is recorded once even if later work fails. A lost worker observation does not
 become fabricated failure, NO_EFFECT or permission to replay.
+
+## Workspace file download authority
+
+Loopback host detection is a surface hint, not protected local authorization.
+After the existing session bootstrap resolves, browser file saving checks the
+existing local-session owner. A confirmed protected local session keeps direct
+Workspace file access; a paired browser without that proof uses the existing
+single-use transfer ticket, including on localhost. VS Code retains its native
+bridge. Expected absence of the local cookie must not force renewal of an
+otherwise valid trusted-device session. Unknown session/network failures and file/path rejections are surfaced,
+not retried as a different file request. Runtime reveal remains first; only its
+explicit unavailable result permits the existing paired File Bridge fallback.
+Server authentication priority, roots/realpath guards and file bytes are unchanged.

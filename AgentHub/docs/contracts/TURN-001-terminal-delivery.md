@@ -29,7 +29,8 @@ terminal.
   Existing legacy terminals keep their recorded interpretation (ADR-0123).
 
 - Terminal status, final content, usage identity and last-message identity are
-  committed before admission or queue ownership is released.
+  committed before ordinary provider completion releases admission or queue ownership.
+  The administrative local-only reboot disposition below is not provider completion.
 - Ordinary Claude turns remain background work on Windows: starting a turn or
   any console descendant must not expose a console window or steal foreground
   focus. The durable worker survives an Agent Hub restart, retains redirected
@@ -54,8 +55,8 @@ terminal.
   same outcome. A promptless `task_started`, a missing active-turn projection,
   an App Server `interrupted` status, a lost connection and rollout age are not
   terminal evidence. Observer and restart recovery keep the exact run and its
-  admission lane until an exact terminal event or the narrowly proven current
-  recovery interruption below is committed; a late terminal
+  admission lane until an exact terminal event, the narrowly proven current
+  recovery interruption below, or the local-only reboot disposition is committed; a late terminal
   releases that lane once. Current context maintenance does not generate a user
   turn. The retired probe is a bounded historical exception identified only by
   its generated reserved `client_id`, never by prompt or response text (ADR-0073).
@@ -75,6 +76,23 @@ terminal.
   interrupt remains fenced and cannot be repeated by polling. Its ACK is not a
   terminal. Another live turn or external owner in the same Thread keeps the
   original blocked; mailbox read/cancellation cannot establish provider terminal.
+- The canonical managed lifecycle may durably retire only an old local Codex Hub
+  execution after trusted later system boot and exact canonical saved-run provenance
+  (run, command, Thread, turn and captured admission/request/acceptance times).
+  This administrative record is stored separately from provider terminals within
+  the existing lifecycle store/mutation owner. It preserves providerStart, UNKNOWN,
+  raw history and accepted input; it never creates a terminal/outbox or post-turn
+  maintenance. Durable write precedes removal of only local admission ownership.
+  Exact old run/turn lookup and retained runtime snapshot survive for later real
+  provider evidence. New starts/steers still cross fresh current/external guards.
+  Missing/ambiguous proof, same boot, foreign/new identity, registry replacement
+  and failed persistence retain the fence. PID absence/reuse never authorizes
+  retirement or interruption. See ADR-HUB-392.
+  A generic completion call cannot settle a locally retired UNKNOWN. Only an
+  exact durable terminal with the original provider/Thread/turn/run identity
+  and committed terminal revision may finalize it. Late nonterminal events keep
+  their old exact lookup without reacquiring admission. Late true completion
+  never reserves old post-turn maintenance over a newer writer.
 - If a previously committed Codex completion is contradicted by a later exact
   rollout terminal for the same provider/thread/turn, the terminal owner uses
   expected-revision CAS to commit a higher revision and its existing projection
@@ -237,3 +255,23 @@ inspect the chain in this order:
 Required regression coverage includes direct ImageGen, multiple ideate outputs,
 an empty terminal delivered before a richer generated-image revision, and
 exclusion of viewed or supplied input images from generated response outputs.
+
+## Payload-free transport memory observations
+
+The existing Codex transport diagnostics expose fixed RPC classes and wire-byte
+counters, without payloads, arbitrary method names or Thread/Turn content. Byte
+counts use the existing decoded UTF-8 JSON-line boundary, excluding its framing
+delimiter, not retained heap measurements. They do not reconstruct invalid UTF-8
+bytes already replaced by the existing decoder. Active full-read page volume sums received page envelopes
+(including duplicate items); it is an inclusive wire-volume proxy while that
+read is assembling its result, not an exclusive allocation estimate. Hydration
+queue occupancy ends at replay; it does not measure downstream callback memory.
+
+Only 64 recent dispatched timeout identities are retained for diagnostic
+attribution. Eviction is counted; an unmatched reply has an unknown request
+identity/classification rather than inferred timeout or zero bytes. This window
+is not a receipt or recovery authority. Counters survive within the transport
+instance across child generations, and recorded request/observed generations
+remain separate. Normal timeout outcomes, full history and attachment content,
+request dispatch, hydration ordering/coalescing and terminal owners are unchanged.
+Observations do not establish a memory fix or authorize another provider read.

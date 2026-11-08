@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { createReleaseOperation } from "../../src/domain/release-operation.mjs";
 import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
@@ -889,6 +890,63 @@ async function fixture(context, {
   };
 }
 
+test("release reference MCP preserves archived ownership and requires exact RM Workspace authority", async (t) => {
+  const f = await fixture(t, { releaseWorkflowEnabled: true });
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-reference-mcp-"));
+  const databaseFile = path.join(directory, "runtime.sqlite");
+  const store = new TaskBoardStore({ databaseFile });
+  t.after(async () => { store.close(); await rm(directory, { recursive: true, force: true }); });
+  const owner = new TaskBoardService({ store, workspaceCatalog: f.workspaceCatalog });
+  for (const name of ["task", "updateChecklist", "checklistRequestResult", "recoverChecklistEvents"]) {
+    f.taskBoard[name] = owner[name].bind(owner);
+  }
+  const create = text => store.create({ text, workspaceId: "workspace-1", bucket: "workspace", taskPrefix: "HUB", triageStatus: "disabled" });
+  const child = create("Accepted member"), old = create("Archived release"), parent = create("New release");
+  const oldItem = await owner.updateChecklist({ id: old.id, operation: "add", text: "Member", requestId: "old-add", expectedRevision: old.revision });
+  await owner.updateChecklist({ id: old.id, operation: "link", itemId: oldItem.itemId,
+    linkedTaskId: child.id, requestId: "old-link", expectedRevision: oldItem.task.revision });
+  const db = new DatabaseSync(databaseFile);
+  db.prepare("UPDATE hub_board_tasks SET status = 'done' WHERE id = ?").run(old.id);
+  db.prepare("UPDATE hub_board_tasks SET workflow_status = 'awaiting_implementation' WHERE id = ?").run(child.id);
+  const refs = [{ projectRoot: path.resolve(directory, "source"), branch: child.taskNumber, resultCommit: "a".repeat(40) }];
+  db.prepare(`INSERT INTO hub_task_git_references (task_id,project_root,branch,result_commit,updated_at_ms)
+    VALUES (?,?,?,?,1)`).run(child.id, refs[0].projectRoot, refs[0].branch, refs[0].resultCommit);
+  db.close();
+  const archived = owner.task(old.id), childBefore = owner.task(child.id);
+  const item = await owner.updateChecklist({ id: parent.id, operation: "add", text: "Member", requestId: "new-add", expectedRevision: parent.revision });
+  const input = { task_id: parent.id, expected_task_revision: item.task.revision, operation: "link",
+    item_id: item.itemId, linked_task_id: child.id, release_reference: { taskRevision: childBefore.revision, gitReferences: refs } };
+  for (const [thread, name] of [["thread-2", "non-RM"], ["thread-3", "foreign-RM"]]) {
+    await assert.rejects(f.service.call("hub_task_checklist_update", { ...input, request_id: name,
+      context_token: f.service.contextToken({ provider: "codex", threadId: thread }) }), /Release Manager/u);
+    assert.equal(f.workspaceCatalog.mcpOperation(name), null);
+  }
+  const request = { ...input, request_id: "new-release-reference", context_token: f.token };
+  const result = await f.service.call("hub_task_checklist_update", request);
+  assert.equal(result.task.checklist[0].linkedTaskId, child.id);
+  assert.equal(result.task.checklist[0].releaseReference.gitReferences[0].resultCommit, refs[0].resultCommit);
+  assert.deepEqual(await f.service.call("hub_task_checklist_update", request), result);
+  assert.deepEqual(owner.task(old.id), archived);
+  assert.deepEqual(owner.task(child.id), childBefore);
+  assert.equal(f.workspaceCatalog.mcpOperation(request.request_id).status, "succeeded");
+  const another = await owner.updateChecklist({ id: parent.id, operation: "add", text: "Queue boundary",
+    requestId: "queue-add", expectedRevision: owner.task(parent.id).revision });
+  const hierarchy = f.workspaceCatalog.hierarchy;
+  f.taskBoard.updateChecklist = payload => {
+    f.workspaceCatalog.hierarchy = () => hierarchy().map(workspace => ({ ...workspace,
+      streams: workspace.streams.map(stream => ({ ...stream, settings: { ...stream.settings, releaseManager: false } })),
+    }));
+    return owner.updateChecklist(payload);
+  };
+  try {
+    await assert.rejects(f.service.call("hub_task_checklist_update", { ...input, context_token: f.token,
+      item_id: another.itemId, expected_task_revision: another.task.revision, request_id: "role-drift" }), /Release Manager/u);
+    assert.equal(owner.task(parent.id).checklist.find(item => item.id === another.itemId).linkedTaskId, null);
+  } finally { f.workspaceCatalog.hierarchy = hierarchy; }
+  const props = f.service.tools().find(tool => tool.name === "hub_task_checklist_update").inputSchema.properties;
+  assert.equal(props.release_reference.additionalProperties, false);
+});
+
 async function preparationFixture(t) {
   let ledger;
   const setup = await fixture(t, { releaseWorkflowEnabled: true,
@@ -1676,29 +1734,22 @@ test("Task status and unknown-operation schemas expose the exact squash transfer
   }
 });
 
-test("public Await forwards a complete reviewed bundle only with exact RM CAS", async context => {
-  const { service, token, tasks, operations } = await fixture(context, { releaseWorkflowEnabled: true });
+test("public Await exposes no machine-review approval input", async context => {
+  const { service, token, tasks } = await fixture(context, { releaseWorkflowEnabled: true });
   const calls = [];
   service.taskLifecycle.updateWorkflowStatus = async input => {
     calls.push(input); return { task: { ...tasks.get("task-current"), workflowStatus: input.status } };
   };
-  const review = { bundlePath: "owned.bundle", bundleSha256: "a".repeat(64),
-    reviews: [{ requestId: "first", text: "exact first receipt" }, { requestId: "second", text: "exact second receipt" }] };
-  const input = { context_token: token, task_id: "task-current", status: "awaiting_implementation",
-    expected_task_revision: 1, expected_workflow_status: "testing", native_resolution_review: review };
-  assert.equal((await service.call("hub_task_status_update", { ...input, request_id: "all-prefixes" })).workflowStatus,
-    "awaiting_implementation");
-  assert.deepEqual(calls[0].operationEvidence, { nativeResolutionReview: review });
-  const foreignToken = service.contextToken({ provider: "codex", threadId: "thread-2", streamId: "stream-2" });
-  for (const [suffix, patch] of [["array", { native_resolution_review: [] }],
-    ["extra", { native_resolution_review: { ...review, force: true } }],
-    ["duplicate", { native_resolution_review: { ...review, reviews: [review.reviews[0], review.reviews[0]] } }],
-    ["cas", { expected_task_revision: null }], ["test", { status: "testing" }],
-    ["foreign", { context_token: foreignToken }]]) {
-    await assert.rejects(service.call("hub_task_status_update", { ...input, ...patch, request_id: `bundle-${suffix}` }));
-    assert.equal(operations.get(`bundle-${suffix}`).status, "failed");
-  }
+  const schema = service.tools().find(tool => tool.name === "hub_task_status_update").inputSchema.properties;
+  assert.equal(Object.hasOwn(schema, "native_resolution_review"), false);
+  const result = await service.call("hub_task_status_update", { context_token: token,
+    request_id: "ordinary-await", task_id: "task-current", status: "awaiting_implementation",
+    expected_task_revision: 1, expected_workflow_status: "testing" });
+  assert.equal(result.workflowStatus, "awaiting_implementation");
   assert.equal(calls.length, 1);
+  assert.equal(calls[0].expectedRevision, 1);
+  assert.equal(calls[0].expectedWorkflowStatus, "testing");
+  assert.equal(calls[0].operationEvidence, undefined);
 });
 
 test("Release Manager cannot reopen fresh selected-materialization preview or confirmation after native cutover", async (context) => {
@@ -2174,6 +2225,57 @@ test("HubMcpService forwards original-addressed reviewed-main recovery through t
   const input = { context_token: token, request_id: "original-main-rebind", operation_id: "original", reviewed_main: reviewedMain };
   assert.equal((await service.call("hub_release_continue", input)).accepted, true);
   assert.deepEqual(calls, [["original", { requestId: input.request_id, reviewedMain }]]);
+});
+
+test("public first compose continuation advertises generation zero and keeps its failed receipt", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-first-compose-public-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const store = new ReleaseOperationStore({ dataDir: root });
+  const scheduled = [];
+  let recoveries = 0;
+  const forbidden = async () => assert.fail("changed membership must wait before validation or publication");
+  const operations = new ReleaseOperationService({ store, schedule: callback => scheduled.push(callback),
+    processAlive: pid => pid === process.pid,
+    compose: async () => { throw new Error("first frozen readback failed"); },
+    inspectFirstCompose: async () => [{ repositoryRoot: "D:/repo", commit: "frozen", tree: "tree",
+      manifestHash: "manifest", releaseVersion: "2.1.5", runtimeReleaseVersion: "2.1.5+build.29901174" }],
+    recoverFirstCompose: async ({ validateBeforeCommit }) => {
+      await validateBeforeCommit(); recoveries++;
+      return { repositoryBases: [{ repositoryRoot: "D:/repo", baseCommit: "base" }],
+        selectedResults: [{ taskId: "task-current", resultCommit: "result", acceptanceRevision: 1 }],
+        candidates: [{ repositoryRoot: "D:/repo", releaseRoot: "D:/frozen", commit: "frozen", tree: "tree", manifestHash: "manifest" }] };
+    },
+    reservePublication: ({ recompose }) => recompose(),
+    validate: forbidden, publishTarget: forbidden, readTarget: forbidden, finalize: forbidden,
+  });
+  const { service, token, taskBoard, tasks } = await fixture(context, { releaseOperations: operations });
+  tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  taskBoard.releaseTasks = () => [tasks.get("task-current")];
+  const schema = service.tools().find(tool => tool.name === "hub_release_continue").inputSchema;
+  assert.equal(schema.properties.expected_generation.minimum, 0);
+  const ack = await service.call("hub_release_run", { context_token: token, request_id: "public-first-compose",
+    task_ids: ["task-current"], validation_mode: "full",
+    approved_targets: [{ targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" }] });
+  scheduled.shift()();
+  const failed = await operations.drain(ack.operationId);
+  assert.equal(failed.operation.state, "failed");
+  const first = structuredClone(failed.receipts[0]);
+  const args = { context_token: token, operation_id: ack.operationId, request_id: "public-first-continue",
+    expected_revision: failed.operation.revision, expected_generation: 0 };
+  assert.equal((await service.call("hub_release_continue", args)).accepted, true);
+  assert.equal((await service.call("hub_release_continue", args)).accepted, true);
+  assert.equal(scheduled.length, 1, "same request does not admit another worker");
+  scheduled.shift()();
+  const recovered = await operations.drain(ack.operationId);
+  assert.equal(recoveries, 1);
+  assert.equal(recovered.operation.currentGeneration, 1);
+  assert.equal(recovered.operation.waitReason.code, "release_inputs_changed");
+  assert.deepEqual(recovered.receipts.find(receipt => receipt.attempt === 1), first);
+  assert.equal(recovered.receipts.find(receipt => receipt.attempt === 2).status, "applied");
+  const ordinary = await service.call("hub_release_continue", { context_token: token,
+    operation_id: ack.operationId, request_id: "public-first-unamended" });
+  assert.equal(ordinary.reason, "test-selection-required");
+  assert.equal(scheduled.length, 0);
 });
 
 test("manual public version reaches the same durable release admission and survives original readback", async context => {

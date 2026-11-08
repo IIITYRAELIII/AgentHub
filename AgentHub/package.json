@@ -1,7 +1,7 @@
 {
   "name": "agent-hub",
   "private": true,
-  "version": "2.1.4",
+  "version": "2.1.5",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -70,7 +70,9 @@
     "contour:lock-status": "node test-contour.mjs lock-status",
     "contour:unlock": "node test-contour.mjs unlock",
     "contour:stop": "node test-contour.mjs stop",
-    "contour:verify": "node test-contour.mjs verify"
+    "contour:verify": "node test-contour.mjs verify",
+    "release:api": "node release-api.mjs",
+    "build:runtime": "node build-runtime.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1",

@@ -8,6 +8,7 @@ import { readClaimCustodyFence, configureClaimCustodyBindingFences, configureCla
 import { claimCustodyState, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { nativeTestMetadataDrift } from "../../domain/native-test-terminal-recovery.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { configureTaskTurnProjection } from "./task-turn-projection.mjs";
 
 import {
@@ -1689,21 +1690,25 @@ export class TaskBoardStore {
 
   updateChecklist({
     id, operation, itemId = null, text = null, completed = null,
-    beforeItemId = null, linkedTaskId = null, expectedRevision, requestId, taskPrefix = "",
+    beforeItemId = null, linkedTaskId = null, releaseReference = null, validateReleaseReference = null,
+    expectedRevision, requestId, taskPrefix = "",
   } = {}) {
     const payload = {
       taskId: String(id ?? "").trim(), operation, itemId, text, completed,
-      beforeItemId, linkedTaskId, expectedRevision, requestId: String(requestId ?? "").trim(),
+      beforeItemId, linkedTaskId, releaseReference, expectedRevision, requestId: String(requestId ?? "").trim(),
     };
-    const outcome = this.#withChecklistWrite((database) => mutateTaskChecklist(database, payload, {
-      now: this.now,
-      idFactory: this.idFactory,
-      createExtractedTask: (target, extracted) => createExtractedChecklistTask(target, {
-        ...extracted,
-        taskPrefix,
+    const outcome = this.#withChecklistWrite((database) => {
+      validateReleaseReference?.();
+      return mutateTaskChecklist(database, payload, {
+        now: this.now,
         idFactory: this.idFactory,
-      }),
-    }));
+        createExtractedTask: (target, extracted) => createExtractedChecklistTask(target, {
+          ...extracted,
+          taskPrefix,
+          idFactory: this.idFactory,
+        }),
+      });
+    });
     return this.checklistRequestResult(payload, outcome);
   }
 
@@ -1741,6 +1746,7 @@ export class TaskBoardStore {
         completed: payload.completed,
         beforeItemId: payload.beforeItemId,
         linkedTaskId: payload.linkedTaskId,
+        releaseReference: payload.releaseReference,
         expectedRevision: payload.expectedRevision,
         requestId: payload.requestId,
       });
@@ -2283,6 +2289,8 @@ export class TaskBoardStore {
 
   runMutation(operation, options = {}) {
     const authorities = captureClaimCustodySqlAuthorities(this.#database, options.method, options.args ?? []);
+    const timedMethod = ["beginLifecycleTransition", "failLifecycleTransition", "commitWorkflowTransition"].includes(options.method)
+      ? options.method : null;
     return this.#mutations.run(() => {
       this.#custodyWriteAuthorities = authorities;
       try {
@@ -2290,7 +2298,8 @@ export class TaskBoardStore {
         if (result?.then) throw new TypeError("Task SQL mutation must remain synchronous");
         return result;
       } finally { this.#custodyWriteAuthorities = []; }
-    }, options);
+    }, { ...options, ...(timedMethod ? { recordMutationTiming: measurement =>
+      recordTaskOperationTiming("sqlite-mutation", { store: "task-board", method: timedMethod, ...measurement }) } : {}) });
   }
 
   mutationDiagnostics() {

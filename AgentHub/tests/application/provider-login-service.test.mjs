@@ -62,6 +62,36 @@ function createService(overrides = {}) {
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
+test("hub410 paused admission never thaws queued requests and permanent disposal stays terminal", async () => {
+  const gate = deferred(); let started = 0;
+  const { service, calls } = createService({ sendRpc: async (method, params) => {
+    calls.rpc.push([method, params]);
+    if (method !== "account/login/start") return {};
+    started++;
+    if (started === 1) return gate.promise;
+    return { loginId: `fresh-${started}`, authUrl: "https://auth.example/fresh" };
+  } });
+  try {
+    const admitted = service.start("codex");
+    await settle();
+    const queued = service.start("codex");
+    const queuedRejection = assert.rejects(queued, /останавливается/u);
+    service.pause();
+    const duringPause = assert.rejects(service.start("codex"), /останавливается/u);
+    service.resume();
+    gate.resolve({ loginId: "original-login", authUrl: "https://auth.example/original" });
+    assert.equal((await admitted).status, "pending", "already-started provider work retains its exact reply");
+    await queuedRejection; await duringPause;
+    assert.equal(started, 1);
+    const next = await service.start("codex");
+    assert.equal(next.status, "pending"); assert.equal(started, 2);
+    assert.deepEqual(calls.rpc.filter(call => call[0] === "account/login/cancel"), [["account/login/cancel", { loginId: "original-login" }]]);
+    service.dispose(); service.resume();
+    await assert.rejects(service.start("codex"), /останавливается/u);
+    assert.equal(started, 2);
+  } finally { service.dispose(); }
+});
+
 test("account display reads are nonblocking, coalesced and refreshed independently of login attempts", async () => {
   let now = 0;
   const first = deferred();

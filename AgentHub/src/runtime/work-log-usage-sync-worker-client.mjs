@@ -1,15 +1,24 @@
+import { observeRuntimeWorkerMemory } from "../application/runtime-worker-memory.mjs";
 import { Worker } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
 
 const DEFAULT_MAX_PENDING_REQUESTS = 32;
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
+const SNAPSHOT_INPUT_MEASUREMENTS = ["selectedJournalRecords", "materializedRecordJsonBytes", "journalSelectionMode"];
 const TRACE_MEASUREMENTS = [
+  ...SNAPSHOT_INPUT_MEASUREMENTS,
+  "workerProcessId", "sqlWriteAttempts", "sqlRowPreparationMs", "sqlBeginMs", "sqlTransactionMs", "sqlTransactionCount",
+  "sqlFirstLockAtMs", "sqlFirstReleaseAtMs", "sqlLastLockAtMs", "sqlLastReleaseAtMs", "sqlUnreleasedTransactions",
+  "sqlQueueWaitMs", "sqlExecutionMs", "sqlRetries", "sqlExhausted",
+  "sqlBeginRefused", "sqlRolledBack", "sqlCommitted", "sqlRollbackRefused",
   "queueWaitMs", "durationMs", "recordCount", "invalidRecordCount", "eventCount", "factCount",
   "workerThreadId", "accountingRecordsRead", "changedDayCount", "inspected", "candidateCount", "updated", "revisionReadMs", "projectionReadMs", "ledgerReadMs", "normalizeMs",
   "metadataReadMs", "recordReadMs",
   "workspaceResolveMs", "workspaceReadMs", "factsReadMs", "accountCatalogReadMs", "renderMs",
   "lazyBuildMs", "commitMs", "aggregateMs", "reuseCheckMs", "reuseWindowMs", "factsRevisionReadMs", "reuseReceiptFailed",
   "expectedRevision", "revision",
+  "revisionCheckMs", "workspaceBatchCount", "workspaceReferenceCount",
+  "accountingPointReads",
 ];
 
 function workerError(value) {
@@ -52,6 +61,7 @@ export class WorkLogUsageSyncWorkerStore {
     this.#worker = new WorkerImpl(workerUrl, {
       workerData: { databaseFile, legacyFile, deviceId, defaultRuntimeHomeIds },
     });
+    observeRuntimeWorkerMemory("usageSync", this.#worker);
     this.#worker.unref?.();
     this.#worker.on("message", (message) => this.#settle(message));
     this.#worker.on("error", (error) => {
@@ -78,10 +88,10 @@ export class WorkLogUsageSyncWorkerStore {
     this.#traceService = service;
   }
 
-  #startTrace(type, id) {
+  #startTrace(type, id, traceCommandId = "") {
     try {
       return this.#traceService?.startBestEffortSpan?.({
-        commandId: `usage-worker:${this.#traceIdentity}:${id}`, stage: "usage-worker-request",
+        commandId: traceCommandId || `usage-worker:${this.#traceIdentity}:${id}`, stage: "usage-worker-request",
         transport: "server-runtime", recordStarted: true, metadata: { action: type },
       });
     } catch { return null; }
@@ -93,10 +103,13 @@ export class WorkLogUsageSyncWorkerStore {
       request.trace?.finish({
         outcome, queueDepth: request.queueDepth,
         metadata: {
+          ...(["ERR_SQLITE_ERROR", "SQLITE_BUSY", "SQLITE_LOCKED"].includes(value?.code)
+            ? { sqliteErrorCode: value.code } : {}),
+          ...(Number.isSafeInteger(value?.errcode) && value.errcode >= 0 ? { sqliteNativeCode: value.errcode } : {}),
           ...Object.fromEntries(TRACE_MEASUREMENTS
             .filter((key) => Number.isFinite(source?.[key]) && source[key] >= 0)
             .map((key) => [key, source[key]])),
-          ...Object.fromEntries(["conflict", "projectionDeferred", "projectionReused"]
+          ...Object.fromEntries(["conflict", "projectionDeferred", "projectionReused", "renderSkipped", "accountingBulkRead"]
             .filter((key) => typeof value?.[key] === "boolean")
             .map((key) => [key, value[key]])),
         },
@@ -149,11 +162,11 @@ export class WorkLogUsageSyncWorkerStore {
     });
   }
 
-  projectJournal(payload = {}, { workspaceResolver = null } = {}) {
+  projectJournal(payload = {}, { workspaceResolver = null, traceCommandId = "" } = {}) {
     return this.#request("project-journal", {
       ...payload,
       resolveWorkspaces: typeof workspaceResolver === "function",
-    }, { workspaceResolver }).then((result) => {
+    }, { workspaceResolver, traceCommandId }).then((result) => {
       this.#lastJournalProjection = result;
       return result;
     });
@@ -192,6 +205,9 @@ export class WorkLogUsageSyncWorkerStore {
       this.#lastSnapshot = {
         durationMs: result.durationMs,
         eventCount: result.events?.length ?? 0,
+        ...Object.fromEntries(SNAPSHOT_INPUT_MEASUREMENTS
+          .filter(key => Number.isFinite(result[key]) && result[key] >= 0)
+          .map(key => [key, result[key]])),
         completedAtMs: Date.now(),
       };
       return result;
@@ -244,7 +260,7 @@ export class WorkLogUsageSyncWorkerStore {
     }
   }
 
-  #request(type, payload = {}, { allowClosing = false, workspaceResolver = null, mutationLock = null } = {}) {
+  #request(type, payload = {}, { allowClosing = false, workspaceResolver = null, mutationLock = null, traceCommandId = "" } = {}) {
     if (this.#closed || (this.#closing && !allowClosing) || !this.#worker) {
       return Promise.reject(new Error("usage sync worker is unavailable"));
     }
@@ -256,7 +272,7 @@ export class WorkLogUsageSyncWorkerStore {
     return new Promise((resolve, reject) => {
       const request = {
         resolve, reject, workspaceResolver, mutationLock,
-        trace: this.#startTrace(type, id), queueDepth: this.#pending.size,
+        trace: this.#startTrace(type, id, traceCommandId), queueDepth: this.#pending.size,
       };
       this.#pending.set(id, request);
       try {
@@ -287,9 +303,15 @@ export class WorkLogUsageSyncWorkerStore {
       return;
     }
     if (message.type === "journal-workspaces") {
-      void Promise.resolve().then(() => Promise.all(
-        message.references.map((reference) => request.workspaceResolver(reference)),
-      ))
+      void Promise.resolve().then(() => typeof request.workspaceResolver?.batch === "function"
+        ? request.workspaceResolver.batch(message.references)
+        : Promise.all(message.references.map((reference) => request.workspaceResolver(reference))))
+        .then(bindings => {
+          if (!Array.isArray(bindings) || bindings.length !== message.references.length) {
+            throw new Error("Workspace batch lookup returned an incomplete result");
+          }
+          return bindings;
+        })
         .then((bindings) => this.#worker?.postMessage({
           id: message.id, type: "journal-workspaces-result", bindings,
         }))
@@ -309,7 +331,7 @@ export class WorkLogUsageSyncWorkerStore {
     this.#pending.delete(message.id);
     const failed = message.error || message.value?.conflict === true
       || message.value?.projectionDeferred === true;
-    this.#finishTrace(request, failed ? "failed" : "succeeded", message.value);
+    this.#finishTrace(request, failed ? "failed" : "succeeded", message.error ?? message.value);
     if (message.error) request.reject(workerError(message.error));
     else request.resolve(message.value);
     if (!this.#pending.size) this.#worker?.unref?.();

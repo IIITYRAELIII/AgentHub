@@ -1,10 +1,13 @@
 # ADR-0108 — Exact reviewed native merge compatibility corrections
 
 Date: 2026-10-12
-Status: implementation pending independent review
+Status: superseded for native approval permission by ADR-HUB-416
 Contracts: REL-001, MCP-001
 
-## Decision
+This document records historical approval-gate behavior. ADR-HUB-416 removes
+that gate; saved receipts remain history, not permission for continuation.
+
+## Historical decision
 
 Git can automatically merge two individually valid changes into a combined
 result that needs a compatibility correction, such as duplicate test helpers.

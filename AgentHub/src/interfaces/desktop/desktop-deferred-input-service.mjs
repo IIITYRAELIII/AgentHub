@@ -27,6 +27,7 @@ export class DesktopDeferredInputService {
       "startTurn", "startDeferred", "runForTask", "describeAttachments", "selectedTask", "dispatchCommand",
       "activeTitle", "snapshot",
     ]) requiredFunction(dependencies[name], name);
+    if (dependencies.persistCancellation != null) requiredFunction(dependencies.persistCancellation, "persistCancellation");
     if (!dependencies.composerTransfers?.remember || !dependencies.composerTransfers?.has
       || !dependencies.composerTransfers?.forget || !dependencies.composerTransfers?.ready) {
       throw new TypeError("composerTransfers is required");
@@ -190,17 +191,21 @@ export class DesktopDeferredInputService {
       d.pendingInputs.delete(id);
       d.queuedInputs.delete(id);
       try {
-        await d.saveState();
+        const cancelled = await d.persistCancellation?.(item);
+        if (cancelled?.owned !== true) await d.saveState();
       } catch (error) {
         (destination === "queued" ? d.queuedInputs : d.pendingInputs).set(id, item);
         if (wasScheduled) d.scheduleQueued(item, 0);
         throw error;
       }
-      d.updateReceipt(item, "cancelled");
+      d.updateReceipt(item, "cancelled", {
+        cancellationScope: "future-hub-dispatch", providerEffectOutcome: "unknown",
+      });
       await d.cleanupFiles(item);
       await d.updateMessage(item, "❌ Сохранённое сообщение отменено.");
       d.scheduleNext(item);
-      return { accepted: true, message: "Сохранённое сообщение отменено" };
+      return { accepted: true, cancellationScope: "future-hub-dispatch",
+        providerEffectOutcome: "unknown", message: "Сохранённое сообщение отменено" };
     }
     if (action === "queue" || action === "retry") {
       if (d.queuedInputs.has(id)) return { accepted: true, id, queued: true, message: "Сообщение уже находится в очереди" };

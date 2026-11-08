@@ -43,16 +43,17 @@ if (input["read-arguments"]) {
     const result = await runtime.service.call("hub_task_operation_get", { ...command, context_token: token });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } finally { runtime.close(); }
-} else if (input["cancel-arguments"]) {
+} else if (input["cancel-arguments"] || input["reconcile-arguments"]) {
   const { openTaskAwaitCutoverRuntime } = await import("./task-await-cutover.mjs");
   const { createClaimCustodyRuntime } = await import("./src/infrastructure/process/claim-custody-runtime.mjs");
-  const command = JSON.parse(await readFile(path.resolve(input["cancel-arguments"]), "utf8"));
-  if (command.context_token != null) throw new Error("Cancellation arguments must not contain a context capability");
+  const reconcile = Boolean(input["reconcile-arguments"]);
+  const command = JSON.parse(await readFile(path.resolve(input[reconcile ? "reconcile-arguments" : "cancel-arguments"]), "utf8"));
+  if (command.context_token != null) throw new Error("Operation arguments must not contain a context capability");
   const runtime = await openTaskAwaitCutoverRuntime();
   try {
     runtime.service.taskOperationInterruption.runtime = createClaimCustodyRuntime({ dataDir: runtime.config.dataDir });
     const token = runtime.service.contextToken({ provider: input.provider, threadId: input.thread, streamId: input.stream });
-    const result = await runtime.service.call("hub_task_operation_cancel", { ...command, context_token: token });
+    const result = await runtime.service.call(reconcile ? "hub_task_operation_reconcile" : "hub_task_operation_cancel", { ...command, context_token: token });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } finally { runtime.close(); }
 } else {

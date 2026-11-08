@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1057,6 +1057,53 @@ test("cleanup preserves ignored WIP despite clean status and explicit dirty perm
     assert.equal(await readFile(useful, "utf8"), "unpublished useful evidence");
     assert.equal(await git(root, "rev-parse", workspace.branch), workspace.headCommit);
   }
+});
+
+test("cleanup binds each repository's durable publication after origin advances", async (context) => {
+  const root = await repository(context);
+  const foreignRoot = await repository(context);
+  const original = await git(root, "rev-parse", "HEAD");
+  await writeFile(path.join(root, "published.txt"), "published result\n");
+  await git(root, "add", "published.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "published result");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "branch", "HUB-905", published);
+  await writeFile(path.join(root, "later.txt"), "later unapproved origin change\n");
+  await git(root, "add", "later.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "later origin");
+  const advanced = await git(root, "rev-parse", "HEAD");
+  await git(root, "update-ref", "refs/remotes/origin/main", advanced);
+  const foreign = await git(foreignRoot, "rev-parse", "HEAD");
+  const entries = [{ root: foreignRoot, revision: foreign }, { root, revision: published }];
+  let publication = { revision: foreign, generation: "multi-repository-publication", repositories: entries };
+  const dataDir = path.join(root, "..", `${path.basename(root)}-multi-cleanup`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const taskId = "30303030-3030-4030-8030-303030303035";
+  const references = [{ projectRoot: root, branch: "HUB-905", resultCommit: published }];
+  const preview = () => service.cleanupPreview(taskId, { gitReferences: references });
+  let result = (await preview()).gitReferences[0];
+  assert.equal(result.published, true);
+  assert.equal(result.publishedRevision, published);
+  assert.equal(result.branchPublished, true);
+  assert.equal(result.publicationGeneration, "multi-repository-publication");
+
+  // A global matching OID cannot substitute for a missing repository entry.
+  publication = { revision: published, generation: "g", repositories: entries.slice(0, 1) };
+  assert.equal((await preview()).gitReferences[0].published, false);
+  publication = { revision: published, repositories: entries };
+  assert.equal((await preview()).gitReferences[0].published, false);
+  publication = { revision: foreign, generation: "g", repositories: entries };
+  await git(root, "update-ref", "refs/remotes/origin/main", original);
+  assert.equal((await preview()).gitReferences[0].published, false);
+  await git(root, "update-ref", "refs/remotes/origin/main", advanced);
+  await git(root, "update-ref", "refs/heads/HUB-905", advanced, published);
+  result = (await preview()).gitReferences[0];
+  assert.equal(result.published, true);
+  assert.equal(result.publishedRevision, published);
+  assert.equal(result.branchPublished, false);
+  assert.equal(await git(root, "rev-parse", "HEAD"), advanced);
+  assert.equal(await git(root, "rev-parse", "refs/heads/HUB-905"), advanced);
 });
 
 test("cleanup publication authority requires durable evidence matching origin main", async (context) => {
@@ -2710,4 +2757,51 @@ test("sparse scope normalizes Windows paths and rejects repository escape", () =
     () => taskSparseCheckoutSelection(root, path.resolve(root, "..", "escape")),
     /outside its Git worktree/u,
   );
+});
+
+
+test("Task Git actual dependency caller reuses compatible payload and fences an unknown shared installer", async context => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", path.basename(root) + "-dependency-inputs");
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const manifest = { name: "tiny-fixture", private: true, dependencies: { tiny: "1.0.0" } };
+  const entry = { version: "1.0.0", resolved: "https://registry.example.invalid/tiny.tgz", integrity: "sha512-fixture" };
+  await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ name: manifest.name,
+    lockfileVersion: 3, packages: { "": manifest, "node_modules/tiny": entry } }));
+  await writeFile(path.join(root, ".gitignore"), "node_modules/\n.agent-hub-dependency-retained/\n");
+  await git(root, "add", ".");
+  await git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid", "commit", "-m", "dependency input");
+  let installs = 0, unknown = false;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => null, recordTiming: () => {},
+    runCommand: async (args, options) => {
+      if (options.commandLabel !== "npm") return runTaskGitCommand(args, options);
+      installs++;
+      if (unknown) throw Object.assign(new Error("controlled installer outcome unknown"), { processTreeStopped: false });
+      const modules = path.join(options.cwd, "node_modules");
+      await mkdir(path.join(modules, "tiny"), { recursive: true });
+      await writeFile(path.join(modules, "tiny/package.json"), JSON.stringify({ name: "tiny", version: "1.0.0" }));
+      await writeFile(path.join(modules, "tiny/payload.bin"), Buffer.alloc(65536, 17));
+      await writeFile(path.join(modules, ".package-lock.json"), JSON.stringify({ lockfileVersion: 3,
+        packages: { "node_modules/tiny": entry } }));
+      return "";
+    } });
+  const a = await service.prepare({ taskId: "41414141-4141-4141-8141-414141414141", projectRoot: root, dependencyMode: "ensure" });
+  const b = await service.prepare({ taskId: "42424242-4242-4242-8242-424242424242", projectRoot: root, dependencyMode: "ensure" });
+  assert.equal(installs, 1);
+  const af = await lstat(path.join(a.projectRoot, "node_modules/tiny/payload.bin"));
+  const bf = await lstat(path.join(b.projectRoot, "node_modules/tiny/payload.bin"));
+  assert.equal(af.ino, bf.ino); assert.equal(af.nlink, 3);
+  assert.equal(await git(root, "status", "--porcelain=v1"), "");
+  // New exact compatibility key; simulated unknown child must fence every
+  // later Task using the same key, even though their Task locks differ.
+  await writeFile(path.join(root, "package.json"), JSON.stringify(manifest) + "\n");
+  await git(root, "add", "package.json");
+  await git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid", "commit", "-m", "new input");
+  unknown = true;
+  await assert.rejects(service.prepare({ taskId: "43434343-4343-4343-8343-434343434343", projectRoot: root, dependencyMode: "ensure" }), /controlled installer outcome unknown/u);
+  await assert.rejects(service.prepare({ taskId: "44444444-4444-4444-8444-444444444444", projectRoot: root, dependencyMode: "ensure" }));
+  assert.equal(installs, 2);
+  context.diagnostic(JSON.stringify({ compatibleTasks: 2, ownedNpmInstalls: 1, sharedPayloadB: 65536,
+    newPayloadAllocatedBOnSecondTask: 0, unknownInstallerNeverReplayed: true }));
 });

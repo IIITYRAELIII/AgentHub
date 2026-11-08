@@ -2,6 +2,16 @@
 
 ## Archive and deletion
 
+Native release membership references preserve the unique checklist decomposition
+owner and archived Task rows (ADR-HUB-415). Their nullable checklist columns are
+migrated by the existing schema owner without rebuilding Tasks or relinking history.
+A referenced Task cannot be physically deleted or individually split from its
+reference's Workspace. Existing atomic whole-Workspace reassignment/merge remains
+valid when both endpoints move together. Deferred composite foreign keys with
+update cascades check the complete transaction; they also fence older writers.
+An archived release reference cannot be edited or unlinked by normal metadata
+operations. These references do not project a second `checklistParent`.
+
 Catalog mutations composed inside one synchronous catalog transaction retain
 that outer SQLite owner. Nested operations use savepoints: an inner refusal
 rolls back its own writes, and an outer refusal rolls back all nested writes.
@@ -60,6 +70,14 @@ or migration authority is introduced.
   no enabled continuation command.
 
 ## Server account cards
+
+Local sign-in replies carry their attempt and allowlisted account display only;
+they do not depend on the complete desktop snapshot fitting the IPC response.
+The paired client updates account cards before binding the starter's local URL,
+preserving unrelated state without a second full snapshot request. Protected
+local session/WebView proof takes precedence over coexisting device credentials
+only on the existing unforwarded local boundary; remote device authority never
+grants local-only sign-in commands.
 
 - Account cards display the provider's current account email or authentication
   method, separately from the state of a login attempt. Idle/succeeded attempt

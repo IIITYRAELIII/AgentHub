@@ -46,7 +46,7 @@ export class DesktopTaskBoardController {
       ? this.hubMcpService.readDesktopTaskOperation({ id }, operationRequestId, argumentsHash) : null;
     let task = null;
     try { if (id) task = this.taskBoard.card(id); }
-    catch (error) { if (!operation?.taskOperation.terminal) throw error; }
+    catch (error) { if (!operation?.taskOperation?.terminal) throw error; }
     if (!operation && !task) task = this.taskBoard.card(id);
     return { task, taskOperations: id ? this.hubMcpService?.taskOperationInterruption?.list(id) ?? [] : [],
       ...(operation ? { operation } : {}) };
@@ -163,6 +163,10 @@ export class DesktopTaskBoardController {
   }
 
   checklist(params) {
+    if (params.releaseReference != null
+        || this.taskBoard.task(params.id).checklist?.find(item => item.id === params.itemId)?.releaseReference) {
+      throw new Error("Release references require the authenticated Release Manager tool");
+    }
     return this.#mutate(() => this.taskBoard.updateChecklist(params));
   }
 
@@ -196,7 +200,7 @@ export class DesktopTaskBoardController {
     const result = this.hubMcpService
       ? await this.hubMcpService.runDesktopTaskOperation(this.taskBoard.task(params.id), operationId, params.status, run,
         { receiptOnly: context.taskOperationReceipt === true }) : await run();
-    if (result?.taskOperation) return result;
+    if (result?.taskOperation || result?.admission?.status === "not_admitted") return result;
     return { ...await this.#boardMutationSnapshot(params), lifecycleResult: result };
   }
 

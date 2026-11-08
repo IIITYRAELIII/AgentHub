@@ -68,8 +68,10 @@ async function fixture(t, { hub = false } = {}) {
       return await withTaskOperationTiming({ operationId: `native-reuse-${path.basename(root)}-${input.identity.planRevision}`, taskId: "fixture",
         record: event => { timings.push(event); events.push(event); } }, () => mergeSelectedResults(input));
     } finally {
-      observations.push({ revision: input.identity.planRevision, durationMs: performance.now() - start,
+      observations.push({ operationId: `native-reuse-${path.basename(root)}-${input.identity.planRevision}`,
+        revision: input.identity.planRevision, durationMs: performance.now() - start,
         mergeCalls: counts.merge - before,
+        checkpoints: events.filter(x => x.phase === "checkpoint" && x.stage?.startsWith("native:")).map(x => ({ stage: x.stage, count: x.count })),
         stages: events.filter(x => x.phase === "end" && x.stage?.startsWith("native:")).map(x => ({ stage: x.stage, durationMs: x.durationMs })) });
     }
   };
@@ -111,6 +113,119 @@ test("identical whole conflict context reuses marker resolution while retaining 
   assert.deepEqual((await git(next.root, "show", "-s", "--format=%P", next.head)).split(" "), [next.merges[0].commit, nextB.resultCommit]);
   assert.deepEqual(await readFile(path.join(original.root, "merge.json")), old);
   assert.equal(await git(f.source, "status", "--porcelain=v1"), "");
+});
+
+test("reuse preserves compatibility helpers or leaves their real conflict unresolved", async t => {
+  const f = await fixture(t);
+  const a = await f.result("A", "shared.txt", "A\n"), b = await f.result("B", "shared.txt", "B\n");
+  const first = f.request([a, b], "helper-one");
+  await assert.rejects(f.run(first), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  const checkout = path.join(first.root, "repository");
+  await writeFile(path.join(checkout, "shared.txt"), "A+B\n");
+  await writeFile(path.join(checkout, "compatibility.mjs"), "export const combined = true;\n");
+  await f.commit(checkout, "owned helper and resolution");
+  const original = await f.run(first);
+  const journal = await readFile(path.join(first.root, "merge.json"));
+  const c = await f.result("C", "extra.txt", "third result\n");
+  const whole = await f.run(f.request([a, b, c], "helper-prefix"));
+  assert.equal(whole.merges[1].commit, original.head);
+  assert.equal(await git(whole.root, "show", "HEAD:compatibility.mjs"), "export const combined = true;");
+  const changedB = await f.result("B", "new.txt", "new automatic bytes\n");
+  const changed = f.request([a, changedB], "helper-changed");
+  await assert.rejects(f.run(changed), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  const state = await changed.readJson(path.join(changed.root, "merge.json"));
+  assert.ok(state.conflict);
+  assert.equal(state.next, 1);
+  assert.deepEqual(await readFile(path.join(first.root, "merge.json")), journal);
+});
+
+async function partialResolution(t, { helper = false } = {}) {
+  const f = await fixture(t);
+  const a = await f.result("A", "shared.txt", "A\n"), b = await f.result("B", "shared.txt", "B\n");
+  const c = await f.result("C", "shared.txt", "C\n");
+  const original = f.request([a, b, c], "partial");
+  await assert.rejects(f.run(original), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  const checkout = path.join(original.root, "repository");
+  await writeFile(path.join(checkout, "shared.txt"), "A\nB\n");
+  if (helper) await writeFile(path.join(checkout, "compatibility.mjs"), "export const combined = true;\n");
+  await f.commit(checkout, "complete first resolution only");
+  let stopped;
+  try { await f.run(original); } catch (error) { stopped = error; }
+  if (helper && stopped?.code === "RELEASE_NATIVE_REVIEW_REQUIRED") {
+    // Only the old PUBLIC verifier needs this controlled exact-binding port.
+    // It is a test oracle, not production receipt authentication or a new grant.
+    const binding = stopped.binding;
+    original.resolutionReview = { requestId: "fixture-old-helper", text:
+      `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>` };
+    original.verifyReview = async (review, actual, identity) => {
+      assert.deepEqual(review, original.resolutionReview); assert.deepEqual(actual, binding); assert.deepEqual(identity, original.identity);
+    };
+    await assert.rejects(f.run(original), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  } else assert.equal(stopped?.code, "RELEASE_NATIVE_MERGE_CONFLICT");
+  const file = path.join(original.root, "merge.json"), state = JSON.parse(await readFile(file));
+  assert.equal(state.next, 2); assert.equal(state.merges[1].resolved, true); assert.ok(state.conflict);
+  // Uncommitted bytes in the ACTIVE next conflict must never supply a solution.
+  await writeFile(path.join(checkout, "shared.txt"), "not a committed resolution\n");
+  return { f, a, b, c, original, file, state, checkout };
+}
+
+test("completed prefix of partial capture is reusable without its active conflict or WIP", async t => {
+  const { f, a, b, original, file, state, checkout } = await partialResolution(t);
+  const raw = await readFile(file), before = f.counts.merge;
+  const next = await f.run(f.request([a, b], "partial-prefix"));
+  assert.equal(f.counts.merge - before, 0);
+  assert.equal(next.head, state.head); assert.equal(next.merges.length, 2);
+  assert.equal(await git(next.root, "show", "HEAD:shared.txt"), "A\nB");
+  assert.deepEqual(await readFile(file), raw);
+  assert.equal(await readFile(path.join(checkout, "shared.txt"), "utf8"), "not a committed resolution\n");
+  assert.equal(await git(checkout, "rev-parse", "MERGE_HEAD"), original.tasks[2].resultCommit);
+});
+
+test("partial conflict hints survive selection and implementation changes but retain new automatic context", async t => {
+  const { f, a, b, c, file, state, checkout } = await partialResolution(t);
+  state.reuseContext.baseProvenance.planRevision = "partial";
+  state.reuseContext.baseProvenance.selectionHash = "old-selection";
+  state.reuseContext.implementation = "a".repeat(64);
+  await writeFile(file, JSON.stringify(state));
+  const raw = await readFile(file);
+  const nextB = await f.result("B", "new.txt", "new automatic contribution\n");
+  const input = f.request([a, nextB, c], "current-selection");
+  input.reuseContext = { ...f.context, baseProvenance: { ...f.context.baseProvenance,
+    planRevision: input.identity.planRevision, selectionHash: "new-selection" } };
+  await assert.rejects(f.run(input), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  const current = JSON.parse(await readFile(path.join(input.root, "merge.json")));
+  assert.equal(current.next, 2, "first completed conflict reused; active C remains unresolved");
+  assert.equal(current.merges[1].resolved, true);
+  assert.equal(await git(path.join(input.root, "repository"), "show", "HEAD:shared.txt"), "A\nB");
+  assert.equal(await git(path.join(input.root, "repository"), "show", "HEAD:new.txt"), "new automatic contribution");
+  assert.deepEqual((await git(path.join(input.root, "repository"), "show", "-s", "--format=%P", current.head)).split(" "),
+    [current.merges[0].commit, nextB.resultCommit]);
+  assert.deepEqual(await readFile(file), raw);
+  assert.equal(await readFile(path.join(checkout, "shared.txt"), "utf8"), "not a committed resolution\n");
+  assert.ok(f.observations.at(-1).checkpoints.some(x => x.stage === "native:conflict-reused" && x.count === 1));
+  assert.equal(f.observations.at(-1).checkpoints.find(x => x.stage === "native:prefix-reused")?.count, 0);
+  const foreign = f.request([a, nextB], "foreign-history");
+  foreign.reuseContext = { ...input.reuseContext, historyAuthority: { bases: [b.resultCommit] } };
+  await assert.rejects(f.run(foreign), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  assert.equal(JSON.parse(await readFile(path.join(foreign.root, "merge.json"))).next, 1);
+  const changedB = await f.result("B", "shared.txt", "changed B stage\n");
+  const changed = f.request([a, changedB], "changed-stage"); changed.reuseContext = input.reuseContext;
+  await assert.rejects(f.run(changed), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  assert.equal(JSON.parse(await readFile(path.join(changed.root, "merge.json"))).next, 1);
+  assert.deepEqual(await readFile(file), raw);
+});
+
+test("partial conflict hint cannot discard a completed compatibility helper", async t => {
+  const { f, a, b, file, checkout } = await partialResolution(t, { helper: true });
+  const raw = await readFile(file);
+  const corrected = await f.result("B", "new.txt", "new automatic contribution\n");
+  const input = f.request([a, corrected], "partial-helper-new-context");
+  await assert.rejects(f.run(input), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  const state = JSON.parse(await readFile(path.join(input.root, "merge.json")));
+  assert.equal(state.next, 1); assert.equal(state.conflict.retainedResolution, undefined);
+  assert.equal(await readFile(path.join(checkout, "compatibility.mjs"), "utf8"), "export const combined = true;\n");
+  assert.equal(await readFile(path.join(input.root, "repository/new.txt"), "utf8"), "new automatic contribution\n");
+  assert.deepEqual(await readFile(file), raw);
 });
 
 test("middle correction, removal, reordering and full Task entry drift never retain an old suffix", async t => {

@@ -45,7 +45,7 @@ async function fixture(t, { relocated = false } = {}) {
       assert.equal(output, path.join(await realpath(physicalExecutionRoot), "distribution"));
       await promisify(execFile)(command, ["-X", "utf8", "-c",
         "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); import build_release as b; b._plain_chain(Path(sys.argv[2]))",
-        path.resolve(import.meta.dirname, "../../../distribution"), output],
+        path.join(process.env.AGENT_HUB_RELEASE_TOOLS_ROOT, "python"), output],
       { encoding: "utf8", windowsHide: true, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
     }
     if (!result) {

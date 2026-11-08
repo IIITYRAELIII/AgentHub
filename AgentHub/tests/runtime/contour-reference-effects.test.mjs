@@ -91,7 +91,8 @@ test("recording claim custody and cleanup entries refuse before reading supplied
   const { root, recording, policy } = await fixture(t);
   const methods = ["claimAdmissionNoEffectEvidence", "reuseClaimWorkspaceOwned",
     "planIndependentClaimNamespace", "stageIndependentClaimNamespaceOwned", "readIndependentClaimNamespaceOwned",
-    "publishedDeliveryPreviewOwned", "confirmedDeleteResumePreviewOwned"];
+    "publishedDeliveryPreviewOwned", "confirmedDeleteResumePreviewOwned",
+    "nativeCaptureRetirementRecordOwned", "verifyNativeCaptureArchiveOwned"];
   let argumentReads = 0;
   const forbidden = new Proxy({}, { get() {
     argumentReads += 1;

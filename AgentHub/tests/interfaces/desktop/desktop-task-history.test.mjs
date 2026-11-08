@@ -2841,3 +2841,30 @@ test("desktop task history rejects invalid and missing tasks", async () => {
     /Поток не найден/,
   );
 });
+
+test("history API extracts retained raw quotes without receipts and keeps explicit annotation authority", async () => {
+  const annotations = [{ text: "Изменения карточки отменены", annotation: "чё?", source: ANNOTATION_SOURCE }];
+  const raw = `<response-annotations>${JSON.stringify(annotations)}</response-annotations>\n## My request:\n`;
+  const explicit = [{ text: "Explicit quote", annotation: "Explicit comment", source: ANNOTATION_SOURCE }];
+  const setup = fixture({ run: null, receipts: { forMessage: () => null, forTurn: () => null }, history: [{
+    id: "raw-quote-turn", completed: true, active: false, status: "completed", messages: [
+      { role: "user", itemId: "raw-quote", clientUserMessageId: "raw-client", text: raw },
+      { role: "user", itemId: "explicit-quote", clientUserMessageId: "explicit-client", text: raw,
+        responseAnnotations: explicit, responseAnnotationRequest: "" },
+      { role: "user", itemId: "plain", clientUserMessageId: "plain-client", text: "чё?" },
+      { role: "user", itemId: "malformed", clientUserMessageId: "malformed-client",
+        text: '<response-annotations>{broken</response-annotations>\n## My request:\nЗапрос' },
+    ],
+  }] });
+  const { items } = await setup.desktopTaskHistory({ provider: "codex", threadId: "thread-1", includeActive: false });
+  const users = items[0].messages;
+  assert.deepEqual(users[0].responseAnnotations, annotations);
+  assert.equal(users[0].text, "чё?");
+  assert.equal(users[0].responseAnnotationRequest, "");
+  assert.deepEqual(users[1].responseAnnotations, explicit);
+  assert.equal(users[1].responseAnnotationRequest, "");
+  assert.equal(users[2].responseAnnotations, undefined);
+  assert.equal(users[3].responseAnnotations, undefined);
+  assert.equal(users[3].text, "Запрос");
+  assert.equal(setup.state.history[0].messages[0].text, raw);
+});

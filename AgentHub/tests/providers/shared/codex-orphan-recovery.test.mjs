@@ -2,6 +2,72 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexRecoveryService } from "../../../src/providers/provider-recovery-services.mjs";
 import { ProviderCancellationService } from "../../../src/providers/provider-turn-services.mjs";
+import { CodexAppServerTransport } from "../../../src/providers/codex/codex-app-server-transport.mjs";
+import { markProviderTurnRequested, markProviderTurnAccepted, markProviderFirstEvent } from "../../../src/domain/task-runs.mjs";
+
+test("metadata recovery records a failed provider read without releasing the original", async () => {
+  const spans = [];
+  const f = metadataRecoveryFixture({ trace: { startBestEffortSpan(details) {
+    const row = { ...details, outcomes: [] }; spans.push(row);
+    return { finish(result) { row.outcomes.push(result.outcome); } };
+  } } });
+  f.transport.request = async () => { throw new Error("controlled metadata failure"); };
+  await assert.rejects(f.recovery.recover(f.run, { reconcileOnly: true }), /controlled metadata failure/u);
+  assert.equal(f.current(), f.run);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.transport.threadHydrations.size, 0);
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0].stage, "recovery-provider-read");
+  assert.deepEqual(spans[0].outcomes, ["failed"]);
+});
+
+test("metadata recovery read spans survive the existing trace worker reopen", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const { CommandTraceService } = await import("../../../src/application/command-trace-service.mjs");
+  const { CommandTraceWorkerStore } = await import("../../../src/infrastructure/persistence/command-trace-worker-store.mjs");
+  const directory = await mkdtemp(path.join(tmpdir(), "hub392-read-trace-"));
+  const databaseFile = path.join(directory, "trace.sqlite");
+  let store = new CommandTraceWorkerStore({ databaseFile });
+  try {
+    await store.initialize();
+    const f = metadataRecoveryFixture({ trace: new CommandTraceService({ store }) });
+    await f.recovery.recover(f.run, { reconcileOnly: true });
+    assert.equal(f.current(), null);
+    await store.close();
+    store = new CommandTraceWorkerStore({ databaseFile });
+    await store.initialize();
+    const timeline = await store.readCommandTimeline(f.run.clientUserMessageId);
+    const readSpans = timeline.filter(row => row.stage === "recovery-provider-read");
+    assert.deepEqual(readSpans.map(row => row.outcome), ["started", "succeeded"]);
+    assert.equal(readSpans.every(row => row.metadata.turnId === f.run.turnId && row.metadata.metadataOnly === true), true);
+    assert.equal(readSpans[1].metadata.operationSpanId, readSpans[0].metadata.operationSpanId);
+    assert.equal(JSON.stringify(timeline).includes("Retained partial answer"), false);
+  } finally {
+    await store.close();
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));
+    assert.match(path.basename(directory), /^hub392-read-trace-/u);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retained active rollout eligibility does not bypass current authority fences", async () => {
+  for (const variant of [
+    { threadState: "active" }, { activity: "active" }, { activity: "unknown" },
+    { activity: "new-live-after" }, { acceptance: "external" }, { acceptance: "foreign" },
+    { interrupt: "accepted" }, { interrupt: "unknown" },
+  ]) {
+    const f = metadataRecoveryFixture({ snapshotMode: "active", ...variant });
+    await f.recovery.recover(f.run, { reconcileOnly: true }).catch(() => {});
+    assert.equal(f.current(), f.run, JSON.stringify(variant));
+    assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), false);
+    assert.equal(f.transport.threadHydrations.size, 0);
+    if (variant.threadState || ["active", "unknown"].includes(variant.activity) || variant.acceptance) {
+      assert.equal(f.calls.includes("interrupt-original"), false);
+    }
+  }
+});
 
 function fixture(overrides = {}, recoveryOverrides = {}) {
   const calls = [];
@@ -299,4 +365,150 @@ test("canonical accepted-before-first-event recovery retains original guards", a
     assert.equal(f.calls.includes("interrupt-original"), false, variant);
     assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), false, variant);
   }
+});
+
+function metadataRecoveryFixture({ threadState = "idle", activity = "inactive", snapshotMode = "exact",
+  trace = null, acceptance = "accepted", interrupt = "rejected" } = {}) {
+  const requests = [];
+  const transport = new CodexAppServerTransport({ spawnProcess: () => assert.fail("No real provider process") });
+  transport.request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === "thread/read") return { thread: { id: "thread-original", path: "retained-rollout", status: { type: threadState } } };
+    if (method === "thread/turns/list") throw new Error("Controlled full-history read timeout");
+    assert.fail(`Unexpected provider RPC ${method}`);
+  };
+  let checks = 0;
+  let f;
+  f = fixture({
+    taskExternalActivity: async (_run, options) => {
+      assert.equal(options.forceFresh, true);
+      assert.equal(transport.threadHydrations.size, 0, "Thread lane must be released before cancellation checks");
+      f.calls.push("fresh-activity");
+      return { state: activity === "new-live-after" && ++checks > 1 ? "active"
+        : activity === "new-live-after" ? "inactive" : activity };
+    },
+    ...(interrupt === "rejected" ? {} : { interruptCodex: async () => {
+      f.calls.push("interrupt-original");
+      if (interrupt === "unknown") throw new Error("ambiguous transport");
+    } }),
+  }, {
+    readThread: (...args) => transport.readThread(...args),
+    readTaskSnapshot: async () => snapshotMode === "missing" ? null : {
+      turnId: snapshotMode === "foreign" ? "newer-turn" : f.run.turnId,
+      completed: false, active: snapshotMode === "active", activityUnknown: snapshotMode !== "active",
+      status: snapshotMode === "active" ? "inProgress" : "unknown", answer: f.run.responseText,
+    },
+    commandTrace: trace,
+  });
+  f.run.executionOwner = "hub";
+  markProviderTurnRequested(f.run);
+  markProviderTurnAccepted(f.run, { turnId: f.run.turnId });
+  if (acceptance === "observed") markProviderFirstEvent(f.run, { turnId: f.run.turnId, method: "turn/started" });
+  if (acceptance === "foreign") f.run.providerStart.turnId = "foreign-turn";
+  if (acceptance === "external") f.run.executionOwner = "desktop";
+  return { ...f, requests, transport };
+}
+
+test("retained exact recovery does not require full Thread history before guarded settlement", async () => {
+  for (const reconcileOnly of [false, true]) {
+    const f = metadataRecoveryFixture({ acceptance: reconcileOnly ? "observed" : "accepted" });
+    let readError = null;
+    await f.recovery.recover(f.run, { reconcileOnly }).catch(error => { readError = error; });
+    assert.equal(f.current(), null, readError?.message ?? "Exact original must reach canonical recovery");
+    assert.equal(readError, null);
+    assert.deepEqual(f.requests.map(x => x.method), ["thread/read"]);
+    assert.deepEqual(f.calls, ["fresh-activity", "interrupt-original", "fresh-activity",
+      ["commit", "interrupted", "Retained partial answer"]]);
+    assert.equal(f.transport.threadHydrations.size, 0);
+    assert.equal(f.run.clientUserMessageId, "message-original");
+  }
+});
+
+test("metadata-only recovery keeps exact snapshot, live Thread and interrupt fences", async () => {
+  for (const variant of [
+    { threadState: "active" }, { activity: "active" }, { activity: "unknown" },
+    { activity: "new-live-after" }, { snapshotMode: "missing" }, { snapshotMode: "foreign" },
+    { acceptance: "foreign" }, { acceptance: "external" }, { interrupt: "accepted" }, { interrupt: "unknown" },
+  ]) {
+    const f = metadataRecoveryFixture(variant);
+    await f.recovery.recover(f.run, { reconcileOnly: true }).catch(() => {});
+    assert.equal(f.current(), f.run, JSON.stringify(variant));
+    assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), false);
+    assert.equal(f.transport.threadHydrations.size, 0);
+    if (variant.threadState || ["active", "unknown"].includes(variant.activity)
+      || variant.snapshotMode || variant.acceptance) assert.equal(f.calls.includes("interrupt-original"), false);
+  }
+});
+
+test("metadata recovery traces the original read boundary without payload or trace authority", async () => {
+  const spans = [];
+  const trace = { startBestEffortSpan(details) {
+    const entry = { ...details, finished: [] }; spans.push(entry);
+    return { finish(result) { entry.finished.push(result); } };
+  } };
+  const f = metadataRecoveryFixture({ trace });
+  await f.recovery.recover(f.run, { reconcileOnly: true });
+  assert.equal(f.current(), null);
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0].stage, "recovery-provider-read");
+  assert.equal(spans[0].commandId, f.run.clientUserMessageId);
+  assert.equal(spans[0].recordStarted, true);
+  assert.equal(spans[0].metadata.metadataOnly, true);
+  assert.equal(spans[0].metadata.turnId, "turn-original");
+  assert.equal(spans[0].finished[0].outcome, "succeeded");
+  assert.equal(JSON.stringify(spans).includes("Retained partial answer"), false);
+  const throwing = metadataRecoveryFixture({ trace: { startBestEffortSpan() { throw new Error("sink failed"); } } });
+  await throwing.recovery.recover(throwing.run);
+  assert.equal(throwing.current(), null);
+});
+
+test("reviewer metadata recovery retains guarded reconciliation for a dangling active rollout marker", async () => {
+  const { CodexTaskSnapshotService, codexTurnSnapshot } = await import("../../../src/providers/codex/codex-task-snapshot-service.mjs");
+  const { codexRolloutTurnState } = await import("../../../src/providers/codex/codex-rollout-activity.mjs");
+  const transport = new CodexAppServerTransport({ spawnProcess: () => assert.fail("No real provider") });
+  const requests = [];
+  const thread = { id: "thread-original", path: "retained-rollout", status: { type: "idle" } };
+  transport.request = async (method, params) => {
+    requests.push(method);
+    if (method === "thread/read") return { thread };
+    if (method === "thread/turns/list") return { data: [{ id: "turn-original", status: "inProgress", items: [] }], nextCursor: null };
+    assert.fail(`Unexpected RPC ${method}`);
+  };
+  const activity = { activeTurnIds: ["turn-original"], latestTurnId: "turn-original",
+    terminalStatusesByTurnId: {}, latestMessages: {}, finalMessages: {}, userMessages: {},
+    startedAtMsByTurnId: {}, completedAtMsByTurnId: {} };
+  const snapshots = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => thread.path, readRolloutActivity: async () => activity,
+    rolloutTurnState: codexRolloutTurnState, capturedOwner: () => null,
+    runtimeActive: async () => false, resolveOwner: async () => "hub",
+    readThread: (...args) => transport.readThread(...args),
+    selectTurn: turns => turns.find(turn => turn.id === "turn-original"),
+    turnSnapshot: codexTurnSnapshot, turnStartedAt: () => null, describeItem: () => "stage",
+    hubOwner: () => "hub", agentHubPid: () => 1, modelLabel: value => value,
+    runtimeLabel: value => value, delay: async () => {}, reindexRun: () => {},
+  });
+  let f;
+  f = fixture({
+    readCodexSnapshot: run => snapshots.read(run),
+    taskExternalActivity: async (_run, options) => {
+      assert.equal(options.forceFresh, true);
+      assert.equal(transport.threadHydrations.size, 0);
+      f.calls.push("fresh-activity");
+      return { state: "inactive" };
+    },
+  }, {
+    readThread: (...args) => transport.readThread(...args),
+    readTaskSnapshot: (run, options) => snapshots.read(run, options),
+  });
+  f.run.executionOwner = "hub";
+  markProviderTurnRequested(f.run);
+  markProviderTurnAccepted(f.run, { turnId: f.run.turnId });
+  const snapshot = await snapshots.read(f.run, { threadResult: { thread } });
+  assert.equal(snapshot.turnId, f.run.turnId);
+  assert.equal(snapshot.active, true, "A retained task_started marker is still active in the canonical exact rollout snapshot");
+  assert.equal(snapshot.completed, false);
+  await f.recovery.recover(f.run, { reconcileOnly: true });
+  assert.equal(f.current(), null, "Fresh provider/native inactivity plus exact interrupt rejection must still reach the existing terminal owner");
+  assert.deepEqual(f.calls.slice(0, 3), ["fresh-activity", "interrupt-original", "fresh-activity"]);
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
 });

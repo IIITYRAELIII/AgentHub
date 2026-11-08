@@ -8,7 +8,7 @@ const WORKSPACE_MUTATIONS = new Set([
   "updateWorkspaceDeveloperRules", "recordWorkspaceEvent", "beginMcpOperation",
   "bindMcpOperationInterstreamContentHash", "bindTaskOperationExecution", "requestTaskOperationInterruption", "finishTaskOperationInterruption",
   "completeMcpOperation", "failMcpOperation", "recordClaimAdmissionRefusal", "cancelMcpOperation", "beginMcpOperationReconciliation",
-  "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation",
+  "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation", "recordMcpOperationCompletionFailure",
   "checkpointMcpPreparation", "settleMcpPreparationFailure", "checkpointClaimCustody", "checkpointMcpPreparationForward",
   "mergeWorkspaces", "createWorkspaceFromStream", "createStream", "renameStream",
   "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
@@ -21,7 +21,7 @@ const WORKSPACE_READS = new Set([
   "archivedWorkspaces", "releaseWorkflowEnabledForThread", "workspaceDeveloperRules", "workspaceEvents",
   "claimCustodyForOriginal", "claimCustodyForTask", "claimCustodyNamespaceForTask", "claimCustodyTaskSnapshot", "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage", "preparationIsolationAuthority",
   "workspace", "workspaceBySystemKey", "stream", "streamDeveloperRules", "developerRulesForThread",
-  "developerRulesForStream", "thread", "activeThread", "threadsForStream", "resolveThread", "hierarchy",
+  "developerRulesForStream", "thread", "activeThread", "threadsForStream", "resolveThread", "resolveThreads", "hierarchy",
   "taskOperationExecutions", "meta", "threadNaming", "mutationDiagnostics", "close",
 ]);
 

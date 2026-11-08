@@ -3,7 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
+import { McpAdmissionContentionError } from "../../domain/mcp-admission-contention.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { readClaimCustodyFence, readClaimCustodySuccessor, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
   claimCustodyNamespaces, claimCustodyTaskSnapshot, assertNoPendingClaimCustodyWriters } from "./claim-custody-fence.mjs";
@@ -402,6 +403,30 @@ function threadFromRow(row) {
     linkedAtMs: Number(row.linked_at_ms) || 0,
     updatedAtMs: Number(row.updated_at_ms) || 0,
     detachedAtMs: row.detached_at_ms == null ? null : Number(row.detached_at_ms),
+  };
+}
+
+const THREAD_RESOLUTION_COLUMNS = `t.*, s.ordinal AS resolved_ordinal, s.name AS resolved_stream_name,
+  w.id AS resolved_workspace_id, w.name AS resolved_workspace_name,
+  w.kind AS resolved_workspace_kind,
+  CASE WHEN s.name IS NOT NULL AND trim(s.name) <> '' THEN 0 ELSE EXISTS (
+    SELECT 1 FROM hub_streams live
+    WHERE live.workspace_id = s.workspace_id AND live.archived_at_ms IS NULL
+    LIMIT 1 OFFSET 1
+  ) END AS multiple_live_streams`;
+
+function resolvedThreadFromRow(row) {
+  if (!row) return null;
+  const thread = threadFromRow(row);
+  const ordinal = Number(row.resolved_ordinal) || 1;
+  const name = row.resolved_stream_name ? String(row.resolved_stream_name) : null;
+  return {
+    workspaceId: String(row.resolved_workspace_id),
+    workspaceName: String(row.resolved_workspace_name),
+    workspaceKind: String(row.resolved_workspace_kind),
+    streamId: thread.streamId, streamOrdinal: ordinal, streamName: name,
+    streamDisplayName: streamDisplayName({ name, ordinal, streamCount: row.multiple_live_streams ? 2 : 1 }),
+    threadPosition: thread.position, thread,
   };
 }
 
@@ -979,7 +1004,12 @@ export class WorkspaceCatalogStore {
     const normalizedThreadId = user ? null : safeIdentifier(threadId, "thread id");
     const tool = safeIdentifier(toolName, "MCP tool name");
     const hash = safeIdentifier(argumentsHash, "MCP arguments hash");
-    this.#database.exec("BEGIN IMMEDIATE");
+    try { this.#database.exec("BEGIN IMMEDIATE"); }
+    catch (error) {
+      if (!sqliteContention(error)) throw error;
+      throw new McpAdmissionContentionError({ requestId: id, workspaceId: workspace, streamId: stream,
+        provider: normalizedProvider, threadId: normalizedThreadId, toolName: tool, argumentsHash: hash, actorKind }, error);
+    }
     try {
     if (taskExecution && ["hub_task_claim", "hub_task_status_update"].includes(tool)) {
       assertNoPendingTaskInterruption(this.#database, taskExecution.taskId);
@@ -1032,7 +1062,10 @@ export class WorkspaceCatalogStore {
   }
 
   runMutation(operation, options = {}) {
-    return this.#mutations.run(operation, options);
+    return this.#mutations.run(operation, { ...options,
+      ...(options.method === "beginMcpOperation"
+        ? { onTiming: options.args?.[0]?.recordAdmissionTiming } : {}),
+    });
   }
 
   mutationDiagnostics() {
@@ -1309,6 +1342,32 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
+  recordMcpOperationCompletionFailure(requestId, { identity, ownerId, diagnostic } = {}) {
+    return this.#transaction(() => {
+      const row = this.mcpOperation(requestId);
+      if (!row || Object.entries(identity ?? {}).length !== 8 || identity.actorKind !== (row.actorKind ?? "provider")
+          || !["workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash", "createdAtMs"]
+            .every(key => identity[key] === row[key])) throw new Error("Completion diagnostic receipt identity differs");
+      if (["succeeded", "failed"].includes(row.status) || row.taskExecution?.cancellation) return row;
+      if (this.claimCustodyForOriginal(requestId) || row.taskExecution?.protocol !== "task-operation-interruption-v1"
+          || !ownerId || row.taskExecution.ownerId !== ownerId) throw new Error("Completion diagnostic execution owner differs");
+      if (diagnostic?.version !== 1 || diagnostic.kind !== "mcp-completion-failure-v1"
+          || diagnostic.effects !== "retained_unknown" || typeof diagnostic.effectCompleted !== "boolean"
+          || ![diagnostic.originalError, diagnostic.persistenceError].every(error => error
+            && typeof error.name === "string" && error.name.length <= 100
+            && (error.code === null || /^[A-Z0-9_]{1,64}$/u.test(error.code))
+            && typeof error.message === "string" && error.message.length <= 4000)
+          || Buffer.byteLength(JSON.stringify(diagnostic), "utf8") > 32_768) throw new Error("Invalid bounded completion diagnostic");
+      if (row.taskExecution.completionFailure) return row;
+      const completionFailure = { ...diagnostic, ownerId, argumentsHash: row.argumentsHash, observedAtMs: this.#nowMs() };
+      const changed = this.#database.prepare(`UPDATE hub_mcp_operations SET task_execution_json=?
+        WHERE request_id=? AND task_execution_json=? AND receipt_state IN ('pending','reconciling','unknown')`)
+        .run(JSON.stringify({ ...row.taskExecution, completionFailure }), requestId, JSON.stringify(row.taskExecution));
+      if (Number(changed.changes) !== 1) throw new Error("Completion diagnostic owner CAS changed");
+      return this.mcpOperation(requestId);
+    });
+  }
+
   completeUnknownMcpOperation(requestId, {
     workspaceId, toolName, result, reconciliation,
   } = {}) {
@@ -1349,7 +1408,7 @@ export class WorkspaceCatalogStore {
   }
 
   failUnknownMcpOperation(requestId, {
-    workspaceId, toolName, error, reconciliation,
+    workspaceId, toolName, error, reconciliation, beforeSettle = null,
   } = {}) {
     const id = safeIdentifier(requestId, "MCP request id");
     if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
@@ -1368,6 +1427,10 @@ export class WorkspaceCatalogStore {
         || operation.receiptState !== "unknown"
       ) {
         throw new Error("Unknown MCP operation identity or receipt state does not match");
+      }
+      if (beforeSettle) {
+        const checked = beforeSettle(operation);
+        if (checked?.then) throw new TypeError("Receipt settlement validation must be synchronous");
       }
       const errorText = String(error?.message ?? error ?? "authoritative reconciliation failed").slice(0, 2_000);
       const resultJson = compactMcpOperationResult(
@@ -2126,34 +2189,35 @@ export class WorkspaceCatalogStore {
     // This point read is used for every distinct journal Thread. Display needs
     // only zero/one versus multiple live Streams, never their complete count.
     const row = this.#database.prepare(`
-      SELECT t.*, s.ordinal AS resolved_ordinal, s.name AS resolved_stream_name,
-        w.id AS resolved_workspace_id, w.name AS resolved_workspace_name,
-        w.kind AS resolved_workspace_kind,
-        CASE WHEN s.name IS NOT NULL AND trim(s.name) <> '' THEN 0 ELSE EXISTS (
-          SELECT 1 FROM hub_streams live
-          WHERE live.workspace_id = s.workspace_id AND live.archived_at_ms IS NULL
-          LIMIT 1 OFFSET 1
-        ) END AS multiple_live_streams
+      SELECT ${THREAD_RESOLUTION_COLUMNS}
       FROM hub_threads t
       JOIN hub_streams s ON s.id = t.stream_id
       JOIN hub_workspaces w ON w.id = s.workspace_id
       WHERE t.provider = ? AND t.provider_thread_id = ?
     `).get(identity.provider, identity.threadId);
-    if (!row) return null;
-    const thread = threadFromRow(row);
-    const ordinal = Number(row.resolved_ordinal) || 1;
-    const name = row.resolved_stream_name ? String(row.resolved_stream_name) : null;
-    return {
-      workspaceId: String(row.resolved_workspace_id),
-      workspaceName: String(row.resolved_workspace_name),
-      workspaceKind: String(row.resolved_workspace_kind),
-      streamId: thread.streamId,
-      streamOrdinal: ordinal,
-      streamName: name,
-      streamDisplayName: streamDisplayName({ name, ordinal, streamCount: row.multiple_live_streams ? 2 : 1 }),
-      threadPosition: thread.position,
-      thread,
-    };
+    return resolvedThreadFromRow(row);
+  }
+
+  // A worker already asks for at most 128 exact references per callback. Read
+  // each such group in one fresh statement, without retaining binding authority
+  // between calls or enumerating unrelated Workspace/Thread history.
+  resolveThreads(values) {
+    if (!Array.isArray(values)) throw new TypeError("Thread references must be an array");
+    const identities = values.map(normalizedThreadIdentity);
+    const resolved = identities.map(() => null);
+    for (let offset = 0; offset < identities.length; offset += 128) {
+      const batch = identities.slice(offset, offset + 128);
+      const rows = this.#database.prepare(`
+        WITH requested(slot, provider, thread_id) AS (VALUES ${batch.map(() => "(?, ?, ?)").join(",")})
+        SELECT requested.slot AS resolution_slot, ${THREAD_RESOLUTION_COLUMNS}
+        FROM requested
+        JOIN hub_threads t ON t.provider = requested.provider AND t.provider_thread_id = requested.thread_id
+        JOIN hub_streams s ON s.id = t.stream_id
+        JOIN hub_workspaces w ON w.id = s.workspace_id
+      `).all(...batch.flatMap((identity, index) => [offset + index, identity.provider, identity.threadId]));
+      for (const row of rows) resolved[row.resolution_slot] = resolvedThreadFromRow(row);
+    }
+    return resolved;
   }
 
   assignUnknownThread(value, { source = "discovered", streamName = null } = {}) {

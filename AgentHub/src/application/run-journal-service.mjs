@@ -264,6 +264,7 @@ export class RunJournalService {
     return this.usageStore.project(null, {
       projectRoot: this.defaultProjectRoot,
       projectionProjectRoots: projectRoots,
+      traceCommandId: completions[0]?.clientUserMessageId || "",
     });
   }
 

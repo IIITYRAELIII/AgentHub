@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,8 +15,28 @@ import { runtimePointerTransition } from "../../../src/infrastructure/filesystem
 import { retireSealedRuntimeRelease } from "../../../src/infrastructure/filesystem/sealed-runtime-release.mjs";
 import { StorageRetentionService } from "../../../src/application/storage-retention-service.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
+import { withStorageRetentionLease } from "../../../src/composition/storage-retention-composition.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
+const execute = promisify(execFile);
+async function generatedCache(f) {
+  const python = (await execute("python", ["-I", "-S", "-B", "-c", "import sys; print(sys.executable)"])).stdout.trim();
+  const source = Buffer.from("def transcribe():\n    return 'fixture only'\n");
+  const file = path.join(f.body, "whisper_runtime.py"), manifestFile = path.join(f.body, "runtime-manifest.json");
+  await writeFile(file, source);
+  const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+  manifest.files.push({ path: "whisper_runtime.py", bytes: source.length, sha256: hash(source) });
+  await writeFile(manifestFile, JSON.stringify(manifest));
+  const binding = await captureRuntimeReleaseBinding(f.body, "runtime-1");
+  const pointer = await readRuntimePointer(f.runtimeRoot);
+  pointer.runtimeRetention.retired = [{ ...pointer.runtimeRetention.retired[0], ...binding }];
+  await writeRuntimePointer(f.runtimeRoot, pointer);
+  f.candidate = (await f.owner.list({ limit: 3, context: f.context })).items[0];
+  f.owner.pythonExe = python;
+  const cache = (await execute(python, ["-I", "-S", "-B", "-c",
+    "import py_compile,sys; print(py_compile.compile(sys.argv[1], doraise=True))", file])).stdout.trim();
+  return { file, cache, manifest: await readFile(manifestFile) };
+}
 async function fixture(t, count = 2) {
   const parent = await realpath(os.tmpdir());
   const root = await mkdtemp(path.join(parent, "runtime-retirement-"));
@@ -90,6 +114,97 @@ test("actual bounded batches retain SAME original operation, manifest and curren
   assert.equal(f.store.get(record.operationId).revision, revision);
 });
 
+test("finite foreground held storage lease reuses producer across real runApproved originals", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t, 130), producers = [], originalSpawn = childProcess.spawn;
+  const observed = t.mock.method(childProcess, "spawn", (...args) => {
+    const child = originalSpawn(...args);
+    if (args[2]?.env?.AGENT_HUB_RUNTIME_RETIRE_SOURCE) {
+      const entry = { closed: false }; producers.push(entry);
+      child.once("close", () => { entry.closed = true; });
+    }
+    return child;
+  });
+  syncBuiltinESMExports();
+  const began = performance.now(), passes = []; let originalId;
+  try {
+    const preview = await f.owner.preview({ candidate: f.candidate, context: f.context });
+    assert.equal(preview.status, "eligible");
+    const approved = { ownerId: f.owner.id, candidate: f.candidate, binding: preview.binding };
+    // Exact foreground caller wiring: acquire ONCE, then delegate the SAME real
+    // token on each normal pass. Per-unit installation custody remains fresh.
+    await withStorageRetentionLease(path.join(f.root, "maintenance"), async lease => {
+      const service = new StorageRetentionService({ store: f.store, owners: [f.owner], maxUnits: 1,
+        readContext: () => f.context, withLease: fn => fn(lease) });
+      try {
+        for (let pass = 0; pass < 3; pass++) {
+          await lease.assertOwned();
+          const status = await service.runApproved([approved]);
+          const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0];
+          originalId ??= record?.operationId;
+          assert.ok(originalId);
+          const original = f.store.get(originalId);
+          passes.push(original.metadata.lastObservation?.files ?? original.result?.files);
+          assert.equal(producers.length, 1);
+          assert.equal(producers[0].closed, false, "producer stays inside the actual foreground lease");
+          if (pass < 2) {
+            assert.equal(record.operationId, originalId); assert.equal(status.partialBatches, pass + 1);
+            assert.equal(original.status, "reconciling");
+          } else { assert.equal(status.removed, 1); assert.equal(original.status, "succeeded"); }
+        }
+      } finally { await service.close(); }
+    });
+    assert.equal(producers.length, 1); assert.equal(producers[0].closed, true);
+    await withStorageRetentionLease(path.join(f.root, "maintenance"), async lease => {
+      await lease.assertOwned(); assert.equal(producers[0].closed, true);
+    });
+    await assert.rejects(lstat(f.body), { code: "ENOENT" });
+    assert.deepEqual(passes.slice(0, 2), [64, 64]);
+    t.diagnostic(JSON.stringify({ runApprovedPasses: 3, nativeProducerStarts: producers.length,
+      originalId, elapsedMs: performance.now() - began }));
+  } finally { observed.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("foreground stop joins before lease release and late source pin still refuses SAME original", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t, 130), producers = [], originalSpawn = childProcess.spawn;
+  const observed = t.mock.method(childProcess, "spawn", (...args) => {
+    const child = originalSpawn(...args);
+    if (args[2]?.env?.AGENT_HUB_RUNTIME_RETIRE_SOURCE) {
+      const entry = { closed: false }; producers.push(entry); child.once("close", () => { entry.closed = true; });
+    }
+    return child;
+  });
+  syncBuiltinESMExports(); let originalId;
+  try {
+    const preview = await f.owner.preview({ candidate: f.candidate, context: f.context });
+    const approved = { ownerId: f.owner.id, candidate: f.candidate, binding: preview.binding };
+    await assert.rejects(withStorageRetentionLease(path.join(f.root, "maintenance"), async lease => {
+      const service = new StorageRetentionService({ store: f.store, owners: [f.owner], maxUnits: 1,
+        readContext: () => f.context, withLease: fn => fn(lease) });
+      try {
+        assert.equal((await service.runApproved([approved])).partialBatches, 1);
+        originalId = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0].operationId;
+        const prepared = await f.release(99), file = path.join(prepared.body, "runtime-manifest.json");
+        const manifest = JSON.parse(await readFile(file, "utf8")); manifest.sourceRoot = f.body;
+        await writeFile(file, JSON.stringify(manifest));
+        await service.runApproved([approved]);
+        assert.equal(f.store.get(originalId).status, "reconciling");
+        assert.equal(f.store.get(originalId).metadata.lastObservation.reason, "runtime-source-pinned");
+        assert.equal((await readdir(path.join(f.body, "assets"))).length, 66);
+        assert.equal(producers.length, 1);
+        throw Error("foreground cooperative boundary");
+      } finally { await service.close(); }
+    }), /foreground cooperative boundary/u);
+    assert.equal(producers[0].closed, true);
+    await withStorageRetentionLease(path.join(f.root, "maintenance"), async lease => {
+      await lease.assertOwned(); assert.equal(producers[0].closed, true);
+    });
+    assert.equal((await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0].operationId, originalId);
+    assert.ok(await readFile(path.join(f.body, "runtime-manifest.json")));
+  } finally { observed.mock.restore(); syncBuiltinESMExports(); }
+});
+
 test("lost native completion reply reconciles exact absence without a second deletion", async t => {
   if (process.platform !== "win32") return t.skip("Native Windows custody");
   const f = await fixture(t);
@@ -156,4 +271,145 @@ test("logical alias and native path share one installation lease", async t => {
   release();
   await Promise.all([first, second]);
   assert.equal(secondEntered, true);
+});
+
+test("verified generated Python cache retires first within SAME bounded original", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t, 65), generated = await generatedCache(f);
+  const first = await f.service.runOnce();
+  assert.equal(first.partialBatches, 1);
+  await assert.rejects(lstat(generated.cache), { code: "ENOENT" });
+  assert.ok(await readFile(generated.file), "cache retires while its proven source still exists");
+  assert.deepEqual(await readFile(path.join(f.body, "runtime-manifest.json")), generated.manifest);
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0];
+  assert.equal(f.store.get(record.operationId).metadata.lastObservation.files, 64);
+  assert.equal((await f.service.runOnce()).removed, 1);
+  assert.equal(f.store.get(record.operationId).status, "succeeded");
+  await assert.rejects(lstat(f.body), { code: "ENOENT" });
+  assert.equal((await readRuntimePointer(f.runtimeRoot)).current, "runtime-3");
+});
+
+test("foreign bytecode and late source drift preserve SAME UNKNOWN runtime original", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f);
+  const correct = await readFile(generated.cache);
+  await writeFile(generated.cache, Buffer.concat([correct, Buffer.from("foreign")]));
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0], id = record.operationId;
+  assert.equal(f.store.get(id).status, "reconciling");
+  assert.ok(await readFile(path.join(f.body, "assets/000.txt")));
+  await writeFile(generated.cache, correct);
+  f.owner.retire = async (...args) => {
+    await writeFile(generated.file, "foreign source after proof");
+    return retireSealedRuntimeRelease(...args);
+  };
+  await f.service.runOnce();
+  assert.equal(f.store.get(id).status, "reconciling");
+  assert.equal((await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0].operationId, id);
+  assert.deepEqual(await readFile(generated.cache), correct);
+  assert.ok(await readFile(path.join(f.body, "assets/000.txt")));
+});
+
+test("lost cache-first batch reply resumes SAME original without a persistent cache waiver", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t, 65), generated = await generatedCache(f);
+  let calls = 0;
+  f.owner.retire = async (...args) => {
+    const result = await retireSealedRuntimeRelease(...args);
+    if (++calls === 1) throw new Error("lost cache-first batch reply");
+    return result;
+  };
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0];
+  await assert.rejects(lstat(generated.cache), { code: "ENOENT" });
+  assert.equal(f.store.get(record.operationId).status, "reconciling");
+  await f.service.runOnce();
+  assert.equal(f.store.get(record.operationId).status, "succeeded");
+  assert.equal(calls, 2);
+});
+
+test("generated cache requires configured compiler and refuses extra useful data or forged proof", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f);
+  const python = f.owner.pythonExe;
+  f.owner.pythonExe = "";
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0], id = record.operationId;
+  assert.equal(f.store.get(id).status, "reconciling");
+  const bytes = await readFile(generated.cache);
+  f.owner.pythonExe = python;
+  await writeFile(path.join(f.body, "useful-WIP.txt"), "retained unique bytes");
+  await f.service.runOnce();
+  assert.equal(f.store.get(id).status, "reconciling");
+  assert.deepEqual(await readFile(generated.cache), bytes);
+  assert.equal(await readFile(path.join(f.body, "useful-WIP.txt"), "utf8"), "retained unique bytes");
+  assert.throws(() => retireSealedRuntimeRelease(f.body, record, { allowPartial: true,
+    verifiedCache: { path: path.relative(f.body, generated.cache), bytes: bytes.length, sha256: hash(bytes) } }),
+  /runtime-generated-cache-proof-required/u);
+});
+
+test("native asset failure after cache unlink recovers SAME original after exact asset restore", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f);
+  const asset = path.join(f.body, "assets/000.txt"), bytes = await readFile(asset);
+  await writeFile(asset, Buffer.alloc(bytes.length, 120));
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0], id = record.operationId;
+  assert.equal(f.store.get(id).status, "reconciling");
+  await assert.rejects(lstat(generated.cache), { code: "ENOENT" });
+  assert.ok(await readFile(generated.file));
+  await writeFile(asset, bytes);
+  await f.service.runOnce();
+  assert.equal(f.store.get(id).status, "succeeded");
+  await assert.rejects(lstat(f.body), { code: "ENOENT" });
+});
+
+test("lost reply between cache and directory unlink resumes exact persisted directory custody", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f);
+  f.owner.retire = async () => {
+    const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0];
+    assert.equal(record.generatedCache.empty, false);
+    assert.equal(record.generatedCache.directoryIno, String((await lstat(path.dirname(generated.cache), { bigint: true })).ino));
+    await unlink(generated.cache); // Fixture's precise crash boundary after the owned cache unlink.
+    throw Error("lost reply before directory unlink");
+  };
+  await f.service.runOnce();
+  const record = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0], id = record.operationId;
+  assert.deepEqual(await readdir(path.dirname(generated.cache)), []);
+  assert.equal(f.store.get(id).status, "reconciling");
+  f.owner.retire = retireSealedRuntimeRelease;
+  await f.service.runOnce();
+  assert.equal(f.store.get(id).status, "succeeded");
+  await assert.rejects(lstat(f.body), { code: "ENOENT" });
+});
+
+test("empty cache directory requires original custody and refuses a same-path replacement", async t => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const f = await fixture(t), generated = await generatedCache(f), directory = path.dirname(generated.cache);
+  const cacheBytes = await readFile(generated.cache);
+  await unlink(generated.cache);
+  let calls = 0;
+  f.owner.retire = async () => { calls++; throw Error("must never reach native without custody"); };
+  await f.service.runOnce();
+  const id = (await readRuntimePointer(f.runtimeRoot)).runtimeRetention.retired[0].operationId;
+  assert.equal(calls, 0);
+  assert.equal(f.store.get(id).status, "reconciling");
+  await writeFile(generated.cache, cacheBytes);
+  f.owner.retire = async () => {
+    calls++;
+    await unlink(generated.cache);
+    await rename(directory, path.join(f.root, "retained-original-cache-directory"));
+    await mkdir(directory);
+    throw Error("foreign directory after lost reply");
+  };
+  await f.service.runOnce();
+  assert.equal(calls, 1);
+  f.owner.retire = async () => { calls++; throw Error("replacement must refuse before native"); };
+  await f.service.runOnce();
+  assert.equal(calls, 1);
+  assert.equal(f.store.get(id).status, "reconciling");
+  assert.deepEqual(await readdir(directory), []);
+  assert.ok(await readFile(generated.file));
+  assert.ok(await readFile(path.join(f.body, "assets/000.txt")));
 });

@@ -351,6 +351,14 @@ test("dashboard saves edited Task fields", async () => {
   assert.deepEqual(calls[1], ["snapshot", { refresh: true }]);
 });
 
+test("dashboard checklist cannot author or modify a Release Manager reference", () => {
+  const { controller, calls } = fixture();
+  assert.throws(() => controller.checklist({ id: "board-1", operation: "link", releaseReference: {} }), /Release Manager/u);
+  controller.taskBoard.task = () => ({ checklist: [{ id: "reference-item", releaseReference: {} }] });
+  assert.throws(() => controller.checklist({ id: "board-1", itemId: "reference-item", operation: "unlink" }), /Release Manager/u);
+  assert.equal(calls.length, 0);
+});
+
 test("dashboard checklist mutation waits for durable completion before snapshot", async () => {
   const { controller, calls } = fixture();
   const result = await controller.checklist({

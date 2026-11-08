@@ -8,7 +8,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { HubMcpService } from "./src/application/hub-mcp-service.mjs";
-import { createNativeMergeReviewVerifier } from "./src/application/native-merge-review.mjs";
 import { measureTaskOperation } from "./src/infrastructure/process/task-operation-timing.mjs";
 import { TaskBoardService } from "./src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "./src/application/task-lifecycle-service.mjs";
@@ -57,7 +56,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
   }
   if (input["resume-preparation"]) {
     const allowed = new Set(["resume-preparation", "provider", "thread", "stream", "request",
-      "expected-arguments-hash", "expected-preparation-revision", "native-resolution-review-file"]);
+      "expected-arguments-hash", "expected-preparation-revision"]);
     if (Object.keys(input).some(key => !allowed.has(key))) throw new Error("Preparation continuation cannot change selection or original arguments");
     const expectedPreparationRevision = Number(required(input, "expected-preparation-revision"));
     const expectedArgumentsHash = required(input, "expected-arguments-hash");
@@ -65,8 +64,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
         || !/^[a-f0-9]{64}$/u.test(expectedArgumentsHash)) throw new Error("Invalid original preparation continuation identity");
     return { resumePreparation: true, provider: required(input, "provider"), threadId: required(input, "thread"),
       streamId: required(input, "stream"), requestId: required(input, "request"), expectedArgumentsHash,
-      expectedPreparationRevision, ...(input["native-resolution-review-file"]
-        ? { nativeResolutionReviewFile: path.resolve(input["native-resolution-review-file"]) } : {}) };
+      expectedPreparationRevision };
   }
   const parsed = {
     workspaceId: required(input, "workspace"),
@@ -97,20 +95,17 @@ export function parseTaskAwaitCutoverArguments(argv) {
   if (parsed.ordinaryTest) {
     const allowed = new Set(["workspace", "stream", "provider", "thread", "task", "request", "repository",
       "expected-task-revision", "ordinary-test", "confirm-cutover", "expected-source-commit",
-      "expected-source-tree", "expected-source-branch", "native-resolution-review-file"]);
+      "expected-source-tree", "expected-source-branch"]);
     if (Object.keys(input).some(key => !allowed.has(key)) || !parsed.confirm) throw new Error("Ordinary Test uses only its normal same-Task admission");
     parsed.expectedSourceTree = required(input, "expected-source-tree");
     parsed.expectedSourceBranch = required(input, "expected-source-branch");
     if (!shaPattern.test(parsed.expectedSourceTree)) throw new Error("invalid expected source tree");
-    if (input["native-resolution-review-file"]) parsed.nativeResolutionReviewFile = path.resolve(input["native-resolution-review-file"]);
   }
   if (parsed.initialNativeTest) {
     const allowed = new Set(["workspace", "stream", "provider", "thread", "task", "request", "repository",
       "expected-task-revision", "initial-native-test", "confirm-cutover", "expected-source-commit",
       "expected-source-tree", "expected-source-branch", "expected-main-commit", "expected-dev-commit",
       "expected-publication-sha256", "expected-candidate-sha256", "expected-plan-revision", "expected-runtime-sha256"]);
-    allowed.add("native-resolution-review-file");
-    if (input["native-resolution-review-file"]) parsed.nativeResolutionReviewFile = path.resolve(input["native-resolution-review-file"]);
     if (input["returned-native-test"]) {
       if (input["initial-native-test"]) throw new Error("Returned native Test and initial native Test are distinct admissions");
       allowed.add("returned-native-test"); allowed.add("expected-returned-result-commit");
@@ -267,12 +262,11 @@ export async function openTaskAwaitCutoverRuntime({
     autoPlaceConfidence: config.taskBoard.autoPlaceConfidence,
     recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
-  const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
   const taskGitWorkspaces = suppliedTaskGitWorkspaces
-    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview,
+    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir,
       readClaimCustodyNamespace: id => workspaceCatalogStore.claimCustodyNamespaceForTask(id) });
   const releaseGitWorkspaces = suppliedReleaseGitWorkspaces
-    ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview,
+    ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir,
       readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
       readPreparationOriginal: id => workspaceCatalogStore.mcpOperation(id) });
   const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
@@ -324,8 +318,6 @@ export async function executeTaskAwaitCutover(input, {
   openRuntime = openTaskAwaitCutoverRuntime,
 } = {}) {
   const source = await inspectSource(input);
-  const nativeResolutionReview = input.nativeResolutionReviewFile
-    ? JSON.parse(await readFile(input.nativeResolutionReviewFile, "utf8")) : null;
   const runtime = await openRuntime();
   try {
     const token = runtime.service.contextToken({
@@ -352,7 +344,7 @@ export async function executeTaskAwaitCutover(input, {
       const result = await runtime.service.call("hub_task_status_update", { context_token: token,
         request_id: input.requestId, task_id: input.taskId, status: "testing",
         expected_task_revision: input.expectedTaskRevision, expected_workflow_status: "in_progress",
-        ...(nativeResolutionReview ? { native_resolution_review: nativeResolutionReview } : {}) });
+       });
       return { source, before: { id: before.id, revision: before.revision, workflowStatus: before.workflowStatus }, result };
     }
     if (input.initialNativeTest) {
@@ -371,7 +363,7 @@ export async function executeTaskAwaitCutover(input, {
         request_id: input.requestId, task_id: input.taskId, status: "testing",
         expected_task_revision: input.expectedTaskRevision, expected_workflow_status: "in_progress",
         initial_native_test: identity,
-        ...(nativeResolutionReview ? { native_resolution_review: nativeResolutionReview } : {}) }, {
+       }, {
         verifySource: () => inspectSource(input),
         inspectInstalledNativeOwner: runtime.inspectInstalledNativeOwner,
       });
@@ -470,14 +462,12 @@ export async function executePreparationForward(input, {
 }
 
 export async function executePreparationResume(input, { openRuntime = openTaskAwaitCutoverRuntime } = {}) {
-  const review = input.nativeResolutionReviewFile
-    ? JSON.parse(await readFile(input.nativeResolutionReviewFile, "utf8")) : input.nativeResolutionReview;
   const runtime = await openRuntime();
   try {
     const token = runtime.service.contextToken({ provider: input.provider, threadId: input.threadId, streamId: input.streamId });
     return await runtime.service.call("hub_release_prepare_resume", { context_token: token, request_id: input.requestId,
       expected_arguments_hash: input.expectedArgumentsHash, expected_preparation_revision: input.expectedPreparationRevision,
-      ...(review == null ? {} : { native_resolution_review: review }) });
+    });
   } finally { runtime.close(); }
 }
 

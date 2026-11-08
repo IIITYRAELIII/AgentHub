@@ -81,7 +81,6 @@ function approvedRepositoryEntries(entries = []) {
       projectRoot,
       approvedLocalMainCommit: String(entry?.approvedLocalMainCommit ?? entry?.localMainCommit ?? "").trim(),
       approvedOriginMainCommit: String(entry?.approvedOriginMainCommit ?? entry?.originMainCommit ?? "").trim(),
-      ...(entry.nativeResolutionReview ? { nativeResolutionReview: entry.nativeResolutionReview } : {}),
     };
     if (!approval.approvedLocalMainCommit || !approval.approvedOriginMainCommit) {
       throw new Error(`approved release main commits for ${projectRoot} require both local and origin commits`);
@@ -422,7 +421,7 @@ export class WorkspaceReleasePreflightService {
 
   async prepareAwaitAcceptance({
     workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
-    nativeResolutionReview = null, nativeAwaitRecovery = null,
+    nativeAwaitRecovery = null,
   } = {}) {
     if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
     const root = path.resolve(String(projectRoot ?? "").trim());
@@ -431,7 +430,7 @@ export class WorkspaceReleasePreflightService {
     // Lifecycle holds Workspace Await -> Task -> repository locks, including
     // recovery and cross-Task cutover. Retain candidate rollback through Task CAS.
     return this.#prepareAwaitSet({
-      workspaceId, acceptingTask, lease, nativeResolutionReview, nativeAwaitRecovery,
+      workspaceId, acceptingTask, lease, nativeAwaitRecovery,
       commitPrepared: async (prepared) => {
         const matches = prepared.releaseCandidates.flatMap((candidate) => (
           canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
@@ -471,7 +470,7 @@ export class WorkspaceReleasePreflightService {
 
   async prepareOperationGeneration({
     workspaceId, operationId, generation, taskIds, approvedRepositories = [], changelogContent = undefined,
-    previousSelectedResults = [], releaseVersion = undefined,
+    previousSelectedResults = [], releaseVersion = undefined, frozenVersions = [],
   } = {}) {
     if (typeof this.releaseGitWorkspaces.prepareGeneration !== "function") {
       throw new Error("immutable release generation preparation is unavailable");
@@ -517,6 +516,11 @@ export class WorkspaceReleasePreflightService {
       const releaseCandidates = [];
       for (const repository of prepared.repositories) {
         const source = repository.frozenCandidate;
+        const frozenVersion = frozenVersions.find(item => canonicalRoot(item.repositoryRoot) === canonicalRoot(repository.projectRoot));
+        if (frozenVersions.length && !frozenVersion
+            || frozenVersion && releaseVersion !== undefined && releaseVersion !== frozenVersion.releaseVersion) {
+          throw new Error("Original frozen repository version binding changed");
+        }
         if (source.checkpointPhase !== "prepared") throw Object.assign(new Error("Await owner must prepare the current release candidate"),
           { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
         await validate();
@@ -525,7 +529,9 @@ export class WorkspaceReleasePreflightService {
           planRevision: plan.revision, approvedBaseCommit: source.baseCommit,
           baseProvenance: source.manifest.baseProvenance, frozenTasks: source.manifest.tasks,
           ...(changelogContent === undefined ? {} : { changelogContent }), validateBeforeCommit: validate,
-          ...(releaseVersion !== undefined ? { releaseVersion } : {}),
+          ...(frozenVersion ? { releaseVersion: frozenVersion.releaseVersion,
+            expectedRuntimeVersion: frozenVersion.runtimeReleaseVersion }
+            : releaseVersion !== undefined ? { releaseVersion } : {}),
         }));
         if (previousSelectedResults.length) await this.releaseGitWorkspaces.assertSelectedResultLineage({ candidate, previousSelectedResults });
         releaseCandidates.push(candidate);
@@ -533,6 +539,41 @@ export class WorkspaceReleasePreflightService {
       await validate();
       return { workspaceId: String(workspaceId), planRevision: plan.revision,
         taskIds: prepared.taskIds, releaseCandidates, overlaps: plan.conflicts };
+    });
+  }
+
+  async firstOperationGeneration({ workspaceId, operationId, generation, taskIds, approvedRepositories,
+    changelogContent, releaseVersion, inspectOnly, expectedBindings = [], validateBeforeCommit = async () => {} }) {
+    if (generation !== 1) throw new Error("First compose recovery requires generation one");
+    requiredMethod(this.releaseGitWorkspaces, "firstFrozenGeneration");
+    return this.withAwaitTransition(workspaceId, async () => {
+      const approvals = approvedRepositoryEntries(approvedRepositories);
+      if (!approvals.size) throw new Error("First compose recovery requires original repository approvals");
+      const releaseCandidates = [];
+      for (const approval of approvals.values()) {
+        const frozen = await this.releaseGitWorkspaces.firstFrozenGeneration({ ...approval,
+          operationId, projectRoot: approval.projectRoot, workspaceId, taskIds,
+          changelogContent, releaseVersion, inspectOnly: true });
+        releaseCandidates.push(frozen);
+      }
+      const actualIds = [...new Set(releaseCandidates.flatMap(item => item.candidate.manifest.taskIds))].sort();
+      if (JSON.stringify(actualIds) !== JSON.stringify([...taskIds].sort())) {
+        throw new Error("First frozen generation does not contain its original whole selection");
+      }
+      if (inspectOnly) return { releaseCandidates };
+      if (taskGitIdentityHash(releaseCandidates.map(item => item.binding)) !== taskGitIdentityHash(expectedBindings)) {
+        throw new Error("First frozen generation binding changed after admission");
+      }
+      await validateBeforeCommit();
+      const recovered = [];
+      for (const [index, approval] of [...approvals.values()].entries()) {
+        const value = await this.releaseGitWorkspaces.firstFrozenGeneration({ ...approval,
+          operationId, projectRoot: approval.projectRoot, workspaceId, taskIds,
+          changelogContent, releaseVersion, expectedBinding: expectedBindings[index], validateBeforeCommit });
+        recovered.push(value.candidate);
+      }
+      await validateBeforeCommit();
+      return { planRevision: recovered[0].planRevision, releaseCandidates: recovered };
     });
   }
 
@@ -703,7 +744,7 @@ export class WorkspaceReleasePreflightService {
     reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
     prospectiveOnly = false, freezeGeneration = true, ephemeralGeneration = false,
     previousSelectedResults = [], preparation = null, nativeAwaitRecovery = null,
-    nativeResolutionReview = null, releaseVersion = undefined,
+    releaseVersion = undefined,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -833,7 +874,7 @@ export class WorkspaceReleasePreflightService {
         }
         // Native composition starts at the explicitly agreed local main.
         // Reviewing origin does not silently adopt it as a different base.
-        reviewed = { provenance, adoption: null, nativeResolutionReview: approval.nativeResolutionReview };
+        reviewed = { provenance, adoption: null };
       }
       baseChecks.push({ repository, base, reviewed });
       if (reviewed && reviewed.provenance.approvedLocalMainCommit !== base.baseCommit) {
@@ -925,7 +966,7 @@ export class WorkspaceReleasePreflightService {
         ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
         ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
-        nativeResolutionReview: preparationRepository?.nativeResolutionReview ?? reviewed?.nativeResolutionReview ?? nativeResolutionReview,
+
         ...(preparation ? { preflightRequestId: preparation.requestId, preparationGuard: {
           ...preparationRepository, argumentsHash: preparation.argumentsHash,
           sourceCommit: preparation.envelope.sourceCommit, sourceTree: preparation.envelope.sourceTree,

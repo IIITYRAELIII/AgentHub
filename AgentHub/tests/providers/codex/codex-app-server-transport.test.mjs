@@ -462,3 +462,219 @@ test("CodexAppServerTransport coalesces concurrent starts", async () => {
   assert.equal(second, child);
   assert.equal(spawns, 1);
 });
+
+
+function diagnosticWire(child, value) {
+  const line = JSON.stringify(value);
+  child.stdout.write(`${line}\n`);
+  return Buffer.byteLength(line, "utf8");
+}
+
+test("Codex memory diagnostics count exact UTF-8 wire bytes without retaining payload or method text", async (t) => {
+  const invalid = [];
+  const { child, transport } = await startedTransport({ onInvalidMessage: (error) => invalid.push(error) });
+  t.after(() => transport.stop());
+  const written = nextWrittenJson(child.stdin);
+  const response = transport.request("private/path?token=SECRET", { token: "SECRET" });
+  const request = await written;
+  const result = { text: "Полный ответ 😀 SECRET", values: [1, 2] };
+  const bytes = diagnosticWire(child, { id: request.id, result });
+  assert.deepEqual(await response, result);
+  const orphanBytes = diagnosticWire(child, { id: "private-secret-id", result: { text: "SECRET" } });
+  child.stdout.write("invalid-json\n");
+  const diagnostics = transport.diagnostics().memory;
+  assert.equal(diagnostics.wireBytes, bytes + orphanBytes + Buffer.byteLength("invalid-json"));
+  assert.equal(diagnostics.invalidWireBytes, Buffer.byteLength("invalid-json"));
+  assert.equal(diagnostics.wireMessages, 3);
+  assert.equal(invalid.length, 1);
+  assert.equal(diagnostics.rpc.other.wireBytes, bytes);
+  assert.deepEqual(diagnostics.rpc.other.last, {
+    requestId: request.id, generation: 1, observedGeneration: 1, wireBytes: bytes, disposition: "succeeded",
+  });
+  assert.equal(diagnostics.unclassifiedResponses, 1);
+  assert.equal(diagnostics.rpc.unknown.last.requestId, null);
+  assert.equal(diagnostics.rpc.unknown.last.generation, null);
+  assert.equal(JSON.stringify(diagnostics).includes("SECRET"), false);
+  assert.equal(JSON.stringify(diagnostics).includes("private"), false);
+  diagnostics.rpc.other.responses = 999;
+  assert.equal(transport.diagnostics().memory.rpc.other.responses, 1);
+});
+
+test("Codex memory diagnostics measure active full-read page volume and release it after failure", async (t) => {
+  const { child, transport } = await startedTransport();
+  t.after(() => transport.stop());
+  let written = nextWrittenJson(child.stdin);
+  const full = transport.readThread("private-thread", { turnLimit: 3, turnPageSize: 1 });
+  const metadata = await written;
+  written = nextWrittenJson(child.stdin);
+  diagnosticWire(child, { id: metadata.id, result: { thread: { id: "private-thread" } } });
+  const first = await written;
+  written = nextWrittenJson(child.stdin);
+  const firstBytes = diagnosticWire(child, { id: first.id, result: {
+    data: [{ id: "new", items: [{ text: "Whole 😀 answer" }] }], nextCursor: "private-cursor",
+  } });
+  const second = await written;
+  let memory = transport.diagnostics().memory;
+  assert.equal(memory.fullRead.active, 1);
+  assert.equal(memory.fullRead.currentPageWireBytes, firstBytes);
+  assert.equal(memory.fullRead.peakPageWireBytes, firstBytes);
+  written = nextWrittenJson(child.stdin);
+  const secondBytes = diagnosticWire(child, { id: second.id, result: {
+    data: [{ id: "middle" }], nextCursor: "private-older",
+  } });
+  const third = await written;
+  const rejected = assert.rejects(full, (error) => error.code === -42 && error.deliveryOutcome === "rejected");
+  diagnosticWire(child, { id: third.id, error: { code: -42, message: "original failure" } });
+  await rejected;
+  memory = transport.diagnostics().memory;
+  assert.equal(memory.fullRead.active, 0);
+  assert.equal(memory.fullRead.currentPageWireBytes, 0);
+  assert.equal(memory.fullRead.peakPageWireBytes, firstBytes + secondBytes);
+  assert.equal(memory.fullRead.unknownPages, 0);
+  assert.deepEqual(memory.fullRead.last, {
+    generation: 1, firstRequestId: first.id, lastRequestId: second.id, lastRequestGeneration: 1,
+    pageWireBytes: firstBytes + secondBytes, pages: 2, unknownPages: 0, outcome: "failed",
+  });
+  assert.equal(memory.rpc["thread/turns/list"].last.requestId, third.id);
+  assert.equal(memory.rpc["thread/turns/list"].last.disposition, "rejected");
+  assert.equal(JSON.stringify(memory).includes("private"), false);
+});
+
+test("Codex memory diagnostics preserve full pages and hydration replay while measuring suppression", async (t) => {
+  let releaseSnapshot;
+  const snapshotWait = new Promise((resolve) => { releaseSnapshot = resolve; });
+  let snapshotEntered;
+  const entered = new Promise((resolve) => { snapshotEntered = resolve; });
+  const delivered = [];
+  const { child, transport } = await startedTransport({ onMessage: (value) => delivered.push(value) });
+  t.after(() => transport.stop());
+  let written = nextWrittenJson(child.stdin);
+  let completeSnapshot;
+  const hydrated = transport.readThread("private-thread", {
+    turnLimit: 1,
+    applySnapshot: async (value) => { completeSnapshot = value; snapshotEntered(); await snapshotWait; },
+  });
+  const metadata = await written;
+  const delta = (text) => ({ method: "item/agentMessage/delta", params: {
+    threadId: "private-thread", turnId: "turn", itemId: "answer", delta: text,
+  } });
+  const firstBytes = diagnosticWire(child, delta("Гото"));
+  written = nextWrittenJson(child.stdin);
+  diagnosticWire(child, { id: metadata.id, result: { thread: { id: "private-thread" } } });
+  const pageRequest = await written;
+  const page = { data: [{ id: "turn", items: [{ text: "Whole answer 😀" }] }], nextCursor: null };
+  const pageBytes = diagnosticWire(child, { id: pageRequest.id, result: page });
+  await entered;
+  const secondBytes = diagnosticWire(child, delta("во"));
+  const during = transport.diagnostics().memory;
+  assert.equal(during.hydration.currentMessages, 2);
+  assert.equal(during.hydration.currentWireBytes, firstBytes + secondBytes);
+  assert.equal(during.fullRead.currentPageWireBytes, 0);
+  assert.equal(during.fullRead.last.pageWireBytes, pageBytes);
+  assert.equal(during.fullRead.last.outcome, "succeeded");
+  assert.deepEqual(completeSnapshot.thread.turns, page.data);
+  releaseSnapshot();
+  assert.equal(await hydrated, completeSnapshot);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].params.delta, "Готово");
+  const after = transport.diagnostics().memory.hydration;
+  assert.equal(after.currentWireBytes, 0);
+  assert.equal(after.currentMessages, 0);
+  assert.equal(after.peakWireBytes, firstBytes + secondBytes);
+  assert.equal(after.peakMessages, 2);
+  assert.equal(after.receivedMessages, 2);
+  assert.equal(after.replayedMessages, 1);
+  assert.equal(after.coalescedMessages, 1);
+});
+
+test("Codex memory diagnostics bound timeout attribution and leave evicted replies unknown", async (t) => {
+  const { child, transport } = await startedTransport({ maxConcurrentRequests: 70, rpcTimeoutMs: 10 });
+  t.after(() => transport.stop());
+  const requests = [];
+  child.stdin.on("data", (chunk) => requests.push(JSON.parse(String(chunk))));
+  const replies = await Promise.allSettled(Array.from({ length: 65 }, () => transport.request("private-method")));
+  assert.equal(requests.length, 65);
+  assert.ok(replies.every((reply) => reply.status === "rejected" && reply.reason.deliveryOutcome === "unknown"));
+  const firstBytes = diagnosticWire(child, { id: requests[0].id, result: { private: "SECRET" } });
+  const lastBytes = diagnosticWire(child, { id: requests.at(-1).id, result: { private: "SECRET" } });
+  const memory = transport.diagnostics().memory;
+  assert.equal(memory.timeoutIdentityEvictions, 1);
+  assert.equal(memory.lateResponses, 1);
+  assert.equal(memory.unclassifiedResponses, 1);
+  assert.equal(memory.ignoredResponses, 2);
+  assert.equal(memory.rpc.other.timeouts, 65);
+  assert.equal(memory.rpc.other.wireBytes, lastBytes);
+  assert.equal(memory.rpc.unknown.wireBytes, firstBytes);
+  assert.equal(memory.rpc.other.last.requestId, requests.at(-1).id);
+  assert.equal(memory.rpc.other.last.disposition, "late");
+  assert.equal(JSON.stringify(memory).includes("SECRET"), false);
+  assert.ok(Buffer.byteLength(JSON.stringify(memory)) < 4096);
+});
+
+test("Codex memory diagnostics retain generation and drain hydration on exit without settling UNKNOWN", async (t) => {
+  const children = [fakeChild({ pid: 111 }), fakeChild({ pid: 222 })];
+  const { child, transport } = await startedTransport({
+    child: children[0], spawnProcess: async () => children.shift(),
+  });
+  t.after(() => transport.stop());
+  const written = nextWrittenJson(child.stdin);
+  const hydration = transport.readThread("private-thread", { includeTurns: false, applySnapshot: async () => {} });
+  const request = await written;
+  const bytes = diagnosticWire(child, { method: "item/agentMessage/delta", params: {
+    threadId: "private-thread", turnId: "turn", itemId: "answer", delta: "kept",
+  } });
+  const rejected = assert.rejects(hydration, (error) => error.deliveryOutcome === "unknown");
+  child.emit("exit", 1, null);
+  await rejected;
+  assert.equal(transport.diagnostics().memory.hydration.currentWireBytes, 0);
+  assert.equal(transport.diagnostics().memory.hydration.peakWireBytes, bytes);
+  await transport.start();
+  assert.equal(transport.diagnostics().generation, 2);
+  const replacement = children.length ? children[0] : transport.child;
+  diagnosticWire(replacement, { id: request.id, result: { thread: {} } });
+  assert.equal(transport.diagnostics().memory.rpc.unknown.last.generation, null);
+  assert.equal(transport.diagnostics().memory.rpc.unknown.last.observedGeneration, 2);
+  assert.equal(transport.diagnostics().memory.lateResponses, 0);
+  assert.equal(transport.diagnostics().memory.unclassifiedResponses, 1);
+});
+
+
+test("Codex memory diagnostics separate concurrent page occupancy and queued timeout identities", async (t) => {
+  const { child, transport } = await startedTransport({ maxConcurrentRequests: 2, maxBackgroundRequests: 2 });
+  t.after(() => transport.stop());
+  let written = nextWrittenJson(child.stdin);
+  const left = transport.readRecentThreadTurns("left-private", { limit: 2, pageSize: 1 });
+  const leftFirst = await written;
+  written = nextWrittenJson(child.stdin);
+  const right = transport.readRecentThreadTurns("right-private", { limit: 2, pageSize: 1 });
+  const rightFirst = await written;
+  written = nextWrittenJson(child.stdin);
+  const leftBytes = diagnosticWire(child, { id: leftFirst.id, result: { data: [{ id: "L1" }], nextCursor: "L" } });
+  const leftSecond = await written;
+  written = nextWrittenJson(child.stdin);
+  const rightBytes = diagnosticWire(child, { id: rightFirst.id, result: { data: [{ id: "R1" }], nextCursor: "R" } });
+  const rightSecond = await written;
+  assert.equal(transport.diagnostics().memory.fullRead.currentPageWireBytes, leftBytes + rightBytes);
+  const queued = assert.rejects(transport.request("thread/read", {}, { timeoutMs: 10 }),
+    (error) => error.deliveryOutcome === "not-sent");
+  await queued;
+  const lastTimeout = transport.diagnostics().memory.rpc["thread/read"].lastTimeout;
+  assert.equal(lastTimeout.dispatched, false);
+  assert.equal(lastTimeout.generation, 1);
+  assert.equal(transport.diagnostics().memory.rpc["thread/read"].queuedTimeouts, 1);
+  const leftRejected = assert.rejects(left, (error) => error.message === "same error" && error.deliveryOutcome === "rejected");
+  diagnosticWire(child, { id: leftSecond.id, error: { message: "same error" } });
+  await leftRejected;
+  assert.equal(transport.diagnostics().memory.fullRead.currentPageWireBytes, rightBytes);
+  const rightLastBytes = diagnosticWire(child, { id: rightSecond.id, result: { data: [{ id: "R0" }], nextCursor: null } });
+  assert.deepEqual((await right).turns.map((turn) => turn.id), ["R0", "R1"]);
+  const memory = transport.diagnostics().memory;
+  assert.equal(memory.fullRead.currentPageWireBytes, 0);
+  assert.equal(memory.fullRead.peakPageWireBytes, Math.max(leftBytes + rightBytes, rightBytes + rightLastBytes));
+  assert.equal(memory.fullRead.active, 0);
+  assert.equal(memory.fullRead.completed, 1);
+  assert.equal(memory.fullRead.failed, 1);
+  assert.equal(memory.fullRead.currentUnknownPages, 0);
+  assert.equal(memory.rpc["thread/read"].timeouts, 0);
+});

@@ -40,8 +40,20 @@ const localWorkspaceFilesAvailable = window.AgentHubResourceInteractions.localWo
 });
 function remoteWorkspaceFileBridgeAvailable() {
   return !vscode
-    && !localWorkspaceFilesAvailable
     && window.AgentHubBrowserDevice?.isPaired?.() === true;
+}
+
+async function hasLocalWorkspaceFileAccess() {
+  await localSessionReady;
+  if (vscode) return true;
+  if (!localWorkspaceFilesAvailable) return false;
+  // Loopback is a location, not proof of the browser's authorization. The
+  // existing session owner checks the protected cookie, including after reload.
+  // Its expected 401 is not expiry of the separate trusted-device session.
+  const response = await hubFetch("/api/local-session", { method: "HEAD", cache: "no-store" }, false);
+  if (response.status === 204) return true;
+  if ([401, 403, 404].includes(response.status)) return false;
+  throw new Error(`Не удалось проверить локальный доступ: HTTP ${response.status}`);
 }
 
 async function requestWorkspaceFileTransfer(localPath) {
@@ -154,6 +166,9 @@ const CONNECTION_LATENCY_PROBE_INTERVAL_MS = 5_000;
 const historyByTask = new Map();
 const historyWindowByTask = new Map();
 const historyPageByTask = new Map();
+// Reuse the existing four-column working-set size, without copying windows or
+// making it a limit on conversations. Explicit close still evicts its page.
+const RECENT_HISTORY_PAGE_COUNT = 4;
 const focusedHistoryWindowByTask = new Map();
 const historyCatchUpDeadlines = new Map();
 const historyCatchUpTurnIds = new Map();
@@ -449,6 +464,12 @@ function readSelectedTaskId() {
 
 function rememberSelectedTaskId(id) {
   selectedTaskId = String(id ?? "").trim();
+  const page = historyPageByTask.get(selectedTaskId);
+  if (page && sameIdentity(page.identity, taskIdentity(selectedTaskId))) {
+    page.reusable = true;
+    historyPageByTask.delete(selectedTaskId);
+    historyPageByTask.set(selectedTaskId, page);
+  }
   releaseClosedTaskHistories();
   try {
     if (selectedTaskId) localStorage.setItem(selectedTaskKey, selectedTaskId);
@@ -1837,7 +1858,7 @@ async function waitTaskOperationResult(admission, params) {
         operationRequestId: original.requestId, argumentsHash: original.argumentsHash,
         clientTraceId: original.requestId });
       receipt = value.operation;
-      if (!receipt || receipt.taskOperation.requestId !== original.requestId
+      if (!receipt?.taskOperation || receipt.taskOperation.requestId !== original.requestId
           || receipt.taskOperation.argumentsHash !== original.argumentsHash) throw new Error("Ответ относится к другой операции задачи");
       if (receipt.taskOperation.terminal || receipt.taskOperation.status === "unknown"
           || receipt.taskOperation.cancellation?.phase === "stopped") break;
@@ -1889,8 +1910,15 @@ async function control(action, params = {}) {
             await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
           }
         }
-        if (read.operation?.taskOperation.requestId !== taskOperationId) throw error;
+        if (read.operation?.lookup?.status === "not_found") {
+          throw new Error(`Квитанция операции ${taskOperationId} не найдена. Её исход не подтверждён; запрос не повторён.`);
+        }
+        if (read.operation?.taskOperation?.requestId !== taskOperationId) throw error;
         result = read.operation;
+      }
+      if (result?.admission?.status === "not_admitted") {
+        throw Object.assign(new Error(`Не удалось принять запрос: хранилище занято. Проверь исходную операцию ${result.admission.requestId} перед повтором.`),
+          { admission: result.admission });
       }
       reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
       transportAcknowledged = true;
@@ -3191,12 +3219,13 @@ function applyOpened(result, {
   }
   const retainsPinnedFocus = Boolean(result.focusedTurn && exactNavigation?.pinId);
   const newest = historyMessages(history, retainsPinnedFocus ? null : result.focusedTurn);
-  const previousPage = historyPageByTask.get(id);
+  const existingPage = historyPageByTask.get(id);
+  const previousPage = existingPage && sameIdentity(existingPage.identity, history) ? existingPage : null;
   const preserveOlder = !result.focusedTurn
     && previousPage
     && Number(previousPage.start) < Number(history.start);
   if (retainsPinnedFocus) setFocusedHistoryWindow(id, result, exactNavigation);
-  const previousWindow = historyWindowByTask.get(id);
+  const previousWindow = previousPage ? historyWindowByTask.get(id) : null;
   setHistoryWindow(id, retainsPinnedFocus && previousWindow
     ? previousWindow
     : preserveOlder
@@ -3207,6 +3236,7 @@ function applyOpened(result, {
   if (!retainsPinnedFocus || !previousPage) {
     historyPageByTask.set(id, {
       identity: stableIdentity(history),
+      reusable: previousPage?.reusable === true && sameIdentity(previousPage.identity, history),
       start: preserveOlder ? previousPage.start : history.start,
       end: history.end,
       total: history.total,
@@ -3487,15 +3517,39 @@ agentHub.on("task:select", ({ id }) => {
   }
   pendingSelectionId = id;
   rememberSelectedTaskId(id);
+  const page = historyPageByTask.get(id);
+  const retained = page && sameIdentity(page.identity, identity)
+    && historyWindowByTask.has(id) && !focusedHistoryWindowByTask.has(id);
+  const traceId = commandTrace.newId();
+  const started = performance.now();
   selectionTail = runNavigation(
     identity,
     async () => {
+      if (retained) {
+        replaceRoute(`#/chat/stream/${encodeURIComponent(id)}`);
+        agentHub.selectTask(id);
+        syncHistoryPagination(id);
+        renderTaskMessages(id, { preserveScroll: true });
+        const generation = navigationIntents.capture();
+        commandTrace.afterPaint("ui-render", "history-page-paint", started, traceId,
+          { ...identity, clientAssetRevision: "hub414.history.1", trigger: "retained-page",
+            count: historyWindowByTask.get(id)?.length ?? 0 }, null,
+          () => navigationIntents.current(generation) && selectedTaskId === id
+            && sameIdentity(taskIdentity(id), identity) && historyPageByTask.get(id) === page
+            && !document.hidden && document.documentElement.dataset.view === "chat");
+        // Selection keeps its ordered mutation; the canonical, versioned
+        // history refresh is independent of that mutation and the first paint.
+        void enqueueTaskHistoryLoad(id, identity, { preserveScroll: true, traceId });
+        const snapshot = await control("select-task", taskOpenParams(identity, { clientTraceId: traceId }));
+        return { retainedHistory: true, snapshot };
+      }
       const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
       if (opened?.history) verifiedTaskHistory(opened.history, identity);
       return opened;
     },
     (result) => {
-      applyOpened(result);
+      if (result.retainedHistory) applySnapshot(result.snapshot);
+      else applyOpened(result);
       pendingSelectionId = "";
       const route = window.AgentHubNavigationTabs.resolvedChatRoute(result, identity);
       if (route.hash) replaceRoute(route.hash);
@@ -3529,6 +3583,7 @@ function enqueueTaskHistoryLoad(id, identity, {
   refreshSource = false,
   preserveScroll = true,
   onlyWhenSelected = false,
+  traceId = commandTrace.newId(),
 } = {}) {
   let state = historyLoadStates.get(id);
   if (!state) {
@@ -3538,7 +3593,7 @@ function enqueueTaskHistoryLoad(id, identity, {
   state.pending = mergeHistoryLoadRequest(state.pending, {
     identity: stableIdentity(identity),
     generation: historyRequestGenerationByTask.get(id) ?? 0,
-    traceId: commandTrace.newId(),
+    traceId,
     queuedAt: performance.now(),
     refreshSource,
     preserveScroll,
@@ -3624,8 +3679,11 @@ function enqueueTaskHistoryLoad(id, identity, {
 
 function releaseClosedTaskHistories() {
   if (!retainedHistoryTaskIds) return;
+  const recent = new Set([...historyPageByTask]
+    .filter(([id, page]) => page.reusable && sameIdentity(page.identity, taskIdentity(id)))
+    .slice(-RECENT_HISTORY_PAGE_COUNT).map(([id]) => id));
   for (const id of historyWindowByTask.keys()) {
-    if (id === selectedTaskId || retainedHistoryTaskIds.has(id)) continue;
+    if (id === selectedTaskId || retainedHistoryTaskIds.has(id) || recent.has(id)) continue;
     if (!agentHub.releaseTaskHistory(id)) continue;
     // Canonical pages are disposable. Durable history, receipt/read cursors,
     // outgoing sends and active-turn ownership remain with their existing owners.
@@ -3640,14 +3698,17 @@ function releaseClosedTaskHistories() {
   }
 }
 
-async function loadVisibleTaskHistories(taskIds, retainedTaskIds) {
+async function loadVisibleTaskHistories(taskIds, retainedTaskIds = retainedHistoryTaskIds) {
   const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
     .map((id) => String(id ?? "").trim())
     .filter(Boolean))];
   visibleStreamTaskIds = new Set(ids);
-  retainedHistoryTaskIds = new Set(retainedTaskIds);
+  retainedHistoryTaskIds = retainedTaskIds == null ? null : new Set(retainedTaskIds);
   releaseClosedTaskHistories();
   if (initialRouteOpening) return;
+  // Layout is published before its synchronous task:select intent. Let that
+  // handler own the cold open instead of starting a duplicate history read.
+  await Promise.resolve();
   await Promise.all(ids.map(async (id) => {
     // История выбранного Thread уже загружается open-task. Остальные колонки
     // подгружаются только после того, как пользователь открыл их Stream.
@@ -3660,6 +3721,12 @@ async function loadVisibleTaskHistories(taskIds, retainedTaskIds) {
 
 agentHub.on("workspace:visible-streams", ({ taskIds, retainedTaskIds }) =>
   void loadVisibleTaskHistories(taskIds, retainedTaskIds));
+
+agentHub.on("history:close", ({ id }) => {
+  const page = historyPageByTask.get(id);
+  if (page) page.reusable = false;
+  releaseClosedTaskHistories();
+});
 
 agentHub.on("devices:refresh", () => void runAction(async () => {
   agentHub.setTrustedDevices({ loading: true });
@@ -5186,7 +5253,7 @@ async function saveLinkResource(resource) {
     return;
   }
   if (String(resource?.localPath ?? "").trim()) {
-    if (!localWorkspaceFilesAvailable) {
+    if (!await hasLocalWorkspaceFileAccess()) {
       if (!remoteWorkspaceFileBridgeAvailable()) {
         throw new Error("Чтобы скачать файл с компьютера Agent Hub, сначала сопряги это устройство");
       }
@@ -5284,9 +5351,12 @@ agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
   const localPath = String(resource?.localPath ?? "").trim();
   if (!localPath) throw new Error("Локальный путь не указан");
   if (vscode) await bridgeCall("copy-link-object", { href: localPath });
-  else if (remoteWorkspaceFileBridgeAvailable()) await launchWorkspaceFileBridge("copy", localPath);
-  else if (!localWorkspaceFilesAvailable) {
-    throw new Error("Для удалённого браузера сопряги устройство и установи Windows File Bridge");
+  else if (!await hasLocalWorkspaceFileAccess()) {
+    if (!remoteWorkspaceFileBridgeAvailable()) {
+      throw new Error("Для удалённого браузера сопряги устройство и установи Windows File Bridge");
+    }
+    await launchWorkspaceFileBridge("copy", localPath);
+    return;
   }
   else {
     const response = await hubFetch("/api/workspace-file/copy", {
@@ -5299,7 +5369,7 @@ agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
       throw new Error(String(payload.error ?? `Не удалось скопировать файл: HTTP ${response.status}`));
     }
   }
-  if (!remoteWorkspaceFileBridgeAvailable()) agentHub.toast("Файл скопирован в буфер обмена");
+  agentHub.toast("Файл скопирован в буфер обмена");
 }));
 
 window.AgentHubFileTransferOwner?.configure(async (action, body) => {
@@ -5370,6 +5440,13 @@ agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Автозапуск Agent Hub обновлён");
 }));
+function applyProviderLoginReply(result) {
+  if (!Array.isArray(result?.accounts)) return;
+  const server = { ...(lastSnapshot?.server ?? {}), accounts: result.accounts };
+  if (lastSnapshot) lastSnapshot = { ...lastSnapshot, server };
+  agentHub.setServerStatus(server);
+}
+
 /* Страница входа провайдера открывается во внешнем браузере Hub-машины: туда
    же возвращается OAuth callback. */
 async function openProviderLoginPage(authUrl) {
@@ -5381,10 +5458,8 @@ async function openProviderLoginPage(authUrl) {
 agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
   const result = await control("start-provider-login", { provider });
   const login = result?.login;
-  /* Сначала снапшот с новой попыткой, затем её локальная привязка: иначе
-     перерисовка по прежнему снапшоту сбросила бы ссылку и поле кода. */
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
+  /* Сначала состояние новой попытки, затем её локальная привязка. */
+  applyProviderLoginReply(result);
   agentHub.setProviderLoginUrl?.(provider, { attemptId: login?.attemptId ?? null, authUrl: login?.authUrl ?? null });
   /* Claude Code сам открывает браузер со своим callback; его печатная ссылка —
      ручной путь с кодом, поэтому она открывается только кнопкой. */
@@ -5393,15 +5468,13 @@ agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
 }));
 agentHub.on("server:provider-login-code", ({ provider, attemptId, code }) => runAction(async () => {
   const result = await control("submit-provider-login-code", { provider, attemptId, code });
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
+  applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Код передан Claude Code");
 }));
 agentHub.on("server:provider-login-open", ({ authUrl }) => runAction(() => openProviderLoginPage(authUrl)));
 agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async () => {
   const result = await control("cancel-provider-login", { provider });
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
+  applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Вход отменён");
 }));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {

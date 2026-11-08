@@ -8,7 +8,6 @@ import { readPreparationSourceClosure, validatePreparationEnvelope } from "../..
 import { localSourceSelectionHash } from "../../src/domain/release-base-provenance.mjs";
 import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 import { validatePreparationForward, inspectPreparationForwardCustody } from "../../src/application/release-preparation-forward.mjs";
-import { normalizedNativeResolution } from "../../src/domain/native-resolution-input.mjs";
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
 test("original preparation receipt retains complete large terminal bindings", async t => {
@@ -27,7 +26,7 @@ test("original preparation receipt retains complete large terminal bindings", as
   assert.deepEqual(store.mcpOperation("exact-original").result, result);
 });
 
-test("valid internal preparation sets and reviews have no arbitrary data ceilings", () => {
+test("valid internal preparation sets and historical metadata have no arbitrary data ceilings", () => {
   const value = preparationEnvelope();
   value.tasks = Array.from({ length: 160 }, (_, i) => ({ ...value.tasks[0], taskId: `task-${i}` }));
   value.repositories = Array.from({ length: 12 }, (_, i) => ({ ...value.repositories[0], projectRoot: `D:/repo-${i}` }));
@@ -35,7 +34,6 @@ test("valid internal preparation sets and reviews have no arbitrary data ceiling
     reviews: Array.from({ length: 40 }, (_, i) => ({ requestId: `review-${i}`, text: "exact proof ".repeat(4000) })) };
   assert.ok(Buffer.byteLength(JSON.stringify(value)) > 48 * 1024);
   assert.deepEqual(validatePreparationEnvelope(value), value);
-  assert.deepEqual(normalizedNativeResolution(value.repositories[0].nativeResolutionReview), value.repositories[0].nativeResolutionReview);
   value.tasks.push(value.tasks[0]);
   assert.throws(() => validatePreparationEnvelope(value), /Task set/u);
 });
@@ -52,7 +50,7 @@ test("source closure streams complete valid inventories beyond former file and b
   assert.deepEqual(await readPreparationSourceClosure(root), result);
 });
 
-test("preparation-only local source binding is exact and keeps native review bounded", () => {
+test("preparation-only local source binding is exact and historical reviews grant no permission", () => {
   const value = preparationEnvelope();
   const repository = value.repositories[0];
   repository.approvedBaseCommit = "c".repeat(40);
@@ -70,7 +68,6 @@ test("preparation-only local source binding is exact and keeps native review bou
     v => { v.repositories[0].localSourceBaseline.sourceBaseCommit = "a".repeat(40); },
     v => { v.repositories[0].localSourceBaseline.planRevision = "changed"; },
     v => { v.repositories[0].originMainCommit = "a".repeat(40); },
-    v => { v.repositories[0].nativeResolutionReview.approved = true; },
   ]) {
     const changed = structuredClone(value); mutate(changed);
     assert.throws(() => validatePreparationEnvelope(changed), { code: "RELEASE_PREPARATION_REJECTED" });

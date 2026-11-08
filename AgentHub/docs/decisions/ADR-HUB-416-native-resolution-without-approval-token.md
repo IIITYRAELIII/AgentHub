@@ -1,0 +1,79 @@
+# ADR-HUB-416 — Native resolution without an approval token
+
+Date: 2026-11-05
+Status: implementation pending independent review
+Contracts: REL-001, MCP-001
+
+## Decision
+
+Remove the independent programmatic native-review permission introduced by
+ADR-0108. Ordinary Test/Await, dev synchronization and release composition use
+their existing Git and application owners. They do not authenticate an ACCEPT
+message, sender/receiver, interstream content hash or approval receipt.
+Auto-review remains an agent instruction policy under the existing setting.
+No Workspace/global rule is changed and no replacement approval input is added.
+
+The issued checkout is still bound to the original selection and ordered Git
+inputs. Every completed step is independently reconstructed from objects on
+reopen; candidate parents, automatic tree, index/worktree and stored Git bindings
+must agree. Historical reviewedResolution stores are read as metadata and exact
+Git bindings, without attempting receipt authentication. Ordinary undelivered
+amendments retain the same journal and delivered history remains immutable.
+
+Selected-content checking retains real automatic context and valid conflict
+resolution, rather than requiring a signed replay waiver. A replay that only
+adds a byte-identical block already retained is idempotent. Unique missing code,
+lost mode/deletion, forged automatic prefixes, stale selection, different parents and
+dirty/foreign checkout still refuse. This is structural preservation evidence,
+not a claim that Git proves arbitrary code semantically equivalent.
+
+An actual conflict file remains covered by its exact owned resolution binding
+when compatibility corrections also change clean context outside its markers.
+Reopen recomputes that coverage from ordered parents, automatic/result trees and
+the complete diff; unrelated extra paths never acquire conflict coverage.
+Whole-parent substitution, deletion of clean code and restoration of the other
+parent's clean context still refuse composition instead of receiving an
+override. This is a structural loss check, not a semantic approval of arbitrary
+replacement code. No approval token or additional durable state is introduced.
+For unique clean context, a lossy inline deletion retains local context on each
+changed line. Its removed tokens must be a contiguous ordered span of
+one incoming inline deletion from Git's actual stage-1 blob. This also projects
+a removed parameter to a shorthand caller without its declaration's default
+value, allowing its adjacent comma at either edge and a wrapped argument at the
+start/end of a retained line. At least one word token must remain in the local
+context; punctuation alone, such as uniqueCall(); becoming ;, cannot represent
+the selected caller. A retained keyword is also insufficient: return uniqueCall() becoming
+return cannot acquire credit for losing its entire call. A removed call
+expression requires a retained enclosing parenthesized expression, as with a
+nested optional argument. Whole-line loss, novel replacement, permuted words or
+combining unrelated removals cannot supply that proof. This carries an API
+compatibility correction such as uniqueCall(legacy) to uniqueCall(), while
+retaining the selected caller. It is a structural token-span projection, not
+semantic proof of arbitrary changes sharing an identifier.
+The evidence is recomputed, including virtual-base stage-1 content, on reopen.
+Only the composition baseline identifies inherited context. A clean block newly
+added by both selected parents is still selected code and cannot be discarded
+merely because it is common to those two parents.
+
+Ordinary selected replay uses the existing captured composition baseline as a
+lower bound only when its policy, baseline and complete selected descriptor set
+match and Git proves older Task base -> captured baseline -> exact Task result.
+Already inherited published context must not be replayed into a second location
+when another selected result moved the retained block. The remaining selected
+delta still undergoes the same complete content checks. Missing or foreign
+capture evidence and unproved ancestry retain the previous range; this adds no
+path waiver, remote lookup, authority input or publication inference. Ordinary
+Test's separately sealed publication and virtual-base replay retain their policy.
+
+## Migration and verification
+
+New public status/release/preparation inputs omit native approval fields.
+Historical reconciliation still matches its original arguments and immutable
+receipts; neither history nor UNKNOWN effects are rewritten. Existing source
+entry points invoke these same owners; no alternative driver or publisher is
+introduced. Runtime adoption/publication remains with the release owner.
+
+Focused evidence includes owned conflict and compatibility resolution without
+an envelope, completed-prefix reopening and lost journal reply, retained actual
+blocked composition, content-loss/mode/deletion negatives and stale/foreign Git
+identity. It does not authorize installation, restart or publication.

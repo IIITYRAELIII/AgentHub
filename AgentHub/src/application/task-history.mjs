@@ -957,6 +957,13 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       const origin = normalizeInterstreamOrigin(directOrigin);
       const author = interstreamOriginAuthor(origin) || String(message.author ?? "").trim();
       const messageText = displayUserPrompt(interstream?.text ?? rawMessageText);
+      const embeddedAnnotations = responseAnnotationDetails(interstream?.text ?? rawMessageText);
+      const messageAnnotations = Array.isArray(message.responseAnnotations) && message.responseAnnotations.length
+        ? message.responseAnnotations
+        : embeddedAnnotations?.items ?? [];
+      const annotationRequest = String(
+        message.responseAnnotationRequest ?? embeddedAnnotations?.request ?? "",
+      ).trim();
       const clientUserMessageId = directClientUserMessageId
         || (origin?.requestId ? `mcp:${origin.requestId}` : "");
       return {
@@ -970,11 +977,11 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
         ...(author ? { author } : {}),
         ...(origin ? { kind: "interstream", origin: structuredClone(origin) } : {}),
         ...(normalizedTimestamp(message.time) ? { time: normalizedTimestamp(message.time) } : {}),
-        ...(Array.isArray(message.responseAnnotations)
-          ? { responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })) }
+        ...(messageAnnotations.length
+          ? { responseAnnotations: messageAnnotations.map((item) => ({ ...item })) }
           : {}),
-        ...(String(message.responseAnnotationRequest ?? "").trim()
-          ? { responseAnnotationRequest: String(message.responseAnnotationRequest).trim() }
+        ...(messageAnnotations.length || annotationRequest
+          ? { responseAnnotationRequest: annotationRequest }
           : {}),
         ...(Array.isArray(message.attachments)
           ? { attachments: message.attachments.map((item) => ({ ...item })) }
