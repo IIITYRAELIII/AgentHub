@@ -460,6 +460,128 @@ async function dashboardReceiptFixture(context, { source = {}, telegram } = {}) 
   };
 }
 
+test("Dashboard inspection reads original metadata without changing leases, expiry or notifications", async (context) => {
+  const f = await dashboardReceiptFixture(context, { source: {
+    bundleId: "018f6c86-3f34-7a31-8f27-16f5b96cce99", cardMessageId: 124,
+    items: [{ messageId: 123, updateId: 456, source: "private sender" }],
+  } });
+  const before = structuredClone([...f.storage.values]);
+  const alarm = f.storage.alarmAt;
+  const worker = await loadWorker();
+  const store = new worker.JournalStore({ storage: f.storage }, {});
+  const env = { ASSETS: { fetch: async () => new Response("not found", { status: 404 }) }, JOURNAL: { getByName: (name) => {
+    if (["current", "dashboard-bot:router"].includes(name)) return { fetch: () => { throw new Error("unexpected identity migration"); } };
+    assert.equal(name, "dashboard-bot:018f6c86-3f34-7a31-8f27-16f5b96cce50"); return store;
+  } } };
+  for (const method of ["put", "delete", "setAlarm", "deleteAlarm"]) {
+    f.storage[method] = async () => { throw new Error(`unexpected inspection write ${method}`); };
+  }
+  for (let pass = 0; pass < 2; pass += 1) {
+    const response = await worker.default.fetch(signedServiceRequest(
+      "https://hub.test/api/dashboard-bot/inspect", { id: f.id }, "h".repeat(64),
+      { "X-Agent-Hub-Dashboard-Id": "018f6c86-3f34-7a31-8f27-16f5b96cce50" },
+    ), env);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.commands.length, 1);
+    assert.equal(body.commands[0].status, "running");
+    assert.equal(body.commands[0].deliveryAttempt, 1);
+    assert.equal(body.commands[0].bundleId, "018f6c86-3f34-7a31-8f27-16f5b96cce99");
+    assert.deepEqual(body.commands[0].items, [{ messageId: 123, updateId: 456 }]);
+    assert.equal(body.commands[0].destination, "dashboard");
+    for (const secret of ["private sender", "Task", "chatId", "userId", "text", "h".repeat(64)]) {
+      assert.equal(JSON.stringify(body).includes(secret), false);
+    }
+    assert.deepEqual([...f.storage.values], before);
+    assert.equal(f.storage.alarmAt, alarm);
+    assert.deepEqual(f.calls, []);
+  }
+});
+
+test("Dashboard inspection fails closed for unauthorized, foreign and unbounded requests", async (context) => {
+  const f = await dashboardReceiptFixture(context);
+  const worker = await loadWorker();
+  const store = new worker.JournalStore({ storage: f.storage }, {});
+  const env = { JOURNAL: { getByName: () => store } };
+  const invoke = (body, secret = "h".repeat(64)) => worker.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/inspect", body, secret,
+    { "X-Agent-Hub-Dashboard-Id": "018f6c86-3f34-7a31-8f27-16f5b96cce50" },
+  ), env);
+  const before = structuredClone([...f.storage.values]);
+  assert.equal((await worker.default.fetch(new Request("https://hub.test/api/dashboard-bot/inspect"), env)).status, 405);
+  assert.equal((await invoke({ id: f.id }, "wrong-secret")).status, 401);
+  for (const body of [{}, { id: f.id, userId: "foreign" }, { fromMs: 1, toMs: 86_400_002 },
+    { fromMs: 1, toMs: 2, after: "invalid" }, { id: "invalid" }]) {
+    assert.equal((await invoke(body)).status, 400);
+  }
+  const foreign = "018f6c86-3f34-7a31-8f27-16f5b96cce91";
+  await f.storage.put(`control:command:${foreign}`, { ...(await f.command()), id: foreign, userId: "foreign" });
+  assert.deepEqual((await (await invoke({ id: foreign })).json()).commands, []);
+  assert.deepEqual((await (await invoke({ id: "018f6c86-3f34-7a31-8f27-16f5b96cce92" })).json()).commands, []);
+  f.storage.values.delete(`control:command:${foreign}`);
+  assert.deepEqual([...f.storage.values], before);
+  const noIdentity = new worker.JournalStore({ storage: new MemoryStorage() }, {});
+  assert.equal((await worker.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/inspect", { id: f.id }, "h".repeat(64),
+    { "X-Agent-Hub-Dashboard-Id": "018f6c86-3f34-7a31-8f27-16f5b96cce50" },
+  ), { JOURNAL: { getByName: () => noIdentity } })).status, 401);
+});
+
+test("Dashboard inspection pages bounded retained records and keeps expired terminal evidence unchanged", async (context) => {
+  const f = await dashboardReceiptFixture(context);
+  const worker = await loadWorker();
+  const original = await f.command();
+  const createdAt = Date.now() - 1_000;
+  for (let index = 0; index < 25; index += 1) {
+    const id = `018f6c86-3f34-7a31-8f27-${String(index).padStart(12, "0")}`;
+    await f.storage.put(`control:command:${id}`, {
+      ...original, id, status: "completed", createdAt, expiresAt: 1,
+      result: { text: "private outcome" }, dashboardBotReceipt: { state: "pending", body: { text: "private notice" } },
+    });
+  }
+  const before = structuredClone([...f.storage.values]);
+  const inspect = async (body) => {
+    const response = await new worker.JournalStore({ storage: f.storage }, {}).fetch(signedServiceRequest(
+      "https://hub.test/api/dashboard-bot/inspect", body, "h".repeat(64),
+      { "X-Agent-Hub-Dashboard-Id": "018f6c86-3f34-7a31-8f27-16f5b96cce50" },
+    ));
+    assert.equal(response.status, 200); return response.json();
+  };
+  const page1 = await inspect({ fromMs: createdAt, toMs: createdAt + 1 });
+  assert.equal(page1.scanned, 20); assert.equal(page1.commands.length, 20); assert.ok(page1.nextAfter);
+  const page2 = await inspect({ fromMs: createdAt, toMs: createdAt + 1, after: page1.nextAfter });
+  assert.equal(page2.commands.length, 5); assert.equal(page2.nextAfter, null);
+  const selected = page1.commands[0];
+  assert.equal(selected.expiresAt, 1); assert.equal(selected.status, "completed");
+  assert.equal(selected.resultPresent, true); assert.equal(selected.notificationState, "pending");
+  assert.equal(JSON.stringify(page1).includes("private"), false);
+  const emptyPage = await inspect({ fromMs: createdAt - 1, toMs: createdAt });
+  assert.equal(emptyPage.commands.length, 0); assert.ok(emptyPage.nextAfter);
+  assert.deepEqual([...f.storage.values], before);
+});
+
+test("Dashboard inspection storage failure remains unavailable rather than a rejection or missing original", async (context) => {
+  const f = await dashboardReceiptFixture(context);
+  const worker = await loadWorker();
+  const originalError = console.error;
+  const diagnostics = [];
+  console.error = (message) => diagnostics.push(String(message));
+  context.after(() => { console.error = originalError; });
+  const originalGet = f.storage.get.bind(f.storage);
+  f.storage.get = async (key) => {
+    if (String(key).startsWith("control:command:")) throw new Error("Exceeded allowed volume of requests in Durable Objects free tier.");
+    return originalGet(key);
+  };
+  const store = new worker.JournalStore({ storage: f.storage }, {});
+  const response = await worker.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/inspect", { id: f.id }, "h".repeat(64),
+    { "X-Agent-Hub-Dashboard-Id": "018f6c86-3f34-7a31-8f27-16f5b96cce50" },
+  ), { JOURNAL: { getByName: () => store } });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "dashboard_bot_storage_unavailable");
+  assert.equal(diagnostics.length, 1);
+});
+
 test("Dashboard confirmation failure stays durable and retries after Worker recreation without replaying the Task", async (context) => {
   const realNow = Date.now;
   let now = realNow();

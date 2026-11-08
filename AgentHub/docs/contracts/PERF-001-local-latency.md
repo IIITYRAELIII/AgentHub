@@ -253,6 +253,21 @@ These elapsed spans do not classify filesystem or callback wait as CPU work.
 
 ## Unified performance evidence
 
+Shared Dashboard relay intake forwards the existing `recordCommandTrace`
+callback. Original command UUIDs join attachment preparation/download,
+manifest/first-chunk transport samples, local finalized-file verification and
+publication, local intake and remote result confirmation. Started/terminal pairs
+share an operation span ID, UTC start and monotonic duration. Transport samples
+separate headers/body and retain bounded counts, HTTP status and allowlisted
+cause codes; ordinary successful chunks do not each create a trace span.
+Raw text, sender identity, filenames/paths, URLs, file bytes and credentials are
+excluded. Throwing, rejected or unavailable telemetry cannot change delivery.
+The existing trace worker persists failures as well as success; retention and
+overflow remain owned by that worker. A successful remote result span is not
+proof that Telegram displayed a notification. Inspector transition timestamps
+and local spans do not retroactively establish unrecorded historical queue/I/O
+durations or exclusive network latency. Missing original IDs remain unknown.
+
 Explicitly traced snapshot GETs carry their existing client trace ID to the
 HTTP owner; diagnostic health/static probes may supply the same bounded
 `clientTraceId` query field. The response echoes only that identity. Existing
