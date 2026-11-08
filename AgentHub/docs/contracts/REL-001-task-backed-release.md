@@ -3781,6 +3781,30 @@ membership/source checks and revision/generation CAS remain unchanged. Initial
 progression, unamended result/lineage correction and already-started publication
 are preserved; no acceptance event infers affected coverage or writes notes.
 
+Publication sends file selections to `test-suite.mjs selected` through an
+addressed whole-plan payload and its SHA-256, keeping argv independent of the
+number of selected IDs. The existing publication owner verifies the frozen
+plan before preparing the payload. The child verifies its bytes, exact source
+root/commit, clean source and complete current inventory before dependencies,
+accounting or test children. It derives every selected core ID from that same
+plan. Candidate contour and Worker retain their publication steps. Existing
+inline selection remains the direct runner API; publication always uses the
+bounded file transport, including small selections. Immutable payloads remain
+under the candidate's ignored WIP for the owning cleanup after joined consumers.
+Publication identity, per-file checkpoint identity and completed-step reuse keep
+their existing owners. See ADR-HUB-426-frozen-release-inventory.
+
+Frozen release inventory contains `check:release-candidate` and `check:worker`;
+it does not contain the rolling dev-only `check:contour`. The existing selected
+publication dispatcher runs the candidate contour with `--release-candidate`
+against the exact clean owned main checkout. Ordinary dev preview remains a
+separate source kind with its existing dev authority. All discovered core,
+profile, installer, syntax and extension checks retain their exact IDs and
+selection semantics; the complete pending suite is still required by `all`.
+An old or foreign inventory/plan is rejected by the existing frozen-plan
+verification rather than silently filtered or rewritten. See
+ADR-HUB-426-frozen-release-inventory.
+
 An explicit typed selection is `all`, `include`, `exclude`, or `none`, with exact
 inventory IDs. Omission retains prescribed focused/full/quick behavior. Selection
 is separate from immutable initial release authorization. The same RM continue

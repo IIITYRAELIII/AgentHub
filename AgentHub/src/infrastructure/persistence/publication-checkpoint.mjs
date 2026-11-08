@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { preparePublicationTestSelection } from "../filesystem/publication-test-selection.mjs";
 
 export function publicationCheckpointFile(environment = process.env) {
   const root = environment.LOCALAPPDATA
@@ -45,13 +46,29 @@ export async function runPublicationSteps(steps, {
   checkpointScope = identity,
   journal = null,
 } = {}) {
+  const executeStep = async step => {
+    let prepared = step;
+    if (step.testSelectionPlan) {
+      const args = step.args;
+      if (!identity?.testPlan || JSON.stringify(identity.testPlan) !== JSON.stringify(step.testSelectionPlan)
+          || step.command !== process.execPath || args?.length !== 2
+          || args[0] !== "test-suite.mjs" || args[1] !== "selected"
+          || path.resolve(step.cwd) !== path.join(path.resolve(identity.worktreeRoot), "AgentHub")) {
+        throw new Error("Selected-test step differs from its publication identity");
+      }
+      prepared = { ...step, args: [...args, ...await preparePublicationTestSelection(step.testSelectionPlan, {
+        repositoryRoot: identity.worktreeRoot, revision: identity.revision,
+      })] };
+    }
+    await run({ ...prepared, logFile: journal?.logFile ?? "" });
+  };
   await journal?.start(identity, steps);
   if (!checkpoint) {
     try {
       for (const step of steps) {
         await journal?.stepStarted(step.label);
         try {
-          await run({ ...step, logFile: journal?.logFile ?? "" });
+          await executeStep(step);
           await journal?.stepFinished(step.label, { status: "completed" });
         } catch (error) {
           await journal?.stepFinished(step.label, { status: "failed", error });
@@ -82,7 +99,7 @@ export async function runPublicationSteps(steps, {
       }
       await journal?.stepStarted(step.label);
       try {
-        await run({ ...step, logFile: journal?.logFile ?? "" });
+        await executeStep(step);
       } catch (error) {
         await journal?.stepFinished(step.label, { status: "failed", error });
         throw error;
