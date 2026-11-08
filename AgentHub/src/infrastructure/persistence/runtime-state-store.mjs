@@ -1,3 +1,4 @@
+import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
 import { renameSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -151,6 +152,7 @@ class RuntimeStateWriter {
     this.worker = new Worker(new URL("./runtime-state-writer-worker.mjs", import.meta.url), {
       workerData: { dataDir },
     });
+    observeRuntimeWorkerMemory("runtimeState", this.worker);
     this.exit = new Promise((resolve) => {
       this.worker.once("exit", (code) => {
         this.closed = true;
@@ -391,6 +393,14 @@ export class RuntimeStateStore {
   transitionMessageCommand(transition) {
     const outcome = this.#messageCommands.transition(transition);
     if (outcome.changed) this.messageCommandRevision = (this.messageCommandRevision ?? 0) + 1;
+    return Promise.resolve(outcome);
+  }
+
+  cancelDeferredInput(item) {
+    const outcome = this.#messageCommands.cancelQueuedInput(item);
+    if (outcome.owned && !outcome.duplicate) {
+      this.messageCommandRevision = (this.messageCommandRevision ?? 0) + 1;
+    }
     return Promise.resolve(outcome);
   }
 

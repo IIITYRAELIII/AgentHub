@@ -1,5 +1,7 @@
 import path from "node:path";
 import { normalizedCodexResponseAnnotationReferences } from "./codex-response-annotation.mjs";
+import { normalizeTaskExecutionOwner, TASK_EXECUTION_OWNERS } from "./task-execution-owner.mjs";
+import { normalizeProviderRunTerminalStatus } from "./provider-run-terminal.mjs";
 
 function normalizedProjectRoot(projectRoot) {
   const resolved = path.resolve(String(projectRoot ?? ""));
@@ -474,8 +476,51 @@ export function createObservedTaskRun(value, snapshot = {}) {
 
 export function taskRunIsActive(run) {
   if (!run || typeof run !== "object") return false;
+  if (run.localAdmissionReleased === true) return false;
   const status = String(run?.status ?? "running").trim().toLowerCase();
   return status === "running" || status === "finishing";
+}
+
+// This identity is captured only from the canonical persisted runtime snapshot.
+// Submission time, PID, Thread activity and caller-supplied proof are not provenance.
+export function localExecutionIdentity(run) {
+  if (run?.provider !== "codex" || run.observer === true
+    || normalizeTaskExecutionOwner(run.executionOwner) !== TASK_EXECUTION_OWNERS.HUB
+    || !["running", "finishing"].includes(run.status)
+    || normalizeProviderRunTerminalStatus(run.providerTerminalStatus)
+    || !providerTurnAcceptance(run).accepted) return null;
+  const fields = ["id", "threadId", "turnId", "clientUserMessageId", "startedAt"];
+  if (fields.some(key => typeof run[key] !== "string" || !run[key].trim()
+    || run[key].length > 512)) return null;
+  const start = run.providerStart;
+  if (start.clientUserMessageId !== run.clientUserMessageId) return null;
+  const times = [run.startedAt, start.requestedAt, start.acceptedAt].map(Date.parse);
+  if (times.some(time => !Number.isFinite(time))
+    || times[0] > times[1] || times[1] > times[2]) return null;
+  return {
+    runId: run.id, provider: run.provider, threadId: run.threadId, turnId: run.turnId,
+    commandId: run.clientUserMessageId, streamId: run.streamId ?? null,
+    startedAt: run.startedAt, requestedAt: start.requestedAt, acceptedAt: start.acceptedAt,
+  };
+}
+
+export function validLocalExecutionRetirement(record) {
+  const key = record?.identity;
+  const proof = record?.proof;
+  const boot = Date.parse(proof?.bootTime);
+  const restored = Date.parse(proof?.restoredAt);
+  return Boolean(key?.provider === "codex"
+    && ["runId", "threadId", "turnId", "commandId"].every(name => (
+      typeof key[name] === "string" && key[name].length > 0 && key[name].length <= 512
+    ))
+    && proof?.kind === "system-restart-after-local-execution"
+    && proof.source === "Win32_OperatingSystem.LastBootUpTime"
+    && Number.isFinite(boot) && Number.isFinite(restored) && boot <= restored
+    && [key.startedAt, key.requestedAt, key.acceptedAt].every(time => (
+      Number.isFinite(Date.parse(time)) && Date.parse(time) < boot
+    ))
+    && Date.parse(key.startedAt) <= Date.parse(key.requestedAt)
+    && Date.parse(key.requestedAt) <= Date.parse(key.acceptedAt));
 }
 
 export class TaskRunRegistry {
@@ -483,6 +528,7 @@ export class TaskRunRegistry {
   #byTask = new Map();
   #byTurn = new Map();
   #revision = 0;
+  #restoredLocalExecutions = new WeakMap();
 
   constructor(runs = []) {
     for (const run of runs) this.add(run);
@@ -490,6 +536,11 @@ export class TaskRunRegistry {
 
   add(run) {
     if (!run?.id) throw new Error("run id is required");
+    if (this.#byId.get(run.id) === run) return run;
+    if (run.localAdmissionReleased === true || this.#byId.has(run.id)) {
+      throw new Error("cannot reacquire a retained local execution identity");
+    }
+    run.localAdmissionReleased = false;
     const key = taskRunKey(run);
     const existing = this.#byTask.get(key);
     if (existing && existing !== run && taskRunIsActive(existing)) {
@@ -502,13 +553,57 @@ export class TaskRunRegistry {
     return run;
   }
 
+  addRestored(run, savedRun) {
+    const retired = run.localAdmissionReleased === true;
+    if (retired) {
+      // Only the restoration owner may set this after exact lifecycle-store readback.
+      if (this.#byId.has(run.id)) throw new Error("duplicate restored run identity");
+      this.#byId.set(run.id, run);
+      if (run.turnId) {
+        if (this.#byTurn.has(run.turnId)) throw new Error("duplicate restored turn identity");
+        this.#byTurn.set(run.turnId, run);
+      }
+      this.#revision += 1;
+    } else this.add(run);
+    const identity = localExecutionIdentity(savedRun);
+    if (identity) this.#restoredLocalExecutions.set(run, {
+      identity, restoredAt: new Date().toISOString(),
+    });
+    return run;
+  }
+
+  restoredLocalExecution(run) {
+    if (this.#byId.get(run?.id) !== run) return null;
+    const provenance = this.#restoredLocalExecutions.get(run);
+    return provenance ? structuredClone(provenance) : null;
+  }
+
+  releaseLocalAdmission(run, disposition) {
+    if (this.#byId.get(run?.id) !== run
+      || !validLocalExecutionRetirement(disposition)
+      || JSON.stringify(localExecutionIdentity(run)) !== JSON.stringify(disposition?.identity)) {
+      return false;
+    }
+    if (run.localAdmissionReleased === true) return true;
+    if (this.forTask(run) !== run) return false;
+    run.localExecutionRetirement = structuredClone(disposition);
+    run.localAdmissionReleased = true;
+    for (const [key, indexed] of this.#byTask) {
+      if (indexed === run) this.#byTask.delete(key);
+    }
+    // Keep exact run/turn lookup for late provider events and retained UNKNOWN.
+    this.#revision += 1;
+    return true;
+  }
+
   reindex(run) {
     if (!run?.id || this.#byId.get(run.id) !== run) {
       throw new Error("cannot reindex an inactive task run");
     }
     const newKey = taskRunKey(run);
     const taskCollision = this.#byTask.get(newKey);
-    if (taskCollision && taskCollision !== run && taskRunIsActive(taskCollision)) {
+    if (run.localAdmissionReleased !== true
+      && taskCollision && taskCollision !== run && taskRunIsActive(taskCollision)) {
       throw new Error("this task is already running");
     }
     if (run.turnId) {
@@ -521,7 +616,7 @@ export class TaskRunRegistry {
     for (const [turnId, indexedRun] of this.#byTurn) {
       if (indexedRun === run) this.#byTurn.delete(turnId);
     }
-    this.#byTask.set(newKey, run);
+    if (run.localAdmissionReleased !== true) this.#byTask.set(newKey, run);
     if (run.turnId) this.#byTurn.set(run.turnId, run);
     this.#revision += 1;
     return run;
@@ -618,11 +713,15 @@ export class TaskRunRegistry {
   }
 
   values() {
+    return this.retainedValues().filter(run => run.localAdmissionReleased !== true);
+  }
+
+  retainedValues() {
     return [...this.#byId.values()];
   }
 
   get size() {
-    return this.#byId.size;
+    return this.values().length;
   }
 
   get revision() {
@@ -755,6 +854,9 @@ export function shouldAutoObserveTask({
 
 export function serializableTaskRun(run) {
   const {
+    localAdmissionReleased: _localAdmissionReleased,
+    completionPreparing: _completionPreparing,
+    admissionReleasing: _admissionReleasing,
     process: _process,
     progressMessageId: _progressMessageId,
     progressStartTimer: _progressStartTimer,

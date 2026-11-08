@@ -1,9 +1,8 @@
 import path from "node:path";
-import { copyFile, mkdir, lstat, open, readFile, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
-import { normalizedNativeResolution } from "../../domain/native-resolution-input.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
   from "../../domain/task-selected-composition.mjs";
 import { nativeReuseContext, nativeReuseCandidates, verifiedNativePrefix, retainedNativeConflict } from "./native-merge-reuse.mjs";
@@ -40,8 +39,8 @@ async function publishedVirtualReplay({ git, identity, baseCommit, tasks }) {
   return true;
 }
 
-async function maybe(git, args) {
-  try { return await git(args); } catch { return null; }
+async function maybe(git, args, options) {
+  try { return await git(args, options); } catch { return null; }
 }
 
 function failure(message, code = "RELEASE_NATIVE_HISTORY_REQUIRED", details = {}) {
@@ -263,18 +262,148 @@ async function changesCleanConflictContext(git, automaticTree, target, file, bef
   return hunks === 0;
 }
 
-// Commit reachability proves history, not the continued presence of a Task's
-// changes. Replaying its delta in Git objects is a check only: it never checks
-// out, applies a patch, updates refs or changes the chosen candidate.
-function contentCompatibilityReview(review) {
-  if (!review) return null;
-  let envelope;
-  try { envelope = JSON.parse(/<native-merge-review>\s*([^]*?)\s*<\/native-merge-review>/u.exec(review.text)?.[1]); }
-  catch { throw failure("Native compatibility review is malformed", "RELEASE_NATIVE_REVIEW_REQUIRED"); }
-  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
-    throw failure("Native compatibility review is malformed", "RELEASE_NATIVE_REVIEW_REQUIRED");
+// A recorded owned resolution covers its real conflict files, including
+// compatibility edits outside marker ranges. Keep structural loss checks:
+// choosing an entire parent, deleting clean code, or restoring the other
+// parent's clean context is not evidence that selected code was preserved.
+async function retainsConflictCleanContext(git, automaticTree, target, file, before, result, baseCommit) {
+  const body = String(await git(["show", `${automaticTree}:${file}`], { rawOutput: true }));
+  const resolved = String(await git(["show", `${target}:${file}`], { rawOutput: true }));
+  const parents = await Promise.all([before, result].map(async commit => {
+    const value = await maybe(git, ["show", `${commit}:${file}`], { rawOutput: true });
+    return value === null ? null : String(value);
+  }));
+  const baselineValue = baseCommit ? await maybe(git, ["show", `${baseCommit}:${file}`], { rawOutput: true }) : null;
+  const baseline = baselineValue === null ? null : String(baselineValue);
+  if (parents.includes(resolved)) return false;
+  const ranges = [];
+  let opened = null;
+  for (const [index, line] of body.split("\n").entries()) {
+    if (line === `<<<<<<< ${before}`) opened = index + 1;
+    if (line === `>>>>>>> ${result}` && opened !== null) {
+      ranges.push([opened, index + 1]); opened = null;
+    }
   }
-  return Object.hasOwn(envelope, "selectedContentCompatibility") ? review : null;
+  if (opened !== null || !ranges.length) return false;
+  const patch = String(await git(["--literal-pathspecs", "-c", "diff.algorithm=myers", "diff", "--no-ext-diff", "--no-textconv",
+    "--no-renames", "--no-color", "--no-indent-heuristic", "--unified=0", "--inter-hunk-context=0",
+    automaticTree, target, "--", file], { rawOutput: true }));
+  if (/^(?:old mode|new mode|deleted file|new file|Binary files)/mu.test(patch)) return false;
+  const words = value => value.match(/[A-Za-z0-9_$]+|[^\s]/gu) ?? [];
+  const counts = value => {
+    const result = new Map();
+    for (const word of words(value)) result.set(word, (result.get(word) ?? 0) + 1);
+    return result;
+  };
+  const losesWords = (oldText, newText) => {
+    const retained = counts(newText);
+    return [...counts(oldText)].some(([word, count]) => count > (retained.get(word) ?? 0));
+  };
+  const inlineEdit = (oldText, newText) => {
+    const oldWords = words(oldText), newWords = words(newText);
+    let prefix = 0, suffix = 0;
+    while (prefix < Math.min(oldWords.length, newWords.length) && oldWords[prefix] === newWords[prefix]) prefix++;
+    while (suffix < Math.min(oldWords.length, newWords.length) - prefix
+        && oldWords[oldWords.length - suffix - 1] === newWords[newWords.length - suffix - 1]) suffix++;
+    // An inline compatibility edit retains context on the same line. A
+    // whole-line deletion, or the same words removed elsewhere in the file,
+    // cannot provide evidence for losing this selected line.
+    // An argument at a wrapped line's first/last position has only one such
+    // boundary. It must still leave that line, rather than remove it entirely.
+    if (!prefix && !suffix) return null;
+    const retained = [...oldWords.slice(0, prefix), ...oldWords.slice(oldWords.length - suffix)];
+    // Delimiters alone are not retained code: uniqueCall(); -> ; loses the
+    // complete selected call even when another inline edit removed that call.
+    if (!retained.some(word => /^[A-Za-z0-9_$]+$/u.test(word))) return null;
+    const removed = oldWords.slice(prefix, oldWords.length - suffix);
+    const added = newWords.slice(prefix, newWords.length - suffix);
+    // A retained keyword such as return is no evidence for deleting its whole
+    // call. A removed call expression must remain inside a retained outer
+    // parenthesized expression (for example an optional nested argument).
+    const enclosing = oldWords.slice(0, prefix).reduce((depth, word) =>
+      depth + (word === "(" ? 1 : word === ")" ? -1 : 0), 0);
+    if (removed.includes("(") && enclosing <= 0) return null;
+    // A parameter removed from the middle of a declaration can be the last
+    // shorthand argument at a caller. Its adjacent comma changes sides; the
+    // ordered removed tokens, not a file-wide word count, carry that edit.
+    if (removed[0] === ",") removed.shift();
+    if (removed.at(-1) === ",") removed.pop();
+    return !added.length && removed.length ? removed : null;
+  };
+  let incomingEdits = null;
+  const selectedInlineEdits = async () => {
+    if (incomingEdits) return incomingEdits;
+    incomingEdits = [];
+    // Use Git's actual stage-1 blob, including its virtual merge base. Do not
+    // treat the current parent's unique additions as incoming removals.
+    const stages = String(await git(["merge-tree", "--write-tree", "-z", before, result],
+      { acceptableExitCodes: [1] })).split("\0");
+    const stage = stages.find(row => row.slice(row.indexOf("\t") + 1) === file
+      && row.slice(0, row.indexOf("\t")).split(" ")[2] === "1");
+    if (!stage) return incomingEdits;
+    const baseBlob = stage.split(" ")[1];
+    const resultBlob = String(await git(["rev-parse", `${result}:${file}`]));
+    const delta = String(await git(["-c", "diff.algorithm=myers", "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+      "--no-indent-heuristic", "--unified=0", "--inter-hunk-context=0", baseBlob, resultBlob], { rawOutput: true }));
+    let inHunk = false;
+    let oldLines = [], newLines = [];
+    const retainEdits = () => {
+      if (oldLines.length !== newLines.length) return;
+      for (let index = 0; index < oldLines.length; index++) {
+        const edit = inlineEdit(oldLines[index], newLines[index]);
+        if (edit) incomingEdits.push(edit);
+      }
+    };
+    for (const line of delta.split("\n")) {
+      if (line.startsWith("@@ ")) {
+        retainEdits(); inHunk = true; oldLines = []; newLines = [];
+      } else if (inHunk && line.startsWith("-")) oldLines.push(line.slice(1));
+      else if (inHunk && line.startsWith("+")) newLines.push(line.slice(1));
+      else if (inHunk && line.startsWith("\\")) {
+        // An unterminated boundary cannot supply a complete inline edit.
+        oldLines = []; newLines = []; inHunk = false;
+      }
+    }
+    retainEdits();
+    return incomingEdits;
+  };
+  let sourceLine = 0, removed = [], added = [], markerEdit = false;
+  const preserved = async () => {
+    if (!removed.some(line => line.trim())) return true;
+    const oldBlock = removed.join("\n") + "\n", newBlock = added.join("\n") + "\n";
+    // Common to both selected parents is not sufficient: both may have added
+    // this same unique code after the composition baseline.
+    if (baseline !== null && baseline.includes(oldBlock)) return true;
+    // Mixed marker/clean hunks cannot lend their conflict additions to erased
+    // unique clean code. Ordinary marker-only edits need no such projection.
+    if (markerEdit) return false;
+    if (!losesWords(oldBlock, newBlock)) return true;
+    if (removed.length !== added.length) return false;
+    const available = await selectedInlineEdits();
+    for (let index = 0; index < removed.length; index++) {
+      if (!losesWords(removed[index], added[index])) continue;
+      const edit = inlineEdit(removed[index], added[index]);
+      // A shorthand use may omit the declaration's default value, but its
+      // removed tokens must still be one contiguous part of that same inline
+      // deletion. Never combine unrelated removals or permute their words.
+      if (!edit || !available.some(incoming => incoming.some((_, start) =>
+        edit.every((word, offset) => incoming[start + offset] === word)))) return false;
+    }
+    return true;
+  };
+  for (const line of patch.split("\n")) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@/u.exec(line);
+    if (hunk) {
+      if (!await preserved()) return false;
+      sourceLine = Number(hunk[1]); removed = []; added = []; markerEdit = false;
+    } else if (sourceLine && line.startsWith("-")) {
+      if (!ranges.some(([a, b]) => sourceLine >= a && sourceLine <= b)) removed.push(line.slice(1));
+      else markerEdit = true;
+      sourceLine++;
+    } else if (sourceLine && line.startsWith("+")) added.push(line.slice(1));
+    else if (sourceLine && line.startsWith(" ")) sourceLine++;
+  }
+  return preserved();
 }
 
 async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
@@ -304,29 +433,64 @@ async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
   return publication.commit;
 }
 
+// A replay can reinsert a complete block already present in the composition.
+// Treat only byte-identical additions as idempotent; deletion, replacement,
+// binary and mode changes still need their actual native merge evidence.
+async function repeatsRetainedContent(git, head, replayTree, file) {
+  const patch = String(await git(["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv",
+    "--no-renames", "--no-color", "--unified=0", head, replayTree, "--", file], { rawOutput: true }));
+  if (/^(?:old mode|new mode|deleted file|new file|Binary files)/mu.test(patch)) return false;
+  const body = String(await git(["show", `${head}:${file}`], { rawOutput: true }));
+  let block = null, additions = 0;
+  const retained = () => block !== null && block.length > 0 && body.includes(block.join("\n") + "\n");
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@ ")) {
+      if (block !== null && !retained()) return false;
+      block = []; additions += 1;
+    } else if (block !== null) {
+      if (line.startsWith("+")) block.push(line.slice(1));
+      else if (line.startsWith("-") && line.slice(1).trim() !== "" || line.startsWith("\\")) return false;
+    }
+  }
+  return additions > 0 && retained();
+}
+
+// Reachability alone does not prove content. Reproduce each selected delta, but
+// retain the actual automatic context and verified conflict resolutions instead
+// of requiring a message to authorize that same Git evidence.
 async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
   const virtualReplay = await publishedVirtualReplay({ git, identity, baseCommit, tasks });
   const publishedBase = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
-  const targetTree = String(await git(["rev-parse", `${head}^{tree}`]));
-  const target = new Map(await entries(git, ["ls-tree", "-r", "-z", targetTree]));
-  const overrides = new Map();
-  for (const { binding } of resolutions) {
-    const automatic = new Map(await entries(git, ["ls-tree", "-r", "-z", binding.automaticTree]));
-    const reviewed = new Map(await entries(git, ["ls-tree", "-r", "-z", binding.tree]));
-    for (const file of new Set([...automatic.keys(), ...reviewed.keys()])) {
-      if (automatic.get(file) !== reviewed.get(file) && target.get(file) === reviewed.get(file)) overrides.set(file, true);
+  const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit
+    && Array.isArray(identity.tasks) && taskGitIdentityHash(identity.tasks) === taskGitIdentityHash(tasks);
+  const target = new Map(await entries(git, ["ls-tree", "-r", "-z", head]));
+  const resolvedPaths = new Set();
+  for (const { binding, conflictPaths } of resolutions) {
+    const resolved = new Map(await entries(git, ["ls-tree", "-r", "-z", binding.tree]));
+    for (const file of conflictPaths) {
+      if (target.get(file) === resolved.get(file)) resolvedPaths.add(file);
     }
   }
-  const obligations = [];
   for (const [index, task] of tasks.entries()) {
-    if (String(await git(["rev-parse", `${task.resultCommit}^{tree}`])) === targetTree) continue;
-    // Replaying against head with a forced individual base invents a different
-    // merge for a published criss-cross history. Its one exact parent pair must
-    // use Git's recursive virtual base, as did the native merge/review verifier.
-    // Ordinary selected Tasks retain their existing agreed-base content check.
+    const prefix = index === 0 ? baseCommit : merges[index - 1].commit;
+    const merged = await maybe(git, ["merge-base", "--is-ancestor", task.resultCommit, prefix]) === null;
+    const actual = merged ? new Map(await entries(git, ["ls-tree", "-r", "-z",
+      (String(await git(["merge-tree", "--write-tree", "--name-only", "-z", prefix, task.resultCommit],
+        { acceptableExitCodes: [1] })).split("\0"))[0]])) : new Map();
+    let replayBase = publishedBase || task.baseCommit || baseCommit;
+    // The captured composition already owns its complete baseline tree. If
+    // that exact baseline lies inside this selected history, replay only the
+    // remaining delta rather than reinserting inherited code at an old site.
+    // No remote/ref lookup or path exemption supplies this ancestry evidence;
+    // ordinary Test's separately bound published base keeps its own policy.
+    if (capturedComposition && !publishedBase && replayBase !== baseCommit
+        && await maybe(git, ["merge-base", "--is-ancestor", replayBase, baseCommit]) !== null
+        && await maybe(git, ["merge-base", "--is-ancestor", baseCommit, task.resultCommit]) !== null) {
+      replayBase = baseCommit;
+    }
     const replayBefore = virtualReplay ? baseCommit : head;
     const replay = String(await git(["merge-tree", "--write-tree", "--name-only", "-z",
-      ...(virtualReplay ? [] : [`--merge-base=${publishedBase || task.baseCommit || baseCommit}`]),
+      ...(virtualReplay ? [] : [`--merge-base=${replayBase}`]),
       replayBefore, task.resultCommit], { acceptableExitCodes: [1] })).split("\0");
     const replayTree = replay.shift();
     if (!/^[a-f0-9]{40}$/u.test(replayTree)) throw failure("Selected Task content replay is unavailable");
@@ -335,66 +499,23 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     const expected = new Map(await entries(git, ["ls-tree", "-r", "-z", replayTree]));
     const missing = [];
     for (const file of new Set([...expected.keys(), ...target.keys()])) {
-      if (expected.get(file) === target.get(file) || overrides.has(file)) continue;
-      if (!conflicts.has(file) || await changesCleanConflictContext(git, replayTree, head, file, replayBefore, task.resultCommit)) missing.push(file);
+      if (expected.get(file) === target.get(file) || resolvedPaths.has(file)
+          || actual.get(file) === target.get(file) && actual.has(file)) continue;
+      if ((!conflicts.has(file) || await changesCleanConflictContext(git, replayTree, head, file, replayBefore, task.resultCommit))
+          && !await repeatsRetainedContent(git, head, replayTree, file)) missing.push(file);
     }
-    if (!missing.length) continue;
-    const prefixCommit = index === 0 ? baseCommit : merges[index - 1].commit;
-    const automaticTree = String(await git(["merge-tree", "--write-tree", "--name-only", "-z",
-      prefixCommit, task.resultCommit], { acceptableExitCodes: [1] })).split("\0")[0];
-    if (!/^[a-f0-9]{40}$/u.test(automaticTree)) throw failure("Native automatic context is unavailable");
-    const automatic = new Map(await entries(git, ["ls-tree", "-r", "-z", automaticTree]));
-    for (const file of missing.sort()) obligations.push({taskId:task.taskId,baseCommit:task.baseCommit || baseCommit,
-      resultCommit:task.resultCommit,replayTree,path:file,expectedEntry:expected.get(file) ?? null,
-      retainedEntry:target.get(file) ?? null,prefixCommit,automaticTree,automaticEntry:automatic.get(file) ?? null});
-  }
-  const binding = {kind:"selected-content-compatibility-v1",identityHash:taskGitIdentityHash(identity),
-    selectedTasks:tasks.map(task=>({taskId:task.taskId,baseCommit:task.baseCommit || baseCommit,resultCommit:task.resultCommit})),
-    candidateCommit:head,candidateTree:targetTree,obligations};
-  const capabilities = resolutions.filter(resolution=>resolution.compatibilityReview);
-  const accepted = new Set();
-  if (capabilities.length) {
-    if (capabilities.length !== 1) throw failure("Ambiguous selected-content compatibility authority", "RELEASE_NATIVE_REVIEW_REQUIRED");
-    const capability = JSON.parse(/<native-merge-review>\s*([^]*?)\s*<\/native-merge-review>/u
-      .exec(capabilities[0].compatibilityReview.text)[1]).selectedContentCompatibility;
-    if (!capability || typeof capability !== "object" || Array.isArray(capability)
-        || Object.keys(capability).sort().join(",") !== "acceptedObligations,binding"
-        || !capability.binding || typeof capability.binding !== "object" || Array.isArray(capability.binding)
-        || taskGitIdentityHash(capability.binding) !== taskGitIdentityHash(binding)
-        || !Array.isArray(capability.acceptedObligations) || !capability.acceptedObligations.length) {
-      throw failure("Selected-content compatibility binding changed", "RELEASE_NATIVE_REVIEW_REQUIRED");
-    }
-    for (const index of capability.acceptedObligations) {
-      const obligation = obligations[index];
-      if (!Number.isSafeInteger(index) || index < 0 || !obligation || accepted.has(index)
-          || obligation.retainedEntry !== obligation.automaticEntry) {
-        throw failure("Selected-content compatibility does not retain the exact automatic entry", "RELEASE_NATIVE_REVIEW_REQUIRED");
-      }
-      accepted.add(index);
-    }
-  }
-  const remaining = obligations.filter((_,index)=>!accepted.has(index));
-  if (remaining.length) {
-    const first = remaining[0];
-    throw failure(`Selected Task ${first.taskId} changes are missing from the candidate`, "RELEASE_SELECTED_CONTENT_MISSING",
-      {taskId:first.taskId,resultCommit:first.resultCommit,candidateCommit:head,
-        missingPaths:remaining.filter(row=>row.taskId===first.taskId).map(row=>row.path).sort(),
-        selectedContentCompatibilityBinding:binding});
+    if (missing.length) throw failure(`Selected Task ${task.taskId} changes are missing from the candidate`,
+      "RELEASE_SELECTED_CONTENT_MISSING", { taskId: task.taskId, resultCommit: task.resultCommit,
+        candidateCommit: head, missingPaths: missing.sort() });
   }
 }
 
-// Reopen must prove completed native steps from Git objects, rather than trusting
-// a mutable journal's next/head counters. Git identifies the actual conflict
-// boundary; additional compatibility bytes require an exact independent review.
-async function verifyMergeStep(git, before, result, target, { identity, review = null, verifyReview = null,
-  evidenceRoot = null, storedBinding = null, compatibilityReview = null, requireConflictReview = false } = {}) {
-  compatibilityReview ??= contentCompatibilityReview(review);
-  review ??= compatibilityReview;
-  const contained = await maybe(git, ["merge-base", "--is-ancestor", result, before]) !== null;
-  if (contained) {
-    if (compatibilityReview) throw failure("Contained merge has no compatibility review boundary", "RELEASE_NATIVE_REVIEW_REQUIRED");
+// Recompute Git evidence on every reopen. Historical reviewedResolution is only
+// an old spelling of this immutable Git binding; its message/receipt is ignored.
+async function verifyMergeStep(git, before, result, target, { storedBinding = null, ownedResolution = false, baseCommit = null } = {}) {
+  if (await maybe(git, ["merge-base", "--is-ancestor", result, before]) !== null) {
     if (target !== before) throw failure("Contained native result changed the prefix");
-    return;
+    return null;
   }
   if (String(await git(["show", "-s", "--format=%P", target])) !== `${before} ${result}`) {
     throw failure("Completed native merge parents changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
@@ -406,56 +527,48 @@ async function verifyMergeStep(git, before, result, target, { identity, review =
   const conflicts = new Set();
   for (const file of output) { if (!file) break; conflicts.add(file); }
   const automatic = new Map(await entries(git, ["ls-tree", "-r", "-z", automaticTree]));
-  const resolved = new Map(await entries(git, ["ls-tree", "-r", "-z", `${target}^{tree}`]));
+  const tree = String(await git(["rev-parse", `${target}^{tree}`]));
+  const resolved = new Map(await entries(git, ["ls-tree", "-r", "-z", tree]));
   const extraPaths = [];
   for (const file of new Set([...automatic.keys(), ...resolved.keys()])) {
-    if (!conflicts.has(file) && automatic.get(file) !== resolved.get(file)) {
-      extraPaths.push(file);
-    }
+    if (automatic.get(file) === resolved.get(file)) continue;
+    if (!conflicts.has(file)
+        || await changesCleanConflictContext(git, automaticTree, target, file, before, result)) extraPaths.push(file);
   }
+  const diff = await git(["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree], { rawOutput: true });
+  const binding = { parents: [before, result], commit: target, tree, automaticTree,
+    diffSha256: createHash("sha256").update(diff).digest("hex") };
+  if (storedBinding && Object.keys(binding).some(key =>
+    JSON.stringify(storedBinding[key]) !== JSON.stringify(binding[key]))) {
+    throw failure("Recorded native resolution binding changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  if (extraPaths.length && !ownedResolution && !storedBinding) {
+    throw failure("Completed automatic native prefix contains unexpected changes", "RELEASE_SELECTED_CONTENT_MISSING",
+      { candidateCommit: target, missingPaths: extraPaths.sort() });
+  }
+  const conflictPaths = [];
   for (const file of conflicts) {
-    if (automatic.get(file) !== resolved.get(file)
-        && await changesCleanConflictContext(git, automaticTree, target, file, before, result)) extraPaths.push(file);
+    if (extraPaths.includes(file) && (ownedResolution || storedBinding)
+        && !await retainsConflictCleanContext(git, automaticTree, target, file, before, result, baseCommit)) {
+      throw failure("Owned conflict resolution discards selected clean context", "RELEASE_SELECTED_CONTENT_MISSING",
+        { candidateCommit: target, missingPaths: [file] });
+    }
+    conflictPaths.push(file);
   }
-  if (extraPaths.length || review || requireConflictReview && conflicts.size) {
-    const tree = String(await git(["rev-parse", `${target}^{tree}`]));
-    const diff = await git(["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree], { rawOutput: true });
-    const binding = { identityHash: taskGitIdentityHash(identity), parents: [before, result],
-      commit: target, tree, automaticTree,
-      diffSha256: createHash("sha256").update(diff).digest("hex") };
-    if (storedBinding && taskGitIdentityHash(storedBinding) !== taskGitIdentityHash(binding)) {
-      throw failure("Recorded native review binding changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
-    }
-    const diffFile = `resolution-diff-${binding.diffSha256}.patch`;
-    const diffPath = evidenceRoot ? path.join(evidenceRoot, diffFile) : null;
-    if (diffPath) {
-      if (!storedBinding) {
-        try { await writeFile(diffPath, diff, { flag: "wx" }); }
-        catch (error) { if (error.code !== "EEXIST") throw error; }
-      }
-      const info = await lstat(diffPath);
-      if (!info.isFile() || info.isSymbolicLink()
-          || !Buffer.from(await readFile(diffPath)).equals(Buffer.from(diff))) {
-        throw failure("Recorded native resolution diff changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
-      }
-    }
-    if (!review || typeof verifyReview !== "function") {
-      throw failure("Native compatibility correction requires exact independent review", "RELEASE_NATIVE_REVIEW_REQUIRED",
-        { binding, diffPath, extraPaths: extraPaths.sort() });
-    }
-    await verifyReview(review, binding, identity);
-    if (compatibilityReview && (compatibilityReview.requestId !== review.requestId || compatibilityReview.text !== review.text)) {
-      await verifyReview(compatibilityReview, binding, identity);
-    }
-    return { review, binding, diffFile, ...(compatibilityReview ? {compatibilityReview} : {}) };
-  }
-  return null;
+  return { before, commit: target, binding, conflictPaths };
 }
 
 // Verify an already accepted native candidate without composing another one.
 export async function assertNativePreparedComposition({ git, baseCommit, tasks, merges, head, tree,
-  identity = { policy: NATIVE_RELEASE_POLICY, baseCommit, tasks }, verifyReview = null, historyAuthority = null }) {
+  identity = { policy: NATIVE_RELEASE_POLICY, baseCommit, tasks }, historyAuthority = null }) {
   await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
+  return assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree, identity });
+}
+
+// Shared native graph proof. Storage preservation uses this proof;
+// current result and historical Task certification add selected content below.
+export async function assertNativeMergeGraph({ git, baseCommit, tasks, merges, head, tree,
+  identity }) {
   if (!Array.isArray(merges) || merges.length !== tasks.length) throw failure("Prepared native selection changed");
   let prefix = baseCommit;
   const resolutions = [];
@@ -465,14 +578,19 @@ export async function assertNativePreparedComposition({ git, baseCommit, tasks, 
       throw failure("Prepared native result evidence changed");
     }
     const resolution = await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
-      { identity, review: step.reviewedResolution?.review, verifyReview,
-        storedBinding: step.reviewedResolution?.binding, compatibilityReview: step.reviewedResolution?.compatibilityReview });
+      { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding, baseCommit });
     if (resolution) resolutions.push(resolution);
     prefix = step.commit;
   }
   if (prefix !== head || String(await git(["rev-parse", `${head}^{tree}`])) !== tree) {
     throw failure("Prepared native head or tree changed");
   }
+  return resolutions;
+}
+
+export async function assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree,
+  identity }) {
+  const resolutions = await assertNativeMergeGraph({ git, baseCommit, tasks, merges, head, tree, identity });
   await assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges });
 }
 
@@ -482,11 +600,10 @@ export async function assertNativePreparedComposition({ git, baseCommit, tasks, 
 // exact ordered parents and preserves all previously automatic clean entries.
 export async function mergeSelectedResults({
   root, sourceRoot, baseCommit, tasks, identity, gitAt, readJson, writeJson,
-  resolutionReview = null, verifyReview = null,
   deliveredHead = null,
   reuseContext = null,
   readLegacyReuseBinding = null,
-  requireConflictReview = false,
+  provisionNativeObjects = null, verifyNativeObjects = null,
 }) {
   const repository = path.join(root, "repository");
   const stateFile = path.join(root, "merge.json");
@@ -508,6 +625,33 @@ export async function mergeSelectedResults({
   if (state && JSON.stringify(state.identity) !== JSON.stringify(identity)) {
     throw failure("Native merge staging identity changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
+  if (provisionNativeObjects !== null) {
+    const devStorage = identity.policy === "native-dev-merge-v1"
+      && identity.objectStorage?.kind === "owned-immutable-git-objects-v1";
+    const releaseStorage = identity.policy === NATIVE_RELEASE_POLICY && !identity.objectStorage;
+    if ((!devStorage && !releaseStorage) || typeof provisionNativeObjects !== "function") {
+      throw failure("Native object storage authority differs from capture");
+    }
+    if (!state) {
+      state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null, provisioningObjects: true,
+        ...(reuse ? { reuseContext: reuse } : {}) };
+      await writeJson(stateFile, state); // Original intake BEFORE pool/consumer effects.
+    }
+    if (state.provisioningObjects) {
+      assertCurrentInputs();
+      state.objectStorage = await provisionNativeObjects({ repository, sourceRoot,
+        inputs: [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])], identityHash });
+      assertCurrentInputs();
+      for (const commit of [baseCommit, ...tasks.map(task => task.resultCommit)]) {
+        await gitAt(repository, ["cat-file", "-e", commit + "^{commit}"]);
+      }
+      await gitAt(repository, ["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);
+      delete state.provisioningObjects;
+      await writeJson(stateFile, state);
+    }
+  } else if (identity.objectStorage || state?.provisioningObjects) {
+    throw failure("Native object storage capture requires its original provisioner");
+  }
   if (!state) {
     // Transport only Git objects/refs. Direct upload-pack from a repository with
     // mandatory local hooks is refused by Git clone protection; keep that
@@ -527,6 +671,10 @@ export async function mergeSelectedResults({
       ...(reuse ? { reuseContext: reuse } : {}) };
     await writeJson(stateFile, state);
   }
+  if (state.objectStorage && typeof verifyNativeObjects === "function") {
+    await verifyNativeObjects({ repository, identityHash, storage: state.objectStorage,
+      inputs: [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])] });
+  }
   const git = (args, options) => gitAt(repository, args, options);
   const beforeTransport = async binding => {
     assertCurrentInputs();
@@ -534,13 +682,12 @@ export async function mergeSelectedResults({
     await writeJson(stateFile, state);
     assertCurrentInputs();
   };
-  let verifiedPrefix = null, verifiedPrefixCount = 0;
+
   if (reuse && state.reuseContext && taskGitIdentityHash(state.reuseContext) === taskGitIdentityHash(reuse)
       && state.next === 0 && !state.merging && !state.conflict && !state.reuseIntent) {
     const prefix = await verifiedNativePrefix({ root, repository, candidates, tasks, baseCommit, gitAt, beforeTransport,
-      verify: (before, result, target) => verifyMergeStep(git, before, result, target, { identity }) });
+      verify: (before, result, target, step) => verifyMergeStep(git, before, result, target, { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding, baseCommit }) });
     if (prefix) {
-      verifiedPrefix = prefix;
       state.reuseIntent = prefix;
       await writeJson(stateFile, state);
     }
@@ -554,10 +701,10 @@ export async function mergeSelectedResults({
     }
     let before = baseCommit;
     for (const [i, step] of state.reuseIntent.merges.entries()) {
-      if (step.taskId !== tasks[i].taskId || step.resultCommit !== tasks[i].resultCommit
-          || verifiedPrefix !== state.reuseIntent && await verifyMergeStep(git, before, step.resultCommit, step.commit, { identity })) {
+      if (step.taskId !== tasks[i].taskId || step.resultCommit !== tasks[i].resultCommit) {
         throw failure("Native prefix reuse no longer has ordinary authority", "RELEASE_NATIVE_CHECKOUT_CHANGED");
       }
+      await verifyMergeStep(git, before, step.resultCommit, step.commit, { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding, baseCommit });
       before = step.commit;
     }
     if (before !== state.reuseIntent.head || String(await git(["rev-parse", `${before}^{tree}`])) !== state.reuseIntent.tree) {
@@ -568,83 +715,16 @@ export async function mergeSelectedResults({
     if (![baseCommit, before].includes(observed)) throw failure("Native reused prefix checkout changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
     if (observed !== before) await git(["checkout", "--detach", "--no-overwrite-ignore", before]);
     state.merges = state.reuseIntent.merges; state.next = state.merges.length; state.head = before;
-    verifiedPrefixCount = state.next;
     delete state.reuseIntent;
     await writeJson(stateFile, state);
   }
-  const verifyStep = (before, result, target, options) => verifyMergeStep(git, before, result, target,
-    { ...options, requireConflictReview });
-  const input = resolutionReview == null ? null : normalizedNativeResolution(resolutionReview);
-  const choices = [];
-  if (requireConflictReview && input && !input.reviews) {
-    let binding;
-    try { binding = JSON.parse(/<native-merge-review>\s*([^]*?)\s*<\/native-merge-review>/u.exec(input.text)?.[1]).binding; }
-    catch { throw new Error("Published synchronization exact review is malformed"); }
-    if (binding?.identityHash !== taskGitIdentityHash(identity)
-        || typeof verifyReview !== "function") throw new Error("Published synchronization review identity changed");
-    await verifyReview(input, binding, identity);
-  }
-  if (input?.reviews) {
-    // Authenticate before importing any supplied object. A bundle imports no
-    // source configuration/hooks and cannot move the primary or selected refs.
-    for (const review of input.reviews) {
-      let binding;
-      try { binding = JSON.parse(/<native-merge-review>\s*([^]*?)\s*<\/native-merge-review>/u.exec(review.text)?.[1]).binding; }
-      catch { throw failure("Native resolution review is malformed", "RELEASE_NATIVE_REVIEW_REQUIRED"); }
-      if (binding?.identityHash !== taskGitIdentityHash(identity)
-          || !Array.isArray(binding.parents) || binding.parents.length !== 2
-          || !tasks.some(task => task.resultCommit === binding.parents[1])
-          || ![binding.commit, binding.tree, binding.automaticTree, ...binding.parents].every(c => /^[a-f0-9]{40}$/u.test(c))
-          || !/^[a-f0-9]{64}$/u.test(binding.diffSha256)
-          || choices.some(choice => choice.binding.parents[0] === binding.parents[0]
-            && choice.binding.parents[1] === binding.parents[1]) || typeof verifyReview !== "function") {
-        throw failure("Native resolution differs from the selected identity", "RELEASE_NATIVE_REVIEW_REQUIRED");
-      }
-      await verifyReview(review, binding, identity);
-      choices.push({ review, binding });
-    }
-    const info = await lstat(input.bundlePath);
-    if (!info.isFile() || info.isSymbolicLink()) {
-      throw failure("Native resolution bundle is not a regular file");
-    }
-    const same = (a, b) => a.isFile() && !a.isSymbolicLink()
-      && ["dev", "ino", "size", "mtimeMs", "ctimeMs"].every(key => a[key] === b[key]);
-    const verifyBundle = async (file, entry) => {
-      if (!entry.isFile() || entry.isSymbolicLink() || entry.size !== info.size) {
-        throw failure("Retained native resolution bundle changed");
-      }
-      const handle = await open(file, "r");
-      try {
-        if (!same(await handle.stat(), entry)) throw failure("Retained native resolution bundle changed");
-        const hash = createHash("sha256");
-        let length = 0;
-        for await (const chunk of handle.createReadStream({ autoClose: false, highWaterMark: 64 * 1024 })) {
-          hash.update(chunk); length += chunk.length;
-        }
-        if (length !== entry.size || !same(await handle.stat(), entry) || !same(await lstat(file), entry)
-            || hash.digest("hex") !== input.bundleSha256) {
-          throw failure("Native resolution bundle digest changed");
-        }
-      } finally { await handle.close(); }
-    };
-    await verifyBundle(input.bundlePath, info);
-    const bundle = path.join(root, `reviewed-${input.bundleSha256}.bundle`);
-    try { await copyFile(input.bundlePath, bundle, 1); }
-    catch (error) { if (error.code !== "EEXIST") throw error; }
-    await verifyBundle(bundle, await lstat(bundle));
-    if (!same(await lstat(input.bundlePath), info)) throw failure("Native resolution bundle changed");
-    await git(["fetch", "--no-tags", bundle, ...choices.map(choice => choice.binding.commit)]);
-  }
-  const reviewFor = (before, result, target) => input?.reviews
-    ? choices.find(choice => choice.binding.parents[0] === before && choice.binding.parents[1] === result
-      && (!target || choice.binding.commit === target))?.review ?? null : input;
   if (state.version !== 1 || !Number.isInteger(state.next) || state.next < 0
       || state.next > tasks.length || state.merges?.length !== state.next) {
     throw failure("Native merge journal progress changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
   // A private completed automatic merge can be amended for compatibility before
-  // delivery. Only the exact independently reviewed replacement of its last
-  // step is admitted; all earlier ordered inputs remain immutable.
+  // delivery. The issued checkout remains the owner input; earlier ordered
+  // steps and delivered history are immutable. No review token is needed.
   const currentHead = String(await git(["rev-parse", "HEAD^{commit}"]));
   if (!state.merging && !state.conflict && state.next > 0 && currentHead !== state.head) {
     if (deliveredHead === state.head) {
@@ -653,35 +733,21 @@ export async function mergeSelectedResults({
     const index = state.next - 1;
     const previous = index === 0 ? baseCommit : state.merges[index - 1].commit;
     await requireClean(git);
-    const reviewedResolution = await verifyStep(previous, tasks[index].resultCommit, currentHead,
-      { identity, review: reviewFor(previous, tasks[index].resultCommit, currentHead), verifyReview, evidenceRoot: root });
-    if (!reviewedResolution) throw failure("Native merge amendment lacks exact review", "RELEASE_NATIVE_REVIEW_REQUIRED");
+    const resolution = await verifyMergeStep(git, previous, tasks[index].resultCommit, currentHead, { ownedResolution: true, baseCommit });
     state.merges[index] = { taskId: tasks[index].taskId, resultCommit: tasks[index].resultCommit,
-      commit: currentHead, resolved: true, reviewedResolution };
+      commit: currentHead, resolved: true, resolution };
     state.head = currentHead;
     await writeJson(stateFile, state);
   }
   let prefix = baseCommit;
   const resolutions = [];
-  const compatibilityUpdates = [];
   for (const [index, step] of state.merges.entries()) {
     if (step.taskId !== tasks[index].taskId || step.resultCommit !== tasks[index].resultCommit) {
       throw failure("Native merge journal selection changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
     }
-    const incomingCompatibility = index === tasks.length - 1
-      ? contentCompatibilityReview(reviewFor(prefix, step.resultCommit, step.commit)) : null;
-    const storedCompatibility = step.reviewedResolution?.compatibilityReview
-      ?? contentCompatibilityReview(step.reviewedResolution?.review);
-    const changedCompatibility = incomingCompatibility
-      && (!storedCompatibility || taskGitIdentityHash(incomingCompatibility) !== taskGitIdentityHash(storedCompatibility));
-    if (changedCompatibility && deliveredHead) throw failure("Delivered native compatibility authority cannot change",
-      "RELEASE_NATIVE_CHECKOUT_CHANGED");
-    const compatibilityReview = incomingCompatibility ?? storedCompatibility;
-    const resolution = index < verifiedPrefixCount && !compatibilityReview && !requireConflictReview ? null : await verifyStep(prefix, step.resultCommit, step.commit,
-      { identity, review: step.reviewedResolution?.review ?? compatibilityReview, verifyReview, evidenceRoot: root,
-        storedBinding: step.reviewedResolution?.binding, compatibilityReview });
+    const resolution = await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
+      { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding, baseCommit });
     if (resolution) resolutions.push(resolution);
-    if (changedCompatibility) compatibilityUpdates.push({index,resolution});
     prefix = step.commit;
   }
   if (prefix !== state.head) throw failure("Native merge journal prefix changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
@@ -696,11 +762,10 @@ export async function mergeSelectedResults({
           throw failure("Interrupted native merge has no exact automatic readback", "RELEASE_NATIVE_CHECKOUT_CHANGED");
         }
         await requireClean(git);
-        const reviewedResolution = await verifyStep(state.head, task.resultCommit, head,
-          { identity, review: reviewFor(state.head, task.resultCommit, head), verifyReview, evidenceRoot: root });
-        if (reviewedResolution) resolutions.push(reviewedResolution);
+        const resolution = await verifyMergeStep(git, state.head, task.resultCommit, head, { baseCommit });
+        if (resolution) resolutions.push(resolution);
         state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head,
-          ...(reviewedResolution ? { resolved: true, reviewedResolution } : {}) });
+          ...(resolution ? { resolved: true, resolution } : {}) });
         state.head = head;
         state.next += 1;
         state.merging = false;
@@ -719,40 +784,38 @@ export async function mergeSelectedResults({
     }
     if (state.conflict) {
       let head = String(await git(["rev-parse", "HEAD^{commit}"]));
-      let choice = choices.find(item => item.binding.parents[0] === state.head
-        && item.binding.parents[1] === task.resultCommit);
+      let choice = null;
       if (!choice && reuse && head === state.head) {
         let retained = state.conflict.retainedResolution;
         if (!retained && await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]) === task.resultCommit) {
           await requireUntouchedConflict(git, state.head, task.resultCommit, state.conflict);
           retained = await retainedNativeConflict({ root, repository, candidates, state, task, identity, gitAt, beforeTransport,
-            verify: (before, result, target) => verifyMergeStep(git, before, result, target, { identity }) });
+            verify: (before, result, target, step) => verifyMergeStep(git, before, result, target, { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding, ownedResolution: true, baseCommit }) });
         }
         if (retained) {
           assertCurrentInputs();
           if (retained.identityHash !== identityHash || JSON.stringify(retained.parents) !== JSON.stringify([state.head, task.resultCommit])
               || retained.contextHash !== taskGitIdentityHash(state.conflict.stages.filter(([, entry]) => !entry.endsWith(" 0")))
-              || String(await git(["rev-parse", `${retained.commit}^{tree}`])) !== retained.tree
-              || await verifyMergeStep(git, state.head, task.resultCommit, retained.commit, { identity })) {
+              || String(await git(["rev-parse", `${retained.commit}^{tree}`])) !== retained.tree) {
             throw failure("Retained native conflict intent changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
           }
+          await verifyMergeStep(git, state.head, task.resultCommit, retained.commit, { ownedResolution: true, baseCommit });
           state.conflict.retainedResolution = retained;
           await writeJson(stateFile, state);
-          choice = { binding: retained, review: null, retained: true };
+          choice = { binding: retained, retained: true };
         }
       }
       if (head === state.head && choice) {
         assertCurrentInputs();
         const mergeHead = await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]);
         if (mergeHead === task.resultCommit) await requireUntouchedConflict(git, state.head, task.resultCommit, state.conflict);
-        else if (mergeHead || !state.conflict.reviewedResolution && !choice.retained) {
+        else if (mergeHead || !state.conflict.resolution && !state.conflict.reviewedResolution && !choice.retained) {
           throw failure("Native conflict operation changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
         } else await requireClean(git);
-        const accepted = await verifyStep(state.head, task.resultCommit, choice.binding.commit,
-          { identity, review: choice.review, verifyReview, evidenceRoot: root });
+        const accepted = await verifyMergeStep(git, state.head, task.resultCommit, choice.binding.commit, { ownedResolution: true, baseCommit });
         // Retain the accepted boundary BEFORE abort/checkout, so either side of
         // a lost local response is read back through this same journal.
-        state.conflict.reviewedResolution = accepted;
+        state.conflict.resolution = accepted;
         await writeJson(stateFile, state);
         if (mergeHead) await git(["merge", "--abort"]);
         await requireClean(git);
@@ -768,11 +831,10 @@ export async function mergeSelectedResults({
         throw failure("Native resolution has different merge parents", "RELEASE_NATIVE_CHECKOUT_CHANGED");
       }
       await requireClean(git);
-      const reviewedResolution = await verifyStep(state.head, task.resultCommit, head,
-        { identity, review: reviewFor(state.head, task.resultCommit, head), verifyReview, evidenceRoot: root });
-      if (reviewedResolution) resolutions.push(reviewedResolution);
+      const resolution = await verifyMergeStep(git, state.head, task.resultCommit, head, { ownedResolution: true, baseCommit });
+      if (resolution) resolutions.push(resolution);
       state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head, resolved: true,
-        ...(reviewedResolution ? { reviewedResolution } : {}) });
+        ...(resolution ? { resolution } : {}) });
       state.head = head;
       state.conflict = null;
       state.merging = false;
@@ -787,26 +849,6 @@ export async function mergeSelectedResults({
     if (await maybe(git, ["merge-base", "--is-ancestor", task.resultCommit, state.head]) !== null) {
       state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: state.head, contained: true });
       state.next += 1;
-      await writeJson(stateFile, state);
-      continue;
-    }
-    const choice = choices.find(item => item.binding.parents[0] === state.head
-      && item.binding.parents[1] === task.resultCommit);
-    if (choice) {
-      const reviewedResolution = await verifyStep(state.head, task.resultCommit, choice.binding.commit,
-        { identity, review: choice.review, verifyReview, evidenceRoot: root });
-      if (reviewedResolution) resolutions.push(reviewedResolution);
-      // The existing intent/readback handles a lost checkout or journal reply.
-      // Checkout retains Git's ignored/untracked collision protection.
-      state.merging = true;
-      await writeJson(stateFile, state);
-      await git(["checkout", "--detach", "--no-overwrite-ignore", choice.binding.commit]);
-      await requireClean(git);
-      state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit,
-        commit: choice.binding.commit, resolved: true, reviewedResolution });
-      state.head = choice.binding.commit;
-      state.next += 1;
-      state.merging = false;
       await writeJson(stateFile, state);
       continue;
     }
@@ -842,13 +884,6 @@ export async function mergeSelectedResults({
   if (String(await git(["rev-parse", "HEAD^{commit}"])) !== state.head) throw failure("Native final merge head changed");
   assertCurrentInputs();
   await measureTaskOperation("native:selected-content", () => assertSelectedContent({ git, baseCommit, tasks, head: state.head, resolutions, identity, merges:state.merges }));
-  // Preserve the original v1 review and add the separately authenticated exact
-  // compatibility decision only after full replay validation, before delivery.
-  if (compatibilityUpdates.length) {
-    for (const {index,resolution} of compatibilityUpdates) state.merges[index].reviewedResolution = resolution;
-    await writeJson(stateFile,state);
-  }
-  if (state.reuseTransportIntent) { delete state.reuseTransportIntent; await writeJson(stateFile, state); }
   return { root: repository, head: state.head,
     tree: String(await git(["rev-parse", "HEAD^{tree}"])), merges: state.merges };
 }

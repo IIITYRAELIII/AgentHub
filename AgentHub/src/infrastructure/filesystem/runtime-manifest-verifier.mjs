@@ -7,6 +7,8 @@ import { agentHubReleaseSequence, readAgentHubVersion } from "./agent-hub-packag
 import { relativeModuleSpecifiers } from "./module-import-specifiers.mjs";
 import { manifestVersionIdentity } from "../../domain/agent-hub-version.mjs";
 
+export const NATIVE_CAPTURE_RUNTIME_ASSET = "src/infrastructure/filesystem/sealed-native-capture.cs";
+
 const MODULE_FILE_PATTERN = /\.(?:cjs|mjs)$/iu;
 
 export const RELEASE_PROGRESS_RUNTIME_ASSETS = Object.freeze([
@@ -14,6 +16,10 @@ export const RELEASE_PROGRESS_RUNTIME_ASSETS = Object.freeze([
   "release-progress/index.html", "release-progress/app.js", "release-progress/style.css",
 ]);
 const RELEASE_PROGRESS_RUNTIME_FILES = new Set(RELEASE_PROGRESS_RUNTIME_ASSETS);
+const SOURCE_OPERATOR_FILES = new Set([
+  "release.mjs", "publish-all.mjs", "publish-changed.mjs", "release-api.mjs", "build-runtime.mjs",
+  "src/composition/release-api-runtime.mjs", "src/interfaces/mcp/release-api-host.mjs",
+]);
 
 const RUNTIME_TOP_LEVEL_FILES = new Set([
   "AGENT_HUB_GUIDE.md",
@@ -42,6 +48,7 @@ function normalizedRelative(value) {
 // assets are copied recursively; src and top-level modules exclude test tools.
 export function isRuntimeSourceModule(relative) {
   const file = normalizedRelative(relative);
+  if (SOURCE_OPERATOR_FILES.has(file)) return false;
   const name = path.posix.basename(file);
   if (file.startsWith("assets/") || RELEASE_PROGRESS_RUNTIME_FILES.has(file)) return MODULE_FILE_PATTERN.test(name);
   return /\.(?:cjs|mjs)$/u.test(name) && ((!file.includes("/") || file.startsWith("src/"))
@@ -54,6 +61,7 @@ export function isRuntimeSourceFile(relative) {
   return RUNTIME_TOP_LEVEL_FILES.has(file) || RUNTIME_HOST_SOURCE_INPUTS.includes(file) || file.startsWith("assets/")
     // This declared module companion is also required by native source closure.
     || file === "src/infrastructure/filesystem/git-invocation-policy.json"
+    || file === NATIVE_CAPTURE_RUNTIME_ASSET
     || RELEASE_PROGRESS_RUNTIME_FILES.has(file) || isRuntimeSourceModule(file);
 }
 
@@ -62,6 +70,10 @@ export async function verifyRuntimeImportClosure(releaseRoot, files, {
 } = {}) {
   const included = new Set(files.map((entry) => normalizedRelative(entry.path ?? entry)));
   const missing = [];
+  const captureModule = "src/infrastructure/filesystem/sealed-native-capture.mjs";
+  if (included.has(captureModule) && !included.has(NATIVE_CAPTURE_RUNTIME_ASSET)) {
+    missing.push({ importer: captureModule, specifier: "./sealed-native-capture.cs", target: NATIVE_CAPTURE_RUNTIME_ASSET });
+  }
   // npm's locked package tree is verified by npm ci and the runtime manifest.
   // Its modules may use package exports or extensionless internal specifiers;
   // the first-party relative-import rule does not model Node package resolution.

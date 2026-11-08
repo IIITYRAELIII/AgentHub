@@ -123,7 +123,7 @@ public static class AgentHubSealedRuntimeRelease {
   }
 
   public static string Retire(string selectedRoot, string volume, string index, string birth,
-    string manifestHash, string releaseId, bool allowPartial) {
+    string manifestHash, string releaseId, bool allowPartial, string generatedCache) {
     AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
     AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
     string fullRoot = Path.GetFullPath(selectedRoot);
@@ -199,6 +199,25 @@ public static class AgentHubSealedRuntimeRelease {
             expectedDirectories.Add(relative); AddParents(expectedDirectories, relative);
           }
         }
+        Asset cacheAsset = null, cacheSource = null;
+        bool emptyCache = false;
+        Dictionary<string, object> cacheProof = null;
+        if (!String.IsNullOrEmpty(generatedCache) && generatedCache != "null") {
+          cacheProof = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(generatedCache);
+          string relative = (string)cacheProof["path"], sourceName = (string)cacheProof["source"], cacheHash = (string)cacheProof["sha256"];
+          long cacheBytes = Convert.ToInt64(cacheProof["bytes"], CultureInfo.InvariantCulture);
+          emptyCache = (bool)cacheProof["empty"];
+          if (!Regex.IsMatch(relative, "^__pycache__/whisper_runtime\\.cpython-[0-9]+\\.pyc$")
+              || Convert.ToInt32(cacheProof["version"], CultureInfo.InvariantCulture) != 1
+              || sourceName != "whisper_runtime.py" || !files.TryGetValue(sourceName, out cacheSource)
+              || files.ContainsKey(relative) || cacheBytes < 16 || cacheBytes > 1024 * 1024
+              || !Regex.IsMatch(cacheHash, "^[a-f0-9]{64}$")) throw new IOException("runtime-generated-cache-proof-refused");
+          if (!emptyCache) {
+            cacheAsset = new Asset { Relative = relative, Hash = cacheHash, Bytes = cacheBytes };
+            files.Add(relative, cacheAsset);
+          }
+          AddParents(expectedDirectories, relative);
+        }
         foreach (string directory in expectedDirectories) if (files.ContainsKey(directory)) throw new IOException("runtime-path-type-conflict");
         if (expectedDirectories.Count > MaxFiles) throw new IOException("runtime-directory-budget");
         HashSet<string> foundFiles = new HashSet<string>(Case), foundDirectories = new HashSet<string>(Case);
@@ -227,8 +246,45 @@ public static class AgentHubSealedRuntimeRelease {
         }
         if (!allowPartial && (foundFiles.Count != files.Count || foundDirectories.Count != expectedDirectories.Count)) throw new IOException("runtime-missing-unadmitted-data");
         List<string> ordered = new List<string>(foundFiles); ordered.Sort(Case);
+        Dir cacheDirectory = null;
+        if (cacheProof != null) {
+          cacheDirectory = directories.Find(d => d.Relative == "__pycache__");
+          if (cacheDirectory == null || !foundFiles.Contains(cacheSource.Relative)) throw new IOException("runtime-generated-cache-source-missing");
+          Info directoryInfo = Information(cacheDirectory.Handle);
+          if (directoryInfo.Volume.ToString(CultureInfo.InvariantCulture) != (string)cacheProof["directoryDev"]
+              || Number(directoryInfo.IndexHigh, directoryInfo.IndexLow).ToString(CultureInfo.InvariantCulture) != (string)cacheProof["directoryIno"]
+              || Number(directoryInfo.Creation.High, directoryInfo.Creation.Low).ToString(CultureInfo.InvariantCulture) != (string)cacheProof["directoryBirthFileTime"])
+            throw new IOException("runtime-generated-cache-directory-changed");
+          if (emptyCache && !Empty(cacheDirectory.Path)) throw new IOException("runtime-generated-cache-empty-changed");
+          if (!emptyCache && (!foundFiles.Contains(cacheAsset.Relative)
+              || cacheAsset.Snapshot.Volume.ToString(CultureInfo.InvariantCulture) != (string)cacheProof["dev"]
+              || Number(cacheAsset.Snapshot.IndexHigh, cacheAsset.Snapshot.IndexLow).ToString(CultureInfo.InvariantCulture) != (string)cacheProof["ino"]
+              || Number(cacheAsset.Snapshot.Creation.High, cacheAsset.Snapshot.Creation.Low).ToString(CultureInfo.InvariantCulture) != (string)cacheProof["birthFileTime"]))
+            throw new IOException("runtime-generated-cache-custody-changed");
+        }
+        int plannedFiles = ordered.Count;
         int removed = 0; long deletedBytes = 0;
         Stopwatch clock = Stopwatch.StartNew();
+        if (cacheProof != null) {
+          using (SafeFileHandle sourceHandle = Open(Child(root, cacheSource.Relative), false, true))
+          using (FileStream sourceStream = new FileStream(sourceHandle, FileAccess.Read)) {
+            CheckSnapshot(sourceHandle, cacheSource);
+            if (Hash(sourceStream) != cacheSource.Hash) throw new IOException("runtime-generated-cache-source-changed");
+            CheckSnapshot(sourceHandle, cacheSource);
+            if (cacheAsset != null) {
+              using (SafeFileHandle h = Open(Child(root, cacheAsset.Relative), false, true))
+              using (FileStream stream = new FileStream(h, FileAccess.Read)) {
+                CheckSnapshot(h, cacheAsset);
+                if (Hash(stream) != cacheAsset.Hash) throw new IOException("runtime-asset-hash-changed");
+                CheckSnapshot(h, cacheAsset); DisposeEntry(h);
+              }
+              removed++; deletedBytes += cacheAsset.Bytes; ordered.Remove(cacheAsset.Relative);
+            }
+            if (!Empty(cacheDirectory.Path)) throw new IOException("runtime-generated-cache-late-data");
+            Streams(cacheDirectory.Handle, true); DisposeEntry(cacheDirectory.Handle);
+            cacheDirectory.Deleted = true; cacheDirectory.Handle.Dispose();
+          }
+        }
         foreach (string relative in ordered) {
           Asset asset = files[relative];
           if (removed >= 64 || (removed > 0 && (deletedBytes + asset.Bytes > MaxFileBytes || clock.ElapsedMilliseconds >= 10000))) break;
@@ -242,11 +298,11 @@ public static class AgentHubSealedRuntimeRelease {
         }
         for (int i = directories.Count - 1; i > 0; i--) {
           Dir directory = directories[i];
-          if (Empty(directory.Path)) {
+          if (!directory.Deleted && Empty(directory.Path)) {
             Streams(directory.Handle, true); DisposeEntry(directory.Handle); directory.Deleted = true; directory.Handle.Dispose();
           }
         }
-        bool complete = ordered.Count == removed;
+        bool complete = plannedFiles == removed;
         if (complete) {
           foreach (string child in System.IO.Directory.EnumerateFileSystemEntries(root)) {
             if (!Case.Equals(child, manifestPath)) throw new IOException("runtime-late-unexpected-data:" + Path.GetFileName(child));

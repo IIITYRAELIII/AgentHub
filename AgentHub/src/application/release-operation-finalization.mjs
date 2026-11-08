@@ -60,7 +60,7 @@ export class ReleaseOperationFinalization {
   // Repair only the already-published original's dev integration. Task delivery
   // remains owned by ordinary finalize and is never repeated by this command.
   async synchronizePublishedDev({ operation, generation, projectRoot, expectedDevCommit,
-    nativeResolutionReview = null, validate }) {
+    validate }) {
     const candidate = generation.candidates.find(item => item.repositoryRoot === projectRoot);
     if (!candidate) throw new Error("Published dev sync repository is not in the frozen generation");
     await validate();
@@ -73,6 +73,6 @@ export class ReleaseOperationFinalization {
       publishedSync: { operationId: operation.operationId, workspaceId: operation.workspaceId,
         generation: generation.generation, candidateIdentity: generation.identitySha256,
         expectedDevCommit, tasks: [...new Set(generation.selectedResults.map(item => item.taskId))].sort().map(taskId => ({ taskId })) },
-      nativeResolutionReview, validatePublishedSync: validate });
+      validatePublishedSync: validate });
   }
 }

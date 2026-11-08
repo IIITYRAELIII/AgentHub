@@ -1,4 +1,4 @@
-import { ownedGitArguments } from "./preparation-git-isolation.mjs";
+import { preparationGitInvocation } from "./preparation-git-isolation.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { link, lstat, readFile, writeFile, rename, rm } from "node:fs/promises";
@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { inspectAgentHubReleaseVersion } from "./release-version.mjs";
 import { nextRuntimeReleaseVersion } from "./runtime-release-version.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
+import { artifactVersionIdentity } from "../../domain/agent-hub-version.mjs";
 
 const execute = promisify(execFile);
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -15,11 +16,49 @@ const samePath = (a, b) => process.platform === "win32"
   ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
   : path.resolve(a) === path.resolve(b);
 
-async function git(root, args, environment = {}) {
-  return String((await execute("git", ownedGitArguments(args), {
-    cwd: root, env: { ...process.env, ...environment }, windowsHide: true,
+async function git(root, args, { GIT_INDEX_FILE } = {}) {
+  const invocation = preparationGitInvocation(args, root);
+  return String((await execute("git", invocation.args, {
+    cwd: root, env: { ...(invocation.env ?? process.env),
+      ...(GIT_INDEX_FILE === undefined ? {} : { GIT_INDEX_FILE }) }, windowsHide: true,
     maxBuffer: Infinity, encoding: "utf8",
   })).stdout).trimEnd();
+}
+
+const frozenMetadataPaths = new Set(["CHANGELOG.md", "AgentHub/package.json", "AgentHub/package-lock.json"]);
+
+// A read-only proof of the legacy writer's exact CRLF materialization. The
+// caller retains generation ownership and rechecks this proof before effects.
+export async function frozenMetadataMaterialization({ root, head }) {
+  const dirty = await git(root, ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const result = [];
+  for (const entry of dirty.split("\0").filter(Boolean)) {
+    const name = entry.slice(3);
+    if (!entry.startsWith(" M ") || !frozenMetadataPaths.has(name)) {
+      throw new Error("Frozen metadata recovery refuses unrelated or staged changes");
+    }
+    const file = path.join(root, name);
+    const info = await lstat(file, { bigint: true });
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n) {
+      throw new Error("Frozen metadata recovery file custody changed");
+    }
+    const bytes = await readFile(file);
+    const canonical = Buffer.from(bytes.toString("latin1").replaceAll("\r\n", "\n"), "latin1");
+    const blob = await git(root, ["rev-parse", `${head}:${name}`]);
+    const algorithm = blob.length === 64 ? "sha256" : "sha1";
+    const actualBlob = createHash(algorithm).update(`blob ${canonical.length}\0`).update(canonical).digest("hex");
+    const index = await git(root, ["ls-files", "--stage", "--", name]);
+    const delta = await git(root, ["diff", "--raw", "--no-abbrev", "--", name]);
+    const modes = /^:([0-7]+) ([0-7]+) /u.exec(delta);
+    if (bytes.equals(canonical) || actualBlob !== blob
+        || !modes || modes[1] !== modes[2]
+        || !new RegExp(`^100(?:644|755) ${blob} 0\\t`, "u").test(index)) {
+      throw new Error("Frozen metadata recovery requires whole CRLF-only committed afterimages");
+    }
+    result.push({ path: name, blob, sha256: digest(bytes),
+      fileId: [info.dev, info.ino, info.birthtimeNs].map(String) });
+  }
+  return result;
 }
 
 async function save(file, value) {
@@ -71,6 +110,8 @@ export async function freezePreparedPublicationCandidate({
   layout, marker, expectedPlanRevision, expectedPreparedHead, workspaceId,
   changelogContent, reusePersistedChangelog = false, releaseDate = new Date(), releaseType = "patch",
   expectedVersion = undefined,
+  expectedRuntimeVersion = undefined,
+  recoverMetadataMaterialization = false,
   runtimeRoot = defaultRuntimeRoot(),
   validateBeforeCommit = async () => {}, onPhase = async () => {},
 }) {
@@ -83,6 +124,9 @@ export async function freezePreparedPublicationCandidate({
   const priorFreeze = checkpoint.publicationFreeze;
   if (priorFreeze && expectedVersion !== undefined && priorFreeze.releaseVersion !== expectedVersion) {
     throw new Error("publication version differs from the original frozen intent");
+  }
+  if (priorFreeze && expectedRuntimeVersion !== undefined && priorFreeze.runtimeReleaseVersion !== expectedRuntimeVersion) {
+    throw new Error("publication runtime version differs from the original frozen intent");
   }
   const callerSuppliedChangelog = changelogContent == null ? null : Buffer.from(changelogContent);
   const callerSuppliedChangelogHash = callerSuppliedChangelog === null ? null : digest(callerSuppliedChangelog);
@@ -131,7 +175,8 @@ export async function freezePreparedPublicationCandidate({
     for (const line of dirty.split(/\r?\n/u).filter(Boolean)) {
       const file = line.slice(3).replaceAll("\\", "/");
       if (file !== "CHANGELOG.md"
-          && !(checkpoint.phase === "freezing" && recoverableFreezePaths.has(file))) {
+          && !((checkpoint.phase === "freezing" || checkpoint.phase === "frozen" && recoverMetadataMaterialization)
+            && recoverableFreezePaths.has(file))) {
         throw new Error("publication freeze permits only frozen release metadata changes");
       }
     }
@@ -158,11 +203,30 @@ export async function freezePreparedPublicationCandidate({
     const versionState = frozenVersion ? await inspectAgentHubReleaseVersion({
       root: path.join(root, "AgentHub"), expectedVersion: frozenVersion,
     }) : { changed: true };
+    if (!priorFreeze || state.head !== checkpoint.preReleaseHead || state.branch !== "refs/heads/main"
+        || manifest.publication?.head !== state.head || versionState.changed
+        || await git(root, ["rev-parse", "refs/heads/PreRelease^{commit}"]) !== state.head) {
+      throw new Error("frozen publication candidate changed");
+    }
+    if (state.dirty && recoverMetadataMaterialization) {
+      if (versionState.changed || state.head !== checkpoint.preReleaseHead || state.branch !== "refs/heads/main") {
+        throw new Error("Frozen metadata recovery original identity changed");
+      }
+      const checkpointHash = digest(await readFile(layout.checkpointFile));
+      const proof = await frozenMetadataMaterialization({ root, head: checkpoint.preReleaseHead });
+      await validateBeforeCommit();
+      if (digest(await readFile(layout.checkpointFile)) !== checkpointHash
+          || JSON.stringify(await frozenMetadataMaterialization({ root, head: checkpoint.preReleaseHead })) !== JSON.stringify(proof)
+          || await git(root, ["rev-parse", "HEAD^{commit}"]) !== checkpoint.preReleaseHead) {
+        throw new Error("Frozen metadata recovery changed before materialization");
+      }
+      await git(root, ["restore", `--source=${checkpoint.preReleaseHead}`, "--worktree", "--", ...proof.map(item => item.path)]);
+      state = await inspect({ requireSuppliedBytes: false });
+    }
     await requireMaterializedChangelog(state.content, priorFreeze?.changelogBlob ?? null);
-    if (!priorFreeze || state.head !== checkpoint.preReleaseHead || state.branch !== "refs/heads/main" || state.dirty
-      || manifest.publication?.head !== state.head
-      || versionState.changed
-      || await git(root, ["rev-parse", "refs/heads/PreRelease^{commit}"]) !== state.head) throw new Error("frozen publication candidate changed");
+    if (state.dirty || state.head !== checkpoint.preReleaseHead || state.branch !== "refs/heads/main") {
+      throw new Error("frozen publication candidate changed");
+    }
     return { ...checkpoint, releaseRoot: root, reused: true };
   }
   await validateBeforeCommit();
@@ -180,9 +244,15 @@ export async function freezePreparedPublicationCandidate({
     // This is a frozen expectation, not a reservation or allocation. The
     // installation owner compares it again under its existing lease before
     // preparing any bytes. Resume reuses this same immutable expectation.
+    const retainedRuntime = expectedRuntimeVersion === undefined ? null : artifactVersionIdentity(expectedRuntimeVersion);
+    if (retainedRuntime && retainedRuntime.publicVersion !== versionState.version) throw new Error("Original frozen public/runtime version mismatch");
     const runtimeReleaseVersion = await nextRuntimeReleaseVersion({
       releasesDir: runtimeLayout(runtimeRoot).releasesDir, packageVersion: versionState.version,
+      ...(retainedRuntime ? { allocationFloor: retainedRuntime.buildNumber - 1 } : {}),
     });
+    if (expectedRuntimeVersion !== undefined && runtimeReleaseVersion !== expectedRuntimeVersion) {
+      throw new Error("Original frozen runtime version is no longer available");
+    }
     const indexFile = path.join(marker.releaseGitCommonDir, `publication-freeze-index-${randomUUID()}`);
     let head = preparedHead;
     let changelogBlob = null;
