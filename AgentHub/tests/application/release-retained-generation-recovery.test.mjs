@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -132,7 +132,7 @@ async function fixture(t) {
         targetId:process.env.AGENT_HUB_RELEASE_TARGET_ID,candidate:process.env.AGENT_HUB_RELEASE_CANDIDATE_IDENTITY,
         status:'applied',leaseVerified:true,revision:${JSON.stringify(candidate.commit)},tool:${JSON.stringify(tool)}}));
     });`);
-  let selectedResults = selected, readback = "not_applied", publications = 0, compositions = 0;
+  let selectedResults = selected, readback = "not_applied", publications = 0, compositions = 0, cleanups = 0;
   let childJoined = Promise.resolve();
   const publication = new ReleaseOperationPublication({ dataDir, runtimeRoot,
     runnerFile, readPublicationStateImpl: async () => null, gitRemoteHeadImpl: async () => baseCommit,
@@ -149,7 +149,10 @@ async function fixture(t) {
     validateOperationGeneration: async () => ({ status: "ready" }) };
   const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight: preflight, publication, finalization: { finalize() {} } });
   const service = new ReleaseOperationService({ store, processAlive: () => false,
-    resolveTestPlans: async () => generation.testPlans,
+    resolveTestPlans: async () => {
+      await readdir(path.join(candidate.releaseRoot, "AgentHub"));
+      return generation.testPlans;
+    },
     withTaskSelection: input => adapter.withTaskSelection(input), withRetainedGeneration: input => adapter.withRetainedGeneration(input),
     reservePublication: input => adapter.reservePublication(input),
     compose: async () => {
@@ -164,7 +167,8 @@ async function fixture(t) {
       await childJoined;
       publications++;
       return effect;
-    }, finalize: async () => ({ status: "complete" }) });
+    }, finalize: async () => ({ status: "complete" }),
+    cleanupGeneration: async () => { cleanups++; } });
   const command = new ReleaseOperationCommandService({ releaseOperations: service,
     workspaceCatalog: { workspace() {}, hierarchy() {} }, taskBoard: { task() {}, releaseTasks() {} } });
   const amendmentAck = await command.continue({ operationId, requestId: "failed-next-compose", expectedGeneration: 7,
@@ -179,8 +183,38 @@ async function fixture(t) {
   return { root, primary, notesFile, body, execution, candidate, generation, store, command, service, request,
     publication, adapter, run, runner, selected, releaseId, metadata, releaseGit,
     setSelection: value => { selectedResults = value; }, setReadback: value => { readback = value; },
-    counts: () => ({ publications, compositions }) };
+    counts: () => ({ publications, compositions }), cleanups: () => cleanups };
 }
+
+test("failed composition keeps its unpublished frozen predecessor for recovery", async t => {
+  const f = await fixture(t);
+  assert.equal(f.cleanups(), 0, "terminal FAILED must retain the unpublished current generation");
+  await f.command.continue(f.request);
+  await f.service.drain(f.request.operationId);
+  assert.equal(f.store.get(f.request.operationId).state, "done");
+  assert.equal(f.cleanups(), 1, "verified completion retains the existing cleanup owner");
+});
+
+test("public retained recovery restores its original retired frozen checkout from the owning archive", async t => {
+  const f = await fixture(t);
+  const before = f.store.snapshot(f.request.operationId);
+  const index = await readFile(path.join(f.candidate.releaseRoot, ".git/index"));
+  const marker = await readFile(path.join(f.candidate.releaseRoot, ".git/agent-hub-release-clone.json"));
+  await f.releaseGit.discardGenerationCandidate({ ...f.candidate, operationId: f.request.operationId, generation: 7 });
+  await assert.rejects(readFile(path.join(f.candidate.generationRoot, "identity.json")), { code: "ENOENT" });
+  const ack = await f.command.continue(f.request);
+  assert.equal(ack.accepted, true);
+  await f.service.drain(f.request.operationId);
+  assert.equal(f.store.get(f.request.operationId).state, "done");
+  assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "HEAD"), f.candidate.commit);
+  assert.equal(await git(f.candidate.releaseRoot, "status", "--porcelain=v1"), "");
+  assert.deepEqual(await readFile(path.join(f.candidate.releaseRoot, ".git/index")), index);
+  assert.deepEqual(await readFile(path.join(f.candidate.releaseRoot, ".git/agent-hub-release-clone.json")), marker);
+  assert.deepEqual(f.store.snapshot(f.request.operationId).generations, before.generations);
+  for (const receipt of before.receipts) assert.deepEqual(f.store.snapshot(f.request.operationId).receipts.find(item =>
+    item.generation === receipt.generation && item.stepId === receipt.stepId && item.attempt === receipt.attempt), receipt);
+  assert.deepEqual(f.counts(), { publications: 1, compositions: 1 });
+});
 
 test("public continue reuses the original real Git frozen allocation after a terminal later compose failure", async t => {
   const f = await fixture(t);
