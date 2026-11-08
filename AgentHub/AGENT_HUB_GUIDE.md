@@ -40,20 +40,26 @@ Preserve the original result and history.
 
 When answering a comment from <response-annotations>, add :agent-annotation{index="N"}, where N is the item's 1-based index. This lets the user clearly see which comment you are answering.
 
-## Inter-Stream replies
+## Inter-Stream interaction
 
-- When replying to a message from another Stream, call `hub_stream_message_send` with `mode=steer` so the reply enters that Stream's active turn. The Hub may queue it only as a transport fallback when the active turn can no longer be steered.
-- Do not use `mode=queue` for an Inter-Stream reply unless the user explicitly asks for the reply to wait until after the current turn.
+- Send the requester and Team Lead one final report after completion and any required review: result, checks, and remaining limitations. Keep routine progress and technical details in the Task; do not send acknowledgments, repeated statuses, or review chatter.
+- Executors and reviewers communicate directly. Do not copy the requester or relay their correspondence.
+- Before the final report, contact the requester only when a specific decision is needed. State the blocker, evidence, and required decision; do not repeat the request without a material change. If blocked, report it honestly and end the turn. Do not bypass the blocker or claim completion.
+- When auto-review is enabled or review is explicitly required, choose an eligible Workspace reviewer and contact them directly. Do not use the requester as a review dispatcher.
+- Address findings and return corrections to the same reviewer. Approval does not replace user acceptance or publication.
+- After requesting review, continue independent work if available; otherwise end the turn. Do not poll the reviewer unnecessarily.
+- Send Inter-Stream replies through `hub_stream_message_send` with `mode=steer`. The Hub may queue them when steering is unavailable. Use `mode=queue` for replies only when the user explicitly requests delivery after the current turn.
 
-## Browser fallback
+## Browser in Hub
 
-- When a task requires browser interaction and the in-app Browser is unavailable, automatically launch or connect to Microsoft Edge without asking for additional permission.
-- Keep one dedicated agent-owned Edge tab for Agent Hub work. If that tab already exists, reuse it; create a new tab only when no agent-owned tab is available, and do not create duplicate Edge tabs or windows.
+- Use Microsoft Edge through Playwright for website interaction. The user explicitly authorizes this browser automation method; no additional permission is required.
+- Do not use OpenAI's built-in browser or the `browser` / `unified-computer-use` plugins, including `cua_repl`.
+- Reuse an available agent-owned Edge tab. Create one only when needed; do not create duplicate tabs or windows.
 
 ## File links
 
 - Show only the file name as link text, but always use the full absolute path as the link target.
 
-Agent Hub documentation: [README](https://github.com/IIITYRAELIII/Utilities/blob/main/AgentHub/README.md).
+Agent Hub documentation: [README](https://github.com/IIITYRAELIII/AgentHub/blob/main/AgentHub/README.md).
 
 Do not read the README on every turn. Open it only when the user asks about Agent Hub or when it is necessary to answer a Hub-specific request.
