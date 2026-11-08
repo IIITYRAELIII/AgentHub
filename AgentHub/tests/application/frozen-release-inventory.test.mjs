@@ -11,6 +11,7 @@ import { resolveTestSelection, verifyTestPlan } from "../../src/domain/test-sele
 import { discoverReleaseTestInventory, releaseTestPlans } from "../../src/infrastructure/filesystem/release-test-inventory.mjs";
 import { resolveTestContourSource } from "../../src/runtime/test-contour-manager.mjs";
 import { preparePublicationTestSelection, readPublicationTestSelection } from "../../src/infrastructure/filesystem/publication-test-selection.mjs";
+import { runPublicationSteps } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
 
 const exec = promisify(execFile);
 const all = { mode: "all", ids: [] };
@@ -114,6 +115,7 @@ const selection = args.some(arg => arg.startsWith("--selection-file="))
   ? await readPublicationTestSelection(args, { sourceRoot: import.meta.dirname })
   : JSON.parse(args[0].slice("--selection=".length));
 console.log(JSON.stringify({ count: selection.ids.length, digest: createHash("sha256").update(JSON.stringify(selection)).digest("hex") }));
+process.exitCode = Number(process.env.FROZEN_SELECTION_EXIT || 0);
 `);
   await git(f.repository, "add", ".");
   await git(f.repository, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "selected receiver");
@@ -211,4 +213,28 @@ test("selection payload refuses foreign roots, changed commits, dirty source and
   const stale = resolveTestSelection(all, [...f.inventory, { id: "tests/foreign.test.mjs" }]);
   const staleArgs = await preparePublicationTestSelection(stale, { repositoryRoot: f.repository, revision });
   await assert.rejects(readPublicationTestSelection(staleArgs, { sourceRoot: f.sourceRoot }), /Frozen test plan changed/u);
+});
+
+test("selected checkpoint execution refuses foreign descriptors and preserves a joined child failure", async t => {
+  const f = await selectionFixture(t);
+  const planned = selectedPublicationSteps({ unknown: [] }, f.plan, { boundedTestSelection: true })
+    .find(step => step.args[0] === "test-suite.mjs");
+  const step = { ...planned, cwd: f.sourceRoot };
+  const identity = { worktreeRoot: f.repository, revision: f.head, testPlan: f.plan };
+  const none = resolveTestSelection({ mode: "none", ids: [] }, f.inventory);
+  for (const invalid of [{ ...step, testSelectionPlan: none }, { ...step, args: [...step.args, "--selection={}"] },
+    { ...step, cwd: f.root }, { ...step, command: "foreign-executor" }]) {
+    await assert.rejects(runPublicationSteps([invalid], { identity, run: () => assert.fail("invalid descriptor started a child") }), /differs from its publication identity/u);
+  }
+  const finished = [];
+  const journal = { start: async () => {}, stepStarted: async () => {}, stepFinished: async (label, result) => finished.push(result.status) };
+  const checkpoint = { read: async () => null, write: async () => assert.fail("failed child recorded a successful checkpoint") };
+  let code;
+  try {
+    await runPublicationSteps([step], { identity, journal, checkpoint, run: child => exec(child.command, child.args, {
+      cwd: child.cwd, windowsHide: true, env: { ...process.env, FROZEN_SELECTION_EXIT: "9" },
+    }) });
+  } catch (error) { code = error.code; }
+  assert.equal(code, 9);
+  assert.deepEqual(finished, ["failed"]);
 });

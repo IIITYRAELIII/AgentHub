@@ -29,6 +29,7 @@ selection before execution. File publication is atomic and never replaces a
 retained payload. Direct inline callers keep their existing API.
 
 The independently pinned release tool needs the corresponding small dispatch
-companion, forwarding Hub's payload-preparation port. Its old immutable package
+companion, declaring the selected plan on the existing checkpoint-runner step.
+Hub prepares the payload only when that step actually executes. Its old immutable package
 and admitted generations remain retained. A corrected coherent Hub source and
 new reviewed tool input are delivered together through their existing owners.
