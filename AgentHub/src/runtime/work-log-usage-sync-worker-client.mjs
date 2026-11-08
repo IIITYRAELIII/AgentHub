@@ -1,9 +1,12 @@
+import { observeRuntimeWorkerMemory } from "../application/runtime-worker-memory.mjs";
 import { Worker } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
 
 const DEFAULT_MAX_PENDING_REQUESTS = 32;
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
+const SNAPSHOT_INPUT_MEASUREMENTS = ["selectedJournalRecords", "materializedRecordJsonBytes", "journalSelectionMode"];
 const TRACE_MEASUREMENTS = [
+  ...SNAPSHOT_INPUT_MEASUREMENTS,
   "queueWaitMs", "durationMs", "recordCount", "invalidRecordCount", "eventCount", "factCount",
   "workerThreadId", "accountingRecordsRead", "changedDayCount", "inspected", "candidateCount", "updated", "revisionReadMs", "projectionReadMs", "ledgerReadMs", "normalizeMs",
   "metadataReadMs", "recordReadMs",
@@ -52,6 +55,7 @@ export class WorkLogUsageSyncWorkerStore {
     this.#worker = new WorkerImpl(workerUrl, {
       workerData: { databaseFile, legacyFile, deviceId, defaultRuntimeHomeIds },
     });
+    observeRuntimeWorkerMemory("usageSync", this.#worker);
     this.#worker.unref?.();
     this.#worker.on("message", (message) => this.#settle(message));
     this.#worker.on("error", (error) => {
@@ -192,6 +196,9 @@ export class WorkLogUsageSyncWorkerStore {
       this.#lastSnapshot = {
         durationMs: result.durationMs,
         eventCount: result.events?.length ?? 0,
+        ...Object.fromEntries(SNAPSHOT_INPUT_MEASUREMENTS
+          .filter(key => Number.isFinite(result[key]) && result[key] >= 0)
+          .map(key => [key, result[key]])),
         completedAtMs: Date.now(),
       };
       return result;

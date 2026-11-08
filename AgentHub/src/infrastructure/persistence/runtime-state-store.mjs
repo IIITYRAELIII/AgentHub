@@ -1,3 +1,4 @@
+import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
 import { renameSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -151,6 +152,7 @@ class RuntimeStateWriter {
     this.worker = new Worker(new URL("./runtime-state-writer-worker.mjs", import.meta.url), {
       workerData: { dataDir },
     });
+    observeRuntimeWorkerMemory("runtimeState", this.worker);
     this.exit = new Promise((resolve) => {
       this.worker.once("exit", (code) => {
         this.closed = true;

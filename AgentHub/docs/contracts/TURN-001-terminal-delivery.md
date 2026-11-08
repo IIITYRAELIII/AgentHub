@@ -255,3 +255,23 @@ inspect the chain in this order:
 Required regression coverage includes direct ImageGen, multiple ideate outputs,
 an empty terminal delivered before a richer generated-image revision, and
 exclusion of viewed or supplied input images from generated response outputs.
+
+## Payload-free transport memory observations
+
+The existing Codex transport diagnostics expose fixed RPC classes and wire-byte
+counters, without payloads, arbitrary method names or Thread/Turn content. Byte
+counts use the existing decoded UTF-8 JSON-line boundary, excluding its framing
+delimiter, not retained heap measurements. They do not reconstruct invalid UTF-8
+bytes already replaced by the existing decoder. Active full-read page volume sums received page envelopes
+(including duplicate items); it is an inclusive wire-volume proxy while that
+read is assembling its result, not an exclusive allocation estimate. Hydration
+queue occupancy ends at replay; it does not measure downstream callback memory.
+
+Only 64 recent dispatched timeout identities are retained for diagnostic
+attribution. Eviction is counted; an unmatched reply has an unknown request
+identity/classification rather than inferred timeout or zero bytes. This window
+is not a receipt or recovery authority. Counters survive within the transport
+instance across child generations, and recorded request/observed generations
+remain separate. Normal timeout outcomes, full history and attachment content,
+request dispatch, hydration ordering/coalescing and terminal owners are unchanged.
+Observations do not establish a memory fix or authorize another provider read.

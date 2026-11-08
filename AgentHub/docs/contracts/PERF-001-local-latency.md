@@ -856,3 +856,68 @@ identities without hydrating retained Git/WIP/dependency/payload trees, opening
 SQLite or acquiring writer reservations on the live runtime. The existing
 original-ID `package-backup-preflight` restart span measures that work. It is not
 queue wait or proof of snapshot completion; actual backup and ready remain distinct.
+
+## Worker memory observations
+
+The composition root forwards its existing commandTraceService to the client
+runtime. Journal preparation's existing started/terminal pair therefore reaches
+the same bounded best-effort worker/SQLite sink, under the original publication
+command and operation span with instance/release identity. Diagnostic failure or
+backpressure cannot change preparation, upload or retry results. Existing gzip
+encoding counts the actual buffers already produced: encodedInputBytes,
+encodingBufferCount and maxEncodingBufferBytes are fixed numeric terminal
+measurements, not another serialization, retained payload or process-memory
+bound. Failed preparation leaves unavailable input volume unknown. Missing older
+spans do not prove no operation and cannot be retrospectively reconstructed.
+
+Journal publication retains its canonical JSON serialization and complete gzip
+payload, but feeds UTF8 encoding blocks into gzip with stream backpressure rather
+than allocating another full uncompressed UTF8 Buffer. Block boundaries preserve
+surrogate pairs. This is an internal encoding granularity, not a history/content
+limit. Compression level, exact compressed bytes and sync ID, chunk protocol,
+read-snapshot generation, worker ownership and failure-before-publication remain
+unchanged. Full JSON strings, SQLite materialization and compressed output still
+consume memory; eliminating this copy is not an exclusive process-RSS bound or a
+claim that all retained-memory causes have been fixed.
+
+Usage-sync snapshot export removes message bodies, prompts, diffs and auxiliary
+file/tool lists from its SQLite record projection before materializing journal
+rows in JavaScript. These fields are not inputs to the canonical usage-fact
+projector. Full journal reads and stored records retain their original content;
+all usage fields, cursor selection, ordering and legacy handling are unchanged.
+This avoids copying unused content, not a new history limit or cache policy.
+
+The existing usage snapshot result and original worker-request trace report
+selectedJournalRecords and materializedRecordJsonBytes from the already returned
+SQLite JSON strings, before parsing. Invalid selected JSON still contributes to
+input volume; these counts are not output fact count or retained heap. A non-text
+legacy value leaves byte volume unknown. journalSelectionMode is numeric:0 full
+(including revision0),1 positive revision cursor,2 legacy observed-time cursor,
+3 no journal table. The existing revision-backed query takes precedence over
+the legacy timestamp argument. No raw cursor/identity/content is logged, no
+additional query/export/stringification is performed, and metrics do not change
+selection, fact normalization, original errors or operation identity. Existing
+health exposes only the latest bounded snapshot scalars through the same owner.
+
+The existing health sampler may read getHeapStatistics from already-owned Node
+workers, without spawning/refing/stopping them or posting business requests.
+Seven fixed owner classes retain weak references to at most 16 diagnostic
+records each; additional active workers remain explicitly unobserved. This is
+an observation bound, not worker admission or a limit on history/work. Exit
+removes the exact observation. Samples carry numeric thread/generation and
+request/completion times; missing/failed values are unknown, not zero. At most
+one observation per tracked worker is pending, with no added timer or wait on
+the business path. Automatic ticks join only observations started by that
+tick; an already pending observation retains no additional completion chain.
+Other workers can still be observed while one request stays pending. An
+explicit awaited sample may join existing pending observations. Native
+sampling failure cannot change an owner's result.
+
+Existing runtime-health trace frames retain the original metric selection and
+cap; separate small frames persist each worker owner's numeric summary through
+the same trace. Heap/physical/external values belong to worker isolates, may be
+stale and overlap native allocator accounting; they are not per-worker RSS.
+Summed latest samples are not a simultaneous exclusive decomposition of process
+RSS. Payload, paths, arbitrary names, stacks and provider data are not sampled.
+These observations do not authorize GC, heap dumps, inspector operations, cache
+clearing, retries, provider calls, restarts or a claim that a memory cause is fixed.

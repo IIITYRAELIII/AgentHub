@@ -319,6 +319,8 @@
         "src/application/runtime-performance-sampler.mjs",
         "src/application/runtime-cpu-sample.mjs",
         "src/composition/command-trace-composition.mjs",
+      "src/composition/agent-hub-composition.mjs",
+      "tests/composition/journal-publication-trace.test.mjs",
         "src/interfaces/web/http-read-timing.mjs",
         "tests/application/runtime-cpu-sample.test.mjs",
         "tests/interfaces/web/http-read-timing.test.mjs",
@@ -339,7 +341,9 @@
         "docs/decisions/ADR-HUB-376-public-package-handoff.md",
         "src/infrastructure/persistence/runtime-update-backup-retention.mjs",
         "tests/infrastructure/persistence/runtime-update-backup-retention.test.mjs",
-        "docs/decisions/ADR-HUB-383-update-backup-retention.md"
+        "docs/decisions/ADR-HUB-383-update-backup-retention.md",
+        "src/application/runtime-worker-memory.mjs",
+        "tests/application/runtime-worker-memory.test.mjs"
       ]
     },
     {
