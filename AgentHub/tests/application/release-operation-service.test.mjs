@@ -205,7 +205,7 @@ test("same UNKNOWN publication request waits for owning Ready before one uncaptu
   assert.deepEqual(f.store.snapshot(f.operationId), before);
   await assert.rejects(hub.call("hub_release_continue", args), /public-installer-readiness/u);
   assert.deepEqual(f.store.snapshot(f.operationId), before);
-  assert.equal(catalog.mcpOperation(args.request_id).status, "unknown");
+  assert.deepEqual(catalog.mcpOperation(args.request_id), unknown);
   const refused = inspections;
   await assert.rejects(hub.call("hub_release_continue", { ...args, expected_revision: 1 }), /another operation/u);
   await assert.rejects(hub.call("hub_release_continue", { ...args,
@@ -225,6 +225,8 @@ test("same UNKNOWN publication request waits for owning Ready before one uncaptu
   const result = await hub.call("hub_release_continue", args);
   assert.equal(result.recovery, admitted[0].identitySha256);
   assert.equal(result.operatorReconciliation.kind, "failed-publication-admission-readback-v1");
+  assert.deepEqual(result.operatorReconciliation.priorReceipt, {
+    status: unknown.status, error: unknown.error, createdAtMs: unknown.createdAtMs, completedAtMs: unknown.completedAtMs });
   assert.equal(catalog.mcpOperation(args.request_id).argumentsHash, unknown.argumentsHash);
   assert.equal(catalog.mcpOperation(args.request_id).status, "succeeded");
   assert.deepEqual(await hub.call("hub_release_continue", args), result);
