@@ -239,7 +239,9 @@ test("recent canonical windows stay bounded and explicit close fences its late r
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(await page.getByText("Loaded answer 4/11", { exact: false }).count(), 0);
     assert.equal(await page.getByText("Late closed answer", { exact: true }).count(), 0);
-    assert.equal(await page.evaluate(() => window.__bounds.held.some(m => m.action === "open-task" && m.params.streamId === "stream-4")), true);
+    assert.equal(await page.evaluate(() => window.__bounds.held.some(m => m.params.streamId === "stream-4"
+      && (m.action === "open-task" || (m.action === "task-history" && m.params.includeActive == null)))), true,
+    "an explicitly closed page needs a fresh canonical read before it can reappear");
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

@@ -101,17 +101,25 @@ for (const scenario of ['first', 'newer-final', 'rotated', 'navigation', 'existi
         })));
         probe.respond = respond;
         window.__agentHubVscode.postMessage = m => {
+          if (m.action === 'select-task') {
+            respond(m, m.params.deferSnapshot ? { selectionChanged: true, snapshotDeferred: true }
+              : window.__agentHubFixture.snapshot);
+            return;
+          }
           if (m.action === 'mark-task-read') {
             probe.reads.push(m.params);
             void window.__firstHistoryRead(m.params).then(result => { probe.results.push(result); respond(m, result); });
             return;
           }
           if (['open-task', 'task-history'].includes(m.action) && m.params?.streamId === 'stream-b') {
-            if (m.action === 'task-history' && m.params.before == null && probe.setupHistory) {
+            if (m.action === 'task-history' && m.params.before == null
+              && m.params.includeActive === true && probe.setupHistory) {
               respond(m, probe.setupHistory);
               return;
             }
-            (m.action === 'open-task' ? probe.opens : probe.held).push(m);
+            const firstLocalRead = m.action === 'task-history' && m.params.before == null
+              && m.params.includeActive == null;
+            (m.action === 'open-task' || firstLocalRead ? probe.opens : probe.held).push(m);
             return;
           }
           original(m);
@@ -129,7 +137,8 @@ for (const scenario of ['first', 'newer-final', 'rotated', 'navigation', 'existi
       const releaseOpen = async (index, body = history) => {
         await page.evaluate(({ index, history, initial }) => {
           const p = window.__firstHistory;
-          p.respond(p.opens[index], { history, snapshot: initial });
+          const request = p.opens[index];
+          p.respond(request, request.action === 'open-task' ? { history, snapshot: initial } : history);
         }, { index, history: body, initial: first });
       };
       if (scenario === 'existing-older') {
@@ -157,13 +166,23 @@ for (const scenario of ['first', 'newer-final', 'rotated', 'navigation', 'existi
           });
         });
         await page.getByText('Explicit older page', { exact: true }).waitFor({ timeout: 3000 });
-        await page.evaluate(() => { delete window.__firstHistory.setupHistory; });
+        await page.evaluate(() => {
+          delete window.__firstHistory.setupHistory;
+        });
         // This case protects an existing open window. Ordinary replacement
         // legitimately releases a closed column's canonical pages (ADR-HUB-343).
         await page.locator('[data-stream-task-id="stream-a"]:visible').first().click({ modifiers: ['Control'] });
         assert.equal(await page.locator('.stream-tabs-track [data-stream-tab-id="stream-b"]').getAttribute('aria-pressed'), 'true');
       }
-      await click('stream-b');
+      if (scenario === 'existing-older') {
+        // Retained tab selection now deliberately reuses its page. Exercise
+        // the existing explicit route-open path for this stale-open control.
+        await page.evaluate(() => {
+          const target = '#/chat/stream/stream-b';
+          if (location.hash === target) window.dispatchEvent(new HashChangeEvent('hashchange'));
+          else location.hash = target;
+        });
+      } else await click('stream-b');
       const count = scenario === 'existing-older' ? 2 : 1;
       await page.waitForFunction(n => window.__firstHistory.opens.length === n, count);
       if (scenario === 'navigation') await click('stream-a');
@@ -252,6 +271,10 @@ for (const scenario of ['first', 'newer-final', 'rotated', 'navigation', 'existi
     } catch (error) {
       console.error(JSON.stringify({ scenario, stage, errors, state: page && !page.isClosed() ? await page.evaluate(() => ({
         connection: document.documentElement.dataset.connection,
+        view: document.documentElement.dataset.view,
+        pane: document.querySelector('[data-chat-pane]')?.dataset.streamChatTaskId,
+        selected: [...document.querySelectorAll('[data-stream-task-id][aria-pressed="true"]')]
+          .map(node => node.dataset.streamTaskId),
         opens: window.__firstHistory?.opens?.length,
         held: window.__firstHistory?.held?.map(m => m.params),
         applied: window.__firstHistory?.applied,
