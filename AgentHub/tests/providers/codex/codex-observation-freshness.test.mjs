@@ -214,3 +214,59 @@ test("the real rollout reader orders unchanged records and later appends against
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("selected native items reject unseen older IDs and admit proven later distinct items", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub430-selection-order-"));
+  try {
+    for (const external of [false, true]) {
+      const file = path.join(directory, `${external}.jsonl`);
+      await writeFile(file, start() + message("old-final", "final_answer", "Old final"));
+      const codex = observer(() => readCodexRolloutActivity(file));
+      const run = createObservedTaskRun(binding, { answer: "" });
+      run.observer = external;
+      completeCodexAgentMessage(run, { turnId, item: {
+        id: "new-final", type: "agentMessage", phase: "final_answer", text: "New final",
+      } });
+      const publication = publisher(codex);
+      await publication.service.applyActive(run, await codex.read(run, readOptions));
+      assert.equal(run.responseItemId, "new-final");
+      assert.equal(run.responseText, "New final");
+      assert.equal(publication.states.at(-1).answer, "New final");
+      assert.deepEqual(run.responseItems.map((item) => item.id), ["new-final"]);
+
+      const equal = "Distinct items retain equal text";
+      await writeFile(file, start() + message("first", "final_answer", equal));
+      const initial = await codex.read(binding);
+      const anchored = createObservedTaskRun(binding, initial);
+      anchored.observer = external;
+      completeCodexAgentMessage(anchored, { turnId, item: {
+        id: "first", type: "agentMessage", phase: "final_answer", text: equal,
+      } });
+      await appendFile(file, message("second", "final_answer", equal));
+      await publication.service.applyActive(anchored, await codex.read(anchored, readOptions));
+      assert.equal(anchored.responseItemId, "second");
+      assert.equal(anchored.responseText, equal);
+      assert.equal(publication.states.at(-1).answer, equal);
+      assert.deepEqual(anchored.responseItems.map((item) => item.id), ["first", "second"]);
+
+      // A new record for a retained ID carries new source order too.
+      await appendFile(file, message("first", "final_answer", "Later short"));
+      await publication.service.applyActive(anchored, await codex.read(anchored, readOptions));
+      assert.equal(anchored.responseItemId, "first");
+      assert.equal(anchored.responseText, "Later short");
+      assert.equal(publication.states.at(-1).answer, "Later short");
+      assert.equal(anchored.responseItems.length, 2);
+
+      completeCodexAgentMessage(anchored, { turnId, item: {
+        id: "first", type: "agentMessage", phase: "final_answer", text: "Newer native",
+      } });
+      await writeFile(file, start() + message("unseen", "final_answer", "Earlier unseen"));
+      await publication.service.applyActive(anchored, await codex.read(anchored, readOptions));
+      assert.equal(anchored.responseItemId, "first");
+      assert.equal(anchored.responseText, "Newer native");
+      assert.equal(publication.states.at(-1).answer, "Newer native");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

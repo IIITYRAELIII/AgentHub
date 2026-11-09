@@ -288,6 +288,10 @@ cache generation. An unchanged record or unrelated file growth cannot replace
 that native body. A later record for the item in the same append generation can
 apply a shorter update. Rewrites, cache loss and missing ordering retain native
 ownership until ordering is available through the canonical native item path.
+The selected native item also owns selection against a different incoming ID.
+An unseen observation needs the same later-record proof to displace it. A
+proven later record may select a different item with equal text or refresh an
+earlier retained item. Array insertion order alone supplies no such proof.
 Source completeness accompanies a shortened live preview. A complete native
 item retains its full body when the bounded observation covers a suffix, while
 preview-owned items continue to refresh within the existing preview bound.

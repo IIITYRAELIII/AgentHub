@@ -184,7 +184,16 @@ export function completeCodexAgentMessage(run, { turnId = null, item = null } = 
 export function observeCodexAgentMessage(run, { turnId = null, item = null, expectedRevision } = {}) {
   if (!run || !isResponseItem(item)) return null;
   if (expectedRevision !== codexAgentMessageRevision(run)) return synchronizeResponse(run);
-  const current = agentMessages(run).find((candidate) => candidate.id === normalizedId(item.id));
+  const items = agentMessages(run);
+  const current = items.find((candidate) => candidate.id === normalizedId(item.id));
+  const selected = selectedAgentMessage(items);
+  if (selected?.[NATIVE_MESSAGE] && selected !== current
+    && !laterRolloutRecord(item.rolloutRecord, selected.rolloutRecord)) {
+    return synchronizeResponse(run);
+  }
+  if (laterRolloutRecord(selected?.rolloutRecord, item.rolloutRecord)) {
+    return synchronizeResponse(run);
+  }
   if (current?.[NATIVE_MESSAGE] && !laterRolloutRecord(item.rolloutRecord, current.rolloutRecord)) {
     return synchronizeResponse(run);
   }
@@ -193,6 +202,11 @@ export function observeCodexAgentMessage(run, { turnId = null, item = null, expe
   }
   if (item.textComplete === false && current && current.textComplete !== false) {
     return synchronizeResponse(run);
+  }
+  if (current && selected !== current
+    && laterRolloutRecord(item.rolloutRecord, selected?.rolloutRecord)) {
+    items.splice(items.indexOf(current), 1);
+    items.push(current);
   }
   const phase = agentMessagePhase(item);
   const message = upsertAgentMessage(run, { turnId, itemId: item.id }, {
