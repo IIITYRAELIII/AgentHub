@@ -73,8 +73,9 @@ Append copies only the groups it mutates. Serialized rollout-cache budgets are
 Desktop paged history clones only each selected cached turn.
 
 The same rollout cache retains native phase/item data for at most eight latest
-assistant items, using the existing 200,000-character live-preview bound per
-item. Those bytes participate in its serialized cache budget. Full terminal
+assistant items, retaining paired raw and projected text under the existing
+200,000-character live-preview bound per representation. Those bytes participate
+in its serialized cache budget. Full terminal
 content and explicit trace-source reads retain their existing boundaries.
 
 Explicit “All stages” reads use the existing history owner and rollout worker,

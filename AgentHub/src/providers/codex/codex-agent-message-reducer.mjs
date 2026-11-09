@@ -2,6 +2,20 @@ import { codexAssistantResponseProjection } from "../../domain/codex-response-an
 
 const MAX_AGENT_MESSAGES = 64;
 const PROVIDER_TEXT = Symbol("codex-provider-text");
+const MESSAGE_REVISION = Symbol("codex-agent-message-revision");
+
+export function codexAgentMessageRevision(run) {
+  return run?.[MESSAGE_REVISION] ?? 0;
+}
+
+function advanceMessageRevision(run) {
+  Object.defineProperty(run, MESSAGE_REVISION, {
+    configurable: true,
+    enumerable: false,
+    writable: true,
+    value: codexAgentMessageRevision(run) + 1,
+  });
+}
 
 function normalizedId(value) {
   return String(value ?? "").trim();
@@ -16,10 +30,12 @@ function agentMessageText(item) {
 }
 
 function providerText(item) {
-  return typeof item?.[PROVIDER_TEXT] === "string" ? item[PROVIDER_TEXT] : agentMessageText(item);
+  if (typeof item?.[PROVIDER_TEXT] === "string") return item[PROVIDER_TEXT];
+  if (typeof item?.rawProviderText === "string") return item.rawProviderText;
+  return agentMessageText(item);
 }
 
-function setProviderText(item, value) {
+function setProviderText(item, value, knownProjection = null) {
   const text = String(value ?? "");
   Object.defineProperty(item, PROVIDER_TEXT, {
     configurable: true,
@@ -27,10 +43,11 @@ function setProviderText(item, value) {
     writable: true,
     value: text,
   });
-  const projection = codexAssistantResponseProjection(text);
+  delete item.rawProviderText;
+  const projection = knownProjection ?? codexAssistantResponseProjection(text);
   item.text = projection.text;
-  if (projection.responseAnnotationReferences.length) {
-    item.responseAnnotationReferences = projection.responseAnnotationReferences;
+  if (projection.responseAnnotationReferences?.length) {
+    item.responseAnnotationReferences = structuredClone(projection.responseAnnotationReferences);
   } else delete item.responseAnnotationReferences;
 }
 
@@ -65,6 +82,7 @@ function upsertAgentMessage(run, reference, defaults = {}) {
     type: defaults.type ?? item.type ?? "agentMessage",
     turnId: normalizedId(reference.turnId) || item.turnId || null,
   });
+  advanceMessageRevision(run);
   return item;
 }
 
@@ -107,7 +125,10 @@ export function startCodexAgentMessage(run, { turnId = null, item = null } = {})
     ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
   });
   const text = agentMessageText(item);
-  if (text) setProviderText(message, text);
+  if (text) {
+    setProviderText(message, text);
+    delete message.textComplete;
+  }
   synchronizeResponse(run);
   return message;
 }
@@ -135,7 +156,27 @@ export function completeCodexAgentMessage(run, { turnId = null, item = null } = 
     type: item.type, ...(phase ? { phase } : {}), status: "completed",
     ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
   });
-  if (typeof item.text === "string") setProviderText(message, item.text);
+  if (typeof item.text === "string") {
+    setProviderText(message, item.text);
+    delete message.textComplete;
+  }
+  synchronizeResponse(run);
+  return message;
+}
+
+export function observeCodexAgentMessage(run, { turnId = null, item = null, expectedRevision } = {}) {
+  if (!run || !isResponseItem(item)) return null;
+  if (expectedRevision !== codexAgentMessageRevision(run)) return synchronizeResponse(run);
+  const current = agentMessages(run).find((candidate) => candidate.id === normalizedId(item.id));
+  if (item.textComplete === false && current && current.textComplete !== false) {
+    return synchronizeResponse(run);
+  }
+  const phase = agentMessagePhase(item);
+  const message = upsertAgentMessage(run, { turnId, itemId: item.id }, {
+    type: item.type, ...(phase ? { phase } : {}), status: "completed", textComplete: item.textComplete,
+    ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
+  });
+  setProviderText(message, item.rawProviderText ?? agentMessageText(item), item);
   synchronizeResponse(run);
   return message;
 }
@@ -145,6 +186,7 @@ export function hydrateCodexAgentMessages(run, items = [], { turnId = null } = {
   const messages = (Array.isArray(items) ? items : [])
     .filter((item) => isResponseItem(item) && normalizedId(item.id));
   if (!messages.length) return synchronizeResponse(run);
+  advanceMessageRevision(run);
   run.responseItems = messages.slice(-MAX_AGENT_MESSAGES).map((item) => {
     const message = {
       id: normalizedId(item.id),

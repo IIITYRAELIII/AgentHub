@@ -90,7 +90,8 @@
         "src/infrastructure/persistence/provider-turn*",
         "src/infrastructure/persistence/task-sync-store.mjs",
         "tests/application/turn-end-delivery-batch.test.mjs",
-        "tests/providers/codex/codex-rollout-answer-projection.test.mjs"
+        "tests/providers/codex/codex-rollout-answer-projection.test.mjs",
+        "tests/providers/codex/codex-observation-freshness.test.mjs"
       ]
     },
     {
@@ -116,6 +117,7 @@
         "src/infrastructure/persistence/task-sync-store.mjs",
         "tests/public/composer-send-isolation.test.mjs",
         "tests/providers/codex/codex-rollout-answer-projection.test.mjs",
+        "tests/providers/codex/codex-observation-freshness.test.mjs",
         "tests/public/codex-rollout-live-answer.test.mjs"
       ]
     },

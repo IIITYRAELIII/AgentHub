@@ -275,6 +275,17 @@ existing item reducer preserves a later streamed item during an older rollout
 observation. Unphased legacy recovery and exact terminal status/content retain
 their existing owners.
 
+That read captures the reducer's process-local mutation revision before yielding.
+Native start, delta, completion, hydration and accepted observation advance it.
+An intervening mutation retains the current item body and citations, including
+for the same item ID. A fresh observation may apply an authoritative shorter
+body. Its canonical text and complete annotation metadata cross the reducer
+together, with the bounded raw provider text retained for subsequent deltas.
+This ephemeral revision is separate from durable terminal revision authority.
+Source completeness accompanies a shortened live preview. A complete native
+item retains its full body when the bounded observation covers a suffix, while
+preview-owned items continue to refresh within the existing preview bound.
+
 Hidden or zero-sized chat panes do not automatically expand cached history or
 request older pages. Queued frame and scroll callbacks recheck current visibility;
 returning to a visible short chat resumes viewport filling, and explicit older-page

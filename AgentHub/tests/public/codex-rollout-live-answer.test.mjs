@@ -46,7 +46,7 @@ test("rollout observer through desktop and shipped client renders exact commenta
     });
 
     activity = parseCodexRolloutActivity(source + message("comment-two", "commentary", text));
-    service.applyObserved(run, await service.read(binding));
+    service.applyObserved(run, await service.read(run));
     const next = structuredClone(value);
     next.version = "rollout-second";
     next.tasks[0].run = { ...desktopRunSnapshot(run, { operationKind: "user-turn" }), projectionState: "active" };
@@ -57,7 +57,7 @@ test("rollout observer through desktop and shipped client renders exact commenta
 
     activity = parseCodexRolloutActivity(source + message("comment-two", "commentary", text)
       + message("final-one", "final_answer", text));
-    service.applyObserved(run, await service.read(binding));
+    service.applyObserved(run, await service.read(run));
     const final = structuredClone(next);
     final.version = "rollout-final-item";
     final.tasks[0].run = { ...desktopRunSnapshot(run, { operationKind: "user-turn" }), projectionState: "active" };

@@ -44,7 +44,7 @@ test("rollout commentary is trace-owned and exact final items survive observer r
   activity = parseCodexRolloutActivity(start()
     + message("comment-one", "commentary", "Same visible text")
     + message("final-one", "final_answer", "Same visible text"));
-  const final = await service.read(binding);
+  const final = await service.read(run);
   assert.equal(final.answer, "Same visible text");
   assert.equal(final.active, true, "an explicit final item alone does not complete its turn");
   assert.equal(final.completed, false);

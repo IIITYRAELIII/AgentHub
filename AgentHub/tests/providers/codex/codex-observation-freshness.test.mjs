@@ -1,0 +1,150 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { TaskObservationService } from "../../../src/application/task-observation-service.mjs";
+import { createObservedTaskRun } from "../../../src/domain/task-runs.mjs";
+import { codexAssistantResponseProjection } from "../../../src/domain/codex-response-annotation.mjs";
+import { appendCodexAgentMessageDelta, completeCodexAgentMessage,
+  hydrateCodexAgentMessages, startCodexAgentMessage } from "../../../src/providers/codex/codex-agent-message-reducer.mjs";
+import { parseCodexRolloutActivity } from "../../../src/providers/codex/codex-rollout-activity.mjs";
+import { message, observer, start, turnId } from "./codex-rollout-answer.fixture.mjs";
+
+const binding = { provider: "codex", threadId: "thread-one", turnId,
+  observer: true, exactTurnObserver: true };
+const readOptions = { threadResult: { thread: { path: "synthetic-rollout", status: { type: "active" }, turns: [] } } };
+
+function publisher(codex) {
+  const states = [];
+  const service = new TaskObservationService({
+    providers: { call(_provider, method, ...args) {
+      if (method === "applyActiveSnapshot") return codex.applyActive(...args);
+      if (method === "applyObservedSnapshot") return codex.applyObserved(...args);
+      assert.fail(`Unexpected provider hook ${method}`);
+    } },
+    syncTaskRun: (_run, state) => states.push(structuredClone(state)),
+    noteRunActivity: () => {}, scheduleProgressUpdate: () => {},
+    markProgressHeartbeat: () => false, progressHeartbeatState: () => "active",
+  });
+  return { service, states };
+}
+
+test("same-item events during an observation read retain their body through both publication paths", async () => {
+  for (const external of [false, true]) {
+    let activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", "Final start"));
+    let held = false;
+    let releaseRead;
+    let signalRead;
+    const readStarted = new Promise((resolve) => { signalRead = resolve; });
+    const codex = observer(async () => {
+      if (!held) return activity;
+      signalRead();
+      return new Promise((resolve) => { releaseRead = resolve; });
+    });
+    const initial = await codex.read(binding);
+    const run = createObservedTaskRun(binding, initial);
+    run.observer = external;
+    const publication = publisher(codex);
+    held = true;
+    const pending = codex.read(run, readOptions);
+    await readStarted;
+    completeCodexAgentMessage(run, { turnId, item: {
+      id: "same-final", type: "agentMessage", phase: "final_answer",
+      text: "Final start with the complete newer ending",
+    } });
+    releaseRead(activity);
+    const stale = await pending;
+    await publication.service.applyActive(run, stale);
+    assert.equal(run.responseText, "Final start with the complete newer ending");
+    assert.equal(run.responseItemId, "same-final");
+    assert.equal(publication.states.at(-1).answer, run.responseText);
+
+    held = false;
+    activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", "Shorter authoritative update"));
+    const fresh = await codex.read(run, readOptions);
+    await publication.service.applyActive(run, fresh);
+    assert.equal(run.responseText, "Shorter authoritative update");
+    assert.equal(publication.states.at(-1).answer, run.responseText);
+  }
+});
+
+test("fresh and refreshed observed finals retain their complete citation projection and raw delta base", async () => {
+  for (const external of [false, true]) {
+    let raw = ':codex-annotation{index="1"} Original final';
+    let activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", raw));
+    const codex = observer(async () => activity);
+    const initial = await codex.read(binding);
+    const expectedInitial = structuredClone(initial.responseItem.responseAnnotationReferences);
+    assert.equal(expectedInitial[0].index, 1);
+    const seeded = createObservedTaskRun(binding, initial);
+    appendCodexAgentMessageDelta(seeded, { turnId, itemId: "same-final", delta: " More" });
+    assert.deepEqual(seeded.responseAnnotationReferences,
+      codexAssistantResponseProjection(raw + " More").responseAnnotationReferences);
+    const run = createObservedTaskRun(binding, initial);
+    run.observer = external;
+    const publication = publisher(codex);
+    await publication.service.applyActive(run, initial);
+    assert.deepEqual(run.responseAnnotationReferences, expectedInitial);
+    assert.equal(publication.states.at(-1).answer, run.responseText);
+
+    raw = ':codex-annotation{index="2"} Changed final';
+    activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", raw));
+    const fresh = await codex.read(run, readOptions);
+    const expectedRefresh = structuredClone(fresh.responseItem.responseAnnotationReferences);
+    assert.equal(expectedRefresh[0].index, 2);
+    await publication.service.applyActive(run, fresh);
+    assert.deepEqual(run.responseAnnotationReferences, expectedRefresh);
+    assert.equal(run.responseText, fresh.responseItem.text);
+
+    const delta = ' :codex-annotation{index="3"} Next part';
+    appendCodexAgentMessageDelta(run, { turnId, itemId: "same-final", delta });
+    const expectedDelta = codexAssistantResponseProjection(raw + delta);
+    assert.deepEqual(run.responseAnnotationReferences.map((reference) => reference.index), [2, 3]);
+    assert.deepEqual(run.responseAnnotationReferences, expectedDelta.responseAnnotationReferences);
+    assert.equal(run.responseText, expectedDelta.text);
+    await publication.service.applyActive(run, fresh);
+    assert.equal(run.responseText, expectedDelta.text);
+    assert.deepEqual(run.responseAnnotationReferences, expectedDelta.responseAnnotationReferences);
+    assert.equal(publication.states.at(-1).answer, expectedDelta.text.trim());
+
+    activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", "Plain final"));
+    await publication.service.applyActive(run, await codex.read(run, readOptions));
+    assert.equal(run.responseText, "Plain final");
+    assert.deepEqual(run.responseAnnotationReferences, []);
+  }
+});
+
+test("native start and hydration also supersede an earlier same-item observation", async () => {
+  for (const nativeUpdate of [
+    (run, item) => startCodexAgentMessage(run, { turnId, item }),
+    (run, item) => hydrateCodexAgentMessages(run, [item], { turnId }),
+  ]) {
+    const activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", "Old"));
+    const codex = observer(async () => activity);
+    const snapshot = await codex.read(binding);
+    const run = createObservedTaskRun(binding, snapshot);
+    nativeUpdate(run, { id: "same-final", type: "agentMessage", phase: "final_answer", text: "Native update" });
+    codex.applyObserved(run, snapshot);
+    assert.equal(run.responseText, "Native update");
+    assert.equal(run.responseItemId, "same-final");
+  }
+});
+
+test("the existing bounded rollout preview preserves a complete same-item native response", async () => {
+  const original = "Original prefix " + "x".repeat(200_100) + " Original ending";
+  let activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", original));
+  const codex = observer(async () => activity);
+  const initial = await codex.read(binding);
+  assert.equal(initial.responseItem.textComplete, false);
+  const run = createObservedTaskRun(binding, initial);
+  const publication = publisher(codex);
+  const changed = original + " Updated preview";
+  activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", changed));
+  const freshPreview = await codex.read(run);
+  await publication.service.applyActive(run, freshPreview);
+  assert.equal(run.responseText, freshPreview.answer, "an observed preview keeps its normal refresh");
+  completeCodexAgentMessage(run, { turnId, item: {
+    id: "same-final", type: "agentMessage", phase: "final_answer", text: changed,
+  } });
+  await publication.service.applyActive(run, await codex.read(run));
+  assert.equal(run.responseText, changed);
+  assert.equal(publication.states.at(-1).answer, changed);
+});

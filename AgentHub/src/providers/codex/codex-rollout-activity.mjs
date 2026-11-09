@@ -374,12 +374,16 @@ function rememberCodexTurnMessage(metadata, turnId, message, item = null) {
   if (item) {
     const phase = String(item.phase ?? "").trim();
     if (phase) {
+      const rawText = String(message);
+      const rawProviderText = rawText.slice(-CODEX_AGENT_MESSAGE_CHARS);
+      const nativeProjection = codexAssistantResponseProjection(rawProviderText);
       metadata.latestAgentMessages.set(turnId, {
         id: String(item.id ?? ""), type: "agentMessage", phase,
-        text: value.slice(-CODEX_AGENT_MESSAGE_CHARS),
+        rawProviderText, text: nativeProjection.text,
+        textComplete: rawText.length <= CODEX_AGENT_MESSAGE_CHARS,
         ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
-        ...(projection.responseAnnotationReferences.length
-          ? { responseAnnotationReferences: projection.responseAnnotationReferences.map((reference) => ({ ...reference })) }
+        ...(nativeProjection.responseAnnotationReferences.length
+          ? { responseAnnotationReferences: structuredClone(nativeProjection.responseAnnotationReferences) }
           : {}),
       });
       while (metadata.latestAgentMessages.size > 8) {
