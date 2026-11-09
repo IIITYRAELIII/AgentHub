@@ -83,9 +83,11 @@ test("an older rollout commentary cannot retarget a newer final citation", async
     id: "final", type: "agentMessage", phase: "final_answer",
     text: ':codex-annotation{index="1"} Final answer',
   } });
+  const finalReferences = structuredClone(run.responseAnnotationReferences);
+  assert.equal(finalReferences[0].index, 1);
   service.applyObserved(run, stale);
   assert.equal(run.responseItemId, "final");
-  assert.deepEqual(run.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(run.responseAnnotationReferences, finalReferences);
 });
 
 test("managed and observed publication use the same selected native item after a stale read", async () => {
