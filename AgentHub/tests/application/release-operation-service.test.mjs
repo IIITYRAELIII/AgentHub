@@ -68,6 +68,72 @@ function start(service, requestId = "request-1") {
   });
 }
 
+async function partialPublicationFixture(t, overrides = {}) {
+  const scheduled = [];
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback),
+    withPublicationRecovery: async ({ commit }) => commit({ kind: "fixture-positive-installed-owner" }, async () => {}),
+    ...overrides });
+  const created = f.store.create({ requestId: "partial-original", workspaceId: "workspace-1", streamId: "stream-1",
+    threadId: "thread-1", runnerVersion: "test", authorization: { taskIds, approvedTargets: targets, validationMode: "full" },
+    state: "publish", currentGeneration: 1, selectedResults: generation().selectedResults,
+    publicationEffects: { generation: 1, publishStarted: { generation: 1 }, targets: { git: { status: "applied" } } } });
+  const operationId = created.operation.operationId;
+  const candidate = createCandidateGeneration({ ...generation(), operationId, generation: 1,
+    runnerVersion: "test", authorizedTaskIds: taskIds });
+  f.store.putGeneration(candidate);
+  f.store.transition(operationId, { publicationEffects: { generation: 1,
+    publishStarted: { generation: 1, candidate: candidate.identitySha256 }, targets: { git: { status: "applied" } } } });
+  const finish = (stepId, input, status, effect) => {
+    const row = f.store.beginStep({ operationId, generation: 1, stepId, input }).receipt;
+    f.store.finishStep(row, { status, effect });
+  };
+  finish("compose", { authorization: created.operation.authorization }, "applied", { identitySha256: candidate.identitySha256 });
+  finish("validate", { candidate: candidate.identitySha256 }, "applied", { status: "ready" });
+  finish("publish:git", { candidate: candidate.identitySha256, target: targets[0] }, "applied", { status: "applied" });
+  const pending = { candidate: candidate.identitySha256, target: targets[1] };
+  finish("publish:runtime", pending, "failed", { status: "partial" });
+  f.store.beginStep({ operationId, generation: 1, stepId: "publish:runtime", input: pending });
+  f.store.transition(operationId, { state: "failed", lastError: { step: "publish", message: "original executor unavailable" } });
+  return { ...f, scheduled, operationId, candidate };
+}
+
+test("partial publication recovery keeps original generation, applied receipts and lost-ACK admission", async t => {
+  const f = await partialPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  const options = { requestId: "same-partial-recovery", expectedRevision: before.operation.revision, expectedGeneration: 1 };
+  const reply = await f.service.continue(f.operationId, options);
+  assert.equal(reply.accepted, true);
+  const admitted = f.store.snapshot(f.operationId);
+  assert.deepEqual(admitted.generations, before.generations);
+  assert.deepEqual(admitted.receipts, before.receipts);
+  assert.deepEqual(admitted.operation.publicationEffects, before.operation.publicationEffects);
+  assert.deepEqual(admitted.operation.publicationRecoveries[0].boundary.priorFailure,
+    { completedAt: before.operation.completedAt, error: before.operation.lastError });
+  assert.equal((await f.service.continue(f.operationId, options)).duplicate, true);
+  assert.equal(f.scheduled.length, 1);
+  f.service.readTarget = async () => ({ status: "applied", source: "existing-ready-consumer" });
+  f.service.publishTarget = () => assert.fail("no second installer or publication");
+  f.scheduled.shift()(); await f.service.drain(f.operationId);
+  assert.equal(f.store.get(f.operationId).state, "done");
+  assert.equal(f.store.get(f.operationId).currentGeneration, 1);
+  assert.equal(f.store.snapshot(f.operationId).generations.length, 1);
+});
+
+test("partial publication recovery refuses stale, changed receipt and unproved owning outcome", async t => {
+  const f = await partialPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  const options = { requestId: "refused-partial", expectedRevision: before.operation.revision, expectedGeneration: 1 };
+  assert.equal((await f.service.continue(f.operationId, { ...options, expectedRevision: options.expectedRevision - 1 })).reason, "stale-revision");
+  f.service.withPublicationRecovery = async () => { throw new Error("unknown installed outcome"); };
+  await assert.rejects(f.service.continue(f.operationId, options), /unknown installed/u);
+  assert.deepEqual(f.store.snapshot(f.operationId).operation, before.operation);
+  f.service.withPublicationRecovery = async ({ commit }) => commit({ kind: "fixture-positive" }, async () => {
+    const receipt = f.store.latestStep(f.operationId, 1, "publish:runtime");
+    f.store.finishStep(receipt, { status: "unknown", effect: { status: "unknown" } });
+  });
+  await assert.rejects(f.service.continue(f.operationId, options), /capture changed/u);
+  assert.equal(f.store.get(f.operationId).state, "failed");
+  assert.equal(f.scheduled.length, 0);
+});
+
 test("published dev sync refuses every amendment family before owner acquisition", async t => {
   const f = await fixture(t, { schedule: () => assert.fail("no scheduling") });
   const created = f.store.create({ requestId: "exclusive-sync", workspaceId: "workspace-1", streamId: "stream-1",

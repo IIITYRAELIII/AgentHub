@@ -8,6 +8,7 @@ import { normalizedOwnGitPublication } from "../../domain/release-base-provenanc
 
 import {
   retainedGenerationRecovery,
+  failedPublicationRecovery,
   createCandidateGeneration,
   completedReleaseGenerationEvidence,
   effectiveReleaseTaskIds,
@@ -610,6 +611,7 @@ export class ReleaseOperationStore {
     testSelectionAmendment = null,
     firstComposeRecovery = null,
     retainedRecovery = null,
+    publicationRecovery = null,
   } = {}) {
     const id = String(operationId ?? "").trim();
     if (!id) throw new TypeError("operationId is required");
@@ -627,6 +629,16 @@ export class ReleaseOperationStore {
         if (!owns(current, expectedOwner)) {
           database.exec("ROLLBACK");
           return { operation: current, applied: false, reason: "owner-fenced" };
+        }
+        if (publicationRecovery && expectedRevision === current.revision) {
+          const raw = JSON.parse(row.operation_json);
+          if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("Publication recovery is source-owner-fenced");
+          const boundary = failedPublicationRecovery({ operation: current,
+            receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=?").all(id).map(row => readJson(row.receipt_json)),
+            generations: database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=?").all(id).map(row => readJson(row.generation_json)) });
+          if (!boundary || releaseIdentitySha256(boundary) !== releaseIdentitySha256(publicationRecovery.boundary)) {
+            throw new Error("Publication recovery capture changed");
+          }
         }
         if (reviewedMainRecovery && expectedRevision === current.revision) {
           const raw = JSON.parse(row.operation_json);
@@ -699,6 +711,7 @@ export class ReleaseOperationStore {
           testSelectionAmendment,
           firstComposeRecovery,
           retainedRecovery,
+          publicationRecovery,
         });
         if (!result.applied) {
           database.exec("ROLLBACK");

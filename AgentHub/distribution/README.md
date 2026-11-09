@@ -339,14 +339,19 @@ stopping Hub. Do not introduce new work, start another Hub or log in/out during
 this window. The updater does **not** terminate any process. A manual forced
 stop is crash-consistent, not graceful; uncommitted work may remain UNKNOWN.
 
-The native continuation holds original process/Job handles, waits for every old
-Job member to disappear and rechecks before each effect. Unknown/foreign/live
-writers stop the operation. It then backs up regular config/data using SQLite's
+The native continuation holds original process/Job handles, proves complete
+membership and kernel exit signals, and rechecks before each effect. In a
+capable Hub, the original authorizes bounded graceful retirement followed by
+forced termination of that exact held Job if necessary. The updater is admitted
+outside every Job before the initiating agent finishes its turn. Foreign or
+unreadable membership refuses termination. It then backs up regular config/data using SQLite's
 backup API with writer reservations and integrity checks, runs the verified
 stopped-only installer and launches the exact target once. It does not copy live
-WAL files, restore data, replay unknown work or silently roll back. Backup size
-and verification determine downtime; 45 seconds is only the Job-accounting
-observation bound, not a downtime promise. Keep enough private free space for
+WAL files or replay unknown work. A definitively failed joined installer can
+restart the verified unchanged previous current while retaining the failed
+original. An ambiguous installer outcome cannot authorize that recovery.
+Host verification/admission and Node Ready have separate observation budgets;
+timeout retains the one original for readback. Keep enough private free space for
 the unpacked package and all runtime data/config plus backup.
 
 After this one-time upgrade, a capable installed Hub advertises its real package
@@ -354,6 +359,13 @@ restart protocol. The SAME command submits its ordinary graceful restart request
 active work finishes normally before the existing stopping fence, all writers
 close, then native retirement/backup/install/start occur. A lost authenticated
 request never falls back to manual stop or creates another original.
+
+For a protocol1 installed source, the incoming package retains the old
+controller/native attempt and separately admits its verified independent
+continuation before returning the turn-yield acknowledgement. It waits for
+that exact native attempt to close. Only a proven pre-backup boundary can
+continue installation under the same original; partial install/start remains
+reconciliation. Read the same ID after a lost response.
 
 Read the original after interruption or a lost result:
 

@@ -1,5 +1,25 @@
 # REL-001 — Task-backed Workspace release
 
+## Original executor continuity after public self-install (ADR-HUB-429)
+
+Before publication effects, the runner retains the verified external tool's
+physical root/directory identity and whole runtime digest alongside its original
+tool identity. Replacement owners resolve that exact retained package; ambient
+configuration cannot replace it. Historical unbound runners require an explicit
+original-compatible pin. Missing future executor input is an external condition,
+not evidence of an unapplied target.
+
+The existing public continue may recover a positively qualified failed partial
+publication without composing or changing generation, input, authorization,
+selected results, applied effects or old receipts. Generic admission verifies
+the failed publish boundary, original candidate, compose/validation receipts,
+applied target and same-candidate pending receipt with prior partial history.
+Its adapter must positively verify the original public distribution and the
+same successful installed consumer with whole payload/Ready under physical
+installation custody immediately before CAS. Only remaining checkpoints resume.
+Unknown, foreign, active, changed or incomplete proof refuses. The recovery
+retains the prior failure and an addressed durable admission for lost replies.
+
 Multiple authorized publication targets for one canonical repository share one
 repository approval only when both exact local-main and origin-main pins agree.
 Both target identities and publication ordering remain in original authorization.

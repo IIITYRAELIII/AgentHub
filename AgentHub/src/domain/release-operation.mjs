@@ -357,6 +357,52 @@ export function retainedGenerationRecovery({ operation, receipts = [], generatio
     receiptsSha256: releaseIdentitySha256(receipts), inputSha256: releaseIdentitySha256(releaseCompositionInput(operation)) };
 }
 
+export function failedPublicationRecovery({ operation, generations = [], receipts = [] }) {
+  if (operation?.state !== "failed" || operation.owner || operation.currentGeneration < 1
+    || operation.lastError?.step !== "publish" || !operation.completedAt) return null;
+  const generation = generations.find(item => item.generation === operation.currentGeneration);
+  if (!generation || generation.operationId !== operation.operationId) return null;
+  const { identitySha256, ...contents } = generation;
+  if (releaseIdentitySha256(contents) !== identitySha256
+    || releaseIdentitySha256(generation.selectedResults) !== releaseIdentitySha256(operation.selectedResults)
+    || releaseIdentitySha256(generation.authorizedTaskIds ?? null) !== releaseIdentitySha256(effectiveReleaseTaskIds(operation))
+    || operation.publicationEffects?.generation !== generation.generation
+    || operation.publicationEffects?.publishStarted?.candidate !== identitySha256) return null;
+  const latest = step => receipts.filter(item => item.generation === generation.generation && item.stepId === step)
+    .sort((a, b) => a.attempt - b.attempt).at(-1);
+  if (latest("compose")?.status !== "applied" || latest("compose").effect?.identitySha256 !== identitySha256
+    || releaseIdentitySha256(latest("compose").input?.authorization ?? null) !== releaseIdentitySha256(operation.authorization)
+    || latest("validate")?.status !== "applied" || latest("validate").input?.candidate !== identitySha256) return null;
+  const targets = releaseApprovedTargets(operation);
+  if (Object.keys(operation.publicationEffects.targets ?? {}).some(id => !targets.some(target => target.targetId === id))) return null;
+  if (!targets.some(target => latest(`publish:${target.targetId}`)?.status === "applied")) return null;
+  for (const target of targets) {
+    const step = `publish:${target.targetId}`, receipt = latest(step);
+    if (!receipt || !["applied", "intent"].includes(receipt.status) || receipt.input?.candidate !== identitySha256
+      || releaseIdentitySha256(receipt.input.target) !== releaseIdentitySha256(target)) return null;
+    if (receipt.status === "applied" && releaseIdentitySha256(receipt.effect ?? null)
+      !== releaseIdentitySha256(operation.publicationEffects.targets?.[target.targetId] ?? null)) return null;
+    if (receipt.status === "intent" && !receipts.some(item => item.generation === generation.generation
+      && item.stepId === step && item.attempt < receipt.attempt && item.status === "failed"
+      && item.effect?.status === "partial" && releaseIdentitySha256(item.input) === releaseIdentitySha256(receipt.input))) return null;
+  }
+  const ordered = [...receipts].sort((a, b) => a.generation - b.generation || a.stepId.localeCompare(b.stepId) || a.attempt - b.attempt);
+  return { generation: generation.generation, candidate: identitySha256, receiptsSha256: releaseIdentitySha256(ordered),
+    inputSha256: releaseIdentitySha256(releaseCompositionInput(operation)),
+    effectsSha256: releaseIdentitySha256(operation.publicationEffects),
+    priorFailure: { completedAt: operation.completedAt, error: operation.lastError } };
+}
+
+function normalizedPublicationRecovery(value, operation) {
+  const { identitySha256, ...contents } = value ?? {};
+  if (!contents.requestId || contents.operationId !== operation.operationId
+    || contents.authorizationFingerprint !== operation.authorization.fingerprint
+    || !Number.isSafeInteger(contents.priorRevision) || contents.priorRevision < 1
+    || contents.generation !== operation.currentGeneration || !contents.boundary || !contents.evidence
+    || releaseIdentitySha256(contents) !== identitySha256) throw new Error("Invalid publication recovery");
+  return structuredClone(value);
+}
+
 function normalizedRetainedGenerationRecovery(value, operation) {
   const { identitySha256, ...contents } = value ?? {};
   if (!contents.requestId || contents.operationId !== operation.operationId
@@ -432,6 +478,7 @@ export function createReleaseOperation({
   testSelectionAmendments = [],
   firstComposeRecovery = null,
   retainedGenerationRecoveries = [],
+  publicationRecoveries = [],
 } = {}) {
   const normalizedState = requiredText(state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(normalizedState)) {
@@ -470,6 +517,7 @@ export function createReleaseOperation({
   if (reviewedMain != null) operation.reviewedMain = normalizedReviewedMain(reviewedMain, operation);
   if (firstComposeRecovery != null) operation.firstComposeRecovery = normalizedFirstComposeRecovery(firstComposeRecovery, operation);
   if (retainedGenerationRecoveries.length) operation.retainedGenerationRecoveries = retainedGenerationRecoveries.map(item => normalizedRetainedGenerationRecovery(item, { ...operation, currentGeneration: item.generation }));
+  if (publicationRecoveries.length) operation.publicationRecoveries = publicationRecoveries.map(item => normalizedPublicationRecovery(item, { ...operation, currentGeneration: item.generation }));
   if (releaseOperationIsTerminal(operation)) operation.completedAt = operation.updatedAt;
   return operation;
 }
@@ -498,6 +546,7 @@ export function transitionReleaseOperation(current, patch = {}, {
   testSelectionAmendment = null,
   firstComposeRecovery = null,
   retainedRecovery = null,
+  publicationRecovery = null,
 } = {}) {
   const operation = restoreReleaseOperation(current);
   if (!operation) throw new TypeError("valid current release operation is required");
@@ -505,6 +554,13 @@ export function transitionReleaseOperation(current, patch = {}, {
   const recovery = reviewedMainRecovery == null ? null : normalizedReviewedMain(reviewedMainRecovery, operation);
   const firstRecovery = firstComposeRecovery == null ? null : normalizedFirstComposeRecovery(firstComposeRecovery, operation);
   const retained = retainedRecovery == null ? null : normalizedRetainedGenerationRecovery(retainedRecovery, operation);
+  const publication = publicationRecovery == null ? null : normalizedPublicationRecovery(publicationRecovery, operation);
+  if (publication && (operation.state !== "failed" || operation.owner || operation.lastError?.step !== "publish"
+    || publication.priorRevision !== operation.revision || patch.state !== "publish"
+    || Object.keys(patch).some(key => !["state", "currentStep", "lastError", "nextAction"].includes(key))
+    || releaseIdentitySha256(publication.boundary.priorFailure) !== releaseIdentitySha256({ completedAt: operation.completedAt, error: operation.lastError })
+    || publication.boundary.inputSha256 !== releaseIdentitySha256(releaseCompositionInput(operation))
+    || publication.boundary.effectsSha256 !== releaseIdentitySha256(operation.publicationEffects))) throw new Error("Publication recovery changed its failed boundary");
   if (retained && (operation.state !== "failed" || operation.owner != null || operation.lastError?.step !== "compose"
       || retained.priorRevision !== operation.revision || patch.state !== "publish"
       || patch.currentGeneration !== undefined || patch.selectedResults !== undefined
@@ -531,7 +587,8 @@ export function transitionReleaseOperation(current, patch = {}, {
   if (patch.testSelectionAmendments !== undefined) throw new Error("testSelectionAmendments requires its amendment boundary");
   if (patch.firstComposeRecovery !== undefined) throw new Error("firstComposeRecovery requires its recovery boundary");
   if (patch.retainedGenerationRecoveries !== undefined) throw new Error("retainedGenerationRecoveries requires its recovery boundary");
-  if (releaseOperationIsTerminal(operation) && !recovery && !amendment && !firstRecovery && !retained) return { operation, applied: false, reason: "terminal" };
+  if (patch.publicationRecoveries !== undefined) throw new Error("publicationRecoveries requires its recovery boundary");
+  if (releaseOperationIsTerminal(operation) && !recovery && !amendment && !firstRecovery && !retained && !publication) return { operation, applied: false, reason: "terminal" };
   if (patch.reviewedMain !== undefined) throw new Error("reviewedMain requires its recovery boundary");
   for (const name of ["operationId", "requestId", "workspaceId", "streamId", "threadId", "authorization", "runnerVersion"]) {
     if (patch[name] !== undefined && releaseIdentitySha256(patch[name]) !== releaseIdentitySha256(operation[name])) {
@@ -540,7 +597,7 @@ export function transitionReleaseOperation(current, patch = {}, {
   }
   const state = requiredText(patch.state ?? operation.state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(state)) throw new TypeError(`unsupported release operation state: ${state}`);
-  if (state !== operation.state && !recovery && !amendment && !firstRecovery && !retained && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
+  if (state !== operation.state && !recovery && !amendment && !firstRecovery && !retained && !publication && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
     return { operation, applied: false, reason: "invalid-transition" };
   }
   const next = {
@@ -563,6 +620,7 @@ export function transitionReleaseOperation(current, patch = {}, {
     ...(recovery ? { reviewedMain: recovery, completedAt: null } : {}),
     ...(firstRecovery ? { firstComposeRecovery: firstRecovery, completedAt: null } : {}),
     ...(retained ? { retainedGenerationRecoveries: [...(operation.retainedGenerationRecoveries ?? []), retained], completedAt: null } : {}),
+    ...(publication ? { publicationRecoveries: [...(operation.publicationRecoveries ?? []), publication], completedAt: null } : {}),
     ...(amendment ? { testSelectionAmendments: [...(operation.testSelectionAmendments ?? []), amendment], completedAt: null } : {}),
   };
   if (state !== RELEASE_OPERATION_STATES.WAITING) {

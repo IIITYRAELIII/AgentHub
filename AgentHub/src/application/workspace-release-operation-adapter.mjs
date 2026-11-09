@@ -51,6 +51,14 @@ function selectionIdentity(value) {
 }
 
 export class WorkspaceReleaseOperationAdapter {
+  async withPublicationRecovery(input) {
+    await releaseMetadataBytes(effectiveReleaseMetadata(input.operation));
+    return this.publication.withPublicationRecovery({ ...input, commit: (evidence, validate) => input.commit(evidence, async () => {
+      await releaseMetadataBytes(effectiveReleaseMetadata(input.operation));
+      await validate();
+    }) });
+  }
+
   constructor({ releasePreflight, publication, finalization } = {}) {
     requiredMethod(releasePreflight, "prepareOperationGeneration");
     requiredMethod(releasePreflight, "validateOperationGeneration");
