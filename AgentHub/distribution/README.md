@@ -226,6 +226,12 @@ The recipient can select an exact stable tag (or explicitly `latest`):
 python install_release.py --release <exact-stable-tag> --runtime-root <private-runtime-directory> --scratch-root <separate-private-temporary-directory>
 ```
 
+For a first installation, add `--project-root <selected-project-directory>` to
+initialize a valid nonempty project selection through the same configuration
+owner used at startup. Existing private configuration is preserved. This option
+belongs to the first install command. Configure the desired provider and account
+before starting the installed Host. Installer completion alone does not prove Ready.
+
 The fixed anonymous API origin is `IIITYRAELIII/AgentHub`; Utilities is never an
 update origin. No token or GitHub CLI is read. One bounded release response pins
 both versioned asset URLs, GitHub SHA-256 digests and sizes. Missing digests,

@@ -142,7 +142,7 @@ class InstalledPackageTests(unittest.TestCase):
                 packages.append(package)
                 archives.append((archive, manifest["sha256"]))
 
-            def install(index, *, rollback=False, success=True, release=False, checksum_override=None):
+            def install(index, *, rollback=False, success=True, release=False, checksum_override=None, project_root=None):
                 archive, checksum = archives[index]
                 checksum = checksum_override or checksum
                 command = [str(bootstrap), "--archive", str(archive), "--sha256", checksum]
@@ -165,10 +165,16 @@ class InstalledPackageTests(unittest.TestCase):
                     command = [str(harness), str(bootstrap), "--release", "latest", "--sha256", checksum]
                 return run([sys.executable, "-X", "utf8", "-B", *command,
                             "--runtime-root", str(runtime), "--scratch-root", str(root/"package-scratch"),
+                             *(["--project-root", str(project_root)] if project_root else []),
                             *(["--rollback"] if rollback else [])], success=success)
 
-            install(0, release=True)
+            selected_project = root/"selected-project"
+            selected_project.mkdir()
+            install(0, release=True, project_root=selected_project)
             self.assertEqual(json.loads((runtime/"config.json").read_text())["usageSyncServerUrl"], "")
+            initial_config = json.loads((runtime/"config.json").read_text())
+            self.assertEqual(Path(initial_config["projectRoot"]), selected_project)
+            self.assertEqual(initial_config["projects"], [{"name": selected_project.name, "path": str(selected_project)}])
             run([str(runtime/"AgentHub.RuntimeHost.exe"), "--check"])
             pointer_before = (runtime/"current.json").read_bytes()
             wrong_pin = install(0, release=True, success=False, checksum_override="0"*64)

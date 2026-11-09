@@ -9,6 +9,7 @@ import {
   canonicalizeProjectRoots,
   findContainingProject,
   httpBaseUrl,
+  initialRuntimeProjectConfiguration,
   loadConfig,
   loadLegacyTeamUsageAccountPolicy,
   miniAppSettings,
@@ -18,6 +19,37 @@ import {
   samePath,
 } from "../../../src/infrastructure/filesystem/config.mjs";
 import { rawPolicy } from "../../helpers/legacy-account-policy.mjs";
+
+test("first public installation selects a nonempty project through the real startup configuration owner", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-first-project-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const template = { projects: [], projectRoot: "unselected", provider: "codex", usageSyncServerUrl: "",
+    components: { telegram: false, miniApp: false, androidApp: false, sharedDashboardBot: false } };
+  const original = structuredClone(template);
+  const configured = initialRuntimeProjectConfiguration(template, root);
+  assert.deepEqual(template, original);
+  assert.equal(configured.provider, template.provider);
+  assert.deepEqual(configured.components, template.components);
+  const file = path.join(root, "config.json");
+  await writeFile(file, JSON.stringify(configured));
+  const oldConfig = process.env.AGENT_HUB_CONFIG, oldProject = process.env.CODEX_PROJECT_ROOT;
+  process.env.AGENT_HUB_CONFIG = file;
+  delete process.env.CODEX_PROJECT_ROOT;
+  try {
+    const actual = await loadConfig();
+    assert.equal(actual.projectRoot, root);
+    assert.deepEqual(actual.projects, [{ name: path.basename(root), path: root }]);
+  } finally {
+    if (oldConfig === undefined) delete process.env.AGENT_HUB_CONFIG; else process.env.AGENT_HUB_CONFIG = oldConfig;
+    if (oldProject === undefined) delete process.env.CODEX_PROJECT_ROOT; else process.env.CODEX_PROJECT_ROOT = oldProject;
+  }
+});
+
+test("a first public installation cannot invent a project from empty or malformed selection", () => {
+  for (const root of [null, undefined, "", "  ", [], 17]) {
+    assert.throws(() => initialRuntimeProjectConfiguration({ projects: [] }, root), /selected project/u);
+  }
+});
 
 test("private legacy policy is explicit-CLI only; normal configuration projects only the sync URL", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-private-policy-config-"));

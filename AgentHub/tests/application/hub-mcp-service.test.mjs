@@ -2190,10 +2190,14 @@ test("HubMcpService exposes cursor events and one durable release operation owne
     request_id: "release-1",
     task_ids: ["task-current"],
     validation_mode: "full",
-    approved_targets: [{ targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" }],
+    approved_targets: [
+      { targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" },
+      { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: "D:/repo" },
+    ],
   });
   assert.equal(ack.operationId, "release-operation-1");
   assert.equal(calls[0][1].authorization.validationMode, "full");
+  assert.equal(calls[0][1].authorization.runtimeInstallation, "public-package-v1");
   assert.deepEqual(calls[0][1].authorization.taskIds, ["task-current"]);
   assert.equal(Object.hasOwn(calls[0][1].authorization, "releaseMetadata"), false);
   const snapshot = await service.call("hub_release_get", {
@@ -2255,7 +2259,10 @@ test("public first compose continuation advertises generation zero and keeps its
   assert.equal(schema.properties.expected_generation.minimum, 0);
   const ack = await service.call("hub_release_run", { context_token: token, request_id: "public-first-compose",
     task_ids: ["task-current"], validation_mode: "full",
-    approved_targets: [{ targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" }] });
+    approved_targets: [
+      { targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" },
+      { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: "D:/repo" },
+    ] });
   scheduled.shift()();
   const failed = await operations.drain(ack.operationId);
   assert.equal(failed.operation.state, "failed");
@@ -2293,7 +2300,10 @@ test("manual public version reaches the same durable release admission and survi
   assert.equal(new RegExp(schema.properties.release_version.pattern, "u").test("3.7.9"), true);
   const args = { context_token: token, request_id: "manual-version-original", task_ids: ["task-current"],
     validation_mode: "full", release_version: "3.7.9",
-    approved_targets: [{ targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" }] };
+    approved_targets: [
+      { targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" },
+      { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: "D:/repo" },
+    ] };
   const ack = await service.call("hub_release_run", args);
   const original = store.get(ack.operationId);
   assert.equal(original.authorization.releaseVersion, "3.7.9");
@@ -2328,7 +2338,10 @@ test("HubMcpService carries exact release metadata through the domain and byte-c
   };
   const args = {
     context_token: token, request_id: "release-metadata", task_ids: ["task-current"],
-    validation_mode: "full", approved_targets: [{ targetId: "production", kind: "agent-hub-publication" }],
+    validation_mode: "full", approved_targets: [
+      { targetId: "production", kind: "agent-hub-publication", repositoryRoot: projectRoot },
+      { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: projectRoot },
+    ],
     release_metadata: releaseMetadata,
   };
   const schema = service.tools().find((item) => item.name === "hub_release_run").inputSchema;

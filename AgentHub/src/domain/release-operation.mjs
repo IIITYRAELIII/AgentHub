@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { selectedCompositionFields } from "./task-selected-composition.mjs";
 import { semanticVersion } from "./agent-hub-version.mjs";
+import { normalizedRuntimeInstallation, PUBLIC_RUNTIME_INSTALLATION } from "./public-runtime-installation.mjs";
 
 
 export const RELEASE_OPERATION_STATES = Object.freeze({
@@ -78,6 +79,11 @@ function normalizedTargets(value) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       throw new TypeError("approved target must be an object");
     }
+    const retainedReview = entry.nativeResolutionReview;
+    if (retainedReview != null && (typeof retainedReview !== "object"
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(retainedReview)))) {
+      throw new TypeError("Invalid exact native resolution bundle");
+    }
     return {
       targetId: requiredText(entry.targetId ?? entry.id, "approved target id"),
       kind: requiredText(entry.kind, "approved target kind"),
@@ -135,14 +141,16 @@ export function effectiveReleaseTaskScope(operation) {
 }
 
 function normalizedAuthorization(value = {}) {
+  const approvedTargets = normalizedTargets(value.approvedTargets);
   const authorization = {
     taskIds: uniqueTextList(value.taskIds, "authorization taskIds"),
     ...(value.taskScope == null ? {} : { taskScope: normalizeReleaseTaskScope(value.taskScope) }),
-    approvedTargets: normalizedTargets(value.approvedTargets),
+    approvedTargets,
     validationMode: requiredText(value.validationMode, "validationMode"),
     ...(value.testSelection != null ? { testSelection: normalizeTestSelection(value.testSelection) } : {}),
     ...(value.releaseMetadata ? { releaseMetadata: normalizedReleaseMetadata(value.releaseMetadata) } : {}),
     ...(value.releaseVersion !== undefined ? { releaseVersion: normalizeReleaseVersion(value.releaseVersion) } : {}),
+    ...normalizedRuntimeInstallation(value.runtimeInstallation, approvedTargets),
   };
   return { ...authorization, fingerprint: releaseIdentitySha256(authorization) };
 }
@@ -386,12 +394,16 @@ function normalizedReviewedMain(value, operation) {
 }
 
 export function releaseApprovedTargets(operation) {
-  return operation.authorization.approvedTargets.map(target => {
+  const targets = operation.authorization.approvedTargets.map(target => {
     const approval = operation.reviewedMain?.approvedRepositories.find(entry =>
       repositoryKey(entry.projectRoot) === repositoryKey(target.repositoryRoot));
     return approval ? { ...target, approvedLocalMainCommit: approval.approvedLocalMainCommit,
       approvedOriginMainCommit: approval.approvedOriginMainCommit } : target;
   });
+  return operation.authorization.runtimeInstallation === PUBLIC_RUNTIME_INSTALLATION
+    ? [...targets.filter(target => target.environment === "github-release"),
+      ...targets.filter(target => target.environment !== "github-release")]
+    : targets;
 }
 
 export function createReleaseOperation({

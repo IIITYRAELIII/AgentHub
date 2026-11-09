@@ -28,6 +28,7 @@ async function copyModule(relative) {
 await copyModule("src/runtime/runtime-manager.mjs");
 await copyModule("src/infrastructure/process/publication-lock.mjs");
 await copyModule("src/domain/runtime-package-identity.mjs");
+await copyModule("src/infrastructure/filesystem/config.mjs");
 if (updateRole !== "plain") {
   await copyModule("src/infrastructure/process/instance-lock.mjs");
   await copyModule("src/infrastructure/process/desktop-control.mjs");

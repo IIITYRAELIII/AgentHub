@@ -595,6 +595,7 @@ def main():
     parser.add_argument("--prepare-update", action="store_true", help="Arm the package-side legacy updater; the user stops old Hub")
     parser.add_argument("--update-status", action="store_true", help="Read the exact original without replaying effects")
     parser.add_argument("--operation-id", help="Original stable identity for package update/readback")
+    parser.add_argument("--project-root", type=Path, help="Selected project for a first installation; existing configuration is preserved")
     args = parser.parse_args()
     if not args.release and not args.sha256:
         parser.error("--sha256 is required with --url or --archive")
@@ -605,6 +606,8 @@ def main():
     if args.prepare_update or args.update_status:
         if not args.release or args.release == "latest" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.operation_id or ""):
             parser.error("Update requires an exact --release and original --operation-id")
+    if args.project_root and (args.rollback or args.inspect_package or args.prepare_update or args.update_status):
+        parser.error("--project-root belongs only to a first installation")
     if os.name != "nt":
         raise RuntimeError("Ready packages currently support Windows x64 only")
     if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
@@ -652,7 +655,8 @@ def main():
         # Explicit offline update only; the existing owner checks live/unknown
         # process evidence. No automatic start, stop, autostart or retry.
         result = subprocess.run([node, entry,
-                                 "rollback" if args.rollback else "install", str(args.runtime_root.resolve())],
+                                 "rollback" if args.rollback else "install", str(args.runtime_root.resolve()),
+                                 *(["--project-root", str(args.project_root.resolve())] if args.project_root else [])],
                                 check=False, env={k: v for k, v in os.environ.items()
                                                   if not k.startswith("AGENT_HUB_PUBLICATION_")})
         if result.returncode:

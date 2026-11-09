@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { preparePublicationTestSelection } from "../filesystem/publication-test-selection.mjs";
 
 export function publicationCheckpointFile(environment = process.env) {
@@ -39,6 +40,24 @@ export function publicationCheckpointStore(file = publicationCheckpointFile()) {
   };
 }
 
+export const PUBLIC_INSTALLER_HANDOFF = "public-runtime-installer-handoff-v1";
+
+function publicInstallerHandoff(step, result, identity) {
+  if (result?.kind !== PUBLIC_INSTALLER_HANDOFF) return null;
+  const binding = step.publicInstallerBinding;
+  if (step.label !== "Установка runtime-релиза" || result.status !== "waiting"
+      || !binding || Object.keys(binding).sort().join() !== "candidate,generation,operationId,targetId"
+      || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(binding.operationId ?? "")
+      || !Number.isSafeInteger(binding.generation) || binding.generation < 1
+      || !/^[a-f0-9]{64}$/u.test(binding.candidate ?? "")
+      || typeof binding.targetId !== "string" || !binding.targetId.trim()
+      || !isDeepStrictEqual(identity?.publicInstallerBinding, binding)
+      || !isDeepStrictEqual(result.binding, binding)) {
+    throw new Error("Public installer handoff binding differs from its publication step");
+  }
+  return result;
+}
+
 export async function runPublicationSteps(steps, {
   run,
   checkpoint = null,
@@ -60,7 +79,7 @@ export async function runPublicationSteps(steps, {
         repositoryRoot: identity.worktreeRoot, revision: identity.revision,
       })] };
     }
-    await run({ ...prepared, logFile: journal?.logFile ?? "" });
+    return run({ ...prepared, logFile: journal?.logFile ?? "" });
   };
   await journal?.start(identity, steps);
   if (!checkpoint) {
@@ -68,7 +87,11 @@ export async function runPublicationSteps(steps, {
       for (const step of steps) {
         await journal?.stepStarted(step.label);
         try {
-          await executeStep(step);
+          const waiting = publicInstallerHandoff(step, await executeStep(step), identity);
+          if (waiting) {
+            await journal?.stepFinished(step.label, { status: "waiting" });
+            return waiting;
+          }
           await journal?.stepFinished(step.label, { status: "completed" });
         } catch (error) {
           await journal?.stepFinished(step.label, { status: "failed", error });
@@ -81,6 +104,10 @@ export async function runPublicationSteps(steps, {
     return;
   }
   const saved = await checkpoint.read();
+  if (saved?.pendingPublicInstaller
+      && !isDeepStrictEqual(saved.pendingPublicInstaller.binding, identity?.publicInstallerBinding)) {
+    throw new Error("Public installer checkpoint binding changed while awaiting its original");
+  }
   const exactIdentity = JSON.stringify(saved?.identity) === JSON.stringify(identity);
   const matchingScope = JSON.stringify(saved?.checkpointScope ?? saved?.identity)
     === JSON.stringify(checkpointScope);
@@ -99,7 +126,13 @@ export async function runPublicationSteps(steps, {
       }
       await journal?.stepStarted(step.label);
       try {
-        await executeStep(step);
+        const waiting = publicInstallerHandoff(step, await executeStep(step), identity);
+        if (waiting) {
+          await journal?.stepFinished(step.label, { status: "waiting" });
+          await checkpoint.write({ identity, checkpointScope, completedLabels: [...completed],
+            completedFingerprints, pendingPublicInstaller: waiting, updatedAt: new Date().toISOString() });
+          return waiting;
+        }
       } catch (error) {
         await journal?.stepFinished(step.label, { status: "failed", error });
         throw error;

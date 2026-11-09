@@ -1,5 +1,17 @@
 # REL-001 — Task-backed Workspace release
 
+## Public package consumer for new local publications
+
+New normal installed-Hub release intakes record the immutable public-package-v1
+installation policy and require a separately approved public package target for
+the same repository. Public targets execute first. The public versioned installer
+and published package own local installation and update. The existing publication
+checkpoint can retain an exact pending INSTALL handoff while the enclosing lock
+is released. Installation readiness and the same original consumer outcome are
+required before remaining stages and finalization. Generic Git publication state
+alone does not establish that consumer. Historical authorization and recorded tool
+executors retain their original path on replay. See ADR-HUB-422-public-runtime-installer.
+
 ## Unregistered partial generations after explicit amendment
 
 An ordinary addressed amendment may capture the exact terminal failed compose

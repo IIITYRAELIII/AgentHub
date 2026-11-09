@@ -10,6 +10,10 @@ import { ReleaseOperationStore } from "../../src/infrastructure/persistence/rele
 
 test("release command service binds the public request to a real initiating Thread", () => {
   const calls = [];
+  const approvedTargets = [
+    { targetId: "production", kind: "agent-hub-publication", repositoryRoot: "/fixture/AgentHub" },
+    { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: "/fixture/AgentHub" },
+  ];
   const workspace = {
     id: "workspace-1",
     streams: [{ id: "stream-1", threads: [{ threadId: "thread-old" }] }],
@@ -42,7 +46,7 @@ test("release command service binds the public request to a real initiating Thre
     threadId: "thread-old",
     taskIds: ["task-b", "task-a", "task-b"],
     validationMode: "full",
-    approvedTargets: [{ targetId: "production", kind: "agent-hub-publication" }],
+    approvedTargets,
   });
   assert.equal(result.operationId, "operation-1");
   assert.deepEqual(calls[0], ["start", {
@@ -54,13 +58,14 @@ test("release command service binds the public request to a real initiating Thre
       taskIds: ["task-a", "task-b"],
       taskScope: "all_await",
       validationMode: "full",
-      approvedTargets: [{ targetId: "production", kind: "agent-hub-publication" }],
+      approvedTargets,
+      runtimeInstallation: "public-package-v1",
     },
   }]);
   assert.deepEqual(service.get({ operationId: "operation-1" }), { operationId: "operation-1" });
   assert.deepEqual(service.continue({ operationId: "operation-1" }), { operationId: "operation-1" });
   service.start({ requestId: "manual-version", workspaceId: workspace.id, streamId: "stream-1", threadId: "thread-old",
-    taskIds: ["task-a", "task-b"], validationMode: "full", approvedTargets: [{ targetId: "production", kind: "agent-hub-publication" }],
+    taskIds: ["task-a", "task-b"], validationMode: "full", approvedTargets,
     releaseVersion: "3.7.9" });
   assert.equal(calls.at(-1)[1].authorization.releaseVersion, "3.7.9");
 });

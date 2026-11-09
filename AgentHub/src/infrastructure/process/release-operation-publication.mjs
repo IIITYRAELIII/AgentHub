@@ -20,6 +20,7 @@ import { assertReleaseCloneForPublication } from "../filesystem/release-git-work
 import { measureTaskOperation } from "./task-operation-timing.mjs";
 import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
 import { withRuntimeInstallationLease, readRuntimePointer, captureRuntimeReleaseBinding } from "../filesystem/runtime-installation-custody.mjs";
+import { createPublicRuntimeInstaller, publicRuntimeInstallerBinding, readPublishedRuntimePackage } from "./public-runtime-installer.mjs";
 
 function identity(value) {
   return createHash("sha256").update(String(value)).digest("hex");
@@ -165,6 +166,7 @@ export class ReleaseOperationPublication {
     createArtifactSteps = createPublicationArtifactSteps,
     distributionCapture = undefined,
     distributionApi = undefined,
+    publicRuntimeInstallerPorts = {},
     runnerFile = path.join(import.meta.dirname, "../../../release-operation-publication-runner.mjs"),
     now = () => new Date().toISOString(),
     launchGraceMs = 30_000,
@@ -185,6 +187,7 @@ export class ReleaseOperationPublication {
     this.createArtifactSteps = createArtifactSteps;
     this.distributionCapture = distributionCapture;
     this.distributionApi = distributionApi;
+    this.publicRuntimeInstallerPorts = publicRuntimeInstallerPorts;
     this.runnerFile = path.resolve(runnerFile);
     this.now = now;
     this.launchGraceMs = Math.max(1_000, Number(launchGraceMs) || 30_000);
@@ -618,6 +621,53 @@ export class ReleaseOperationPublication {
       return { status: "unknown", cursor: { phase: "launching", stateFile: layout.stateFile } };
     }
     const result = await readJson(layout.resultFile);
+    const publicBinding = publicRuntimeInstallerBinding({ operation, generation, target });
+    if (publicBinding) {
+      // A canonical closed target remains historical truth after a later public
+      // update or caller/tool cutover. Active admission still needs fresh proof.
+      if (operation.state === "done" && operation.publicationEffects?.generation === generation.generation
+        && result?.status === "applied" && result.operationId === operation.operationId
+        && result.generation === generation.generation && result.targetId === target.targetId
+        && result.candidate === generation.identitySha256 && result.revision === candidate.commit
+        && result.publicRuntimeInstaller?.status === "ready"
+        && releaseIdentitySha256(result.publicRuntimeInstaller.binding) === releaseIdentitySha256(publicBinding)
+        && releaseIdentitySha256(operation.publicationEffects.targets?.[target.targetId]) === releaseIdentitySha256(result)) return result;
+      const journal = this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment });
+      const saved = await journal.read();
+      if (!saved?.progress?.publicRuntimeInstaller) return {
+        status: "partial", cursor: { reason: "public-installer-required" },
+      };
+      if (!runner?.tool || saved.identity?.revision !== candidate.commit) return {
+        status: "unknown", cursor: { reason: "public-installer-runner-binding" },
+      };
+      const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
+        expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
+      const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
+      if (releaseIdentitySha256(toolIdentity) !== releaseIdentitySha256(runner.tool)) return {
+        status: "unknown", cursor: { reason: "public-installer-tool-changed" },
+      };
+      await tool.assertUnchanged();
+      const artifacts = this.createArtifactSteps({ sourceRoot: path.join(candidate.releaseRoot, "AgentHub"),
+        runtimeRoot: this.runtimeRoot, journal, runtimePublication: {
+          operationId: operation.operationId, generation: generation.generation,
+          sourceCommit: candidate.commit, version: candidate.manifest?.publication?.runtimeReleaseVersion,
+        } });
+      const consumer = createPublicRuntimeInstaller({ ...this.publicRuntimeInstallerPorts, operation, generation, target, runtimeRoot: this.runtimeRoot,
+        journal, tool: toolIdentity, readPublishedInput: async () => {
+          const api = this.distributionApi ?? (await import("./github-release-publication.mjs")).githubReleaseTransport();
+          return readPublishedRuntimePackage({ operation, generation, target, dataDir: this.dataDir,
+            tool: toolIdentity, prepared: await artifacts.preparedRuntimeReceipt(saved.identity),
+            api });
+        } });
+      const proof = await consumer.readback();
+      if (proof.status !== "ready") return proof;
+      if (result?.status === "applied" && result.operationId === operation.operationId
+        && result.generation === generation.generation && result.targetId === target.targetId
+        && result.candidate === generation.identitySha256 && result.revision === candidate.commit
+        && releaseIdentitySha256(result.tool) === releaseIdentitySha256(toolIdentity)
+        && releaseIdentitySha256(result.publicRuntimeInstaller) === releaseIdentitySha256(proof)) return result;
+      return { status: "partial", revision: candidate.commit, source: "public-installer-ready", publicRuntimeInstaller: proof };
+    }
     if (result?.operationId === operation.operationId
         && result?.generation === generation.generation
         && result?.targetId === target.targetId

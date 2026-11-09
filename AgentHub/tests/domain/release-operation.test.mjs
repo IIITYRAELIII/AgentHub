@@ -138,6 +138,11 @@ test("reviewed native transport remains bound to original release authorization 
   const malformed = structuredClone(authorization);
   malformed.approvedTargets[0].nativeResolutionReview = Object.assign([], nativeResolutionReview);
   assert.throws(() => operation({ authorization: malformed }), /Invalid exact native resolution bundle/u);
+  for (const value of ["legacy", 1, new String("legacy"), new Date(0), new Map(), []]) {
+    const invalid = structuredClone(authorization);
+    invalid.approvedTargets[0].nativeResolutionReview = value;
+    assert.throws(() => operation({ authorization: invalid }), /Invalid exact native resolution bundle/u);
+  }
 });
 
 test("release operation rejects invalid regressions and terminal replay", () => {
