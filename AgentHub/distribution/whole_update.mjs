@@ -145,6 +145,7 @@ try {
   // External fixture only. A bounded held turn finishes normally after the
   // test's release file; no product controller/active count is substituted.
   await fs.copyFile(path.join(source, "e2e/fake-codex-app-server.mjs"), fake, 1);
+  await fs.copyFile(path.join(source, "e2e/fake-codex-package-update.mjs"), path.join(path.dirname(fake), "fake-codex-package-update.mjs"), 1);
   const config = releaseAcceptanceConfig({ root, telegramApiBaseUrl: telegram.baseUrl, fakeCodexFile: fake });
   config.usageSyncServerUrl = "";
   config.codexExecutableArgs = [fake, "--require-test-contour", "--state", path.join(root, "data/fake-codex-state.json"), "--whole-release-file", path.join(fixtures, "work-complete")];
@@ -206,7 +207,6 @@ try {
     const jobProbe = path.join(fixtures, "job-membership.exe");
     await run("compile-job-probe", runtimeHostCompilerCandidates()[0], ["/nologo", "/target:exe", `/out:${jobProbe}`,
       path.join(source, "tests/fixtures/runtime-job-membership.cs")]);
-    await fs.copyFile(path.join(here, "whole-update-managed-turn.mjs"), path.join(fixtures, "whole-update-managed-turn.mjs"));
     const command = path.join(fixtures, "managed-update.json");
     await fs.writeFile(command, JSON.stringify({ runtimeRoot: root, operationId: id, args: cli, jobProbe,
       nodeOptions: `--import=${pathToFileURL(preload).href}` }));
