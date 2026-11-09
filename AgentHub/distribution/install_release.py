@@ -357,8 +357,19 @@ def read_update_original(runtime_root: Path, operation_id: str):
 def original_status(operation_id: str, original) -> dict:
     if original is None:
         return {"operationId": operation_id, "state": "unknown", "effectsReplayed": False}
-    return {"operationId": operation_id, "status": original.get("status"), "phase": original.get("phase"),
-            "outcome": original.get("outcome"), "effectsReplayed": False}
+    result = {"operationId": operation_id, "status": original.get("status"), "phase": original.get("phase"),
+              "outcome": original.get("outcome"), "effectsReplayed": False}
+    metadata = original.get("metadata") or {}
+    envelope = metadata.get("packageHandoff") or {}
+    binding = envelope.get("binding") or {}
+    if (original.get("status") in {"requested", "blocked", "running"} and original.get("outcome") is None
+            and metadata.get("packageInputSha256") and envelope.get("schema") == 1
+            and binding.get("operationId") == operation_id
+            and hashlib.sha256(json.dumps(binding, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+            == envelope.get("sha256")):
+        result["handoff"] = {"action": "yield_current_turn", "reason": "public_package_restart",
+                             "operationId": operation_id}
+    return result
 
 
 def update_status(runtime_root: Path, operation_id: str) -> dict:
@@ -573,12 +584,12 @@ def prepare_update(args) -> None:
                       selectionSha256=file_hash(selection_file), requestSha256=file_hash(request_file)))
         assert_bound()
         entry = package/"runtime/src/runtime/runtime-package-handoff.mjs"
+        print("Keep the retained package/backup until the original update completes. "
+              "After yield_current_turn, finish this Hub turn so the admitted restart can proceed. "
+              "Read the same original after restart.", flush=True)
         result = subprocess.run([node, str(entry), "bootstrap-start", str(request_file)], check=False)
         if result.returncode:
             raise RuntimeError("Update admission was not confirmed; retained original must be read, not re-launched")
-    print("Keep the retained package/backup until the original update completes. "
-          "A legacy updater waits for your explicit old-app stop; a capable installed Hub uses its ordinary graceful restart owner.")
-    print(json.dumps({"operationId": args.operation_id, "retainedPackage": str(cache), "effectsReplayed": False}))
 
 
 def main():

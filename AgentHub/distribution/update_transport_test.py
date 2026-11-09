@@ -29,6 +29,20 @@ def sha(body):
 
 
 class PreparationTransportTests(unittest.TestCase):
+    def test_same_modern_pending_original_yields_turn_but_unknown_terminal_and_bad_binding_do_not(self):
+        binding = dict(operationId="same-original", runtimeRoot="synthetic-runtime")
+        envelope = dict(schema=1, binding=binding,
+                        sha256=sha(json.dumps(binding, separators=(",", ":")).encode("utf-8")))
+        original = dict(operationId="same-original", kind="restart", status="blocked", phase="waiting-for-work",
+                        outcome=None, metadata=dict(packageInputSha256="a"*64, packageHandoff=envelope))
+        projected = installer.original_status("same-original", original)
+        self.assertEqual(projected["handoff"], dict(action="yield_current_turn", reason="public_package_restart",
+                                                  operationId="same-original"))
+        for status, outcome in [("reconciling", "unknown"), ("failed", "failed"), ("succeeded", "succeeded")]:
+            self.assertNotIn("handoff", installer.original_status("same-original", dict(original, status=status, outcome=outcome)))
+        envelope["sha256"] = "b"*64
+        self.assertNotIn("handoff", installer.original_status("same-original", original))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="hub-transport-")
         self.addCleanup(self.temporary.cleanup)

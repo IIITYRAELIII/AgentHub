@@ -1,5 +1,18 @@
 # RST-001 — Restart and maintenance recovery
 
+## Public update initiated by an active Hub agent
+
+A capable runtime admits one exact package maintenance original before stopping.
+Its public installer acknowledgement identifies `yield_current_turn`. The active
+agent finishes its existing response and turn so the restart owner can drain work.
+Readback of the same known pending original carries that handoff after a lost
+reply. UNKNOWN and terminal outcomes never grant another install or stop.
+The existing native continuation must survive retirement of the initiating
+Node/provider Job, then prove that entire old cohort closed before backup,
+installation and one replacement launch. The same original's settlement, exact
+Ready and retained conversation/configuration/data establish completion. The
+protocol-v1 legacy manual bootstrap keeps its external-operator boundary.
+
 ## Explicit package next attempt (ADR-HUB-398)
 
 ### External package scratch and closed acceptance disposition (ADR-HUB-422)

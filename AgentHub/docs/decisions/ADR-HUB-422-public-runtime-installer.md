@@ -2,6 +2,18 @@
 
 ## Status and scope
 
+The principal update consumer is an active Codex turn inside the running Hub.
+Public package intake returns an addressed `yield_current_turn` acknowledgement
+after durable admission. The agent must finish that turn, allowing the existing
+restart controller to drain the managed cohort. The public CLI preserves this
+acknowledgement as its final JSON output and same-original readback repeats it
+only for an exact known pending package binding. It does not poll Ready while
+holding its own active turn. Native Host remains the independent continuation
+owner. The isolated `whole_update.mjs` inside-hub scenario uses a real managed
+provider Job, public CLI, canonical maintenance store and native backup/install/
+launch with controlled external providers and download peers. Actual recipient
+and production delivery remain separately observed outcomes.
+
 Implementation in progress in HUB-422. The separately reviewed queue component
 ends at SOURCE b284 and CURRENT 6b483. These additional common-installer changes
 have their own pending execution and review boundary.

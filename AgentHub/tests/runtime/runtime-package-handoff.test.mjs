@@ -655,11 +655,22 @@ for (const lostReply of [false, true]) test(`public package entry uses one grace
   const invoke = () => startPackageBootstrap(f.requestFile, { readMetadata: f.readMetadata, control,
     confirmManualStop: () => assert.fail("no manual fallback"), spawnImpl: () => assert.fail("no external legacy launch") });
   if (lostReply) await assert.rejects(invoke(), /lost addressed reply/u);
-  else assert.equal((await invoke()).status, "accepted-graceful");
+  else {
+    const admitted = await invoke();
+    assert.equal(admitted.status, "accepted-graceful");
+    assert.deepEqual(admitted.handoff, { action: "yield_current_turn", reason: "public_package_restart",
+      operationId: f.input.operationId });
+    assert.equal(admitted.retainedPackage, f.scratchRoot);
+  }
   assert.equal(dispatches, 1); assert.equal(saves, 1);
   const replay = await startPackageBootstrap(f.requestFile, { readMetadata: () => assert.fail("readback must not prepare again"),
     control: () => assert.fail("no repeated dispatch"), spawnImpl: () => assert.fail("no repeated native launch") });
   assert.equal(replay.effectsReplayed, false); assert.equal(replay.status, "blocked");
+  assert.equal(replay.handoff.action, "yield_current_turn");
+  f.store.settle(f.input.operationId, { succeeded: false, phase: "owned-refusal" });
+  const failed = await invoke();
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.handoff, undefined);
 });
 
 test("legacy package entry requires explicit manual step; health and canonical payload drift cannot admit it", async (t) => {

@@ -45,6 +45,18 @@ export function packageHandoffBinding(operation) {
   return envelope.binding;
 }
 
+function packageIntakeReadback(operation, retainedPackage) {
+  const result = { operationId: operation.operationId, status: operation.status,
+    phase: operation.phase, outcome: operation.outcome, retainedPackage, effectsReplayed: false };
+  if (["requested", "blocked", "running"].includes(operation.status) && operation.outcome === null
+    && operation.metadata?.packageInputSha256) {
+    packageHandoffBinding(operation);
+    result.handoff = { action: "yield_current_turn", reason: "public_package_restart",
+      operationId: operation.operationId };
+  }
+  return result;
+}
+
 export function packageRestartInput(input) {
   const keys = ["operationId", "tag", "archive", "descriptor", "installer"];
   if (!input || Object.keys(input).some((key) => !keys.includes(key))
@@ -210,7 +222,7 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
   const existing = store.getReadonly(input.operationId);
   if (existing) {
     assertRetainedPackageRequest(input, inputEvidence, root, existing);
-    return { operationId: existing.operationId, status: existing.status, phase: existing.phase, effectsReplayed: false };
+    return packageIntakeReadback(existing, path.dirname(inputEvidence.file));
   }
   const scratchRoot = path.dirname(inputEvidence.file);
   if (root === scratchRoot || root.startsWith(`${scratchRoot}${path.sep}`)
@@ -256,8 +268,10 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
     // Once dispatched, failure/timeout is UNKNOWN. It never falls through to a
     // manual bootstrap or a second original; the same restart owns readback.
     const result = await control("restart-package", business, { runtimeRoot: root, timeoutMs: 120000 });
-    return { operationId: input.operationId, status: "accepted-graceful", waiting: result.waiting === true,
-      accepted: result.accepted === true, effectsReplayed: false };
+    const original = store.getReadonly(input.operationId);
+    assertRetainedPackageRequest(input, inputEvidence, root, original);
+    return { ...packageIntakeReadback(original, scratchRoot), status: "accepted-graceful",
+      originalStatus: original.status, waiting: result.waiting === true, accepted: result.accepted === true };
   }
   await confirmManualStop();
   // Read-only preflight: an initiating operator in the old Hub job would itself

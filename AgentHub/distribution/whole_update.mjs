@@ -23,11 +23,12 @@ import { installPreparedRuntime } from "../src/runtime/runtime-manager.mjs";
 import { MaintenanceOperationStore } from "../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { MAINTENANCE_OPERATION_KINDS } from "../src/domain/maintenance-operation.mjs";
 import { createInterface } from "node:readline";
+import { runtimeHostCompilerCandidates } from "../src/infrastructure/process/runtime-host-builder.mjs";
 
 const execute = promisify(execFile), here = import.meta.dirname, source = path.resolve(here, "..");
 const [artifactFile, outputArgument] = process.argv.slice(2);
 const mode = process.argv[4] ?? "whole";
-if (!["whole", "downgrade", "poststop-recovery"].includes(mode)) throw Error("Unknown isolated scenario");
+if (!["whole", "downgrade", "poststop-recovery", "inside-hub"].includes(mode)) throw Error("Unknown isolated scenario");
 if (process.platform !== "win32" || !artifactFile || !outputArgument) throw Error("Windows artifacts.json and new isolated output required");
 const input = JSON.parse(await fs.readFile(artifactFile, "utf8")), output = path.resolve(outputArgument);
 await fs.mkdir(output); // Exclusive: never adopt an existing instance/data/cache.
@@ -118,8 +119,9 @@ try {
     if (index === 0) continue; // Initial private instance setup, not the tested public update.
     const archive = path.join(path.dirname(path.resolve(artifactFile)), "packages", `package-${index}`, "AgentHub-win32-x64.zip");
     if (!await fs.stat(archive).catch(error => { if (error.code === "ENOENT") return null; throw error; }))
-      await run(`package-${index}`, "python", ["-X", "utf8", "-B", path.join(here, "build_package.py"), "--prepared-runtime", artifact.releaseRoot,
-      "--license", path.join(source, "..", "LICENSE"), "--notices", path.join(source, "..", "THIRD_PARTY_NOTICES.md"), "--source-commit", input.revision, "--output", archive]);
+      await run(`package-${index}`, "python", ["-X", "utf8", "-B", path.join(input.toolRoot, "python/build_package.py"), "--prepared-runtime", artifact.releaseRoot,
+      "--license", path.join(source, "..", "LICENSE"), "--notices", path.join(source, "..", "THIRD_PARTY_NOTICES.md"), "--source-commit", input.revision,
+      "--recipient-root", path.join(source, "distribution"), "--output", archive]);
     const value = await json(`${archive}.json`);
     assert.equal(value.sourceCommit, input.revision); assert.equal(value.releaseId, artifact.releaseId);
     const packageManifest = JSON.parse((await execute("python", ["-X", "utf8", "-c",
@@ -163,7 +165,7 @@ try {
   await fs.copyFile(path.join(here, "whole-update-preload.mjs"), preload);
   const control = { root, metadataUrl: `https://api.github.com/repos/IIITYRAELIII/AgentHub/releases/tags/${tag}`,
     temporaryRoot: path.join(output, "temp"), telegramApiBaseUrl: telegram.baseUrl, transport: `http://127.0.0.1:${server.address().port}`, assetBase, assetNames: Object.keys(assets),
-    churn: mode === "downgrade" ? null : "replacement",
+    churn: ["downgrade", "inside-hub"].includes(mode) ? null : "replacement",
     ...(mode === "poststop-recovery" ? { installFailurePath: path.join(root, "releases", target.value.releaseId) } : {}) };
   await fs.writeFile(controlFile, JSON.stringify(control));
   await fs.writeFile(path.join(root, ".agent-hub-release-acceptance.json"), JSON.stringify({ schemaVersion: 1, id, root,
@@ -200,6 +202,45 @@ try {
   }
   const cli = ["-X", "utf8", "-B", path.join(here, "whole-update-transport.py"), controlFile, installer, "--release", tag,
     "--prepare-update", "--operation-id", id, "--runtime-root", root, "--scratch-root", path.join(output, "cache")];
+  if (mode === "inside-hub") {
+    const jobProbe = path.join(fixtures, "job-membership.exe");
+    await run("compile-job-probe", runtimeHostCompilerCandidates()[0], ["/nologo", "/target:exe", `/out:${jobProbe}`,
+      path.join(source, "tests/fixtures/runtime-job-membership.cs")]);
+    await fs.copyFile(path.join(here, "whole-update-managed-turn.mjs"), path.join(fixtures, "whole-update-managed-turn.mjs"));
+    const command = path.join(fixtures, "managed-update.json");
+    await fs.writeFile(command, JSON.stringify({ runtimeRoot: root, operationId: id, args: cli, jobProbe,
+      nodeOptions: `--import=${pathToFileURL(preload).href}` }));
+    await prepareAcceptanceRestartTarget({ root, telegram });
+    telegram.pushMessage("[whole-update-managed] обнови утилитис и хаб");
+    const managed = await wait(() => json(`${command}.result.json`).catch(error => {
+      if (error.code === "ENOENT") return null; throw error;
+    }), "managed provider public installer acknowledgement", 180_000);
+    report.managedTurn = managed;
+    assert.equal(managed.original.operationId, id);
+    const completed = await wait(() => operation()?.status === "succeeded" && operation(), "same original installed and Ready", 240_000);
+    const lock = await json(path.join(root, "data/bot.lock"));
+    assert.equal(lock.releaseId, target.value.releaseId); assert.equal(lock.ready, true);
+    assert.notEqual(lock.pid, before.pid);
+    const health = await callDesktopControl("runtime-health", {}, { runtimeRoot: root });
+    assert.equal(health.live, true); assert.equal(health.ready, true);
+    assert.equal(health.process.pid, lock.pid);
+    const backup = completed.metadata.packageBackup.directory;
+    assert.equal(await fs.readFile(path.join(root, "config.json"), "utf8"), await fs.readFile(path.join(backup, "config.json"), "utf8"));
+    assert.equal(await fs.readFile(path.join(root, "data/whole-update-cursor.keep"), "utf8"), "owned cursor 19");
+    assert.deepEqual(new MaintenanceOperationStore({ dataDir: path.join(root, "data", unknownRelative) })
+      .getReadonly(unknownOriginal.operationId), unknownOriginal);
+    const conversation = await json(path.join(root, "data/fake-codex-state.json"));
+    assert.ok(conversation.threads.some(thread => thread.turns.some(turn => JSON.stringify(turn).includes("whole-update-managed"))));
+    const beforeReadback = JSON.stringify(completed);
+    await run("managed-same-original-status", "python", [installer, "--release", tag, "--update-status",
+      "--operation-id", id, "--runtime-root", root, "--scratch-root", path.join(output, "cache")]);
+    assert.equal(JSON.stringify(operation()), beforeReadback);
+    await wait(() => !processIsAlive(completed.metadata.packageNative.hostPid), "independent native continuation joined");
+    assert.equal(processIsAlive(managed.providerPid), false);
+    assert.equal(processIsAlive(managed.installerPid), false);
+    report.completed = completed; report.after = lock; report.health = health; report.status = "passed";
+    await event("inside-hub-public-installer-same-original-ready");
+  } else {
   let admissionError;
   try { await run("public-installer-admission", "python", cli, { input: "\n", env: { ...cleanEnvironment, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } }); }
   catch (error) { admissionError = error; }
@@ -348,6 +389,7 @@ try {
   report.completed = completed; report.after = lock; report.snapshot = snapshot;
   await fs.writeFile(path.join(output, "telegram-calls.json"), JSON.stringify(telegram.calls, null, 2));
   await event("whole-update-ready-and-same-request-readback"); report.status = "passed";
+  }
   }
   }
 } catch (error) { report.status = "failed"; report.error = { message: error.message, stack: error.stack }; throw error; }

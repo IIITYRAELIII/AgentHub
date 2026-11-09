@@ -55,10 +55,9 @@ Runtime и scratch должны быть отдельными каталогам
 ## Подготовка обновления работающего Hub
 
 Для опубликованной целевой версии используй её проверенный versioned installer
-из отдельного интерактивного терминала того же пользователя, вне process Job
-работающего Hub. Не запускай эту команду из самого Hub. Сохрани один exact stable
-tag, один original operation ID, тот же приватный runtime root и отдельный
-приватный scratch вне runtime:
+того же пользователя. Codex внутри работающего Hub может выполнить эту команду.
+Сохрани один exact stable tag, один original operation ID, тот же приватный
+runtime root и отдельный приватный scratch вне runtime:
 
 ```powershell
 python install_release.py --release <exact-stable-tag> --prepare-update --operation-id <original-update-id> --runtime-root <installed-private-runtime-root> --scratch-root <separate-private-scratch>
@@ -70,7 +69,8 @@ ZIP, descriptor, installer и manifest одной версии, затем пе�
 исходников и новая публикация получателю не нужны.
 
 Для public **2.0.4 без package handoff** сначала закончи активную работу, но оставь
-Hub запущенным до arm. Подтверди показанный разовый ручной шаг. Только после
+Hub запущенным до arm. Для этого legacy-пути нужен отдельный терминал вне Job
+старого Hub. Подтверди показанный разовый ручной шаг. Только после
 `awaiting-user-stop` с exact old Host/Node PIDs и release останови именно эту
 старую группу в показанное 120-секундное окно. Не запускай новые ходы, второй Hub
 и не меняй пользовательскую сессию. Updater не убивает процессы. Ручное
@@ -85,6 +85,14 @@ backup API, вызывает неизменённый stopped-only installer и 
 exact replacement. Успех требует exact ready и settlement исходной операции,
 а не только exit0 установщика. WAL/SHM не копируются как live-файлы; backup не
 восстанавливает данные и не повторяет UNKNOWN работу.
+
+Если Codex выполняет обновление из самого Hub, после сохранённого ответа
+`handoff.action = yield_current_turn` он завершает свой текущий ответ и ход.
+Ожидание Ready внутри этого же хода удерживает работу, завершения которой ждёт
+restart owner. Native Host продолжает исходную операцию после закрытия старой
+Node/provider Job-группы. После перезапуска открой прежнюю беседу, прочитай статус
+того же original и проверь Ready выбранного release. Потерянный ответ читается
+через `--update-status` с прежним ID, без новой установки.
 
 После прерывания или потери ответа читай только тот же original:
 
