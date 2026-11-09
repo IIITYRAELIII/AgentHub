@@ -582,7 +582,8 @@ export class ReleaseOperationService {
       const current = this.store.get(operationId);
       const recovery = current?.firstComposeRecovery;
       if (!recovery || recovery.operationId !== operationId || recovery.requestId !== requestId || recovery.priorRevision !== expectedRevision
-          || recovery.priorGeneration !== 0 || recovery.authorizationFingerprint !== current.authorization.fingerprint) return null;
+          || recovery.priorGeneration !== 0 || recovery.authorizationFingerprint !== current.authorization.fingerprint
+          || !recovery.candidates?.length || recovery.candidates.some(candidate => candidate.kind !== "uncaptured-first-generation-v1")) return null;
       const { identitySha256, ...contents } = recovery;
       if (releaseIdentitySha256(contents) !== identitySha256
           || releaseIdentitySha256(recovery.input?.authorization) !== releaseIdentitySha256(current.authorization)) return null;
@@ -596,13 +597,13 @@ export class ReleaseOperationService {
       }
       return previous;
     }
-    await this.#recoverFirstCompose(operationId, { requestId, expectedRevision, expectedGeneration });
+    await this.#recoverFirstCompose(operationId, { requestId, expectedRevision, expectedGeneration, uncapturedOnly: true });
     const durable = admitted();
     if (!durable) throw new Error("First compose continuation lacks exact durable recovery admission");
     return durable;
   }
 
-  async #recoverFirstCompose(operationId, { requestId, expectedRevision, expectedGeneration }) {
+  async #recoverFirstCompose(operationId, { requestId, expectedRevision, expectedGeneration, uncapturedOnly = false }) {
     const snapshot = this.store.snapshot(operationId);
     const current = snapshot.operation;
     if (expectedRevision !== current.revision || expectedGeneration !== 0) {
@@ -613,6 +614,9 @@ export class ReleaseOperationService {
         || typeof this.recoverFirstCompose !== "function") return { accepted: false, reason: "ineligible", operation: current };
     requiredText(requestId, "first compose recovery requestId");
     const frozen = await this.inspectFirstCompose({ operation: current, generation: 1 });
+    if (uncapturedOnly && (!frozen?.length || frozen.some(candidate => candidate.kind !== "uncaptured-first-generation-v1"))) {
+      throw new Error("First compose admission reconciliation requires positively uncaptured custody");
+    }
     const contents = { ...failed, requestId, operationId, priorGeneration: 0, priorRevision: current.revision,
       authorizationFingerprint: current.authorization.fingerprint,
       input: releaseCompositionInput(current), candidates: frozen,
