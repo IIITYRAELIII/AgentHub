@@ -1,5 +1,22 @@
 # REL-001 — Task-backed Workspace release
 
+Multiple authorized publication targets for one canonical repository share one
+repository approval only when both exact local-main and origin-main pins agree.
+Both target identities and publication ordering remain in original authorization.
+Conflicting pins refuse before preparation. Direct preflight duplicate and foreign
+repository guards remain strict.
+
+The existing request-addressed first-compose recovery also accepts positively
+uncaptured generation one. It requires the same failed compose receipts, original
+input and generation-zero CAS, fresh complete prepared selection and approvals,
+plus generation-owner proof that both checkout and archive namespaces are absent.
+The prepared commit, tree, manifest and plan are bound before recovery admission
+and rechecked before capture. Existing generation locking rechecks absence before
+creating anything. Occupied, partial, archived, mixed or changed evidence refuses.
+The same original appends the next compose attempt and stays at generation zero
+until actual capture. Failed history, target authority, notes, version and test
+selection remain intact. See ADR-HUB-422-uncaptured-first-compose.
+
 ## Public package consumer for new local publications
 
 New normal installed-Hub release intakes record the immutable public-package-v1

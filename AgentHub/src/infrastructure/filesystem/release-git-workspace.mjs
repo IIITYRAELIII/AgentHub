@@ -1182,7 +1182,7 @@ export class ReleaseGitWorkspaceService {
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
     ephemeral = false, releaseVersion = undefined,
-    expectedRuntimeVersion = undefined, firstComposeRecovery = null,
+    expectedRuntimeVersion = undefined, firstComposeRecovery = null, expectedAbsentGeneration = null,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
     if (!preparationObjectStore()) {
@@ -1192,7 +1192,7 @@ export class ReleaseGitWorkspaceService {
         ({ lease, objects }) => withPreparationGitIsolation(this.dataDir, () => this.prepareGeneration({
           operationId, generation, planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
           baseProvenance, validateBeforeCommit, changelogContent, freezePublication, ephemeral,
-          releaseVersion, expectedRuntimeVersion, firstComposeRecovery }), lease, objects));
+          releaseVersion, expectedRuntimeVersion, firstComposeRecovery, expectedAbsentGeneration }), lease, objects));
     }
     if (releaseVersion !== undefined) normalizeReleaseVersion(releaseVersion);
     const operation = String(operationId ?? "").trim();
@@ -1207,7 +1207,15 @@ export class ReleaseGitWorkspaceService {
     const lock = path.join(this.dataDir, "locks", `release-generation-${generationKey}`);
     return withInterprocessLocks([lock], async () => {
       try {
-        if (!firstComposeRecovery) await mkdir(generationDataDir, { recursive: true });
+        if (expectedAbsentGeneration) {
+          const absent = await this.#uncapturedFirstGeneration(operation, sourceRoot);
+          if (generationNumber !== 1 || stableManifest(absent) !== stableManifest(expectedAbsentGeneration)) {
+            throw new Error("Uncaptured first generation binding changed before capture");
+          }
+          await mkdir(path.dirname(generationDataDir), { recursive: true });
+          await mkdir(generationDataDir);
+        }
+        if (!firstComposeRecovery && !expectedAbsentGeneration) await mkdir(generationDataDir, { recursive: true });
         const identityFile = path.join(generationDataDir, "identity.json");
         let identity = {
           schemaVersion: 1,
@@ -3539,9 +3547,25 @@ export class ReleaseGitWorkspaceService {
     const sourceRoot = await repositoryRoot(projectRoot);
     const key = sha256(`${operationId}:1:${sourceRoot}`).slice(0, 24);
     const identity = await readJson(path.join(this.dataDir, "release-gens", key, "identity.json"));
-    if (!identity?.preparedCandidate) throw new Error("First compose has no retained prepared generation");
+    if (!identity?.preparedCandidate) {
+      if (!options.allowUncaptured || !options.inspectOnly) throw new Error("First compose has no retained prepared generation");
+      return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${key}`)], async () =>
+        ({ binding: await this.#uncapturedFirstGeneration(operationId, sourceRoot), candidate: null }));
+    }
     return withPreparationGitIsolation(this.dataDir, () => this.prepareGeneration({
       operationId, generation: 1, projectRoot: sourceRoot, firstComposeRecovery: options }));
+  }
+
+  async #uncapturedFirstGeneration(operationId, sourceRoot) {
+    const identitySha256 = sha256(`${operationId}:1:${sourceRoot}`);
+    const key = identitySha256.slice(0, 24);
+    const generationRoot = path.join(this.dataDir, "release-gens", key);
+    for (const root of [generationRoot, path.join(this.dataDir, "release-generation-evidence", key)]) {
+      const entry = await lstat(root).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+      if (entry) throw new Error("First generation capture is occupied, partial or archived");
+    }
+    return { kind: "uncaptured-first-generation-v1", operationId, generation: 1,
+      repositoryRoot: sourceRoot, generationRoot, identitySha256 };
   }
 
   async inspectRetainedGeneration({ operationId, generation, workspaceId, candidate, changelogContent }) {

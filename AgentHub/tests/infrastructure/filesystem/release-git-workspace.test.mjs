@@ -485,6 +485,40 @@ test("first frozen generation recovery preserves its input and the corrected nex
   assert.deepEqual(await readFile(first.manifestFile), manifest);
 });
 
+test("uncaptured first generation requires physical absence through the owning capture lock", async context => {
+  const f = await fixture(context);
+  const selected = await taskResult(f, context, { branch: "HUB-first-uncaptured", file: "selected.txt" });
+  const input = { projectRoot: f.primary, workspaceId: "workspace", planRevision: "uncaptured-plan",
+    approvedBaseCommit: f.baseCommit, frozenTasks: [{ taskId: "uncaptured-task", taskRevision: 2, resultCommit: selected }] };
+  await f.service.prepareCandidate(input);
+  const inspect = operationId => f.service.firstFrozenGeneration({ operationId, projectRoot: f.primary,
+    inspectOnly: true, allowUncaptured: true });
+  const original = "uncaptured-first-original";
+  const preview = await inspect(original);
+  assert.equal(preview.binding.kind, "uncaptured-first-generation-v1");
+  assert.equal(preview.candidate, null);
+  await assert.rejects(stat(preview.binding.generationRoot), { code: "ENOENT" });
+  const capture = { ...input, operationId: original, generation: 1, freezePublication: false,
+    expectedAbsentGeneration: preview.binding };
+  await assert.rejects(f.service.prepareGeneration({ ...capture,
+    expectedAbsentGeneration: { ...preview.binding, operationId: "foreign" } }), /binding changed/u);
+  await mkdir(preview.binding.generationRoot, { recursive: true });
+  await writeFile(path.join(preview.binding.generationRoot, "partial.keep"), "partial capture");
+  await assert.rejects(inspect(original), /occupied, partial or archived/u);
+  await assert.rejects(f.service.prepareGeneration(capture), /occupied, partial or archived/u);
+  assert.equal(await readFile(path.join(preview.binding.generationRoot, "partial.keep"), "utf8"), "partial capture");
+  const archived = "archived-first-original";
+  const archivedPreview = await inspect(archived);
+  await mkdir(path.join(f.dataDir, "release-generation-evidence", path.basename(archivedPreview.binding.generationRoot)), { recursive: true });
+  await assert.rejects(inspect(archived), /occupied, partial or archived/u);
+  const clean = "clean-first-original";
+  const cleanPreview = await inspect(clean);
+  const candidate = await f.service.prepareGeneration({ ...input, operationId: clean, generation: 1,
+    freezePublication: false, expectedAbsentGeneration: cleanPreview.binding });
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:selected.txt`), "feature");
+  await assert.rejects(inspect(clean), /occupied, partial or archived/u);
+});
+
 test("new permanent release captures keep exact selected history without unrelated refs or object payloads", async context => {
   const f = await fixture(context);
   const selected = await taskResult(f, context, { branch: "HUB-selected-transport", file: "selected.txt" });

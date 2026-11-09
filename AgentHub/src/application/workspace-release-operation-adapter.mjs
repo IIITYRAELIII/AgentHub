@@ -2,6 +2,7 @@ import { effectiveReleaseTaskIds, effectiveReleaseMetadata, effectiveReleaseTask
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
+import { canonicalReleaseRepositoryRoot } from "./workspace-release-preflight-service.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -22,15 +23,22 @@ async function releaseMetadataBytes(metadata) {
 }
 function approvedRepositories(operation) {
   if (operation.reviewedMain) return operation.reviewedMain.approvedRepositories;
-  return operation.authorization.approvedTargets.flatMap((target) => (
-    target.repositoryRoot && target.approvedLocalMainCommit && target.approvedOriginMainCommit
-      ? [{
-          projectRoot: target.repositoryRoot,
-          approvedLocalMainCommit: target.approvedLocalMainCommit,
-          approvedOriginMainCommit: target.approvedOriginMainCommit,
-        }]
-      : []
-  ));
+  const repositories = new Map();
+  for (const target of operation.authorization.approvedTargets) {
+    if (!target.repositoryRoot || !target.approvedLocalMainCommit || !target.approvedOriginMainCommit) continue;
+    const key = canonicalReleaseRepositoryRoot(target.repositoryRoot);
+    const existing = repositories.get(key);
+    if (existing && (existing.approvedLocalMainCommit !== target.approvedLocalMainCommit
+        || existing.approvedOriginMainCommit !== target.approvedOriginMainCommit)) {
+      throw new Error(`conflicting repository approval for ${target.repositoryRoot}`);
+    }
+    if (!existing) repositories.set(key, {
+      projectRoot: target.repositoryRoot,
+      approvedLocalMainCommit: target.approvedLocalMainCommit,
+      approvedOriginMainCommit: target.approvedOriginMainCommit,
+    });
+  }
+  return [...repositories.values()];
 }
 
 function selectionIdentity(value) {
@@ -58,13 +66,15 @@ export class WorkspaceReleaseOperationAdapter {
 
   async compose({ operation, generation }) {
     const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
+    const frozenVersions = operation.firstComposeRecovery?.candidates
+      .filter(item => item.kind !== "uncaptured-first-generation-v1");
     const prepared = await this.releasePreflight.prepareOperationGeneration({
       workspaceId: operation.workspaceId,
       operationId: operation.operationId,
       generation,
       ...(effectiveReleaseTaskScope(operation) === "all_await" ? {} : { taskIds: effectiveReleaseTaskIds(operation) }),
       previousSelectedResults: operation.selectedResults,
-      ...(operation.firstComposeRecovery ? { frozenVersions: operation.firstComposeRecovery.candidates } : {}),
+      ...(frozenVersions?.length ? { frozenVersions } : {}),
       approvedRepositories: approvedRepositories(operation),
       ...(operation.authorization.releaseVersion !== undefined ? { releaseVersion: operation.authorization.releaseVersion } : {}),
       ...(changelogContent ? { changelogContent } : {}),

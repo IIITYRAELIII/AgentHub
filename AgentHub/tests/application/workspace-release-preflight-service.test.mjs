@@ -13,6 +13,9 @@ import { createRepositoryProductionValidationAdapter } from "../../src/infrastru
 import { preparationEnvelope } from "../helpers/release-preparation-envelope.mjs";
 import { preparationHash } from "../../src/application/release-preparation-admission.mjs";
 import { localSourceSelectionHash } from "../../src/domain/release-base-provenance.mjs";
+import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
+import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
+import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -205,6 +208,107 @@ test("manual public version survives the actual preflight generation boundary", 
   assert.equal(calls[0].releaseVersion, "3.7.9");
   await f.service.prepareOperationGeneration(input);
   assert.equal(Object.hasOwn(calls[1], "releaseVersion"), false);
+});
+
+test("two publication targets share one exact repository approval through generation preflight", async () => {
+  const f = localSourceFixture();
+  const captures = [];
+  f.service.releaseGitWorkspaces.prepareGeneration = async request => {
+    await request.validateBeforeCommit();
+    captures.push(request);
+    return { ...f.candidate, frozenTasks: f.plan.ready };
+  };
+  const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight: f.service,
+    publication: { publish: async () => null, readback: async () => null },
+    finalization: { finalize: async () => null } });
+  const target = { kind: "agent-hub-publication", repositoryRoot: f.projectRoot,
+    approvedLocalMainCommit: f.p.agreedMainCommit, approvedOriginMainCommit: f.p.publishedBaseCommit };
+  const operation = { operationId: "same-two-target-original", workspaceId: "workspace-1", selectedResults: [],
+    authorization: { taskIds: ["task-current"], fingerprint: "original", releaseVersion: "2.1.6",
+      approvedTargets: [{ ...target, targetId: "public", environment: "github-release" },
+        { ...target, targetId: "local", environment: "production", repositoryRoot: path.join(f.projectRoot, ".") }] } };
+  const before = structuredClone(operation);
+  const result = await adapter.compose({ operation, generation: 1 });
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].releaseVersion, "2.1.6");
+  assert.equal(captures[0].approvedBaseCommit, f.p.publishedBaseCommit);
+  assert.equal(result.candidates.length, 1);
+  assert.deepEqual(result.selectedResults.map(item => item.taskId), ["task-current"]);
+  assert.deepEqual(operation, before, "both target authorities and original input stay immutable");
+});
+
+test("failed before first capture resumes the same SQLite original with exact absence and prepared authority", async t => {
+  const f = localSourceFixture();
+  const root = await mkdtemp(path.join(os.tmpdir(), "first-uncaptured-original-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new ReleaseOperationStore({ dataDir: root, idFactory: () => "uncaptured-original" });
+  const absence = { kind: "uncaptured-first-generation-v1", operationId: "uncaptured-original", generation: 1,
+    repositoryRoot: f.projectRoot, generationRoot: path.join(root, "generation"), identitySha256: "e".repeat(64) };
+  let occupied = false, captures = 0, fixed = false;
+  f.service.releaseGitWorkspaces.firstFrozenGeneration = async () => {
+    if (occupied) throw new Error("First generation capture is occupied, partial or archived");
+    return { binding: absence, candidate: null };
+  };
+  f.service.releaseGitWorkspaces.prepareGeneration = async request => {
+    await request.validateBeforeCommit();
+    assert.deepEqual(request.expectedAbsentGeneration, absence);
+    assert.equal(request.releaseVersion, "2.1.6");
+    captures++;
+    return { ...f.candidate, frozenTasks: f.plan.ready };
+  };
+  const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight: f.service,
+    publication: { publish: async () => null, readback: async () => null },
+    finalization: { finalize: async () => null } });
+  const service = new ReleaseOperationService({ store, ownerId: "test-owner", processAlive: pid => pid === process.pid,
+    compose: input => fixed ? adapter.compose(input) : f.service.prepareOperationGeneration({
+      workspaceId: input.operation.workspaceId, operationId: input.operation.operationId, generation: input.generation,
+      taskIds: input.operation.authorization.taskIds, approvedRepositories: input.operation.authorization.approvedTargets
+        .map(target => ({ projectRoot: target.repositoryRoot, approvedLocalMainCommit: target.approvedLocalMainCommit,
+          approvedOriginMainCommit: target.approvedOriginMainCommit })) }),
+    inspectFirstCompose: input => adapter.inspectFirstCompose(input),
+    recoverFirstCompose: input => adapter.recoverFirstCompose(input),
+    validate: async () => { throw Object.assign(new Error("stop before publication"), { code: "RELEASE_VALIDATION_FAILED" }); },
+    publishTarget: () => assert.fail("no publication in this regression"),
+    readTarget: async () => ({ status: "not_applied" }), finalize: () => assert.fail("no finalization") });
+  const target = { kind: "agent-hub-publication", repositoryRoot: f.projectRoot,
+    approvedLocalMainCommit: f.p.agreedMainCommit, approvedOriginMainCommit: f.p.publishedBaseCommit };
+  const ack = service.start({ requestId: "same-original", workspaceId: "workspace-1", streamId: "stream", threadId: "thread",
+    authorization: { taskIds: ["task-current"], validationMode: "full", releaseVersion: "2.1.6",
+      approvedTargets: [{ ...target, targetId: "public", environment: "github-release" },
+        { ...target, targetId: "local", environment: "production" }] } });
+  const failed = await service.drain(ack.operationId);
+  assert.equal(failed.operation.state, "failed");
+  assert.match(failed.operation.lastError.message, /duplicated or ambiguous/u);
+  assert.equal(captures, 0);
+  const before = structuredClone(failed);
+  fixed = true;
+  const request = { requestId: "same-original-recovery", expectedRevision: failed.operation.revision, expectedGeneration: 0 };
+  assert.equal((await service.continue(ack.operationId, { ...request, expectedRevision: 1 })).reason, "stale-revision");
+  occupied = true;
+  await assert.rejects(service.continue(ack.operationId, request), /occupied, partial or archived/u);
+  assert.deepEqual(store.snapshot(ack.operationId), before);
+  occupied = false;
+  const conflicting = structuredClone(failed.operation);
+  conflicting.authorization.approvedTargets[1].approvedOriginMainCommit = "c".repeat(40);
+  await assert.rejects(adapter.inspectFirstCompose({ operation: conflicting, generation: 1 }), /conflicting repository approval/u);
+  const foreignSelection = structuredClone(failed.operation);
+  foreignSelection.authorization.taskIds.push("foreign-task");
+  await assert.rejects(adapter.inspectFirstCompose({ operation: foreignSelection, generation: 1 }), /whole selection changed/u);
+  const oldTree = f.candidate.tree;
+  f.candidate.tree = "changed-before-admission";
+  const preview = await adapter.inspectFirstCompose({ operation: failed.operation, generation: 1 });
+  f.candidate.tree = oldTree;
+  await assert.rejects(adapter.recoverFirstCompose({ operation: failed.operation, generation: 1,
+    recovery: { candidates: preview }, validateBeforeCommit: async () => {} }), /source or custody changed/u);
+  assert.equal(captures, 0);
+  assert.equal((await service.continue(ack.operationId, request)).accepted, true);
+  const result = await service.drain(ack.operationId);
+  assert.equal(result.operation.currentGeneration, 1);
+  assert.equal(result.operation.waitReason.code, "validation_failed");
+  assert.equal(captures, 1);
+  assert.deepEqual(result.operation.authorization, before.operation.authorization);
+  assert.deepEqual(result.receipts.find(item => item.stepId === "compose" && item.attempt === 1), before.receipts[0]);
+  assert.equal(result.receipts.find(item => item.stepId === "compose" && item.attempt === 2).status, "applied");
 });
 
 test("first compose preflight fences whole original bindings before recovery and retains artifact version", async () => {
