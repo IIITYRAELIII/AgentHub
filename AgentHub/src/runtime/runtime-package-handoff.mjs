@@ -287,9 +287,19 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
     }
     const original = store.getReadonly(input.operationId);
     assertRetainedPackageRequest(input, inputEvidence, root, original);
-    await admitIncomingPackageContinuation({ store, original, input, inputEvidence, target,
-      host, spawnImpl, ownershipTimeoutMs, now, wait });
-    return { ...packageIntakeReadback(store.getReadonly(input.operationId), scratchRoot), status: "accepted-graceful",
+    let admissionError;
+    try {
+      await admitIncomingPackageContinuation({ store, original, input, inputEvidence, target,
+        host, spawnImpl, ownershipTimeoutMs, now, wait });
+    } catch (error) { admissionError = error; }
+    const current = store.getReadonly(input.operationId);
+    assertRetainedPackageRequest(input, inputEvidence, root, current);
+    if (packageBindingDigest(packageHandoffBinding(current)) !== packageBindingDigest(packageHandoffBinding(original))) {
+      throw new Error("Original binding changed during incoming admission");
+    }
+    if (terminal(current)) return packageIntakeReadback(current, scratchRoot);
+    if (admissionError) throw admissionError;
+    return { ...packageIntakeReadback(current, scratchRoot), status: "accepted-graceful",
       originalStatus: original.status, waiting: result.waiting === true, accepted: result.accepted === true };
   }
   await confirmManualStop();
@@ -364,7 +374,9 @@ async function admitIncomingPackageContinuation({ store, original, input, inputE
   const deadline = now() + ownershipTimeoutMs;
   while (now() < deadline) {
     const current = store.getReadonly(original.operationId), incoming = current?.metadata?.packageIncoming;
-    if (incoming?.sha256 !== packageBindingDigest(intent)) throw new Error("Incoming package intent changed");
+    if (incoming?.sha256 !== packageBindingDigest(intent)
+      || packageBindingDigest(packageHandoffBinding(current)) !== intent.bindingSha256) throw new Error("Incoming package intent changed");
+    if (terminal(current)) return;
     if (incoming.native?.launcherPid === child.pid) return incoming.native;
     if (failure) throw failure;
     await wait(100);

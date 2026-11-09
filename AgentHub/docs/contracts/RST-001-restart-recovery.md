@@ -25,6 +25,9 @@ proves old native closure before a separate recovery intent is admitted under
 the existing root gate. The prior row, native attempt and input remain intact.
 Only a positively closed pre-backup attempt qualifies. Installing, launching,
 foreign or unproved effects retain reconciliation and never replay.
+If the ordinary controller settles the same immutable original during incoming
+admission, intake returns that canonical terminal without a yield instruction.
+An unchanged original binding is required before resolving a bridge error this way.
 
 The native owner captures the exact old Host Job and process handles before
 retirement and proves itself outside every Job. After a bounded graceful period

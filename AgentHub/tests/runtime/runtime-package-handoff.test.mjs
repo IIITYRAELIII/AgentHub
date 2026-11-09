@@ -688,6 +688,50 @@ for (const lostReply of [false, true]) test(`public package entry uses one grace
   assert.equal(failed.handoff, undefined);
 });
 
+for (const failureAt of ["control-reply", "incoming-arm"]) test(`public package entry reads exact terminal refusal during ${failureAt}`, async t => {
+  const f = await packageEntryFixture(t);
+  const binding = { ...f.binding, operationId: f.input.operationId,
+    target: { ...await verifyPublicPackageTarget(f.input, { readMetadata: f.readMetadata }),
+      runtimeManifest: await packageFile(path.join(f.input.packageRoot, "runtime/runtime-manifest.json")) } };
+  let request = null, bridges = 0, dispatches = 0;
+  const service = new RestartRequestService({ operationStore: f.store, currentTarget: () => ({}),
+    getRequest: () => request, setRequest: value => { request = value; }, blockingWorkCount: () => 1,
+    currentChatId: () => null, updateOffset: () => 0, processingUpdateId: () => null,
+    saveState: noop, announceDesktop: noop, sendTelegram: noop,
+    performRestart: () => assert.fail("no stop before incoming admission"),
+    scheduleRestart: () => assert.fail("active work cannot schedule"),
+    preparePackage: async () => ({ schema: 1, binding, sha256: packageBindingDigest(binding) }) });
+  const refuse = () => f.store.settle(f.input.operationId, { succeeded: false, phase: "failed" });
+  const result = await startPackageBootstrap(f.requestFile, { readMetadata: f.readMetadata,
+    control: async (action, business) => {
+      if (action === "runtime-health") return { live: true, ready: true,
+        process: { pid: process.pid, releaseId: "old" }, packageHandoff: { protocol: 1 } };
+      assert.equal(action, "restart-package"); dispatches++;
+      const reply = await service.fromPackage(business);
+      if (failureAt === "control-reply") refuse();
+      return reply;
+    },
+    confirmManualStop: () => assert.fail("no manual fallback"),
+    spawnImpl: (_host, args) => {
+      assert.equal(args[0], "--package-observe"); bridges++;
+      const child = new EventEmitter(); child.pid = 901; child.unref = noop;
+      queueMicrotask(() => { refuse(); child.emit("exit", 1); });
+      return child;
+    } });
+  assert.equal(result.status, "failed"); assert.equal(result.outcome, "failed");
+  assert.equal(result.handoff, undefined); assert.equal(result.accepted, undefined);
+  assert.deepEqual([dispatches, bridges], [1, failureAt === "incoming-arm" ? 1 : 0]);
+  const terminal = f.store.getReadonly(f.input.operationId);
+  assert.deepEqual(packageHandoffBinding(terminal), binding);
+  assert.equal(terminal.metadata.packageNative, undefined);
+  assert.equal(terminal.metadata.packageIncoming?.native, undefined);
+  const replay = await startPackageBootstrap(f.requestFile, {
+    readMetadata: () => assert.fail("terminal readback cannot prepare"),
+    control: () => assert.fail("no repeated dispatch"), spawnImpl: () => assert.fail("no repeated bridge") });
+  assert.equal(replay.status, "failed"); assert.equal(replay.handoff, undefined);
+  assert.deepEqual(f.store.getReadonly(f.input.operationId), terminal);
+});
+
 test("legacy package entry requires explicit manual step; health and canonical payload drift cannot admit it", async (t) => {
   const f = await packageEntryFixture(t); let confirmations = 0;
   const options = { readMetadata: f.readMetadata,
