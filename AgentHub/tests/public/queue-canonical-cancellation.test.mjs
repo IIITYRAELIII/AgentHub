@@ -24,8 +24,13 @@ async function renderedCancellation(mode, surface = "vscode") {
     input: `Synthetic retained event ${index}`, createdAt: new Date().toISOString(),
     conflictKind: "message-intake", temporaryFiles: [], persistentFiles: true,
   }));
+  const cancellations = new Map();
   const wire = id => {
     const receipt = store.projectMessageReceipt({ clientUserMessageId: id });
+    if (receipt.result?.cancelled && !cancellations.has(id)) cancellations.set(id, {
+      clientUserMessageId: id, canonicalCommittedAtMs: store.messageCommand(id).terminalAtMs,
+      canonicalProjectionAtMs: Date.now(),
+    });
     return { ...receipt.result, provider: receipt.provider, threadId: receipt.threadId,
       clientUserMessageId: id, createdAt: receipt.createdAt };
   };
@@ -56,11 +61,13 @@ async function renderedCancellation(mode, surface = "vscode") {
       dispatchCommand: unused, activeTitle: unused, snapshot: unused,
       composerTransfers: new DeferredComposerTransferRegistry(),
     });
-    const cancelInput = params => {
+    const cancelInput = async params => {
       assert.equal(params.action, "cancel");
       const original = items.find(item => item.id === params.id);
       assert.equal(params.clientUserMessageId, original?.clientUserMessageId);
-      return service.handle(params);
+      const result = await service.handle(params);
+      wire(params.clientUserMessageId);
+      return result;
     };
     const readSnapshot = params => {
       requests.push(params.messageReceiptIds ?? []);
@@ -127,9 +134,14 @@ async function renderedCancellation(mode, surface = "vscode") {
       await mkdir(process.env.AGENT_HUB_TEST_ARTIFACT_DIR, { recursive: true });
       await page.screenshot({ path: path.join(process.env.AGENT_HUB_TEST_ARTIFACT_DIR, `queue-cancelled-${surface}-${mode}.png`), fullPage: true });
     }
-    console.log(JSON.stringify({ canonicalCancelAtMs: committedAt, receiptProjectionAtMs: projectedAt,
-      renderedRemovalAtMs: removedAt, cancelToRenderedRemovalMs: removedAt - committedAt,
-      exactIds: ids, mode, surface, retainedQueueCards: 0 }));
+    const observed = [...cancellations.values()].map(value => ({ ...value,
+      renderedRemovalUpperBoundAtMs: removedAt, canonicalToRenderedUpperBoundMs: removedAt - value.canonicalCommittedAtMs,
+    }));
+    assert.equal(observed.length, ids.length);
+    assert.ok(observed.every(value => value.canonicalCommittedAtMs <= value.canonicalProjectionAtMs
+      && value.canonicalProjectionAtMs <= value.renderedRemovalUpperBoundAtMs));
+    console.log(JSON.stringify({ cancellationStartedAtMs: committedAt, receiptProjectionAtMs: projectedAt,
+      renderedRemovalAtMs: removedAt, observed, mode, surface, retainedQueueCards: 0 }));
   } finally {
     await page.close();
     await browser.close();
