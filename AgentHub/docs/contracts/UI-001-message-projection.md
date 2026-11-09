@@ -267,6 +267,14 @@ text-prefix guessing nor command replay is a migration path.
 
 ## Canonical reducer
 
+Known phased Codex rollout items retain their native item identity and phase
+through observation and active-history projection. Commentary remains in its
+trace group, while an explicit streaming final keeps its own answer body and
+citations, including when its text equals an earlier commentary item. The
+existing item reducer preserves a later streamed item during an older rollout
+observation. Unphased legacy recovery and exact terminal status/content retain
+their existing owners.
+
 Hidden or zero-sized chat panes do not automatically expand cached history or
 request older pages. Queued frame and scroll callbacks recheck current visibility;
 returning to a visible short chat resumes viewport filling, and explicit older-page

@@ -72,6 +72,11 @@ Append copies only the groups it mutates. Serialized rollout-cache budgets are
 32 MiB ordinary and 16 MiB active; these are not total process-heap limits.
 Desktop paged history clones only each selected cached turn.
 
+The same rollout cache retains native phase/item data for at most eight latest
+assistant items, using the existing 200,000-character live-preview bound per
+item. Those bytes participate in its serialized cache budget. Full terminal
+content and explicit trace-source reads retain their existing boundaries.
+
 Explicit “All stages” reads use the existing history owner and rollout worker,
 without provider calls, history writes or automatic polling. They stream a fixed
 source prefix in 64 KiB chunks, cap a record at 4 MiB and return at most 50 groups

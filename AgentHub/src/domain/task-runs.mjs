@@ -458,6 +458,10 @@ export function createObservedTaskRun(value, snapshot = {}) {
       displayRequested: false,
     }),
     responseText: snapshot.answer ?? "",
+    ...(snapshot.responseItem?.id ? {
+      responseItemId: snapshot.responseItem.id,
+      responseItems: [structuredClone(snapshot.responseItem)],
+    } : {}),
     observedInitialResponseText: String(snapshot.answer ?? ""),
     observedResponseChanged: false,
     observerTimer: null,

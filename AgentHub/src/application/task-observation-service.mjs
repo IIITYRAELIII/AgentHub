@@ -385,7 +385,7 @@ export class TaskObservationService {
     if (this.markProgressHeartbeat(run, this.progressHeartbeatState(run))) {
       this.scheduleProgressUpdate(run);
     }
-    if (run.observer) {
+    if (run.observer || snapshot.responseItem?.id) {
       this.update(run, snapshot);
     } else {
       const answer = String(snapshot.answer ?? "").trim();
@@ -400,7 +400,7 @@ export class TaskObservationService {
     this.syncTaskRun(run, {
       active: true,
       stage: snapshot.stage,
-      answer: snapshot.answer,
+      answer: snapshot.responseItem?.id ? run.responseText : snapshot.answer,
       activityAtMs: snapshot.activityAtMs ?? snapshot.modifiedAtMs ?? this.now(),
     });
   }

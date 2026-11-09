@@ -5,6 +5,7 @@ import {
   codexTurnHasExplicitFinalAnswer,
 } from "../../application/task-history.mjs";
 import { codexTurnAnswer } from "./codex-turn-answers.mjs";
+import { completeCodexAgentMessage } from "./codex-agent-message-reducer.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
 import {
@@ -372,12 +373,20 @@ export class CodexTaskSnapshotService {
       run.turnId = snapshot.turnId;
       this.#d.reindexRun(run);
     }
+    const observedItem = snapshot?.active && snapshot.responseItem?.id && run.turnId === snapshot.turnId
+      ? snapshot.responseItem : null;
+    if (observedItem) {
+      completeCodexAgentMessage(run, { turnId: snapshot.turnId, item: observedItem });
+      // A native event may already have selected a later item than this read.
+      // Keep the body and citations with that same item owner.
+      run.responseText = codexTurnAnswer({ items: run.responseItems });
+    }
     if (snapshot?.model) run.model = this.#d.modelLabel(snapshot.model);
     if (snapshot?.reasoningEffort) {
       run.reasoning = this.#d.reasoningLabels?.[snapshot.reasoningEffort]
         ?? snapshot.reasoningEffort;
     }
-    if (Array.isArray(snapshot?.responseAnnotationReferences)) {
+    if (!observedItem && Array.isArray(snapshot?.responseAnnotationReferences)) {
       run.responseAnnotationReferences = structuredClone(snapshot.responseAnnotationReferences);
     }
     if (Array.isArray(snapshot?.activityGroups) && snapshot.activityGroups.length) {
@@ -403,6 +412,8 @@ export class CodexTaskSnapshotService {
     const rootUser = state.userMessages.find((message) => message?.role !== "agent");
     return {
       answer: overrides.active ? state.latestAnswer : state.finalAnswer,
+      ...(overrides.active && state.responseItem
+        ? { responseItem: structuredClone(state.responseItem) } : {}),
       userMessageSnapshotAuthority: activity.userMessageSnapshotAuthorityByTurnId?.[state.turnId]
         ?? activity.userMessageSnapshotAuthority
         ?? "incremental",

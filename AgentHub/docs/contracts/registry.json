@@ -89,7 +89,8 @@
         "src/interfaces/telegram/task-view-controller.mjs",
         "src/infrastructure/persistence/provider-turn*",
         "src/infrastructure/persistence/task-sync-store.mjs",
-        "tests/application/turn-end-delivery-batch.test.mjs"
+        "tests/application/turn-end-delivery-batch.test.mjs",
+        "tests/providers/codex/codex-rollout-answer-projection.test.mjs"
       ]
     },
     {
@@ -113,7 +114,9 @@
         "src/providers/codex/codex-task-snapshot-service.mjs",
         "src/infrastructure/persistence/task-read-state-store.mjs",
         "src/infrastructure/persistence/task-sync-store.mjs",
-        "tests/public/composer-send-isolation.test.mjs"
+        "tests/public/composer-send-isolation.test.mjs",
+        "tests/providers/codex/codex-rollout-answer-projection.test.mjs",
+        "tests/public/codex-rollout-live-answer.test.mjs"
       ]
     },
     {
