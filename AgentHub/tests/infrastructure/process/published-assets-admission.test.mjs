@@ -175,7 +175,7 @@ async function fixture(t) {
     assert.deepEqual(await readFile(path.join(parentRoot, "publication-status.json")), parentBytes);
   };
   return { hub, operations, store, state, publication, original, packageFile, request, ordinaryToken, unchanged,
-    root, rmStream, token, receiptFile };
+    root, rmStream, token, receiptFile, releaseRoot, catalog };
 }
 
 test("public RM assets admission preserves DONE original and reuses the exact published package", async t => {
@@ -235,21 +235,63 @@ test("assets admission rechecks package after durable authorization before the f
 
 test("assets publication reads back a lost create response and retains unknown uploads without replay", async t => {
   const f = await fixture(t);
+  const request = f.request();
   f.state.loseCreate = true;
-  await assert.rejects(f.hub.call("hub_release_continue", f.request()), /lost create/u);
-  const result = await f.hub.call("hub_release_continue", f.request());
+  await assert.rejects(f.hub.call("hub_release_continue", request), /lost create/u);
+  assert.equal(f.catalog.mcpOperation(request.request_id).status, "unknown");
+  const result = await f.hub.call("hub_release_continue", request);
   assert.equal(result.assetsPublication.status, "applied");
+  assert.equal(f.catalog.mcpOperation(request.request_id).status, "succeeded");
   assert.equal(f.state.writes.filter(([method, route]) => method === "POST" && route.endsWith("/releases")).length, 1);
   await f.unchanged();
 
   const unknown = await fixture(t);
   unknown.state.loseUpload = true;
   unknown.state.dropUpload = true;
-  await assert.rejects(unknown.hub.call("hub_release_continue", unknown.request()), /lost upload/u);
+  const unknownRequest = unknown.request();
+  await assert.rejects(unknown.hub.call("hub_release_continue", unknownRequest), /lost upload/u);
   const writes = unknown.state.writes.length;
-  await assert.rejects(unknown.hub.call("hub_release_continue", unknown.request()), /unconfirmed/u);
+  await assert.rejects(unknown.hub.call("hub_release_continue", unknownRequest), /unconfirmed/u);
   assert.equal(unknown.state.writes.length, writes);
+  assert.equal(unknown.catalog.mcpOperation(unknownRequest.request_id).status, "unknown");
   await unknown.unchanged();
+});
+
+test("same addressed assets request resumes its owner after a pre-admission dirty refusal", async t => {
+  const f = await fixture(t);
+  const request = f.request();
+  const cache = path.join(f.releaseRoot, "AgentHub", ".wrangler", "cache", "wrangler-account.json");
+  await save(cache, { synthetic: true });
+  await assert.rejects(f.hub.call("hub_release_continue", request), /frozen source changed/u);
+  const refused = f.catalog.mcpOperation(request.request_id);
+  assert.equal(refused.status, "unknown");
+  assert.equal(f.store.latestStep(request.operation_id, 1, "publish-assets:agent-hub-github-release"), null);
+  assert.equal(f.state.writes.length, 0);
+  // The fixture owns its disposable cache. Production housekeeping stays with RM.
+  await rm(cache);
+  const foreign = structuredClone(request);
+  foreign.assets_publication.inputIdentity = "d".repeat(64);
+  await assert.rejects(f.hub.call("hub_release_continue", foreign), /was already used for another operation/u);
+  await assert.rejects(f.hub.call("hub_release_continue", { ...request, context_token: f.ordinaryToken }),
+    /was already used for another operation|Release Manager/u);
+  assert.equal(f.state.writes.length, 0);
+  assert.equal(f.catalog.mcpOperation(request.request_id).status, "unknown");
+  const result = await f.hub.call("hub_release_continue", request);
+  assert.equal(result.assetsPublication.status, "applied");
+  const completed = f.catalog.mcpOperation(request.request_id);
+  assert.equal(completed.status, "succeeded");
+  assert.equal(completed.argumentsHash, refused.argumentsHash);
+  const writes = f.state.writes.length;
+  assert.deepEqual(await f.hub.call("hub_release_continue", request), result);
+  assert.equal(f.state.writes.length, writes);
+  let ordinaryCalls = 0;
+  f.operations.continue = () => { ordinaryCalls++; throw new Error("controlled ambiguous ordinary continuation"); };
+  const ordinaryRequest = { ...request, request_id: "ordinary-unknown" };
+  delete ordinaryRequest.assets_publication;
+  await assert.rejects(f.hub.call("hub_release_continue", ordinaryRequest), /controlled ambiguous/u);
+  await assert.rejects(f.hub.call("hub_release_continue", ordinaryRequest), /outcome is unknown/u);
+  assert.equal(ordinaryCalls, 1);
+  await f.unchanged();
 });
 
 test("source release entry returns the addressed assets effect instead of the old DONE snapshot", async t => {

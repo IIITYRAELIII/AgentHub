@@ -3897,6 +3897,11 @@ the original verified package namespace. Its GitHub adapter persists each
 tag/create/upload intent and verifies the exact public assets. Unknown remote
 outcomes retain their existing readback and refusal semantics. The source API
 returns the addressed assets effect separately from the prior completed release.
+An unknown outer MCP receipt can enter this same assets owner again only under
+its original request, actor and argument hash. Fresh completed-generation proof,
+source/package guards and the original target lock/journal still precede effects.
+The outer receipt becomes succeeded only after that owner returns its verified
+applied result. An unconfirmed remote intent keeps its unknown refusal semantics.
 Anonymous recipient install/update/rollback verification remains part of delivery.
 See ADR-HUB-422-published-assets-admission.
 

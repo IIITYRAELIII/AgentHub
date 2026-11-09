@@ -3400,6 +3400,10 @@ export class HubMcpService {
     const custodyConsume = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id);
     const custodyStage = toolName === "hub_task_operation_reconcile" && Boolean(args.claim_custody);
     const interruption = toolName === "hub_task_operation_cancel";
+    // This owner resumes only the same addressed assets input. Its canonical
+    // step and GitHub journal recheck authority and reconcile remote intents
+    // before effects. An unknown outer receipt is preserved until it returns.
+    const assetsContinuation = toolName === "hub_release_continue" && args.assets_publication != null;
     if (started.status === "unknown" && toolName === "hub_task_claim" && !custodyConsume) {
       const reconciled = await this.#reconcileClaimAdmissionNoEffect(context, args, started).catch(() => null);
       if (reconciled) {
@@ -3414,7 +3418,7 @@ export class HubMcpService {
         throw terminal;
       }
     }
-    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption) {
+    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption && !assetsContinuation) {
       throw new Error(`MCP operation outcome is unknown; reconcile authoritatively before retrying request_id ${requestId}`);
     }
     const inFlight = this.#pendingMutations.get(requestId);
@@ -3424,7 +3428,7 @@ export class HubMcpService {
       "hub_task_checklist_update",
       "hub_task_operation_cancel",
     ]);
-    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage) {
+    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage && !assetsContinuation) {
       const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
       if (toolName !== "hub_release_prepare" || !started.preparationState) {
         await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
@@ -3465,7 +3469,13 @@ export class HubMcpService {
           if (!durable) throw new Error("Custody stage is not durable");
           return durable.result;
         }
-        if (interruption && started.status === "unknown") {
+        if (assetsContinuation && started.status === "unknown") {
+          const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
+            result, reconciliation: { kind: "published-assets-owner-continuation-v1",
+              operationId: args.operation_id, generation: args.expected_generation,
+              targetId: args.assets_publication.target.targetId } });
+          return completed.result;
+        } else if (interruption && started.status === "unknown") {
           await this.workspaceCatalog.completeUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
             result, reconciliation: { kind: "task-operation-interruption-v1", originalRequestId: args.operation_request_id } });
         } else if (custodyConsume && started.status === "unknown") {

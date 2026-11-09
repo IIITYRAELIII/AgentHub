@@ -38,6 +38,14 @@ after the adapter verifies the complete public target. The existing source API
 returns that addressed result directly so the completed production snapshot
 cannot substitute for the assets result.
 
+The same original MCP command may reenter this assets owner after an outer
+unknown outcome, including a refusal before target authorization. Existing intake
+checks keep its request, actor and argument hash exact. The owner reacquires its
+target lock, validates current authority and source/package inputs and uses the
+same durable remote-intent readbacks. Only a verified applied owner result settles
+the unknown outer receipt. Other release continuation families keep their existing
+unknown restrictions. Generated cache housekeeping belongs to its release owner.
+
 The focused regression uses a real tiny Git clone, SQLite admission, public MCP
 roles, the real publication journal and actual asset files. Artifact preparation,
 packaging and GitHub transport ports are controlled fixture boundaries. Live
