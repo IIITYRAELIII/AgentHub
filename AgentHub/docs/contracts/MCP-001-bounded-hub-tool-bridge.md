@@ -1,5 +1,19 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Interrupted first-compose continuation admission
+
+An exact ordinary `hub_release_continue` with generation-zero and revision CAS
+may reconcile its retained pending/UNKNOWN receipt through the existing failed
+first-compose owner. Original actor, tool, arguments hash and RM authority still
+match. The owner repeats definite failed-receipt/input/CAS and complete prepared
+authority plus physical uncaptured-custody checks under the Workspace Await lease.
+Only its durable same-request recovery admission can complete the outer receipt.
+A lost acknowledgement reads that exact stored recovery binding without another
+capture. The completed receipt retains the prior receipt diagnostic and identity.
+Foreign, partial, changed, occupied or unproven input stays UNKNOWN. Amendments,
+later generations and unrelated UNKNOWN commands retain their existing refusal.
+See ADR-HUB-422-uncaptured-first-compose.
+
 ## Bounded Task intake before a durable receipt
 
 Task submission retains the existing catalog queue and its unchanged contention

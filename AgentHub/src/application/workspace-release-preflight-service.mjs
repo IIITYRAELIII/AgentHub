@@ -471,6 +471,12 @@ export class WorkspaceReleasePreflightService {
   }
 
   async prepareOperationGeneration({
+    workspaceId, ...input
+  } = {}) {
+    return this.withAwaitTransition(workspaceId, () => this.#prepareOperationGenerationLocked({ workspaceId, ...input }));
+  }
+
+  async #prepareOperationGenerationLocked({
     workspaceId, operationId, generation, taskIds, approvedRepositories = [], changelogContent = undefined,
     previousSelectedResults = [], releaseVersion = undefined, frozenVersions = [],
     uncapturedFirstGenerations = [], inspectOnly = false, validateBeforeCommit = async () => {},
@@ -479,99 +485,97 @@ export class WorkspaceReleasePreflightService {
     if (typeof this.releaseGitWorkspaces.prepareGeneration !== "function") {
       throw new Error("immutable release generation preparation is unavailable");
     }
-    return this.withAwaitTransition(workspaceId, async () => {
-      const plan = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId, taskIds == null ? {} : { selectedTaskIds: taskIds }));
-      for (const repository of readyRepositories(plan.ready)) {
-        if (!await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot, { allowAbsent: true })) {
-          throw Object.assign(new Error("No ready PreRelease exists; complete ordinary Await preparation"),
-            { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-        }
+    const plan = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId, taskIds == null ? {} : { selectedTaskIds: taskIds }));
+    for (const repository of readyRepositories(plan.ready)) {
+      if (!await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot, { allowAbsent: true })) {
+        throw Object.assign(new Error("No ready PreRelease exists; complete ordinary Await preparation"),
+          { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
       }
-      const prepared = await this.#preflightLocked({ workspaceId, expectedPlanRevision: plan.revision,
-        approvedRepositories, verifyOnly: true });
-      if (prepared.status !== "ready") throw Object.assign(new Error("Prepared PreRelease requires current main approval"),
-        { code: "RELEASE_MAIN_APPROVAL_STALE" });
-      const publication = taskGitIdentityHash(await this.measureOperation("release:publication", async () => this.readPublicationState()));
-      const validate = async () => {
-        await validateBeforeCommit();
-        const current = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId));
-        if (current.revision !== plan.revision || current.blocked.length
-            || taskGitIdentityHash(await this.measureOperation("release:publication", async () => this.readPublicationState())) !== publication) {
-          throw Object.assign(new Error("Prepared Await membership or publication changed during capture"),
-            { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-        }
-        for (const repository of prepared.repositories) {
-          const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
-          if (!sameFrozenCandidateIdentity(candidate, repository.frozenCandidate)
-              || candidate.checkpointPhase !== "prepared") throw Object.assign(new Error("Prepared PreRelease changed during capture"),
-            { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-          const audit = prepared.mainAudits.find(item => canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot));
-          const fresh = await this.measureOperation("release:main-validation", async () => this.releaseGitWorkspaces.inspectMainChanges({ projectRoot: repository.projectRoot,
-            publishedRevision: audit.publishedRevision, approvedLocalMainCommit: audit.localMain,
-            approvedOriginMainCommit: audit.originMain }));
-          if (fresh.approvalRequired || fresh.localMain !== audit.localMain || fresh.originMain !== audit.originMain) {
-            throw Object.assign(new Error("Prepared release main authority changed during capture"), { code: "RELEASE_MAIN_APPROVAL_STALE" });
-          }
-          const primary = await this.measureOperation("release:primary-validation", async () => this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, { phase: "prepared release capture" }));
-          const before = prepared.primaryRepositories.find(item => canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot));
-          if (primary.headCommit !== before.headCommit || primary.indexFingerprint !== before.indexFingerprint
-              || primary.dirtyFingerprint !== before.dirtyFingerprint) throw new ReleasePreparationRejectedError("Primary changed during prepared capture");
-        }
-      };
-      const releaseCandidates = [];
-      if (uncapturedFirstGenerations.length
-          && (generation !== 1 || JSON.stringify([...taskIds].sort()) !== JSON.stringify([...prepared.taskIds].sort())
-            || uncapturedFirstGenerations.length !== prepared.repositories.length)) {
-        throw new Error("Uncaptured first generation whole selection changed");
+    }
+    const prepared = await this.#preflightLocked({ workspaceId, expectedPlanRevision: plan.revision,
+      approvedRepositories, verifyOnly: true });
+    if (prepared.status !== "ready") throw Object.assign(new Error("Prepared PreRelease requires current main approval"),
+      { code: "RELEASE_MAIN_APPROVAL_STALE" });
+    const publication = taskGitIdentityHash(await this.measureOperation("release:publication", async () => this.readPublicationState()));
+    const validate = async () => {
+      await validateBeforeCommit();
+      const current = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId));
+      if (current.revision !== plan.revision || current.blocked.length
+          || taskGitIdentityHash(await this.measureOperation("release:publication", async () => this.readPublicationState())) !== publication) {
+        throw Object.assign(new Error("Prepared Await membership or publication changed during capture"),
+          { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
       }
       for (const repository of prepared.repositories) {
-        const source = repository.frozenCandidate;
-        const absent = uncapturedFirstGenerations.find(item => canonicalRoot(item.repositoryRoot) === canonicalRoot(repository.projectRoot));
-        let absentBinding;
-        let absentCapture;
-        if (uncapturedFirstGenerations.length) {
-          if (!absent) throw new Error("Uncaptured first generation repository changed");
-          const observed = await this.releaseGitWorkspaces.firstFrozenGeneration({ operationId,
-            projectRoot: repository.projectRoot, inspectOnly: true, allowUncaptured: true });
-          const preparedSource = { planRevision: plan.revision, commit: source.preReleaseHead,
-            tree: source.tree, manifestHash: source.manifestHash };
-          const { preparedSource: priorPrepared, ...expectedAbsent } = absent;
-          absentCapture = expectedAbsent;
-          if (observed.candidate || taskGitIdentityHash(observed.binding) !== taskGitIdentityHash(expectedAbsent)
-              || priorPrepared && taskGitIdentityHash(priorPrepared) !== taskGitIdentityHash(preparedSource)) {
-            throw new Error("Uncaptured first generation source or custody changed");
-          }
-          absentBinding = { ...observed.binding, preparedSource };
-        }
-        const frozenVersion = frozenVersions.find(item => canonicalRoot(item.repositoryRoot) === canonicalRoot(repository.projectRoot));
-        if (frozenVersions.length && !frozenVersion
-            || frozenVersion && releaseVersion !== undefined && releaseVersion !== frozenVersion.releaseVersion) {
-          throw new Error("Original frozen repository version binding changed");
-        }
-        if (source.checkpointPhase !== "prepared") throw Object.assign(new Error("Await owner must prepare the current release candidate"),
+        const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+        if (!sameFrozenCandidateIdentity(candidate, repository.frozenCandidate)
+            || candidate.checkpointPhase !== "prepared") throw Object.assign(new Error("Prepared PreRelease changed during capture"),
           { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-        await validate();
-        if (inspectOnly) {
-          releaseCandidates.push({ binding: absentBinding, candidate: source });
-          continue;
+        const audit = prepared.mainAudits.find(item => canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot));
+        const fresh = await this.measureOperation("release:main-validation", async () => this.releaseGitWorkspaces.inspectMainChanges({ projectRoot: repository.projectRoot,
+          publishedRevision: audit.publishedRevision, approvedLocalMainCommit: audit.localMain,
+          approvedOriginMainCommit: audit.originMain }));
+        if (fresh.approvalRequired || fresh.localMain !== audit.localMain || fresh.originMain !== audit.originMain) {
+          throw Object.assign(new Error("Prepared release main authority changed during capture"), { code: "RELEASE_MAIN_APPROVAL_STALE" });
         }
-        const candidate = await this.measureOperation("release:capture-prepared", () => this.releaseGitWorkspaces.prepareGeneration({
-          operationId, generation, workspaceId, projectRoot: repository.projectRoot,
-          planRevision: plan.revision, approvedBaseCommit: source.baseCommit,
-          baseProvenance: source.manifest.baseProvenance, frozenTasks: source.manifest.tasks,
-          ...(changelogContent === undefined ? {} : { changelogContent }), validateBeforeCommit: validate,
-          ...(absentCapture ? { expectedAbsentGeneration: absentCapture } : {}),
-          ...(frozenVersion ? { releaseVersion: frozenVersion.releaseVersion,
-            expectedRuntimeVersion: frozenVersion.runtimeReleaseVersion }
-            : releaseVersion !== undefined ? { releaseVersion } : {}),
-        }));
-        if (previousSelectedResults.length) await this.releaseGitWorkspaces.assertSelectedResultLineage({ candidate, previousSelectedResults });
-        releaseCandidates.push(candidate);
+        const primary = await this.measureOperation("release:primary-validation", async () => this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, { phase: "prepared release capture" }));
+        const before = prepared.primaryRepositories.find(item => canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot));
+        if (primary.headCommit !== before.headCommit || primary.indexFingerprint !== before.indexFingerprint
+            || primary.dirtyFingerprint !== before.dirtyFingerprint) throw new ReleasePreparationRejectedError("Primary changed during prepared capture");
       }
+    };
+    const releaseCandidates = [];
+    if (uncapturedFirstGenerations.length
+        && (generation !== 1 || JSON.stringify([...taskIds].sort()) !== JSON.stringify([...prepared.taskIds].sort())
+          || uncapturedFirstGenerations.length !== prepared.repositories.length)) {
+      throw new Error("Uncaptured first generation whole selection changed");
+    }
+    for (const repository of prepared.repositories) {
+      const source = repository.frozenCandidate;
+      const absent = uncapturedFirstGenerations.find(item => canonicalRoot(item.repositoryRoot) === canonicalRoot(repository.projectRoot));
+      let absentBinding;
+      let absentCapture;
+      if (uncapturedFirstGenerations.length) {
+        if (!absent) throw new Error("Uncaptured first generation repository changed");
+        const observed = await this.releaseGitWorkspaces.firstFrozenGeneration({ operationId,
+          projectRoot: repository.projectRoot, inspectOnly: true, allowUncaptured: true });
+        const preparedSource = { planRevision: plan.revision, commit: source.preReleaseHead,
+          tree: source.tree, manifestHash: source.manifestHash };
+        const { preparedSource: priorPrepared, ...expectedAbsent } = absent;
+        absentCapture = expectedAbsent;
+        if (observed.candidate || taskGitIdentityHash(observed.binding) !== taskGitIdentityHash(expectedAbsent)
+            || priorPrepared && taskGitIdentityHash(priorPrepared) !== taskGitIdentityHash(preparedSource)) {
+          throw new Error("Uncaptured first generation source or custody changed");
+        }
+        absentBinding = { ...observed.binding, preparedSource };
+      }
+      const frozenVersion = frozenVersions.find(item => canonicalRoot(item.repositoryRoot) === canonicalRoot(repository.projectRoot));
+      if (frozenVersions.length && !frozenVersion
+          || frozenVersion && releaseVersion !== undefined && releaseVersion !== frozenVersion.releaseVersion) {
+        throw new Error("Original frozen repository version binding changed");
+      }
+      if (source.checkpointPhase !== "prepared") throw Object.assign(new Error("Await owner must prepare the current release candidate"),
+        { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
       await validate();
-      return { workspaceId: String(workspaceId), planRevision: plan.revision,
-        taskIds: prepared.taskIds, releaseCandidates, overlaps: plan.conflicts };
-    });
+      if (inspectOnly) {
+        releaseCandidates.push({ binding: absentBinding, candidate: source });
+        continue;
+      }
+      const candidate = await this.measureOperation("release:capture-prepared", () => this.releaseGitWorkspaces.prepareGeneration({
+        operationId, generation, workspaceId, projectRoot: repository.projectRoot,
+        planRevision: plan.revision, approvedBaseCommit: source.baseCommit,
+        baseProvenance: source.manifest.baseProvenance, frozenTasks: source.manifest.tasks,
+        ...(changelogContent === undefined ? {} : { changelogContent }), validateBeforeCommit: validate,
+        ...(absentCapture ? { expectedAbsentGeneration: absentCapture } : {}),
+        ...(frozenVersion ? { releaseVersion: frozenVersion.releaseVersion,
+          expectedRuntimeVersion: frozenVersion.runtimeReleaseVersion }
+          : releaseVersion !== undefined ? { releaseVersion } : {}),
+      }));
+      if (previousSelectedResults.length) await this.releaseGitWorkspaces.assertSelectedResultLineage({ candidate, previousSelectedResults });
+      releaseCandidates.push(candidate);
+    }
+    await validate();
+    return { workspaceId: String(workspaceId), planRevision: plan.revision,
+      taskIds: prepared.taskIds, releaseCandidates, overlaps: plan.conflicts };
   }
 
   async firstOperationGeneration({ workspaceId, operationId, generation, taskIds, approvedRepositories,
@@ -596,7 +600,7 @@ export class WorkspaceReleasePreflightService {
         if (!inspectOnly && (!bindings.length || bindings.some(item => !item.preparedSource))) {
           throw new Error("Uncaptured first generation prepared binding is missing");
         }
-        return this.prepareOperationGeneration({ workspaceId, operationId, generation, taskIds, approvedRepositories,
+        return this.#prepareOperationGenerationLocked({ workspaceId, operationId, generation, taskIds, approvedRepositories,
           changelogContent, releaseVersion, uncapturedFirstGenerations: bindings, inspectOnly, validateBeforeCommit });
       }
       const actualIds = [...new Set(releaseCandidates.flatMap(item => item.candidate.manifest.taskIds))].sort();

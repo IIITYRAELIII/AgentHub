@@ -27,6 +27,20 @@ unchanged release metadata and owner, then uses ordinary capture. The original
 generation lock repeats physical absence immediately before directory creation.
 Mixed captured and uncaptured repositories refuse.
 
+First-generation inspection already owns the non-reentrant Workspace Await lock.
+Its uncaptured branch calls the private locked preparation body. The ordinary
+public preparation entry acquires that lock once. A real production-lock regression
+exercises inspection, refusal, capture and subsequent lock acquisition.
+
+An interrupted outer MCP admission can retain pending or UNKNOWN while the original
+release is still definitely failed before capture. The same public continuation
+re-enters only the existing first-compose recovery owner with unchanged actor,
+arguments and generation-zero CAS. Fresh owner proof precedes its atomic recovery
+admission. Only that exact durable recovery identity completes the outer receipt,
+retaining the previous diagnostic. If admission committed before a lost reply,
+read back the same request binding and let ordinary release ownership continue its
+already admitted work. Never repeat capture from missing reply evidence.
+
 The existing release store continues to recheck definite failed compose receipts,
 original input, empty registered generations and effects, owner and revision CAS.
 It appends recovery and the next attempt on the same original. Generation zero

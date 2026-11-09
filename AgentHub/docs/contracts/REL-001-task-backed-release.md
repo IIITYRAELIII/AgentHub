@@ -17,6 +17,11 @@ The same original appends the next compose attempt and stays at generation zero
 until actual capture. Failed history, target authority, notes, version and test
 selection remain intact. See ADR-HUB-422-uncaptured-first-compose.
 
+First-compose inspection owns one Workspace Await lease through complete prepared
+verification. Its uncaptured branch uses the existing locked preparation body
+without reacquiring that non-reentrant lease. Ordinary preparation still acquires
+the same lease at its public boundary.
+
 ## Public package consumer for new local publications
 
 New normal installed-Hub release intakes record the immutable public-package-v1

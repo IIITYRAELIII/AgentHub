@@ -572,6 +572,36 @@ export class ReleaseOperationService {
     } });
   }
 
+  async reconcileFirstComposeContinuation(operationId, { requestId, expectedRevision, expectedGeneration }) {
+    requiredText(operationId, "operationId");
+    requiredText(requestId, "first compose recovery requestId");
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || expectedGeneration !== 0) {
+      throw new Error("First compose continuation requires its original revision and generation zero");
+    }
+    const admitted = () => {
+      const current = this.store.get(operationId);
+      const recovery = current?.firstComposeRecovery;
+      if (!recovery || recovery.operationId !== operationId || recovery.requestId !== requestId || recovery.priorRevision !== expectedRevision
+          || recovery.priorGeneration !== 0 || recovery.authorizationFingerprint !== current.authorization.fingerprint) return null;
+      const { identitySha256, ...contents } = recovery;
+      if (releaseIdentitySha256(contents) !== identitySha256
+          || releaseIdentitySha256(recovery.input?.authorization) !== releaseIdentitySha256(current.authorization)) return null;
+      return { accepted: true, duplicate: true, operationId, revision: current.revision, recovery: identitySha256 };
+    };
+    const previous = admitted();
+    if (previous) {
+      const current = this.store.get(operationId);
+      if (!["failed", "done", "waiting"].includes(current.state)) {
+        this.#observe(operationId); this.#schedule(operationId);
+      }
+      return previous;
+    }
+    await this.#recoverFirstCompose(operationId, { requestId, expectedRevision, expectedGeneration });
+    const durable = admitted();
+    if (!durable) throw new Error("First compose continuation lacks exact durable recovery admission");
+    return durable;
+  }
+
   async #recoverFirstCompose(operationId, { requestId, expectedRevision, expectedGeneration }) {
     const snapshot = this.store.snapshot(operationId);
     const current = snapshot.operation;
