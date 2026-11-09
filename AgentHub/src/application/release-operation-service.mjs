@@ -544,9 +544,20 @@ export class ReleaseOperationService {
     }
   }
 
-  reconcilePublicationContinuation(operationId, { requestId, expectedRevision, expectedGeneration }) {
-    const current = this.store.get(requiredText(operationId, "operationId"));
-    const recovery = current?.publicationRecoveries?.find(item => item.requestId === requestId);
+  async reconcilePublicationContinuation(operationId, { requestId, expectedRevision, expectedGeneration }) {
+    requiredText(operationId, "operationId");
+    requiredText(requestId, "publication recovery requestId");
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1
+      || !Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1) {
+      throw new Error("Publication continuation requires its original revision and generation");
+    }
+    let current = this.store.get(operationId);
+    let recovery = current?.publicationRecoveries?.find(item => item.requestId === requestId);
+    if (!recovery && !current?.publicationRecoveries?.length) {
+      await this.#recoverPublication(operationId, { requestId, expectedRevision, expectedGeneration, uncapturedOnly: true });
+      current = this.store.get(operationId);
+      recovery = current?.publicationRecoveries?.find(item => item.requestId === requestId);
+    }
     const { identitySha256, ...contents } = recovery ?? {};
     if (!recovery || recovery.operationId !== operationId || recovery.priorRevision !== expectedRevision
       || recovery.generation !== expectedGeneration || recovery.authorizationFingerprint !== current.authorization.fingerprint
@@ -557,14 +568,16 @@ export class ReleaseOperationService {
     return { accepted: true, duplicate: true, operationId, recovery: identitySha256 };
   }
 
-  async #recoverPublication(operationId, { requestId, expectedRevision, expectedGeneration }) {
+  async #recoverPublication(operationId, { requestId, expectedRevision, expectedGeneration, uncapturedOnly = false }) {
     const snapshot = this.store.snapshot(operationId), current = snapshot.operation;
     if (current.revision !== expectedRevision || current.currentGeneration !== expectedGeneration) {
       return { accepted: false, reason: "stale-revision", operation: current };
     }
     requiredText(requestId, "publication recovery requestId");
     const boundary = failedPublicationRecovery(snapshot);
-    if (!boundary || this.#running.has(operationId) || this.#scheduled.has(operationId)) {
+    if (!boundary || this.#running.has(operationId) || this.#scheduled.has(operationId)
+      || typeof this.withPublicationRecovery !== "function"
+      || uncapturedOnly && current.publicationRecoveries?.length) {
       return { accepted: false, reason: "ineligible", operation: current };
     }
     const generation = this.store.generation(operationId, expectedGeneration);
@@ -572,7 +585,10 @@ export class ReleaseOperationService {
       if (!evidence || typeof validate !== "function") throw new Error("Publication recovery requires owning evidence");
       await validate();
       const contents = { requestId, operationId, priorRevision: expectedRevision, generation: expectedGeneration,
-        authorizationFingerprint: current.authorization.fingerprint, boundary, evidence };
+        authorizationFingerprint: current.authorization.fingerprint, boundary, evidence,
+        ...(uncapturedOnly ? { admission: { kind: "uncaptured-publication-recovery-v1",
+          priorRevision: expectedRevision, generation: expectedGeneration,
+          recoveriesSha256: releaseIdentitySha256(current.publicationRecoveries ?? []) } } : {}) };
       const recovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
       const result = await this.store.runOperationMutation(operationId, () => this.store.transition(operationId, {
         state: "publish", currentStep: "publish", lastError: null,

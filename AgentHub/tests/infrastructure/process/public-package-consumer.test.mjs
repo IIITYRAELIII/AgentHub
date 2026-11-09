@@ -234,8 +234,18 @@ test("actual publication readback requires same canonical maintenance, installed
   await assert.rejects(publication.withPublicationRecovery({ operation, generation, commit: () => assert.fail("no active-runner admission") }), /positively closed/u);
   await writeFile(runner, retainedRunner);
   ready = false;
-  await assert.rejects(publication.withPublicationRecovery({ operation, generation, commit: () => assert.fail("no unready admission") }), /successful public installer/u);
+  await assert.rejects(publication.withPublicationRecovery({ operation, generation, commit: () => assert.fail("no unready admission") }), error => {
+    assert.equal(error.code, "RELEASE_PUBLIC_INSTALLER_NOT_READY");
+    assert.deepEqual(error.publicationRecoveryProof, { targetId: target.targetId,
+      status: "partial", reason: "public-installer-readiness", installerStatus: null, sourceCommit: null });
+    assert.match(error.message, /public-installer-readiness/u);
+    return true;
+  });
   ready = true;
+  await publication.withPublicationRecovery({ operation, generation, commit: async (_evidence, validate) => {
+    await validate(); admissions++;
+  } });
+  assert.equal(admissions, 2);
   f.ref.object.sha = "0".repeat(40);
   assert.equal((await readback()).cursor.reason, "public-installer-proof-refused");
   assert.equal((await readback()).status, "unknown");

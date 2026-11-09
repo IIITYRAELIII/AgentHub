@@ -560,7 +560,12 @@ export class ReleaseOperationPublication {
             if (!["applied", "partial"].includes(readback.status)
               || readback.publicRuntimeInstaller?.status !== "ready"
               || readback.publicRuntimeInstaller.sourceCommit !== candidate.commit) {
-              throw new Error("Publication recovery requires the exact successful public installer and Ready");
+              const proof = { targetId: target.targetId, status: readback.status,
+                reason: readback.cursor?.reason ?? "public-installer-proof-missing",
+                installerStatus: readback.publicRuntimeInstaller?.status ?? null,
+                sourceCommit: readback.publicRuntimeInstaller?.sourceCommit ?? null };
+              throw Object.assign(new Error(`Publication recovery requires the exact successful public installer and Ready (${proof.reason})`),
+                { code: "RELEASE_PUBLIC_INSTALLER_NOT_READY", publicationRecoveryProof: proof });
             }
           } else if (readback.status !== "applied") throw new Error("Original public distribution is not applied");
           evidence.push({ targetId: target.targetId, candidate: candidate.commit, tool: tool.location,

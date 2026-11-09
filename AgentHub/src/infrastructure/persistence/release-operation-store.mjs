@@ -633,6 +633,13 @@ export class ReleaseOperationStore {
         if (publicationRecovery && expectedRevision === current.revision) {
           const raw = JSON.parse(row.operation_json);
           if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("Publication recovery is source-owner-fenced");
+          const admission = publicationRecovery.admission;
+          if (admission && (admission.kind !== "uncaptured-publication-recovery-v1"
+            || admission.priorRevision !== current.revision || admission.generation !== current.currentGeneration
+            || current.publicationRecoveries?.length
+            || admission.recoveriesSha256 !== releaseIdentitySha256(current.publicationRecoveries ?? []))) {
+            throw new Error("Publication recovery admission is not positively uncaptured");
+          }
           const boundary = failedPublicationRecovery({ operation: current,
             receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=?").all(id).map(row => readJson(row.receipt_json)),
             generations: database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=?").all(id).map(row => readJson(row.generation_json)) });

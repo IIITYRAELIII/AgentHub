@@ -41,6 +41,12 @@ boundary retains failed receipts, partial effects and frozen generation. The
 product adapter must positively verify original public assets and the same
 successful installed consumer/Ready under installation custody before admission.
 It resumes remaining checkpoints without re-running INSTALL or composition.
+If the same outer request is UNKNOWN before recovery admission, the existing
+owner may repeat its full proof and admit only while canonical CAS also proves
+that recovery history is empty. That fact is recorded with the admission.
+Already admitted lost replies read their exact durable identity. Foreign or
+unproved requests keep UNKNOWN, and installer-proof refusals retain a bounded
+target/status/cursor reason without response bodies or credentials.
 
 ## Evidence and limits
 

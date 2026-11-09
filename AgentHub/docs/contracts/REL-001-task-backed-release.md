@@ -20,9 +20,15 @@ installation custody immediately before CAS. Only remaining checkpoints resume.
 Unknown, foreign, active, changed or incomplete proof refuses. The recovery
 retains the prior failure and an addressed durable admission for lost replies.
 Public MCP readback of that admission requires the same original request,
-arguments, actor and revision/generation binding. It cannot create a missing
-recovery from UNKNOWN. Unadmitted or changed requests retain their prior
-unknown outcome. Existing operation scheduling resumes only recorded work.
+arguments, actor and revision/generation binding. A request that became UNKNOWN
+before admission may reenter this same owner only with the exact failed boundary
+and fresh complete adapter proof. The existing canonical transaction additionally
+proves an empty recovery history at that revision/generation and records this
+uncaptured-admission evidence. Until that owner admission is authoritative the
+prior UNKNOWN remains intact. Changed, partly admitted or unproved requests
+retain refusal. Existing operation scheduling resumes only recorded work.
+An installer-proof refusal preserves its content-free target/status/cursor reason
+so a failed Ready observation can be distinguished from changed custody or payload.
 
 Multiple authorized publication targets for one canonical repository share one
 repository approval only when both exact local-main and origin-main pins agree.

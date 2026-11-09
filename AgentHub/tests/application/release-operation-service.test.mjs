@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
-import { createCandidateGeneration, failedFirstComposeRecovery } from "../../src/domain/release-operation.mjs";
+import { createCandidateGeneration, failedFirstComposeRecovery, failedPublicationRecovery, releaseIdentitySha256 } from "../../src/domain/release-operation.mjs";
 import { resolveTestSelection } from "../../src/domain/test-selection.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
@@ -139,8 +139,8 @@ test("partial publication recovery refuses stale, changed receipt and unproved o
   assert.equal(f.scheduled.length, 0);
 });
 
-test("public partial publication lost ACK reconciles only its durable SAME admission and actor", async t => {
-  const f = await partialPublicationFixture(t), before = f.store.snapshot(f.operationId);
+async function publicPartialPublicationFixture(t, overrides = {}) {
+  const f = await partialPublicationFixture(t, overrides), before = f.store.snapshot(f.operationId);
   const catalogRoot = await mkdtemp(path.join(os.tmpdir(), "partial-publication-catalog-"));
   const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(catalogRoot, "catalog.sqlite") });
   await catalog.load();
@@ -159,6 +159,11 @@ test("public partial publication lost ACK reconciles only its durable SAME admis
     releaseOperations: f.service, reconcilePendingOnStartup: false });
   const args = { context_token: hub.contextToken({ provider: "codex", threadId: "rm-thread" }),
     operation_id: f.operationId, request_id: "same-public-partial", expected_revision: before.operation.revision, expected_generation: 1 };
+  return { ...f, before, catalog, hub, args, releaseManager };
+}
+
+test("public partial publication lost ACK reconciles only its durable SAME admission and actor", async t => {
+  const { before, catalog, hub, args, releaseManager, ...f } = await publicPartialPublicationFixture(t);
   const complete = catalog.completeMcpOperation.bind(catalog);
   catalog.completeMcpOperation = () => { throw Error("controlled lost durable reply"); };
   await assert.rejects(hub.call("hub_release_continue", args), /receipt reconciliation is required/u);
@@ -183,6 +188,70 @@ test("public partial publication lost ACK reconciles only its durable SAME admis
   assert.equal(catalog.mcpOperation(unknown.request_id).status, "unknown");
   assert.equal(f.store.get(f.operationId).publicationRecoveries.length, 1);
   assert.deepEqual(f.store.snapshot(f.operationId).receipts, before.receipts);
+});
+
+test("same UNKNOWN publication request waits for owning Ready before one uncaptured recovery admission", async t => {
+  let ready = false, inspections = 0;
+  const { before, catalog, hub, args, ...f } = await publicPartialPublicationFixture(t, {
+    withPublicationRecovery: async ({ commit }) => {
+      inspections++;
+      if (!ready) throw Error("public-installer-readiness");
+      return commit({ kind: "fixture-positive-installed-owner" }, async () => assert.equal(ready, true));
+    },
+  });
+  await assert.rejects(hub.call("hub_release_continue", args), /public-installer-readiness/u);
+  const unknown = catalog.mcpOperation(args.request_id);
+  assert.equal(unknown.status, "unknown");
+  assert.deepEqual(f.store.snapshot(f.operationId), before);
+  await assert.rejects(hub.call("hub_release_continue", args), /public-installer-readiness/u);
+  assert.deepEqual(f.store.snapshot(f.operationId), before);
+  assert.equal(catalog.mcpOperation(args.request_id).status, "unknown");
+  const refused = inspections;
+  await assert.rejects(hub.call("hub_release_continue", { ...args, expected_revision: 1 }), /another operation/u);
+  await assert.rejects(hub.call("hub_release_continue", { ...args,
+    context_token: hub.contextToken({ provider: "codex", threadId: "other-thread" }) }), /another operation/u);
+  await assert.rejects(hub.call("hub_release_continue", { ...args, test_selection: { mode: "none", ids: [] } }), /another operation/u);
+  assert.equal(inspections, refused);
+  ready = true;
+  const complete = catalog.completeUnknownMcpOperation.bind(catalog);
+  catalog.completeUnknownMcpOperation = () => { throw Error("controlled lost recovery admission reply"); };
+  await assert.rejects(hub.call("hub_release_continue", args), /receipt reconciliation is required/u);
+  assert.equal(catalog.mcpOperation(args.request_id).status, "unknown");
+  const admitted = f.store.get(f.operationId).publicationRecoveries;
+  assert.equal(admitted.length, 1);
+  assert.deepEqual(admitted[0].admission, { kind: "uncaptured-publication-recovery-v1",
+    priorRevision: args.expected_revision, generation: 1, recoveriesSha256: releaseIdentitySha256([]) });
+  catalog.completeUnknownMcpOperation = complete;
+  const result = await hub.call("hub_release_continue", args);
+  assert.equal(result.recovery, admitted[0].identitySha256);
+  assert.equal(result.operatorReconciliation.kind, "failed-publication-admission-readback-v1");
+  assert.equal(catalog.mcpOperation(args.request_id).argumentsHash, unknown.argumentsHash);
+  assert.equal(catalog.mcpOperation(args.request_id).status, "succeeded");
+  assert.deepEqual(await hub.call("hub_release_continue", args), result);
+  assert.equal(f.store.get(f.operationId).publicationRecoveries.length, 1);
+  assert.deepEqual(f.store.snapshot(f.operationId).generations, before.generations);
+  assert.deepEqual(f.store.snapshot(f.operationId).receipts, before.receipts);
+  assert.deepEqual(f.store.get(f.operationId).publicationEffects, before.operation.publicationEffects);
+  assert.equal(f.scheduled.length, 1);
+});
+
+test("uncaptured publication recovery requires exact canonical absence evidence inside CAS", async t => {
+  const f = await partialPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  const admission = { kind: "uncaptured-publication-recovery-v1", priorRevision: before.operation.revision,
+    generation: 1, recoveriesSha256: releaseIdentitySha256([]) };
+  for (const changed of [{ kind: "foreign" }, { priorRevision: admission.priorRevision - 1 },
+    { generation: 2 }, { recoveriesSha256: "0".repeat(64) }]) {
+    const contents = { requestId: "foreign-admission", operationId: f.operationId,
+      priorRevision: before.operation.revision, generation: 1,
+      authorizationFingerprint: before.operation.authorization.fingerprint,
+      boundary: failedPublicationRecovery(before), evidence: { kind: "fixture-positive-installed-owner" },
+      admission: { ...admission, ...changed } };
+    const recovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+    assert.throws(() => f.store.transition(f.operationId, { state: "publish", lastError: null }, {
+      expectedRevision: before.operation.revision, publicationRecovery: recovery }), /positively uncaptured/u);
+    assert.deepEqual(f.store.snapshot(f.operationId), before);
+  }
+  assert.equal(f.scheduled.length, 0);
 });
 
 test("published dev sync refuses every amendment family before owner acquisition", async t => {
