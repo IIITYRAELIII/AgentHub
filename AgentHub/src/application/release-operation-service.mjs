@@ -186,6 +186,7 @@ export class ReleaseOperationService {
     readTarget,
     finalize,
     synchronizePublishedDev = null,
+    publishPreparedAssets = null,
     reservePublication = ({ reserve }) => reserve(),
     deliverEvent = null,
     schedule = (operation) => setImmediate(operation),
@@ -239,6 +240,7 @@ export class ReleaseOperationService {
     this.readTarget = readTarget;
     this.finalize = finalize;
     this.synchronizePublishedDevEffect = synchronizePublishedDev;
+    this.publishPreparedAssets = publishPreparedAssets;
     this.reservePublication = reservePublication;
     this.deliverEvent = deliverEvent;
     this.scheduleTask = schedule;
@@ -340,6 +342,7 @@ export class ReleaseOperationService {
   continue(operationId, options = {}) {
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
+    if (options.assetsPublication != null) return this.#publishAssets(operationId, options);
     if (options.publishedDevSync != null) return this.#synchronizePublishedDev(operationId, options);
     // A captured amendment remains an amendment even when a replay omits all
     // optional fields. Check its identity before ordinary resume or recovery.
@@ -389,6 +392,73 @@ export class ReleaseOperationService {
     }
     this.#schedule(operation.operationId);
     return { accepted: true, operationId: operation.operationId, state: operation.state, revision: operation.revision };
+  }
+
+  async #publishAssets(operationId, options) {
+    const { assetsPublication: requested, assetsPublicationActor: actor, requestId,
+      expectedRevision, expectedGeneration } = options;
+    requiredText(requestId, "assets publication requestId");
+    const keys = ["target", "inputIdentity", "preparedReceiptSha256", "packageResultSha256", "toolSha256"];
+    if (!requested || typeof requested !== "object" || Array.isArray(requested)
+        || Object.keys(requested).sort().join() !== [...keys].sort().join()
+        || keys.slice(1).some(key => !/^[a-f0-9]{64}$/u.test(requested[key] ?? ""))
+        || !actor?.streamId || !actor?.threadId || !actor?.provider
+        || ["publishedDevSync", "reviewedMain", "testSelection", "taskIds", "taskScope", "releaseMetadata"]
+          .some(key => options[key] != null)
+        || typeof this.publishPreparedAssets !== "function") {
+      throw new Error("Assets publication requires an exclusive addressed RM admission");
+    }
+    const target = structuredClone(requested.target);
+    if (!target || typeof target !== "object" || Array.isArray(target)
+        || Object.keys(target).sort().join() !== "environment,kind,repositoryRoot,targetId"
+        || target.kind !== "agent-hub-publication" || target.environment !== "github-release"
+        || target.targetId !== "agent-hub-github-release"
+        || typeof target.repositoryRoot !== "string" || !target.repositoryRoot.trim() || !Number.isSafeInteger(expectedRevision)
+        || !Number.isSafeInteger(expectedGeneration)) throw new Error("Invalid assets-only publication target");
+    const operation = this.store.get(operationId);
+    const generation = this.store.generation(operationId, expectedGeneration);
+    const validate = async () => {
+      const current = this.store.get(operationId);
+      const frozen = this.store.generation(operationId, expectedGeneration);
+      if (current?.state !== "done" || current.owner || current.revision !== expectedRevision
+          || current.currentGeneration !== expectedGeneration || current.workspaceId !== actor.workspaceId
+          || !completedReleaseGenerationEvidence({ operation: current, generation: frozen,
+            validation: this.store.latestStep(operationId, expectedGeneration, "validate"),
+            finalization: this.store.latestStep(operationId, expectedGeneration, "finalize") })
+          || current.authorization.approvedTargets.some(item => item.targetId === target.targetId)
+          || releaseIdentitySha256(current) !== releaseIdentitySha256(operation)
+          || !frozen || releaseIdentitySha256(frozen) !== releaseIdentitySha256(generation)) {
+        throw new Error("Assets publication completed original, authority or CAS changed");
+      }
+    };
+    await validate();
+    let receipt;
+    const stepId = `publish-assets:${target.targetId}`;
+    const authorize = async binding => this.store.runOperationMutation(operationId, () => {
+      const current = this.store.get(operationId);
+      if (releaseIdentitySha256(current) !== releaseIdentitySha256(operation)) throw new Error("Assets publication admission CAS changed");
+      const previous = this.store.latestStep(operationId, expectedGeneration, stepId);
+      const input = { authorization: previous?.input?.authorization ?? { requestId, actor: structuredClone(actor) },
+        target, requested: structuredClone(requested), binding };
+      if (previous && previous.inputSha256 !== releaseIdentitySha256(input)) {
+        throw new Error("Original assets publication input or target changed");
+      }
+      receipt = this.store.beginStep({ operationId, generation: expectedGeneration, stepId, input,
+        expectedCompletedGeneration: { operationSha256: releaseIdentitySha256(operation), identitySha256: generation.identitySha256 } }).receipt;
+      return receipt;
+    });
+    try {
+      const result = await this.publishPreparedAssets({ operation, generation, target, requested, requestId, validate, authorize });
+      await validate();
+      if (!receipt || result?.status !== "applied") throw new Error("Assets publication has no verified target result");
+      this.store.finishStep(receipt, { status: "applied", effect: result });
+      return { accepted: true, operationId, generation: expectedGeneration, assetsPublication: result };
+    } catch (error) {
+      if (receipt && ["intent", "unknown"].includes(receipt.status)) {
+        this.store.finishStep(receipt, { status: "unknown", error });
+      }
+      throw error;
+    }
   }
 
   async #synchronizePublishedDev(operationId, { publishedDevSync, expectedRevision, expectedGeneration,

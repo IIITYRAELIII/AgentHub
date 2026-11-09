@@ -2,7 +2,7 @@ import { ownedGitArguments } from "../filesystem/preparation-git-isolation.mjs";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, lstat, writeFile, realpath } from "node:fs/promises";
+import { mkdir, open, readFile, lstat, writeFile, realpath, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { processIsAlive } from "./process-liveness.mjs";
@@ -12,7 +12,12 @@ import { readPublicationCheckpoint } from "../persistence/publication-checkpoint
 import { releaseIdentitySha256 } from "../../domain/release-operation.mjs";
 import { releasePublicationBaseCommit } from "../../domain/release-base-provenance.mjs";
 import { readReleaseToolPackage } from "./release-tool-package.mjs";
-import { readArtifact } from "./publication-artifacts.mjs";
+import { readArtifact, createPublicationArtifactSteps } from "./publication-artifacts.mjs";
+import { withPublicationLock } from "./publication-lock.mjs";
+import { artifactVersionIdentity } from "../../domain/agent-hub-version.mjs";
+import { parseGitHubRemote } from "../persistence/github-publication-baseline.mjs";
+import { assertReleaseCloneForPublication } from "../filesystem/release-git-workspace.mjs";
+import { measureTaskOperation } from "./task-operation-timing.mjs";
 import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
 import { withRuntimeInstallationLease, readRuntimePointer, captureRuntimeReleaseBinding } from "../filesystem/runtime-installation-custody.mjs";
 
@@ -157,6 +162,9 @@ export class ReleaseOperationPublication {
     candidateAbsentFromRemoteImpl = candidateAbsentFromRemote,
     readPublicationCheckpointImpl = readPublicationCheckpoint,
     readToolPackage = readReleaseToolPackage,
+    createArtifactSteps = createPublicationArtifactSteps,
+    distributionCapture = undefined,
+    distributionApi = undefined,
     runnerFile = path.join(import.meta.dirname, "../../../release-operation-publication-runner.mjs"),
     now = () => new Date().toISOString(),
     launchGraceMs = 30_000,
@@ -174,6 +182,9 @@ export class ReleaseOperationPublication {
     this.candidateAbsentFromRemote = candidateAbsentFromRemoteImpl;
     this.readPublicationCheckpoint = readPublicationCheckpointImpl;
     this.readToolPackage = readToolPackage;
+    this.createArtifactSteps = createArtifactSteps;
+    this.distributionCapture = distributionCapture;
+    this.distributionApi = distributionApi;
     this.runnerFile = path.resolve(runnerFile);
     this.now = now;
     this.launchGraceMs = Math.max(1_000, Number(launchGraceMs) || 30_000);
@@ -349,6 +360,134 @@ export class ReleaseOperationPublication {
       child.unref();
       await Promise.all([stdout.close(), stderr.close()]);
     }
+  }
+
+  async publishPreparedAssets({ operation, generation, target, requested, validate, authorize }) {
+    const candidate = candidateFor(generation, target);
+    const parents = operation.authorization.approvedTargets.filter(item => item.kind === "agent-hub-publication"
+      && item.environment !== "github-release" && path.resolve(item.repositoryRoot ?? "") === path.resolve(candidate.repositoryRoot));
+    if (parents.length !== 1) throw new Error("Assets publication requires one original installed target");
+    const parent = this.#layout(operation, generation, parents[0]);
+    const layout = this.#layout(operation, generation, target);
+    const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
+      expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
+    const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
+    const runner = await readJson(parent.stateFile);
+    const parentJournal = this.publicationRunStore({ runtimeRoot: parent.root, environment: this.environment });
+    const originalRun = await parentJournal.read();
+    if (runner?.operationId !== operation.operationId || runner.generation !== generation.generation
+        || runner.candidate !== generation.identitySha256 || runner.targetId !== parents[0].targetId
+        || runner.status !== "exited" || !Number.isInteger(runner.exitCode)
+        || !Number.isSafeInteger(runner.pid) || runner.pid <= 0 || !runner.completedAt
+        || this.processAlive(runner.pid) !== false || tool.sha256 !== requested.toolSha256
+        || releaseIdentitySha256(runner.tool) !== releaseIdentitySha256(toolIdentity)
+        || originalRun?.identity?.revision !== candidate.commit
+        || path.resolve(originalRun.identity.runtimeRoot) !== this.runtimeRoot
+        || path.resolve(originalRun.identity.worktreeRoot) !== path.resolve(candidate.releaseRoot)
+        || originalRun.progress?.githubDistribution != null) {
+      throw new Error("Assets publication original runner, tool or target changed");
+    }
+    const runtimePublication = { operationId: operation.operationId, generation: generation.generation,
+      sourceCommit: candidate.commit, version: candidate.manifest?.publication?.runtimeReleaseVersion };
+    const sourceRoot = path.join(candidate.releaseRoot, "AgentHub");
+    const publicationIdentity = { revision: candidate.commit };
+    const artifacts = this.createArtifactSteps({ sourceRoot, runtimeRoot: this.runtimeRoot,
+      journal: parentJournal, runtimePublication });
+    const packageFile = path.join(parent.root, "distribution", runtimePublication.version, "result.json");
+    const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+    let preparedInput;
+    const inspect = async () => {
+      await validate();
+      const marker = await assertReleaseCloneForPublication({ repositoryRoot: candidate.releaseRoot });
+      if (path.resolve(marker.primaryRoot) !== path.resolve(candidate.repositoryRoot)) throw new Error("Assets publication clone custody changed");
+      const git = async args => (await measureTaskOperation("release:assets-git-command", () => promisify(execFile)("git", ownedGitArguments(args), {
+        cwd: candidate.releaseRoot, encoding: "utf8", windowsHide: true,
+      }), { command: args.find(value => !value.startsWith("--")) })).stdout.trim();
+      const [head, dirty, branch] = await Promise.all([
+        git(["rev-parse", "HEAD^{commit}", "HEAD^{tree}"]),
+        git(["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"]),
+        git(["symbolic-ref", "--quiet", "HEAD"]),
+      ]);
+      if (head.split(/\r?\n/u).join(" ") !== `${candidate.commit} ${candidate.tree}` || dirty || branch !== "refs/heads/main") {
+        throw new Error("Assets publication frozen source changed");
+      }
+      // Full artifact verification belongs to the existing reader and packaging
+      // checkpoints. Every remote boundary rereads their immutable metadata.
+      const prepared = preparedInput ??= await artifacts.preparedRuntimeReceipt(publicationIdentity);
+      const preparedBytes = await readFile(prepared.receiptFile);
+      const manifestBytes = await readFile(path.join(prepared.receipt.releaseRoot, "runtime-manifest.json"));
+      const packageInfo = await lstat(packageFile);
+      const packageBytes = await readFile(packageFile);
+      const packaged = JSON.parse(packageBytes);
+      if (!packageInfo.isFile() || packageInfo.isSymbolicLink()
+          || digest(preparedBytes) !== prepared.receiptSha256 || digest(manifestBytes) !== prepared.receipt.manifestSha256
+          || prepared.receiptSha256 !== requested.preparedReceiptSha256
+          || Object.entries(runtimePublication).some(([key, value]) => prepared.receipt[key] !== value)
+          || digest(packageBytes) !== requested.packageResultSha256 || packaged.phase !== "PACKAGED"
+          || packaged.inputIdentity !== requested.inputIdentity || packaged.inputs?.preparedReceiptSha256 !== prepared.receiptSha256
+          || releaseIdentitySha256(packaged.inputs?.tool) !== releaseIdentitySha256(toolIdentity)
+          || Object.entries(runtimePublication).some(([key, value]) => packaged.inputs?.[key] !== value)) {
+        throw new Error("Assets publication PREPARED or PACKAGED input changed");
+      }
+      if (releaseIdentitySha256(await parentJournal.read()) !== releaseIdentitySha256(originalRun)
+          || releaseIdentitySha256(await readJson(parent.stateFile)) !== releaseIdentitySha256(runner)) {
+        throw new Error("Assets publication original execution changed");
+      }
+      await tool.assertUnchanged();
+      return { candidate: generation.identitySha256, sourceCommit: candidate.commit, sourceTree: candidate.tree,
+        runtimePublication, tool: toolIdentity, inputIdentity: packaged.inputIdentity,
+        preparedReceiptSha256: prepared.receiptSha256, packageResultSha256: digest(packageBytes),
+        parentRunnerSha256: releaseIdentitySha256(runner), parentRunSha256: releaseIdentitySha256(originalRun) };
+    };
+    await mkdir(layout.root, { recursive: true });
+    return withPublicationLock(async () => {
+      const journal = this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment });
+      const binding = await inspect();
+      const saved = await journal.read();
+      if (!saved && (await readdir(layout.root)).some(name => name !== "publication.lock" && !name.startsWith("publication.lock."))) {
+        throw new Error("Assets publication execution root is occupied");
+      }
+      const receipt = await authorize(binding);
+      const deliveryIdentity = { kind: "published-assets-v1", operationId: operation.operationId,
+        generation: generation.generation, revision: candidate.commit, target,
+        authorizationInputSha256: receipt.inputSha256, binding };
+      if (saved && releaseIdentitySha256(saved.identity) !== releaseIdentitySha256(deliveryIdentity)) {
+        throw new Error("Original assets publication journal identity changed");
+      }
+      const apiModule = await tool.module("src/github-publication.mjs");
+      const api = apiModule.createGitHubPublicationTools({ toolRoot: tool.root,
+        assertToolUnchanged: () => tool.assertUnchanged(), ownedGitArguments, artifactVersionIdentity, parseGitHubRemote });
+      const transport = this.distributionApi ?? api.githubReleaseTransport();
+      const distribution = api.createGitHubDistributionSteps({ sourceRoot, repositoryRoot: candidate.repositoryRoot,
+        executionRoot: parent.root, runtimePublication, artifacts, journal,
+        ...(this.distributionCapture ? { capture: this.distributionCapture } : {}),
+        api: async (method, route, options) => {
+          await validate();
+          if (method !== "GET" && releaseIdentitySha256(await inspect()) !== releaseIdentitySha256(binding)) {
+            throw new Error("Assets publication changed before GitHub effect");
+          }
+          const uploadPayloadBytes = options?.file ? (await lstat(options.file)).size : 0;
+          return measureTaskOperation("release:github-request", () => transport(method, route, options),
+            { method, uploadPayloadBytes });
+        } });
+      if (saved?.status === "succeeded") return { status: "applied", distribution: await distribution.verify(publicationIdentity) };
+      const steps = distribution.steps(publicationIdentity);
+      await journal.start(deliveryIdentity, steps);
+      try {
+        for (const step of steps) {
+          await journal.stepStarted(step.label);
+          await step.execute();
+          await journal.stepFinished(step.label, { status: "completed" });
+        }
+        const effect = { status: "applied", distribution: await distribution.verify(publicationIdentity) };
+        await validate();
+        await journal.finish("succeeded");
+        return effect;
+      } catch (error) {
+        await journal.finish("failed", error);
+        throw error;
+      }
+    }, { environment: { ...this.environment }, lockTarget: path.join(layout.root, "publication") });
   }
 
   async withRetainedGeneration({ operation, generation, commit }) {

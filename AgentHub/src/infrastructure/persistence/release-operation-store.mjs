@@ -822,13 +822,24 @@ export class ReleaseOperationStore {
     `).get(String(operationId), Number(generation))?.generation_json));
   }
 
-  beginStep({ operationId, generation, stepId, input, createdAt = this.now(), expectedOwner = null } = {}) {
+  beginStep({ operationId, generation, stepId, input, createdAt = this.now(), expectedOwner = null,
+    expectedCompletedGeneration = null } = {}) {
     const id = String(operationId ?? "").trim();
     const step = String(stepId ?? "").trim();
     if (!id || !step) throw new TypeError("step receipt requires operationId and stepId");
     const inputSha256 = releaseIdentitySha256(input ?? {});
     return this.#withDatabase((database) => immediateTransaction(database, () => {
       assertDatabaseOwner(database, id, expectedOwner);
+      if (expectedCompletedGeneration) {
+        const original = operationFromRow(database.prepare("SELECT operation_json FROM release_operations WHERE operation_id=?").get(id));
+        const frozen = readJson(database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=? AND generation=?")
+          .get(id, Number(generation))?.generation_json);
+        if (original?.state !== "done" || original.owner || original.currentGeneration !== Number(generation)
+            || releaseIdentitySha256(original) !== expectedCompletedGeneration.operationSha256
+            || frozen?.identitySha256 !== expectedCompletedGeneration.identitySha256) {
+          throw new Error("Assets publication completed original changed before durable admission");
+        }
+      }
       if (step === "compose") {
         const operation = operationFromRow(database.prepare("SELECT operation_json FROM release_operations WHERE operation_id=?").get(id));
         const amendment = operation?.testSelectionAmendments?.at(-1);

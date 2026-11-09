@@ -74,6 +74,7 @@ export async function executeRelease(input, {
     throw new Error("Release request must contain business arguments, not a caller token");
   }
   if (request.published_dev_sync != null && input.action !== "continue") throw new Error("Published dev sync is an addressed continuation only");
+  if (request.assets_publication != null && input.action !== "continue") throw new Error("Assets publication is an addressed continuation only");
   if (input.action === "accept" && (request.status !== "awaiting_implementation"
       || typeof request.task_id !== "string" || !request.task_id.trim())) {
     throw new Error("Release acceptance requires an addressed Task Await request");
@@ -86,7 +87,7 @@ export async function executeRelease(input, {
     try {
       result = await runtime.service.call(tools[input.action], { ...request, context_token: token });
     } catch (error) {
-      if (input.action !== "get" && !request.published_dev_sync) {
+      if (input.action !== "get" && !request.published_dev_sync && !request.assets_publication) {
         // The public MCP receipt can fail after durable release admission.
         // Wait for only addressed local work (including normal Task wakes); do not replay the call or
         // settle its unknown receipt from a successful release readback.
@@ -97,7 +98,7 @@ export async function executeRelease(input, {
       }
       throw error;
     }
-    if (input.action === "get" || result.accepted === false || request.published_dev_sync) return result;
+    if (input.action === "get" || result.accepted === false || request.published_dev_sync || request.assets_publication) return result;
     // The durable acknowledgement is visible before waiting; a lost client
     // response is read through the same public get, never a fresh release ID.
     let replyError = null;

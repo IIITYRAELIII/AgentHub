@@ -3882,6 +3882,24 @@ See ADR-HUB-351-release-metadata-amendment.
 
 ## Explicit GitHub distribution target
 
+After a completed installed publication, the existing RM continuation can carry
+an exclusive `assets_publication` admission for its exact current generation.
+The request supplies a separate GitHub distribution target, the existing
+PACKAGED input identity/result digest, original PREPARED receipt digest and
+external tool pin. Completed-generation validation/finalization evidence,
+frozen identity and fresh revision/generation CAS remain mandatory. The existing
+release-step receipt records the separate target authorization. The original
+completed operation, selected results, target authorization, effects and old
+execution retain their identities and bytes.
+
+This assets execution uses a separate existing publication journal and consumes
+the original verified package namespace. Its GitHub adapter persists each
+tag/create/upload intent and verifies the exact public assets. Unknown remote
+outcomes retain their existing readback and refusal semantics. The source API
+returns the addressed assets effect separately from the prior completed release.
+Anonymous recipient install/update/rollback verification remains part of delivery.
+See ADR-HUB-422-published-assets-admission.
+
 Recipient HTTPS transport does not request early peer connection closure. It
 uses the existing stdlib TLS/certificate policy, proxy and redirect owners and
 closes each response locally after the same bounded framed read or failure.

@@ -1010,6 +1010,15 @@ export class HubMcpService {
       }),
       tool("hub_release_continue", "Continue the same original release. Explicit task_scope=all_await uses the existing revision/generation and not-applied amendment owner; original authorization and historical receipts remain immutable.", {
         operation_id: { type: "string" },
+        assets_publication: { type: "object", additionalProperties: false,
+          required: ["target", "inputIdentity", "preparedReceiptSha256", "packageResultSha256", "toolSha256"], properties: {
+            target: { type: "object", additionalProperties: false, required: ["targetId", "kind", "environment", "repositoryRoot"], properties: {
+              targetId: { type: "string", enum: ["agent-hub-github-release"] }, kind: { type: "string", enum: ["agent-hub-publication"] },
+              environment: { type: "string", enum: ["github-release"] }, repositoryRoot: { type: "string" },
+            } },
+            ...Object.fromEntries(["inputIdentity", "preparedReceiptSha256", "packageResultSha256", "toolSha256"]
+              .map(key => [key, { type: "string", pattern: "^[a-f0-9]{64}$" }])),
+          } },
         published_dev_sync: { type: "object", additionalProperties: false,
           description: "Exclusive published-finalization recovery. Prepares/applies only the original native dev synchronization; does not wake release work.",
           required: ["projectRoot", "expectedDevCommit"], properties: {
@@ -2876,6 +2885,9 @@ export class HubMcpService {
       requestId: args.request_id, reviewedMain: args.reviewed_main,
       testSelection: args.test_selection, taskIds: args.task_ids, taskScope: args.task_scope, releaseMetadata: args.release_metadata, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
       ...(args.published_dev_sync != null ? { publishedDevSync: args.published_dev_sync } : {}),
+      ...(args.assets_publication != null ? { assetsPublication: args.assets_publication,
+        assetsPublicationActor: { workspaceId: context.workspaceId, streamId: context.streamId,
+          threadId: context.threadId, provider: context.provider } } : {}),
     });
   }
 
