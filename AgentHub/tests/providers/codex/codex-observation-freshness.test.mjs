@@ -4,7 +4,7 @@ import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { TaskObservationService } from "../../../src/application/task-observation-service.mjs";
-import { createObservedTaskRun } from "../../../src/domain/task-runs.mjs";
+import { applyObservedResponseAnnotationReferences, createObservedTaskRun } from "../../../src/domain/task-runs.mjs";
 import { codexAssistantResponseProjection } from "../../../src/domain/codex-response-annotation.mjs";
 import { appendCodexAgentMessageDelta, completeCodexAgentMessage,
   hydrateCodexAgentMessages, startCodexAgentMessage } from "../../../src/providers/codex/codex-agent-message-reducer.mjs";
@@ -16,6 +16,29 @@ const binding = { provider: "codex", threadId: "thread-one", turnId,
 const readOptions = { threadResult: { thread: { path: "synthetic-rollout", status: { type: "active" }, turns: [] } } };
 const parseActivity = (text) => parseCodexRolloutActivity(text, {
   sourceObservationGeneration: "synthetic-same-rollout",
+});
+
+test("the owned annotation copy retains native projection and legacy metadata boundaries", () => {
+  const latest = [{ index: 2, position: { start: 0, end: 7 } }];
+  const run = { turnId: "turn-one", responseAnnotationReferences: structuredClone(latest) };
+  applyObservedResponseAnnotationReferences(run, {
+    active: true, turnId: "turn-one", responseItem: { id: "same-final" },
+    answer: "Old answer", responseAnnotationReferences: [{ index: 1 }],
+  });
+  assert.deepEqual(run.responseAnnotationReferences, latest);
+  applyObservedResponseAnnotationReferences(run, { turnId: "turn-one" });
+  assert.deepEqual(run.responseAnnotationReferences, latest);
+  applyObservedResponseAnnotationReferences(run, {
+    turnId: "turn-one", answer: "Legacy answer", responseAnnotationReferences: [{ index: 1 }],
+  });
+  assert.equal(run.responseAnnotationReferences[0].index, 1);
+  applyObservedResponseAnnotationReferences(run, { turnId: "turn-one", answer: "" });
+  assert.deepEqual(run.responseAnnotationReferences, []);
+  run.responseAnnotationReferences = structuredClone(latest);
+  applyObservedResponseAnnotationReferences(run, {
+    active: true, turnId: "different-turn", responseItem: { id: "other-final" },
+  });
+  assert.deepEqual(run.responseAnnotationReferences, []);
 });
 
 function publisher(codex) {

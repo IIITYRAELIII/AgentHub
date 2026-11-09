@@ -281,6 +281,9 @@ An intervening mutation retains the current item body and citations, including
 for the same item ID. A fresh observation may apply an authoritative shorter
 body. Its canonical text and complete annotation metadata cross the reducer
 together, with the bounded raw provider text retained for subsequent deltas.
+The shared observation annotation-copy owner retains that native projection.
+Its legacy metadata-only, empty-answer and different-turn behavior remains
+available through the same constructor and publication entry points.
 This ephemeral revision is separate from durable terminal revision authority.
 Native updates that precede the read also retain ownership of their item. The
 rollout reader carries the record position in its existing append-validated
