@@ -26,8 +26,22 @@ export function githubReleaseTransport(options, toolPackage = null) {
 }
 
 export function createGitHubDistributionSteps({ toolPackage = null, ...options } = {}) {
+  if (!options.runtimePublication || !options.journal || !options.artifacts) throw new Error("Frozen distribution owner is required");
+  const version = artifactVersionIdentity(options.runtimePublication.version).publicVersion;
+  if (!/^\d+\.\d+\.\d+$/u.test(version)) throw new Error("Stable distribution requires a stable public version");
   let owner;
   const load = () => owner ??= tools(toolPackage).then(api => api.createGitHubDistributionSteps(options));
-  return { steps: async (...args) => (await load()).steps(...args),
-    verify: async (...args) => (await load()).verify(...args) };
+  async function executeStep(label, identity, args) {
+    const matches = (await load()).steps(identity).filter(step => step.label === label);
+    if (matches.length !== 1 || matches[0].reusable !== false) throw new Error("External distribution step contract changed");
+    return matches[0].execute(...args);
+  }
+  return {
+    // Preserve the existing synchronous step-planning port. Executor selection
+    // and its asynchronous verification happen when the actual step runs.
+    steps: identity => [PACKAGE_DISTRIBUTION, PUBLISH_GITHUB_RELEASE].map(label => ({
+      label, reusable: false, execute: (...args) => executeStep(label, identity, args),
+    })),
+    verify: async (...args) => (await load()).verify(...args),
+  };
 }

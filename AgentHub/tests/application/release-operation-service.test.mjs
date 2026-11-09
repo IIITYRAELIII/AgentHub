@@ -12,6 +12,11 @@ import { createCandidateGeneration, failedFirstComposeRecovery } from "../../src
 import { resolveTestSelection } from "../../src/domain/test-selection.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
+import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
+import { TaskBoardService } from "../../src/application/task-board-service.mjs";
+import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 
 const taskIds = ["task-a", "task-b"];
 const targets = [
@@ -132,6 +137,52 @@ test("partial publication recovery refuses stale, changed receipt and unproved o
   await assert.rejects(f.service.continue(f.operationId, options), /capture changed/u);
   assert.equal(f.store.get(f.operationId).state, "failed");
   assert.equal(f.scheduled.length, 0);
+});
+
+test("public partial publication lost ACK reconciles only its durable SAME admission and actor", async t => {
+  const f = await partialPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  const catalogRoot = await mkdtemp(path.join(os.tmpdir(), "partial-publication-catalog-"));
+  const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(catalogRoot, "catalog.sqlite") });
+  await catalog.load();
+  const boardStore = new TaskBoardStore({ databaseFile: path.join(catalogRoot, "catalog.sqlite") });
+  t.after(async () => { boardStore.close(); catalog.close(); await rm(catalogRoot, { recursive: true, force: true }); });
+  catalog.createWorkspace({ id: "workspace-1", name: "Generic publication workspace" });
+  const releaseManager = catalog.createStream({ workspaceId: "workspace-1", name: "RM", settings: { releaseManager: true } });
+  const other = catalog.createStream({ workspaceId: "workspace-1", name: "other RM", settings: { releaseManager: true } });
+  catalog.bindThread({ provider: "codex", threadId: "rm-thread", streamId: releaseManager.id });
+  catalog.bindThread({ provider: "codex", threadId: "other-thread", streamId: other.id });
+  const hub = new HubMcpService({ workspaceCatalog: catalog,
+    taskBoard: new TaskBoardService({ store: boardStore, workspaceCatalog: catalog }), taskLifecycle: {},
+    workLog: { threadTurns: () => [] }, attachmentDirectory: path.join(f.root, "attachments"), secret: "synthetic-partial-publish",
+    releasePreflight: { preflight: () => assert.fail("no new preparation") },
+    releaseCompleter: { completeRelease: () => assert.fail("no legacy completion") },
+    releaseOperations: f.service, reconcilePendingOnStartup: false });
+  const args = { context_token: hub.contextToken({ provider: "codex", threadId: "rm-thread" }),
+    operation_id: f.operationId, request_id: "same-public-partial", expected_revision: before.operation.revision, expected_generation: 1 };
+  const complete = catalog.completeMcpOperation.bind(catalog);
+  catalog.completeMcpOperation = () => { throw Error("controlled lost durable reply"); };
+  await assert.rejects(hub.call("hub_release_continue", args), /receipt reconciliation is required/u);
+  assert.equal(catalog.mcpOperation(args.request_id).status, "unknown");
+  const admitted = f.store.get(f.operationId).publicationRecoveries[0];
+  assert.equal(admitted.requestId, args.request_id);
+  catalog.completeMcpOperation = complete;
+  await assert.rejects(hub.call("hub_release_continue", { ...args, expected_revision: 1 }), /another operation/u);
+  await assert.rejects(hub.call("hub_release_continue", { ...args,
+    context_token: hub.contextToken({ provider: "codex", threadId: "other-thread" }) }), /another operation/u);
+  const reconciled = await hub.call("hub_release_continue", args);
+  assert.equal(reconciled.recovery, admitted.identitySha256);
+  assert.equal(reconciled.operatorReconciliation.kind, "failed-publication-admission-readback-v1");
+  assert.equal(catalog.mcpOperation(args.request_id).status, "succeeded");
+  assert.deepEqual(await hub.call("hub_release_continue", args), reconciled);
+  assert.equal(f.scheduled.length, 1);
+  const unknown = { ...args, request_id: "unadmitted-partial" };
+  catalog.beginMcpOperation({ requestId: unknown.request_id, workspaceId: "workspace-1", streamId: releaseManager.id,
+    provider: "codex", threadId: "rm-thread", toolName: "hub_release_continue", argumentsHash: mcpArgumentsHash(unknown) });
+  catalog.markMcpOperationUnknown(unknown.request_id, Error("unknown before owner admission"));
+  await assert.rejects(hub.call("hub_release_continue", unknown), /durable publication recovery admission/u);
+  assert.equal(catalog.mcpOperation(unknown.request_id).status, "unknown");
+  assert.equal(f.store.get(f.operationId).publicationRecoveries.length, 1);
+  assert.deepEqual(f.store.snapshot(f.operationId).receipts, before.receipts);
 });
 
 test("published dev sync refuses every amendment family before owner acquisition", async t => {

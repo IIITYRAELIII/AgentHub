@@ -13,17 +13,6 @@ if (main || process.argv[1]?.endsWith("runtime-package-handoff.mjs")) {
   const directory = path.dirname(fileURLToPath(import.meta.url));
   const controlFile = path.join(directory, "control.json");
   const control = JSON.parse(await fs.readFile(controlFile, "utf8"));
-  if (main && process.env.AGENT_HUB_RELEASE_ID === control.heldWriterRelease) {
-    // A real child inherits only the exact test installation's Job. It ignores
-    // ordinary application drain, exposing the existing native stop boundary.
-    const held = childProcess.spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
-      windowsHide: true, stdio: "ignore", env: { ...process.env, NODE_OPTIONS: "" },
-    });
-    await new Promise((resolve, reject) => { held.once("spawn", resolve); held.once("error", reject); });
-    await fs.writeFile(path.join(directory, "held-writer.json"), JSON.stringify({ pid: held.pid,
-      parentPid: process.pid, releaseId: control.heldWriterRelease }));
-    held.unref();
-  }
   if (process.env.AGENT_HUB_RESTART_OPERATION_ID && control.delayedAdmissionRelease) {
     const pointer = JSON.parse(await fs.readFile(path.join(control.root, "current.json"), "utf8"));
     if (pointer.current === control.delayedAdmissionRelease) {

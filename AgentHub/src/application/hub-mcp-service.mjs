@@ -2863,7 +2863,7 @@ export class HubMcpService {
       ? { execution: { localActive: this.#releaseOperation().hasLocalWork(snapshot.operation.operationId) } } : {}) };
   }
 
-  #continueReleaseOperation(context, args, { reconcileFirstCompose = false } = {}) {
+  #continueReleaseOperation(context, args, { reconcileFirstCompose = false, reconcilePublication = false } = {}) {
     const operationId = requiredText(args.operation_id, "operation id", 200);
     const snapshot = this.#releaseOperation().get(operationId);
     this.#workspace(context, snapshot.operation.workspaceId);
@@ -2883,6 +2883,9 @@ export class HubMcpService {
     }
     const owner = this.#releaseOperation();
     if (reconcileFirstCompose) return owner.reconcileFirstComposeContinuation(operationId, {
+      requestId: args.request_id, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
+    });
+    if (reconcilePublication) return owner.reconcilePublicationContinuation(operationId, {
       requestId: args.request_id, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
     });
     return owner.continue(operationId, {
@@ -3412,6 +3415,11 @@ export class HubMcpService {
       && args.expected_generation === 0 && Number.isSafeInteger(args.expected_revision)
       && Object.keys(args).every(key => ["context_token", "operation_id", "request_id", "expected_revision", "expected_generation"].includes(key))
       && typeof this.releaseOperations?.reconcileFirstComposeContinuation === "function";
+    const publicationContinuation = toolName === "hub_release_continue" && started.replayed
+      && Number.isSafeInteger(args.expected_generation) && args.expected_generation > 0 && Number.isSafeInteger(args.expected_revision)
+      && Object.keys(args).every(key => ["context_token", "operation_id", "request_id", "expected_revision", "expected_generation"].includes(key))
+      && typeof this.releaseOperations?.reconcilePublicationContinuation === "function";
+    const ownerContinuation = firstComposeContinuation || publicationContinuation;
     if (started.status === "unknown" && toolName === "hub_task_claim" && !custodyConsume) {
       const reconciled = await this.#reconcileClaimAdmissionNoEffect(context, args, started).catch(() => null);
       if (reconciled) {
@@ -3426,23 +3434,23 @@ export class HubMcpService {
         throw terminal;
       }
     }
-    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption && !assetsContinuation && !firstComposeContinuation) {
+    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption && !assetsContinuation && !ownerContinuation) {
       throw new Error(`MCP operation outcome is unknown; reconcile authoritatively before retrying request_id ${requestId}`);
     }
     const inFlight = this.#pendingMutations.get(requestId);
     if (inFlight) return inFlight;
-    if (firstComposeContinuation) {
+    if (ownerContinuation) {
       if (!this.#isReleaseManager(context)) throw new Error("release continuation requires a Release Manager Stream");
       this.#workspace(context, this.#releaseOperation().get(args.operation_id).operation.workspaceId);
       if (started.status !== "unknown") await this.workspaceCatalog.markMcpOperationUnknown(requestId,
-        new Error("First compose continuation requires addressed owner reconciliation"));
+        new Error("Release continuation requires addressed owner reconciliation"));
     }
     const resumable = new Set([
       "hub_task_start", "hub_task_reassign", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
       "hub_task_checklist_update",
       "hub_task_operation_cancel",
     ]);
-    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage && !assetsContinuation && !firstComposeContinuation) {
+    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage && !assetsContinuation && !ownerContinuation) {
       const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
       if (toolName !== "hub_release_prepare" || !started.preparationState) {
         await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
@@ -3469,8 +3477,9 @@ export class HubMcpService {
           ? await this.taskOperationInterruption.run(started, args,
             () => committedClaimReadback ? this.#claimTask(context, args, { committedReadbackOnly: true }) : operation(started),
             { committedClaimReadback })
-          : firstComposeContinuation
-            ? await this.#continueReleaseOperation(context, args, { reconcileFirstCompose: true })
+          : ownerContinuation
+            ? await this.#continueReleaseOperation(context, args, { reconcileFirstCompose: firstComposeContinuation,
+              reconcilePublication: publicationContinuation })
             : await operation(started);
         effectCompleted = true;
         if (toolName === "hub_release_prepare") {
@@ -3485,10 +3494,10 @@ export class HubMcpService {
           if (!durable) throw new Error("Custody stage is not durable");
           return durable.result;
         }
-        if (firstComposeContinuation) {
+        if (ownerContinuation) {
           const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, {
             workspaceId: context.workspaceId, toolName, result,
-            reconciliation: { kind: "failed-first-compose-owner-continuation-v1", operationId: args.operation_id,
+            reconciliation: { kind: firstComposeContinuation ? "failed-first-compose-owner-continuation-v1" : "failed-publication-admission-readback-v1", operationId: args.operation_id,
               recovery: result.recovery, priorReceipt: { status: started.status, error: started.error,
                 createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs } },
           });

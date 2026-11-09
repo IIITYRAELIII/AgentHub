@@ -884,8 +884,8 @@ namespace AgentHub.RuntimeHost
             start.EnvironmentVariables["AGENT_HUB_PACKAGE_OLD_HOST_PID"] = hostPid.ToString(CultureInfo.InvariantCulture);
             start.EnvironmentVariables["AGENT_HUB_PACKAGE_OLD_NODE_STARTED"] = nodeStarted.ToString(CultureInfo.InvariantCulture);
             start.EnvironmentVariables["AGENT_HUB_PACKAGE_OLD_HOST_STARTED"] = hostStarted.ToString(CultureInfo.InvariantCulture);
-            bool outsideJobs;
-            if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out outsideJobs) || (outsideJobs && stage != "recover-backup"))
+            bool ownerInJob;
+            if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out ownerInJob) || (ownerInJob && stage != "recover-backup"))
                 throw new InvalidOperationException("Package stage owner must remain outside every Job");
             start.EnvironmentVariables["AGENT_HUB_PACKAGE_OWNER_OUTSIDE_JOBS"] = "1";
             bool continuing = stage == "continue" || stage == "recover-backup" || stage == "retired";
@@ -893,11 +893,17 @@ namespace AgentHub.RuntimeHost
             using (Process child = Process.Start(start))
             {
                 if (child == null) throw new InvalidOperationException("Package continuation did not start");
+                if (stage != "recover-backup") WriteLifetime(root, "package-" + stage + "-start", child.Id, null, false);
                 string line;
                 bool released = false;
                 bool alreadyCompleted = false;
                 while ((line = child.StandardOutput.ReadLine()) != null)
                 {
+                    if (stage == "observe" && line == "AGENT_HUB_PACKAGE_READ_PENDING")
+                    {
+                        WriteLifetime(root, "package-observer-read-pending", child.Id, null, false);
+                        continue;
+                    }
                     if ((stage == "observe" || stage == "observe-recover") && line == "AGENT_HUB_PACKAGE_DONE")
                     {
                         alreadyCompleted = true;
@@ -937,6 +943,7 @@ namespace AgentHub.RuntimeHost
                     }
                 }
                 child.WaitForExit();
+                if (stage != "recover-backup") WriteLifetime(root, "package-" + stage + "-exit", child.Id, child.ExitCode, false);
                 return child.ExitCode == 0 && alreadyCompleted ? 2 : child.ExitCode;
             }
         }

@@ -354,10 +354,7 @@ export class ReleaseOperationService {
     if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     const previousPublication = current.publicationRecoveries?.find(item => item.requestId === options.requestId);
     if (previousPublication) {
-      if (previousPublication.priorRevision !== options.expectedRevision || previousPublication.generation !== options.expectedGeneration) {
-        throw new Error("Publication recovery request changed");
-      }
-      return { accepted: true, duplicate: true, operationId, recovery: previousPublication.identitySha256 };
+      return this.reconcilePublicationContinuation(operationId, options);
     }
     if (this.withPublicationRecovery && failedPublicationRecovery(this.store.snapshot(operationId))) {
       return this.#recoverPublication(operationId, options);
@@ -545,6 +542,19 @@ export class ReleaseOperationService {
     } catch {
       console.warn('Release progress monitor unavailable: MONITOR_OBSERVATION_FAILED');
     }
+  }
+
+  reconcilePublicationContinuation(operationId, { requestId, expectedRevision, expectedGeneration }) {
+    const current = this.store.get(requiredText(operationId, "operationId"));
+    const recovery = current?.publicationRecoveries?.find(item => item.requestId === requestId);
+    const { identitySha256, ...contents } = recovery ?? {};
+    if (!recovery || recovery.operationId !== operationId || recovery.priorRevision !== expectedRevision
+      || recovery.generation !== expectedGeneration || recovery.authorizationFingerprint !== current.authorization.fingerprint
+      || releaseIdentitySha256(contents) !== identitySha256) throw new Error("No durable publication recovery admission matches this request");
+    if (current.currentGeneration === expectedGeneration && current.state === "publish") {
+      this.#observe(operationId); this.#schedule(operationId);
+    }
+    return { accepted: true, duplicate: true, operationId, recovery: identitySha256 };
   }
 
   async #recoverPublication(operationId, { requestId, expectedRevision, expectedGeneration }) {

@@ -396,11 +396,22 @@ async function incomingPackageStage(stage, store, current, binding, native, envi
   if (stage === "observe") {
     // The old controller retains ordinary turn drain and its original native
     // attempt. This observer neither takes its gate nor resubmits that attempt.
+    let readPendingRecorded = false;
     for (;;) {
       if (await access(path.join(binding.runtimeRoot, ".agent-hub-release-acceptance.closed")).then(() => true, error => {
         if (error.code === "ENOENT") return false; throw error;
       })) throw new Error("Closed acceptance forbids incoming package continuation");
-      current = store.getReadonly(current.operationId);
+      try { current = store.getReadonly(current.operationId); }
+      catch (error) {
+        if (![5, 6, 1546].includes(error.errcode)) throw error;
+        // A WAL/SHM or writer-reservation observation failure establishes no
+        // original outcome. Keep observing; never open a second SQLite writer
+        // alongside the old native backup to manufacture readable evidence.
+        if (!readPendingRecorded) console.log("AGENT_HUB_PACKAGE_READ_PENDING");
+        readPendingRecorded = true;
+        await delay(100);
+        continue;
+      }
       if (packageBindingDigest(packageHandoffBinding(current)) !== intent.bindingSha256
         || current.metadata.packageIncoming?.sha256 !== incoming.sha256) throw new Error("Observed package original changed");
       if (terminal(current)) { console.log("AGENT_HUB_PACKAGE_DONE"); return { status: "already-terminal" }; }

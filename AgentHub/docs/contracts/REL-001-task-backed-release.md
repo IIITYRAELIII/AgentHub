@@ -19,6 +19,10 @@ same successful installed consumer with whole payload/Ready under physical
 installation custody immediately before CAS. Only remaining checkpoints resume.
 Unknown, foreign, active, changed or incomplete proof refuses. The recovery
 retains the prior failure and an addressed durable admission for lost replies.
+Public MCP readback of that admission requires the same original request,
+arguments, actor and revision/generation binding. It cannot create a missing
+recovery from UNKNOWN. Unadmitted or changed requests retain their prior
+unknown outcome. Existing operation scheduling resumes only recorded work.
 
 Multiple authorized publication targets for one canonical repository share one
 repository approval only when both exact local-main and origin-main pins agree.

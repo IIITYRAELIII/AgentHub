@@ -35,6 +35,11 @@ internal static class PackageRetirementProbe
     [DllImport("kernel32.dll", EntryPoint = "QueryInformationJobObject", SetLastError = true)]
     private static extern bool QueryMembers(IntPtr job, int informationClass, IntPtr buffer, uint length, out uint returned);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenJobObject(uint access, bool inherit, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool member);
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
     private static void Check(bool condition, string message)
     {
         if (!condition) throw new Win32Exception(Marshal.GetLastWin32Error(), message);
@@ -46,9 +51,13 @@ internal static class PackageRetirementProbe
         string body = naturalExit ? "setTimeout(()=>{},500)" : "setInterval(()=>{},1000)";
         Check(CreateProcess(node, new StringBuilder("\"" + node + "\" --eval \"" + body + "\""),
             IntPtr.Zero, IntPtr.Zero, false, 4 | 0x08000000, IntPtr.Zero, null, ref startup, out process), "create fixture member");
-        Check(job == IntPtr.Zero || AssignProcessToJobObject(job, process.Process), "assign exact fixture Job");
-        Check(ResumeThread(process.Thread) == 1, "resume fixture member");
-        return process;
+        try
+        {
+            Check(job == IntPtr.Zero || AssignProcessToJobObject(job, process.Process), "assign exact fixture Job");
+            Check(ResumeThread(process.Thread) == 1, "resume fixture member");
+            return process;
+        }
+        catch { Cleanup(process); throw; }
     }
     private static void Cleanup(Created process)
     {
@@ -74,6 +83,7 @@ internal static class PackageRetirementProbe
     }
     public static int Main(string[] args)
     {
+        if (args.Length == 5 && args[2] == "hold-owned") return HoldOwned(args);
         IntPtr job = CreateJobObject(IntPtr.Zero, null);
         Created first = new Created(), second = new Created(), foreign = new Created();
         Process node = null, host = null, other = null;
@@ -158,5 +168,45 @@ internal static class PackageRetirementProbe
             Cleanup(first); Cleanup(second); Cleanup(foreign);
             if (job != IntPtr.Zero) CloseHandle(job);
         }
+    }
+
+    private static int HoldOwned(string[] args)
+    {
+        IntPtr job = IntPtr.Zero;
+        Created held = new Created();
+        try
+        {
+            string root = System.IO.Path.GetFullPath(args[3]);
+            Check(String.Equals(System.IO.Path.GetFullPath(args[0]), System.IO.Path.Combine(root, "AgentHub.RuntimeHost.exe"),
+                StringComparison.OrdinalIgnoreCase), "exact private fixture Host");
+            Type owner = Assembly.LoadFrom(args[0]).GetType("AgentHub.RuntimeHost.Program", true);
+            Check(owner.GetMethod("ReadAcceptanceMarker", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new object[] { root }) != null, "explicit private acceptance authority");
+            string name = (string)owner.GetMethod("PackageCohortJobName", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new object[] { root, Int32.Parse(args[4]) });
+            job = OpenJobObject(4 | 1, false, name);
+            Check(job != IntPtr.Zero, "open existing private installation Job");
+            using (Process host = Process.GetProcessById(Int32.Parse(args[4])))
+            {
+                bool member;
+                Check(String.Equals(System.IO.Path.GetFullPath(host.MainModule.FileName), System.IO.Path.GetFullPath(args[0]),
+                    StringComparison.OrdinalIgnoreCase), "physical old fixture Host image");
+                Check(IsProcessInJob(host.Handle, job, out member) && member, "old Host owns private fixture Job");
+                Check(IsProcessInJob(GetCurrentProcess(), job, out member) && !member, "writer holder is outside old Job");
+            }
+            held = Start(args[1], job, false);
+            using (Process process = Process.GetProcessById((int)held.Pid))
+            {
+                bool member;
+                Check(IsProcessInJob(process.Handle, job, out member) && member, "held writer belongs to exact old Job");
+                Console.WriteLine(new JavaScriptSerializer().Serialize(new { pid = held.Pid, parentPid = Process.GetCurrentProcess().Id,
+                    started = process.StartTime.ToUniversalTime().Ticks.ToString(), jobMember = true }));
+                Console.Out.Flush();
+            }
+            Console.ReadLine();
+            return 0;
+        }
+        catch (Exception error) { Console.Error.WriteLine(error); return 1; }
+        finally { Cleanup(held); if (job != IntPtr.Zero) CloseHandle(job); }
     }
 }

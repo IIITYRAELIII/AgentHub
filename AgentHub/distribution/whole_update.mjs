@@ -42,6 +42,7 @@ const event = async (stage, details = {}) => { report.events.push({ stage, at: n
 const started = performance.now();
 await save();
 let monitor, sampling, samplingError, server, telegram, host, externalSampler, externalLines, externalExit, lastOperation;
+let writerHolder, writerHolderExit, writerHolderLines;
 const samples = [], children = new Set();
 const essential = new Set(["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATH", "PATHEXT", "COMSPEC", "OS",
   "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "USERNAME", "USERDOMAIN", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432"]);
@@ -80,7 +81,7 @@ function operation() {
       updatedAt: value.updatedAt, blockers: value.blockers });
     return value;
   } catch (error) {
-    if ([5, 6].includes(error.errcode)) {
+    if ([5, 6, 1546].includes(error.errcode)) {
       // Backup's real writer reservations may temporarily prevent this readonly
       // observer. Keep waiting on the same original; never infer its outcome.
       report.busyReadObservations = (report.busyReadObservations ?? 0) + 1;
@@ -168,7 +169,7 @@ try {
   const control = { root, metadataUrl: `https://api.github.com/repos/IIITYRAELIII/AgentHub/releases/tags/${tag}`,
     temporaryRoot: path.join(output, "temp"), telegramApiBaseUrl: telegram.baseUrl, transport: `http://127.0.0.1:${server.address().port}`, assetBase, assetNames: Object.keys(assets),
     churn: mode === "downgrade" || insideHub ? null : "replacement",
-    ...(mode === "inside-hub-forced" ? { heldWriterRelease: previous.releaseId,
+    ...(mode === "inside-hub-forced" ? {
       delayedAdmissionRelease: target.value.releaseId, admissionDelayMs: 45_000, startupDelayMs: 100_000 } : {}),
     ...(mode === "poststop-recovery" ? { installFailurePath: path.join(root, "releases", target.value.releaseId) } : {}) };
   await fs.writeFile(controlFile, JSON.stringify(control));
@@ -190,6 +191,21 @@ try {
   host.stdout.pipe(createWriteStream(path.join(output, "host.stdout"))); host.stderr.pipe(createWriteStream(path.join(output, "host.stderr")));
   await waitForAcceptanceHost(host, { runtimeRoot: root, expectedReleaseId: input.artifacts[0].releaseId, timeoutMs: 120_000 });
   const before = await json(path.join(root, "data/bot.lock")); report.before = before;
+  if (mode === "inside-hub-forced") {
+    const holder = path.join(fixtures, "writer-holder.exe");
+    await run("compile-writer-holder", runtimeHostCompilerCandidates()[0], ["/nologo", "/target:exe", `/out:${holder}`,
+      "/reference:System.dll", "/reference:System.Web.Extensions.dll", path.join(source, "tests/fixtures/runtime-package-retirement.cs")]);
+    writerHolder = spawn(holder, [launcher, process.execPath, "hold-owned", root, String(host.pid)], {
+      env: cleanEnvironment, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    });
+    writerHolderExit = once(writerHolder, "close");
+    writerHolder.stderr.pipe(createWriteStream(path.join(output, "writer-holder.stderr")));
+    writerHolderLines = createInterface({ input: writerHolder.stdout });
+    const [line] = await Promise.race([once(writerHolderLines, "line"), writerHolderExit.then(() => { throw Error("Writer holder refused"); })]);
+    const held = JSON.parse(line); assert.equal(held.jobMember, true);
+    await fs.writeFile(path.join(fixtures, "held-writer.json"), JSON.stringify(held));
+    assert.equal(processIsAlive(held.pid), true);
+  }
   if (mode === "whole") {
   await prepareAcceptanceRestartTarget({ root, telegram });
   telegram.pushMessage("[whole-update-wait] finish only after package admission");
@@ -410,7 +426,11 @@ try {
   }
   }
   }
-} catch (error) { report.status = "failed"; report.error = { message: error.message, stack: error.stack }; throw error; }
+} catch (error) {
+  report.status = "failed"; report.error = { message: error.message, stack: error.stack };
+  await save(); // Retain the first failure even if finally encounters a readback refusal.
+  throw error;
+}
 finally {
   report.stopSampling?.(); delete report.stopSampling;
   await sampling;
@@ -427,14 +447,20 @@ finally {
   if (lastOperation?.metadata?.packageNative?.hostPid) {
     await wait(() => !processIsAlive(lastOperation.metadata.packageNative.hostPid), "owned admitted continuation drain", 300_000);
   }
-  const beforeCloseIncoming = operation()?.metadata?.packageIncoming?.native;
-  if (beforeCloseIncoming && operation()?.metadata?.packageNative) {
+  const beforeCloseOriginal = operation() ?? lastOperation;
+  const beforeCloseIncoming = beforeCloseOriginal?.metadata?.packageIncoming?.native;
+  if (beforeCloseIncoming && beforeCloseOriginal?.metadata?.packageNative) {
     await wait(() => !processIsAlive(beforeCloseIncoming.hostPid), "admitted incoming install completion before fence", 600_000);
   }
   try { if (host) await execute(path.join(root, "AgentHub.RuntimeHost.exe"), ["--close-release-acceptance"], { env: { ...cleanEnvironment, AGENT_HUB_RUNTIME_ROOT: root }, windowsHide: true, timeout: 15_000 }); }
   catch (error) { report.cleanupError = error.message; report.status = "failed"; }
   const incoming = operation()?.metadata?.packageIncoming?.native;
   if (incoming) await wait(() => !processIsAlive(incoming.hostPid), "owned incoming continuation drain", 300_000);
+  if (writerHolder) {
+    writerHolder.stdin.end("close\n");
+    const [code] = await writerHolderExit; writerHolderLines.close();
+    if (code !== 0) { report.status = "failed"; report.writerHolderExitCode = code; }
+  }
   if (host && host.exitCode === null) await Promise.race([once(host, "close"), new Promise((_, reject) => setTimeout(() => reject(Error("Owned Host did not join")), 15_000))]);
   if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   await telegram?.stop(); report.ownedChildren = [...children].map(child => ({ pid: child.pid, code: child.exitCode }));
