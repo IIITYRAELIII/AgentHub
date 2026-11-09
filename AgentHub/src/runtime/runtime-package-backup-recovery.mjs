@@ -7,6 +7,7 @@ import { MaintenanceOperationStore } from "../infrastructure/persistence/mainten
 import { packageBindingDigest, packageDirectory, packageFile, assertPackageFiles } from "../infrastructure/filesystem/runtime-package-target.mjs";
 import { verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { inspectRuntimeBackupScope, assertRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
+import { withRuntimeInstallationLease } from "../infrastructure/filesystem/runtime-installation-custody.mjs";
 import { assertOldPackageCurrent, packageHandoffBinding } from "./runtime-package-handoff.mjs";
 
 const execute = promisify(execFile);
@@ -149,21 +150,26 @@ export async function settlePackageBackupRecoveryStage(store, operationId, nativ
     throw new Error("Package backup recovery native admission changed");
   }
   const binding = await assertPackageBackupRecovery(recovery.original);
-  await assertRetired();
-  await assertPackageBackupRecoveryFiles(request, binding);
-  await assertRetired();
-  await store.runRestartMutation(() => {
-    const saved = store.transition(operationId, { status: "failed", outcome: "failed", phase: "retained-stopped-current", metadata: {
-      packageBackupRecovery: { ...recovery, phase: "settled", native,
-        disposition: request.disposition, retainedReleaseId: binding.old.releaseId,
-        priorOutcome: "unknown", installInvoked: false, launchInvoked: false,
-        dataScopeSha256: packageBindingDigest(request.dataScope),
-        retirementProof: { kind: "closed-acceptance-backup-refusal-v1",
-          originalNative: request.native, closedFenceSha256: request.closedFence.sha256,
-          acceptanceSha256: request.acceptance.sha256 } },
-    } }, { expectedRevision: current.revision });
-    if (!saved.applied) throw new Error("Package backup recovery native CAS changed");
-  }, { requestId: operationId });
+  // The native package gate excludes starts. The existing physical installation
+  // lease also excludes a concurrent stopped installer/pointer writer.
+  await withRuntimeInstallationLease(binding.runtimeRoot, async lease => {
+    await assertRetired();
+    await assertPackageBackupRecoveryFiles(request, binding);
+    await assertRetired();
+    await lease.assertOwned();
+    await store.runRestartMutation(() => {
+      const saved = store.transition(operationId, { status: "failed", outcome: "failed", phase: "retained-stopped-current", metadata: {
+        packageBackupRecovery: { ...recovery, phase: "settled", native,
+          disposition: request.disposition, retainedReleaseId: binding.old.releaseId,
+          priorOutcome: "unknown", installInvoked: false, launchInvoked: false,
+          dataScopeSha256: packageBindingDigest(request.dataScope),
+          retirementProof: { kind: "closed-acceptance-backup-refusal-v1",
+            originalNative: request.native, closedFenceSha256: request.closedFence.sha256,
+            acceptanceSha256: request.acceptance.sha256 } },
+      } }, { expectedRevision: current.revision });
+      if (!saved.applied) throw new Error("Package backup recovery native CAS changed");
+    }, { requestId: operationId });
+  });
   return store.getReadonly(operationId);
 }
 

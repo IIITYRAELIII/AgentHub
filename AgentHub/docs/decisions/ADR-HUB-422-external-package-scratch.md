@@ -27,8 +27,10 @@ manifest, closed acceptance marker/fence and retained data custody. The complete
 UNKNOWN row is retained before native admission. A live or identity-unknown
 owner, changed selection/current/data, foreign scope or CAS refuses.
 
-The native root gate and fresh stopped handshakes protect the canonical FAILED
-write. All four recorded process IDs must be closed, including the old Node,
+The native root gate, existing physical installation lease and fresh stopped
+handshakes protect the canonical FAILED write. The installation lease retains
+current/payload checks through the write, excluding a concurrent stopped installer.
+All four recorded process IDs must be closed, including the old Node,
 old Host, handoff Host and launcher. A reused live PID refuses. A surviving
 original named Job must report zero active processes. Only Windows' explicit
 missing-object result permits the absent-Job observation after the other proofs.

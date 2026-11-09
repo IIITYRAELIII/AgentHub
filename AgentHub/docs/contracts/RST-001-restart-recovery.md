@@ -22,6 +22,8 @@ ADR-HUB-422. Generic UNKNOWN or historical error text cannot authorize it.
 
 The SAME original stores the entire prior UNKNOWN row and one durable disposition
 intent before native admission. The native owner retains the existing root gate,
+and the existing physical installation lease excludes concurrent pointer writers
+through fresh current/data checks and the canonical disposition write. It
 requires all recorded old/native/launcher processes closed (a reused live PID
 refuses), and verifies any surviving original Job is empty. An unavailable Job
 query refuses. Its fresh handshake is repeated immediately before settlement.

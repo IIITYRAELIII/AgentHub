@@ -17,9 +17,11 @@ import { packageBindingDigest, packageDigest, packageFile, packageDirectory, ver
 import { armPackageRestart, continuePackageRestart, packageCheckpoint, packageHandoffBinding,
   packageHostMain, startPackageBootstrap, preparePackageRestart,
   preflightPackageRestart } from "../../src/runtime/runtime-package-handoff.mjs";
-import { packageBackupRecoveryRequest, recoverPackageBackup, assertPackageBackupRecovery } from "../../src/runtime/runtime-package-backup-recovery.mjs";
+import { packageBackupRecoveryRequest, recoverPackageBackup, assertPackageBackupRecovery,
+  settlePackageBackupRecoveryStage } from "../../src/runtime/runtime-package-backup-recovery.mjs";
+import { readInterprocessLockStatus } from "../../src/infrastructure/process/interprocess-lock.mjs";
 import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
-import { buildWindowsRuntimeHost } from "../../src/infrastructure/process/runtime-host-builder.mjs";
+import { buildWindowsRuntimeHost, runtimeHostSourceHash, RUNTIME_HOST_SOURCE_INPUTS } from "../../src/infrastructure/process/runtime-host-builder.mjs";
 
 const noop = async () => {};
 const quiet = { log() {}, error() {}, warn() {} };
@@ -235,6 +237,13 @@ async function recoveryHelper(t) {
   included.add("src/infrastructure/filesystem/sealed-native-capture.cs");
   await cp(path.join(source, "src/infrastructure/filesystem/sealed-native-capture.cs"), path.join(root, "src/infrastructure/filesystem/sealed-native-capture.cs"));
   await buildWindowsRuntimeHost({ sourceRoot: source, outputFile: path.join(root, "AgentHub.RuntimeHost.exe") });
+  for (const file of RUNTIME_HOST_SOURCE_INPUTS) {
+    const target = path.join(root, file); await mkdir(path.dirname(target), { recursive: true });
+    await cp(path.join(source, file), target); included.add(file);
+  }
+  await writeFile(path.join(root, "AgentHub.RuntimeHost.source.sha256"), await runtimeHostSourceHash(source));
+  await writeFile(path.join(root, "AgentHub.RuntimeHost.exe.sha256"), (await packageFile(path.join(root, "AgentHub.RuntimeHost.exe"))).sha256);
+  included.add("AgentHub.RuntimeHost.source.sha256"); included.add("AgentHub.RuntimeHost.exe.sha256");
   await writeFile(path.join(root, "package.json"), '{"name":"agent-hub","version":"2.1.5"}');
   included.add("AgentHub.RuntimeHost.exe"); included.add("package.json");
   const files = [];
@@ -357,6 +366,25 @@ test("concurrent SAME backup disposition requests retain one native admission", 
   await Promise.all([recoverPackageBackup(f.requestFile, { executeHost }), recoverPackageBackup(f.requestFile, { executeHost })]);
   assert.equal(admissions, 1);
   assert.equal(f.store.getReadonly(f.original.operationId).status, "failed");
+});
+
+test("backup disposition retains the physical installation lease through final stopped checks", async t => {
+  const helper = await recoveryHelper(t), f = await backupRefusalFixture(t, helper);
+  let checks = 0;
+  await recoverPackageBackup(f.requestFile, { executeHost: async () => {
+    const file = await packageFile(f.requestFile);
+    const native = { ...f.request.native, hostPid: process.pid, launcherPid: process.pid };
+    await settlePackageBackupRecoveryStage(f.store, f.original.operationId, native, {
+      AGENT_HUB_PACKAGE_BACKUP_RECOVERY_REQUEST: f.requestFile,
+      AGENT_HUB_PACKAGE_BACKUP_RECOVERY_SHA256: file.sha256, AGENT_HUB_PACKAGE_COHORT_RETIRED: "1",
+    }, async () => {
+      const lease = await readInterprocessLockStatus(path.join(f.root, ".runtime-installation"));
+      assert.equal(lease.status, "held"); assert.equal(lease.owner.pid, process.pid); checks++;
+    });
+  } });
+  assert.equal(checks, 2);
+  assert.equal(f.store.getReadonly(f.original.operationId).status, "failed");
+  assert.equal((await readInterprocessLockStatus(path.join(f.root, ".runtime-installation"))).status, "available");
 });
 
 test("package continuation backs up original UNKNOWN receipts before its exact install and launch ports", async (t) => {
