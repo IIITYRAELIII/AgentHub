@@ -1,18 +1,30 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
 
-## Lost partial-publication admission reply (ADR-HUB-429)
+## Partial-publication continuation admission (ADR-HUB-429)
 
 A plain addressed release continuation with generation greater than zero may
-reconcile an outer pending/UNKNOWN command only against its already durable
+reconcile an outer pending/UNKNOWN command against its already durable
 publication recovery admission. The normal request/arguments hash, Workspace,
 Stream/provider/thread/actor and RM guards precede the owner readback. That
 readback proves the same request, prior revision/generation, authorization and
 recovery digest. It may schedule only the original's already admitted remaining
-work. It never creates a recovery admission from UNKNOWN or repeats INSTALL.
+work.
+
+An exact continuation refused before recovery admission may re-enter the same
+failed-publication owner only with the original actor, arguments hash, revision
+and generation CAS and full fresh failed-boundary and adapter proof. The owner
+requires no publication recovery history and repeats that canonical empty-history
+proof, its digest and the exact failed boundary inside the existing SQL admission
+transaction. Only this positively uncaptured boundary may create the addressed
+recovery admission. UNKNOWN and its diagnostic remain unchanged until that
+admission is authoritative. Continuation schedules only the original remaining
+publication work and never repeats INSTALL, compose or generation capture.
+
 The existing command ledger atomically retains the prior receipt and stores the
-verified result. Changed, foreign, mixed or unadmitted requests remain refused
-with their history and unknown effects intact.
+verified result. Changed, foreign, mixed, partially admitted or unproven inputs
+remain refused with their history and unknown effects intact. All other
+unadmitted pending/UNKNOWN requests retain their existing refusal.
 
 ## Interrupted first-compose continuation admission
 
