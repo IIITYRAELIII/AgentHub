@@ -3561,12 +3561,39 @@ agentHub.on("task:select", ({ id }) => {
         const snapshot = await control("select-task", taskOpenParams(identity, { clientTraceId: traceId }));
         return { retainedHistory: true, snapshot };
       }
-      const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
-      if (opened?.history) verifiedTaskHistory(opened.history, identity);
-      return opened;
+      const generation = navigationIntents.capture();
+      // A cold local page can paint and acknowledge its exact final while the
+      // independently ordered selection is still waiting for persistence.
+      const [selection, history] = await Promise.allSettled([
+        control("select-task", taskOpenParams(identity, { clientTraceId: traceId, deferSnapshot: true })),
+        control("task-history", { ...identity, limit: 20, clientTraceId: traceId }).then((history) => {
+          verifiedTaskHistory(history, identity);
+          if (navigationIntents.current(generation) && sameIdentity(taskIdentity(id), identity)) {
+            const opened = bindSnapshotBaseline(commandTrace.associate({ history, snapshot: null }, traceId),
+              responseSnapshotBaselines.get(history));
+            applyOpened(opened, { skipSnapshot: true });
+            replaceRoute(`#/chat/stream/${encodeURIComponent(id)}`);
+            const paintedPage = historyPageByTask.get(id);
+            commandTrace.afterPaint("ui-render", "history-page-paint", started, traceId,
+              { ...identity, clientAssetRevision: "hub427.history.1", trigger: "cold-page",
+                count: historyWindowByTask.get(id)?.length ?? 0 }, null,
+              () => navigationIntents.current(generation) && selectedTaskId === id
+                && historyPageByTask.get(id) === paintedPage && paintedPage?.version === history.version
+                && !document.hidden && document.documentElement.dataset.view === "chat");
+          }
+          return history;
+        }),
+      ]);
+      if (history.status === "rejected") throw history.reason;
+      if (selection.status === "rejected") throw selection.reason;
+      return { retainedHistory: true, openedEarly: true, history: history.value, snapshot: selection.value };
     },
     (result) => {
-      if (result.retainedHistory) applySnapshot(result.snapshot);
+      if (result.retainedHistory) {
+        if (result.snapshot?.snapshotDeferred === true) void refresh();
+        else applySnapshot(result.snapshot);
+        if (result.openedEarly) agentHub.selectTask(id);
+      }
       else applyOpened(result);
       pendingSelectionId = "";
       const route = window.AgentHubNavigationTabs.resolvedChatRoute(result, identity);

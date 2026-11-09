@@ -115,6 +115,8 @@
         "tests/public/attachment-upload-production.test.mjs",
         "docs/decisions/ADR-0044-readiness-gated-rotation.md",
         "docs/decisions/ADR-HUB-414-retained-chat-switching.md",
+        "docs/decisions/ADR-HUB-427-cold-chat-selection.md",
+        "tests/public/cold-chat-selection.test.mjs",
         "tests/public/open-chat-history-reuse.test.mjs",
         "tests/public/retained-chat-scroll-anchor.test.mjs",
         "assets/web-app/**",
@@ -193,6 +195,8 @@
       "document": "RST-001-restart-recovery.md",
       "paths": [
         "docs/decisions/ADR-HUB-409-startup-journal-work.md",
+        "docs/decisions/ADR-HUB-427-cold-chat-selection.md",
+        "tests/public/cold-chat-selection.test.mjs",
         "tests/runtime/startup-journal-cost.test.mjs",
         "src/interfaces/desktop/desktop-control-router.mjs",
         "tests/public/desktop-package-restart.test.mjs",

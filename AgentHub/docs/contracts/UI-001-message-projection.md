@@ -937,3 +937,21 @@ otherwise valid trusted-device session. Unknown session/network failures and fil
 not retried as a different file request. Runtime reveal remains first; only its
 explicit unavailable result permits the existing paired File Bridge fallback.
 Server authentication priority, roots/realpath guards and file bytes are unchanged.
+
+## Cold chat read and ordered selection
+
+A cold tab selection starts its exact local history read independently of the
+ordered selection command. The first canonical page may render while selection
+confirmation is pending. Original navigation generation, current Stream/provider/
+Thread identity, runtime/snapshot freshness and exact final revision fence that
+early render. A later selection reply cannot replace a newer navigation.
+
+The selection owner may return `snapshotDeferred=true` when `deferSnapshot=true`
+was requested, after its binding activation succeeds. Its ordinary snapshot read
+then runs through the existing refresh path. Activation failure still fails that
+command. Other callers receive the ordinary selection snapshot.
+
+Canonical history supplies the complete last request and final response. Existing
+history pages, older-page cursors, retained windows and exact navigation provide
+the rest of the conversation. The same rendered-final and durable read-cursor
+owner clears Ready on both tabs and activity cards. See ADR-HUB-427.

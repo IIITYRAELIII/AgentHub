@@ -346,6 +346,24 @@ test("Desktop task selection does not infer read state before rendering", async 
   assert.deepEqual(calls[1], ["snapshot", params, context]);
 });
 
+test("Desktop selection can confirm its durable binding without collecting a global snapshot", async () => {
+  const { service, calls } = fixture();
+  const pending = Promise.withResolvers();
+  service.activateBinding = async binding => {
+    calls.push(["activate", binding]);
+    await pending.promise;
+    return { changed: true };
+  };
+  const operation = service.select({ streamId: "stream-1", deferSnapshot: true });
+  assert.equal(calls[0][0], "activate");
+  pending.resolve();
+  assert.deepEqual(await operation, { selectionChanged: true, snapshotDeferred: true });
+  assert.equal(calls.filter(([kind]) => kind === "snapshot").length, 0);
+  const failure = new Error("binding write failed");
+  service.activateBinding = async () => { throw failure; };
+  await assert.rejects(service.select({ streamId: "stream-1", deferSnapshot: true }), error => error === failure);
+});
+
 test("Desktop task open shares one response budget between snapshot and history", async () => {
   const { service } = fixture();
   let historyParams;

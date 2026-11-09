@@ -1066,3 +1066,18 @@ identity; hardlinked byte counts are not new disk allocations. A disposable fixt
 measures these producer effects, not reclaimed production GB or provider latency.
 Existing repository/pool and exact dependency-key locks serialize only their own
 resources; an unknown process tree retains its original lifetime fence.
+
+## Cold history selection dependency
+
+The existing `history-page-paint` measurement joins cold selection intent,
+canonical history and a confirmed paint opportunity under the selection trace ID.
+Report selection-response waiting separately from SQLite lock waiting. A held
+selection reply in an isolated fixture establishes the dependency cost, while
+actual database contention needs its own writer/queue evidence.
+
+Measure the full latest request/final DOM and exact read-clear receipt with the
+ordinary and heavy canonical pages. Record request/body sizes, renderer task and
+script work, heap/long tasks and separately qualified test-process CPU/I/O counts.
+Fixture delays and renderer counters have their own attribution. Natural loaded
+runtime observations and source/fixture AFTER are distinct acceptance evidence.
+The existing bounded recorder owns these measurements. See ADR-HUB-427.
