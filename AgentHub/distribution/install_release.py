@@ -592,7 +592,7 @@ def main():
     parser.add_argument("--scratch-root", type=Path, required=True, help="Private temporary area on the intended volume")
     parser.add_argument("--rollback", action="store_true")
     parser.add_argument("--inspect-package", action="store_true", help="Verify/extract public input only; no runtime effect")
-    parser.add_argument("--prepare-update", action="store_true", help="Arm the package-side legacy updater; the user stops old Hub")
+    parser.add_argument("--prepare-update", action="store_true", help="Admit one exact package update through the existing runtime owner")
     parser.add_argument("--update-status", action="store_true", help="Read the exact original without replaying effects")
     parser.add_argument("--operation-id", help="Original stable identity for package update/readback")
     parser.add_argument("--project-root", type=Path, help="Selected project for a first installation; existing configuration is preserved")

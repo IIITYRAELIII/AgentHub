@@ -21,6 +21,18 @@ the existing intake owner. Public targets execute before local installation
 regardless of identifier sorting, without changing the original authorization.
 Historical originals retain their recorded protocol, target authority and tool
 executor on replay. Publication-only targets retain their existing path.
+Before any first target worker for the new policy, the existing pinned tool
+must expose the matching installer handoff capability. An incompatible executor
+refuses before creating a runner pin or public package effects, so compatibility
+can be corrected before that generation has admitted an executor.
+
+The selected tool root and digest remain explicit inputs of the actual release
+executor. Its durable runner binds tool name, version and digest. The existing
+package replacement inherits the old runtime environment. During a bootstrap
+cutover with a different installed tool pin, the original-compatible source API
+caller continues that same original with its explicit pin through terminal
+completion. Root owns the separate installed-environment handoff. This preserves
+the existing executor compatibility boundary across the public installer.
 
 ## Pending installation boundary
 
@@ -101,3 +113,10 @@ delivery remain Root's acceptance boundary after normal Task delivery. No live
 speedup or resource reduction is inferred from these correctness checks. The
 remaining broad HUB-422 performance, failure and completion requirements retain
 their original scope.
+
+Participant documentation retains the existing Utilities inventory to public
+AgentHub guide route for a request to update both tools. The selected version's
+guide and CLI help distinguish first installation, stopped update, modern
+prepare-update/status, legacy manual stop and explicit code-only rollback.
+Configuration, components, auth, sync settings and history keep their owners.
+No Utilities installer, global agent rule or second update register is added.

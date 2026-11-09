@@ -28,7 +28,7 @@ export function releaseTargetExecutionRoot(dataDir, operation, generation, targe
 }
 
 export function publicRuntimeInstallerBinding({ operation, generation, target }) {
-  if (operation.authorization.runtimeInstallation !== PUBLIC_RUNTIME_INSTALLATION
+  if (operation.authorization?.runtimeInstallation !== PUBLIC_RUNTIME_INSTALLATION
     || target.kind !== "agent-hub-publication" || target.environment === "github-release") return null;
   publicRuntimeInstallationAuthorization(operation.authorization.approvedTargets);
   return { operationId: operation.operationId, generation: generation.generation,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -57,6 +58,24 @@ test("canonical completed public consumer remains historical truth after later c
   assert.deepEqual(await f.publication.readback(f), result);
   f.operation.publicationEffects.targets[f.target.targetId] = { ...result, candidate: "0".repeat(64) };
   assert.equal((await f.publication.readback(f)).status, "partial");
+});
+
+test("new public installer policy rejects an incompatible tool before the first public target worker", async t => {
+  const f = await publicationFixture(t);
+  const target = f.operation.authorization.approvedTargets.find(item => item.environment === "github-release");
+  let children = 0;
+  const publication = new ReleaseOperationPublication({ dataDir: f.dataDir, runtimeRoot: f.publication.runtimeRoot,
+    readPublicationStateImpl: async () => null, gitRemoteHeadImpl: async () => f.generation.candidates[0].commit,
+    processAliveImpl: () => false,
+    readToolPackage: async () => ({ name: "legacy-tool", version: "0.1.1", sha256: "e".repeat(64),
+      module: async () => ({}), assertUnchanged: async () => {} }),
+    spawnImpl: () => { children++; return spawn(process.execPath, ["-e", "process.exit(0)"], { windowsHide: true, stdio: "ignore" }); },
+  });
+  const failure = await publication.publish({ operation: f.operation, generation: f.generation, target })
+    .then(() => assert.fail("incompatible publication tool must refuse"), error => error);
+  console.log(JSON.stringify({ incompatibleToolPublicationChildren: children }));
+  assert.equal(children, 0);
+  assert.equal(failure.code, "RELEASE_EXTERNAL_CONDITION");
 });
 
 for (const route of ["changed", "full"]) {

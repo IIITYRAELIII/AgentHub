@@ -6,6 +6,20 @@
 получателю не нужны. Пока reviewed ready release не опубликован, установка
 через Releases откажет; исходники вместо пакета не скачиваются.
 
+## Запрос "обнови Utilities и Hub"
+
+Для такого запроса используй существующий маршрут Utilities →
+`UTILITY_INVENTORY.md` → публичное руководство AgentHub → versioned
+`install_release.py` выбранного опубликованного релиза. Обновление Utilities
+обрабатывает его обычный журнал и согласия участника. Hub устанавливается через
+публичную поставку по этому руководству. Сверяй руководство и `--help` с выбранной
+версией установщика.
+
+Для существующего Hub сохрани прежний runtime root, приватный config/data,
+компоненты, auth, sync URL, историю и original receipts. Команды fresh install,
+stopped update, автоматического handoff, status и rollback используют один
+установщик с соответствующей явной операцией. Их границы описаны ниже.
+
 Поддерживается Windows x64. Нужны Python 3.10+ для `install_release.py` и Node.js
 с модулем `node:sqlite` для Hub (проверяется установщиком; используй версию,
 поддерживаемую проектом). Возьми versioned asset `install_release.py` и ready
@@ -16,6 +30,12 @@ package из одной версии Releases этого проекта. Пер�
 ```powershell
 python install_release.py --release <exact-stable-tag> --runtime-root <private-runtime-directory> --scratch-root <separate-private-temporary-directory>
 ```
+
+При первой установке добавь `--project-root <selected-project-directory>`.
+Существующий configuration owner создаст непустой выбранный список проектов.
+Приватная конфигурация уже установленного Hub сохраняется. Настрой нужные
+компоненты и провайдера, затем запусти установленный Host и проверь Ready.
+Один exit0 установщика подтверждает обработку пакета.
 
 Источник установки и обновлений — только `IIITYRAELIII/AgentHub`.
 `--release latest` выбирает stable release один раз, затем скачивает только его
@@ -98,7 +118,7 @@ auth и cursors сохраняются; установщик не выбирае
 Старые записи согласий `.team` не удаляются и не превращаются в отказ от Hub;
 они не создают второй updater. Изъятие исходников Utilities разрешено только
 после проверки реального standalone package/download/update/rollback и границы
-миграции штатным владельцем поставки. До этого работающая установка продолжает
+миграции существующим владельцем поставки. До этого работающая установка продолжает
 использовать прежнюю идентичность. Этот CLI сам не меняет Git identity/release origin.
 
 После первой установки отредактируй приватный `config.json` runtime и укажи

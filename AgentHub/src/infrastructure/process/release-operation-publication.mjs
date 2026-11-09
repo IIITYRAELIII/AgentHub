@@ -8,7 +8,8 @@ import path from "node:path";
 import { processIsAlive } from "./process-liveness.mjs";
 import { readPublicationState } from "../persistence/publication-state.mjs";
 import { publicationRunStore, failedFrozenPublicationEvidence } from "../persistence/publication-run-store.mjs";
-import { readPublicationCheckpoint } from "../persistence/publication-checkpoint.mjs";
+import { PUBLIC_INSTALLER_HANDOFF, readPublicationCheckpoint } from "../persistence/publication-checkpoint.mjs";
+import { PUBLIC_RUNTIME_INSTALLATION } from "../../domain/public-runtime-installation.mjs";
 import { releaseIdentitySha256 } from "../../domain/release-operation.mjs";
 import { releasePublicationBaseCommit } from "../../domain/release-base-provenance.mjs";
 import { readReleaseToolPackage } from "./release-tool-package.mjs";
@@ -237,6 +238,14 @@ export class ReleaseOperationPublication {
       }
       const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
         expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
+      if (operation.authorization?.runtimeInstallation === PUBLIC_RUNTIME_INSTALLATION) {
+        const capabilities = await tool.module("src/publication-artifacts.mjs");
+        if (capabilities.publicInstallerHandoffProtocol !== PUBLIC_INSTALLER_HANDOFF) {
+          const error = new Error("Selected release tool does not support the original public installer policy");
+          error.code = "RELEASE_EXTERNAL_CONDITION";
+          throw error;
+        }
+      }
       const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
       const previousRunner = await readJson(layout.stateFile);
       if (previousRunner && JSON.stringify(previousRunner.tool) !== JSON.stringify(toolIdentity)) {
