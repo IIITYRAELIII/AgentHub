@@ -1,7 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { copyFile, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
@@ -10,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { access } from "node:fs/promises";
 import { RUNTIME_RESTART_SCOPE } from "../domain/maintenance-operation.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
-import { backupStoppedRuntime, preflightRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
+import { assertRuntimeExternalDirectory, backupStoppedRuntime, preflightRuntimeBackupDestination, preflightRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
 import { sealRuntimeUpdateBackup } from "../infrastructure/persistence/runtime-update-backup-retention.mjs";
 import { verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
@@ -72,21 +71,30 @@ export function packageResumeInput(value) {
       instanceSha256: old.instanceSha256, manifestSha256: old.manifestSha256 } };
 }
 
-export async function preparePackageRestart(input, { dataDir, environment = process.env } = {}) {
+export async function preparePackageRestart(input, { dataDir, environment = process.env,
+  verifyTarget = verifyPublicPackageTarget, captureCurrent = capturePackageRuntime,
+  inspect = execute } = {}) {
   input = packageRestartInput(input);
   if (process.platform !== "win32" || !environment.AGENT_HUB_RUNTIME_ROOT
     || !environment.AGENT_HUB_HOST_PID) throw new Error("Installed package handoff Host is unavailable");
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(input?.operationId ?? "")) {
     throw new Error("Package restart requires its original operationId");
   }
-  const target = await verifyPublicPackageTarget(input);
-  const current = await capturePackageRuntime(environment.AGENT_HUB_RUNTIME_ROOT, dataDir,
+  const target = await verifyTarget(input);
+  const current = await captureCurrent(environment.AGENT_HUB_RUNTIME_ROOT, dataDir,
     { hostPid: Number(environment.AGENT_HUB_HOST_PID) });
   if (current.old.releaseId === target.releaseId) throw new Error("Target is already the running release");
   await preflightRuntimeBackupScope({ runtimeRoot: current.runtimeRoot });
-  const scratchRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-package-"));
+  // The verified public installer already belongs to the retained external
+  // package. Ambient TEMP can be inside the installed runtime (acceptance too).
+  const packageParent = await packageDirectory(path.dirname(target.installer.file));
+  await assertRuntimeExternalDirectory(current.runtimeRoot, packageParent.directory);
+  const scratchRoot = await mkdtemp(path.join(packageParent.directory, "agent-hub-package-"));
   await protectRuntimeDirectory(scratchRoot);
-  const inspection = await execute("python", [target.installer.file, "--archive", target.archive.file,
+  const scratch = await packageDirectory(scratchRoot);
+  await preflightRuntimeBackupDestination({ runtimeRoot: current.runtimeRoot,
+    destination: path.join(scratchRoot, "backup") });
+  const inspection = await inspect("python", [target.installer.file, "--archive", target.archive.file,
     "--sha256", target.archive.sha256, "--runtime-root", current.runtimeRoot,
     "--scratch-root", path.join(scratchRoot, "inspection"), "--inspect-package"], {
     windowsHide: true, encoding: "utf8", maxBuffer: 12 * 1024 * 1024,
@@ -105,7 +113,7 @@ export async function preparePackageRestart(input, { dataDir, environment = proc
   if ((await packageFile(hostCopy)).sha256 !== current.old.launcher.sha256) {
     throw new Error("Copied handoff Host differs from the admitted current Host");
   }
-  const binding = { operationId: input.operationId, ...current, target, scratchRoot, hostCopy };
+  const binding = { operationId: input.operationId, ...current, target, scratchRoot, hostCopy, scratch };
   return { schema: 1, binding, sha256: packageBindingDigest(binding) };
 }
 
@@ -156,6 +164,16 @@ export async function preflightPackageRestart(request) {
   await assertPackageFiles(binding.target);
   await assertPackageUpgrade(binding);
   await preflightRuntimeBackupScope({ runtimeRoot: binding.runtimeRoot });
+  await assertPackageScratch(binding);
+}
+
+export async function assertPackageScratch(binding) {
+  const actual = await packageDirectory(binding.scratchRoot);
+  if (binding.scratch && packageBindingDigest(actual) !== packageBindingDigest(binding.scratch)) {
+    throw new Error("Admitted package scratch physical identity changed");
+  }
+  await preflightRuntimeBackupDestination({ runtimeRoot: binding.runtimeRoot,
+    destination: path.join(binding.scratchRoot, "backup") });
 }
 
 async function verifyRecoverableCurrent(binding) {
@@ -480,6 +498,7 @@ export async function continuePackageRestart({ store, operationId, assertRetired
   await assertRetired();
   await validateOld(binding);
   await validateFiles(binding.target);
+  await assertPackageScratch(binding);
   await packageCheckpoint(store, operationId, "package-backup");
   const snapshot = await backup({ runtimeRoot: binding.runtimeRoot,
     destination: path.join(binding.scratchRoot, "backup"), assertStopped: assertRetired });
@@ -543,6 +562,9 @@ export async function continuePackageRestart({ store, operationId, assertRetired
         metadata: { packageFailurePhase: latest.metadata.packageFailurePhase ?? latest.phase,
           packageFailureCode: String(error?.code ?? "").slice(0, 100) || null,
           packageFailureMessage: String(error?.message ?? error).slice(0, 1_000),
+          ...(latest.phase === "package-backup" && error.code === "MAINTENANCE_BACKUP_INSIDE_RUNTIME"
+            ? { packageBackupDestinationFailure: { schema: 1, bindingSha256: packageBindingDigest(binding),
+              fromRevision: latest.revision, reason: "inside-runtime" } } : {}),
           ...(error.recoveryError ? { packageRecoveryFailureMessage: String(error.recoveryError.message).slice(0, 1_000) } : {}) },
       }, { expectedRevision: latest.revision });
     }, { requestId: operationId });
@@ -551,6 +573,14 @@ export async function continuePackageRestart({ store, operationId, assertRetired
 }
 
 export async function packageHostMain(args, environment = process.env) {
+  if (args.length === 6 && args[0] === "backup-recovery-input") {
+    const owner = await import("./runtime-package-backup-recovery.mjs");
+    return owner.packageBackupRecoveryRequest(...args.slice(1));
+  }
+  if (args.length === 2 && args[0] === "recover-backup") {
+    const owner = await import("./runtime-package-backup-recovery.mjs");
+    return owner.recoverPackageBackup(args[1]);
+  }
   if (args.length === 2 && args[0] === "bootstrap-start") return startPackageBootstrap(args[1]);
   if (args.length === 4 && args[0] === "resume-input") return packageContinuationRequest(args[1], args[2], args[3]);
   if (args.length === 3 && args[0] === "resume") return resumePackageBootstrap(args[1], args[2]);
@@ -599,13 +629,20 @@ export async function packageHostMain(args, environment = process.env) {
     return { status: "admitted-original", operationId: current.operationId };
   }
   const [stage, root, operationId] = args;
-  if (args.length !== 3 || !["arm", "continue"].includes(stage)) throw new Error("Unknown package Host stage");
+  if (args.length !== 3 || !["arm", "continue", "recover-backup"].includes(stage)) throw new Error("Unknown package Host stage");
   const store = new MaintenanceOperationStore({ dataDir: path.join(await realpath(root), "data") });
   let current = store.getReadonly(operationId);
   if (stage === "arm" && current?.metadata?.packageBootstrap) return armPackageBootstrap(store, current, await realpath(root), environment);
   const binding = packageHandoffBinding(current);
   if (binding.runtimeRoot !== await realpath(root)) throw new Error("Package Host root changed");
   const native = nativeContext(binding, environment);
+  if (stage === "recover-backup") {
+    const owner = await import("./runtime-package-backup-recovery.mjs");
+    return owner.settlePackageBackupRecoveryStage(store, operationId, native, environment, async () => {
+      await nativeReply("AGENT_HUB_PACKAGE_CHECK_STOPPED", "AGENT_HUB_PACKAGE_STOPPED");
+      await assertPackageRuntimeStopped(binding);
+    });
+  }
   if (stage === "arm") {
     if (current.phase !== "package-arming") throw new Error("Package Host is not awaiting admission");
     await assertOldPackageCurrent(binding, { requireInstance: true });
@@ -622,23 +659,7 @@ export async function packageHostMain(args, environment = process.env) {
     // this child. Only that parent can supply the retirement proof.
     if (process.ppid !== native.hostPid) throw new Error("Native handoff parent changed");
     await nativeReply("AGENT_HUB_PACKAGE_CHECK_STOPPED", "AGENT_HUB_PACKAGE_STOPPED");
-    const lock = await readFile(path.join(binding.dataDir, "bot.lock"), "utf8").catch((error) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    });
-    if (lock !== null) {
-      const originalLock = JSON.parse(lock);
-      if (originalLock.pid !== binding.old.pid || originalLock.releaseId !== binding.old.releaseId
-        || packageDigest(originalLock.instanceToken ?? "") !== binding.old.instanceSha256) {
-        throw new Error("A foreign instance changed the stopped boundary");
-      }
-    }
-    // User termination can leave the exact original ephemeral lock file. The
-    // existing process owner must still prove it is dead; we neither delete the
-    // file nor treat a foreign/reused live PID as the retired original.
-    if ((await runtimeStatus({ runtimeRoot: binding.runtimeRoot, requireProcessEvidence: true })).running) {
-      throw new Error("A runtime process still owns the stopped boundary");
-    }
+    await assertPackageRuntimeStopped(binding);
   };
   return continuePackageRestart({ store, operationId, assertRetired, launch: async (actual) => {
     // The native parent releases its root gate only after the installer and the
@@ -659,6 +680,26 @@ export async function packageHostMain(args, environment = process.env) {
     child.unref();
     return { pid: child.pid };
   } });
+}
+
+async function assertPackageRuntimeStopped(binding) {
+  const lock = await readFile(path.join(binding.dataDir, "bot.lock"), "utf8").catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (lock !== null) {
+    const originalLock = JSON.parse(lock);
+    if (originalLock.pid !== binding.old.pid || originalLock.releaseId !== binding.old.releaseId
+      || packageDigest(originalLock.instanceToken ?? "") !== binding.old.instanceSha256) {
+      throw new Error("A foreign instance changed the stopped boundary");
+    }
+  }
+  // User termination can leave the exact original ephemeral lock file. The
+  // existing process owner must still prove it is dead; we neither delete the
+  // file nor treat a foreign/reused live PID as the retired original.
+  if ((await runtimeStatus({ runtimeRoot: binding.runtimeRoot, requireProcessEvidence: true })).running) {
+    throw new Error("A runtime process still owns the stopped boundary");
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

@@ -272,6 +272,7 @@
         "tests/infrastructure/persistence/runtime-maintenance-live-preflight.test.mjs",
         "tests/application/package-terminal-readback.test.mjs",
         "docs/decisions/ADR-HUB-398-live-backup-lock-observation.md",
+        "docs/decisions/ADR-HUB-422-external-package-scratch.md",
         "docs/decisions/ADR-HUB-380-retained-source-backup.md",
         "docs/decisions/ADR-HUB-387-interrupted-update-preparation.md",
         "distribution/update_transport_test.py",

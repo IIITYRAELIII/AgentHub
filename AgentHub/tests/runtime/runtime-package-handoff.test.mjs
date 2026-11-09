@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { createRuntimeRestartComposition } from "../../src/composition/runtime-restart-composition.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { RuntimeRestartController } from "../../src/runtime/runtime-restart-controller.mjs";
@@ -13,7 +15,11 @@ import { RestartRequestService } from "../../src/application/restart-request-ser
 import { backupStoppedRuntime, inspectRuntimeBackupScope } from "../../src/infrastructure/persistence/runtime-maintenance-backup.mjs";
 import { packageBindingDigest, packageDigest, packageFile, packageDirectory, verifyPublicPackageTarget } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
 import { armPackageRestart, continuePackageRestart, packageCheckpoint, packageHandoffBinding,
-  packageHostMain, startPackageBootstrap } from "../../src/runtime/runtime-package-handoff.mjs";
+  packageHostMain, startPackageBootstrap, preparePackageRestart,
+  preflightPackageRestart } from "../../src/runtime/runtime-package-handoff.mjs";
+import { packageBackupRecoveryRequest, recoverPackageBackup, assertPackageBackupRecovery } from "../../src/runtime/runtime-package-backup-recovery.mjs";
+import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
+import { buildWindowsRuntimeHost } from "../../src/infrastructure/process/runtime-host-builder.mjs";
 
 const noop = async () => {};
 const quiet = { log() {}, error() {}, warn() {} };
@@ -140,6 +146,217 @@ async function fixture(t, phase = "package-writers-closed") {
     threadId: "agent-hub-runtime", status: "running", phase, metadata: { packageHandoff: envelope } });
   return { root, dataDir, scratchRoot, store, binding, envelope };
 }
+
+test("real package preparation keeps backup outside runtime-local TEMP and binds its physical scratch", async t => {
+  const f = await versionedFixture(t);
+  const manifest = JSON.parse(await readFile(f.binding.target.runtimeManifest.file, "utf8"));
+  manifest.releaseVersion = "2.1.4+build.29900000";
+  manifest.publicVersion = manifest.version = "2.1.4";
+  manifest.buildNumber = 29900000;
+  const raw = Buffer.from(JSON.stringify(manifest));
+  f.binding.target.version = manifest.releaseVersion;
+  f.binding.target.packageManifestSha256 = "b".repeat(64);
+  const temp = path.join(f.root, "temp"); await mkdir(temp);
+  const priorTemp = process.env.TEMP, priorTmp = process.env.TMP;
+  t.after(() => {
+    if (priorTemp === undefined) delete process.env.TEMP; else process.env.TEMP = priorTemp;
+    if (priorTmp === undefined) delete process.env.TMP; else process.env.TMP = priorTmp;
+  });
+  process.env.TEMP = process.env.TMP = temp;
+  const target = structuredClone(f.binding.target);
+  const envelope = await preparePackageRestart({ operationId: f.binding.operationId, tag: "2.1.4",
+    archive: target.archive.file, descriptor: target.descriptor.file, installer: target.installer.file }, {
+    dataDir: f.dataDir, environment: { AGENT_HUB_RUNTIME_ROOT: f.root, AGENT_HUB_HOST_PID: "123" },
+    verifyTarget: async () => target,
+    captureCurrent: async () => ({ runtimeRoot: f.root, dataDir: f.dataDir,
+      roots: f.binding.roots, old: f.binding.old }),
+    inspect: async () => ({ stdout: JSON.stringify({ schema: 1, kind: "verified-package-input",
+      releaseId: target.releaseId, packageManifestSha256: target.packageManifestSha256,
+      runtimeManifestSha256: packageDigest(raw), runtimeManifestBase64: raw.toString("base64") }) }),
+  });
+  assert.ok(!path.relative(f.root, envelope.binding.scratchRoot).startsWith(`temp${path.sep}`));
+  assert.deepEqual(envelope.binding.scratch, await packageDirectory(envelope.binding.scratchRoot));
+  f.store.transition(f.binding.operationId, { metadata: { packageHandoff: envelope } });
+  await preflightPackageRestart(f.store.getReadonly(f.binding.operationId));
+  let backedUp = false;
+  await continuePackageRestart({ store: f.store, operationId: f.binding.operationId, assertRetired: noop,
+    backup: async args => { const saved = await backupStoppedRuntime(args); backedUp = true; return saved; },
+    install: async () => {
+      assert.equal(backedUp, true);
+      const db = new DatabaseSync(path.join(envelope.binding.scratchRoot, "backup/data/runtime.sqlite"), { readOnly: true });
+      try { assert.ok(db.prepare("SELECT count(*) AS n FROM maintenance_operations").get().n > 0); }
+      finally { db.close(); }
+    }, verifyInstalled: noop, launch: async () => ({ pid: 900 }),
+    ready: async () => { f.store.settle(f.binding.operationId, { succeeded: true, phase: "completed" }); },
+  });
+});
+
+test("pre-stop package preflight refuses runtime-local, replaced and occupied backup destinations", async t => {
+  const f = await versionedFixture(t);
+  const raw = JSON.parse(await readFile(f.binding.target.runtimeManifest.file, "utf8"));
+  raw.releaseVersion = "2.1.4+build.29900000"; raw.publicVersion = raw.version = "2.1.4"; raw.buildNumber = 29900000;
+  const manifestFile = path.join(path.dirname(f.root), "external-manifest.json");
+  await writeFile(manifestFile, JSON.stringify(raw));
+  f.binding.target.runtimeManifest = await packageFile(manifestFile);
+  f.binding.target.version = raw.releaseVersion;
+  const originalScratch = f.binding.scratchRoot;
+  const local = path.join(f.root, "temp"); await mkdir(local);
+  for (const fault of ["inside", "replaced", "occupied"]) {
+    const binding = structuredClone(f.binding);
+    binding.scratchRoot = fault === "inside" ? local : originalScratch;
+    binding.scratch = await packageDirectory(binding.scratchRoot);
+    if (fault === "replaced") {
+      await rename(originalScratch, `${originalScratch}-retained`); await mkdir(originalScratch);
+    }
+    if (fault === "occupied") await mkdir(path.join(originalScratch, "backup"));
+    const request = { operationId: binding.operationId, kind: "restart",
+      metadata: { packageHandoff: { schema: 1, binding, sha256: packageBindingDigest(binding) } } };
+    await assert.rejects(preflightPackageRestart(request), /outside runtime|physical identity|occupied/u);
+  }
+});
+
+async function recoveryHelper(t) {
+  const source = path.resolve(import.meta.dirname, "../..");
+  const base = path.join(source, "WIP"); await mkdir(base, { recursive: true });
+  const root = await mkdtemp(path.join(base, "package-backup-recovery-test-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const pending = ["src/runtime/runtime-package-handoff.mjs"], included = new Set();
+  while (pending.length) {
+    const file = pending.shift();
+    if (included.has(file)) continue;
+    assert.ok(!file.startsWith("../") && !path.isAbsolute(file));
+    const raw = await readFile(path.join(source, file));
+    included.add(file);
+    const target = path.join(root, file); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, raw);
+    for (const relative of relativeModuleSpecifiers(raw.toString("utf8"))) {
+      pending.push(path.posix.normalize(path.posix.join(path.posix.dirname(file), relative)));
+    }
+  }
+  included.add("src/infrastructure/filesystem/sealed-native-capture.cs");
+  await cp(path.join(source, "src/infrastructure/filesystem/sealed-native-capture.cs"), path.join(root, "src/infrastructure/filesystem/sealed-native-capture.cs"));
+  await buildWindowsRuntimeHost({ sourceRoot: source, outputFile: path.join(root, "AgentHub.RuntimeHost.exe") });
+  await writeFile(path.join(root, "package.json"), '{"name":"agent-hub","version":"2.1.5"}');
+  included.add("AgentHub.RuntimeHost.exe"); included.add("package.json");
+  const files = [];
+  for (const file of [...included].sort()) {
+    const identity = await packageFile(path.join(root, file));
+    files.push({ path: file, bytes: identity.bytes, sha256: identity.sha256 });
+  }
+  await writeFile(path.join(root, "runtime-manifest.json"), JSON.stringify({
+    releaseId: "recovery-fixture", version: "2.1.5", files,
+  }));
+  t.diagnostic(`thinHelperFiles=${files.length}; bytes=${files.reduce((sum, file) => sum + file.bytes, 0)}`);
+  return root;
+}
+
+async function backupRefusalFixture(t, helper) {
+  const f = await versionedFixture(t);
+  const child = spawn(process.execPath, ["-e", ""], { windowsHide: true, stdio: "ignore" });
+  const deadPid = child.pid;
+  await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", code => code === 0 ? resolve() : reject(Error("fixture child failed"))); });
+  f.binding.old.pid = deadPid;
+  f.binding.scratchRoot = path.join(f.root, "temp"); await mkdir(f.binding.scratchRoot);
+  const native = { oldNodePid: deadPid, oldHostPid: 123, hostPid: deadPid, launcherPid: deadPid,
+    hostStarted: "1", oldNodeStarted: "1", oldHostStarted: "1" };
+  // All recorded fixture owners are joined. The real native helper independently
+  // checks process absence/root gate; these are controlled cohort receipt ports.
+  f.binding.old.hostPid = deadPid; native.oldHostPid = deadPid;
+  const handoff = { schema: 1, binding: f.binding, sha256: packageBindingDigest(f.binding) };
+  f.store.transition(f.binding.operationId, { phase: "package-backup", metadata: { packageHandoff: handoff, packageNative: native } });
+  const before = f.store.getReadonly(f.binding.operationId);
+  f.store.transition(f.binding.operationId, { status: "reconciling", phase: "package-reconciling", outcome: "unknown",
+    metadata: { packageFailurePhase: "package-backup", packageFailureCode: "MAINTENANCE_BACKUP_INSIDE_RUNTIME",
+      packageFailureMessage: "Maintenance backup destination must be outside runtime root",
+      packageBackupDestinationFailure: { schema: 1, bindingSha256: handoff.sha256, fromRevision: before.revision, reason: "inside-runtime" } } });
+  await writeFile(path.join(f.root, ".agent-hub-release-acceptance.json"), JSON.stringify({ schemaVersion: 1, root: f.root, id: "backup-refusal-fixture" }));
+  await writeFile(path.join(f.root, ".agent-hub-release-acceptance.closed"), Buffer.from([1]));
+  const original = f.store.getReadonly(f.binding.operationId);
+  const request = await packageBackupRecoveryRequest(f.root, original.operationId, original.revision, handoff.sha256, helper);
+  const requestFile = path.join(path.dirname(f.root), "backup-recovery.json");
+  await writeFile(requestFile, JSON.stringify(request));
+  return { ...f, request, requestFile, original };
+}
+
+test("closed acceptance SAME backup original settles failed with history under real native root owner and never installs or launches", async t => {
+  const helper = await recoveryHelper(t), f = await backupRefusalFixture(t, helper);
+  const pointer = await readFile(path.join(f.root, "current.json")), config = await readFile(path.join(f.root, "config.json"));
+  const result = await recoverPackageBackup(f.requestFile);
+  assert.equal(result.status, "failed"); assert.equal(result.phase, "retained-stopped-current");
+  const saved = f.store.getReadonly(f.binding.operationId), recovery = saved.metadata.packageBackupRecovery;
+  assert.deepEqual(recovery.original, f.original);
+  assert.deepEqual(saved.metadata.packageHandoff, f.original.metadata.packageHandoff);
+  assert.deepEqual(saved.metadata.packageNative, f.original.metadata.packageNative);
+  assert.equal(recovery.installInvoked, false); assert.equal(recovery.launchInvoked, false);
+  assert.equal(recovery.priorOutcome, "unknown"); assert.equal(saved.outcome, "failed");
+  assert.deepEqual(await readFile(path.join(f.root, "current.json")), pointer);
+  assert.deepEqual(await readFile(path.join(f.root, "config.json")), config);
+  assert.deepEqual(await readFile(path.join(f.root, ".agent-hub-release-acceptance.closed")), Buffer.from([1]));
+  assert.equal(saved.metadata.packageBackup, undefined); assert.equal(saved.metadata.packageLaunchSha256, undefined);
+  await recoverPackageBackup(f.requestFile, { executeHost: () => assert.fail("no second native admission") });
+  assert.deepEqual(f.store.getReadonly(f.binding.operationId), saved);
+});
+
+test("qualified backup disposition refuses changed input, custody, data, native-live and generic UNKNOWN", async t => {
+  const helper = await recoveryHelper(t);
+  for (const fault of ["revision", "pointer", "config", "fence", "asset", "native-live", "unknown",
+    "late-config", "late-pointer", "late-fence", "old-payload"]) {
+    const f = await backupRefusalFixture(t, helper);
+    if (fault === "revision") f.store.transition(f.original.operationId, { metadata: { foreign: true } });
+    if (fault === "pointer") await writeFile(path.join(f.root, "current.json"), '{"current":"foreign"}');
+    if (fault === "config") await writeFile(path.join(f.root, "config.json"), '{"changed":true}');
+    if (fault === "fence") await rm(path.join(f.root, ".agent-hub-release-acceptance.closed"));
+    if (fault === "asset") await writeFile(f.binding.target.installer.file, "changed");
+    if (fault === "old-payload") await writeFile(path.join(f.root, "releases/old/AgentHub.RuntimeHost.exe"), "changed");
+    if (fault === "native-live") {
+      const row = f.store.getReadonly(f.original.operationId);
+      f.store.transition(row.operationId, { metadata: { packageNative: { ...row.metadata.packageNative, launcherPid: process.pid },
+        packageBackupDestinationFailure: { ...row.metadata.packageBackupDestinationFailure, fromRevision: row.revision } } });
+      const updated = f.store.getReadonly(row.operationId);
+      f.request = await packageBackupRecoveryRequest(f.root, row.operationId, updated.revision,
+        updated.metadata.packageHandoff.sha256, helper);
+      await writeFile(f.requestFile, JSON.stringify(f.request));
+    }
+    if (fault === "unknown") {
+      const row = f.store.getReadonly(f.original.operationId);
+      f.store.transition(row.operationId, { metadata: { packageFailurePhase: "package-installing" } });
+      await assert.rejects(assertPackageBackupRecovery(f.store.getReadonly(row.operationId)), /qualified/u);
+    }
+    await assert.rejects(recoverPackageBackup(f.requestFile, {
+      executeHost: async (...args) => {
+        if (fault === "late-config") await writeFile(path.join(f.root, "config.json"), '{"changed":true}');
+        if (fault === "late-pointer") await writeFile(path.join(f.root, "current.json"), '{"current":"foreign"}');
+        if (fault === "late-fence") await rm(path.join(f.root, ".agent-hub-release-acceptance.closed"));
+        return promisify(execFile)(...args);
+      },
+    }));
+    const saved = f.store.getReadonly(f.original.operationId);
+    assert.equal(saved.status, "reconciling"); assert.equal(saved.outcome, "unknown");
+    assert.equal(saved.metadata.packageBackup, undefined); assert.equal(saved.metadata.packageLaunchSha256, undefined);
+    if (fault !== "native-live" && !fault.startsWith("late-")) assert.equal(saved.metadata.packageBackupRecovery, undefined);
+  }
+});
+
+test("lost backup disposition reply reads the SAME terminal original without another native admission", async t => {
+  const helper = await recoveryHelper(t), f = await backupRefusalFixture(t, helper);
+  let admissions = 0;
+  await assert.rejects(recoverPackageBackup(f.requestFile, { executeHost: async (...args) => {
+    admissions++; await promisify(execFile)(...args); throw Error("controlled reply lost after native join");
+  } }), /reply lost/u);
+  const terminal = f.store.getReadonly(f.original.operationId);
+  assert.equal(terminal.status, "failed");
+  const result = await recoverPackageBackup(f.requestFile, { executeHost: () => assert.fail("no replay") });
+  assert.equal(result.status, "failed"); assert.equal(admissions, 1);
+  assert.deepEqual(f.store.getReadonly(f.original.operationId), terminal);
+});
+
+test("concurrent SAME backup disposition requests retain one native admission", async t => {
+  const helper = await recoveryHelper(t), f = await backupRefusalFixture(t, helper);
+  let admissions = 0;
+  const executeHost = async (...args) => { admissions++; return promisify(execFile)(...args); };
+  await Promise.all([recoverPackageBackup(f.requestFile, { executeHost }), recoverPackageBackup(f.requestFile, { executeHost })]);
+  assert.equal(admissions, 1);
+  assert.equal(f.store.getReadonly(f.original.operationId).status, "failed");
+});
 
 test("package continuation backs up original UNKNOWN receipts before its exact install and launch ports", async (t) => {
   const f = await fixture(t), events = [];

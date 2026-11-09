@@ -459,6 +459,8 @@ namespace AgentHub.RuntimeHost
                 Path.AltDirectorySeparatorChar);
             try
             {
+                if (args.Length == 4 && args[0] == "--package-backup-recovery")
+                    return PackageBackupRecovery(args);
                 if (args.Length == 2 && args[0] == "--check-package-bootstrap")
                 {
                     CheckBootstrapOperator(Path.GetFullPath(args[1]));
@@ -788,7 +790,8 @@ namespace AgentHub.RuntimeHost
         }
 
         private static int RunPackageStage(string entry, string root, string operationId, string stage,
-            int nodePid, int hostPid, long nodeStarted, long hostStarted, ref Mutex gate, IntPtr originalJob)
+            int nodePid, int hostPid, long nodeStarted, long hostStarted, ref Mutex gate, IntPtr originalJob,
+            Func<bool> recoveredStopped = null)
         {
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = FindNodeExecutable();
@@ -805,7 +808,8 @@ namespace AgentHub.RuntimeHost
             start.EnvironmentVariables["AGENT_HUB_PACKAGE_OLD_HOST_PID"] = hostPid.ToString(CultureInfo.InvariantCulture);
             start.EnvironmentVariables["AGENT_HUB_PACKAGE_OLD_NODE_STARTED"] = nodeStarted.ToString(CultureInfo.InvariantCulture);
             start.EnvironmentVariables["AGENT_HUB_PACKAGE_OLD_HOST_STARTED"] = hostStarted.ToString(CultureInfo.InvariantCulture);
-            start.EnvironmentVariables["AGENT_HUB_PACKAGE_COHORT_RETIRED"] = stage == "continue" ? "1" : "0";
+            bool continuing = stage == "continue" || stage == "recover-backup";
+            start.EnvironmentVariables["AGENT_HUB_PACKAGE_COHORT_RETIRED"] = continuing ? "1" : "0";
             using (Process child = Process.Start(start))
             {
                 if (child == null) throw new InvalidOperationException("Package continuation did not start");
@@ -815,14 +819,15 @@ namespace AgentHub.RuntimeHost
                 {
                     if (line == "AGENT_HUB_PACKAGE_CHECK_STOPPED")
                     {
-                        child.StandardInput.WriteLine(stage == "continue" && PackageJobIsEmpty(originalJob)
+                        child.StandardInput.WriteLine(continuing && (recoveredStopped == null ? PackageJobIsEmpty(originalJob) : recoveredStopped())
                             ? "AGENT_HUB_PACKAGE_STOPPED" : "AGENT_HUB_PACKAGE_REFUSED");
                         child.StandardInput.Flush();
                         continue;
                     }
                     if (line == "AGENT_HUB_PACKAGE_LAUNCH")
                     {
-                        if (stage != "continue" || released || gate == null || !PackageJobIsEmpty(originalJob))
+                        if (stage != "continue" || released || gate == null
+                            || !(recoveredStopped == null ? PackageJobIsEmpty(originalJob) : recoveredStopped()))
                         {
                             child.StandardInput.WriteLine("AGENT_HUB_PACKAGE_REFUSED");
                             child.StandardInput.Flush();
@@ -844,6 +849,75 @@ namespace AgentHub.RuntimeHost
             JobAccounting accounting;
             return job != IntPtr.Zero && QueryInformationJobObject(job, 1, out accounting,
                 (uint)Marshal.SizeOf(typeof(JobAccounting)), IntPtr.Zero) && accounting.ActiveProcesses == 0;
+        }
+
+        private static bool RecoveryProcessesClosed(Dictionary<string, object> native)
+        {
+            foreach (string field in new string[] { "oldNodePid", "oldHostPid", "hostPid", "launcherPid" })
+            {
+                int pid = Convert.ToInt32(native[field], CultureInfo.InvariantCulture);
+                if (pid <= 0) return false;
+                try
+                {
+                    using (Process process = Process.GetProcessById(pid))
+                        if (!process.HasExited) return false; // A reused live PID also refuses.
+                }
+                catch (ArgumentException) { /* Windows reports no such process. */ }
+            }
+            return true;
+        }
+
+        private static int PackageBackupRecovery(string[] args)
+        {
+            string root = Path.GetFullPath(args[1]), helper = Path.GetFullPath(args[2]);
+            string requestFile = Path.GetFullPath(args[3]);
+            EnsureRegularFile(requestFile, "Package recovery request is unavailable");
+            Dictionary<string, object> request = ReadJsonObject(requestFile);
+            if (!String.Equals(Path.GetFullPath(RequiredString(request, "runtimeRoot")), root, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Package recovery runtime differs");
+            string operationId = RequiredString(request, "operationId");
+            if (!Regex.IsMatch(operationId, "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))
+                throw new InvalidOperationException("Invalid package recovery original");
+            EnsureDirectoryWithoutReparsePoint(root, "Unsafe package recovery runtime");
+            if (ReadAcceptanceMarker(root) == null)
+                throw new InvalidOperationException("Package backup disposition requires its closed acceptance owner");
+            EnsureRegularFile(Path.Combine(root, ".agent-hub-release-acceptance.closed"), "Package acceptance is not closed");
+            EnsureDirectoryWithoutReparsePoint(helper, "Unsafe package recovery helper");
+            Dictionary<string, object> manifest = ReadJsonObject(Path.Combine(helper, "runtime-manifest.json"));
+            VerifyManifest(helper, RequiredString(manifest, "releaseId"));
+            if (ComputeSha256(Assembly.GetExecutingAssembly().Location) != ComputeSha256(Path.Combine(helper, "AgentHub.RuntimeHost.exe")))
+                throw new InvalidOperationException("Package recovery Host differs from its helper manifest");
+            string entry = Path.Combine(helper, "src", "runtime", "runtime-package-handoff.mjs");
+            if (!ManifestDeclares(helper, "src/runtime/runtime-package-handoff.mjs"))
+                throw new InvalidOperationException("Package recovery entry is not manifested");
+            Dictionary<string, object> native = request["native"] as Dictionary<string, object>;
+            if (native == null) throw new InvalidOperationException("Package recovery native binding is unavailable");
+            int nodePid = Convert.ToInt32(native["oldNodePid"], CultureInfo.InvariantCulture);
+            int hostPid = Convert.ToInt32(native["oldHostPid"], CultureInfo.InvariantCulture);
+            Mutex gate = EnterPackageGate(root);
+            IntPtr job = IntPtr.Zero;
+            try
+            {
+                job = OpenJobObject(4, false, PackageCohortJobName(root, hostPid));
+                if (job == IntPtr.Zero && Marshal.GetLastWin32Error() != 2)
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Original package job readback is unknown");
+                // The canonical owner additionally proves the exact legacy pre-backup
+                // refusal. An extant original Job must be empty. No recorded process
+                // may remain alive, including a reused PID. Root admission stays held.
+                Func<bool> stopped = () => RecoveryProcessesClosed(native) && (job == IntPtr.Zero || PackageJobIsEmpty(job));
+                if (!stopped()) throw new InvalidOperationException("Package recovery still has live or unknown owners");
+                Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_BACKUP_RECOVERY_REQUEST", requestFile);
+                Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_BACKUP_RECOVERY_SHA256", ComputeSha256(requestFile));
+                Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_LAUNCHER_PID", Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture));
+                return RunPackageStage(entry, root, operationId, "recover-backup", nodePid, hostPid,
+                    Convert.ToInt64(native["oldNodeStarted"], CultureInfo.InvariantCulture),
+                    Convert.ToInt64(native["oldHostStarted"], CultureInfo.InvariantCulture), ref gate, job, stopped);
+            }
+            finally
+            {
+                if (job != IntPtr.Zero) CloseHandle(job);
+                LeaveAcceptanceGate(ref gate);
+            }
         }
 
         private static Dictionary<string, object> ReadSharedInstance(string file)

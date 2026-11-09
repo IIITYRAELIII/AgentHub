@@ -1,7 +1,7 @@
 import { backup, DatabaseSync } from "node:sqlite";
 import { copyFile, lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import { packageFile } from "../filesystem/runtime-package-target.mjs";
+import { packageDirectory, packageFile } from "../filesystem/runtime-package-target.mjs";
 import { protectRuntimeDirectory } from "../filesystem/runtime-security.mjs";
 import { observeInterprocessLockDirectories } from "../process/interprocess-lock.mjs";
 
@@ -141,15 +141,41 @@ export async function assertRuntimeBackupScope(inventory) {
 
 // The native parent holding original empty Job/root gate supplies assertStopped.
 // Earlier support inspection never supplies this authority.
-export async function backupStoppedRuntime({ runtimeRoot, destination, assertStopped }) {
-  await assertStopped();
-  const inventory = await inspectRuntimeBackupScope({ runtimeRoot });
-  const relative = path.relative(inventory.runtimeRoot, path.resolve(destination));
+export async function assertRuntimeExternalDirectory(runtimeRoot, directory) {
+  const runtime = await packageDirectory(runtimeRoot);
+  const parent = await packageDirectory(directory);
+  if (parent.directory !== path.resolve(directory)) {
+    throw new Error("Maintenance backup parent must be physical");
+  }
+  const relative = path.relative(runtime.directory, parent.directory);
   // Windows relative() returns an absolute path for a different volume. That
   // is outside the source too; the ordinary exclusive mkdir guard still applies.
   if (!relative || (!path.isAbsolute(relative) && !relative.startsWith(`..${path.sep}`) && relative !== "..")) {
-    throw new Error("Maintenance backup destination must be outside runtime root");
+    throw Object.assign(new Error("Maintenance backup destination must be outside runtime root"), {
+      code: "MAINTENANCE_BACKUP_INSIDE_RUNTIME",
+    });
   }
+  return { runtime, parent };
+}
+
+export async function preflightRuntimeBackupDestination({ runtimeRoot, destination }) {
+  const proof = await assertRuntimeExternalDirectory(runtimeRoot, path.dirname(path.resolve(destination)));
+  const relative = path.relative(proof.runtime.directory, path.resolve(destination));
+  if (!relative || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))) {
+    throw Object.assign(new Error("Maintenance backup destination must be outside runtime root"), {
+      code: "MAINTENANCE_BACKUP_INSIDE_RUNTIME",
+    });
+  }
+  await lstat(destination).then(() => {
+    throw Object.assign(new Error("EEXIST: Maintenance backup destination is already occupied"), { code: "EEXIST" });
+  }, error => { if (error.code !== "ENOENT") throw error; });
+  return { ...proof, destination: path.resolve(destination) };
+}
+
+export async function backupStoppedRuntime({ runtimeRoot, destination, assertStopped }) {
+  await assertStopped();
+  const inventory = await inspectRuntimeBackupScope({ runtimeRoot });
+  await preflightRuntimeBackupDestination({ runtimeRoot, destination });
   await mkdir(destination); // Exclusive: never overwrite a prior backup.
   await protectRuntimeDirectory(destination);
   const reservations = [], records = [];
