@@ -1,5 +1,5 @@
 import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { open, stat } from "node:fs/promises";
@@ -367,7 +367,7 @@ function bindCompletedCodexUserProjection(metadata, entry, completedUserMessage)
   return sourceOccurrenceId;
 }
 
-function rememberCodexTurnMessage(metadata, turnId, message, item = null) {
+function rememberCodexTurnMessage(metadata, turnId, message, item = null, rolloutRecord = null) {
   const projection = codexAssistantResponseProjection(message);
   const value = projection.text.trim();
   if (!turnId || !value) return;
@@ -381,6 +381,7 @@ function rememberCodexTurnMessage(metadata, turnId, message, item = null) {
         id: String(item.id ?? ""), type: "agentMessage", phase,
         rawProviderText, text: nativeProjection.text,
         textComplete: rawText.length <= CODEX_AGENT_MESSAGE_CHARS,
+        ...(rolloutRecord ? { rolloutRecord } : {}),
         ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
         ...(nativeProjection.responseAnnotationReferences.length
           ? { responseAnnotationReferences: structuredClone(nativeProjection.responseAnnotationReferences) }
@@ -1013,6 +1014,7 @@ function observeCodexEntry(
   metadata,
   entry,
   sourceOccurrenceId = "",
+  rolloutRecord = null,
 ) {
   if (entry?.type === "session_meta") {
     metadata.parentThreadId = codexParentThreadId(entry.payload);
@@ -1077,7 +1079,7 @@ function observeCodexEntry(
     // response_item duplicates the neighbouring unscoped agent_message, but it
     // carries the real turn_id. It is therefore the authoritative source when
     // VS Code has concurrent turns in one thread.
-    rememberCodexTurnMessage(metadata, turnId, responseItemMessage, entry.payload);
+    rememberCodexTurnMessage(metadata, turnId, responseItemMessage, entry.payload, rolloutRecord);
   }
   observeCodexGeneratedImageEntry(metadata, entry);
   if (turnId) rememberPendingViewImageCall(metadata, turnId, entry);
@@ -1322,6 +1324,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
             occurrence.fingerprint,
             occurrence.occurrenceIndex,
           ),
+          { generation: sourceGeneration, unit: "record", position: index },
         );
       } catch {
         metadata.pendingUserResponseProjection = null;
@@ -1572,6 +1575,8 @@ export async function readCodexRolloutActivityOnCurrentThread(
       && identityCached.sourceObservationGeneration === sourceObservationGeneration,
   );
   const appendOnly = Boolean(cached && sourceExtendsCached && cachedExactTerminalKnown);
+  const agentMessageGeneration = appendOnly && cached.agentMessageGeneration
+    ? cached.agentMessageGeneration : randomUUID();
   const generatedImageCacheReusable = Boolean(
     identityCached
       && info.size === identityCached.size
@@ -1733,6 +1738,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
           metadata,
           entry,
           sourceOccurrenceIdForEntry(entry, lineOffset),
+          { generation: agentMessageGeneration, unit: "byte", position: lineOffset },
         );
       } else {
         if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
@@ -1820,6 +1826,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
           metadata,
           entry,
           sourceOccurrenceIdForEntry(entry, pendingStartOffset),
+          { generation: agentMessageGeneration, unit: "byte", position: pendingStartOffset },
         );
       } else {
         if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
@@ -1850,6 +1857,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   cacheActivity(normalized, {
     size: info.size,
     mtimeMs: info.mtimeMs,
+    agentMessageGeneration,
     activeTurnIds: [...activeTurnIds],
     lastSeenAtByTurnId: [...lastSeenAtByTurnId],
     startedAtMsByTurnId: [...metadata.startedAtMsByTurnId],

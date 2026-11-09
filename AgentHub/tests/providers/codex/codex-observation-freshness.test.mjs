@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { TaskObservationService } from "../../../src/application/task-observation-service.mjs";
 import { createObservedTaskRun } from "../../../src/domain/task-runs.mjs";
 import { codexAssistantResponseProjection } from "../../../src/domain/codex-response-annotation.mjs";
 import { appendCodexAgentMessageDelta, completeCodexAgentMessage,
   hydrateCodexAgentMessages, startCodexAgentMessage } from "../../../src/providers/codex/codex-agent-message-reducer.mjs";
-import { parseCodexRolloutActivity } from "../../../src/providers/codex/codex-rollout-activity.mjs";
+import { parseCodexRolloutActivity, readCodexRolloutActivity } from "../../../src/providers/codex/codex-rollout-activity.mjs";
 import { message, observer, start, turnId } from "./codex-rollout-answer.fixture.mjs";
 
 const binding = { provider: "codex", threadId: "thread-one", turnId,
   observer: true, exactTurnObserver: true };
 const readOptions = { threadResult: { thread: { path: "synthetic-rollout", status: { type: "active" }, turns: [] } } };
+const parseActivity = (text) => parseCodexRolloutActivity(text, {
+  sourceObservationGeneration: "synthetic-same-rollout",
+});
 
 function publisher(codex) {
   const states = [];
@@ -29,7 +35,8 @@ function publisher(codex) {
 
 test("same-item events during an observation read retain their body through both publication paths", async () => {
   for (const external of [false, true]) {
-    let activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", "Final start"));
+    const original = start() + message("same-final", "final_answer", "Final start");
+    let activity = parseActivity(original);
     let held = false;
     let releaseRead;
     let signalRead;
@@ -58,7 +65,7 @@ test("same-item events during an observation read retain their body through both
     assert.equal(publication.states.at(-1).answer, run.responseText);
 
     held = false;
-    activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", "Shorter authoritative update"));
+    activity = parseActivity(original + message("same-final", "final_answer", "Shorter authoritative update"));
     const fresh = await codex.read(run, readOptions);
     await publication.service.applyActive(run, fresh);
     assert.equal(run.responseText, "Shorter authoritative update");
@@ -69,7 +76,7 @@ test("same-item events during an observation read retain their body through both
 test("fresh and refreshed observed finals retain their complete citation projection and raw delta base", async () => {
   for (const external of [false, true]) {
     let raw = ':codex-annotation{index="1"} Original final';
-    let activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", raw));
+    let activity = parseActivity(start() + message("same-final", "final_answer", raw));
     const codex = observer(async () => activity);
     const initial = await codex.read(binding);
     const expectedInitial = structuredClone(initial.responseItem.responseAnnotationReferences);
@@ -86,7 +93,8 @@ test("fresh and refreshed observed finals retain their complete citation project
     assert.equal(publication.states.at(-1).answer, run.responseText);
 
     raw = ':codex-annotation{index="2"} Changed final';
-    activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", raw));
+    const refreshedRollout = start() + message("same-final", "final_answer", raw);
+    activity = parseActivity(refreshedRollout);
     const fresh = await codex.read(run, readOptions);
     const expectedRefresh = structuredClone(fresh.responseItem.responseAnnotationReferences);
     assert.equal(expectedRefresh[0].index, 2);
@@ -105,7 +113,7 @@ test("fresh and refreshed observed finals retain their complete citation project
     assert.deepEqual(run.responseAnnotationReferences, expectedDelta.responseAnnotationReferences);
     assert.equal(publication.states.at(-1).answer, expectedDelta.text.trim());
 
-    activity = parseCodexRolloutActivity(start() + message("same-final", "final_answer", "Plain final"));
+    activity = parseActivity(refreshedRollout + message("same-final", "final_answer", "Plain final"));
     await publication.service.applyActive(run, await codex.read(run, readOptions));
     assert.equal(run.responseText, "Plain final");
     assert.deepEqual(run.responseAnnotationReferences, []);
@@ -147,4 +155,62 @@ test("the existing bounded rollout preview preserves a complete same-item native
   await publication.service.applyActive(run, await codex.read(run));
   assert.equal(run.responseText, changed);
   assert.equal(publication.states.at(-1).answer, changed);
+});
+
+test("the real rollout reader orders unchanged records and later appends against native updates", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub430-record-order-"));
+  try {
+    for (const external of [false, true]) {
+      const file = path.join(directory, `${external}.jsonl`);
+      const original = start() + message("same-final", "final_answer", "Old final");
+      await writeFile(file, original);
+      const codex = observer(() => readCodexRolloutActivity(file));
+      const initial = await codex.read(binding);
+      const run = createObservedTaskRun(binding, initial);
+      run.observer = external;
+      const publication = publisher(codex);
+      const native = "The complete newer native ending";
+      completeCodexAgentMessage(run, { turnId, item: {
+        id: "same-final", type: "agentMessage", phase: "final_answer", text: native,
+      } });
+
+      const unchanged = await codex.read(run, readOptions);
+      assert.deepEqual(unchanged.responseItem.rolloutRecord, initial.responseItem.rolloutRecord);
+      await publication.service.applyActive(run, unchanged);
+      assert.equal(run.responseText, native);
+      assert.equal(publication.states.at(-1).answer, native);
+
+      // File growth without another record for this item supplies no ordering.
+      await appendFile(file, "\n");
+      await publication.service.applyActive(run, await codex.read(run, readOptions));
+      assert.equal(run.responseText, native);
+
+      await appendFile(file, message("same-final", "final_answer", "Fresh shorter"));
+      const later = await codex.read(run, readOptions);
+      assert.equal(later.responseItem.rolloutRecord.generation, initial.responseItem.rolloutRecord.generation);
+      assert.ok(later.responseItem.rolloutRecord.position > initial.responseItem.rolloutRecord.position);
+      await publication.service.applyActive(run, later);
+      assert.equal(run.responseText, "Fresh shorter");
+      assert.equal(publication.states.at(-1).answer, "Fresh shorter");
+
+      completeCodexAgentMessage(run, { turnId, item: {
+        id: "same-final", type: "agentMessage", phase: "final_answer", text: native,
+      } });
+      await writeFile(file, original);
+      const rewritten = await codex.read(run, readOptions);
+      assert.notEqual(rewritten.responseItem.rolloutRecord.generation, later.responseItem.rolloutRecord.generation);
+      await publication.service.applyActive(run, rewritten);
+      assert.equal(run.responseText, native);
+      assert.equal(publication.states.at(-1).answer, native);
+
+      const unanchored = { ...binding, responseItems: [] };
+      completeCodexAgentMessage(unanchored, { turnId, item: {
+        id: "same-final", type: "agentMessage", phase: "final_answer", text: native,
+      } });
+      codex.applyObserved(unanchored, await codex.read(unanchored));
+      assert.equal(unanchored.responseText, native);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

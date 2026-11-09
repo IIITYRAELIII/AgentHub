@@ -77,6 +77,9 @@ assistant items, retaining paired raw and projected text under the existing
 200,000-character live-preview bound per representation. Those bytes participate
 in its serialized cache budget. Full terminal
 content and explicit trace-source reads retain their existing boundaries.
+Each retained item also carries one record position and append-generation token
+from that cache. A rewrite or cache reconstruction starts a new token. These
+small scalar fields participate in the same budget and require no extra read.
 
 Explicit “All stages” reads use the existing history owner and rollout worker,
 without provider calls, history writes or automatic polling. They stream a fixed

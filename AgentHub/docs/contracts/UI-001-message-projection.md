@@ -282,6 +282,12 @@ for the same item ID. A fresh observation may apply an authoritative shorter
 body. Its canonical text and complete annotation metadata cross the reducer
 together, with the bounded raw provider text retained for subsequent deltas.
 This ephemeral revision is separate from durable terminal revision authority.
+Native updates that precede the read also retain ownership of their item. The
+rollout reader carries the record position in its existing append-validated
+cache generation. An unchanged record or unrelated file growth cannot replace
+that native body. A later record for the item in the same append generation can
+apply a shorter update. Rewrites, cache loss and missing ordering retain native
+ownership until ordering is available through the canonical native item path.
 Source completeness accompanies a shortened live preview. A complete native
 item retains its full body when the bounded observation covers a suffix, while
 preview-owned items continue to refresh within the existing preview bound.
