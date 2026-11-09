@@ -1727,7 +1727,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "snapshot",
-        params: { refresh: true },
+        params: { refresh: true, messageReceiptIds: ["original-message-receipt"] },
         commandId: "local-command-1",
       }),
     });
@@ -1750,7 +1750,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
     ], [
       {
         action: "snapshot",
-        params: { refresh: true },
+        params: { refresh: true, messageReceiptIds: ["original-message-receipt"] },
         context: { source: "local-mini-app", commandId: "local-command-1" },
       },
       {

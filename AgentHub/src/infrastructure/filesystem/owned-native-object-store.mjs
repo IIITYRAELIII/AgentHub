@@ -1,7 +1,7 @@
 import path from "node:path";
 import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, link, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, link, unlink } from "node:fs/promises";
 import { MaintenanceOperationStore } from "../persistence/maintenance-operation-store.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { unlinkOwnedNativeObjectAlias, retireSealedNativeCapture } from "./sealed-native-capture.mjs";
@@ -71,9 +71,16 @@ export class OwnedNativeObjectStore {
     const row = this.store.getReadonly(storage.operationId);
     if (row?.status !== "succeeded" || row.metadata.objectStorage.repository !== path.resolve(repository)
         || row.metadata.objectStorage.identityHash !== identityHash || !equal(row.metadata.objectStorage.inputs, inputs)
-        || row.metadata.objectStorage.importOperationId !== storage.importOperationId
-        || !equal(row.metadata.physicalRepository, physical(await plain(repository, true)))
-        || !equal(row.metadata.physicalGit, physical(await plain(path.join(repository, ".git"), true)))) throw fail("Native object consumer custody changed");
+        || row.metadata.objectStorage.importOperationId !== storage.importOperationId) throw fail("Native object consumer custody changed");
+    const repositoryIdentity = physical(await plain(repository, true));
+    const gitIdentity = physical(await plain(path.join(repository, ".git"), true));
+    if (equal(row.metadata.physicalRepository, repositoryIdentity) && equal(row.metadata.physicalGit, gitIdentity)) return;
+    const restored = this.store.getReadonly(this.#restoreId(repository, storage.operationId));
+    const archived = restored && this.store.getReadonly(restored.metadata.objectStorage.archive.operationId);
+    if (restored?.status !== "succeeded" || restored.metadata.objectStorage.consumerOperationId !== storage.operationId
+        || !equal(restored.metadata.physicalRepository, repositoryIdentity)
+        || !equal(restored.metadata.physicalGit, gitIdentity)
+        || archived?.status !== "succeeded" || !equal(archived.metadata.archive, restored.metadata.objectStorage.archive)) throw fail("Native object consumer custody changed");
   }
   archiveIntent({ binding, inventory }) {
     const objectStorage = { ...this.descriptor(), binding, inventorySha256: digest(JSON.stringify(inventory)) };
@@ -263,6 +270,49 @@ export class OwnedNativeObjectStore {
     }
   }
 
+  async #linkObjects(repository, required) {
+    const linked = new Set();
+    const sourceObjects = path.join(this.repository, "objects"), destObjects = path.join(repository, ".git", "objects");
+    for (const directory of await readdir(sourceObjects, { withFileTypes: true })) {
+      if (!/^(?:[a-f0-9]{2}|pack)$/u.test(directory.name)) continue;
+      const from = path.join(sourceObjects, directory.name), to = path.join(destObjects, directory.name);
+      await plain(from, true); await mkdir(to, { recursive: true }); await plain(to, true);
+      const files = await readdir(from), selectedPacks = new Set();
+      if (directory.name === "pack") {
+        for (const file of files.filter(f => /^pack-[a-f0-9]{40}\.idx$/u.test(f))) {
+          await plain(path.join(from, file));
+          const stem = file.slice(0, -4);
+          await plain(path.join(from, stem + ".pack"));
+          // Read only the immutable index to select a pack family. Do not
+          // decompress every unrelated archived pack for each consumer.
+          const indexFile = path.join(from, file), indexIdentity = await hashFile(indexFile);
+          const inventory = String(await this.#git(this.repository, ["show-index"], { input: await readFile(indexFile) }));
+          if (!equal(indexIdentity, await hashFile(indexFile))) throw fail("Owned pack index changed");
+          const packed = inventory.split(/\r?\n/u).filter(Boolean).map(line => {
+            const match = /^\d+ ([a-f0-9]{40})(?: \([a-f0-9]{8}\))?$/u.exec(line);
+            if (!match) throw fail("Owned pack index inventory is malformed");
+            return match[1];
+          });
+          if (!packed.length) throw fail("Owned pack inventory is empty");
+          if (packed.some(x => required.has(x))) selectedPacks.add(stem);
+        }
+      }
+      for (const file of files) {
+        if (directory.name === "pack" && (file === "multi-pack-index" || /^pack-[a-f0-9]{40}\.keep$/u.test(file))) continue;
+        if (!(directory.name === "pack" ? /^pack-[a-f0-9]{40}\.(?:pack|idx|rev|bitmap)$/u : /^[a-f0-9]{38}$/u).test(file)) throw fail("Foreign object-store entry");
+        await plain(path.join(from, file));
+        if (directory.name === "pack") {
+          const stem = file.replace(/\.[^.]+$/u, "");
+          if (!files.includes(stem + ".idx") || !files.includes(stem + ".pack")) throw fail("Owned pack pair is incomplete");
+          if (!selectedPacks.has(stem)) continue;
+        } else if (!required.has(directory.name + file)) continue;
+        await immutableLink(path.join(from, file), path.join(to, file));
+        linked.add(path.relative(repository, path.join(to, file)).split(path.sep).join("/"));
+      }
+    }
+    return linked;
+  }
+
   async provision({ sourceRoot, repository, inputs, identityHash }) {
     if (!/^[a-f0-9]{64}$/u.test(identityHash)) throw fail("Exact native consumer identity required");
     return this.withLease(async () => {
@@ -286,43 +336,7 @@ export class OwnedNativeObjectStore {
         // path policy before this independent consumer can serve its objects.
         if (process.platform === "win32") await this.#git(repository, ["config", "core.longpaths", "true"]);
         await this.#git(repository, ["config", "gc.auto", "0"]);
-        const sourceObjects = path.join(this.repository, "objects"), destObjects = path.join(repository, ".git", "objects");
-        for (const directory of await readdir(sourceObjects, { withFileTypes: true })) {
-          if (!/^(?:[a-f0-9]{2}|pack)$/u.test(directory.name)) continue;
-          const from = path.join(sourceObjects, directory.name), to = path.join(destObjects, directory.name);
-          await plain(from, true); await mkdir(to, { recursive: true }); await plain(to, true);
-          const files = await readdir(from), selectedPacks = new Set();
-          if (directory.name === "pack") {
-            for (const file of files.filter(f => /^pack-[a-f0-9]{40}\.idx$/u.test(f))) {
-              await plain(path.join(from, file));
-              const stem = file.slice(0, -4);
-              await plain(path.join(from, stem + ".pack"));
-              // Read only the immutable index to select a pack family. Do not
-              // decompress every unrelated archived pack for each consumer.
-              const indexFile = path.join(from, file), indexIdentity = await hashFile(indexFile);
-              const inventory = String(await this.#git(this.repository, ["show-index"], { input: await readFile(indexFile) }));
-              if (!equal(indexIdentity, await hashFile(indexFile))) throw fail("Owned pack index changed");
-              const packed = inventory.split(/\r?\n/u).filter(Boolean).map(line => {
-                const match = /^\d+ ([a-f0-9]{40})(?: \([a-f0-9]{8}\))?$/u.exec(line);
-                if (!match) throw fail("Owned pack index inventory is malformed");
-                return match[1];
-              });
-              if (!packed.length) throw fail("Owned pack inventory is empty");
-              if (packed.some(x => required.has(x))) selectedPacks.add(stem);
-            }
-          }
-          for (const file of files) {
-            if (directory.name === "pack" && (file === "multi-pack-index" || /^pack-[a-f0-9]{40}\.keep$/u.test(file))) continue;
-            if (!(directory.name === "pack" ? /^pack-[a-f0-9]{40}\.(?:pack|idx|rev|bitmap)$/u : /^[a-f0-9]{38}$/u).test(file)) throw fail("Foreign object-store entry");
-            await plain(path.join(from, file));
-            if (directory.name === "pack") {
-              const stem = file.replace(/\.[^.]+$/u, "");
-              if (!files.includes(stem + ".idx") || !files.includes(stem + ".pack")) throw fail("Owned pack pair is incomplete");
-              if (!selectedPacks.has(stem)) continue;
-            } else if (!required.has(directory.name + file)) continue;
-            await immutableLink(path.join(from, file), path.join(to, file));
-          }
-        }
+        await this.#linkObjects(repository, required);
         for (const c of inputs) await this.#git(repository, ["cat-file", "-e", c + "^{commit}"]);
         await this.#git(repository, ["fsck", "--connectivity-only", "--no-dangling", ...inputs]);
         row = await this.#patch(row, "linked", { physicalRepository: physical(await plain(repository, true)),
@@ -493,6 +507,143 @@ export class OwnedNativeObjectStore {
       await this.#retireTransferAliases(this.store.getReadonly(archive.operationId));
       return this.#withMath(stored, verify);
     });
+  }
+
+  #restoreId(repository, consumerOperationId) {
+    return "native-object-restore:" + digest(JSON.stringify({ repository: path.resolve(repository), consumerOperationId }));
+  }
+
+  async #restorationBinding(stored, repository) {
+    const { archive } = stored;
+    const { manifest } = stored;
+    repository = path.resolve(repository);
+    if (manifest.binding.kind !== "release-generation-repository-v1"
+        || manifest.binding.repository !== repository || manifest.inventory.repository !== repository) {
+      throw fail("Restoration requires the original release generation repository");
+    }
+    const marker = manifest.files.find(file => file.path === ".git/agent-hub-release-clone.json");
+    if (!marker) throw fail("Archived release clone custody missing");
+    const markerBytes = Buffer.from(await this.#git(this.repository, ["cat-file", "blob", marker.blob], { rawOutput: true }));
+    if (digest(markerBytes) !== marker.identity.sha256) throw fail("Archived release clone marker changed");
+    const consumer = JSON.parse(markerBytes).objectStorage;
+    const consumerOperationId = consumer?.storage.operationId ?? archive.operationId;
+    if (consumer) {
+      const original = this.store.getReadonly(consumerOperationId);
+      const gitDirectory = manifest.inventory.directories.find(item => item.path === ".git");
+      if (original?.status !== "succeeded" || original.metadata.objectStorage.repository !== repository
+          || original.metadata.objectStorage.identityHash !== consumer.identityHash
+          || !equal(original.metadata.objectStorage.inputs, consumer.inputs)
+          || original.metadata.objectStorage.importOperationId !== consumer.storage.importOperationId
+          || !equal(original.metadata.physicalRepository, manifest.inventory.root)
+          || !equal(original.metadata.physicalGit, gitDirectory?.identity)) throw fail("Archived original consumer changed");
+    }
+    return { ...this.descriptor(), archive, repository, consumerOperationId };
+  }
+
+  async hasPendingRestoration({ archive, repository }) {
+    // Routing observation only. The actual continuation repeats this complete
+    // archive/binding proof under its original archive lease before any writes.
+    const stored = await this.readArchive(archive);
+    const binding = await this.#restorationBinding(stored, repository);
+    const row = this.store.getReadonly(this.#restoreId(binding.repository, binding.consumerOperationId));
+    return Boolean(row && ["running", "reconciling"].includes(row.status)
+      && equal(row.metadata.objectStorage, binding));
+  }
+
+  // Rebuild only the original generation repository from its positively sealed
+  // archive. Raw Git metadata is private; immutable history uses the same pool
+  // linker as provision. Original archive/consumer receipts remain unchanged.
+  restoreArchive({ archive, repository, assertCurrent, prepare }) {
+    return measureTaskOperation("native-archive:restore", () => this.withArchiveLease(archive, async stored => {
+      const { manifest } = stored;
+      const binding = await this.#restorationBinding(stored, repository);
+      const { consumerOperationId } = binding;
+      repository = binding.repository;
+      const id = this.#restoreId(repository, consumerOperationId);
+      let row = this.store.getReadonly(id);
+      if (!row && !await absent(repository)) throw fail("Original restoration destination is occupied");
+      row = await this.#create(id, binding);
+      await assertCurrent();
+      await prepare({ metadata: row.metadata, checkpoint: async metadata => {
+        row = await this.#patch(row, "restore-metadata", metadata);
+      } });
+      if (!row.metadata.physicalRepository) {
+        await mkdir(repository);
+        row = await this.#patch(row, "restore-created", { physicalRepository: physical(await plain(repository, true)) });
+      }
+      if (!equal(row.metadata.physicalRepository, physical(await plain(repository, true)))) throw fail("Restoration destination replaced");
+      const destination = relative => {
+        if (!relative || relative.includes("\\") || relative.includes(":") || relative.split("/").some(part => !part || part === "." || part === "..")) {
+          throw fail("Archive restoration path is not relative");
+        }
+        return path.join(repository, ...relative.split("/"));
+      };
+      for (const directory of manifest.inventory.directories) {
+        if (!directory.path) continue;
+        const target = destination(directory.path);
+        await mkdir(target, { recursive: true });
+        await plain(target, true);
+      }
+      const gitIdentity = physical(await plain(path.join(repository, ".git"), true));
+      if (!row.metadata.physicalGit) row = await this.#patch(row, "restore-paths", { physicalGit: gitIdentity });
+      if (!equal(row.metadata.physicalGit, gitIdentity)) throw fail("Restored Git custody changed");
+      for (let offset = 0; offset < manifest.files.length; offset += 32) {
+        await assertCurrent();
+        const files = manifest.files.slice(offset, offset + 32);
+        const bytes = Buffer.from(await this.#git(this.repository, ["cat-file", "--batch"],
+          { input: files.map(file => file.blob).join("\n") + "\n", rawOutput: true }));
+        let cursor = 0;
+        for (const file of files) {
+          const newline = bytes.indexOf(10, cursor);
+          const [blob, type, length] = bytes.subarray(cursor, newline).toString().split(" ");
+          const size = Number(length), body = bytes.subarray(newline + 1, newline + 1 + size);
+          cursor = newline + 1 + size + 1;
+          if (newline < 0 || blob !== file.blob || type !== "blob" || !Number.isSafeInteger(size)
+              || String(size) !== file.identity.bytes || digest(body) !== file.identity.sha256) throw fail("Archived restoration bytes changed");
+          const target = destination(file.path);
+          if (await absent(target)) {
+            const handle = await open(target, "wx");
+            try { await handle.writeFile(body); await handle.sync(); } finally { await handle.close(); }
+          }
+          const actual = await hashFile(target);
+          if (actual.bytes !== file.identity.bytes || actual.sha256 !== file.identity.sha256) throw fail("Restoration file is occupied or changed");
+        }
+        if (cursor !== bytes.length) throw fail("Archived restoration batch has trailing data");
+      }
+      const linked = await this.#linkObjects(repository, new Set(manifest.objects.map(object => object.oid)));
+      const rawPaths = new Set(manifest.files.map(file => file.path)), pending = [repository];
+      while (pending.length) {
+        const directory = pending.pop();
+        await plain(directory, true);
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          const file = path.join(directory, entry.name), relative = path.relative(repository, file).split(path.sep).join("/");
+          if (entry.isDirectory() && !entry.isSymbolicLink()) pending.push(file);
+          else if (!entry.isFile() || entry.isSymbolicLink() || !rawPaths.has(relative) && !linked.has(relative)) {
+            throw fail("Restoration contains a foreign entry");
+          }
+        }
+      }
+      if (process.platform !== "win32") {
+        const entries = String(await this.#git(repository, ["ls-files", "--stage", "-z"], { rawOutput: true })).split("\0").filter(Boolean);
+        for (const entry of entries) {
+          const [metadata, relative] = entry.split("\t");
+          const mode = metadata.split(" ")[0];
+          if (["100644", "100755"].includes(mode)) await chmod(destination(relative), mode === "100755" ? 0o755 : 0o644);
+        }
+      }
+      await this.#git(repository, ["fsck", "--connectivity-only", "--no-reflogs", "--no-dangling"]);
+      for (const file of manifest.files) {
+        const target = destination(file.path), actual = await hashFile(target);
+        if ((await plain(target)).nlink !== 1n || actual.bytes !== file.identity.bytes || actual.sha256 !== file.identity.sha256) {
+          throw fail("Restored raw payload changed before completion");
+        }
+      }
+      await assertCurrent();
+      if (row.status !== "succeeded") row = await this.#patch(row, "restored", {
+        physicalGit: physical(await plain(path.join(repository, ".git"), true)) }, true);
+      if (!equal(row.metadata.physicalGit, physical(await plain(path.join(repository, ".git"), true)))) throw fail("Restored Git custody changed");
+      return { operationId: id, archive };
+    }));
   }
 
   async withInputMath({ sourceRoot, inputs }, verify) {

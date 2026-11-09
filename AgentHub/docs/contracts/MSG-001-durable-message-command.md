@@ -290,6 +290,13 @@ After the actual controller releases processing, normal cancellation may commit
 Cold reopen cannot resurrect that canonical command. Legacy items without a
 command row retain the existing snapshot persistence owner until ledger migration
 owns them; a canonical refusal never falls back to deleting a snapshot projection.
+An absent RAM projection does not retire a canonical queued command. The public
+cancel action resolves its exact deferred ID and, when supplied, its original
+client message ID through the same ledger. Ambiguous legacy IDs refuse. The same
+state, provider-acceptance and revision guards apply before any projection or
+attachment cleanup. An already cancelled exact command returns its durable
+outcome without repeating cleanup. Terminal compaction retains the identity and
+future-dispatch cancellation boundary. See ADR-HUB-422-addressed-queue-receipts.
 Persisted queue errors contain only an allowlisted code and bounded generic
 message. Dependency output, command lines, session identifiers, payload and
 stack text never enter deferred diagnostics or client state.

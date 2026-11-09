@@ -498,16 +498,17 @@ test("publication forwards its stable dependency root to frozen Worker builds", 
     const observation = path.join(directory, "observed.json");
     const runnerFile = path.join(ownerRoot, "release-operation-publication-runner.mjs");
     await writeFile(runnerFile, `
-      import { writeFile } from 'node:fs/promises';
+      import { readFile, writeFile } from 'node:fs/promises';
       import path from 'node:path';
       import { resolveWrangler, runWrangler } from ${JSON.stringify(resolver)};
+      const originalRunner = JSON.parse(await readFile(path.join(process.env.AGENT_HUB_RELEASE_EXECUTION_ROOT, 'runner.json'), 'utf8'));
       const entry = resolveWrangler({ root: process.cwd() });
       await runWrangler(['--version'], { root: process.cwd() });
       await writeFile(${JSON.stringify(observation)}, JSON.stringify({ entry, dependencyRoot: process.env.AGENT_HUB_DEPENDENCY_ROOT, cwd: process.cwd() }));
       await writeFile(path.join(process.env.AGENT_HUB_RELEASE_EXECUTION_ROOT, 'result.json'), JSON.stringify({
         operationId: process.env.AGENT_HUB_RELEASE_OPERATION_ID, generation: Number(process.env.AGENT_HUB_RELEASE_GENERATION),
         targetId: process.env.AGENT_HUB_RELEASE_TARGET_ID, candidate: process.env.AGENT_HUB_RELEASE_CANDIDATE_IDENTITY,
-        status: 'applied', revision: ${JSON.stringify(generation.candidates[0].commit)},
+        status: 'applied', revision: ${JSON.stringify(generation.candidates[0].commit)}, tool: originalRunner.tool,
       }));
     `);
     const publication = new ReleaseOperationPublication({

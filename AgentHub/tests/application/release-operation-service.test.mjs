@@ -403,6 +403,20 @@ test("first frozen compose recovery keeps failed attempt and amends the same rel
   assert.deepEqual(done.receipts.find(item => item.generation === 1 && item.attempt === 1 && item.stepId === "compose"), firstReceipt);
 });
 
+test("first compose admission reconciliation refuses captured custody without changing ordinary frozen recovery", async t => {
+  const f = await fixture(t, {
+    compose: async () => { throw new Error("first frozen readback failed"); },
+    inspectFirstCompose: async () => [{ repositoryRoot: "D:/repo", commit: "already-captured" }],
+    recoverFirstCompose: () => assert.fail("UNKNOWN admission cannot authorize captured recovery"),
+  });
+  const ack = start(f.service, "captured-admission-original");
+  const before = await f.service.drain(ack.operationId);
+  await assert.rejects(f.service.reconcileFirstComposeContinuation(ack.operationId, {
+    requestId: "captured-admission-unknown", expectedRevision: before.operation.revision, expectedGeneration: 0,
+  }), /positively uncaptured custody/u);
+  assert.deepEqual(f.store.snapshot(ack.operationId), before);
+});
+
 test("first frozen compose recovery refuses unknown and changed receipt inputs", async t => {
   let f;
   f = await fixture(t, {

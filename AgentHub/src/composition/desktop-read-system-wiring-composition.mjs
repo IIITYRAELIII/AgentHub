@@ -139,6 +139,7 @@ export function createDesktopReadSystemWiring({
       },
       receipts: {
         forMessage: services.receiptForMessage,
+        forCommand: services.receiptForCommand,
         forTurn: services.receiptsForTurn,
         recent: services.recentReceipts,
       },

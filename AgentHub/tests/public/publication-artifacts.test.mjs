@@ -16,7 +16,7 @@ import { artifactVersionIdentity } from "../../src/domain/agent-hub-version.mjs"
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const save = async (file, value) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, value); };
 
-async function fixture(t, { runtimePublication = null, relocated = false } = {}) {
+async function fixture(t, { runtimePublication = null, relocated = false, publicRuntimeInstaller = null } = {}) {
   const semantic = runtimePublication?.version.includes("+build.") ? artifactVersionIdentity(runtimePublication.version) : null;
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-artifacts-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -76,6 +76,7 @@ async function fixture(t, { runtimePublication = null, relocated = false } = {})
     const journal = journalFactory();
     const artifacts = createPublicationArtifactSteps({ sourceRoot, runtimeRoot, home, journal, run,
       runtimePublication,
+      publicRuntimeInstaller,
       capture: async (_command, args) => {
         if (args.includes("deployments")) return JSON.stringify(state.remoteTag ? [{ id: "deployment", created_on: "2026-09-16", versions: [{ version_id: "version", percentage: 100 }] }] : []);
         if (args.includes("versions")) return JSON.stringify({ id: "version", annotations: { "workers/tag": state.remoteTag } });
@@ -142,6 +143,52 @@ async function fixture(t, { runtimePublication = null, relocated = false } = {})
 
 const frozenRuntime = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2,
   sourceCommit: "a".repeat(40), version: "2026.9.16.7" };
+
+test("public installer preparation yields the real artifact step without invoking the private installer", async t => {
+  const binding = { operationId: frozenRuntime.operationId, generation: frozenRuntime.generation,
+    candidate: "b".repeat(64), targetId: "production" };
+  let prepared = 0;
+  const handoff = { kind: "public-runtime-installer-handoff-v1", status: "waiting", binding };
+  const f = await fixture(t, { runtimePublication: frozenRuntime, publicRuntimeInstaller: {
+    binding, verify: async () => false, prepare: async ({ artifact, identity }) => {
+      assert.equal(identity.revision, frozenRuntime.sourceCommit);
+      assert.ok(artifact.releaseId);
+      prepared++;
+      return handoff;
+    },
+  } });
+  await mkdir(f.runtimeRoot, { recursive: true });
+  const owner = f.create();
+  const identity = { mode: "changed", revision: frozenRuntime.sourceCommit, runtimeRoot: f.runtimeRoot };
+  const steps = await owner.artifacts.steps([{ label: "Сборка runtime-релиза" }], identity);
+  identity.labels = steps.map(step => step.label);
+  await owner.journal.start(identity, identity.labels);
+  const result = await runPublicationSteps(steps, { identity, journal: owner.journal, checkpoint: owner.checkpoint,
+    run: step => step.execute() });
+  assert.deepEqual(result, handoff);
+  assert.equal(prepared, 1);
+  assert.equal(f.events.includes("runtime install"), false);
+  assert.equal(f.state.release, null);
+  assert.equal((await owner.checkpoint.read()).completedLabels.includes("Установка runtime-релиза"), false);
+});
+
+test("public package policy retains its installer step even for a documentation-only plan", async t => {
+  const binding = { operationId: frozenRuntime.operationId, generation: frozenRuntime.generation,
+    candidate: "b".repeat(64), targetId: "production" };
+  const handoff = { kind: "public-runtime-installer-handoff-v1", status: "waiting", binding };
+  const f = await fixture(t, { runtimePublication: frozenRuntime, publicRuntimeInstaller: {
+    binding, verify: async () => false, prepare: async () => handoff,
+  } });
+  await mkdir(f.runtimeRoot, { recursive: true });
+  const owner = f.create();
+  const identity = { mode: "changed", revision: frozenRuntime.sourceCommit, runtimeRoot: f.runtimeRoot };
+  const steps = await owner.artifacts.steps([{ label: "Documentation validation", execute: () => {} }], identity);
+  identity.labels = steps.map(step => step.label);
+  assert.deepEqual(identity.labels, ["Documentation validation", "Подготовка артефактов публикации", "Установка runtime-релиза"]);
+  const result = await runPublicationSteps(steps, { identity, journal: owner.journal, checkpoint: owner.checkpoint, run: step => step.execute() });
+  assert.deepEqual(result, handoff);
+  assert.equal(f.events.includes("runtime install"), false);
+});
 
 test("relocated artifact owner supplies physical receipt and body to the unchanged Python packager", async t => {
   const f = await fixture(t, { runtimePublication: frozenRuntime, relocated: true });

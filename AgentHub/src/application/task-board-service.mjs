@@ -104,8 +104,13 @@ export class TaskBoardService {
     return publicTaskCard(this.task(id));
   }
 
-  snapshot({ includeDetails = false } = {}) {
-    return this.store.list({ includeDetails }).map(publicTaskCard);
+  snapshot({ includeDetails = false, compactPresentation = false } = {}) {
+    return this.store.list({ includeDetails }).map(task => {
+      const card = publicTaskCard(task);
+      if (!compactPresentation || includeDetails) return card;
+      const { rawText, correctedText, description, ...summary } = card;
+      return { ...summary, text: card.title, presentationDeferred: true };
+    });
   }
 
   workspaces() {

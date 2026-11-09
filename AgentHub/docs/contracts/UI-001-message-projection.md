@@ -1,5 +1,26 @@
 # UI-001 — Canonical message projection
 
+## Addressed queue receipts and deferred Task presentation
+
+The recent receipt window is a bounded projection, not cancellation authority.
+The normal client snapshot includes the exact original client message IDs of
+unresolved outgoing projections. The snapshot owner reads those receipts from
+the canonical ledger in addition to recent receipts. Both local writes and
+external committed ledger changes invalidate its revision cache. Different
+requested identity sets cannot reuse a cached response for another set.
+Explicit canonical cancellation removes the exact queue card and count while
+preserving command history and unknown past provider effects. A known canonical
+queued receipt keeps its public cancellation action when its RAM item is absent.
+Unknown/provider-accepted states do not gain that action. Existing snapshot
+generation fencing still rejects late responses.
+
+Desktop snapshots carry Task titles and revisioned deferred presentation, with
+full raw text and descriptions available through the existing addressed Task
+read. Full Task APIs retain their complete presentation. Until a matching full
+read succeeds, the Task editor cannot save an absent description. This projection
+does not truncate the canonical text or change the Desktop response size bound.
+See ADR-HUB-422-addressed-queue-receipts.
+
 A queued command is waiting even when its conflict kind is `message-intake`.
 The queue's starting count requires actual dispatching/steering state. Hub
 admission or a retained intake reason alone cannot present provider launch.

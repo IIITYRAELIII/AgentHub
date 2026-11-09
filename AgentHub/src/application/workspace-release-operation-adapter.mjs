@@ -2,6 +2,7 @@ import { effectiveReleaseTaskIds, effectiveReleaseMetadata, effectiveReleaseTask
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
+import { canonicalReleaseRepositoryRoot } from "./workspace-release-preflight-service.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -22,15 +23,22 @@ async function releaseMetadataBytes(metadata) {
 }
 function approvedRepositories(operation) {
   if (operation.reviewedMain) return operation.reviewedMain.approvedRepositories;
-  return operation.authorization.approvedTargets.flatMap((target) => (
-    target.repositoryRoot && target.approvedLocalMainCommit && target.approvedOriginMainCommit
-      ? [{
-          projectRoot: target.repositoryRoot,
-          approvedLocalMainCommit: target.approvedLocalMainCommit,
-          approvedOriginMainCommit: target.approvedOriginMainCommit,
-        }]
-      : []
-  ));
+  const repositories = new Map();
+  for (const target of operation.authorization.approvedTargets) {
+    if (!target.repositoryRoot || !target.approvedLocalMainCommit || !target.approvedOriginMainCommit) continue;
+    const key = canonicalReleaseRepositoryRoot(target.repositoryRoot);
+    const existing = repositories.get(key);
+    if (existing && (existing.approvedLocalMainCommit !== target.approvedLocalMainCommit
+        || existing.approvedOriginMainCommit !== target.approvedOriginMainCommit)) {
+      throw new Error(`conflicting repository approval for ${target.repositoryRoot}`);
+    }
+    if (!existing) repositories.set(key, {
+      projectRoot: target.repositoryRoot,
+      approvedLocalMainCommit: target.approvedLocalMainCommit,
+      approvedOriginMainCommit: target.approvedOriginMainCommit,
+    });
+  }
+  return [...repositories.values()];
 }
 
 function selectionIdentity(value) {
@@ -58,13 +66,15 @@ export class WorkspaceReleaseOperationAdapter {
 
   async compose({ operation, generation }) {
     const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
+    const frozenVersions = operation.firstComposeRecovery?.candidates
+      .filter(item => item.kind !== "uncaptured-first-generation-v1");
     const prepared = await this.releasePreflight.prepareOperationGeneration({
       workspaceId: operation.workspaceId,
       operationId: operation.operationId,
       generation,
       ...(effectiveReleaseTaskScope(operation) === "all_await" ? {} : { taskIds: effectiveReleaseTaskIds(operation) }),
       previousSelectedResults: operation.selectedResults,
-      ...(operation.firstComposeRecovery ? { frozenVersions: operation.firstComposeRecovery.candidates } : {}),
+      ...(frozenVersions?.length ? { frozenVersions } : {}),
       approvedRepositories: approvedRepositories(operation),
       ...(operation.authorization.releaseVersion !== undefined ? { releaseVersion: operation.authorization.releaseVersion } : {}),
       ...(changelogContent ? { changelogContent } : {}),
@@ -142,6 +152,36 @@ export class WorkspaceReleaseOperationAdapter {
     return this.releasePreflight.withReviewedMainRecovery(input);
   }
 
+  withRetainedGeneration({ operation, generation, commit }) {
+    return this.withTaskSelection({ operation, taskScope: effectiveReleaseTaskScope(operation),
+      taskIds: effectiveReleaseTaskIds(operation), commit: async (current, validateSelection) => {
+        if (selectionIdentity(current) !== selectionIdentity(generation.selectedResults)) {
+          throw new Error("Retained generation accepted selection changed");
+        }
+        const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
+        const inspect = async () => {
+          const frozen = [];
+          for (const candidate of generation.candidates) {
+            frozen.push(await this.releasePreflight.releaseGitWorkspaces.inspectRetainedGeneration({
+              operationId: operation.operationId, generation: generation.generation,
+              workspaceId: operation.workspaceId, candidate, changelogContent,
+            }));
+          }
+          await this.validate({ operation, generation });
+          await validateSelection();
+          return frozen;
+        };
+        const frozen = await inspect();
+        return this.publication.withRetainedGeneration({ operation, generation, commit: (artifacts, validateArtifacts) =>
+          commit([{ frozen, artifacts }], async () => {
+            if (selectionIdentity(current) !== selectionIdentity(generation.selectedResults)
+                || JSON.stringify(await inspect()) !== JSON.stringify(frozen)) throw new Error("Retained frozen authority changed");
+            await releaseMetadataBytes(effectiveReleaseMetadata(operation));
+            await validateArtifacts();
+          }) });
+      } });
+  }
+
   validate({ operation, generation }) {
     return this.releasePreflight.validateOperationGeneration({
       workspaceId: operation.workspaceId,
@@ -151,6 +191,20 @@ export class WorkspaceReleaseOperationAdapter {
 
   reservePublication({ operation, generation, reserve, recompose }) {
     return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
+      const recovery = operation.retainedGenerationRecoveries?.at(-1);
+      if (recovery?.generation === generation.generation) {
+        const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
+        const frozen = [];
+        for (const candidate of generation.candidates) {
+          frozen.push(await this.releasePreflight.releaseGitWorkspaces.inspectRetainedGeneration({
+            operationId: operation.operationId, generation: generation.generation,
+            workspaceId: operation.workspaceId, candidate, changelogContent,
+          }));
+        }
+        if (JSON.stringify(frozen) !== JSON.stringify(recovery.evidence[0]?.frozen)) {
+          throw new Error("Retained frozen candidate changed before publication");
+        }
+      }
       const current = await this.releasePreflight.operationSelection({
         workspaceId: operation.workspaceId,
         ...(effectiveReleaseTaskScope(operation) === "all_await" ? {} : { taskIds: effectiveReleaseTaskIds(operation) }),

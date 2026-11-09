@@ -274,7 +274,7 @@ export function publicationRunStore({
       const previous = await readPublicationRunStatus(paths.statusFile);
       if (previous?.version === 2
         && stableText(previous.identity) === stableText(identity)
-        && ["running", "failed", "awaiting_restart", "awaiting_finalization"].includes(previous.status)) {
+        && ["running", "failed", "awaiting_restart", "awaiting_finalization", "awaiting_public_installer"].includes(previous.status)) {
         state = previous;
         state.attempts.push({ startedAt: startedAt.toISOString(), previousStatus: state.status });
         state.status = "running";

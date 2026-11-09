@@ -411,6 +411,14 @@ function startTurn(params) {
   }
 
   if (prompt.includes("[hold]")) return turn;
+  if (prompt.includes("[whole-update-managed]")) {
+    const fixtureRoot = path.join(path.resolve(process.env.AGENT_HUB_RUNTIME_ROOT ?? "."), "fixtures");
+    if (!process.argv.includes("--require-test-contour")) throw new Error("Managed update requires isolated Test Contour");
+    import("./fake-codex-package-update.mjs").then(({ updateFromManagedTurn }) => updateFromManagedTurn(path.join(fixtureRoot, "managed-update.json")))
+      .then(answer => finishTurn(thread, turn, { answer }))
+      .catch(error => finishTurn(thread, turn, { status: "failed", answer: error.stack }));
+    return turn;
+  }
   if (prompt.includes("[whole-update-wait]")) {
     const index = process.argv.indexOf("--whole-release-file");
     const file = index >= 0 ? path.resolve(process.argv[index + 1]) : "";

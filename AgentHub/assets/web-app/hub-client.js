@@ -911,6 +911,8 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
       uploadState: message.uploadState,
       admissionRetryAvailable: message.deliveryState === "unconfirmed" && Boolean(message.retryRequest),
       remoteCommandId: message.remoteCommandId,
+      cancellationAvailable: message.projectionAuthority === "canonical" && message.projectionState === "queued"
+        && message.providerAccepted !== true && Boolean(message.itemId),
       optimistic: !serverClientIds.has(message.clientUserMessageId),
     }));
 }
@@ -1057,6 +1059,11 @@ function applyMessageReceipts(snapshot) {
     }
     if (receipt?.cancelled === true) {
       outgoingMessages(stableTaskId).delete(clientUserMessageId);
+      commandTrace.record("ui-snapshot", "canonical-cancellation-applied", 0, clientUserMessageId, {
+        streamId, commandState: receipt.commandState, completedAt: receipt.completedAt,
+      });
+      window.requestAnimationFrame(() => commandTrace.record("ui-render", "canonical-cancellation-painted", 0,
+        clientUserMessageId, { streamId, retained: outgoingMessages(stableTaskId).has(clientUserMessageId) }));
       continue;
     }
     const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState, projection) : null;
@@ -1765,7 +1772,7 @@ async function prepareSnapshotTransport() {
 }
 
 async function httpControl(action, params = {}) {
-  if (action === "snapshot") return readSnapshot(params);
+  if (action === "snapshot" && !params.messageReceiptIds?.length) return readSnapshot(params);
   await localSessionReady;
   const commandId = crypto.randomUUID();
   const payload = await retryConnectionFailure(async () => {
@@ -1880,6 +1887,17 @@ async function waitTaskOperationResult(admission, params) {
 }
 
 async function control(action, params = {}) {
+  if (action === "snapshot") {
+    // Resolve the exact unresolved projections even after their receipt ages
+    // out of the recent window. The canonical ledger owns their outcome.
+    params = { ...params, messageReceiptIds: [...new Set([
+      ...(params.messageReceiptIds ?? []),
+      ...[...outgoingByTask.values()].flatMap(messages => [...messages.values()]
+        .filter(message => message.providerAccepted !== true
+          && !["completed", "failed", "cancelled"].includes(message.projectionState))
+        .map(message => message.clientUserMessageId).filter(Boolean)),
+    ])] };
+  }
   const snapshotBaseline = currentSnapshotBaseline();
   const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
   const taskOperationId = ["board-task-create", "board-task-update", "board-task-status", "board-task-complete", "board-task-remove"].includes(action)
@@ -4805,9 +4823,12 @@ agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async (
   applySnapshot(await control("snapshot"));
 }));
 agentHub.on("queue:remove", ({ id }) => runAction(async () => {
-  const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id);
-  const result = await control("deferred-input", { id, action: "cancel" });
+  const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id)
+    ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()])
+      .find(item => item.itemId === id || item.id === id);
   const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
+  const result = await control("deferred-input", { id: deferred?.itemId ?? deferred?.id ?? id, action: "cancel",
+    ...(clientUserMessageId ? { clientUserMessageId } : {}) });
   if (clientUserMessageId) {
     const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
     outgoingMessages(deferredTaskId).delete(clientUserMessageId);

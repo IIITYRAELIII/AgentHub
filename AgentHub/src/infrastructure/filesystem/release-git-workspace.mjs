@@ -1182,7 +1182,7 @@ export class ReleaseGitWorkspaceService {
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
     ephemeral = false, releaseVersion = undefined,
-    expectedRuntimeVersion = undefined, firstComposeRecovery = null,
+    expectedRuntimeVersion = undefined, firstComposeRecovery = null, expectedAbsentGeneration = null,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
     if (!preparationObjectStore()) {
@@ -1192,7 +1192,7 @@ export class ReleaseGitWorkspaceService {
         ({ lease, objects }) => withPreparationGitIsolation(this.dataDir, () => this.prepareGeneration({
           operationId, generation, planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
           baseProvenance, validateBeforeCommit, changelogContent, freezePublication, ephemeral,
-          releaseVersion, expectedRuntimeVersion, firstComposeRecovery }), lease, objects));
+          releaseVersion, expectedRuntimeVersion, firstComposeRecovery, expectedAbsentGeneration }), lease, objects));
     }
     if (releaseVersion !== undefined) normalizeReleaseVersion(releaseVersion);
     const operation = String(operationId ?? "").trim();
@@ -1207,7 +1207,15 @@ export class ReleaseGitWorkspaceService {
     const lock = path.join(this.dataDir, "locks", `release-generation-${generationKey}`);
     return withInterprocessLocks([lock], async () => {
       try {
-        if (!firstComposeRecovery) await mkdir(generationDataDir, { recursive: true });
+        if (expectedAbsentGeneration) {
+          const absent = await this.#uncapturedFirstGeneration(operation, sourceRoot);
+          if (generationNumber !== 1 || stableManifest(absent) !== stableManifest(expectedAbsentGeneration)) {
+            throw new Error("Uncaptured first generation binding changed before capture");
+          }
+          await mkdir(path.dirname(generationDataDir), { recursive: true });
+          await mkdir(generationDataDir);
+        }
+        if (!firstComposeRecovery && !expectedAbsentGeneration) await mkdir(generationDataDir, { recursive: true });
         const identityFile = path.join(generationDataDir, "identity.json");
         let identity = {
           schemaVersion: 1,
@@ -3539,9 +3547,148 @@ export class ReleaseGitWorkspaceService {
     const sourceRoot = await repositoryRoot(projectRoot);
     const key = sha256(`${operationId}:1:${sourceRoot}`).slice(0, 24);
     const identity = await readJson(path.join(this.dataDir, "release-gens", key, "identity.json"));
-    if (!identity?.preparedCandidate) throw new Error("First compose has no retained prepared generation");
+    if (!identity?.preparedCandidate) {
+      if (!options.allowUncaptured || !options.inspectOnly) throw new Error("First compose has no retained prepared generation");
+      return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${key}`)], async () =>
+        ({ binding: await this.#uncapturedFirstGeneration(operationId, sourceRoot), candidate: null }));
+    }
     return withPreparationGitIsolation(this.dataDir, () => this.prepareGeneration({
       operationId, generation: 1, projectRoot: sourceRoot, firstComposeRecovery: options }));
+  }
+
+  async #uncapturedFirstGeneration(operationId, sourceRoot) {
+    const identitySha256 = sha256(`${operationId}:1:${sourceRoot}`);
+    const key = identitySha256.slice(0, 24);
+    const generationRoot = path.join(this.dataDir, "release-gens", key);
+    for (const root of [generationRoot, path.join(this.dataDir, "release-generation-evidence", key)]) {
+      const entry = await lstat(root).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+      if (entry) throw new Error("First generation capture is occupied, partial or archived");
+    }
+    return { kind: "uncaptured-first-generation-v1", operationId, generation: 1,
+      repositoryRoot: sourceRoot, generationRoot, identitySha256 };
+  }
+
+  async inspectRetainedGeneration({ operationId, generation, workspaceId, candidate, changelogContent }) {
+    this.#assertAvailable("inspectRetainedGeneration");
+    const sourceRoot = await repositoryRoot(candidate.repositoryRoot);
+    const ownerHash = sha256(`${operationId}:${generation}:${sourceRoot}`);
+    const generationRoot = path.join(this.dataDir, "release-gens", ownerHash.slice(0, 24));
+    if (!samePath(candidate.generationRoot, generationRoot)) throw new Error("Retained generation root changed");
+    return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${ownerHash.slice(0, 24)}`)],
+      generationLease => this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot, repositoryRoot: generationRoot },
+        ({ lease, objects }) => withPreparationGitIsolation(this.dataDir, async () => {
+        const releaseEntry = await lstat(candidate.releaseRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+        const archived = releaseEntry && await readJson(path.join(this.dataDir, "release-generation-evidence", ownerHash.slice(0, 24),
+          sha256(candidate.releaseRoot).slice(0, 24) + ".objects.json"));
+        const pendingRestore = archived && await objects.hasPendingRestoration({ archive: archived.archive, repository: candidate.releaseRoot });
+        if (!releaseEntry || pendingRestore) await this.#restoreRetainedGeneration({ operationId, generation, sourceRoot, ownerHash, generationRoot, candidate, objects });
+        const ownerBytes = await readFile(path.join(generationRoot, "identity.json"));
+        const owner = JSON.parse(ownerBytes);
+        if (owner.operationId !== operationId || owner.generation !== generation || owner.identitySha256 !== ownerHash
+            || !samePath(owner.repositoryRoot, sourceRoot) || !owner.preparedCandidate) throw new Error("Retained generation custody changed");
+        const reader = new ReleaseGitWorkspaceService({ dataDir: generationRoot,
+          contourExternalEffects: this.#contourExternalEffects, environment: this.#environment,
+          readPreparationOriginal: this.#readPreparationOriginal });
+        reader.#publicationDataDir = this.#publicationDataDir;
+        const actual = await reader.frozenCandidate(sourceRoot);
+        const checkpointBytes = await readFile(actual.checkpointFile);
+        const checkpoint = JSON.parse(checkpointBytes);
+        const publication = actual.manifest.publication;
+        const intent = checkpoint.publicationFreeze;
+        if (actual.checkpointPhase !== "frozen" || actual.manifest.workspaceId !== workspaceId
+            || actual.preReleaseHead !== candidate.commit || actual.tree !== candidate.tree
+            || actual.manifestHash !== candidate.manifestHash || actual.planRevision !== candidate.planRevision
+            || !samePath(actual.releaseRoot, candidate.releaseRoot)
+            || stableManifest(actual.manifest) !== stableManifest(candidate.manifest)
+            || stableManifest(actual.manifest.preparedCandidate) !== stableManifest(owner.preparedCandidate)
+            || publication?.head !== candidate.commit || intent?.preparedHead !== owner.preparedCandidate.commit
+            || publication.changelogContentHash !== (changelogContent == null ? null : sha256(Buffer.from(changelogContent)))) {
+          throw new Error("Retained frozen candidate or release notes changed");
+        }
+        for (const key of ["preparedHead", "releaseVersion", "runtimeReleaseVersion", "changelogBlob", "changelogContentHash", "changelogPayloadFile"]) {
+          if (publication[key] !== intent[key]) throw new Error("Retained frozen publication intent changed");
+        }
+        if (intent.changelogPayloadFile !== `publication-changelog-${intent.changelogContentHash}.bin`
+            || sha256(await readFile(path.join(path.dirname(actual.checkpointFile), "evidence", intent.changelogPayloadFile))) !== intent.changelogContentHash
+            || sha256(await readFile(path.join(actual.releaseRoot, "CHANGELOG.md"))) !== intent.changelogContentHash) {
+          throw new Error("Retained frozen release notes bytes changed");
+        }
+        return { ownerSha256: sha256(ownerBytes), checkpointSha256: sha256(checkpointBytes),
+          commit: actual.preReleaseHead, tree: actual.tree, manifestHash: actual.manifestHash,
+          releaseVersion: intent.releaseVersion, runtimeReleaseVersion: intent.runtimeReleaseVersion,
+          changelogContentHash: intent.changelogContentHash };
+      }, { ...lease, assertOwned: async () => { await generationLease.assertOwned(); await lease.assertOwned(); } }, objects)));
+  }
+
+  async #restoreRetainedGeneration({ operationId, generation, sourceRoot, ownerHash, generationRoot, candidate, objects }) {
+    const archiveRoot = path.join(this.dataDir, "release-generation-evidence", ownerHash.slice(0, 24));
+    await assertPlainIsolationPath(archiveRoot);
+    const ownerBytes = await readFile(path.join(archiveRoot, "identity.json")), owner = JSON.parse(ownerBytes);
+    const repository = path.join(generationRoot, "release-repositories", taskRepositoryKey(sourceRoot), "repository");
+    if (owner.operationId !== operationId || owner.generation !== generation || owner.identitySha256 !== ownerHash
+        || !samePath(owner.repositoryRoot, sourceRoot) || !samePath(candidate.releaseRoot, repository)
+        || stableManifest(owner.preparedCandidate) !== stableManifest(candidate.manifest.preparedCandidate)) {
+      throw new Error("Archived retained generation identity changed");
+    }
+    const receipt = await readJson(path.join(archiveRoot, sha256(repository).slice(0, 24) + ".objects.json"));
+    const inventoryBytes = await readFile(path.join(archiveRoot, sha256(repository).slice(0, 24) + ".inventory.json"));
+    if (receipt?.binding.kind !== "release-generation-repository-v1" || receipt.binding.repository !== repository
+        || stableManifest(receipt.binding.generationIdentity) !== stableManifest(owner)
+        || receipt.binding.inventorySha256 !== sha256(inventoryBytes)) throw new Error("Archived retained repository binding changed");
+    const metadata = [], pending = [path.join(archiveRoot, "raw")];
+    while (pending.length) {
+      const directory = pending.pop();
+      await assertPlainIsolationPath(directory);
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory() && !entry.isSymbolicLink()) pending.push(file);
+        else if (entry.isFile() && !entry.isSymbolicLink()) metadata.push({
+          relative: path.relative(path.join(archiveRoot, "raw"), file), bytes: await readFile(file) });
+        else throw new Error("Archived generation metadata is not plain");
+      }
+    }
+    const child = path.join("release-repositories", taskRepositoryKey(sourceRoot));
+    const identityFile = metadata.find(item => item.relative === "identity.json");
+    const checkpoint = metadata.find(item => item.relative === path.join(child, "checkpoint.json"));
+    const manifest = metadata.find(item => item.relative === path.join(child, "evidence", candidate.manifestHash + ".json"));
+    const metadataChecks = {
+      identity: identityFile?.bytes.equals(ownerBytes),
+      checkpoint: checkpoint?.bytes.equals(await readFile(path.join(archiveRoot, "checkpoint.json"))),
+      manifestDigest: manifest && sha256(manifest.bytes) === candidate.manifestHash,
+      publication: manifest && stableManifest(JSON.parse(manifest.bytes).publication) === stableManifest(candidate.manifest.publication)
+    };
+    const changedMetadata = Object.keys(metadataChecks).filter(key => !metadataChecks[key]);
+    if (changedMetadata.length) throw new Error("Archived frozen metadata changed: " + changedMetadata.join(","));
+    const physical = info => ({ dev: String(info.dev), ino: String(info.ino), birthtimeNs: String(info.birthtimeNs) });
+    await objects.restoreArchive({ archive: receipt.archive, repository, assertCurrent: assertPreparationProcessOwned,
+      prepare: async ({ metadata: state, checkpoint: save }) => {
+        let entry = await lstat(generationRoot, { bigint: true }).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+        if (!entry) {
+          if (state.physicalGenerationRoot) throw new Error("Original generation restoration root disappeared");
+          await mkdir(generationRoot);
+          entry = await lstat(generationRoot, { bigint: true });
+          await save({ physicalGenerationRoot: physical(entry) });
+          state = { ...state, physicalGenerationRoot: physical(entry) };
+        }
+        if (!entry.isDirectory() || entry.isSymbolicLink() || stableManifest(physical(entry)) !== stableManifest(state.physicalGenerationRoot)) {
+          throw new Error("Generation restoration destination is occupied or replaced");
+        }
+        for (const item of metadata) {
+          const target = path.join(generationRoot, item.relative);
+          if (!pathInside(generationRoot, target) || pathInside(repository, target) || samePath(repository, target)) {
+            throw new Error("Archived outer metadata escaped generation custody");
+          }
+          await mkdir(path.dirname(target), { recursive: true });
+          await assertPlainIsolationPath(path.dirname(target));
+          const existing = await lstat(target).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+          if (existing) {
+            if (!existing.isFile() || existing.isSymbolicLink() || !(await readFile(target)).equals(item.bytes)) throw new Error("Restored outer metadata changed");
+          } else {
+            const handle = await open(target, "wx");
+            try { await handle.writeFile(item.bytes); await handle.sync(); } finally { await handle.close(); }
+          }
+        }
+      } });
   }
 
   async #firstFrozenGeneration({ identity, generationDataDir, projectRoot, workspaceId, taskIds,
@@ -3672,7 +3819,7 @@ export class ReleaseGitWorkspaceService {
       gitMaybe(["symbolic-ref", "--short", "HEAD"], { cwd: marker.releaseRoot }),
       runGit(["rev-parse", "HEAD^{commit}"], { cwd: marker.releaseRoot }),
       runGit(["rev-parse", "HEAD^{tree}"], { cwd: marker.releaseRoot }),
-      runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: marker.releaseRoot, rawOutput: true })
+      runGit(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: marker.releaseRoot, rawOutput: true })
         .then(bytes => Buffer.from(bytes).toString("utf8")),
     ]);
     let authorizedNotes = false;

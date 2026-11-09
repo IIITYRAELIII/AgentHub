@@ -11,6 +11,47 @@ import { DeferredInputController } from "../../../src/application/deferred-input
 import { DeferredComposerTransferRegistry } from "../../../src/application/deferred-composer-transfer-registry.mjs";
 import { messageWithTaskReferences } from "../../../src/domain/task-board-task.mjs";
 import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
+import { DesktopControlServer, callDesktopControl } from "../../../src/infrastructure/process/desktop-control.mjs";
+
+test("public cancellation addresses the canonical queued original when its RAM projection is absent", async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), "hub422-cancel-point-"));
+  const store = new RuntimeStateStore({ dataDir: directory });
+  const item = { id: "release-event-1441", clientUserMessageId: "release:original:1441:operation.resumed",
+    provider: "codex", threadId: "thread-original", streamId: "stream-original", projectRoot: directory,
+    input: "synthetic retained release event", temporaryFiles: [], persistentFiles: true,
+    conflictKind: "message-intake", createdAt: new Date().toISOString() };
+  const receipts = new MessageReceiptRegistry();
+  receipts.reserve(item, "fixed-cancel-original", { id: item.id, accepted: true, queued: true, deferred: true, providerAccepted: false });
+  await store.saveDeferredIntake({ item, destination: "queued", receipt: receipts.get(item) });
+  const pendingInputs = new Map(), queuedInputs = new Map();
+  let cleaned = 0;
+  const service = createService(item, { pendingInputs, queuedInputs,
+    findDurableInput: identity => store.deferredInputForCancellation(identity),
+    persistCancellation: value => store.cancelDeferredInput(value),
+    cleanupFiles: async () => { assert.equal(store.messageCommand(item.clientUserMessageId).state, "cancelled"); cleaned++; },
+    updateReceipt: () => {}, startDeferred: () => assert.fail("No provider dispatch"),
+  });
+  const server = new DesktopControlServer({ runtimeRoot: directory, protectSecret: async () => {},
+    handler: ({ action, params }) => {
+      assert.equal(action, "deferred-input"); return service.handle(params);
+    } });
+  t.after(async () => { await server.close(); await store.close(); await rm(directory, { recursive: true, force: true }); });
+  await server.start();
+  const result = await callDesktopControl("deferred-input", { action: "cancel", id: item.id }, { runtimeRoot: directory });
+  assert.equal(result.accepted, true); assert.equal(cleaned, 1);
+  const cancelled = store.messageCommand(item.clientUserMessageId);
+  assert.equal(cancelled.state, "cancelled");
+  assert.equal(cancelled.result.providerEffectOutcome, "unknown");
+  assert.equal(cancelled.result.cancellationScope, "future-hub-dispatch");
+  const repeated = await callDesktopControl("deferred-input", { action: "cancel", id: item.id,
+    clientUserMessageId: item.clientUserMessageId }, { runtimeRoot: directory });
+  assert.equal(repeated.accepted, true); assert.equal(cleaned, 1);
+  await store.saveDeferredIntake({ item, destination: "queued", receipt: receipts.get(item) });
+  await store.save({ queuedInputs: [item], pendingInputs: [], desktopMessageReceipts: receipts.snapshot() });
+  assert.equal(store.messageCommand(item.clientUserMessageId).state, "cancelled");
+  assert.equal((await store.load()).value.queuedInputs.length, 0);
+  assert.equal(pendingInputs.size, 0); assert.equal(queuedInputs.size, 0);
+});
 
 test("a processing refusal can settle to a normal cancel without dispatching the read original", async () => {
   const item = { id: "read-original", clientUserMessageId: "release:operation:1351:operation.waiting",

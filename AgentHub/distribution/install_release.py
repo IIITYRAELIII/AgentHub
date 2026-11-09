@@ -357,8 +357,19 @@ def read_update_original(runtime_root: Path, operation_id: str):
 def original_status(operation_id: str, original) -> dict:
     if original is None:
         return {"operationId": operation_id, "state": "unknown", "effectsReplayed": False}
-    return {"operationId": operation_id, "status": original.get("status"), "phase": original.get("phase"),
-            "outcome": original.get("outcome"), "effectsReplayed": False}
+    result = {"operationId": operation_id, "status": original.get("status"), "phase": original.get("phase"),
+              "outcome": original.get("outcome"), "effectsReplayed": False}
+    metadata = original.get("metadata") or {}
+    envelope = metadata.get("packageHandoff") or {}
+    binding = envelope.get("binding") or {}
+    if (original.get("status") in {"requested", "blocked", "running"} and original.get("outcome") is None
+            and metadata.get("packageInputSha256") and envelope.get("schema") == 1
+            and binding.get("operationId") == operation_id
+            and hashlib.sha256(json.dumps(binding, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+            == envelope.get("sha256")):
+        result["handoff"] = {"action": "yield_current_turn", "reason": "public_package_restart",
+                             "operationId": operation_id}
+    return result
 
 
 def update_status(runtime_root: Path, operation_id: str) -> dict:
@@ -573,12 +584,12 @@ def prepare_update(args) -> None:
                       selectionSha256=file_hash(selection_file), requestSha256=file_hash(request_file)))
         assert_bound()
         entry = package/"runtime/src/runtime/runtime-package-handoff.mjs"
+        print("Keep the retained package/backup until the original update completes. "
+              "After yield_current_turn, finish this Hub turn so the admitted restart can proceed. "
+              "Read the same original after restart.", flush=True)
         result = subprocess.run([node, str(entry), "bootstrap-start", str(request_file)], check=False)
         if result.returncode:
             raise RuntimeError("Update admission was not confirmed; retained original must be read, not re-launched")
-    print("Keep the retained package/backup until the original update completes. "
-          "A legacy updater waits for your explicit old-app stop; a capable installed Hub uses its ordinary graceful restart owner.")
-    print(json.dumps({"operationId": args.operation_id, "retainedPackage": str(cache), "effectsReplayed": False}))
 
 
 def main():
@@ -592,9 +603,10 @@ def main():
     parser.add_argument("--scratch-root", type=Path, required=True, help="Private temporary area on the intended volume")
     parser.add_argument("--rollback", action="store_true")
     parser.add_argument("--inspect-package", action="store_true", help="Verify/extract public input only; no runtime effect")
-    parser.add_argument("--prepare-update", action="store_true", help="Arm the package-side legacy updater; the user stops old Hub")
+    parser.add_argument("--prepare-update", action="store_true", help="Admit one exact package update through the existing runtime owner")
     parser.add_argument("--update-status", action="store_true", help="Read the exact original without replaying effects")
     parser.add_argument("--operation-id", help="Original stable identity for package update/readback")
+    parser.add_argument("--project-root", type=Path, help="Selected project for a first installation; existing configuration is preserved")
     args = parser.parse_args()
     if not args.release and not args.sha256:
         parser.error("--sha256 is required with --url or --archive")
@@ -605,6 +617,8 @@ def main():
     if args.prepare_update or args.update_status:
         if not args.release or args.release == "latest" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.operation_id or ""):
             parser.error("Update requires an exact --release and original --operation-id")
+    if args.project_root and (args.rollback or args.inspect_package or args.prepare_update or args.update_status):
+        parser.error("--project-root belongs only to a first installation")
     if os.name != "nt":
         raise RuntimeError("Ready packages currently support Windows x64 only")
     if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
@@ -652,7 +666,8 @@ def main():
         # Explicit offline update only; the existing owner checks live/unknown
         # process evidence. No automatic start, stop, autostart or retry.
         result = subprocess.run([node, entry,
-                                 "rollback" if args.rollback else "install", str(args.runtime_root.resolve())],
+                                 "rollback" if args.rollback else "install", str(args.runtime_root.resolve()),
+                                 *(["--project-root", str(args.project_root.resolve())] if args.project_root else [])],
                                 check=False, env={k: v for k, v in os.environ.items()
                                                   if not k.startswith("AGENT_HUB_PUBLICATION_")})
         if result.returncode:

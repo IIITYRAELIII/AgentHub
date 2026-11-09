@@ -39,6 +39,36 @@ test("manual public version forwards the original authorization to generation pr
   assert.equal(Object.hasOwn(calls[1], "releaseVersion"), false);
 });
 
+test("repository approval coalesces only equal authority and preserves distinct repositories", async () => {
+  const { adapter } = fixture([]);
+  const calls = [];
+  adapter.releasePreflight.prepareOperationGeneration = async input => {
+    calls.push(input);
+    return { releaseCandidates: [], planRevision: "plan" };
+  };
+  const target = { repositoryRoot: path.resolve("repo"), approvedLocalMainCommit: "a".repeat(40),
+    approvedOriginMainCommit: "b".repeat(40) };
+  const alias = process.platform === "win32"
+    ? target.repositoryRoot.toUpperCase().replaceAll("\\", "/")
+    : `${target.repositoryRoot}/.`;
+  const operation = { operationId: "original", workspaceId: "workspace", selectedResults: [],
+    authorization: { taskIds: [], fingerprint: "original", approvedTargets: [target,
+      { ...target, repositoryRoot: alias }, { ...target, repositoryRoot: path.resolve("other-repo") }] } };
+  const before = structuredClone(operation);
+  await adapter.compose({ operation, generation: 1 });
+  assert.equal(calls[0].approvedRepositories.length, 2);
+  assert.deepEqual(calls[0].approvedRepositories[0], { projectRoot: target.repositoryRoot,
+    approvedLocalMainCommit: target.approvedLocalMainCommit, approvedOriginMainCommit: target.approvedOriginMainCommit });
+  assert.equal(calls[0].approvedRepositories[1].projectRoot, path.resolve("other-repo"));
+  for (const field of ["approvedLocalMainCommit", "approvedOriginMainCommit"]) {
+    operation.authorization.approvedTargets[1] = { ...target, repositoryRoot: alias, [field]: "c".repeat(40) };
+    await assert.rejects(adapter.compose({ operation, generation: 1 }), /conflicting repository approval/u);
+  }
+  assert.equal(calls.length, 1, "conflicting pins refuse before generation preparation");
+  operation.authorization.approvedTargets = before.authorization.approvedTargets;
+  assert.deepEqual(operation, before);
+});
+
 test("first compose adapter recovers the original before forwarding retained versions to its amendment", async () => {
   const { adapter } = fixture([]);
   const calls = [];

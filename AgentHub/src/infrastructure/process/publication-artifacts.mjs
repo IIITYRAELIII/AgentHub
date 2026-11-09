@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import { runtimeLayout, runtimeReleaseDirectory } from "../filesystem/runtime-layout.mjs";
 import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
 import { artifactVersionIdentity } from "../../domain/agent-hub-version.mjs";
+import { PUBLIC_INSTALLER_HANDOFF } from "../persistence/publication-checkpoint.mjs";
 
 export const PREPARE_PUBLICATION_ARTIFACTS = "Подготовка артефактов публикации";
 export const INSTALL_PREPARED_RUNTIME = "Установка runtime-релиза";
@@ -93,6 +94,9 @@ export function createPublicationArtifactSteps(options = {}) {
       runtimeLayout, runtimeReleaseDirectory, verifyRuntimeManifest, artifactVersionIdentity,
       artifactFiles, readArtifact, buildArtifact, validateRuntimePublication: validateFrozenRuntimePublication,
     });
+    if (options.publicRuntimeInstaller != null && api.publicInstallerHandoffProtocol !== PUBLIC_INSTALLER_HANDOFF) {
+      throw new Error("Pinned release tool does not support the public runtime installer handoff");
+    }
     return api.createPublicationArtifactSteps({
       loadWorker: file => import(pathToFileURL(path.join(options.sourceRoot, "cloudflare-worker", file)).href),
       ...options,

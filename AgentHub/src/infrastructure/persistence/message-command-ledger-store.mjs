@@ -494,9 +494,9 @@ function terminalRetryTombstone(record) {
     if (typeof source[key] === "boolean") result[key] = source[key];
   }
   for (const [key, limit] of [
-    ["provider", 40], ["threadId", 500], ["turnId", 500], ["runId", 500],
+    ["provider", 40], ["threadId", 500], ["streamId", 500], ["turnId", 500], ["runId", 500],
     ["id", 500], ["status", 100], ["error", 2_000], ["message", 2_000],
-    ["reason", 100], ["providerEffectOutcome", 100], ["expiredAt", 100],
+    ["reason", 100], ["providerEffectOutcome", 100], ["cancellationScope", 100], ["expiredAt", 100],
   ]) {
     const value = String(source[key] ?? "").trim();
     if (value) result[key] = value.slice(0, limit);
@@ -908,6 +908,28 @@ export class MessageCommandLedgerStore {
     return { changed: true, idempotent: false, conflict: false, record: this.get(id) };
   }
 
+  get revision() {
+    const row = this.#database.prepare(`
+      SELECT data_version, total_changes() AS local_changes FROM pragma_data_version
+    `).get();
+    return `${row.data_version}:${row.local_changes}`;
+  }
+
+  deferredInputForCancellation({ id, clientUserMessageId = "" }) {
+    const commandId = String(clientUserMessageId).trim();
+    const records = commandId ? [this.get(commandId)].filter(Boolean) : this.#database.prepare(`
+      SELECT * FROM message_commands
+      WHERE state IN ('accepted', 'queued', 'attention-required')
+        AND CASE WHEN json_valid(item_json) THEN json_extract(item_json, '$.id') END = ?
+      LIMIT 2
+    `).all(String(id)).map(recordFromRow);
+    if (records.length !== 1) return null;
+    const record = records[0];
+    const itemId = record.item?.id ?? record.result?.id ?? record.receipt?.result?.id;
+    if (itemId !== id) return null;
+    return record.item ?? { id: itemId, clientUserMessageId: record.clientUserMessageId };
+  }
+
   cancelQueuedInput(item) {
     const record = this.get(item?.clientUserMessageId);
     if (!record) return { owned: false }; // Existing raw legacy snapshot owner.
@@ -920,7 +942,7 @@ export class MessageCommandLedgerStore {
     if (storedId !== item.id) return refuse();
     if (record.state === "cancelled") return { owned: true, duplicate: true, record };
     if (!["accepted", "queued", "attention-required"].includes(record.state)
-      || record.result?.providerAccepted === true || record.result?.steered === true) return refuse();
+      || [record.result, record.receipt?.result].some(result => result?.providerAccepted === true || result?.steered === true)) return refuse();
     const outcome = this.transition({
       clientUserMessageId: record.clientUserMessageId, expectedStates: [record.state],
       expectedRevision: record.revision, state: "cancelled",

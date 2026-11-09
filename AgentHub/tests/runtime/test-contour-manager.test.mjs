@@ -445,6 +445,7 @@ test("installed Test Contour providers run with their full module closure outsid
     await cp(path.join(AGENT_HUB_SOURCE_ROOT, "src"), path.join(sourceRoot, "src"), { recursive: true });
     const expected = [
       path.join("e2e", "fake-codex-app-server.mjs"),
+      path.join("e2e", "fake-codex-package-update.mjs"),
       path.join("e2e", "test-contour-claude-cli.mjs"),
       path.join("e2e", "test-contour-codex-multiplexer.mjs"),
       path.join("src", "infrastructure", "process", "process-liveness.mjs"),

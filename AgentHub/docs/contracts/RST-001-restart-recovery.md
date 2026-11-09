@@ -1,6 +1,53 @@
 # RST-001 — Restart and maintenance recovery
 
+## Public update initiated by an active Hub agent
+
+A capable runtime admits one exact package maintenance original before stopping.
+Its public installer acknowledgement identifies `yield_current_turn`. The active
+agent finishes its existing response and turn so the restart owner can drain work.
+Readback of the same known pending original carries that handoff after a lost
+reply. UNKNOWN and terminal outcomes never grant another install or stop.
+The existing native continuation must survive retirement of the initiating
+Node/provider Job, then prove that entire old cohort closed before backup,
+installation and one replacement launch. The same original's settlement, exact
+Ready and retained conversation/configuration/data establish completion. The
+protocol-v1 legacy manual bootstrap keeps its external-operator boundary.
+
 ## Explicit package next attempt (ADR-HUB-398)
+
+### External package scratch and closed acceptance disposition (ADR-HUB-422)
+
+New package handoff preparation creates its owned scratch alongside the verified
+external public installer. Ambient TEMP does not choose a backup destination.
+The binding retains the scratch directory's physical identity. Preparation and
+the actual pre-stopping preflight prove an external physical parent and absent
+backup destination. Replaced, linked, internal or occupied destinations refuse
+before stopping. The stopped backup repeats these guards and keeps exclusive
+creation, complete durable scope, SQLite reservations and integrity checks.
+
+A closed isolated acceptance original has one explicit maintenance-owner
+disposition for the exact pre-backup internal-destination refusal. Fresh original
+revision, complete binding and row digest, closed acceptance marker/fence,
+physical runtime/data custody, unchanged old pointer/full payload/stable Host,
+retained selected data and exact public assets must agree. Eligibility requires
+the typed owner proof or the narrowly pinned protocol-v1 revision7 owners in
+ADR-HUB-422. Generic UNKNOWN or historical error text cannot authorize it.
+
+The SAME original stores the entire prior UNKNOWN row and one durable disposition
+intent before native admission. The native owner retains the existing root gate,
+and the existing physical installation lease excludes concurrent pointer writers
+through fresh current/data checks and the canonical disposition write. It
+requires all recorded old/native/launcher processes closed (a reused live PID
+refuses), and verifies any surviving original Job is empty. An unavailable Job
+query refuses. Its fresh handshake is repeated immediately before settlement.
+The closed fence remains in place. Only this qualified original becomes FAILED
+with `retained-stopped-current`, retaining its graceful retirement, native attempt,
+backup refusal, input and history. This disposition invokes neither installation
+nor launch and grants no generic NO_EFFECT, reset, automatic retry or reopen.
+An admitted or lost reply is read on the same request. A mismatch leaves UNKNOWN
+and its original history intact. Normal future automatic updates require a new
+isolated acceptance with the corrected mechanism, independently of this closed
+case. Remove the pinned legacy route after the addressed originals are settled.
 
 Package preparation and the actual controller preflight apply the existing
 installer version/build eligibility to the inspected, digest-bound public

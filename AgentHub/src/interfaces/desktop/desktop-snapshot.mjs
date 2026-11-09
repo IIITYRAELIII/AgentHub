@@ -173,7 +173,7 @@ export function createDesktopSnapshotFactory({
     const state = {
       workspaces: board.workspaces?.() ?? catalog.hierarchy?.() ?? [],
       archivedWorkspaces: board.archivedWorkspaces?.() ?? [],
-      boardTasks: board.snapshot?.() ?? [],
+      boardTasks: board.snapshot?.({ compactPresentation: true }) ?? [],
       boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
       sourceVersion: "",
     };
@@ -265,8 +265,12 @@ export function createDesktopSnapshotFactory({
     }
   }
 
-  function desktopMessageReceiptSnapshot() {
-    return (receipts.recent?.() ?? []).slice(-100).flatMap((receipt) => {
+  function desktopMessageReceiptSnapshot(requestedIds) {
+    const addressed = requestedIds.map(id => receipts.forCommand?.(id)).filter(Boolean);
+    const exactReceipts = new Map((receipts.recent?.() ?? []).slice(-100)
+      .map(receipt => [receipt.clientUserMessageId, receipt]));
+    for (const receipt of addressed) exactReceipts.set(receipt.clientUserMessageId, receipt);
+    return [...exactReceipts.values()].flatMap((receipt) => {
       const provider = String(receipt?.provider ?? "").trim();
       const threadId = String(receipt?.threadId ?? "").trim();
       const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
@@ -741,7 +745,13 @@ export function createDesktopSnapshotFactory({
     boardTasksVersion = "",
     messageReceiptsVersion = "",
     messagePinsVersion = "",
+    messageReceiptIds = [],
   } = {}) {
+    if (!Array.isArray(messageReceiptIds) || messageReceiptIds.some(id => typeof id !== "string" || !id.trim())) {
+      throw new TypeError("messageReceiptIds must contain exact command identities");
+    }
+    const requestedReceiptIds = [...new Set(messageReceiptIds)].sort();
+    const receiptRequestKey = JSON.stringify(requestedReceiptIds);
     const snapshotStartedAt = monotonicNow();
     const snapshotTiming = {};
     const finishTiming = (result, cacheHit = false) => ({
@@ -783,6 +793,7 @@ export function createDesktopSnapshotFactory({
       && beforeRevision !== null
       && cached?.version === knownVersion
       && cached.revision === beforeRevision
+      && cached.receiptRequestKey === receiptRequestKey
       && collectionVersionsMatch(cached.collectionVersions)
     ) {
       return finishTiming({ notModified: true, version: knownVersion }, true);
@@ -873,7 +884,10 @@ export function createDesktopSnapshotFactory({
     snapshotTiming.serverStateMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     phaseStartedAt = monotonicNow();
     const { boardTasks, archivedWorkspaces, boardLayout } = boardState;
-    const messageReceipts = desktopMessageReceiptSnapshot();
+    const receiptStartedAt = monotonicNow();
+    const messageReceipts = desktopMessageReceiptSnapshot(requestedReceiptIds);
+    snapshotTiming.messageReceiptProjectionMs = Math.round((monotonicNow() - receiptStartedAt) * 10) / 10;
+    snapshotTiming.addressedMessageReceipts = requestedReceiptIds.length;
     const messagePins = pins.snapshot?.() ?? [];
     const codexModelOptions = current.codexModels.map((model) => ({
       value: model.value, label: model.label,
@@ -1035,7 +1049,7 @@ export function createDesktopSnapshotFactory({
     const afterRevision = await sourceRevision(revisionParams);
     snapshotTiming.revisionAfterMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     if (beforeRevision !== null && beforeRevision === afterRevision) {
-      versionCache.set(cacheKey, { revision: afterRevision, version, collectionVersions });
+      versionCache.set(cacheKey, { revision: afterRevision, version, collectionVersions, receiptRequestKey });
     } else {
       versionCache.delete(cacheKey);
     }

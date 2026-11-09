@@ -8545,6 +8545,12 @@ function renderQueueForTask(taskId, container) {
         }));
         actions.push(retry);
       }
+      if (entry.cancellationAvailable) {
+        actions.push(el("button", {
+          type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
+          title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
+        }));
+      }
     } else {
       const steerAvailable = Boolean(task?.running && ["codex", "claude"].includes(String(task?.provider ?? "")));
       const exactSteerDecision = entry.state === "pending"

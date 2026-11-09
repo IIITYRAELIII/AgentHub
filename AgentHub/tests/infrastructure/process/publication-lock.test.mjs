@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { Buffer } from "node:buffer";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
 
 import {
   PUBLICATION_STAGE_DELEGATION_ENV,
+  publicationLockOwned,
   withPublicationLock,
 } from "../../../src/infrastructure/process/publication-lock.mjs";
 
@@ -53,6 +55,58 @@ async function runChild(script, env) {
 }
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+test("publication reentry recognizes the same physical lock through a directory alias", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub422-publication-alias-"));
+  const real = path.join(root, "physical");
+  const alias = path.join(root, "alias");
+  try {
+    await mkdir(real);
+    await symlink(real, alias, process.platform === "win32" ? "junction" : "dir");
+    const value = await withPublicationLock(async () => {
+      const nested = await withPublicationLock(async () => "nested-publication-recorded", {
+        lockTarget: path.join(alias, "publication"), timeoutMs: 100,
+      });
+      assert.equal(publicationLockOwned({ lockTarget: path.join(alias, "publication") }), true);
+      const child = await runChild(delegatedChildScript(path.join(alias, "publication")), { ...process.env });
+      assert.equal(child.entered, true);
+      return nested;
+    }, { lockTarget: path.join(real, "publication"), timeoutMs: 1000 });
+    assert.equal(value, "nested-publication-recorded");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a foreign physical lock cannot borrow the active publication lease through an alias", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub422-publication-foreign-alias-"));
+  const real = path.join(root, "physical");
+  const foreign = path.join(root, "foreign");
+  const alias = path.join(root, "foreign-alias");
+  const entered = deferred();
+  const release = deferred();
+  let foreignOwner;
+  try {
+    await mkdir(real);
+    await mkdir(foreign);
+    await symlink(foreign, alias, process.platform === "win32" ? "junction" : "dir");
+    foreignOwner = withInterprocessLocks([path.join(foreign, "publication")], async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    await entered.promise;
+    await withPublicationLock(async () => {
+      assert.equal(publicationLockOwned({ lockTarget: path.join(alias, "publication") }), false);
+      await assert.rejects(withPublicationLock(() => assert.fail("Foreign lock is held"), {
+        environment: {}, lockTarget: path.join(alias, "publication"), timeoutMs: 100,
+      }), /Timed out waiting for interprocess lock/u);
+    }, { environment: {}, lockTarget: path.join(real, "publication"), timeoutMs: 1000 });
+  } finally {
+    release.resolve();
+    await foreignOwner;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 function deferred() {
   let resolve;

@@ -1678,11 +1678,14 @@
 
   function renderTaskCardSaving(taskId) {
     const saving = state.savingTaskId === taskId;
+    const task = state.tasks.find(item => item.id === taskId);
+    const presentationPending = task?.presentationDeferred
+      && !(openTaskDetails.get(taskId)?.revision === task.detailsRevision && openTaskDetails.get(taskId)?.task);
     const savingStatus = state.savingStatusTaskId === taskId;
     const attaching = state.attachingTaskId === taskId;
     const savingChecklist = state.pendingChecklistActions.has(taskId);
-    if (taskCardTitle) taskCardTitle.disabled = saving;
-    if (taskCardDescription) taskCardDescription.disabled = saving;
+    if (taskCardTitle) taskCardTitle.disabled = saving || presentationPending;
+    if (taskCardDescription) taskCardDescription.disabled = saving || presentationPending;
     if (taskCardStatus) taskCardStatus.disabled = savingStatus;
     if (taskChecklistAddInput) taskChecklistAddInput.disabled = savingChecklist;
     if (taskChecklistAddButton) {
@@ -1690,7 +1693,7 @@
       taskChecklistAddButton.setAttribute("aria-busy", String(savingChecklist));
     }
     if (taskCardSaveButton) {
-      taskCardSaveButton.disabled = saving;
+      taskCardSaveButton.disabled = saving || presentationPending;
       taskCardSaveButton.setAttribute("aria-busy", String(saving));
       taskCardSaveButton.textContent = saving ? "Сохраняю…" : "Сохранить изменения";
     }
@@ -2726,6 +2729,8 @@
   taskCardEditor?.addEventListener("submit", (event) => {
     event.preventDefault();
     const task = state.tasks.find((item) => item.id === state.openTaskId);
+    if (task?.presentationDeferred
+      && !(openTaskDetails.get(task.id)?.revision === task.detailsRevision && openTaskDetails.get(task.id)?.task)) return;
     const title = taskCardTitle.value.trim();
     if (!task || !title) {
       taskCardTitle.reportValidity?.();

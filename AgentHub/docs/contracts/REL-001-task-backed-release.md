@@ -1,5 +1,39 @@
 # REL-001 — Task-backed Workspace release
 
+Multiple authorized publication targets for one canonical repository share one
+repository approval only when both exact local-main and origin-main pins agree.
+Both target identities and publication ordering remain in original authorization.
+Conflicting pins refuse before preparation. Direct preflight duplicate and foreign
+repository guards remain strict.
+
+The existing request-addressed first-compose recovery also accepts positively
+uncaptured generation one. It requires the same failed compose receipts, original
+input and generation-zero CAS, fresh complete prepared selection and approvals,
+plus generation-owner proof that both checkout and archive namespaces are absent.
+The prepared commit, tree, manifest and plan are bound before recovery admission
+and rechecked before capture. Existing generation locking rechecks absence before
+creating anything. Occupied, partial, archived, mixed or changed evidence refuses.
+The same original appends the next compose attempt and stays at generation zero
+until actual capture. Failed history, target authority, notes, version and test
+selection remain intact. See ADR-HUB-422-uncaptured-first-compose.
+
+First-compose inspection owns one Workspace Await lease through complete prepared
+verification. Its uncaptured branch uses the existing locked preparation body
+without reacquiring that non-reentrant lease. Ordinary preparation still acquires
+the same lease at its public boundary.
+
+## Public package consumer for new local publications
+
+New normal installed-Hub release intakes record the immutable public-package-v1
+installation policy and require a separately approved public package target for
+the same repository. Public targets execute first. The public versioned installer
+and published package own local installation and update. The existing publication
+checkpoint can retain an exact pending INSTALL handoff while the enclosing lock
+is released. Installation readiness and the same original consumer outcome are
+required before remaining stages and finalization. Generic Git publication state
+alone does not establish that consumer. Historical authorization and recorded tool
+executors retain their original path on replay. See ADR-HUB-422-public-runtime-installer.
+
 ## Unregistered partial generations after explicit amendment
 
 An ordinary addressed amendment may capture the exact terminal failed compose
@@ -3882,6 +3916,29 @@ See ADR-HUB-351-release-metadata-amendment.
 
 ## Explicit GitHub distribution target
 
+After a completed installed publication, the existing RM continuation can carry
+an exclusive `assets_publication` admission for its exact current generation.
+The request supplies a separate GitHub distribution target, the existing
+PACKAGED input identity/result digest, original PREPARED receipt digest and
+external tool pin. Completed-generation validation/finalization evidence,
+frozen identity and fresh revision/generation CAS remain mandatory. The existing
+release-step receipt records the separate target authorization. The original
+completed operation, selected results, target authorization, effects and old
+execution retain their identities and bytes.
+
+This assets execution uses a separate existing publication journal and consumes
+the original verified package namespace. Its GitHub adapter persists each
+tag/create/upload intent and verifies the exact public assets. Unknown remote
+outcomes retain their existing readback and refusal semantics. The source API
+returns the addressed assets effect separately from the prior completed release.
+An unknown outer MCP receipt can enter this same assets owner again only under
+its original request, actor and argument hash. Fresh completed-generation proof,
+source/package guards and the original target lock/journal still precede effects.
+The outer receipt becomes succeeded only after that owner returns its verified
+applied result. An unconfirmed remote intent keeps its unknown refusal semantics.
+Anonymous recipient install/update/rollback verification remains part of delivery.
+See ADR-HUB-422-published-assets-admission.
+
 Recipient HTTPS transport does not request early peer connection closure. It
 uses the existing stdlib TLS/certificate policy, proxy and redirect owners and
 closes each response locally after the same bounded framed read or failure.
@@ -4161,3 +4218,28 @@ version binding. Runtime allocation collisions still refuse. This is recovery
 of legacy first-freeze materialization, not a general terminal-resume or dirty-tree
 waiver. Remove the materialization compatibility branch when retained affected
 generations are no longer supported. See ADR-HUB-424-first-freeze-recovery.
+
+
+## Retained original runtime allocation recovery
+
+The existing public continue may recover the SAME frozen generation only after
+a positively failed later allocator collision with its own prepared runtime.
+Idle original/CAS, exact all-Await results, NONE plan/inventory, notes, version,
+executor, frozen clone and prepared artifact custody must match. All target
+readbacks must positively remain not_applied. The existing SQLite owner repeats
+receipt/generation guards and appends recovery without replacing failed history.
+Publication rechecks source and artifact authority and reuses the original
+generation/checkpoints. Changed, partial, UNKNOWN or foreign evidence refuses.
+No allocator exclusion, generation retargeting or generic terminal resume is
+introduced. See ADR-HUB-422-retained-generation-recovery.
+
+A failed unpublished generation retains its checkout. If an older owner already
+retired it into its positively completed native object archive, this same narrow
+recovery restores only that original repository and generation metadata under
+their generation, repository and archive leases. Archive identity, original
+consumer, raw refs/index/worktree bytes, frozen metadata and complete object
+closure must match. Existing immutable pool objects are linked without a history
+copy or alternates. The existing maintenance owner records the restored physical
+custody without rewriting the original archive or consumer receipt. Foreign or
+changed destinations refuse. Frozen verification and complete test inventory
+readback follow restoration, before recovery CAS and publication admission.
