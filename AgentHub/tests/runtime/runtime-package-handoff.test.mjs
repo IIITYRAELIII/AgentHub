@@ -688,7 +688,7 @@ for (const lostReply of [false, true]) test(`public package entry uses one grace
   assert.equal(failed.handoff, undefined);
 });
 
-for (const failureAt of ["control-reply", "incoming-arm"]) test(`public package entry reads exact terminal refusal during ${failureAt}`, async t => {
+for (const failureAt of ["control-reply", "incoming-arm", "changed-binding"]) test(`public package entry reads exact terminal refusal during ${failureAt}`, async t => {
   const f = await packageEntryFixture(t);
   const binding = { ...f.binding, operationId: f.input.operationId,
     target: { ...await verifyPublicPackageTarget(f.input, { readMetadata: f.readMetadata }),
@@ -701,8 +701,15 @@ for (const failureAt of ["control-reply", "incoming-arm"]) test(`public package 
     performRestart: () => assert.fail("no stop before incoming admission"),
     scheduleRestart: () => assert.fail("active work cannot schedule"),
     preparePackage: async () => ({ schema: 1, binding, sha256: packageBindingDigest(binding) }) });
-  const refuse = () => f.store.settle(f.input.operationId, { succeeded: false, phase: "failed" });
-  const result = await startPackageBootstrap(f.requestFile, { readMetadata: f.readMetadata,
+  const refuse = () => {
+    if (failureAt === "changed-binding") {
+      const foreign = { ...binding, old: { ...binding.old, pid: binding.old.pid + 1 } };
+      f.store.transition(f.input.operationId, { metadata: {
+        packageHandoff: { schema: 1, binding: foreign, sha256: packageBindingDigest(foreign) } } });
+    }
+    return f.store.settle(f.input.operationId, { succeeded: false, phase: "failed" });
+  };
+  const admission = startPackageBootstrap(f.requestFile, { readMetadata: f.readMetadata,
     control: async (action, business) => {
       if (action === "runtime-health") return { live: true, ready: true,
         process: { pid: process.pid, releaseId: "old" }, packageHandoff: { protocol: 1 } };
@@ -718,6 +725,13 @@ for (const failureAt of ["control-reply", "incoming-arm"]) test(`public package 
       queueMicrotask(() => { refuse(); child.emit("exit", 1); });
       return child;
     } });
+  if (failureAt === "changed-binding") {
+    await assert.rejects(admission, /Original binding changed/u);
+    assert.deepEqual([dispatches, bridges], [1, 1]);
+    assert.equal(f.store.getReadonly(f.input.operationId).metadata.packageNative, undefined);
+    return;
+  }
+  const result = await admission;
   assert.equal(result.status, "failed"); assert.equal(result.outcome, "failed");
   assert.equal(result.handoff, undefined); assert.equal(result.accepted, undefined);
   assert.deepEqual([dispatches, bridges], [1, failureAt === "incoming-arm" ? 1 : 0]);
