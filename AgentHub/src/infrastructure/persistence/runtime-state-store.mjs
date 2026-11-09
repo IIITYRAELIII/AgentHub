@@ -392,16 +392,30 @@ export class RuntimeStateStore {
 
   transitionMessageCommand(transition) {
     const outcome = this.#messageCommands.transition(transition);
-    if (outcome.changed) this.messageCommandRevision = (this.messageCommandRevision ?? 0) + 1;
     return Promise.resolve(outcome);
   }
 
+  get messageCommandRevision() {
+    return this.#messageCommands.revision;
+  }
+
+  deferredInputForCancellation(identity) {
+    return this.#messageCommands.deferredInputForCancellation(identity);
+  }
+
   cancelDeferredInput(item) {
-    const outcome = this.#messageCommands.cancelQueuedInput(item);
-    if (outcome.owned && !outcome.duplicate) {
-      this.messageCommandRevision = (this.messageCommandRevision ?? 0) + 1;
+    const span = this.#commandTrace?.startBestEffortSpan?.({
+      commandId: item.clientUserMessageId, stage: "durable-command-cancel", transport: "desktop",
+      metadata: { itemId: item.id },
+    });
+    try {
+      const outcome = this.#messageCommands.cancelQueuedInput(item);
+      span?.finish({ outcome: "succeeded", metadata: { owned: outcome.owned, duplicate: outcome.duplicate === true } });
+      return Promise.resolve(outcome);
+    } catch (error) {
+      span?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
+      throw error;
     }
-    return Promise.resolve(outcome);
   }
 
   projectMessageReceipt(receipt) {

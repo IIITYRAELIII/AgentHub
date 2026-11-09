@@ -48,6 +48,7 @@
       "title": "Durable message command",
       "document": "MSG-001-durable-message-command.md",
       "paths": [
+        "docs/decisions/ADR-HUB-422-addressed-queue-receipts.md",
         "docs/decisions/ADR-0072-exact-steer-intent.md",
         "src/interfaces/desktop/**",
         "src/interfaces/telegram/task-view-controller.mjs",
@@ -107,6 +108,8 @@
       "title": "Canonical message projection",
       "document": "UI-001-message-projection.md",
       "paths": [
+        "docs/decisions/ADR-HUB-422-addressed-queue-receipts.md",
+        "tests/public/queue-canonical-cancellation.test.mjs",
         "docs/decisions/ADR-0274-upload-attempt-storage.md",
         "tests/composition/message-lifecycle.test.mjs",
         "tests/public/attachment-upload-production.test.mjs",

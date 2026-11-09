@@ -175,6 +175,7 @@ export function createDesktopRunRouterWiring({
       saveState: services.saveState,
       updateReceipt: services.updateDeferredReceipt,
       persistCancellation: services.persistDeferredCancellation,
+      findDurableInput: services.findDurableDeferredInput,
       cleanupFiles: services.cleanupDeferredFiles,
       updateMessage: services.updateDeferredMessage,
       scheduleNext: services.scheduleNextDeferredInput,

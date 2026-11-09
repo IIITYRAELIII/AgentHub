@@ -20,6 +20,42 @@ function accept(store, sequence) {
   return { ...command, accepted: store.accept({ ...command, destination: "queued" }) };
 }
 
+test("addressed cancellation preserves foreign, accepted and unknown guards through terminal retention", async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub422-cancel-retention-"));
+  const store = new MessageCommandLedgerStore({ dataDir, terminalHotLimit: 0, terminalArchiveLimit: 0 });
+  t.after(async () => { store.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const original = accept(store, "original");
+  assert.equal(store.deferredInputForCancellation({ id: original.item.id }).clientUserMessageId,
+    original.item.clientUserMessageId);
+  assert.equal(store.deferredInputForCancellation({ id: "foreign", clientUserMessageId: original.item.clientUserMessageId }), null);
+  assert.equal(store.deferredInputForCancellation({ id: original.item.id, clientUserMessageId: "foreign" }), null);
+  store.cancelQueuedInput(original.item);
+  assert.equal(store.get(original.item.clientUserMessageId).item, null);
+  const compacted = store.projectReceipt({ clientUserMessageId: original.item.clientUserMessageId });
+  assert.equal(compacted.result.cancelled, true);
+  assert.equal(compacted.result.queued, false);
+  const exact = store.deferredInputForCancellation({ id: original.item.id, clientUserMessageId: original.item.clientUserMessageId });
+  assert.equal(store.cancelQueuedInput(exact).duplicate, true);
+  assert.equal(store.accept({ ...original, destination: "queued" }).retryResult.cancelled, true);
+  const sameItemA = messageCommandFixture({ clientUserMessageId: "ambiguous-a", itemId: "shared-item-id" });
+  const sameItemB = messageCommandFixture({ clientUserMessageId: "ambiguous-b", itemId: "shared-item-id" });
+  store.accept({ ...sameItemA, destination: "queued" });
+  store.accept({ ...sameItemB, destination: "queued" });
+  assert.equal(store.deferredInputForCancellation({ id: "shared-item-id" }), null);
+  assert.equal(store.deferredInputForCancellation({ id: "shared-item-id", clientUserMessageId: "ambiguous-a" })
+    .clientUserMessageId, "ambiguous-a");
+  for (const state of ["dispatching", "started", "unknown"]) {
+    const command = accept(store, state);
+    store.transition({ clientUserMessageId: command.item.clientUserMessageId, expectedStates: ["queued"], state });
+    assert.throws(() => store.cancelQueuedInput(command.item), { code: "ERR_DEFERRED_CANCEL_UNCONFIRMED" });
+    assert.equal(store.get(command.item.clientUserMessageId).state, state);
+  }
+  const accepted = messageCommandFixture({ clientUserMessageId: "provider-accepted", itemId: "provider-item",
+    receipt: { result: { providerAccepted: true } } });
+  store.accept({ ...accepted, destination: "queued" });
+  assert.throws(() => store.cancelQueuedInput(accepted.item), { code: "ERR_DEFERRED_CANCEL_UNCONFIRMED" });
+});
+
 test("only a persisted undelivered same-Stream intent may move an exact occupancy binding", async (t) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-stream-rekey-"));
   const store = new MessageCommandLedgerStore({ dataDir });

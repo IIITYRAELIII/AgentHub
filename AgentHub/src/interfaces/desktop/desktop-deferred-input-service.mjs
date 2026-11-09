@@ -28,6 +28,7 @@ export class DesktopDeferredInputService {
       "activeTitle", "snapshot",
     ]) requiredFunction(dependencies[name], name);
     if (dependencies.persistCancellation != null) requiredFunction(dependencies.persistCancellation, "persistCancellation");
+    if (dependencies.findDurableInput != null) requiredFunction(dependencies.findDurableInput, "findDurableInput");
     if (!dependencies.composerTransfers?.remember || !dependencies.composerTransfers?.has
       || !dependencies.composerTransfers?.forget || !dependencies.composerTransfers?.ready) {
       throw new TypeError("composerTransfers is required");
@@ -44,7 +45,8 @@ export class DesktopDeferredInputService {
       ? `${action}\0${String(params.token ?? "").trim()}`
       : action === "edit"
       ? `${action}\0${String(params.text ?? "").trim()}`
-      : action === "move" ? `${action}\0${String(params.direction ?? "")}` : action;
+      : action === "move" ? `${action}\0${String(params.direction ?? "")}`
+      : action === "cancel" ? `${action}\0${String(params.clientUserMessageId ?? "")}` : action;
     return this.#withAction(id, actionKey, () => this.#execute(id, action, params, context));
   }
 
@@ -65,7 +67,12 @@ export class DesktopDeferredInputService {
   async #execute(id, action, params, context) {
     const d = this.#d;
     await d.composerTransfers.ready?.();
-    const item = d.pendingInputs.get(id) ?? d.queuedInputs.get(id);
+    const projectedItem = d.pendingInputs.get(id) ?? d.queuedInputs.get(id);
+    const item = projectedItem ?? (action === "cancel"
+      ? await d.findDurableInput?.({ id, clientUserMessageId: params.clientUserMessageId }) : null);
+    if (item && params.clientUserMessageId && item.clientUserMessageId !== params.clientUserMessageId) {
+      throw new Error("Идентификатор исходного сообщения не совпадает");
+    }
     if (!item) {
       if (action === "composer-commit" && d.composerTransfers.has({ id, token: params.token })) {
         return { accepted: true, id, committed: true, message: "Сообщение возвращено в композер" };
@@ -187,11 +194,16 @@ export class DesktopDeferredInputService {
         throw new Error("Сообщение уже отправляется; отмена не подтверждена");
       }
       const destination = d.pendingInputs.has(id) ? "pending" : "queued";
+      // The canonical transition owns cancellation. A missing RAM projection is
+      // never recreated when the durable owner refuses or cannot confirm it.
+      const cancelled = await d.persistCancellation?.(item);
+      if (!projectedItem && cancelled?.owned !== true) {
+        throw new Error("Отмена исходного сообщения не подтверждена");
+      }
       const wasScheduled = destination === "queued" ? d.cancelSchedule(id) : false;
       d.pendingInputs.delete(id);
       d.queuedInputs.delete(id);
       try {
-        const cancelled = await d.persistCancellation?.(item);
         if (cancelled?.owned !== true) await d.saveState();
       } catch (error) {
         (destination === "queued" ? d.queuedInputs : d.pendingInputs).set(id, item);
@@ -201,10 +213,13 @@ export class DesktopDeferredInputService {
       d.updateReceipt(item, "cancelled", {
         cancellationScope: "future-hub-dispatch", providerEffectOutcome: "unknown",
       });
-      await d.cleanupFiles(item);
-      await d.updateMessage(item, "❌ Сохранённое сообщение отменено.");
-      d.scheduleNext(item);
-      return { accepted: true, cancellationScope: "future-hub-dispatch",
+      if (!cancelled?.duplicate) {
+        await d.cleanupFiles(item);
+        await d.updateMessage(item, "❌ Сохранённое сообщение отменено.");
+        d.scheduleNext(item);
+      }
+      return { accepted: true, id, clientUserMessageId: item.clientUserMessageId,
+        cancelled: true, cancellationScope: "future-hub-dispatch",
         providerEffectOutcome: "unknown", message: "Сохранённое сообщение отменено" };
     }
     if (action === "queue" || action === "retry") {
