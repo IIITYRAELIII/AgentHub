@@ -225,6 +225,11 @@ export class ReleaseOperationPublication {
       await mkdir(layout.root, { recursive: true });
       const current = await this.readback({ operation, generation, target });
       if (["applied", "already_applied"].includes(current.status)) return { result: current };
+      if (current.status === "partial" && current.cursor?.consumerActive === true) {
+        const error = new Error(`public installer for ${target.targetId} is still owned by its admitted consumer`);
+        error.code = "RELEASE_EXTERNAL_CONDITION";
+        throw error;
+      }
       if (current.status === "unknown") {
         const error = new Error(`publication runner for ${target.targetId} is still active or has an unknown effect`);
         error.code = "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
@@ -659,7 +664,10 @@ export class ReleaseOperationPublication {
             tool: toolIdentity, prepared: await artifacts.preparedRuntimeReceipt(saved.identity),
             api });
         } });
-      const proof = await consumer.readback();
+      let proof;
+      try { proof = await consumer.readback(); } catch {
+        return { status: "unknown", cursor: { reason: "public-installer-proof-refused" } };
+      }
       if (proof.status !== "ready") return proof;
       if (result?.status === "applied" && result.operationId === operation.operationId
         && result.generation === generation.generation && result.targetId === target.targetId

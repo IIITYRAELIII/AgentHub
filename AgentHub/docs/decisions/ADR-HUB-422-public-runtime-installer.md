@@ -52,6 +52,9 @@ Inherited publication/restart ownership is cleared for that independent child.
 Missing or unreadable originals after dispatch remain UNKNOWN without another
 launch. A successful maintenance original must retain the exact old current,
 physical runtime/data owner and admitted public asset identities.
+Canonical requested, blocked or running consumer state prevents another
+publication worker. Readback observes that same consumer until its terminal
+outcome permits remaining stages, while UNKNOWN still requires its own evidence.
 
 Stopped installation uses the same public CLI. The existing cold-start owner
 then starts the installed Host, with a durable intent in the same publication

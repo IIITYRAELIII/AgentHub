@@ -215,16 +215,26 @@ export function createPublicRuntimeInstaller({ operation, generation, target, ru
           || admitted.target?.[key]?.bytes !== input.target[key]?.bytes)) throw new Error("Public installer maintenance binding changed");
       if (original.status !== "succeeded" || original.outcome !== "succeeded") return {
         status: original.status === "failed" || original.outcome === "unknown" ? "unknown" : "partial",
-        cursor: { reason: "public-installer-maintenance", operationId, phase: original.phase, outcome: original.outcome },
+        cursor: { reason: "public-installer-maintenance", operationId, phase: original.phase, outcome: original.outcome,
+          consumerActive: ["requested", "blocked", "running"].includes(original.status) },
       };
     } else if (saved.mode !== "stopped" || !["cold_start_intent", "cold_started"].includes(saved.phase) || saved.exitCode !== 0) {
       return { status: "unknown", cursor: { reason: "public-installer-child-unsettled", operationId } };
     }
     await assertInput(saved);
-    const status = await readStatus({ runtimeRoot });
-    if (status.current !== input.target.releaseId) throw new Error("Public installer current pointer differs");
-    await verifyInstalled(runtimeRoot, input);
-    await verifyReady({ runtimeRoot, expectedReleaseId: input.target.releaseId, timeoutMs: 1000 });
+    let status;
+    try { status = await readStatus({ runtimeRoot }); } catch {
+      return { status: "unknown", cursor: { reason: "public-installer-runtime-unreadable", operationId } };
+    }
+    if (status.current !== input.target.releaseId) return {
+      status: "unknown", cursor: { reason: "public-installer-current-drift", operationId },
+    };
+    try { await verifyInstalled(runtimeRoot, input); } catch {
+      return { status: "unknown", cursor: { reason: "public-installer-installed-payload", operationId } };
+    }
+    try { await verifyReady({ runtimeRoot, expectedReleaseId: input.target.releaseId, timeoutMs: 1000 }); } catch {
+      return { status: "partial", cursor: { reason: "public-installer-readiness", consumerActive: true, operationId } };
+    }
     return { status: "ready", operationId, binding, inputIdentity: input.inputIdentity,
       releaseId: input.target.releaseId, sourceCommit: frozen.sourceCommit, version: frozen.version };
   }

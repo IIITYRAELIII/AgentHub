@@ -144,6 +144,7 @@ test("actual publication readback requires same canonical maintenance, installed
   const maintenance = new MaintenanceOperationStore({ dataDir: path.join(runtimeRoot, "data") });
   maintenance.get("fixture-schema");
   let current = "old-runtime", ready = true, manifestValid = true, children = 0, joined = 0;
+  let publicationChildren = 0;
   const ports = {
     readStatus: async () => ({ current, running: true, ready: true }),
     readMaintenance: id => maintenance.getReadonly(id),
@@ -166,6 +167,7 @@ test("actual publication readback requires same canonical maintenance, installed
   const saved = (await journal.read()).progress.publicRuntimeInstaller;
   await writeJson(path.join(localRoot, "runner.json"), { candidate: generation.identitySha256, tool, status: "exited", exitCode: 0 });
   const publication = new ReleaseOperationPublication({ dataDir, runtimeRoot,
+    spawnImpl: () => { publicationChildren++; return spawn(process.execPath, ["-e", "process.exit(0)"], { windowsHide: true, stdio: "ignore" }); },
     processAliveImpl: () => false, readPublicationStateImpl: async () => ({ revision: identity.revision }),
     readToolPackage: async () => ({ ...tool, assertUnchanged: async () => {} }),
     createArtifactSteps: () => ({ preparedRuntimeReceipt: async () => f.prepared }),
@@ -178,14 +180,21 @@ test("actual publication readback requires same canonical maintenance, installed
     roots: { runtime: saved.runtime }, old: { releaseId: "old-runtime" }, target: input.target };
   const original = maintenance.create({ operationId: binding.operationId, kind: "restart", streamId: "fixture", threadId: "fixture",
     metadata: { packageHandoff: { schema: 1, binding, sha256: packageBindingDigest(binding) } } });
+  await assert.rejects(publication.publish({ operation, generation, target }), error => error.code === "RELEASE_EXTERNAL_CONDITION");
+  console.log(JSON.stringify({ canonicalConsumer: original.status, publicationChildren }));
+  assert.equal(publicationChildren, 0, "an admitted package consumer cannot launch another publication worker");
+  assert.equal((await readback()).cursor.consumerActive, true);
   maintenance.transition(original.operationId, { status: "running", phase: "package-installing" }, { expectedRevision: original.revision });
   maintenance.settle(original.operationId, { succeeded: true });
-  await assert.rejects(readback(), /current pointer differs/u);
+  assert.equal((await readback()).cursor.reason, "public-installer-current-drift");
+  assert.equal((await readback()).status, "unknown");
   current = input.target.releaseId;
   ready = false;
-  await assert.rejects(readback(), /actual Ready/u);
+  assert.equal((await readback()).cursor.reason, "public-installer-readiness");
+  assert.equal((await readback()).cursor.consumerActive, true);
   ready = true; manifestValid = false;
-  await assert.rejects(readback(), /whole payload/u);
+  assert.equal((await readback()).cursor.reason, "public-installer-installed-payload");
+  assert.equal((await readback()).status, "unknown");
   manifestValid = true;
   const complete = await readback();
   assert.equal(complete.status, "partial");
@@ -196,6 +205,7 @@ test("actual publication readback requires same canonical maintenance, installed
   await writeJson(path.join(localRoot, "result.json"), result);
   assert.deepEqual(await readback(), result);
   f.ref.object.sha = "0".repeat(40);
-  await assert.rejects(readback(), /tag or release changed/u);
+  assert.equal((await readback()).cursor.reason, "public-installer-proof-refused");
+  assert.equal((await readback()).status, "unknown");
   assert.equal(children, 1); assert.equal(joined, 1);
 });
