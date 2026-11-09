@@ -136,10 +136,15 @@ try {
   await event("verified-local-artifacts");
   const previous = input.artifacts[0], previousRoot = path.join(root, "releases", previous.releaseId);
   const previousManifest = await json(path.join(previous.releaseRoot, "runtime-manifest.json"));
+  let borrowedDependencyFiles = 0;
   for (const name of [...previousManifest.files.map(file => file.path), "runtime-manifest.json"]) {
     const target = path.join(previousRoot, name); await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.copyFile(path.join(previous.releaseRoot, name), target, 1);
+    if (name.startsWith("node_modules/")) {
+      await fs.link(path.join(previous.releaseRoot, name), target); borrowedDependencyFiles++;
+    } else await fs.copyFile(path.join(previous.releaseRoot, name), target, 1);
   }
+  report.borrowedDependencies = { root: previous.releaseRoot, files: borrowedDependencyFiles,
+    method: "immutable private dependency hardlinks; retain both owners until disposition" };
   await installPreparedRuntime({ runtimeRoot: root, releaseId: previous.releaseId });
   await event("initial-private-instance-prepared");
   telegram = new LoopbackTelegramApi(); await telegram.start();
@@ -463,6 +468,7 @@ finally {
   }
   if (host && host.exitCode === null) await Promise.race([once(host, "close"), new Promise((_, reject) => setTimeout(() => reject(Error("Owned Host did not join")), 15_000))]);
   if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  await inspectAcceptanceArtifact(input.artifacts[0].releaseRoot);
   await telegram?.stop(); report.ownedChildren = [...children].map(child => ({ pid: child.pid, code: child.exitCode }));
   report.finishedAt = new Date().toISOString(); await save();
   if (report.status !== "passed") process.exitCode = 1;
