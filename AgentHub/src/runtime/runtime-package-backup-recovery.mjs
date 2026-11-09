@@ -198,5 +198,6 @@ export async function recoverPackageBackup(requestFile, { executeHost = execute 
       { windowsHide: true, cwd: request.helper.directory, maxBuffer: 1024 * 1024 });
   }
   const current = store.getReadonly(request.operationId);
-  return { operationId: current.operationId, status: current.status, phase: current.phase, effectsReplayed: false };
+  return { operationId: current.operationId, status: current.status, phase: current.phase,
+    effectsReplayed: false, nativeInvocationJoined: admitted };
 }

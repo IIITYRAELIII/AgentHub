@@ -281,6 +281,7 @@ test("closed acceptance SAME backup original settles failed with history under r
   const helper = await recoveryHelper(t), f = await backupRefusalFixture(t, helper);
   const pointer = await readFile(path.join(f.root, "current.json")), config = await readFile(path.join(f.root, "config.json"));
   const result = await recoverPackageBackup(f.requestFile);
+  assert.equal(result.nativeInvocationJoined, true);
   assert.equal(result.status, "failed"); assert.equal(result.phase, "retained-stopped-current");
   const saved = f.store.getReadonly(f.binding.operationId), recovery = saved.metadata.packageBackupRecovery;
   assert.deepEqual(recovery.original, f.original);
