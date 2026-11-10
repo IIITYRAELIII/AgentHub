@@ -16,20 +16,31 @@ export function cleanupConfirmationCapsule(result) {
   const task = Object.fromEntries(["id", "taskNumber", "revision", "status", "workflowStatus"]
     .filter(key => result.task[key] != null).map(key => [key, result.task[key]]));
   const previewBytes = JSON.stringify(result.preview ?? null);
+  const absorbed = result.preview?.absorbedInto ?? result.absorption ?? null;
+  if (absorbed && (result.action !== "complete" || typeof absorbed.taskId !== "string" || !absorbed.taskId
+      || absorbed.taskId === result.task.id || !Number.isSafeInteger(absorbed.taskRevision))) return null;
   const capsule = { confirmationRequired: true, action: result.action, cleanupToken: result.cleanupToken, task,
     previewIdentity: { sha256: createHash("sha256").update(previewBytes).digest("hex"), bytes: Buffer.byteLength(previewBytes) },
+    ...(absorbed ? { absorption: { taskId: absorbed.taskId, taskRevision: absorbed.taskRevision } } : {}),
     warning: result.warning, receiptCompacted: true,
     ...(result.previewRecovery ? { previewRecovery: result.previewRecovery } : {}) };
   const complete = { ...capsule, preview: result.preview };
   return Buffer.byteLength(JSON.stringify(complete)) <= 65536 ? complete : { ...capsule, previewOmitted: true };
 }
 
-export function ordinaryCleanupOriginal(receipt, confirm) {
+export function cleanupConfirmationOriginal(receipt, confirm) {
   const execution = receipt?.taskExecution, args = execution?.arguments;
+  const absorption = args && Object.hasOwn(args, "absorbed_into_task_id");
+  // Only a read-only ordinary combined-closure preview joins this migration.
+  // Historical UNKNOWN special confirmations keep their original refusal.
+  if (absorption && (confirm || receipt.toolName !== "hub_task_complete"
+      || typeof args.absorbed_into_task_id !== "string" || !args.absorbed_into_task_id.trim()
+      || args.absorbed_into_task_id === args.task_id)) return null;
   if (!["hub_task_complete", "hub_task_delete"].includes(receipt?.toolName)
       || execution?.version !== 1 || execution.protocol !== "task-operation-interruption-v1"
       || !execution.ownerId || execution.cancellation || !args
-      || Object.keys(args).some(key => !["request_id", "task_id", "confirm_cleanup"].includes(key))
+      || Object.keys(args).some(key => !["request_id", "task_id", "confirm_cleanup",
+        ...(absorption ? ["absorbed_into_task_id"] : [])].includes(key))
       || args.request_id !== receipt.requestId || args.task_id !== execution.taskId
       || mcpArgumentsHash(args) !== receipt.argumentsHash
       || (confirm ? args.confirm_cleanup !== true : args.confirm_cleanup != null && args.confirm_cleanup !== false)) return null;

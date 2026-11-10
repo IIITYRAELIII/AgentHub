@@ -1,6 +1,6 @@
 import { TaskOperationInterruption, INTERRUPTIBLE_TASK_TOOLS, taskOperationInterrupted } from "./task-operation-interruption.mjs";
 import { createHash, createHmac, timingSafeEqual, randomUUID } from "node:crypto";
-import { TaskCleanupConfirmationRejectedError, cleanupConfirmationCapsule, ordinaryCleanupOriginal } from "../domain/task-cleanup-confirmation.mjs";
+import { TaskCleanupConfirmationRejectedError, cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../domain/task-cleanup-confirmation.mjs";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -1178,9 +1178,9 @@ export class HubMcpService {
       // Only the canonical interruption owner can continue its exact UNKNOWN
       // cancellation. Other historical operations and any live worker are read-only.
       const cleanupRecovery = !this.#pendingMutations.has(requestId)
-        && ((existing.status === "succeeded" && ordinaryCleanupOriginal(existing, false)
+        && ((existing.status === "succeeded" && cleanupConfirmationOriginal(existing, false)
           && existing.result?.receiptCompacted === true && !existing.result.cleanupToken)
-          || (existing.status === "unknown" && ordinaryCleanupOriginal(existing, true)));
+          || (existing.status === "unknown" && cleanupConfirmationOriginal(existing, true)));
       recoveringCleanup = Boolean(cleanupRecovery);
       if (!cleanupRecovery && (toolName !== "hub_task_operation_cancel" || existing.status !== "unknown"
         || this.#pendingMutations.has(requestId) || !this.taskOperationInterruption)) {
@@ -3412,11 +3412,12 @@ export class HubMcpService {
     }); });
     if (started.taskExecution?.cancellation) throw taskOperationInterrupted();
     if (started.status === "succeeded") {
-      if (ordinaryCleanupOriginal(started, false) && started.result?.receiptCompacted === true
+      if (cleanupConfirmationOriginal(started, false) && started.result?.receiptCompacted === true
           && !started.result.cleanupToken && started.result.taskId === args.task_id) {
         this.#task(context, args.task_id);
         return this.taskLifecycle.recoverCleanupConfirmation({ taskId: args.task_id, operationId: requestId,
           action: toolName === "hub_task_complete" ? "complete" : "delete", preview: true,
+          absorbedIntoTaskId: args.absorbed_into_task_id ?? null,
           readback: async ({ preview, validate }) => {
             const result = cleanupConfirmationCapsule({ ...preview, previewRecovery: {
               kind: "fresh-cleanup-preview-from-compacted-original-v1", refreshedAtMs: Date.now(),
@@ -3437,7 +3438,7 @@ export class HubMcpService {
       }
       throw new Error(started.error || "previous MCP operation failed");
     }
-    if (started.status === "unknown" && ordinaryCleanupOriginal(started, true)
+    if (started.status === "unknown" && cleanupConfirmationOriginal(started, true)
         && !this.#pendingMutations.has(requestId)) {
       this.#task(context, args.task_id);
       const error = new TaskCleanupConfirmationRejectedError(args.task_id, toolName === "hub_task_complete" ? "complete" : "delete");
@@ -3446,7 +3447,7 @@ export class HubMcpService {
           const identity = JSON.stringify({ ...started, replayed: undefined });
           const check = row => {
             validate();
-            if (JSON.stringify({ ...row, replayed: undefined }) !== identity || !ordinaryCleanupOriginal(row, true)
+            if (JSON.stringify({ ...row, replayed: undefined }) !== identity || !cleanupConfirmationOriginal(row, true)
                 || row.taskExecution.taskWorkspaceId !== task.workspaceId) throw new Error("Missing confirmation original changed");
           };
           check(this.workspaceCatalog.mcpOperation(requestId));

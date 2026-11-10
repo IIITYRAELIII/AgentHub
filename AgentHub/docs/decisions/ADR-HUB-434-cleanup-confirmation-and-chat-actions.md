@@ -22,6 +22,16 @@ timestamp is unchanged. This is not a reconstruction of lost historical bytes.
 Ordinary original reads remain read-only. Remove this compatibility branch once
 the addressed old compacted preview receipts have migrated.
 
+This read-only migration also covers the exact ordinary absorbed-preview family.
+Its capsule retains survivor identity/revision even when the complete plan is
+omitted. Recovery delegates to the existing combined-closure owner, acquiring
+Workspace Await and both Task/repository leases once and retaining them through
+the receipt CAS. It repeats full composition/Git proof, both Task revisions and
+original lifecycle absence. It neither reconstructs a historical token nor
+closes a Task. Other special modes and historical UNKNOWN absorbed confirmations
+remain excluded. A fresh owning stale combined token is typed pre-admission
+validation; a later valid confirmation still uses the full current plan.
+
 A typed owning token mismatch before cleanup admission is terminal failed
 validation. Text or a downstream lookalike code is not such proof. The exact
 protocol-v1 ordinary UNKNOWN confirmation whose immutable original arguments

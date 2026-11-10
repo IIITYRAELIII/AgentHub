@@ -1673,7 +1673,8 @@ export class TaskLifecycleService {
     return confirmation(task, action, preview);
   }
 
-  async #completeAbsorbed({ taskId, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId }) {
+  async #completeAbsorbed({ taskId, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
+    previewReadback = null }) {
     if (taskId === absorbedIntoTaskId) throw new Error("A Task cannot absorb itself");
     requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
     requiredMethod(this.taskGitWorkspaces, "withAbsorptionEvidenceOwned");
@@ -1743,8 +1744,19 @@ export class TaskLifecycleService {
         preview.warning = exactSquash
           ? "Close the squash-absorbed source Task and remove only its exact clean Git artifacts after the survivor is durably published."
           : "Close the source Task as combined. Its branch, worktree and history are preserved; this does not mark it published.";
-        if (confirmCleanup !== true) return preview;
-        if (expectedCleanupToken !== preview.cleanupToken) throw new Error("Combined closure confirmation is stale; read the preview again");
+        if (confirmCleanup !== true) {
+          if (!previewReadback) return preview;
+          const validate = () => {
+            if (this.#task(task.id).revision !== task.revision || this.#task(target.id).revision !== target.revision
+                || this.taskBoard.lifecycleTransition(operationId) || this.taskBoard.lifecycleOutcome(operationId)) {
+              throw new Error("Combined preview original has lifecycle admission or Task drift");
+            }
+          };
+          await this.#assertOwned(ownedLease);
+          validate();
+          return previewReadback({ task, preview, validate });
+        }
+        if (expectedCleanupToken !== preview.cleanupToken) throw new TaskCleanupConfirmationRejectedError(task.id, "complete");
         if (exactSquash && (cleanup.dirty || cleanup.unpublished.length)) {
           throw new Error("Squash-absorbed Task cleanup requires its exact clean source result and published survivor");
         }
@@ -2049,7 +2061,14 @@ export class TaskLifecycleService {
     });
   }
 
-  async recoverCleanupConfirmation({ taskId, operationId, action, preview = false, readback }) {
+  async recoverCleanupConfirmation({ taskId, operationId, action, preview = false, absorbedIntoTaskId = null, readback }) {
+    if (absorbedIntoTaskId) {
+      if (!preview || action !== "complete") throw new Error("Combined recovery supports only the exact read-only preview");
+      // Acquire Workspace and both Task/repository leases once, in the normal
+      // combined-closure order; never nest that owner inside a source-only lock.
+      return this.#completeAbsorbed({ taskId, operationId, absorbedIntoTaskId,
+        confirmCleanup: false, previewReadback: readback });
+    }
     return this.#withLock(taskId, async lease => {
       const task = this.#task(taskId);
       const validate = () => {

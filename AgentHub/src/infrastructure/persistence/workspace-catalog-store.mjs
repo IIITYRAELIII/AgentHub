@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { cleanupConfirmationCapsule, ordinaryCleanupOriginal } from "../../domain/task-cleanup-confirmation.mjs";
+import { cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../../domain/task-cleanup-confirmation.mjs";
 import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
 import { McpAdmissionContentionError } from "../../domain/mcp-admission-contention.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
@@ -1136,14 +1136,15 @@ export class WorkspaceCatalogStore {
   recoverCompactedCleanupPreview(requestId, { argumentsHash, expectedResult, result, validate } = {}) {
     return this.#transaction(() => {
       const row = this.mcpOperation(requestId);
-      if (row?.status === "succeeded" && row.argumentsHash === argumentsHash && ordinaryCleanupOriginal(row, false)
+      if (row?.status === "succeeded" && row.argumentsHash === argumentsHash && cleanupConfirmationOriginal(row, false)
           && row.result?.previewRecovery?.kind === "fresh-cleanup-preview-from-compacted-original-v1"
           && JSON.stringify(row.result.previewRecovery.previousReceipt?.result) === JSON.stringify(expectedResult)) return row;
       if (!row || row.status !== "succeeded" || row.argumentsHash !== argumentsHash
-          || !ordinaryCleanupOriginal(row, false) || row.result?.receiptCompacted !== true
+          || !cleanupConfirmationOriginal(row, false) || row.result?.receiptCompacted !== true
           || row.result?.cleanupToken || row.result?.taskId !== row.taskExecution.taskId
           || JSON.stringify(row.result) !== JSON.stringify(expectedResult)
-          || !cleanupConfirmationCapsule(result) || result.task.id !== row.taskExecution.taskId) {
+          || !cleanupConfirmationCapsule(result) || result.task.id !== row.taskExecution.taskId
+          || (result.absorption?.taskId ?? null) !== (row.taskExecution.arguments.absorbed_into_task_id ?? null)) {
         throw new Error("Compacted cleanup preview original changed");
       }
       if (typeof validate !== "function" || validate()?.then) throw new TypeError("Cleanup readback validator must be synchronous");
