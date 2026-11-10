@@ -18,6 +18,7 @@ import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspac
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { releaseTestPlans } from "../../src/infrastructure/filesystem/release-test-inventory.mjs";
 import * as releaseDomain from "../../src/domain/release-operation.mjs";
 const { createReleaseOperation, restoreReleaseOperation, effectiveReleaseTaskScope } = releaseDomain;
 
@@ -130,6 +131,7 @@ async function fixture(t, { conflicting = false } = {}) {
     validate: async () => { validationCalls++; throw Object.assign(new Error("controlled affected validation failure"), { code: "RELEASE_VALIDATION_FAILED" }); },
     publishTarget: never, readTarget: async () => ({ status: "not_applied", fixture: true }), finalize: never,
     reservePublication: input => adapter.reservePublication(input), withTaskSelection: input => adapter.withTaskSelection(input),
+    resolveTestPlans: releaseTestPlans,
   });
   const mcp = new HubMcpService({ workspaceCatalog: catalog, taskBoard: board, releasePreflight: preflight,
     releaseOperations: operations, workLog: { threadTurns: () => [] }, attachmentDirectory: path.join(root, "attachments"),
@@ -141,13 +143,28 @@ async function fixture(t, { conflicting = false } = {}) {
   const run = async taskIds => {
     const ack = await mcp.call("hub_release_run", { context_token, request_id: `prepared-public-${++nextRequest}`,
       ...(taskIds == null ? {} : { task_ids: taskIds }), validation_mode: "full",
-      approved_targets: [{ targetId: "private-target", kind: "agent-hub-publication", repositoryRoot: primary,
+      approved_targets: [{ targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: primary,
+        approvedLocalMainCommit: base, approvedOriginMainCommit: base },
+      { targetId: "private-target", kind: "agent-hub-publication", repositoryRoot: primary,
         approvedLocalMainCommit: base, approvedOriginMainCommit: base }] });
     assert.equal(ack.accepted, true); admitted.push(ack.operationId); scheduled.shift()();
     return { ack, snapshot: await operations.drain(ack.operationId) };
   };
   const continueOriginal = async operationId => {
-    await mcp.call("hub_release_continue", { context_token, request_id: `prepared-continue-${++nextRequest}`, operation_id: operationId });
+    const before = operations.get(operationId), scheduledBefore = scheduled.length;
+    const plain = await mcp.call("hub_release_continue", { context_token,
+      request_id: `prepared-plain-refused-${++nextRequest}`, operation_id: operationId });
+    assert.equal(plain.accepted, false);
+    assert.equal(plain.reason, "test-selection-required");
+    assert.deepEqual(operations.get(operationId), before);
+    assert.equal(scheduled.length, scheduledBefore);
+    const plan = await planner.plan(workspace.id);
+    const amended = await mcp.call("hub_release_continue", { context_token,
+      request_id: `prepared-explicit-amendment-${++nextRequest}`, operation_id: operationId,
+      expected_revision: before.operation.revision, expected_generation: before.operation.currentGeneration,
+      task_ids: plan.ready.map(task => task.taskId).sort(), task_scope: "all_await",
+      test_selection: { mode: "all", ids: [] } });
+    assert.equal(amended.accepted, true, JSON.stringify(amended));
     if (scheduled.length) scheduled.shift()();
     return operations.drain(operationId);
   };
@@ -226,7 +243,11 @@ test("same public original captures corrected whole Await as next generation and
   f.a.resultCommit = corrected;
   f.taskStore.recordTaskGitReference({ taskId: f.a.id, projectRoot: f.primary, branch: f.a.branch, resultSnapshot: { repoRoot: f.primary, tree: corrected } });
   await f.prepare(); const before = f.counters();
-  assert.deepEqual(f.operations.wakeForTask(c.id, { workspaceId: f.workspace.id }), [original.operationId]);
+  const beforeWake = f.operations.get(original.operationId);
+  assert.deepEqual(f.operations.wakeForTask(c.id, { workspaceId: f.workspace.id }), []);
+  assert.deepEqual(f.operations.get(original.operationId), beforeWake,
+    "a Task wake cannot authorize a new generation after validation failure");
+  assert.equal(f.scheduled.length, 0);
   const next = await f.continueOriginal(original.operationId);
   assert.equal(next.operation.operationId, original.operationId);
   assert.equal(next.operation.authorization.fingerprint, original.authorization.fingerprint);
