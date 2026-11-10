@@ -703,10 +703,17 @@ function fixture({
   return { calls, locks, plan, projectRoot, service };
 }
 
-for (const drift of ["none", "plan", "publication", "member", "row", "base"]) {
-  test(`preparation-only complete selection and ${drift} checks run through existing locks and terminal callback`, async () => {
+for (const approvedMain of [false, true]) for (const drift of ["none", "plan", "publication", "member", "row", "base",
+  ...(approvedMain ? ["approved-base", "origin"] : [])]) {
+  test(`preparation-only ${approvedMain ? "reviewed-main " : ""}complete selection and ${drift} checks run through existing locks and terminal callback`, async () => {
     const { service, plan, projectRoot, calls } = fixture();
     const envelope = preparationEnvelope(projectRoot);
+    const main = approvedMain ? "e".repeat(40) : "f".repeat(40);
+    Object.assign(envelope.repositories[0], { approvedBaseCommit: drift === "approved-base" ? "0".repeat(40) : main,
+      primaryMainCommit: main, originMainCommit: main });
+    let currentOrigin = main;
+    if (approvedMain) service.releaseGitWorkspaces.inspectMainChanges = async () => assert.fail("resume must not repeat main audit");
+
     plan.ready = envelope.tasks.map(({ rowRevision, ...item }) => item);
     const publication = { generation: "generation-1", repositories: [{ root: projectRoot, revision: "f".repeat(40) }] };
     envelope.publicationHash = preparationHash(publication);
@@ -717,7 +724,7 @@ for (const drift of ["none", "plan", "publication", "member", "row", "base"]) {
       )),
     });
     service.taskGitWorkspaces.releaseBaseEvidence = async () => (
-      { baseCommit: "f".repeat(40), publishedBaseCommit: "f".repeat(40) }
+      { baseCommit: main, publishedBaseCommit: "f".repeat(40) }
     );
     const locks = [];
     service.releaseGitWorkspaces.withAwaitTransition = async (_workspaceId, operation) => {
@@ -737,6 +744,13 @@ for (const drift of ["none", "plan", "publication", "member", "row", "base"]) {
       composed += 1;
       assert.equal(request.preflightRequestId, "preparation-original");
       assert.equal(request.preparationGuard.approvedTree, envelope.repositories[0].approvedTree);
+      assert.equal(request.approvedBaseCommit, main);
+      if (approvedMain) {
+        assert.equal(request.baseProvenance.approvedLocalMainCommit, main);
+        assert.equal(request.baseProvenance.approvedOriginMainCommit, main);
+      }
+      if (drift === "origin") currentOrigin = "0".repeat(40);
+
       if (drift === "plan") plan.revision = "changed";
       if (drift === "publication") publication.generation = "changed";
       if (drift === "member") plan.ready.push({ ...plan.ready[0], taskId: "foreign" });
@@ -748,6 +762,7 @@ for (const drift of ["none", "plan", "publication", "member", "row", "base"]) {
       requestId: "preparation-original", argumentsHash: "a".repeat(64),
       validate: async () => {
         validations += 1;
+        if (currentOrigin !== envelope.repositories[0].originMainCommit) throw new Error("origin pin changed");
         if (drift === "row" && validations > 1) throw new Error("selected row changed");
       },
       commitPrepared: async (candidate) => {
@@ -757,8 +772,8 @@ for (const drift of ["none", "plan", "publication", "member", "row", "base"]) {
         return { original: "preparation-original" };
       } });
     if (drift === "none") assert.deepEqual(await operation, { original: "preparation-original" });
-    else await assert.rejects(operation, /changed/);
-    assert.equal(composed, drift === "base" ? 0 : 1);
+    else await assert.rejects(operation, /changed|agreed main/);
+    assert.equal(composed, ["base", "approved-base"].includes(drift) ? 0 : 1);
     assert.equal(terminal, drift === "none" ? 1 : 0);
     assert.deepEqual(locks, []);
     assert.equal(calls.some(([name]) => ["refresh-contour", "resolve-contour", "production-validation"].includes(name)), false);

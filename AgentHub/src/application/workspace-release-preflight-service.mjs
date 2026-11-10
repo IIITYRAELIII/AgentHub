@@ -898,6 +898,9 @@ export class WorkspaceReleasePreflightService {
         publishedBaseCommit: publicationBaselineFor(repository, publication).publishedRevision,
         tasks: repository.frozenTasks, lease,
       });
+      const preparationRepository = preparation?.envelope.repositories.find((item) => (
+        canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot)
+      ));
       let reviewed = null;
       if (explicitApprovals) {
         const baseline = publicationBaselineFor(repository, publication);
@@ -921,6 +924,20 @@ export class WorkspaceReleasePreflightService {
         }
         // Native composition starts at the explicitly agreed local main.
         // Reviewing origin does not silently adopt it as a different base.
+        reviewed = { provenance, adoption: null };
+      }
+      if (!reviewed && preparationRepository && !preparationRepository.localSourceBaseline
+          && preparationRepository.approvedBaseCommit !== preparationRepository.publishedRevision) {
+        // The authenticated preparation already bound this reviewed main/origin.
+        // Its owner repeats those exact pins; resume must not rerun main audit or
+        // silently replace the approved base with the older publication.
+        const provenance = reviewedBaseProvenance({ repository,
+          publishedRevision: preparationRepository.publishedRevision,
+          approval: { approvedLocalMainCommit: preparationRepository.primaryMainCommit,
+            approvedOriginMainCommit: preparationRepository.originMainCommit } });
+        if (preparationRepository.approvedBaseCommit !== provenance.approvedLocalMainCommit) {
+          throw new ReleasePreparationRejectedError("Approved preparation base differs from its agreed main");
+        }
         reviewed = { provenance, adoption: null };
       }
       baseChecks.push({ repository, base, reviewed });
@@ -947,9 +964,6 @@ export class WorkspaceReleasePreflightService {
           throw new ReleasePreparationRejectedError("Preparation registered Task base/result evidence changed");
         }
       }
-      const preparationRepository = preparation?.envelope.repositories.find((item) => (
-        canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot)
-      ));
       let localSource = preparationRepository?.localSourceBaseline ?? null;
       if (!preparation && !generationIdentity && (base.adoptions?.length
           || !reviewed && base.baseCommit !== base.publishedBaseCommit)) {
