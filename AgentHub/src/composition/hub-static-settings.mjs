@@ -9,6 +9,7 @@ import {
   claudeModelLabel,
   CLAUDE_REASONING_EFFORTS,
   CLAUDE_REASONING_LABELS,
+  isRetiredCodexModel,
 } from "../domain/agent-runtime-settings.mjs";
 
 const AGENT_ICONS = ["👾", "🦉", "🐙", "🕶️", "🚀", "⚡", "💻", "🔮", "🛰️", "🔥", "✨"];
@@ -17,7 +18,7 @@ export function createHubStaticSettings(config, agentHubRoot) {
   const claudeModels = [...CLAUDE_MODEL_ALIASES];
   const claudeModelLabels = CLAUDE_MODEL_LABELS;
   const codexModels = orderCodexModels(config.codexModels);
-  if (!codexModels.length) codexModels.push({ value: "gpt-5.6-terra", label: "GPT-5.6 Terra" });
+  if (!config.codexModels.length) codexModels.push({ value: "gpt-5.6-terra", label: "GPT-5.6 Terra" });
   const normalizeCodexModel = (value) => {
     const requested = String(value ?? "").toLowerCase();
     const codexModelAliases = new Map(codexModels.flatMap((model) => ([
@@ -28,13 +29,16 @@ export function createHubStaticSettings(config, agentHubRoot) {
     // Preserve it verbatim; only the live picker grants new selections.
     return codexModelAliases.get(requested)
       ?? ((/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(requested))
-        ? requested : codexModels[0].value);
+        ? requested : codexModels[0]?.value ?? config.codexModels[0]?.value);
   };
   const codexModelLabel = (value) => (
     codexModels.find((model) => model.value === value)?.label ?? value
   );
-  const defaultCodexModel = codexModels.some((model) => model.value === config.codexModel)
-    ? config.codexModel : codexModels[0].value;
+  // Picker availability cannot authorize replacing an explicit retired default.
+  // Retain that ID so the provider owner refuses dispatch until a user chooses.
+  const defaultCodexModel = isRetiredCodexModel(config.codexModel)
+    || codexModels.some((model) => model.value === config.codexModel)
+    ? config.codexModel : codexModels[0]?.value ?? config.codexModels[0]?.value;
   const defaultCodexReasoningEffort = CODEX_REASONING_EFFORTS.includes(config.codexReasoningEffort)
     ? config.codexReasoningEffort
     : "high";

@@ -40,3 +40,7 @@ provider dispatch. Configured non-Spark classification and ordinary available
 model actions retain their owners. Existing Spark preferences, Task records,
 messages, accounting and statistics are historical data and remain untouched.
 No replacement control, model substitution or second workflow is introduced.
+Static and state composition retain an explicitly configured retired default,
+including a Spark-only catalog. Filtering new choices cannot seed a different
+default or fabricate an available choice. The retained unavailable ID reaches
+the existing provider refusal; only an explicit user selection changes it.

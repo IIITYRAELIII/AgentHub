@@ -4,6 +4,45 @@ import { CodexTurnService } from "../../src/providers/provider-turn-services.mjs
 import { CodexSparkTaskClassifier, ensureDashBotStream } from "../../src/providers/codex/codex-spark-task-classifier.mjs";
 import { orderCodexModels } from "../../src/domain/codex-model-order.mjs";
 import { ProviderModelCatalogService } from "../../src/application/provider-model-catalog-service.mjs";
+import { createHubStaticSettings } from "../../src/composition/hub-static-settings.mjs";
+import { createStateComposition } from "../../src/composition/state-composition.mjs";
+
+for (const [label, configuredModels, configuredDefault, expectedChoices] of [
+  ["mixed catalog", ["gpt-5.3-codex-spark", "gpt-6-sol"], "gpt-5.3-codex-spark", ["gpt-6-sol"]],
+  ["Spark-only catalog", ["gpt-5.3-codex-spark"], "gpt-5.3-codex-spark", []],
+  ["available default", ["gpt-5.3-codex-spark", "gpt-6-sol"], "gpt-6-sol", ["gpt-6-sol"]],
+]) test(`static and state composition preserve explicit default: ${label}`, async () => {
+  const config = {
+    codexModels: configuredModels.map(value => ({ value, label: value })), codexModel: configuredDefault,
+    codexReasoningEffort: "high", codexCollaborationMode: "default",
+    claudeModel: "claude-sonnet-4-6", claudeReasoningEffort: "high", claudeCollaborationMode: "default",
+    projects: [{ path: process.cwd() }], projectRoot: process.cwd(), dataDir: process.cwd(),
+    stateFile: "fixture-state.json", deliveryOutboxDir: "fixture-outbox",
+  };
+  const settings = createHubStaticSettings(config, process.cwd());
+  assert.equal(settings.defaultCodexModel, configuredDefault);
+  assert.deepEqual(settings.codexModels.map(model => model.value), expectedChoices);
+  const { agentPreferences } = createStateComposition({ config, initialProvider: "codex",
+    initialProjectRoot: config.projectRoot, ...settings });
+  assert.equal(agentPreferences.defaultCodexModel, configuredDefault);
+  assert.equal(agentPreferences.current().model, configuredDefault);
+  agentPreferences.restore({ codexModel: configuredDefault });
+  assert.equal(agentPreferences.current().model, configuredDefault);
+  const f = turnService();
+  if (configuredDefault.includes("spark")) {
+    await assert.rejects(f.service.launch({ modelId: agentPreferences.current().model }, "request"),
+      { code: "CODEX_MODEL_RETIRED" });
+    assert.equal(f.rpc.length, 0);
+    if (expectedChoices.length) {
+      agentPreferences.setCodexModel(expectedChoices[0]);
+      assert.equal(agentPreferences.current().model, expectedChoices[0]);
+    }
+  } else {
+    await f.service.steer({ run: { modelId: agentPreferences.current().model, turnId: "turn" },
+      target: { threadId: "available" }, input: "ordinary steer" });
+    assert.equal(f.rpc.length, 1);
+  }
+});
 
 test("Spark is excluded from configured and freshly discovered choices while historical preference remains", async () => {
   const source = [{ value: "gpt-5.3-codex-spark", label: "Spark" }, { value: "gpt-6-sol", label: "Sol" }];
