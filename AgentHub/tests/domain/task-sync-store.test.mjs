@@ -593,6 +593,36 @@ test("local task sync preserves durable message metadata and attachments", async
   restored.close();
 });
 
+test("an explicit plain rollout final clears earlier citations through SQLite and Desktop merge", async () => {
+  const { codexRolloutHistory } = await import("../../src/interfaces/telegram/task-view-controller.mjs");
+  const filePath = await storeFile();
+  let store = new LocalTaskSyncStore({ filePath });
+  const turnId = "turn-clear-citation";
+  const activity = { finalMessages: { [turnId]: "Цитата 1\nEarlier" },
+    responseAnnotationReferences: { [turnId]: [{ index: 1, position: { start: 0, end: 8 } }] } };
+  const earlier = codexRolloutHistory(activity);
+  try {
+    await store.load();
+    await store.recordHistory(task, earlier);
+    activity.finalMessages[turnId] = "Plain final.";
+    activity.responseAnnotationReferences[turnId] = [];
+    const plain = codexRolloutHistory(activity);
+    await store.recordHistory(task, plain);
+    assert.deepEqual(store.history(task)[0].messages.at(-1).responseAnnotationReferences ?? [], []);
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const durable = store.history(task);
+    assert.equal(durable[0].messages.at(-1).text, "Plain final.");
+    const merged = mergeDurableTaskHistory(earlier, durable);
+    assert.equal(merged[0].messages.at(-1).text, "Plain final.");
+    assert.deepEqual(merged[0].messages.at(-1).responseAnnotationReferences ?? [], [], "stale hydration cannot restore cleared references");
+  } finally {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  }
+});
+
 test("terminal citation coalescing survives SQLite reopen", async () => {
   const filePath = await storeFile();
   const turnId = "turn-terminal-citation";

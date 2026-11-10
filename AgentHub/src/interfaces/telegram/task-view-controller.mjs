@@ -387,8 +387,7 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
         itemId: `${id}:rollout-agent:${completed ? "final" : "latest"}`,
         role: "agent",
         text: answer,
-        ...(responseAnnotationReferences.length
-          ? { responseAnnotationReferences: structuredClone(responseAnnotationReferences) } : {}),
+        responseAnnotationReferences: structuredClone(responseAnnotationReferences),
         ...(completed ? { phase: "final_answer" } : {}),
         ...(generatedImages.length ? { attachmentSources: generatedImages } : {}),
       });
@@ -406,8 +405,7 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       id,
       prompt,
       answer,
-      ...(responseAnnotationReferences.length
-        ? { responseAnnotationReferences: structuredClone(responseAnnotationReferences) } : {}),
+      responseAnnotationReferences: structuredClone(responseAnnotationReferences),
       status: completed ? "completed" : active ? "inProgress" : "stopped",
       active,
       completed,

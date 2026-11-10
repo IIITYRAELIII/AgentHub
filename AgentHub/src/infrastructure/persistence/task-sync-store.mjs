@@ -83,6 +83,18 @@ function cleanResponseAnnotationReferences(references) {
   return normalizedCodexResponseAnnotationReferences(references);
 }
 
+function storedResponseAnnotationReferences(value) {
+  try {
+    const parsed = JSON.parse(String(value));
+    const explicit = parsed?.version === 1 && Array.isArray(parsed.references);
+    const references = cleanResponseAnnotationReferences(explicit ? parsed.references : parsed);
+    // Old rows wrote [] for both missing and empty metadata. Keep that legacy
+    // enrichment boundary; new explicit empty pairs use the existing column's
+    // versioned JSON form, without a startup rewrite or another state owner.
+    return explicit || references.length ? references : null;
+  } catch { return null; }
+}
+
 function cleanActivities(activities) {
   return (Array.isArray(activities) ? activities : [])
     .map((activity) => ({
@@ -257,7 +269,7 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
             ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
             ...(message?.time ? { time: cleanText(message.time, 80) } : {}),
             responseAnnotations: cleanResponseAnnotations(message?.responseAnnotations),
-            ...(cleanResponseAnnotationReferences(message?.responseAnnotationReferences).length
+            ...(Array.isArray(message?.responseAnnotationReferences)
               ? {
                 responseAnnotationReferences: cleanResponseAnnotationReferences(
                   message.responseAnnotationReferences,
@@ -381,14 +393,12 @@ function preserveDurableResponseAnnotationReferences(existingHistory, incomingHi
           String(turn?.id ?? "").trim(),
           message,
         );
-        const responseAnnotationReferences = cleanResponseAnnotationReferences(
-          message?.responseAnnotationReferences,
-        ).length
+        const responseAnnotationReferences = Array.isArray(message?.responseAnnotationReferences)
           ? message.responseAnnotationReferences
           : terminalSource?.responseAnnotationReferences;
         return {
           ...message,
-          ...(cleanResponseAnnotationReferences(responseAnnotationReferences).length
+          ...(Array.isArray(responseAnnotationReferences)
             ? { responseAnnotationReferences }
             : {}),
         };
@@ -1306,9 +1316,7 @@ export class LocalTaskSyncStore {
       const key = `${row.provider}\0${row.thread_id}\0${Number(row.turn_position)}`;
       const turnMessages = messagesByTurn.get(key) ?? [];
       const origin = parseInterstreamOrigin(row.origin_json);
-      const responseAnnotationReferences = cleanResponseAnnotationReferences(
-        parseJsonArray(row.response_annotation_references_json),
-      );
+      const responseAnnotationReferences = storedResponseAnnotationReferences(row.response_annotation_references_json);
       turnMessages.push({
         itemId: String(row.item_id ?? ""),
         ...(row.client_user_message_id
@@ -1330,7 +1338,7 @@ export class LocalTaskSyncStore {
         ...(row.phase ? { phase: String(row.phase) } : {}),
         ...(row.time ? { time: String(row.time) } : {}),
         responseAnnotations: cleanResponseAnnotations(parseJsonArray(row.response_annotations_json)),
-        ...(responseAnnotationReferences.length
+        ...(Array.isArray(responseAnnotationReferences)
           ? { responseAnnotationReferences }
           : {}),
         ...(row.response_annotation_request
@@ -1802,7 +1810,8 @@ export class LocalTaskSyncStore {
           JSON.stringify(message.origin ?? {}),
           JSON.stringify(message.responseAnnotations),
           message.responseAnnotationRequest ?? "",
-          JSON.stringify(message.responseAnnotationReferences ?? []),
+          JSON.stringify(Array.isArray(message.responseAnnotationReferences) && !message.responseAnnotationReferences.length
+            ? { version: 1, references: [] } : message.responseAnnotationReferences ?? []),
           JSON.stringify(message.attachments),
           message.role === "user" ? userDisplayText(message.userDisplay, {
             provider, threadId, clientUserMessageId: message.clientUserMessageId,
