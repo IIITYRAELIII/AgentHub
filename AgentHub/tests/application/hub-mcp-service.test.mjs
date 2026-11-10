@@ -2397,7 +2397,8 @@ test("HubMcpService restricts release execution to Release Manager Streams", asy
 
 test("Release Manager reconciliation forwards one exact unknown operation and requires confirmation", async (context) => {
   const calls = [];
-  const omittedNativeArguments = { initialNativeTest: undefined, nativeResolutionReview: undefined,
+  const omittedNativeArguments = { expectedArgumentsHash: undefined, runtimeWitness: undefined,
+    initialNativeTest: undefined, nativeResolutionReview: undefined,
     selectedBundlePath: undefined, selectedBundleSha256: undefined, selectedPublishedResolution: undefined,
     selectedAbsorptionHandoff: undefined, selectedProofCommit: undefined, selectedPreviewRequestId: undefined,
     expectedSelectedPreviewHash: undefined };
@@ -2510,6 +2511,14 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
     request_id: "reconcile-command-non-releaseManager",
   }), /requires a Release Manager Stream/u);
   assert.equal(calls.length, 3);
+  const witness = { sourcePath: "D:/isolated/native-witness.json", rawSha256: "d".repeat(64) };
+  assert.deepEqual(await service.call("hub_task_operation_reconcile", {
+    ...ordinaryCasArgs, request_id: "reconcile-command-exact-witness",
+    expected_arguments_hash: "c".repeat(64), runtime_witness: witness,
+  }), { resolved: true, outcome: "succeeded" });
+  assert.deepEqual(calls[3], { ...calls[2], expectedArgumentsHash: "c".repeat(64), runtimeWitness: witness });
+  assert.equal(calls.length, 4);
+
 });
 
 test("HubMcpService binds the current turn to its dedicated Task worktree", async (context) => {

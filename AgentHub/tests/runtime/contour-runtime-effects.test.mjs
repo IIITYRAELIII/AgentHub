@@ -30,7 +30,7 @@ async function fixture(t) {
 
 test("deferred cleanup maps canonical files without mutating message identity or original bytes", {  }, async (t) => {
   const f = await fixture(t);
-  const composition = createRunAdmissionComposition({ config: f.config, pendingInputs: new Map(), queuedInputs: new Map(), stageLaunchAdmission() {}, abortLaunchAdmission() {} });
+  const composition = createRunAdmissionComposition({ runCoordinator: { start() { assert.fail("cleanup must not admit a run"); } }, config: f.config, pendingInputs: new Map(), queuedInputs: new Map(), stageLaunchAdmission() {}, abortLaunchAdmission() {} });
   const item = { id: "queued-1", clientUserMessageId: "original-message", temporaryFiles: [f.original], input: [{ type: "localFile", path: f.original }], messageFingerprint: "immutable" };
   const before = structuredClone(item);
   await composition.cleanupDeferredFiles(item);

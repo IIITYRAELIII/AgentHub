@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { completionPersistenceFailure } from "../helpers/mcp-completion-persistence.fixture.mjs";
 import { spawn, execFile } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, rm, access } from "node:fs/promises";
 import os from "node:os";
@@ -166,8 +167,17 @@ test("admitted assignment with a lost outer receipt cannot be classified as lock
 test("sealed lock refusal survives receipt-write loss and RM reconciliation after reopen", { timeout: 90000 }, async t => {
   let holder; t.after(async () => holder?.release());
   const f = await fixture(t); holder = await holdRepository(f);
-  f.rawCatalog.failMcpOperation = () => { throw Error("lost outer terminal write"); };
-  await assert.rejects(f.hub.call("hub_task_claim", f.input), /lost outer terminal write/);
+  const terminalFailure = new Error("lost outer terminal write");
+  f.rawCatalog.failMcpOperation = () => { throw terminalFailure; };
+  await assert.rejects(f.hub.call("hub_task_claim", f.input),
+    completionPersistenceFailure("TASK_CLAIM_LOCK_ADMISSION_TIMEOUT", terminalFailure));
+  const pending = f.catalog.mcpOperation(f.input.request_id);
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.taskExecution.completionFailure.originalError.code, "TASK_CLAIM_LOCK_ADMISSION_TIMEOUT");
+  assert.equal(pending.taskExecution.completionFailure.persistenceError.message, terminalFailure.message);
+  // This case separately covers a retained UNKNOWN, while the following case
+  // covers the genuine pending receipt after both failed completion writes.
+  await f.catalog.markMcpOperationUnknown(f.input.request_id, new Error("fixture retained original uncertainty"));
   const unknown = f.catalog.mcpOperation(f.input.request_id);
   assert.equal(unknown.status, "unknown");
   assert.equal(unknown.result.evidence.kind, "task-claim-lock-admission-v1");
@@ -187,9 +197,11 @@ test("sealed lock refusal survives receipt-write loss and RM reconciliation afte
 test("pending sealed lock refusal recovers at startup after both outer writes are lost", { timeout: 90000 }, async t => {
   let holder; t.after(async () => holder?.release());
   const f = await fixture(t); holder = await holdRepository(f);
-  f.rawCatalog.failMcpOperation = () => { throw Error("process lost before terminal receipt"); };
+  const terminalFailure = new Error("process lost before terminal receipt");
+  f.rawCatalog.failMcpOperation = () => { throw terminalFailure; };
   f.rawCatalog.markMcpOperationUnknown = () => { throw Error("process already lost"); };
-  await assert.rejects(f.hub.call("hub_task_claim", f.input), /process lost/);
+  await assert.rejects(f.hub.call("hub_task_claim", f.input),
+    completionPersistenceFailure("TASK_CLAIM_LOCK_ADMISSION_TIMEOUT", terminalFailure));
   const pending = f.catalog.mcpOperation(f.input.request_id);
   assert.equal(pending.status, "pending"); assert.equal(pending.result.evidence.kind, "task-claim-lock-admission-v1");
   await holder.release(); holder = null;

@@ -19,6 +19,7 @@ function admissionFixture({ handoff = "PACKAGE", consume = null } = {}) {
       },
     },
     taskRuns: { forTask: () => null },
+    runCoordinator: { start() { assert.fail("direct launch fixture must not admit another run"); } },
     pendingInputs: new Map(),
     queuedInputs: new Map(),
     stageLaunchAdmission: () => true,
