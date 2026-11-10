@@ -226,7 +226,7 @@ export class WorkspaceReleaseOperationAdapter {
   reservePublication({ operation, generation, reserve, recompose }) {
     return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
       const recovery = operation.retainedGenerationRecoveries?.at(-1);
-      if (recovery?.generation === generation.generation) {
+      if (recovery && recovery.generation === generation.generation) {
         const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
         const frozen = [];
         for (const candidate of generation.candidates) {

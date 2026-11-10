@@ -7,9 +7,15 @@ import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/tas
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { RuntimeTimerCoordinator } from "../../src/runtime/runtime-timer-coordinator.mjs";
 import { agentHubRuntimeHealth } from "../../src/application/runtime-health.mjs";
+import { RuntimeUpdateBackupRetention } from "../../src/infrastructure/persistence/runtime-update-backup-retention.mjs";
 
 const events = [], owners = [], schedules = [];
 let service;
+const backupList = RuntimeUpdateBackupRetention.prototype.list;
+RuntimeUpdateBackupRetention.prototype.list = async function (...args) {
+  events.push(`list:${this.id}`);
+  return backupList.apply(this, args);
+};
 for (const Factory of [TaskGitWorkspaceService, ReleaseGitWorkspaceService]) {
   const original = Factory.prototype.storageRetentionOwner;
   Factory.prototype.storageRetentionOwner = function (options) {
@@ -66,7 +72,7 @@ try {
   assert.ok(service, "production bootstrap must schedule the constructed retention service");
   assert.deepEqual(owners, ["native-merge-transport", "release-generation-transport"]);
   assert.deepEqual(service.owners.map(owner => owner.id),
-    ["native-merge-transport", "runtime-release", "release-generation-transport"]);
+    ["runtime-update-backup", "native-merge-transport", "runtime-release", "release-generation-transport"]);
   assert.deepEqual(schedules, [5000]);
   assert.equal(service.store.get("storage-retention:v1"), null,
     "construction/readiness must not scan storage before the deferred timer");
@@ -79,7 +85,8 @@ try {
   assert.equal(service.status().more, false);
   assert.equal(service.status().pending, 0);
   assert.deepEqual(service.store.get("storage-retention:v1").metadata.ownerIds,
-    ["native-merge-transport", "runtime-release", "release-generation-transport"]);
+    ["runtime-update-backup", "native-merge-transport", "runtime-release", "release-generation-transport"]);
+  assert.ok(events.includes("list:runtime-update-backup"));
   assert.ok(events.includes("list:native-merge-transport"));
   assert.ok(events.includes("list:release-generation-transport"));
   assert.equal(schedules.at(-1), 6 * 60 * 60_000);

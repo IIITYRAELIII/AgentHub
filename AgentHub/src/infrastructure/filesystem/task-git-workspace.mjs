@@ -1396,8 +1396,9 @@ export class TaskGitWorkspaceService {
 
   // The existing Git process-tree journal owns both repository computation and
   // the one shared immutable-object writer. A dead lease is not child retirement.
-  createNativeObjectStore({ sourceRoot, lease, store, assertCurrent = async () => {} }) {
+  createNativeObjectStore(input) {
     this.#assertAvailable("createNativeObjectStore");
+    const { sourceRoot, lease, store, assertCurrent = async () => {} } = input;
     requiredGuardLease(lease);
     const repositoryRoot = canonicalPath(sourceRoot);
     const poolScope = "repository-native-object-store-sha1";
@@ -1432,8 +1433,9 @@ export class TaskGitWorkspaceService {
     };
   }
 
-  async withNativeRepositoryOwner({ sourceRoot, repositoryRoot }, operation) {
+  async withNativeRepositoryOwner(input, operation) {
     this.#assertAvailable("withNativeRepositoryOwner");
+    const { sourceRoot, repositoryRoot } = input;
     if (typeof operation !== "function") throw new TypeError("Native repository operation is required");
     const source = canonicalPath(sourceRoot), target = canonicalPath(repositoryRoot);
     if (samePath(source, target)) throw new Error("Native consumer must own an independent repository");

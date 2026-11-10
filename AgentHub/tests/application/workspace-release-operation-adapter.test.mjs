@@ -115,7 +115,7 @@ test("publication reservation uses the Workspace Await boundary for the exact ge
       workspaceId: "workspace-1",
       authorization: { taskIds: ["task-a", "task-b"] },
     },
-    generation: { selectedResults },
+    generation: { generation: 1, candidates: [], selectedResults },
     reserve: () => { effects.push("reserve"); return { applied: true }; },
     recompose: () => { effects.push("recompose"); return { applied: true }; },
   });
@@ -172,12 +172,38 @@ test("publication reservation recomposes when accepted result identity changed",
   await f.adapter.reservePublication({
     operation: { workspaceId: "workspace-1", authorization: { taskIds: ["task-a"] } },
     generation: {
+      generation: 1, candidates: [],
       selectedResults: [{ taskId: "task-a", resultCommit: "result-1", acceptanceRevision: 2 }],
     },
     reserve: () => { effects.push("reserve"); return { applied: true }; },
     recompose: () => { effects.push("recompose"); return { applied: true }; },
   });
   assert.deepEqual(effects, ["recompose"]);
+});
+
+test("retained publication reservation still verifies its exact frozen recovery before reserving", async () => {
+  const f = fixture([]);
+  const frozen = { commit: "retained-commit", tree: "retained-tree" };
+  const candidate = { repositoryRoot: "retained-repository" };
+  let inspected = 0, reserved = 0;
+  f.adapter.releasePreflight.releaseGitWorkspaces = {
+    inspectRetainedGeneration: async input => {
+      inspected++;
+      assert.equal(input.candidate, candidate);
+      assert.equal(input.generation, 1);
+      return frozen;
+    },
+  };
+  const operation = { operationId: "original", workspaceId: "workspace", authorization: { taskIds: [] },
+    retainedGenerationRecoveries: [{ generation: 1, evidence: [{ frozen: [frozen] }] }] };
+  const input = { operation, generation: { generation: 1, candidates: [candidate], selectedResults: [] },
+    reserve: () => { reserved++; }, recompose: () => assert.fail("same selection must not recompose") };
+  await f.adapter.reservePublication(input);
+  assert.equal(inspected, 1);
+  assert.equal(reserved, 1);
+  operation.retainedGenerationRecoveries[0].evidence[0].frozen = [{ ...frozen, tree: "foreign-tree" }];
+  await assert.rejects(f.adapter.reservePublication(input), /Retained frozen candidate changed/u);
+  assert.equal(reserved, 1);
 });
 
 test("composition replays exact referenced release metadata and rejects changed bytes", async (t) => {

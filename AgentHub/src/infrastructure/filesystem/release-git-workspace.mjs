@@ -1648,7 +1648,9 @@ export class ReleaseGitWorkspaceService {
     });
   }
 
-  async promoteGenerationCandidate({ projectRoot, candidate, validateBeforeCommit = null, commitPrepared = null } = {}) {
+  async promoteGenerationCandidate(input = {}) {
+    this.#assertAvailable("promoteGenerationCandidate");
+    const { projectRoot, candidate, validateBeforeCommit = null, commitPrepared = null } = input;
     if (!preparationObjectStore()) {
       const sourceRoot = await repositoryRoot(projectRoot);
       return this.#repositoryOwner.withNativeRepositoryOwner({ sourceRoot,
@@ -1656,7 +1658,6 @@ export class ReleaseGitWorkspaceService {
         withPreparationGitIsolation(this.dataDir, () => this.promoteGenerationCandidate({
           projectRoot, candidate, validateBeforeCommit, commitPrepared }), lease, objects));
     }
-    this.#assertAvailable("promoteGenerationCandidate");
     if (!candidate?.releaseRoot || !candidate?.preReleaseHead || !candidate?.manifest) {
       throw new Error("prospective release generation is incomplete");
     }
@@ -3543,7 +3544,9 @@ export class ReleaseGitWorkspaceService {
     return { checkpointSha256: sha256(bytes), candidate: await this.frozenCandidate(projectRoot) };
   }
 
-  async firstFrozenGeneration({ operationId, projectRoot, ...options }) {
+  async firstFrozenGeneration(input) {
+    this.#assertAvailable("firstFrozenGeneration");
+    const { operationId, projectRoot, ...options } = input;
     const sourceRoot = await repositoryRoot(projectRoot);
     const key = sha256(`${operationId}:1:${sourceRoot}`).slice(0, 24);
     const identity = await readJson(path.join(this.dataDir, "release-gens", key, "identity.json"));
@@ -3568,8 +3571,9 @@ export class ReleaseGitWorkspaceService {
       repositoryRoot: sourceRoot, generationRoot, identitySha256 };
   }
 
-  async inspectRetainedGeneration({ operationId, generation, workspaceId, candidate, changelogContent }) {
+  async inspectRetainedGeneration(input) {
     this.#assertAvailable("inspectRetainedGeneration");
+    const { operationId, generation, workspaceId, candidate, changelogContent } = input;
     const sourceRoot = await repositoryRoot(candidate.repositoryRoot);
     const ownerHash = sha256(`${operationId}:${generation}:${sourceRoot}`);
     const generationRoot = path.join(this.dataDir, "release-gens", ownerHash.slice(0, 24));

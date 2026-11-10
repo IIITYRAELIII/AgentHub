@@ -89,7 +89,7 @@ test("recording Git owners deny every executable public operation before argumen
 
 test("recording claim custody and cleanup entries refuse before reading supplied arguments or lease ports", async (t) => {
   const { root, recording, policy } = await fixture(t);
-  const methods = ["claimAdmissionNoEffectEvidence", "reuseClaimWorkspaceOwned",
+  const methods = ["createNativeObjectStore", "withNativeRepositoryOwner", "claimAdmissionNoEffectEvidence", "reuseClaimWorkspaceOwned",
     "planIndependentClaimNamespace", "stageIndependentClaimNamespaceOwned", "readIndependentClaimNamespaceOwned",
     "publishedDeliveryPreviewOwned", "confirmedDeleteResumePreviewOwned",
     "nativeCaptureRetirementRecordOwned", "verifyNativeCaptureArchiveOwned"];
