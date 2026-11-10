@@ -31,7 +31,7 @@ test("Task reference appears while the target Stream history has not answered", 
       const send = window.__agentHubVscode.postMessage;
       window.__heldNavigation = [];
       window.__agentHubVscode.postMessage = (message) => {
-        if (message.action === "open-task") { window.__heldNavigation.push(message); return; }
+        if (message.action === "select-task") { window.__heldNavigation.push(message); return; }
         send(message);
       };
     });
@@ -160,7 +160,7 @@ for (const destination of ["board", "stream", "composer", "dashboard-composer"])
         const send = window.__agentHubVscode.postMessage;
         window.__agentHubVscode.postMessage = (message) => {
           if (message.action === "board-task-move") { window.__heldNativeMoves.push(message); return; }
-          if (message.action === "open-task") { window.__heldNativeNavigation.push(message); return; }
+          if (message.action === "select-task") { window.__heldNativeNavigation.push(message); return; }
           if (message.action === "send-message") window.__nativeSends.push(message);
           send(message);
         };

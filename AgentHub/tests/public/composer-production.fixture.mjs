@@ -206,6 +206,7 @@ async function openFixture(page, {
   directTransport = false,
   webAppRoot = WEB_APP_ROOT,
   assetOverrides = {},
+  initialHash = "",
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
@@ -357,6 +358,27 @@ async function openFixture(page, {
         let result = {};
         let error = "";
         if (message.action === "snapshot") result = fixture.snapshot;
+        else if (message.action === "select-task") {
+          const tasks = fixture.snapshot.tasks ?? fixture.snapshot.collectionDeltas?.conversations?.reset ?? [];
+          const selected = tasks.find((entry) => (
+            (!message.params.streamId || entry.streamId === message.params.streamId)
+            && entry.provider === message.params.provider && entry.threadId === message.params.threadId
+          ));
+          if (!selected) {
+            ok = false;
+            error = "Поток не найден в локальном каталоге";
+          } else {
+            const selectionChanged = selected.selected !== true;
+            const selectedTasks = tasks.map((entry) => ({ ...entry, selected: entry === selected }));
+            if (fixture.snapshot.tasks) fixture.snapshot.tasks = selectedTasks;
+            else fixture.snapshot.collectionDeltas.conversations.reset = selectedTasks;
+            fixture.snapshot.selected = { ...fixture.snapshot.selected,
+              streamId: selected.streamId, provider: selected.provider, threadId: selected.threadId };
+            result = message.params.deferSnapshot === true
+              ? { selectionChanged, snapshotDeferred: true }
+              : { ...fixture.snapshot, selectionChanged };
+          }
+        }
         else if (message.action === "open-task" || message.action === "task-history") {
           const streamId = message.params.streamId
             || fixture.snapshot.tasks.find((entry) => entry.provider === message.params.provider
@@ -495,20 +517,36 @@ async function openFixture(page, {
       return;
     }
     if (requestUrl.pathname === "/api/snapshot") {
-      const value = await page.evaluate(() => window.__agentHubFixture.snapshot);
+      let value;
+      try { value = await page.evaluate(() => window.__agentHubFixture.snapshot); }
+      catch (error) {
+        if (!String(error.message).includes("Execution context was destroyed")) throw error;
+        await route.abort("aborted");
+        return;
+      }
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
       return;
     }
     if (requestUrl.pathname === "/api/control") {
       const message = route.request().postDataJSON();
-      const outcome = await page.evaluate((request) => new Promise((resolve) => {
+      let outcome;
+      try {
+        outcome = await page.evaluate((request) => new Promise((resolve) => {
         const listener = (event) => {
           if (event.data?.type !== "agenthub:control-result" || event.data.id !== request.commandId) return;
           window.removeEventListener("message", listener); resolve(event.data);
         };
         window.addEventListener("message", listener);
         window.__fixtureBridge.postMessage({ ...request, id: request.commandId, transport: "http" });
-      }), message);
+        }), message);
+      } catch (error) {
+        // A real document reload retires its pending read listeners. Abort that
+        // fixture transport, never fabricate an accepted business response.
+        if (!["snapshot", "task-history", "select-task", "runtime-health"].includes(message.action)
+          || !String(error.message).includes("Execution context was destroyed")) throw error;
+        await route.abort("aborted");
+        return;
+      }
       await route.fulfill({ status: outcome.ok === false ? 400 : 200, contentType: "application/json", body: JSON.stringify(outcome) });
       return;
     }
@@ -552,7 +590,7 @@ async function openFixture(page, {
       await route.fulfill({ status: 404, body: "Not found" });
     }
   });
-  await page.goto("http://agent-hub.test/", { waitUntil: "load" });
+  await page.goto(`http://agent-hub.test/${initialHash}`, { waitUntil: "load" });
   if (expectedTaskId) {
     try {
       await page.waitForFunction((taskId) => document.querySelector(`[data-stream-task-id='${taskId}']`), expectedTaskId, {

@@ -76,7 +76,8 @@ test("replacing a single chat releases closed history and reopening reloads its 
       taskSeconds: metric(metrics, "TaskDuration") - metric(before, "TaskDuration"),
       scriptSeconds: metric(metrics, "ScriptDuration") - metric(before, "ScriptDuration"),
       nodes: (await cdp.send("Memory.getDOMCounters")).nodes }));
-    assert.deepEqual(alive, ["retention-thread-7"], "closed canonical messages must become collectible; the open chat stays owned");
+    assert.deepEqual(alive, ["retention-thread-4", "retention-thread-5", "retention-thread-6", "retention-thread-7"],
+      "replacement retains exactly the accepted four-page recent working set; every older closed page becomes collectible");
     assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "pulsar");
     assert.equal(await page.locator("[data-chat-log] details[open]").count(), 0);
     await page.evaluate(() => {

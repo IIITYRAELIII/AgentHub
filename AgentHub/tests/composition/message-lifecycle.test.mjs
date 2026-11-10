@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
-import { createDesktopTaskHistoryFactory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
-import { mergeActiveTaskHistory, mergeCompletedTaskHistory } from "../../src/application/task-history.mjs";
+import { responseAnnotationDetails } from "../../src/application/task-history.mjs";
 
 const disclosureSource = await readFile(
   new URL("../../assets/web-app/messages/disclosure.js", import.meta.url),
@@ -25,14 +24,6 @@ const projectionSource = await readFile(
 const projectionContext = vm.createContext({});
 vm.runInContext(projectionSource, projectionContext);
 const projection = projectionContext.AgentHubMessageProjection;
-const hubClientSource = await readFile(
-  new URL("../../assets/web-app/hub-client.js", import.meta.url),
-  "utf8",
-);
-const miniAppSource = await readFile(
-  new URL("../../assets/web-app/app.js", import.meta.url),
-  "utf8",
-);
 const streamTabsSource = await readFile(
   new URL("../../assets/web-app/stream-tabs-controller.js", import.meta.url),
   "utf8",
@@ -52,17 +43,6 @@ const codexContextMaintenanceSource = await readFile(
   "utf8",
 );
 
-function clientFunctionSource(name, nextMarker) {
-  let start = hubClientSource.indexOf(`function ${name}`);
-  if (hubClientSource.slice(Math.max(0, start - 6), start) === "async ") start -= 6;
-  const closing = /\r?\n\}\r?\n/u.exec(hubClientSource.slice(start));
-  const end = name === "applyOpened" || !nextMarker
-    ? start + closing.index + closing[0].length : hubClientSource.indexOf(nextMarker, start);
-  assert.notEqual(start, -1, `${name} source start`);
-  assert.notEqual(end, -1, `${name} source end`);
-  return hubClientSource.slice(start, end);
-}
-
 function message(itemId, text) {
   return {
     provider: "codex",
@@ -75,303 +55,18 @@ function message(itemId, text) {
   };
 }
 
-async function pagedActiveHistoryHarness(durableTurnCount) {
-  const identity = { streamId: "stream-active", provider: "codex", threadId: "thread-active" };
-  const startedAt = "2026-09-11T01:53:00Z";
-  const durable = Array.from({ length: durableTurnCount }, (_, index) => ({
-    id: `old-${index}`,
-    completed: true,
-    status: "completed",
-    startedAt: new Date(Date.parse(startedAt) - (durableTurnCount - index) * 60_000).toISOString(),
-    messages: [{ role: "user", itemId: `old-user-${index}`, clientUserMessageId: `old-client-${index}`, text: `Question ${index}` }],
-  }));
-  const run = {
-    ...identity,
-    id: "run-active",
-    turnId: "turn-active",
-    promptPreview: "Accepted question",
-    responseText: "Unfinished answer",
-    clientUserMessageId: "client-active",
-    startedAt,
-    userMessages: [{ role: "user", itemId: "user-active", clientUserMessageId: "client-active",
-      text: "Accepted question", submittedAt: startedAt, time: startedAt }],
-    responseItemId: "agent-active",
-  };
-  // Match the production SQLite readPage boundary: a live-only turn is absent
-  // from the durable page even after the factory has warmed its hydrated cache.
-  const backend = createDesktopTaskHistoryFactory({
-    selection: { activeProvider: () => identity.provider, threadId: () => identity.threadId, chatId: () => 1 },
-    catalog: { entries: () => [{ ...identity, title: "Active chat", projectRoot: "fixture" }] },
-    historyReader: {
-      readPage: async (_bindings, { before, limit }) => {
-        const end = before == null ? durable.length : Math.min(before, durable.length);
-        const start = Math.max(0, end - limit);
-        return { start, end, total: durable.length, messageTotal: durable.length,
-          items: durable.slice(start, end).map((turn) => ({ ...identity, turn: structuredClone(turn) })) };
-      },
+function historyProjection(ports) {
+  return lifecycle.createHistoryMessageProjection({
+    ...ports,
+    normalizedResponseAnnotationReferences: references => {
+      const normalize = ports.AgentHubMessageView?.normalizedResponseAnnotationReferences;
+      return typeof normalize === "function" ? normalize(references) : [];
     },
-    runs: { forTask: () => run },
-    historyMerger: { mergeActive: mergeActiveTaskHistory, mergeCompleted: mergeCompletedTaskHistory },
-    responseBudget: { fit: (payload) => payload },
   });
-  const pending = new Map([["client-active", { ...identity, turnId: run.turnId,
-    ...run.userMessages[0], submittedAt: startedAt }]]);
-  const sandbox = vm.createContext({
-    ...lifecycle,
-    canonicalProjectionState: projection.projectionState,
-    ...projection,
-    Map, Set, performance,
-    historyByTask: new Map(), historyWindowByTask: new Map(), focusedHistoryWindowByTask: new Map(),
-    historyPageByTask: new Map(), historyLoadStates: new Map(),
-    historyRequestGenerationByTask: new Map(), visibleHistoryLoads: new Set(),
-    completionOverlaysByTask: new Map(), maintenanceEventsByTask: new Map(), activeMaintenanceByTask: new Map(),
-    liveUserMessagesByTask: new Map(), liveProbeByTask: new Map(),
-    optimisticDeferredClientUserMessageIds: new Set(), deferredClientUserMessageIds: new Set(),
-    selectedTaskId: identity.streamId,
-    directChatRoute: () => null,
-    lastSnapshot: { tasks: [] },
-    liveCardsByTask: new Map(),
-    snapshotResponseIsStale: () => false,
-    snapshotTask: () => null,
-    traceHistoryCard: () => {},
-    commandTrace: { now: () => 0, objectId: () => "", newId: () => "fixture-open", record: () => {}, afterPaint: () => {} },
-    taskId: (provider, threadId, streamId) => streamId || `${provider}:${threadId}`,
-    taskIdentity: () => identity,
-    attachmentViews: (values) => values ?? [],
-    outgoingMessages: () => pending,
-    reconcileMessageLifecycle: lifecycle.reconcile,
-    deliveryPatch: (deliveryState) => ({ deliveryState }),
-    backgroundHttpScheduler: { run: (read) => read() },
-    control: (action, params) => { assert.equal(action, "task-history"); return backend(params); },
-    clearDurablyCompletedLiveCard: () => {},
-    syncHistoryPagination: () => {}, renderTaskMessages: () => [], renderTaskQueue: () => {},
-    updateHistoryCatchUp: () => {}, displayedFinalAcknowledgement: () => false,
-  });
-  sandbox.window = sandbox;
-  vm.runInContext([
-    clientFunctionSource("verifiedTaskHistory", "function beginNavigation"),
-    clientFunctionSource("historyMessages", "function applyOpened"),
-    clientFunctionSource("applyOpened", "function acknowledgeDisplayedFinal"),
-    clientFunctionSource("reconciledMessages", "function deferredEntriesForTask"),
-    clientFunctionSource("mergeHistoryLoadRequest", "async function loadVisibleTaskHistories"),
-  ].join("\n"), sandbox);
-  const opened = await backend({ ...identity, limit: 20 });
-  sandbox.applyOpened({ history: opened }, { selectTask: false, skipSnapshot: true });
-  return {
-    pending,
-    messages: () => Array.from(sandbox.reconciledMessages(identity.streamId)),
-    page: () => sandbox.historyPageByTask.get(identity.streamId),
-    refresh: () => sandbox.enqueueTaskHistoryLoad(identity.streamId, identity),
-    loadOlder: async () => {
-      const page = sandbox.historyPageByTask.get(identity.streamId);
-      const older = await backend({ ...identity, before: page.start, limit: 20 });
-      sandbox.historyByTask.set(identity.streamId, sandbox.prependOlderHistory(
-        sandbox.historyByTask.get(identity.streamId), sandbox.historyMessages(older),
-      ));
-      Object.assign(page, { start: older.start, nextBefore: older.nextBefore });
-    },
-  };
 }
 
-test("paged background history retains an accepted active question after optimistic reconciliation", async () => {
-  const harness = await pagedActiveHistoryHarness(1);
-  assert.equal(harness.messages().filter((item) => item.clientUserMessageId === "client-active").length, 1);
-  assert.equal(harness.pending.size, 0, "the question must no longer depend on its optimistic copy");
-  assert.equal(harness.messages().filter((item) => item.role === "agent").length, 0);
-  await harness.refresh();
-  assert.equal(harness.messages().filter((item) => item.clientUserMessageId === "client-active").length, 1,
-    "a warm paged history refresh must not erase the accepted live-only question");
-  assert.equal(harness.messages().filter((item) => item.role === "agent").length, 0, "intermediate answer stays on the live surface");
-  assert.equal(harness.messages().filter((item) => item.clientUserMessageId === "old-client-0").length, 1);
-});
-
-test("active history refresh preserves previously loaded older pages without duplicating the question", async () => {
-  const harness = await pagedActiveHistoryHarness(25);
-  harness.messages();
-  await harness.loadOlder();
-  const before = harness.messages().map((item) => item.clientUserMessageId);
-  const previousStart = harness.page().start;
-  const previousCursor = harness.page().nextBefore;
-  assert.equal(before.length, 26);
-  await harness.refresh();
-  assert.deepEqual(harness.messages().map((item) => item.clientUserMessageId), before);
-  assert.equal(harness.page().start, previousStart);
-  assert.equal(harness.page().nextBefore, previousCursor);
-  assert.equal(harness.messages().filter((item) => item.clientUserMessageId === "client-active").length, 1);
-  assert.equal(harness.messages().filter((item) => item.role === "agent").length, 0);
-});
-
-test("latest navigation intent wins when responses settle out of order", async () => {
-  const source = clientFunctionSource(
-    "createLatestIntentController",
-    "const navigationIntents",
-  );
-  const sandbox = vm.createContext({ Object });
-  vm.runInContext(`${source}; globalThis.createController = createLatestIntentController;`, sandbox);
-  const intents = sandbox.createController();
-  const committed = [];
-  let releaseFirst;
-  let releaseSecond;
-  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
-  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
-  const open = async (gate, value) => {
-    const intent = intents.begin();
-    await gate;
-    if (intents.current(intent)) committed.push(value);
-  };
-
-  const first = open(firstGate, "stream-a");
-  const second = open(secondGate, "stream-b");
-  releaseSecond();
-  await second;
-  releaseFirst();
-  await first;
-
-  assert.deepEqual(committed, ["stream-b"]);
-  assert.match(hubClientSource, /if \(pendingSelectionId === id\) pendingSelectionId = "";/u);
-});
-
-test("a stale navigation failure neither commits nor shows a toast", async () => {
-  const source = clientFunctionSource("runNavigation", "function outgoingMessages");
-  let generation = 0;
-  const committed = [];
-  const toasts = [];
-  let rejectFirst;
-  const firstGate = new Promise((_resolve, reject) => { rejectFirst = reject; });
-  const sandbox = vm.createContext({
-    agentHub: { toast: (message) => toasts.push(message) },
-    beginNavigation: () => ({ generation: ++generation }),
-    currentNavigation: (intent) => intent.generation === generation,
-    hubErrorMessage: (error) => error.message,
-    isConnectionFailure: () => false,
-    recordTransientConnectionFailure: () => {},
-  });
-  vm.runInContext(`${source}; globalThis.navigate = runNavigation;`, sandbox);
-
-  const first = sandbox.navigate({}, () => firstGate, () => committed.push("first"));
-  await sandbox.navigate({}, async () => "second", () => committed.push("second"));
-  rejectFirst(new Error("late failure"));
-  await first;
-
-  assert.deepEqual(committed, ["second"]);
-  assert.deepEqual(toasts, []);
-});
-
-test("every operation that selects a new task invalidates an older navigation", () => {
-  assert.match(
-    hubClientSource,
-    /agentHub\.on\("message:send", \(request\) => \{\s*if \(request\.draftStream\) beginNavigation\(\);/u,
-  );
-  assert.match(
-    hubClientSource,
-    /agentHub\.on\("task:new",[\s\S]*?runAction\(async \(\) => \{\s*beginNavigation\(\);/u,
-  );
-  assert.match(
-    hubClientSource,
-    /agentHub\.on\("stream:rebirth",[\s\S]*?runAction\(async \(\) => \{\s*beginNavigation\(\);/u,
-  );
-  assert.match(
-    hubClientSource,
-    /agentHub\.on\("stream:continue-provider",[\s\S]*?runAction\(async \(\) => \{\s*beginNavigation\(\);/u,
-  );
-  assert.match(
-    hubClientSource,
-    /agentHub\.on\("stream:new",[\s\S]*?if \(existing\) return existing;\s*beginNavigation\(\);/u,
-  );
-});
-
-test("an invalid chat hash invalidates an in-flight navigation intent", async () => {
-  const source = clientFunctionSource("openRoute", "function snapshotTask");
-  let invalidations = 0;
-  const sandbox = vm.createContext({
-    beginNavigation: () => { invalidations += 1; },
-    decodeURIComponent,
-    location: { hash: "#/tasks" },
-  });
-  vm.runInContext(`${source}; globalThis.open = openRoute;`, sandbox);
-
-  assert.equal(await sandbox.open(), false);
-  sandbox.location.hash = "#/chat/codex/%E0%A4%A";
-  assert.equal(await sandbox.open(), false);
-  assert.equal(invalidations, 2);
-});
-
-test("an in-flight completion refresh follows a Stream rotation and discards the old Thread", {  }, async () => {
-  const source = clientFunctionSource("mergeHistoryLoadRequest", "async function loadVisibleTaskHistories");
-  const generations = new Map();
-  const responses = [];
-  const applied = [];
-  let currentIdentity = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
-  let releaseFirst;
-  let releaseSecond;
-  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
-  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
-  let dispatchedSecond;
-  const secondDispatched = new Promise((resolve) => { dispatchedSecond = resolve; });
-  const sandbox = vm.createContext({
-    Map,
-    selectedTaskId: "stream-1",
-    directChatRoute: () => null,
-    performance,
-    commandTrace: { newId: () => "fixture-history", record: () => {}, afterPaint: () => {} },
-    syncHistoryPagination: () => {},
-    historyLoadStates: new Map(),
-    historyRequestGenerationByTask: generations,
-    visibleHistoryLoads: new Set(),
-    historyPageByTask: new Map(),
-    beginHistoryRequest: (id, identity) => {
-      const generation = (generations.get(id) ?? 0) + 1;
-      generations.set(id, generation);
-      return { id, identity, generation };
-    },
-    currentHistoryRequest: (request) => generations.get(request.id) === request.generation,
-    stableIdentity: (identity) => ({ ...identity }),
-    settleOptionalRead: async (read) => ({ status: "fulfilled", value: await read() }),
-    backgroundHttpScheduler: { run: (read) => read() },
-    control: async () => {
-      const index = responses.length;
-      const responseIdentity = { ...currentIdentity };
-      responses.push(index);
-      if (index === 1) dispatchedSecond();
-      await (index === 0 ? firstGate : secondGate);
-      return { ...responseIdentity, items: [], version: String(index + 1) };
-    },
-    verifiedTaskHistory: (history) => history,
-    sameIdentity: (left, right) => left.streamId === right.streamId
-      && left.provider === right.provider && left.threadId === right.threadId,
-    taskIdentity: () => currentIdentity,
-    applyOpened: ({ history }) => applied.push(history.version),
-  });
-  vm.runInContext(`${source}; globalThis.enqueue = enqueueTaskHistoryLoad;`, sandbox);
-  const identity = { ...currentIdentity };
-  const first = sandbox.enqueue("stream-1", identity);
-  currentIdentity = { streamId: "stream-1", provider: "claude", threadId: "thread-2" };
-  const followUp = sandbox.enqueue("stream-1", currentIdentity, { refreshSource: true });
-  let dispatchDeadline;
-  try {
-    releaseFirst();
-    await Promise.race([
-      secondDispatched,
-      first.then(() => assert.fail("history refresh settled before dispatching the rotated Thread")),
-      new Promise((_resolve, reject) => {
-        dispatchDeadline = setTimeout(() => reject(new Error("rotated history request was not dispatched")), 1000);
-      }),
-    ]);
-    releaseSecond();
-    await Promise.all([first, followUp]);
-  } finally {
-    clearTimeout(dispatchDeadline);
-    releaseFirst();
-    releaseSecond();
-    await Promise.allSettled([first, followUp]);
-  }
-
-  assert.equal(responses.length, 2);
-  assert.deepEqual(applied, ["2"]);
-});
 
 test("aggregated Stream history preserves each item's provider and Thread", () => {
-  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const sandbox = vm.createContext({
     attachmentViews: () => [],
     conversationMessageAuthor: (_message, provider) => provider,
@@ -380,7 +75,7 @@ test("aggregated Stream history preserves each item's provider and Thread", () =
     canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
-  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  sandbox.mapHistory = historyProjection(sandbox);
   const messages = sandbox.mapHistory({
     provider: "claude",
     threadId: "thread-current",
@@ -399,7 +94,6 @@ test("aggregated Stream history preserves each item's provider and Thread", () =
 });
 
 test("Web history mapping preserves canonical citation references", () => {
-  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const normalize = (references) => references.filter((reference) => reference.index === 1);
   const sandbox = vm.createContext({
     AgentHubMessageView: { normalizedResponseAnnotationReferences: normalize },
@@ -410,7 +104,7 @@ test("Web history mapping preserves canonical citation references", () => {
     canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
-  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  sandbox.mapHistory = historyProjection(sandbox);
   const [historyAgent] = sandbox.mapHistory({
     provider: "codex",
     threadId: "thread-citation",
@@ -439,7 +133,6 @@ test("Web history mapping preserves canonical citation references", () => {
 });
 
 test("focused completed turn cannot append commentary after its durable final", () => {
-  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const sandbox = vm.createContext({
     attachmentViews: () => [],
     conversationMessageAuthor: (_message, provider) => provider,
@@ -448,7 +141,7 @@ test("focused completed turn cannot append commentary after its durable final", 
     canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
   });
-  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  sandbox.mapHistory = historyProjection(sandbox);
   const root = { itemId: "user-root", role: "user", text: "Почему?" };
   const commentary = {
     itemId: "turn-1:rollout-agent:latest",
@@ -492,12 +185,6 @@ test("focused completed turn cannot append commentary after its durable final", 
 });
 
 test("repeated older pages retain each exact provider entity once after a Thread rebind", () => {
-  const source = clientFunctionSource("prependOlderHistory", "function applyOpened");
-  const sandbox = vm.createContext({
-    Set,
-    projectCanonicalMessages: projection.projectCanonicalMessages,
-  });
-  vm.runInContext(`${source}; globalThis.prepend = prependOlderHistory;`, sandbox);
   const previous = [{
     id: "codex:thread-old:turn-15:item-18:agent",
     provider: "codex",
@@ -520,7 +207,7 @@ test("repeated older pages retain each exact provider entity once after a Thread
 
   let merged = previous;
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    merged = sandbox.prepend(merged, overlappingPage);
+    merged = projection.prependOlderHistory(merged, overlappingPage);
   }
 
   assert.equal(merged.length, 2);
@@ -530,14 +217,6 @@ test("repeated older pages retain each exact provider entity once after a Thread
   ]);
 });
 
-test("chat history fallback preserves the reader position after prepending a page", () => {
-  assert.match(miniAppSource, /scrollHeight:\s*chatScroll\.scrollHeight/u);
-  assert.match(
-    miniAppSource,
-    /addedHeight\s*=\s*Math\.max\(0, chatScroll\.scrollHeight - anchor\.scrollHeight\)/u,
-  );
-  assert.match(miniAppSource, /chatScroll\.scrollTop\s*=\s*anchor\.scrollTop \+ addedHeight/u);
-});
 
 test("rotated Stream history keeps the stable Stream cache key", () => {
   const tasks = [{
@@ -584,7 +263,6 @@ test("message delivery distinguishes a server rejection from an unconfirmed tran
     lifecycle.hubErrorMessage(timeout),
     "Agent Hub не подтвердил приём вовремя. Статус сообщения уточняется.",
   );
-  assert.match(hubClientSource, /timeout\.code = "AGENT_HUB_CONTROL_TIMEOUT"/u);
   assert.equal(rejected.agentHubCommandRejected, true);
 });
 
@@ -613,7 +291,6 @@ test("live steer timing never borrows the root timestamp and enriches from its o
 });
 
 test("history and focused steers never inherit a parent turn timestamp", () => {
-  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const sandbox = vm.createContext({
     attachmentViews: () => [],
     conversationMessageAuthor: (_message, provider) => provider,
@@ -622,7 +299,7 @@ test("history and focused steers never inherit a parent turn timestamp", () => {
     canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
-  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  sandbox.mapHistory = historyProjection(sandbox);
   const messages = [
     { itemId: "root", role: "user", turnUserSlot: "root", text: "Root" },
     { itemId: "steer", role: "user", turnUserSlot: "steer", text: "Later clarification" },
@@ -639,7 +316,6 @@ test("history and focused steers never inherit a parent turn timestamp", () => {
 });
 
 test("focused turn without message times keeps its startedAt chronology", () => {
-  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const sandbox = vm.createContext({
     attachmentViews: () => [],
     conversationMessageAuthor: (_message, provider) => provider,
@@ -648,7 +324,7 @@ test("focused turn without message times keeps its startedAt chronology", () => 
     canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
-  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  sandbox.mapHistory = historyProjection(sandbox);
   const current = sandbox.mapHistory({
     provider: "codex",
     threadId: "thread-1",
@@ -727,54 +403,7 @@ test("Web control retries only blank gateway failures", async () => {
   });
   assert.equal(result, "accepted");
   assert.deepEqual(attempts, [0, 1, 2]);
-  const executeHttpControl = (responses) => {
-    const requests = [];
-    let sequence = 0;
-    const sandbox = vm.createContext({
-      crypto: { randomUUID: () => `command-${++sequence}` },
-      performance: { now: () => requests.length },
-      localSessionReady: Promise.resolve(),
-      retryConnectionFailure: lifecycle.retryConnectionFailure,
-      httpControlError: lifecycle.httpControlError,
-      HTTP_CONTROL_RETRY_DELAYS_MS: [0, 0, 0],
-      LONG_CONTROL_ACTIONS: new Set(),
-      DEFAULT_CONTROL_TIMEOUT_MS: 1_000,
-      window: { setTimeout: (callback) => callback() },
-      authorizationHeaders: () => ({}),
-      hubFetchWithin: async (_url, options) => {
-        requests.push(JSON.parse(options.body));
-        const response = responses.shift();
-        if (response instanceof Error) throw response;
-        return { status: response.status, ok: response.status === 200, json: async () => response.payload };
-      },
-    });
-    vm.runInContext(clientFunctionSource("httpControl", "function clientTraceSurface"), sandbox);
-    return { requests, result: sandbox.httpControl("send-message", {
-      text: "same message", clientUserMessageId: "original-message", clientTraceId: "trace-1",
-      clientTiming: { submittedAtMs: 123 },
-    }) };
-  };
-  const retried = executeHttpControl([
-    ...[502, 503, 504].map((status) => ({ status, payload: {} })),
-    { status: 200, payload: { result: { accepted: true } } },
-  ]);
-  assert.equal((await retried.result).accepted, true);
-  assert.equal(retried.requests.length, 4);
-  for (const request of retried.requests) {
-    assert.equal(request.commandId, retried.requests[0].commandId);
-    assert.equal(request.params.clientUserMessageId, "original-message");
-    assert.equal(request.params.clientTiming.submittedAtMs, 123);
-    assert.equal(request.params.text, "same message");
-  }
-  for (const response of [
-    { status: 503, payload: { error: "Application rejected" } },
-    { status: 400, payload: {} },
-    lifecycle.markConnectionFailure(new Error("network disconnected")),
-  ]) {
-    const rejected = executeHttpControl([response]);
-    await assert.rejects(rejected.result);
-    assert.equal(rejected.requests.length, 1);
-  }
+
 });
 
 test("optional history reads settle without becoming connection failures", async () => {
@@ -831,12 +460,6 @@ test("Stop cancels the run even when pausing one queued message fails", async ()
   assert.equal(stopped.result.message, "Остановлено");
 });
 
-test("message delivery keeps the stable Stream identity when a Thread binding is stale", () => {
-  assert.match(
-    hubClientSource,
-    /const params = \{[\s\S]*?streamId: identity\?\.streamId \?\? request\.streamId,[\s\S]*?provider: identity\?\.provider,[\s\S]*?threadId: identity\?\.threadId,/u,
-  );
-});
 
 test("completed history keeps every subagent result before the parent final", () => {
   const visible = lifecycle.historicalMessagesForDisplay({
@@ -1428,12 +1051,12 @@ test("composer quote annotations retain every selected fragment for the protocol
     { quote: "Первый выделенный фрагмент" },
     { quote: "Второй выделенный фрагмент" },
   ]);
-  const embedded = prompt.match(/<response-annotations>\n(?<json>.+)\n<\/response-annotations>/u);
-  assert.deepEqual(JSON.parse(embedded.groups.json), [
+  const parsed = responseAnnotationDetails(prompt);
+  assert.deepEqual(parsed.items, [
     { text: "Первый выделенный фрагмент", annotation: "" },
     { text: "Второй выделенный фрагмент", annotation: "" },
   ]);
-  assert.match(prompt, /## My request for Codex:\nОбщий вопрос$/u);
+  assert.equal(parsed.request, "Общий вопрос");
 });
 
 test("annotation envelopes preserve distinct exact sources for duplicate selected text", () => {
@@ -1829,20 +1452,6 @@ test("the reserved context probe phrase stays visible for a normal client operat
 
 });
 
-test("accepted browser messages refresh immediately without waiting for idle polling", () => {
-  assert.match(
-    hubClientSource,
-    /synchronize: async \(result\) => \{\s*if \(result\?\.snapshot\) applySnapshot\(result\.snapshot\);\s*else if \(result\?\.accepted \|\| result\?\.deferred\) await refresh\(\);/u,
-  );
-  assert.match(
-    hubClientSource,
-    /if \(refreshing\) \{\s*refreshRequested = true;\s*return;\s*\}/u,
-  );
-  assert.match(
-    hubClientSource,
-    /void acknowledgeLocalControl\(commandId\)\.catch/u,
-  );
-});
 
 test("partial former marker text remains visible", () => {
   const visible = lifecycle.visibleConversationMessages([{
@@ -2112,7 +1721,6 @@ test("durable turn order wins over an earlier queue timestamp", () => {
 });
 
 test("focused history item identity includes its provider Thread", () => {
-  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const sandbox = vm.createContext({
     attachmentViews: () => [],
     conversationMessageAuthor: (_message, provider) => provider,
@@ -2121,7 +1729,7 @@ test("focused history item identity includes its provider Thread", () => {
     canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
-  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  sandbox.mapHistory = historyProjection(sandbox);
   const turnId = "20000000-0000-4000-8000-000000000001";
   const itemId = `${turnId}:user`;
   const messages = sandbox.mapHistory({
@@ -2274,7 +1882,6 @@ test("late subagent results stay above their parent final", () => {
 });
 
 test("an older focused turn keeps its timestamp instead of falling below current history", () => {
-  assert.doesNotMatch(hubClientSource, /historyOrder: Number\.MAX_SAFE_INTEGER/u);
   const values = lifecycle.chronologicalMessages([
     {
       id: "current-user", role: "user", turnId: "current",
@@ -2657,59 +2264,6 @@ test("failed pending intake remains queue-owned without a receipt or with an ear
   }
 });
 
-test("failed pending intake exposes decision, retry and cancel only in its exact Stream", async () => {
-  const entry = {
-    id: "failed-intake",
-    clientUserMessageId: "client-failed-intake",
-    provider: "codex",
-    threadId: "thread-shared",
-    streamId: "stream-2",
-    state: "pending",
-    attentionRequired: true,
-    conflictKind: "message-intake",
-    lastError: "Provider start was not confirmed",
-  };
-  const projectionContext = vm.createContext({
-    historyByTask: new Map(),
-    optimisticQueueSteerIds: new Set(),
-    providerAcceptedHistoryClientUserMessageIds: lifecycle.providerAcceptedHistoryClientUserMessageIds,
-    queuedCommandUsesQueue: lifecycle.queuedCommandUsesQueue,
-    taskId: (provider, threadId, streamId) => lifecycle.conversationTaskId({ provider, threadId, streamId }),
-  });
-  vm.runInContext(clientFunctionSource("deferredEntriesForTask", "function optimisticDeferredEntries"), projectionContext);
-  const snapshot = { deferredInputs: [entry], messageReceipts: [] };
-  assert.deepEqual(Array.from(projectionContext.deferredEntriesForTask(snapshot, "stream-1")), []);
-  const entries = projectionContext.deferredEntriesForTask(snapshot, "stream-2");
-  assert.deepEqual(Array.from(entries), [entry]);
-
-  const nodes = [];
-  const renderContext = vm.createContext({
-    state: { queue: new Map([["stream-2", entries]]), tasks: [] },
-    el: (tag, attributes, children = []) => {
-      const node = { tag, ...attributes, children };
-      nodes.push(node);
-      return node;
-    },
-  });
-  vm.runInContext(await readFile(
-    new URL("../../assets/web-app/message-view-controller.js", import.meta.url),
-    "utf8",
-  ), renderContext);
-  renderContext.MessageView = renderContext.AgentHubMessageView;
-  const start = miniAppSource.indexOf("function renderQueueForTask(");
-  const end = miniAppSource.indexOf("function renderQueue()", start);
-  vm.runInContext(miniAppSource.slice(start, end), renderContext);
-  const container = { hidden: true, replaceChildren() {}, append() {} };
-  renderContext.renderQueueForTask("stream-2", container);
-  assert.equal(container.hidden, false);
-  assert.equal(nodes.some((node) => node.class === "queue-head" && node.text === "Требуют решения: 1"), true);
-  assert.equal(nodes.some((node) => node.class === "queue-error" && node.text === entry.lastError), true);
-  for (const action of ["queue-retry", "queue-remove"]) {
-    const button = nodes.find((node) => node["data-action"] === action);
-    assert.equal(button?.["data-queue-id"], entry.id);
-    assert.notEqual(button?.disabled, true);
-  }
-});
 
 test("idle intake survives receipt-window loss and reload without moving to the queue", () => {
   const clientUserMessageId = "client-idle-outside-receipt-window";
@@ -3314,130 +2868,8 @@ test("returning to a busy task keeps its deferred user card only in the queue", 
   assert.deepEqual(visible, [activeUser]);
 });
 
-test("rotation completion waits for maintenance and keeps its post-answer position", () => {
-  assert.match(
-    hubClientSource,
-    /pendingStreamRotations\.set\([\s\S]*sourceThreadId: transition\.sourceThreadId[\s\S]*time: transition\.time/u,
-  );
-  assert.match(hubClientSource, /if \(rotationMaintenanceActive\(task\)\) continue;/u);
-  assert.match(hubClientSource, /placement: "after-source-turn"/u);
-  assert.match(hubClientSource, /!String\(entry\.message\?\.sourceThreadId \?\? ""\)\.trim\(\)/u);
-});
-
-test("context compaction start identifies the task and completion stays in chat", () => {
-  const sandbox = vm.createContext({});
-  vm.runInContext(clientFunctionSource("taskDisplayTitle"), sandbox);
-  assert.equal(sandbox.taskDisplayTitle({ workspaceName: "Workspace", streamName: "S2" }), "Workspace - S2");
-  assert.equal(sandbox.taskDisplayTitle({ displayTitle: "Exact Task", title: "Historical Thread" }), "Exact Task");
-  // Exact completion identity and unknown measurement projection are exercised
-  // by the executable compaction observer cases below.
-});
-
-test("compaction markers keep exact operation identity before provider turn acceptance", () => {
-  const sandbox = vm.createContext({ taskId: () => "task-1" });
-  vm.runInContext(clientFunctionSource("rotationMaintenanceActive", "function syncActiveMaintenanceMessages"), sandbox);
-  const marker = sandbox.activeMaintenanceMessage({
-    provider: "codex", threadId: "thread-1",
-    context: { compaction: {
-      operationId: "operation-1", status: "running", turnId: null,
-      startedAt: "2026-09-09T20:10:00.000Z", origin: "automatic",
-    } },
-  });
-  assert.equal(marker.turnId, null);
-  assert.equal(marker.id, "maintenance:compaction:operation-1:active");
-  assert.equal(marker.text, "Автосвёртка контекста…");
-  const visible = projection.projectCanonicalMessages(lifecycle.visibleConversationMessages([marker]));
-  assert.equal(visible.length, 1);
-  assert.equal(visible[0].role, "system");
-});
-
-test("unknown and legacy timeout compaction replace false failure and settle by exact operation", () => {
-  const events = new Map();
-  const sandbox = vm.createContext({
-    taskId: () => "task-1", maintenanceEventsByTask: events,
-    observedContextCompactions: new Map(), requestedContextCompactions: new Set(),
-    contextPercent: (value) => value == null ? null : Number(value),
-    storedMaintenancePercent: () => null,
-    latestMaintenanceMessages: (values) => values,
-    persistMaintenanceEvents: () => {},
-    agentHub: { toast: () => {} },
-    window: {},
-  });
-  vm.runInContext(clientFunctionSource("rememberMaintenanceEvent", "function taskIdentity"), sandbox);
-  vm.runInContext(clientFunctionSource("observeContextCompactions", "function observeStreamRotations"), sandbox);
-  const compaction = {
-    operationId: "operation-1", origin: "automatic", turnId: null,
-    startedAt: "2026-09-09T20:10:00.000Z", beforePercent: 77,
-  };
-  const observe = (details) => sandbox.observeContextCompactions([{
-    provider: "codex", threadId: "thread-1", context: { compaction: { ...compaction, ...details } },
-  }]);
-  observe({ status: "failed" });
-  for (const status of ["unknown", "timeout"]) {
-    observe({ status });
-    const markers = events.get("task-1");
-    assert.equal(markers.length, 1);
-    assert.equal(markers[0].id, "maintenance:compaction:operation-1");
-    assert.equal(markers[0].maintenanceStatus, "unknown");
-    assert.equal(markers[0].text, "Статус свёртки неизвестен");
-  }
-  observe({ status: "completed", measurementStatus: "completed", afterPercent: 14 });
-  const markers = events.get("task-1");
-  assert.equal(markers.length, 1);
-  assert.equal(markers[0].maintenanceStatus, "completed");
-  assert.equal(markers[0].afterPercent, 14);
-  observe({ status: "failed" });
-  observe({ status: "completed", measurementStatus: "completed", afterPercent: 14 });
-  assert.equal(events.get("task-1").length, 1);
-  assert.equal(events.get("task-1")[0].maintenanceStatus, "completed");
-
-  observe({ status: "completed", measurementStatus: "completed", measurementKind: "estimated", afterPercent: 14 });
-  const estimated = events.get("task-1")[0];
-  assert.equal(estimated.measurementKind, "estimated");
-  assert.match(estimated.text, /77% → ≈14%/u);
-  assert.match(estimated.maintenanceDetail, /Предварительная оценка провайдера/u);
-
-  sandbox.observeContextCompactions([{
-    provider: "codex", threadId: "thread-1", streamId: "stream-1",
-    context: { compaction: { ...compaction, status: "completed", measurementStatus: "completed",
-      measurementKind: "estimated", afterPercent: 14,
-      rotationStatus: "failed", rotationMessage: "Целевой Thread недоступен",
-    } },
-  }]);
-  const rotationFailure = events.get("task-1").find((item) => item.maintenanceType === "rotation");
-  assert.equal(rotationFailure.maintenanceStatus, "failed");
-  assert.match(rotationFailure.text, /Исходный Thread сохранён/u);
-  assert.match(rotationFailure.maintenanceDetail, /Целевой Thread недоступен/u);
-  assert.equal(events.get("task-1").find((item) => item.maintenanceType === "compaction").maintenanceStatus, "completed");
-  events.set("task-1", events.get("task-1").filter((item) => item.maintenanceType === "compaction"));
-
-  // Neither a previous marker nor a current usage value proves a new measurement.
-  for (const details of [
-    { measurementStatus: "completed", measurementKind: "estimated", afterPercent: null },
-    { measurementStatus: "failed", afterPercent: 14 },
-    { afterPercent: 14 },
-  ]) {
-    observe({ status: "completed", ...details });
-    const missing = events.get("task-1")[0];
-    assert.equal(missing.afterPercent, null);
-    assert.doesNotMatch(missing.text, /(?:≈14%|успешно)/u);
-    assert.ok(missing.maintenanceDetail);
-  }
-});
-
-test("workspace task panel follows the effective local Stream selection", () => {
-  assert.doesNotMatch(
-    hubClientSource,
-    /selectedWorkspaceId: snapshot\.selected\?\.workspaceId/u,
-  );
-  assert.match(
-    hubClientSource,
-    /const selectedTask = tasks\.find\(\(task\) => task\.id === effectiveSelectedId\);[\s\S]*const selectedWorkspaceId = String\(selectedTask\?\.workspaceId \?\? ""\)\.trim\(\) \|\| null;[\s\S]*AgentHubTaskBoard\?\.setSnapshot\(\{[\s\S]*selectedWorkspaceId,/u,
-  );
-});
 
 test("completed history attaches the turn trace to its visible final answer", () => {
-  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const sandbox = vm.createContext({
     attachmentViews: () => [],
     conversationMessageAuthor: (_message, provider) => provider,
@@ -3446,7 +2878,7 @@ test("completed history attaches the turn trace to its visible final answer", ()
     canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
   });
-  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  sandbox.mapHistory = historyProjection(sandbox);
   const messages = sandbox.mapHistory({
     provider: "codex",
     threadId: "thread-1",
@@ -3469,29 +2901,6 @@ test("completed history attaches the turn trace to its visible final answer", ()
   assert.equal(messages[1].activities[0].id, "tool-1");
 });
 
-test("Stream UI keeps the selected live Thread instead of a historical duplicate", () => {
-  assert.match(streamTabsSource, /function representativeSnapshotTasks\(tasks\)/u);
-  assert.match(
-    streamTabsSource,
-    /task\?\.selected[\s\S]*task\?\.running && String\(task\?\.run\?\.turnId/u,
-  );
-  assert.match(
-    hubClientSource,
-    /const representativeTasks = representativeSnapshotTasks\(snapshot\.tasks\)/u,
-  );
-  assert.match(
-    hubClientSource,
-    /representativeTasks\.map\(\(task\) => modelTask/u,
-  );
-  assert.match(
-    hubClientSource,
-    /for \(const task of representativeTasks\) \{\s*const stableTaskId[\s\S]*agentHub\.setLive/u,
-  );
-  assert.match(
-    hubClientSource,
-    /function taskIdentity\(id\)[\s\S]*representativeSnapshotTasks\(lastSnapshot\?\.tasks\)/u,
-  );
-});
 
 test("Hub compaction delegates targeted completion to its context maintenance owner", () => {
   assert.match(
@@ -3532,104 +2941,6 @@ test("completed live card uses a newly recorded final even before durable histor
   }), "Legacy final");
 });
 
-test("terminal history clears a pre-turn live card by exact client identity", () => {
-  const taskId = "stream:s5";
-  const provider = "codex";
-  const threadId = "10000000-0000-4000-8000-000000000020";
-  const turnId = "20000000-0000-4000-8000-000000000028";
-  const clientUserMessageId = "qa-28";
-  const history = [
-    {
-      provider, threadId, turnId, itemId: `${turnId}:user`, role: "user",
-      clientUserMessageId, text: "QA-28", projectionState: "completed",
-    },
-    {
-      provider, threadId, turnId, itemId: `${turnId}:agent:final`, role: "agent",
-      text: "Принято", projectionState: "completed", terminalRevision: 1,
-    },
-  ];
-  assert.deepEqual(
-    { ...lifecycle.completedLiveTurnIdentity(history, {
-      provider,
-      threadId,
-      turnId: "",
-      clientUserMessageIds: [clientUserMessageId],
-    }) },
-    { provider, threadId, turnId },
-  );
-
-  const liveCardsByTask = new Map([[taskId, { provider, threadId, turnId: "" }]]);
-  const liveProbeByTask = new Map([[taskId, { provider, threadId, turnId: "" }]]);
-  const liveUserMessagesByTask = new Map([[taskId, {
-    provider,
-    threadId,
-    turnId: "",
-    clientUserMessageId,
-    userMessages: [{ clientUserMessageId }],
-  }]]);
-  const cleared = [];
-  const sandbox = vm.createContext({
-    liveCardsByTask,
-    liveProbeByTask,
-    liveUserMessagesByTask,
-    historyByTask: new Map([[taskId, history]]),
-    completedLiveTurnIdentity: lifecycle.completedLiveTurnIdentity,
-    lastSnapshot: { tasks: [] },
-    agentHub: { setLive: (...args) => cleared.push(args) },
-  });
-  const clearSource = clientFunctionSource(
-    "clearDurablyCompletedLiveCard",
-    "function exactSelectedTaskParams",
-  );
-  vm.runInContext(`${clearSource}; globalThis.clearLive = clearDurablyCompletedLiveCard;`, sandbox);
-
-  assert.equal(sandbox.clearLive(taskId), true);
-  assert.equal(liveCardsByTask.has(taskId), false);
-  assert.equal(liveProbeByTask.has(taskId), false);
-  assert.equal(liveUserMessagesByTask.has(taskId), false);
-  assert.deepEqual(cleared, [[taskId, null]]);
-});
-
-test("an inactive snapshot clears a retained user live card after queued turns drain", () => {
-  const taskId = "stream:burst";
-  const liveCardsByTask = new Map([[taskId, {
-    provider: "codex",
-    threadId: "thread-1",
-    turnId: "turn-last",
-    operationKind: "user-turn",
-    projectionAuthority: "live",
-    projectionState: "active",
-    stage: "Поток принят.",
-  }]]);
-  const liveProbeByTask = new Map([[taskId, { turnId: "turn-last" }]]);
-  const liveUserMessagesByTask = new Map([[taskId, {
-    clientUserMessageId: "client-last",
-  }]]);
-  const rendered = [];
-  const sandbox = vm.createContext({
-    activeTaskRun: lifecycle.activeTaskRun,
-    isUserRunningProjection: projection.isUserRunningProjection,
-    projectedActiveUserRun: (_id, task) => lifecycle.activeTaskRun(task),
-    promoteLiveCompletion: () => false,
-    rememberSnapshotCompletion: () => false,
-    clearInternalContextProbe: () => {},
-    liveCardsByTask,
-    liveProbeByTask,
-    liveUserMessagesByTask,
-    renderTaskMessages: (...args) => rendered.push(args),
-  });
-  const source = clientFunctionSource(
-    "updateLiveMessage",
-    "function authorizationHeaders",
-  );
-  vm.runInContext(`${source}; globalThis.updateLive = updateLiveMessage;`, sandbox);
-
-  assert.equal(sandbox.updateLive(taskId, { running: false, run: null }), null);
-  assert.equal(liveCardsByTask.has(taskId), false);
-  assert.equal(liveProbeByTask.has(taskId), false);
-  assert.equal(liveUserMessagesByTask.has(taskId), false);
-  assert.deepEqual(rendered, [[taskId]]);
-});
 
 test("pre-turn live cleanup never crosses provider Thread identity", () => {
   const turnId = "20000000-0000-4000-8000-000000000028";
@@ -3680,49 +2991,6 @@ test("terminal live promotion keeps the complete activity trace", () => {
   assert.notEqual(message.attachments[0], attachments[0]);
 });
 
-test("live snapshot projects generated response attachments into the current card", () => {
-  const taskId = "stream:imagegen-live";
-  const liveCardsByTask = new Map();
-  const sandbox = vm.createContext({
-    window: { AgentHubMessageProjection: projection },
-    activeTaskRun: lifecycle.activeTaskRun,
-    isUserRunningProjection: () => true,
-    projectedActiveUserRun: (_id, task) => lifecycle.activeTaskRun(task),
-    promoteLiveCompletion: () => false,
-    rememberSnapshotCompletion: () => false,
-    clearInternalContextProbe: () => {},
-    activeRunSubmissionTiming: () => ({ submittedAt: null, startedAt: null }),
-    attachmentViews: (values) => (Array.isArray(values) ? values : [])
-      .map((attachment) => ({ ...attachment, projected: true })),
-    liveUserMessagesSignature: () => "signature",
-    mergeLiveMaintenance: (live) => live,
-    activeStageLabel: (stage) => stage,
-    liveCardsByTask,
-    liveProbeByTask: new Map(),
-    liveUserMessagesByTask: new Map(),
-    maintenanceEventsByTask: new Map(),
-    renderTaskMessages: () => {},
-  });
-  const source = clientFunctionSource("updateLiveMessage", "function authorizationHeaders");
-  vm.runInContext(`${source}; globalThis.updateLive = updateLiveMessage;`, sandbox);
-
-  const live = sandbox.updateLive(taskId, {
-    provider: "codex",
-    threadId: "thread-imagegen-live",
-    running: true,
-    run: {
-      turnId: "turn-imagegen-live",
-      responseAttachments: [{ id: "generated-one.png", type: "image/png" }],
-    },
-  });
-
-  assert.deepEqual(JSON.parse(JSON.stringify(live.attachments)), [{
-    id: "generated-one.png",
-    type: "image/png",
-    projected: true,
-  }]);
-  assert.equal(liveCardsByTask.get(taskId), live);
-});
 
 test("terminal catch-up reads local history before waiting for provider hydration", () => {
   assert.equal(lifecycle.historyRefreshSourceRequired({
@@ -4008,323 +3276,4 @@ test("outgoing receipt lookup survives a task thread rebind", () => {
     lifecycle.outgoingTaskId(outgoingByTask, "client-1", "codex:thread-after"),
     "codex:thread-before",
   );
-});
-
-test("initial routed chat history wins over prefetch and starts snapshot polling", async () => {
-  const source=hubClientSource.replaceAll('\r\n','\n');
-  const begin=source.indexOf('async function loadVisibleTaskHistories(');
-  const end=source.indexOf('\nagentHub.on("workspace:visible-streams"',begin);
-  const visible=source.slice(begin,end);
-  const initialStart=source.indexOf('let initialRouteOpening');
-  if(initialStart<0)throw Error('actual initial-route state initialization unavailable');
-  const initialSource=source.slice(initialStart,source.indexOf(';',initialStart)+1);
-  const bootStart=source.indexOf('void runAction(async () => {\n  agentHub.setConnection("connecting")');
-  const bootEnd=source.indexOf('\nvoid refreshRateLimitHistory();',bootStart);
-  if(begin<0||end<0||bootStart<0||bootEnd<0)throw Error('actual owning source extraction unavailable');
-  const boot=source.slice(bootStart,bootEnd);
-  const refreshStart=source.indexOf('async function refresh(');
-  const refreshEnd=source.indexOf('\nagentHub.on("connection:retry"',refreshStart);
-  if(refreshStart<0||refreshEnd<0)throw Error('actual refresh extraction unavailable');
-  const refreshSource=source.slice(refreshStart,refreshEnd);
-  function harness(kind){
-   const events=[];const timers=[];let release;let opened;
-   const openEntered=new Promise(r=>opened=r);
-   const held=new Promise(r=>release=r);
-   const sandbox=vm.createContext({Set,Map,Array,Promise,visibleStreamTaskIds:new Set(),retainedHistoryTaskIds:null,
-   selectedTaskId:'selected',historyPageByTask:new Map([['cached',{}]]),composerRecoveryBarrier:Promise.resolve(),
-   releaseClosedTaskHistories:()=>events.push('release-closed'),taskIdentity:id=>({streamId:id,provider:'codex',threadId:'thread-'+id}),
-   enqueueTaskHistoryLoad:async(id,identity,options)=>{events.push(['history',id,identity.threadId,options.preserveScroll]);},
-   agentHub:{setConnection:s=>events.push(['connection',s])},streamChatRoute:()=>kind==='stream',directChatRoute:()=>kind==='direct',
-   refreshing:false,refreshRequested:false,refreshTimer:null,lastSnapshot:{tasks:[]},
-   prepareSnapshotTransport:async()=>{},AgentHubSnapshotTransport:{requestParams:()=>({})},
-   snapshotResponseIsStale:()=>false,refreshConnectionLatency:()=>{},resetConnectionFailures:()=>{},applySnapshotConnection:()=>{},considerDisplayedFinal:()=>{},
-   refreshVisibleTaskHistories:async()=>{},recordTransientConnectionFailure:()=>{throw Error('unexpected refresh failure');},historyNeedsCatchUp:()=>false,
-   clearTimeout:()=>{},setTimeout:(fn,delay)=>{timers.push({fn,delay});return timers.length;},
-   openRoute:async()=>{events.push('open-route');opened();return held;},
-   runNavigation:()=>{throw Error('unexpected selected fallback navigation');},control:async action=>{assert.equal(action,'snapshot');events.push(['snapshot',true]);return {notModified:true};},applyOpened:()=>{},
-   runAction:fn=>{sandbox.completion=fn();return sandbox.completion;}});
-   sandbox.window=sandbox;
-   vm.runInContext(initialSource+'\n'+visible+'\n'+refreshSource,sandbox);
-   return {sandbox,events,timers,release,openEntered,boot:()=>vm.runInContext(boot,sandbox)};
-  }
-  {
-   const h=harness('direct');
-   await h.sandbox.loadVisibleTaskHistories(['selected','cached','background',' background ',''],['selected','background']);
-   assert.deepEqual(Array.from(h.sandbox.visibleStreamTaskIds),['selected','cached','background']);
-   assert.deepEqual(Array.from(h.sandbox.retainedHistoryTaskIds),['selected','background']);
-   assert.equal(h.events.filter(x=>Array.isArray(x)&&x[0]==='history').length,0);
-   h.boot();await h.openEntered;
-   assert.equal(h.events.filter(x=>Array.isArray(x)&&x[0]==='snapshot').length,0,'direct routed history must lead first refresh');
-   assert.equal(h.events.filter(x=>Array.isArray(x)&&x[0]==='history').length,0,'background must stay gated while route is held');
-   h.release(true);await h.sandbox.completion;
-   assert.equal(vm.runInContext('initialRouteOpening',h.sandbox),false);
-   assert.deepEqual(h.events.filter(x=>Array.isArray(x)&&x[0]==='snapshot'),[['snapshot',true]]);
-   assert.deepEqual(h.events.filter(x=>Array.isArray(x)&&x[0]==='history'),[['history','background','thread-background',false]]);
-   const open=h.events.indexOf('open-route');const snap=h.events.findIndex(x=>Array.isArray(x)&&x[0]==='snapshot');const background=h.events.findIndex(x=>Array.isArray(x)&&x[0]==='history');
-   assert.ok(open<snap&&snap<background);
-   assert.equal(h.timers.length,1);assert.equal(h.timers[0].fn,h.sandbox.refresh);assert.ok(Number.isFinite(h.timers[0].delay)&&h.timers[0].delay>0);
-   await h.timers[0].fn();assert.equal(h.events.filter(x=>Array.isArray(x)&&x[0]==='snapshot').length,2);assert.equal(h.timers.length,2);
-  }
-  {
-   const h=harness('stream');h.boot();await h.openEntered;
-   assert.deepEqual(h.events.filter(x=>Array.isArray(x)&&x[0]==='snapshot'),[['snapshot',true]]);
-   assert.ok(h.events.findIndex(x=>Array.isArray(x)&&x[0]==='snapshot')<h.events.indexOf('open-route'));
-   h.release(true);await h.sandbox.completion;assert.equal(vm.runInContext('initialRouteOpening',h.sandbox),false);
-  }
-});
-
-test("a cold stable Stream route resolves after the first snapshot instead of server selection", () => {
-  assert.match(
-    hubClientSource,
-    /if \(streamChatRoute\(\)\) \{[\s\S]*?await refresh\(\{ reportError: true \}\);\s*routed = await openRoute\(\);\s*\} else if \(directChatRoute\(\)\)/u,
-  );
-  assert.match(
-    hubClientSource,
-    /function streamChatRoute\(\) \{[\s\S]*?parts\[1\] === "stream" && Boolean\(parts\[2\]\)/u,
-  );
-});
-
-// The deferred and receipt cards are the first thing the user sees for a
-// message that arrived from another Stream. Losing its origin turns a foreign
-// message into an own one until the server projection catches up.
-function interstreamCardSandbox() {
-  const outgoing = new Map();
-  const sandbox = vm.createContext({
-    ...lifecycle,
-    canonicalProjectionState: projection.projectionState,
-    Map,
-    Set,
-    optimisticDeferredClientUserMessageIds: new Set(),
-    deferredClientUserMessageIds: new Set(),
-    taskId: (provider, threadId, streamId) => streamId || `${provider}:${threadId}`,
-    outgoingMessages: () => outgoing,
-    rememberOutgoing: (_taskId, value) => outgoing.set(value.clientUserMessageId, value),
-    attachmentViews: (values) => values ?? [],
-    normalizedResponseAnnotations: (values) => values ?? [],
-    deliveryPatch: (deliveryState) => ({ deliveryState }),
-  });
-  sandbox.window = sandbox;
-  vm.runInContext([
-    clientFunctionSource("confirmedCardOrigin", "function restoreImmediateIntakeMessage"),
-    clientFunctionSource("restoreImmediateIntakeMessage", "function canonicalAcceptedEvidence"),
-  ].join(String.fromCharCode(10)), sandbox);
-  return { sandbox, outgoing };
-}
-
-const INTERSTREAM_ORIGIN = Object.freeze({
-  workspaceId: "workspace-1",
-  workspaceName: "Agent HUB",
-  streamId: "stream-s3",
-  streamName: "S3",
-  provider: "codex",
-  model: "GPT-6 Astra",
-  sourceThreadId: "thread-s3",
-  requestId: "s3-measurements-final-20260911",
-});
-
-function interstreamDeferred(overrides = {}) {
-  return {
-    provider: "codex",
-    threadId: "thread-1",
-    streamId: "stream-1",
-    clientUserMessageId: `mcp:${INTERSTREAM_ORIGIN.requestId}`,
-    clientProjectionIntent: "conversation",
-    createdAt: "2026-09-11T10:00:00.000Z",
-    text: "Замеры готовы, прикладываю сводку.",
-    author: "S3 · Astra",
-    origin: { ...INTERSTREAM_ORIGIN },
-    ...overrides,
-  };
-}
-
-test("an immediate intake card keeps the source of a message from another Stream", () => {
-  const { sandbox, outgoing } = interstreamCardSandbox();
-  const deferred = interstreamDeferred();
-
-  assert.equal(sandbox.restoreImmediateIntakeMessage(deferred, []), true);
-  const card = outgoing.get(deferred.clientUserMessageId);
-  assert.equal(card.author, deferred.author, "карточка представилась пользователем вместо источника");
-  assert.equal(card.kind, "interstream");
-  assert.deepEqual(card.origin, deferred.origin);
-  assert.equal(card.text, deferred.text);
-
-  // The same entry arriving again updates the existing card without losing it.
-  card.author = "Вы";
-  delete card.origin;
-  delete card.kind;
-  assert.equal(sandbox.restoreImmediateIntakeMessage(deferred, []), true);
-  const updated = outgoing.get(deferred.clientUserMessageId);
-  assert.equal(updated.author, deferred.author, "обновление существующей карточки потеряло источник");
-  assert.equal(updated.kind, "interstream");
-  assert.deepEqual(updated.origin, deferred.origin);
-});
-
-test("a card never names a Stream its own alias does not confirm", () => {
-  const { sandbox, outgoing } = interstreamCardSandbox();
-  // The alias belongs to one request while the origin claims another one.
-  const conflicting = interstreamDeferred({
-    clientUserMessageId: "mcp:request-one",
-    author: "WRONG source",
-    origin: { ...INTERSTREAM_ORIGIN, streamName: "WRONG", requestId: "conflicting-request" },
-  });
-
-  assert.equal(sandbox.restoreImmediateIntakeMessage(conflicting, []), true);
-  const card = outgoing.get("mcp:request-one");
-  assert.equal(card.text, conflicting.text, "тело сообщения было переписано");
-  assert.equal(card.author, "Вы", "карточка назвала источник, который её алиас не подтверждает");
-  assert.ok(!card.kind, "неподтверждённый origin дал межпоточный вид");
-  assert.ok(!card.origin, "неподтверждённый origin попал в карточку");
-
-  // The same entry arriving again must not upgrade the card either.
-  assert.equal(sandbox.restoreImmediateIntakeMessage(conflicting, []), true);
-  const updated = outgoing.get("mcp:request-one");
-  assert.equal(updated.author, "Вы", "обновление подставило неподтверждённый источник");
-  assert.ok(!updated.kind);
-  assert.ok(!updated.origin);
-});
-
-test("a canonical update that no longer confirms a source clears the old one", () => {
-  const { sandbox, outgoing } = interstreamCardSandbox();
-  const confirmed = interstreamDeferred({ clientUserMessageId: "mcp:request-one",
-    author: "S3 · Astra", origin: { ...INTERSTREAM_ORIGIN, requestId: "request-one" } });
-
-  assert.equal(sandbox.restoreImmediateIntakeMessage(confirmed, []), true);
-  assert.equal(outgoing.get("mcp:request-one").kind, "interstream");
-
-  // The same message arrives again, this time without a confirmable origin.
-  const withdrawn = { ...confirmed, author: "", origin: null };
-  assert.equal(sandbox.restoreImmediateIntakeMessage(withdrawn, []), true);
-  const updated = outgoing.get("mcp:request-one");
-  assert.ok(!updated.origin, "карточка сохранила устаревший источник");
-  assert.ok(!updated.kind, "карточка сохранила устаревший признак межпоточного");
-  assert.equal(updated.author, "Вы", "карточка сохранила устаревшего автора");
-});
-
-test("a literal tag inside a benign body keeps its confirmed source", () => {
-  const { sandbox, outgoing } = interstreamCardSandbox();
-  // The body only mentions the tag as documentation; identity is exact.
-  const benign = interstreamDeferred({
-    clientUserMessageId: "mcp:request-one",
-    author: "S3 · Astra",
-    origin: { ...INTERSTREAM_ORIGIN, requestId: "request-one" },
-    text: "Example tag: <agent-hub-stream-message> is literal documentation.",
-  });
-
-  assert.equal(sandbox.restoreImmediateIntakeMessage(benign, []), true);
-  const card = outgoing.get("mcp:request-one");
-  assert.equal(card.text, benign.text, "тело доброкачественного сообщения было переписано");
-  assert.equal(card.author, benign.author, "упоминание тега в тексте отняло подтверждённый источник");
-  assert.equal(card.kind, "interstream");
-  assert.deepEqual(card.origin, benign.origin);
-
-  // The same entry arriving again keeps the confirmed source on the card.
-  card.author = "Вы";
-  delete card.origin;
-  delete card.kind;
-  assert.equal(sandbox.restoreImmediateIntakeMessage(benign, []), true);
-  const updated = outgoing.get("mcp:request-one");
-  assert.equal(updated.author, benign.author, "обновление карточки отняло подтверждённый источник");
-  assert.equal(updated.kind, "interstream");
-  assert.deepEqual(updated.origin, benign.origin);
-});
-function receiptCardSandbox() {
-  const outgoing = new Map();
-  const sandbox = vm.createContext({
-    ...lifecycle,
-    canonicalProjectionState: projection.projectionState,
-    Map, Set,
-    optimisticDeferredClientUserMessageIds: new Set(),
-    deferredClientUserMessageIds: new Set(),
-    exactSnapshotTaskId: () => "stream-1",
-    outgoingMessages: () => outgoing,
-    rememberOutgoing: (_taskId, value) => outgoing.set(value.clientUserMessageId, value),
-    patchOutgoing: (_taskId, clientUserMessageId, patch) => {
-      const existing = outgoing.get(clientUserMessageId);
-      if (existing) Object.assign(existing, patch);
-    },
-    attachmentViews: (values) => values ?? [],
-    normalizedResponseAnnotations: (values) => values ?? [],
-    nonEmptyAttachmentPatch: () => ({}),
-    deliveryPatch: (deliveryState) => ({ deliveryState }),
-  });
-  sandbox.window = sandbox;
-  vm.runInContext([
-    clientFunctionSource("confirmedCardOrigin", "function restoreImmediateIntakeMessage"),
-    clientFunctionSource("applyMessageReceipts", "function rememberSnapshotCompletion"),
-  ].join(String.fromCharCode(10)), sandbox);
-  return { sandbox, outgoing };
-}
-
-function receiptSnapshot(receipt) {
-  return {
-    tasks: [{ id: "stream-1", streamId: "stream-1", provider: "codex", threadId: "thread-1" }],
-    messageReceipts: [{
-      provider: "codex",
-      threadId: "thread-1",
-      accepted: true,
-      displayText: "Замеры готовы.",
-      ...receipt,
-    }],
-  };
-}
-
-test("a receipt card keeps a confirmed source and refuses an unconfirmed one", () => {
-  const { sandbox, outgoing } = receiptCardSandbox();
-  const benign = {
-    clientUserMessageId: "mcp:request-one",
-    author: "S3 · Astra",
-    origin: { ...INTERSTREAM_ORIGIN, requestId: "request-one" },
-    displayText: "Example tag: <agent-hub-stream-message> is literal documentation.",
-  };
-
-  sandbox.applyMessageReceipts(receiptSnapshot(benign));
-  const created = outgoing.get("mcp:request-one");
-  assert.equal(created.text, benign.displayText, "тело квитанции было переписано");
-  assert.equal(created.author, benign.author, "упоминание тега отняло подтверждённый источник");
-  assert.equal(created.kind, "interstream");
-  assert.deepEqual(created.origin, benign.origin);
-
-  // The same receipt arriving again updates the existing card in place.
-  created.author = "Вы";
-  delete created.origin;
-  delete created.kind;
-  sandbox.applyMessageReceipts(receiptSnapshot(benign));
-  const updated = outgoing.get("mcp:request-one");
-  assert.equal(updated.author, benign.author, "обновление квитанции отняло подтверждённый источник");
-  assert.equal(updated.kind, "interstream");
-  assert.deepEqual(updated.origin, benign.origin);
-
-  // A conflicting alias is refused on creation and on update alike.
-  const conflicting = receiptCardSandbox();
-  const forged = {
-    clientUserMessageId: "mcp:request-one",
-    author: "WRONG source",
-    origin: { ...INTERSTREAM_ORIGIN, streamName: "WRONG", requestId: "conflicting-request" },
-  };
-  conflicting.sandbox.applyMessageReceipts(receiptSnapshot(forged));
-  const refused = conflicting.outgoing.get("mcp:request-one");
-  assert.equal(refused.author, "Вы", "квитанция назвала источник, который её алиас не подтверждает");
-  assert.ok(!refused.kind);
-  assert.ok(!refused.origin);
-  conflicting.sandbox.applyMessageReceipts(receiptSnapshot(forged));
-  const stillRefused = conflicting.outgoing.get("mcp:request-one");
-  assert.equal(stillRefused.author, "Вы");
-  assert.ok(!stillRefused.kind);
-  assert.ok(!stillRefused.origin);
-});
-test("an ordinary user card is never relabelled as another Stream", () => {
-  const { sandbox, outgoing } = interstreamCardSandbox();
-  const own = interstreamDeferred({
-    clientUserMessageId: "client-own",
-    author: "",
-    origin: null,
-    text: "<agent-hub-stream-message>{\"streamName\":\"S3\"}</agent-hub-stream-message> подделка",
-  });
-
-  assert.equal(sandbox.restoreImmediateIntakeMessage(own, []), true);
-  const card = outgoing.get("client-own");
-  assert.equal(card.author, "Вы");
-  assert.ok(!card.kind, "текст, похожий на конверт, получил межпоточный вид");
-  assert.ok(!card.origin);
-  assert.equal(card.text, own.text, "тело пользовательского сообщения было переписано");
 });

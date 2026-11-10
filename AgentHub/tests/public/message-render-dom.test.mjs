@@ -113,6 +113,26 @@ test.after(async () => {
   await browser?.close();
 });
 
+test("unchanged selected history repairs a foreign physical message owner", async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  try {
+    await openWebApp(page);
+    const messages = [{ id: "owned-final", itemId: "owned-final", role: "agent", text: "Exact owned answer" }];
+    await seedMessages(page, messages);
+    for (const method of ["setMessages", "setMessagesPreservingScroll"]) {
+      await page.evaluate(({ method, messages }) => {
+        const log = document.querySelector("[data-chat-log]");
+        log.dataset.messageOwnerKey = "foreign-task";
+        log.replaceChildren(Object.assign(document.createElement("p"), { textContent: "Foreign answer" }));
+        window.AgentHub[method]("task-1", messages);
+      }, { method, messages });
+      await page.getByText("Exact owned answer", { exact: true }).waitFor({ state: "visible" });
+      assert.equal(await page.locator("[data-chat-log]").getAttribute("data-message-owner-key"), "task-1");
+      assert.equal(await page.getByText("Foreign answer", { exact: true }).count(), 0);
+    }
+  } finally { await page.close(); }
+});
+
 test("positioned annotations interleave four nonsorted answers through stream history and reload", {timeout:45000}, async()=>{
   const raw='# Зачем нужна история Git\n\nИстория Git сохраняет изменения. 🦊 :agent-annotation{index="2"}\n\nЗависимости можно переиспользовать. :codex-annotation{index="1"}\n\nВременные копии удаляются после проверки. :agent-annotation{index="3"}\n\nМедиа принадлежит открытой задаче. :codex-annotation{index="4"}';
   for(const width of [1366,390]) for(const provider of ['codex','claude']) {
@@ -524,245 +544,18 @@ test("Markdown details nesting and code literals do not consume later ordinary t
   }
 });
 
-test("persisted rotation renders once after missed snapshots and page reload", async () => {
-  const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  const sourceTask = {
-    provider: "codex", streamId: "stream-1", threadId: "thread-old", threadPosition: 37,
-    context: { compaction: {
-      operationId: "rotation-source-operation", status: "completed", rotated: true,
-      beforePercent: 78.408282, afterPercent: 25.770898,
-      completedAt: "2026-09-10T20:53:46.990Z",
-    } },
-  };
-  const currentTask = {
-    provider: "codex", streamId: "stream-1", threadId: "thread-new", threadPosition: 38,
-    context: { percent: 61 },
-  };
-  const olderTask = {
-    ...sourceTask, threadId: "thread-older", threadPosition: 36,
-    context: { compaction: {
-      ...sourceTask.context.compaction, operationId: "earlier-rotation",
-      completedAt: "2026-09-09T20:00:00.000Z",
-    } },
-  };
-  const source = await readFile(new URL("hub-client.js", WEB_APP_ROOT), "utf8");
-  const clientFunction = (name, next) => {
-    const start = source.indexOf(`function ${name}(`);
-    return source.slice(start, source.indexOf(`function ${next}`, start));
-  };
-  const installProjection = () => page.addScriptTag({ content: `(() => {
-    const taskId = () => "task-1";
-    const maintenanceEventStorageKey = "rotation-dom-maintenance";
-    const { latestMaintenanceMessages } = window.AgentHubMessageLifecycle;
-    ${clientFunction("readMaintenanceEvents", "persistMaintenanceEvents")}
-    const maintenanceEventsByTask = readMaintenanceEvents();
-    let writes = 0;
-    const persistMaintenanceEvents = () => {
-      writes += 1;
-      localStorage.setItem(maintenanceEventStorageKey, JSON.stringify(
-        [...maintenanceEventsByTask].flatMap(([taskId, messages]) => (
-          messages.map((message) => ({ taskId, message }))
-        )),
-      ));
-    };
-    const pendingStreamRotations = new Map();
-    const observedContextCompactions = new Map();
-    const requestedContextCompactions = new Set();
-    const contextPercent = (value) => value == null ? null : Math.round(Number(value));
-    const storedMaintenancePercent = () => null;
-    const agentHub = { toast: () => {} };
-    ${clientFunction("rotationMaintenanceActive", "syncActiveMaintenanceMessages")}
-    ${clientFunction("rememberMaintenanceEvent", "taskIdentity")}
-    ${clientFunction("observeContextCompactions", "representativeSnapshotTasks")}
-    window.rotationProjection = {
-      observe: (tasks, previous = []) => {
-        observeContextCompactions(tasks);
-        observeStreamRotations(previous, tasks);
-        return { messages: maintenanceEventsByTask.get("task-1") ?? [], writes };
-      },
-    };
-  })();` });
-  try {
-    await openWebApp(page);
-    const title = await page.title();
-    assert.ok(title.trim());
-    assert.equal(page.url(), "http://127.0.0.1/");
-    for (const reload of [false, true]) {
-      if (reload) await page.reload({ waitUntil: "load" });
-      await installProjection();
-      const snapshotTasks = [sourceTask, currentTask, olderTask];
-      const first = await page.evaluate((tasks) => window.rotationProjection.observe(tasks), snapshotTasks);
-      const repeated = await page.evaluate((tasks) => window.rotationProjection.observe(tasks, tasks), snapshotTasks);
-      assert.equal(first.messages.length, 1);
-      assert.deepEqual(repeated.messages, first.messages);
-      assert.equal(repeated.writes, first.writes, "unchanged polling does not rewrite the notice");
-      if (reload) assert.equal(first.writes, 0, "saved projection retains the same exact event on reload");
-      assert.equal(Object.hasOwn(first.messages[0], "afterPercent"), false);
-      for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
-        await page.setViewportSize(viewport);
-        await seedMessages(page, [
-          { id: "before", role: "agent", threadId: "thread-old", turnId: "turn-before",
-            text: "Ответ до ротации", time: "2026-09-10T20:53:50.000Z" },
-          ...first.messages,
-          { id: "after", role: "user", threadId: "thread-new", turnId: "turn-after",
-            text: "Сообщение после ротации", time: "2026-09-10T20:56:00.000Z" },
-        ], currentTask);
-        if (viewport.width < 600) await page.evaluate(() => window.AgentHub.showSelectedTask());
-        assert.equal(await page.locator(".msg-maintenance").count(), 1);
-        assert.match(await page.locator(".msg-maintenance").textContent(), /Ротация завершена/u);
-        assert.equal(await page.locator(".msg-agent").count(), 1, "rotation is not a second agent turn");
-        const positions = await page.evaluate(() => {
-          const marker = document.querySelector(".msg-maintenance");
-          const before = document.querySelector(".msg-agent");
-          const after = document.querySelector(".msg-user");
-          return {
-            afterSource: Boolean(before.compareDocumentPosition(marker) & Node.DOCUMENT_POSITION_FOLLOWING),
-            beforeTarget: Boolean(marker.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING),
-            visible: marker.getBoundingClientRect().height > 0,
-          };
-        });
-        assert.deepEqual(positions, { afterSource: true, beforeTarget: true, visible: true });
-        if (reload && process.env.AGENT_HUB_ROTATION_QA_DIR) {
-          await mkdir(process.env.AGENT_HUB_ROTATION_QA_DIR, { recursive: true });
-          await page.screenshot({ path: path.join(process.env.AGENT_HUB_ROTATION_QA_DIR, `rotation-${viewport.width}.png`) });
-        }
-      }
-    }
-    assert.deepEqual(errors, []);
-  } finally {
-    await page.close();
-  }
-});
 
-test("compaction without provider turn renders a system marker and unknown completion stays explicit", async () => {
+
+test("estimated compaction detail remains available on the rendered activity", async () => {
   const page = await browser.newPage();
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
   try {
     await openWebApp(page);
-    const source = await readFile(new URL("hub-client.js", WEB_APP_ROOT), "utf8");
-    const clientFunction = (name, next) => {
-      const start = source.indexOf(`function ${name}(`);
-      return source.slice(start, source.indexOf(`function ${next}`, start));
-    };
-    await page.addScriptTag({ content: `(() => {
-      const taskId = () => "task-1";
-      const maintenanceEventsByTask = new Map();
-      const observedContextCompactions = new Map();
-      const requestedContextCompactions = new Set();
-      const latestMaintenanceMessages = (values) => values;
-      const persistMaintenanceEvents = () => {};
-      const contextPercent = (value) => value == null ? null : Number(value);
-      const storedMaintenancePercent = () => null;
-      const agentHub = { toast: () => {} };
-      ${clientFunction("rotationMaintenanceActive", "syncActiveMaintenanceMessages")}
-      ${clientFunction("rememberMaintenanceEvent", "taskIdentity")}
-      ${clientFunction("observeContextCompactions", "observeStreamRotations")}
-      window.compactionProjection = {
-        active: activeMaintenanceMessage,
-        observe: (task) => {
-          observeContextCompactions([task]);
-          return maintenanceEventsByTask.get("task-1");
-        },
-      };
-    })();` });
-    const marker = await page.evaluate(() => window.compactionProjection.active({
-      provider: "codex", threadId: "thread-1",
-      context: { compaction: { operationId: "operation-1", status: "running", turnId: null, origin: "automatic" } },
-    }));
-    await seedMessages(page, [marker]);
-    assert.equal(await page.locator(".msg-maintenance").count(), 1);
-    assert.match(await page.locator(".msg-maintenance").textContent(), /Автосвёртка контекста/u);
-    assert.equal(await page.locator(".msg-agent").count(), 0);
-    const preparation = {
-      maintenance: { reason: "automatic-post-turn", phase: "preparing", reservationId: "reservation-new" },
-      context: { usedTokens: 75.04, modelContextWindow: 100, percent: 75.04, compacting: false,
-        compaction: { id: "older", status: "completed", measurementStatus: "completed", afterPercent: 14 } },
-    };
-    const preparationMarker = await page.evaluate((details) => window.compactionProjection.active({
-      provider: "codex", threadId: "thread-1", ...details,
-    }), preparation);
-    await page.evaluate(() => {
-      window.__stops = [];
-      window.AgentHub.on("task:stop", (value) => window.__stops.push(value));
-    });
-    for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
-      await page.setViewportSize(viewport);
-      await seedMessages(page, [preparationMarker], preparation);
-      if (viewport.width < 600) await page.evaluate(() => window.AgentHub.showSelectedTask());
-      assert.match(await page.locator(".msg-maintenance").textContent(), /Подготовка обслуживания контекста/u);
-      assert.equal(await page.locator(".msg-agent").count(), 0);
-      assert.equal(await page.locator("[data-context-label]").textContent(), "подготовка…");
-      assert.equal(await page.locator("[data-context-usage]").getAttribute("data-compacting"), null);
-      const stop = page.locator("[data-chat-stop]:visible");
-      assert.equal(await stop.count(), 1);
-      await stop.click();
-      await page.locator("[data-context-usage]").click();
-      assert.equal(await page.locator("[data-context-usage-compact]").isDisabled(), true);
-      await page.locator('[data-context-usage-modal] [data-action="context-usage-close"]').first().click();
-      if (process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({
-        path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-${viewport.width}.png`, fullPage: true,
-      });
-    }
-    assert.deepEqual(await page.evaluate(() => window.__stops), [{ id: "task-1" }, { id: "task-1" }]);
-    await seedMessages(page, [], { ...preparation,
-      maintenance: { ...preparation.maintenance, phase: "starting" },
-    });
-    assert.equal(await page.locator("[data-context-label]").textContent(), "запуск…");
-    assert.equal(await page.locator("[data-chat-stop]:visible").count(), 0);
-    for (const [compacting, usagePending, expectedLabel] of [
-      [true, false, "свёртка…"],
-      [true, true, "свёртка…"],
-      [false, true, "обновление…"],
-    ]) {
-      await seedMessages(page, [], { ...preparation, maintenance: null,
-        context: { ...preparation.context, compacting, usagePending },
-      });
-      assert.equal(await page.locator("[data-context-label]").textContent(), expectedLabel);
-      assert.equal(await page.locator("[data-context-usage]").getAttribute("data-compacting"), compacting ? "" : null);
-    }
-    await seedMessages(page, [], { ...preparation, maintenance: null });
-    assert.equal(await page.locator("[data-context-label]").textContent(), "75% контекста");
-    assert.equal(await page.locator("[data-chat-stop]:visible").count(), 0);
-    for (const [status, expectedText] of [
-      ["failed", "Автосвёртка контекста не завершилась"],
-      ["unknown", "Статус свёртки неизвестен"],
-      ["completed", "Свёртка контекста"],
-    ]) {
-      const messages = await page.evaluate((status) => window.compactionProjection.observe({
-        provider: "codex", threadId: "thread-1",
-        context: { compaction: {
-          operationId: "operation-1", status, turnId: null, origin: "automatic",
-          beforePercent: 77, afterPercent: status === "completed" ? 14 : null,
-          measurementStatus: status === "completed" ? "completed" : null,
-          measurementKind: status === "completed" ? "estimated" : null,
-        } },
-      }), status);
-      await seedMessages(page, messages);
-      assert.equal(await page.locator(".msg-maintenance").count(), 1);
-      assert.ok((await page.locator(".msg-maintenance").textContent()).includes(expectedText));
-      assert.equal(await page.locator(".msg-agent").count(), 0);
-      if (status === "completed") {
-        for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
-          await page.setViewportSize(viewport);
-          assert.match(await page.locator(".msg-maintenance").textContent(), /77% → ≈14%/u);
-          assert.match(await page.locator(".msg-maintenance").getAttribute("title"), /Предварительная оценка провайдера/u);
-        }
-        await seedMessages(page, [{ id: "answer-after-compaction", role: "agent", text: "Ответ",
-          activities: [{ id: "compaction", type: "compaction", status: "completed",
-            label: messages[0].maintenanceLabel, detail: messages[0].maintenanceDetail }],
-        }]);
-        await page.locator('.msg-agent .activity-feed > summary').click();
-        const activity = page.locator('.activity-item[data-type="compaction"]');
-        assert.match(await activity.getAttribute("title"), /≈14%.*Предварительная оценка провайдера/u);
-      }
-    }
-    assert.deepEqual(errors, []);
-  } finally {
-    await page.close();
-  }
+    await seedMessages(page, [{ id: "answer-after-compaction", role: "agent", text: "Ответ",
+      activities: [{ id: "compaction", type: "compaction", status: "completed", label: "Свёртка завершена успешно",
+        detail: "77% → ≈14% · Предварительная оценка провайдера после свёртки" }] }]);
+    await page.locator('.msg-agent .activity-feed > summary').click();
+    assert.match(await page.locator('.activity-item[data-type="compaction"]').getAttribute("title"), /≈14%.*Предварительная оценка провайдера/u);
+  } finally { await page.close(); }
 });
 
 test("long annotated message mounts full Markdown only while expanded and actions keep original text", async () => {

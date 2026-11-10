@@ -26,15 +26,29 @@ test('a live update in one open Stream preserves the other visible history colum
       window.__heldColumnOpens = [];
       window.__heldColumnHistory = [];
       window.__columnReads = [];
+      window.__holdColumnResponses = false;
       const post = window.__agentHubVscode.postMessage;
       window.__agentHubVscode.postMessage = message => {
-        if (['open-task', 'task-history'].includes(message.action)) {
-          if (message.action === 'open-task') window.__heldColumnOpens.push(message.params.streamId);
+        if (window.__holdColumnResponses && ['select-task', 'task-history'].includes(message.action)) {
+          if (message.action === 'select-task') window.__heldColumnOpens.push(message.params.streamId);
           else window.__heldColumnHistory.push(message);
           return;
         }
+        if (message.action === 'task-history') {
+          const suffix = message.params.streamId.at(-1);
+          queueMicrotask(() => window.dispatchEvent(new MessageEvent('message', { data: {
+            type: 'agenthub:control-result', id: message.id, ok: true,
+            result: { provider: 'codex', threadId: `thread-${suffix}`, streamId: message.params.streamId,
+              start: 0, end: 20, total: 20, nextBefore: null, version: `loaded-${suffix}`,
+              items: Array.from({ length: 20 }, (_, index) => ({ id: `turn-${suffix}-${index}`, completed: true,
+                messages: [{ role: 'agent', itemId: `${suffix}-${index}`, phase: 'final',
+                  text: `History ${suffix} ${index}\n\n` + 'Retained paragraph content. '.repeat(60)
+                    + '\n\n<details><summary>Retained detail</summary>Expanded detail body</details>' }] })) },
+          } })));
+          return;
+        }
         if (message.action === 'mark-task-read') window.__columnReads.push(message.params);
-        if (message.action === 'snapshot') {
+        if (window.__holdColumnResponses && message.action === 'snapshot') {
           queueMicrotask(() => window.dispatchEvent(new MessageEvent('message', { data: {
             type: 'agenthub:control-result', id: message.id, ok: true,
             result: { notModified: true, version: window.__agentHubFixture.snapshot.version },
@@ -48,19 +62,18 @@ test('a live update in one open Stream preserves the other visible history colum
       await page.locator(`[data-stream-task-id="stream-${suffix}"]:visible`).first().click({ modifiers: ['Control'] });
     }
     await page.locator('.stream-chat-preview[data-stream-chat-task-id="stream-a"] .stream-chat-preview-head').click();
+    for (const suffix of ['a', 'b', 'c', 'd']) await page.getByText(`History ${suffix} 19`, { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.__columnReads.length), 0, 'the unseen final has not been rendered during warm-up');
+    await page.evaluate(() => { window.__holdColumnResponses = true; });
+    // These are already loaded open pages. Hold their ordinary selections and
+    // background refreshes without inventing a UI-only history cache.
+    for (const suffix of ['b', 'c', 'd', 'a']) {
+      await page.locator(`.stream-chat-preview[data-stream-chat-task-id="stream-${suffix}"] .stream-chat-preview-head`).click();
+    }
     const dispatched = await page.evaluate(() => window.__heldColumnOpens);
     for (const suffix of ['a', 'b', 'c', 'd']) {
       assert.ok(dispatched.includes(`stream-${suffix}`), 'later navigation dispatches while earlier replies remain held');
     }
-    await page.evaluate(() => {
-      for (const suffix of ['a', 'b', 'c', 'd']) {
-        window.AgentHub.setMessages(`stream-${suffix}`, Array.from({ length: 20 }, (_, index) => ({
-          id: `${suffix}-${index}`, role: 'agent', author: 'Agent',
-          text: `History ${suffix} ${index}\n\n` + 'Retained paragraph content. '.repeat(60)
-            + '\n\n<details><summary>Retained detail</summary>Expanded detail body</details>',
-        })));
-      }
-    });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.locator('[data-composer-input]').fill('Keep this draft and caret');
     await page.locator('[data-composer-input]').evaluate(input => input.setSelectionRange(5, 9));

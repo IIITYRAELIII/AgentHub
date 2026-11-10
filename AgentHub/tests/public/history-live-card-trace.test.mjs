@@ -248,7 +248,7 @@ test("history paint reports superseded when a newer snapshot replaces the same S
     const errors = await openFixture(page, { fixtureSnapshot: inactive, fixtureHistory: history });
     await page.locator("[data-stream-task-id='stream-b']").first().click();
     await page.waitForFunction(() => document.querySelector("[data-chat-pane]")?.dataset.streamChatTaskId === "stream-b");
-    const openedBefore = (await bridgeCalls(page, "open-task")).length;
+    const openedBefore = (await bridgeCalls(page, "select-task")).length;
     await page.evaluate((value) => {
       window.__agentHubFixture.snapshot = value;
       localStorage.setItem("fixture:snapshot", JSON.stringify(value));
@@ -261,11 +261,11 @@ test("history paint reports superseded when a newer snapshot replaces the same S
     await page.locator("[data-stream-task-id='stream-a']").first().click();
     await page.waitForFunction((count) => {
       const log = JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]");
-      return log.filter((entry) => entry.action === "open-task").length > count
+      return log.filter((entry) => entry.action === "select-task").length > count
         && document.querySelector("[data-chat-pane]")?.dataset.streamChatTaskId === "stream-a"
         && window.__heldFrames.length > 0;
     }, openedBefore);
-    const opened = (await bridgeCalls(page, "open-task")).at(-1);
+    const opened = (await bridgeCalls(page, "select-task")).at(-1);
     const hasOriginalDecision = (batch) => batch?.events?.some((event) => (
       event.commandId === opened.params.clientTraceId
       && event.metadata?.action === "history-live-decision"
