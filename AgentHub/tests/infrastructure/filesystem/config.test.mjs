@@ -273,7 +273,7 @@ test("shipped Codex defaults include Astra while explicit catalogs survive until
       { value: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
       { value: "gpt-6-sol", label: "GPT-6 Sol" },
       { value: "gpt-6-luna", label: "GPT-6 Luna" },
-      legacyShippedModels[1], legacyShippedModels[3], legacyShippedModels[6],
+      legacyShippedModels[1], legacyShippedModels[3],
     ];
     assert.deepEqual((await loadConfig()).codexModels, legacyShippedModels);
 
