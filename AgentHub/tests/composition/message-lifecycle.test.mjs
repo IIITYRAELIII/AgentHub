@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
 import { responseAnnotationDetails } from "../../src/application/task-history.mjs";
@@ -28,21 +28,6 @@ const streamTabsSource = await readFile(
   new URL("../../assets/web-app/stream-tabs-controller.js", import.meta.url),
   "utf8",
 );
-const compositionDirectory = new URL("../../src/composition/", import.meta.url);
-const serverSource = (await Promise.all(
-  (await readdir(compositionDirectory))
-    .filter((name) => name.endsWith(".mjs"))
-    .map((name) => readFile(new URL(name, compositionDirectory), "utf8")),
-)).join("\n");
-const codexEventSource = await readFile(
-  new URL("../../src/providers/codex/codex-event-service.mjs", import.meta.url),
-  "utf8",
-);
-const codexContextMaintenanceSource = await readFile(
-  new URL("../../src/providers/codex/codex-context-maintenance-service.mjs", import.meta.url),
-  "utf8",
-);
-
 function message(itemId, text) {
   return {
     provider: "codex",
@@ -2902,25 +2887,6 @@ test("completed history attaches the turn trace to its visible final answer", ()
 });
 
 
-test("Hub compaction delegates targeted completion to its context maintenance owner", () => {
-  assert.match(
-    codexEventSource,
-    /if \(d\.isCompactionItem\(params\.item\)\) \{[\s\S]*?d\.beginCompactionCleanup/u,
-  );
-  assert.match(
-    codexContextMaintenanceSource,
-    /if \(result\.applied \|\| result\.reason === "below-threshold"\) \{\s*this\.compactions\.complete/u,
-  );
-  assert.match(serverSource, /codexContextMaintenance\.beginCompactionCleanup/u);
-  assert.doesNotMatch(
-    serverSource,
-    /contextCompactions\.complete/u,
-  );
-  assert.match(
-    serverSource,
-    /isMaintenanceActive: \(target\) => streamContextMaintenance\.isActive\(target\)/u,
-  );
-});
 
 test("completed live card uses a newly recorded final even before durable history catches up", () => {
   const previous = {

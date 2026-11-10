@@ -23,6 +23,7 @@ The original failed release run remains a separate result.
 | Generated journal script spelling | `vscode-journal-dom.test.mjs` executes the complete generated HTML: theme messages/state, heading, moved rate-limit chips, duplicate collapse button, refresh and explicit empty disclosure state after recreation. |
 | Stable Stream / multi-column / delayed-image source duplicates | The maintained rotation, parallel-history, closed-chat, durable-final, stream-tabs and composer cases exercise these behaviors through their existing APIs and DOM. Their meaningful oracles are retained; source-text duplicates add no behavior coverage. |
 | Browser audit executable pin | `file-transfer-browser-feasibility.test.mjs` launches installed Chrome and Edge by Playwright channel. Both retain the interrupted download and rejected unsigned-resume cases. No audit checkout/configuration selects Chrome. |
+| Backend function-name assertions in the UI lifecycle suite | The existing provider service tests exercise disabled/enabled cleanup with the exact Thread/turn/item; provider event tests exercise a lost separate completion event and an unregistered completed compaction. These preserve real leaf requirements. Neither these cases nor the retired source strings prove the whole application `isMaintenanceActive` registration; no new whole-composition coverage is claimed. Backend production is unchanged. |
 
 Paths in this table are relative to `tests/public/`, except the lifecycle
 composition suite and `VSCodeExtension/render.test.js`. This correction does not
