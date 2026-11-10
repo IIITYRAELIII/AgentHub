@@ -22,8 +22,26 @@ import {
 import { isRuntimeSourceFile, verifyRuntimeImportClosure } from "../../src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { captureRuntimeReleaseBinding } from "../../src/infrastructure/filesystem/runtime-installation-custody.mjs";
+import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
+
+async function copyFixtureModuleClosure(sourceRoot, selected) {
+  const copied = new Set();
+  async function copy(relative) {
+    if (copied.has(relative)) return;
+    copied.add(relative);
+    const source = path.join(ROOT, relative);
+    const target = path.join(sourceRoot, relative);
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(source, target);
+    if (!relative.endsWith(".mjs")) return;
+    for (const specifier of relativeModuleSpecifiers(await readFile(source, "utf8"))) {
+      await copy(path.posix.normalize(path.posix.join(path.posix.dirname(relative), specifier)));
+    }
+  }
+  for (const relative of selected) await copy(relative);
+}
 
 test("prepared runtime ships the shared Git policy and refuses a missing policy before dependency work", async t => {
   const { sourceRoot, runtimeRoot } = await fixture();
@@ -322,10 +340,8 @@ test("prepared runtime carries its retirement owner and refuses wrong native cus
   const { sourceRoot, runtimeRoot } = await fixture();
   t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
   const owner = "src/infrastructure/filesystem/sealed-runtime-release";
-  for (const name of [`${owner}.mjs`, `${owner}.cs`, "src/infrastructure/process/system-boot-identity.mjs"]) {
-    await mkdir(path.dirname(path.join(sourceRoot, name)), { recursive: true });
-    await cp(path.join(ROOT, name), path.join(sourceRoot, name));
-  }
+  await copyFixtureModuleClosure(sourceRoot,
+    [`${owner}.mjs`, `${owner}.cs`, "src/infrastructure/process/system-boot-identity.mjs"]);
   const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "retirement-owner" });
   const binding = await captureRuntimeReleaseBinding(prepared.releaseRoot, prepared.releaseId);
   const bytes = await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"));
@@ -981,10 +997,7 @@ test("prepared native capture owner ships its exact CSharp companion and refuses
   const module = "src/infrastructure/filesystem/sealed-native-capture.mjs";
   const asset = "src/infrastructure/filesystem/sealed-native-capture.cs";
   const boot = "src/infrastructure/process/system-boot-identity.mjs";
-  for (const name of [module, asset, boot]) {
-    await mkdir(path.dirname(path.join(sourceRoot, name)), { recursive: true });
-    await cp(path.join(ROOT, name), path.join(sourceRoot, name));
-  }
+  await copyFixtureModuleClosure(sourceRoot, [module, asset, boot]);
   const unrelated = "src/infrastructure/filesystem/unrelated-capture.cs";
   await writeFile(path.join(sourceRoot, unrelated), "foreign unselected CSharp source");
   const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "native-capture-companion" });
