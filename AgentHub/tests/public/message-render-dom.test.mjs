@@ -113,6 +113,82 @@ test.after(async () => {
   await browser?.close();
 });
 
+test("rollout citation controls survive SQLite, Desktop history and cold mobile reopen", { timeout: 30_000 }, async () => {
+  const { codexRolloutHistory } = await import("../../src/interfaces/telegram/task-view-controller.mjs");
+  const { createDesktopTaskHistoryFactory } = await import("../../src/interfaces/desktop/desktop-task-history.mjs");
+  const { mergeActiveTaskHistory, mergeCompletedTaskHistory } = await import("../../src/application/task-history.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-rollout-citations-"));
+  const filePath = path.join(directory, "tasks.json");
+  const binding = { provider: "codex", threadId: "thread-1", streamId: "stream-1", projectRoot: directory };
+  const projection = codexAssistantResponseProjection('An answer\n\n:agent-annotation{index="1"} First explanation\n\n:agent-annotation{index="2"} Second explanation');
+  const annotations = [
+    { text: "First quoted text", annotation: "First question" },
+    { text: "Second quoted text", annotation: "Second question" },
+  ];
+  const generated = codexRolloutHistory({
+    userMessages: { "rollout-citation-turn": [{ itemId: "quoted-user", clientUserMessageId: "quoted-client", text: "Explain", responseAnnotations: annotations }] },
+    finalMessages: { "rollout-citation-turn": projection.text },
+    responseAnnotationReferences: { "rollout-citation-turn": projection.responseAnnotationReferences },
+  });
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await store.load();
+    await store.recordHistory(binding, generated);
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const api = createDesktopTaskHistoryFactory({
+      selection: { activeProvider: () => "codex", threadId: () => binding.threadId, chatId: () => 42 },
+      catalog: { entries: () => [{ ...binding, title: "Chat" }] },
+      historyReader: { read: async () => ({ history: store.history(binding) }) },
+      runs: { forTask: () => null }, receipts: { forMessage: () => null, forTurn: () => null },
+      historyMerger: { mergeActive: mergeActiveTaskHistory, mergeCompleted: mergeCompletedTaskHistory },
+      responseBudget: { fit: payload => payload },
+    });
+    const history = await api({ provider: binding.provider, threadId: binding.threadId, includeActive: false });
+    assert.deepEqual(history.items[0].messages.at(-1).responseAnnotationReferences, projection.responseAnnotationReferences);
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      page.on("console", message => {
+        if (message.text().includes("404 (Not Found)")
+          && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+        if (["error", "warning"].includes(message.type())) errors.push(message.text());
+      });
+      try {
+        await openWebApp(page);
+        for (const cold of [false, true]) {
+          if (cold) { await page.reload({ waitUntil: "load" }); await page.waitForFunction(() => Boolean(window.AgentHub)); }
+          const messages = await page.evaluate(payload => payload.items.flatMap(turn => (
+            window.AgentHubMessageLifecycle.historicalMessagesForDisplay(turn).map(message => ({
+              ...message, id: `${payload.provider}:${payload.threadId}:${turn.id}:${message.itemId}:${message.role}`,
+              provider: payload.provider, threadId: payload.threadId, turnId: turn.id,
+            }))
+          )), history);
+          await seedMessages(page, messages);
+          if (width < 600) await page.evaluate(() => window.AgentHub.showSelectedTask());
+          for (const index of [1, 2]) {
+            const control = page.locator(`[data-response-citation-index="${index}"]`);
+            assert.equal(await control.evaluate(node => node.tagName), "BUTTON");
+            assert.equal(await control.isVisible(), true);
+            await control.focus();
+            await page.keyboard.press("Enter");
+            const target = page.locator(".msg-annotation-content").nth(index - 1);
+            assert.equal(await target.isVisible(), true);
+            assert.ok((await target.textContent()).includes(annotations[index - 1].annotation));
+          }
+        }
+        assert.match(await page.title(), /Agent Hub/u);
+        assert.equal(page.url(), "http://127.0.0.1/");
+        assert.equal(await page.locator("vite-error-overlay, #webpack-dev-server-client-overlay").count(), 0);
+        assert.deepEqual(errors, []);
+        if (process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({ path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-rollout-${width}.png` });
+      } finally { await page.close(); }
+    }
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("positioned annotations interleave four nonsorted answers through stream history and reload", {timeout:45000}, async()=>{
   const raw='# Зачем нужна история Git\n\nИстория Git сохраняет изменения. 🦊 :agent-annotation{index="2"}\n\nЗависимости можно переиспользовать. :codex-annotation{index="1"}\n\nВременные копии удаляются после проверки. :agent-annotation{index="3"}\n\nМедиа принадлежит открытой задаче. :codex-annotation{index="4"}';
   for(const width of [1366,390]) for(const provider of ['codex','claude']) {

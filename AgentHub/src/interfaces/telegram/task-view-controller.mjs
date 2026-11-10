@@ -20,6 +20,7 @@ import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mj
 import { interstreamDisplayText, interstreamOriginAuthor, normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive, updateTaskRunTitle } from "../../domain/task-runs.mjs";
+import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 
 const RENAMED_TURN_WINDOW_MS = 5 * 60 * 1000;
 
@@ -364,6 +365,11 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
     const finalAnswer = String(finalMessages[id] ?? "").trim();
     const latestAnswer = String(latestMessages[id] ?? "").trim();
     const answer = finalAnswer || latestAnswer;
+    // The activity owner has already projected the marker text. Keep its
+    // paired coordinates instead of reparsing the readable "Цитата N" labels.
+    const responseAnnotationReferences = normalizedCodexResponseAnnotationReferences(
+      activity.responseAnnotationReferences?.[id],
+    );
     const generatedImages = (Array.isArray(generatedImageSources[id])
       ? generatedImageSources[id]
       : []).filter((item) => ["generated-path", "display-path"].includes(item?.type))
@@ -381,6 +387,8 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
         itemId: `${id}:rollout-agent:${completed ? "final" : "latest"}`,
         role: "agent",
         text: answer,
+        ...(responseAnnotationReferences.length
+          ? { responseAnnotationReferences: structuredClone(responseAnnotationReferences) } : {}),
         ...(completed ? { phase: "final_answer" } : {}),
         ...(generatedImages.length ? { attachmentSources: generatedImages } : {}),
       });
@@ -398,6 +406,8 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       id,
       prompt,
       answer,
+      ...(responseAnnotationReferences.length
+        ? { responseAnnotationReferences: structuredClone(responseAnnotationReferences) } : {}),
       status: completed ? "completed" : active ? "inProgress" : "stopped",
       active,
       completed,
