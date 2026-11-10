@@ -10,6 +10,7 @@ import { ReleasePreparationRejectedError } from "../../domain/release-preparatio
 import { normalizeReleaseVersion } from "../../domain/release-operation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import { retireSealedNativeCapture } from "./sealed-native-capture.mjs";
+import { recoverPreparedEvidenceOwned } from "./prepared-evidence-recovery.mjs";
 import { inventoryNativeCapture } from "./native-capture-inventory.mjs";
 import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
@@ -2685,6 +2686,58 @@ export class ReleaseGitWorkspaceService {
         return result;
       }));
     }));
+  }
+
+  async recoverPreparedEvidence(input = {}) {
+    this.#assertAvailable("recoverPreparedEvidence");
+    const { projectRoot, workspaceId, requestId, sourceIdentity, expected = {}, confirm = false,
+      expectedProofHash = null, generationOperationId, generation } = input;
+    if (!String(requestId ?? "").trim() || !String(workspaceId ?? "").trim()
+        || !String(generationOperationId ?? "").trim() || !Number.isSafeInteger(generation) || generation < 1
+        || !/^[a-f0-9]{40}$/u.test(sourceIdentity?.commit ?? "")
+        || !/^[a-f0-9]{64}$/u.test(sourceIdentity?.ownerSha256 ?? "")) {
+      throw new Error("Prepared evidence recovery requires exact operation, generation and verified source identity");
+    }
+    return withPublicationLock(() => this.withAwaitTransition(workspaceId, async () => {
+      const primary = await this.assertPrimaryInvariant(projectRoot, { phase: "prepared evidence recovery" });
+      const layout = { ...this.#layout(primary.projectRoot), primaryRoot: primary.projectRoot };
+      const key = sha256(`${generationOperationId}:${generation}:${primary.projectRoot}`).slice(0, 24);
+      const generationRoot = path.join(this.dataDir, "release-gens", key);
+      const generationLayout = { root: path.join(generationRoot, "release-repositories", layout.repositoryKey) };
+      Object.assign(generationLayout, { releaseRoot: path.join(generationLayout.root, "repository"),
+        evidenceRoot: path.join(generationLayout.root, "evidence"), checkpointFile: path.join(generationLayout.root, "checkpoint.json") });
+      return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${key}`)], generationLease =>
+        withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async repositoryLease => {
+          const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+          if (!samePath(marker.primaryRoot, primary.projectRoot)) throw new Error("Prepared evidence recovery clone is foreign");
+          return recoverPreparedEvidenceOwned({ layout, generationLayout, generationRoot, generationOperationId,
+            generation, workspaceId, requestId, sourceIdentity, expected, confirm, expectedProofHash }, {
+            phase: this.#recoveryPhase, write: this.#recoveryEvidenceWrite,
+            readCurrent: async () => {
+              await generationLease.assertOwned(); await repositoryLease.assertOwned();
+              const currentPrimary = await this.assertPrimaryInvariant(projectRoot, { phase: "prepared evidence recovery CAS" });
+              if (stableManifest(currentPrimary) !== stableManifest(primary)) throw new Error("Prepared evidence recovery primary changed");
+              const currentMarker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+              if (stableManifest(marker) !== stableManifest(currentMarker)) throw new Error("Prepared evidence recovery marker changed");
+              const git = (root, ...args) => runGit(args, { cwd: root });
+              const [head, tree, branch, main, preRelease, dirty, frozenHead, frozenTree, frozenDirty] = await Promise.all([
+                git(layout.releaseRoot, "rev-parse", "HEAD^{commit}"), git(layout.releaseRoot, "rev-parse", "HEAD^{tree}"),
+                git(layout.releaseRoot, "symbolic-ref", "HEAD"), git(layout.releaseRoot, "rev-parse", "refs/heads/main^{commit}"),
+                git(layout.releaseRoot, "rev-parse", "refs/heads/PreRelease^{commit}"),
+                git(layout.releaseRoot, "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"),
+                git(generationLayout.releaseRoot, "rev-parse", "HEAD^{commit}"), git(generationLayout.releaseRoot, "rev-parse", "HEAD^{tree}"),
+                git(generationLayout.releaseRoot, "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"),
+              ]);
+              if (head !== expected.preparedHead || tree !== expected.preparedTree || preRelease !== head
+                  || branch !== "refs/heads/PreRelease" || dirty || frozenDirty
+                  || frozenHead !== expected.frozenHead || frozenTree !== expected.frozenTree) {
+                throw new Error("Prepared evidence recovery current refs, tree or checkout changed");
+              }
+              return { primary: currentPrimary, marker, head, tree, branch, main, preRelease, frozenHead, frozenTree };
+            },
+          });
+        }));
+    }), { environment: this.#environment });
   }
 
   async recoverFreezingPublicationCandidate({

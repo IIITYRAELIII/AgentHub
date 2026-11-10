@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -177,6 +177,85 @@ test("normal publication generation requires and captures its ordinary prepared 
   assert.equal((await reopened.prepareGeneration(request)).preReleaseHead, generated.preReleaseHead);
   assert.equal(await git(generated.releaseRoot, "reflog", "show", "PreRelease"), reflog);
   assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
+});
+
+test("missing prepared evidence recovers exact captured bytes under the original metadata owner", { timeout: 120000 }, async t => {
+  const f = await fixture(t, { versioned: true });
+  const { createHash: hash } = await import("node:crypto");
+  const sha = value => hash("sha256").update(value).digest("hex");
+  const a = await f.result("A", "a.txt", "accepted\n");
+  const preparation = f.request([a], sha("prepared-plan"));
+  const prepared = await f.service.prepareCandidate(preparation);
+  prepared.checkpointFile = path.join(path.dirname(path.dirname(prepared.manifestFile)), "checkpoint.json");
+  const generationOperationId = "captured-original";
+  const frozen = await f.service.prepareGeneration({ ...preparation, operationId: generationOperationId, generation: 1 });
+  frozen.checkpointFile = path.join(path.dirname(path.dirname(frozen.manifestFile)), "checkpoint.json");
+  const layoutRoot = path.dirname(prepared.checkpointFile);
+  const generationRoot = path.join(f.root, "data", "release-gens", sha(`${generationOperationId}:1:${f.primary}`).slice(0, 24));
+  const ownerBytes = await readFile(path.join(generationRoot, "identity.json"));
+  const generationEvidence = path.join(path.dirname(frozen.checkpointFile), "evidence");
+  const captures = await Promise.all((await readdir(generationEvidence)).filter(name => /^[a-f0-9]{64}\.json$/u.test(name))
+    .map(async name => ({ name, bytes: await readFile(path.join(generationEvidence, name)) })));
+  const capture = captures.find(value => !JSON.parse(value.bytes).publication);
+  assert.ok(capture, "the actual capture owner retained the prepared manifest");
+  const checkpointBytes = await readFile(prepared.checkpointFile);
+  const manifestBytes = await readFile(prepared.manifestFile);
+  const nativeBytes = await readFile(path.join(layoutRoot, "native-preparation.json"));
+  const frozenCheckpointBytes = await readFile(frozen.checkpointFile);
+  const frozenHead = await git(frozen.releaseRoot, "rev-parse", "HEAD");
+  const expected = { checkpointSha256: sha(checkpointBytes), manifestHash: prepared.manifestHash,
+    planRevision: preparation.planRevision, preparedHead: prepared.preReleaseHead, preparedTree: prepared.tree,
+    generationOwnerSha256: sha(ownerBytes), captureManifestHash: capture.name.slice(0, -5),
+    frozenManifestHash: frozen.manifestHash, frozenHead, frozenTree: await git(frozen.releaseRoot, "rev-parse", "HEAD^{tree}") };
+  const input = { projectRoot: f.primary, workspaceId: preparation.workspaceId, requestId: "recover-metadata-original",
+    sourceIdentity: { commit: "a".repeat(40), ownerSha256: "b".repeat(64) }, generationOperationId, generation: 1, expected };
+  // Delete only this test's disposable metadata namespace, matching the actual
+  // ancestor-loss incident. Repositories and the immutable capture remain.
+  await rm(path.dirname(prepared.manifestFile), { recursive: true });
+  await assert.rejects(f.service.frozenCandidate(f.primary), { code: "ENOENT" });
+  const preview = await f.service.recoverPreparedEvidence(input);
+  assert.equal(preview.status, "preview");
+  assert.deepEqual(preview.effects, [prepared.manifestFile]);
+  await assert.rejects(readFile(prepared.manifestFile), { code: "ENOENT" });
+  const confirm = { ...input, confirm: true, expectedProofHash: preview.proofHash };
+  await assert.rejects(f.service.recoverPreparedEvidence({ ...confirm, expectedProofHash: "0".repeat(64) }), /confirmation proof/u);
+  await writeFile(prepared.checkpointFile, Buffer.concat([checkpointBytes, Buffer.from(" ")]));
+  await assert.rejects(f.service.recoverPreparedEvidence(confirm), /checkpoint digest/u);
+  await writeFile(prepared.checkpointFile, checkpointBytes);
+  const captureFile = path.join(generationEvidence, capture.name);
+  await writeFile(captureFile, Buffer.concat([capture.bytes, Buffer.from(" ")]));
+  await assert.rejects(f.service.recoverPreparedEvidence(confirm), /capture digest/u);
+  await writeFile(captureFile, capture.bytes);
+  await git(prepared.releaseRoot, "update-ref", "refs/heads/main", prepared.preReleaseHead, f.base);
+  await assert.rejects(f.service.recoverPreparedEvidence(confirm), /confirmation proof/u);
+  await git(prepared.releaseRoot, "update-ref", "refs/heads/main", f.base, prepared.preReleaseHead);
+  await assert.rejects(f.service.recoverPreparedEvidence({ ...confirm, workspaceId: "foreign" }), /capture binding/u);
+  await mkdir(path.dirname(prepared.manifestFile));
+  await writeFile(prepared.manifestFile, "foreign bytes");
+  await assert.rejects(f.service.recoverPreparedEvidence(confirm), /occupied/u);
+  assert.equal(await readFile(prepared.manifestFile, "utf8"), "foreign bytes");
+  await rm(prepared.manifestFile);
+  const interrupted = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment,
+    recoveryPhase: async phase => {
+      if (phase === "prepared-evidence-admitted") throw new Error("lost reply after durable admission");
+    } });
+  await assert.rejects(interrupted.recoverPreparedEvidence(confirm), /lost reply/u);
+  await assert.rejects(readFile(prepared.manifestFile), { code: "ENOENT" });
+  await assert.rejects(f.service.recoverPreparedEvidence({ ...confirm, requestId: "foreign-recovery",
+    expectedProofHash: (await f.service.recoverPreparedEvidence({ ...input, requestId: "foreign-recovery" })).proofHash }), /another identity/u);
+  const restored = await f.service.recoverPreparedEvidence(confirm);
+  assert.equal(restored.status, "restored");
+  assert.equal(restored.reused, true);
+  assert.deepEqual(await readFile(prepared.manifestFile), manifestBytes);
+  const replay = await f.service.recoverPreparedEvidence(confirm);
+  assert.deepEqual(replay.effects, []);
+  assert.equal(replay.receiptSha256, restored.receiptSha256);
+  assert.equal((await f.service.frozenCandidate(f.primary)).manifestHash, expected.manifestHash);
+  assert.deepEqual(await readFile(prepared.checkpointFile), checkpointBytes);
+  assert.deepEqual(await readFile(path.join(layoutRoot, "native-preparation.json")), nativeBytes);
+  assert.deepEqual(await readFile(frozen.checkpointFile), frozenCheckpointBytes);
+  assert.deepEqual(await readFile(path.join(generationRoot, "identity.json")), ownerBytes);
+  for (const value of captures) assert.deepEqual(await readFile(path.join(generationEvidence, value.name)), value.bytes);
 });
 
 test("native merge selects exact independent main branches and complete corrections", { timeout: 60000 }, async (t) => {

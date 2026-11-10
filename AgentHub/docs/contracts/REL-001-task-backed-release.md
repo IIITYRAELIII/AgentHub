@@ -1,5 +1,25 @@
 # REL-001 — Task-backed Workspace release
 
+## Exact prepared evidence reconciliation (ADR-HUB-429-prepared-evidence)
+
+The existing release metadata recovery owner may restore a missing prepared
+manifest from its addressed immutable generation capture. It acquires the
+publication, Workspace Await, generation and repository leases in that order.
+Preview is read-only. Confirmation binds the same request, verified source,
+physical roots, original generation owner, current prepared checkpoint digest,
+plan, native preparation journal, clean refs/trees and whole capture digests.
+Reversing only the recorded capture relocation and prepared binding must
+reproduce the exact manifest hash already retained in the current checkpoint.
+Foreign, corrupt, occupied, changed or incomplete evidence refuses restoration.
+
+An exclusive atomic metadata receipt precedes the exclusive manifest link. Both
+use synced temporary files and never overwrite existing destinations. Current
+authority is checked again before each link. A lost reply resumes only the same
+admission; an identical restored manifest is read back without another effect.
+Checkpoint, refs, Task status, failed Await receipts and generation history remain
+unchanged. This operation does not compose, freeze, publish, install or settle an
+UNKNOWN operation. Ordinary Task acceptance must subsequently run its own guards.
+
 ## Original executor continuity after public self-install (ADR-HUB-429)
 
 Before publication effects, the runner retains the verified external tool's
