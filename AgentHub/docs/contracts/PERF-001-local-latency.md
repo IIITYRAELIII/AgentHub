@@ -567,6 +567,9 @@ replace the durable `terminal-ledger` authority.
 The persisted user-recovery version includes attachment recovery. Version-1
 pages receive one bounded upgrade through the same owner. Version-2 pages do
 not repeat terminal payload reads or enter the mutation lane solely for recovery.
+This attachment upgrade does not invalidate the completed global Journal
+terminal-history backfill. Recent startup recovery and old-page repair retain
+their own bounded recovery version instead of rewriting unopened Threads.
 
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has

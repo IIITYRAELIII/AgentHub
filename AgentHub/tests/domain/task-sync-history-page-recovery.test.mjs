@@ -275,3 +275,53 @@ test("legacy root attachments require the exact root command identity", async (t
   const page = await f.store.readHistoryPage([task], { limit: 1 });
   assert.deepEqual(page.items[0].turn.messages.find((message) => message.role === "user").attachments, []);
 });
+
+test("attachment upgrade repairs recent custody without repeating the completed global journal backfill", async (t) => {
+  const image = { id: "recent.png", name: "image.png", type: "image/png" };
+  const unrelated = { ...task, threadId: "unopened-journal-thread" };
+  const old = legacyTurn("unopened-journal-turn");
+  const target = { ...legacyTurn("recent-custody"), userMessageAuthority: "terminal-ledger" };
+  const f = await fixture(t, [[task, [target]], [unrelated, [old]]], [{
+    turnId: target.id,
+    users: [{ role: "user", clientUserMessageId: "recent-command", text: "Screenshot" }],
+    attachmentsByCommand: { "recent-command": [image] },
+  }]);
+  const before = f.store.history(unrelated);
+  f.store.close();
+  const terminal = new DatabaseSync(f.options.terminalDatabaseFile);
+  try { terminal.prepare("DELETE FROM provider_turn_terminals WHERE thread_id = ?").run("unrelated-new-thread"); }
+  finally { terminal.close(); }
+  const database = new DatabaseSync(f.options.databaseFile);
+  try {
+    database.exec(`
+      CREATE TABLE journal_records (provider TEXT, thread_id TEXT, task_thread_id TEXT,
+        turn_id TEXT, record_json TEXT, PRIMARY KEY(provider, thread_id, turn_id));
+      CREATE TABLE journal_store_meta (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO journal_store_meta VALUES ('revision', '1');
+      CREATE TABLE unrelated_history_write_audit (event TEXT);
+      CREATE TRIGGER audit_unopened_history_delete BEFORE DELETE ON task_read_model_turns
+        WHEN old.thread_id = 'unopened-journal-thread'
+        BEGIN INSERT INTO unrelated_history_write_audit VALUES ('delete'); END;
+    `);
+    database.prepare("INSERT INTO journal_records VALUES (?, ?, ?, ?, ?)").run(
+      unrelated.provider, unrelated.threadId, unrelated.threadId, old.id,
+      JSON.stringify({ status: "completed", prompt: "Unrelated canonical journal prompt", body: "Answer" }),
+    );
+    const meta = database.prepare("INSERT OR REPLACE INTO task_read_model_meta VALUES (?, ?)");
+    meta.run("backfill_terminal_task_history_version", "4");
+    meta.run("backfill_models_from_journal_version", "1:revision:1");
+    meta.run("backfill_subagent_models_from_journal_version", "1:revision:1");
+    meta.run("backfill_journal_message_search_version", "5:revision:1");
+  } finally { database.close(); }
+  await f.reopen();
+  const observer = new DatabaseSync(f.options.databaseFile, { readOnly: true });
+  try {
+    assert.equal(observer.prepare("SELECT COUNT(*) AS count FROM unrelated_history_write_audit").get().count, 0);
+    assert.equal(observer.prepare("SELECT value FROM task_read_model_meta WHERE key = ?")
+      .get("backfill_terminal_task_history_version").value, "4");
+  } finally { observer.close(); }
+  assert.deepEqual(f.store.history(unrelated), before);
+  const recovered = f.store.history(task)[0];
+  assert.equal(recovered.userMessageRecoveryVersion, 2);
+  assert.deepEqual(recovered.messages.find((message) => message.clientUserMessageId === "recent-command").attachments, [image]);
+});
