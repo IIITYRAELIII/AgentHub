@@ -79,3 +79,13 @@ export function normalizeCodexSandboxMode(value, { fallback = "workspace-write" 
   }
   return mode;
 }
+
+export function isRetiredCodexModel(value) {
+  return /(^|[-_.])spark($|[-_.])/iu.test(String(value ?? "").trim());
+}
+
+export function assertCodexModelAvailable(value) {
+  if (isRetiredCodexModel(value)) throw Object.assign(new Error("Spark больше недоступен; выбери доступную модель"), {
+    code: "CODEX_MODEL_RETIRED",
+  });
+}

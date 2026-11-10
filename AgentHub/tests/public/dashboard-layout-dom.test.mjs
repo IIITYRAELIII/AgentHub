@@ -988,6 +988,14 @@ test("activity rail keeps running effects and drags compact Tasks into the compo
     await reference.waitFor({ state: "visible" });
     assert.equal(await reference.count(), 1);
     assert.match(await reference.innerText(), /HUB-1/u);
+    assert.equal(await page.locator("[data-toast].visible").count(), 0);
+    if (process.env.AGENT_HUB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.AGENT_HUB_TEST_SCREENSHOT });
+    await page.evaluate(({ tasks, workspaces }) => {
+      document.documentElement.dataset.view = "dashboard";
+      window.AgentHubTaskBoard.setSnapshot({ tasks: [{ ...tasks[0], triageStatus: "failed", triageError: "Historical failure" }], workspaces });
+    }, { tasks, workspaces });
+    await page.locator("[data-board-task-id]:visible").first().dblclick();
+    assert.equal(await page.getByRole("button", { name: "Повторить Spark", exact: true }).count(), 0);
     assert.deepEqual(await page.evaluate(() => window.__boardActions), []);
     assert.deepEqual(errors, []);
   } finally {

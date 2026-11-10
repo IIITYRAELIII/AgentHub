@@ -165,7 +165,7 @@ test("core-only components need neither Telegram credentials nor Web App", async
       autoRotateThresholdPercent: 20,
     });
     assert.deepEqual(config.taskBoard, {
-      triageEnabled: true,
+      triageEnabled: false,
       triageModel: "gpt-5.3-codex-spark",
       autoPlaceConfidence: 0.82,
       bugReportWorkspaceName: "",

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { assertCodexModelAvailable } from "../../domain/agent-runtime-settings.mjs";
 import {
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
@@ -100,6 +101,7 @@ export function buildCodexApplicationContext(developerInstructions, snapshotId =
 }
 
 export function buildCodexCollaborationMode({ mode, model, reasoningEffort }) {
+  assertCodexModelAvailable(model);
   if (!CODEX_COLLABORATION_MODES.includes(mode)) throw new Error("unknown Codex collaboration mode");
   if (!CODEX_REASONING_EFFORTS.includes(reasoningEffort)) throw new Error("unknown Codex reasoning effort");
   if (!String(model ?? "").trim()) throw new Error("Codex model is required");

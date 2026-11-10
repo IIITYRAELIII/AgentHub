@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { TaskCleanupConfirmationRejectedError } from "../domain/task-cleanup-confirmation.mjs";
 import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelectedAbsorption,
   assertSelectedAbsorptionTasks } from "../domain/task-selected-composition.mjs";
 import { realpathSync } from "node:fs";
@@ -2048,6 +2049,21 @@ export class TaskLifecycleService {
     });
   }
 
+  async recoverCleanupConfirmation({ taskId, operationId, action, preview = false, readback }) {
+    return this.#withLock(taskId, async lease => {
+      const task = this.#task(taskId);
+      const validate = () => {
+        if (this.#task(taskId).revision !== task.revision || this.taskBoard.lifecycleTransition(operationId)
+            || this.taskBoard.lifecycleOutcome(operationId)) throw new Error("Cleanup validation original has lifecycle admission or Task drift");
+      };
+      validate();
+      const current = preview ? await this.#cleanupPreview(task, action) : null;
+      await this.#assertOwned(lease);
+      validate();
+      return readback({ task, preview: current, validate });
+    });
+  }
+
   async complete({
     taskId, operationId, confirmCleanup = false, expectedCleanupToken = null,
     absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, originalArguments = null, completedOperationRequestId = null,
@@ -2084,7 +2100,7 @@ export class TaskLifecycleService {
       const preview = await this.#cleanupPreview(task, "complete");
       if (confirmCleanup !== true) return preview;
       if (!resumingCleanup && String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
-        throw new Error("Task cleanup confirmation is stale or missing; read the preview again");
+        throw new TaskCleanupConfirmationRejectedError(task.id, "complete");
       }
       const hasGitArtifacts = preview.preview.workspaces.length > 0 || (task.gitReferences?.length ?? 0) > 0;
       if (hasGitArtifacts && task.workflowStatus !== "done") {
@@ -2161,7 +2177,7 @@ export class TaskLifecycleService {
       const preview = await this.#cleanupPreview(task, "delete");
       if (confirmCleanup !== true) return preview;
       if (!resumingCleanup && String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
-        throw new Error("Task deletion confirmation is stale or missing; read the preview again");
+        throw new TaskCleanupConfirmationRejectedError(task.id, "delete");
       }
       await this.#assertOwned(lease);
       await this.#mutation(() => this.taskBoard.beginLifecycleTransition({

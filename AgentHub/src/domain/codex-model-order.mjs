@@ -1,4 +1,5 @@
-// Ordering is not an allowlist. Availability comes only from a complete provider catalog.
+import { isRetiredCodexModel } from "./agent-runtime-settings.mjs";
+// Provider discovery supplies availability; explicit product retirement also applies.
 const PRIORITY = [
   "gpt-6-astra",
   "gpt-6.1-sol",
@@ -16,7 +17,7 @@ export function isCodexPriorityModel(value) {
 
 export function orderCodexModels(models, novelIds = []) {
   const novelIndex = new Map(novelIds.map((value, index) => [value, index]));
-  return models.map((model, index) => ({ model, index })).sort((left, right) => {
+  return models.filter(model => !isRetiredCodexModel(model.value)).map((model, index) => ({ model, index })).sort((left, right) => {
     const leftNovel = novelIndex.get(left.model.value);
     const rightNovel = novelIndex.get(right.model.value);
     if (leftNovel !== undefined || rightNovel !== undefined) {

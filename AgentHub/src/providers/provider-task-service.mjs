@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { assertCodexModelAvailable } from "../domain/agent-runtime-settings.mjs";
 
 import { CODEX_TASK_SOURCE_KINDS } from "./codex/codex-subagent-accounting.mjs";
 import { codexThreadSandboxSettings } from "./codex/codex-sandbox.mjs";
@@ -67,12 +68,14 @@ export class CodexProviderTaskService {
   }
 
   async createTask() {
+    const model = this.#model();
+    assertCodexModelAvailable(model);
     const projectRoot = this.#activeProjectRoot();
     const streamId = this.#selection.streamId;
     const pending = this.#pendingCreatedThread({ provider: "codex", streamId });
     const result = pending ? { thread: { id: pending.threadId } } : await this.#sendRpc("thread/start", {
       cwd: projectRoot,
-      model: this.#model() || undefined,
+      model: model || undefined,
       ...codexThreadSandboxSettings(this.#sandboxMode()),
       serviceName: "telegram_codex_bridge",
     });

@@ -1263,3 +1263,27 @@ No client repair parameters, new API, release original or UNKNOWN conversion are
 introduced. Changed accepted membership waits for the existing explicit amendment
 before validation/publication of the corrected next generation. See REL-001 and
 ADR-HUB-424-first-freeze-recovery.
+## Durable cleanup confirmation capsules (ADR-HUB-434)
+
+Successful complete/delete preview compaction preserves action, token, exact
+Task identity/revision and the complete preview digest/length within 64 KiB.
+Editorial text is omitted first. A larger plan has explicit previewOmitted;
+that capsule is not full forward-delete preservation evidence. Confirmation
+still revalidates the full live plan through the existing lifecycle owner.
+
+An exact protocol-v1 ordinary original preview with an already compacted token
+may explicitly re-enter the same tool/arguments to obtain a fresh current
+preview. The existing Task lease and receipt/Task CAS preserve the old receipt
+inside previewRecovery and keep its original completion timestamp. Original get
+remains read-only; changed or foreign authority still refuses.
+
+An owning typed token mismatch before admission is failed validation. An exact
+ordinary UNKNOWN original whose immutable args omitted the token may settle
+through that same validation owner after Task-lease, original/hash/actor,
+canonical lifecycle absence and in-transaction Task/receipt checks. The prior
+UNKNOWN/history/execution binding remain retained. This performs no cleanup,
+new lifecycle admission or effect replay and supplies no general NO_EFFECT.
+Special modes, admitted, changed, foreign or unproven originals stay refused.
+Downstream message/code lookalikes retain ordinary UNKNOWN semantics. Public
+submission waits for this addressed recovery's result rather than returning the
+old compacted success as if the recovery had finished. See ADR-HUB-434.
