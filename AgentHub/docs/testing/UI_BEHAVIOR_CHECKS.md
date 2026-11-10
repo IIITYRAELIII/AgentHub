@@ -56,7 +56,12 @@ The trace join retains the outer diagnostic identity for the inner control
 request. The original business message and idempotency identities are unchanged;
 tests retain the no-payload telemetry assertions. The cold-selection check joins
 selection, history and confirmed visible history paint, and separates held
-selection I/O from render work. Its synthetic Desktop/SQLite measurements are
+selection I/O from render work. `history-page-apply` records synchronous history
+application under the original navigation trace ID; the subsequent paint keeps
+its own visible-opportunity duration. A cold independent history read skips
+snapshot application while its selection reply is still held; that stage is
+reported as inapplicable rather than assigned a fabricated zero. Transport
+spans include waiting and are not CPU-work measurements. Its synthetic Desktop/SQLite measurements are
 not production selection latency or a production SLO. Production mixed
 `ui-render` percentiles remain separately attributed, without inferring a
 selection duration or a cause from them.

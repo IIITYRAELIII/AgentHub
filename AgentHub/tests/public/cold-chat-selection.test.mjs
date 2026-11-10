@@ -137,7 +137,11 @@ for (const [shape, mobile] of [["ordinary", false], ["heavy", false], ["ordinary
         assert.ok(selectionRequest?.clientTraceId);
         assert.equal(historyRequest.clientTraceId, selectionRequest.clientTraceId,
           "independent history and ordered selection retain one navigation trace identity");
-        const paint = traceBatches.flatMap(batch => batch.events).find(event => event.commandId === selectionRequest.clientTraceId
+        const joined = traceBatches.flatMap(batch => batch.events).filter(event => event.commandId === selectionRequest.clientTraceId);
+        const applied = joined.find(event => event.metadata?.action === "history-page-apply" && event.outcome === "succeeded");
+        assert.ok(applied, "the original navigation identity joins actual history application work");
+        assert.ok(applied.monotonicDurationMs >= 0);
+        const paint = joined.find(event => event.commandId === selectionRequest.clientTraceId
           && event.metadata?.action === "history-page-paint" && event.outcome === "succeeded");
         assert.ok(paint, `the exact navigation trace must join a confirmed visible page paint: ${JSON.stringify({
           commandId: selectionRequest.clientTraceId,
@@ -145,11 +149,21 @@ for (const [shape, mobile] of [["ordinary", false], ["heavy", false], ["ordinary
             .map(event => ({ commandId: event.commandId, outcome: event.outcome, metadata: event.metadata })),
           reporter: await page.evaluate(() => window.AgentHubCommandTrace.diagnostics()),
         })}`);
+        assert.ok(paint.observedAtMs >= applied.observedAtMs);
+        assert.ok(joined.some(event => event.metadata?.action === "task-history" && event.outcome === "succeeded"));
+        assert.ok(joined.some(event => event.metadata?.action === "select-task" && event.outcome === "started"));
+        assert.equal(joined.some(event => event.metadata?.action === "select-task" && event.outcome === "succeeded"), false);
         measurements.traceJoin = { commandId: selectionRequest.clientTraceId, paintMs: paint.monotonicDurationMs,
+          applyWorkMs: applied.monotonicDurationMs,
+          stages: joined.map(event => ({ stage: event.stage, action: event.metadata?.action, outcome: event.outcome,
+            observedAtMs: event.observedAtMs ?? event.timing?.clientAckAtMs, startedAtMs: event.metadata?.startedAtMs,
+            durationMs: event.monotonicDurationMs })),
+          snapshotApplication: "Cold history is applied with skipSnapshot; the independent selection reply remains held.",
           loadedAssetMarker: paint.metadata.clientAssetRevision, paintedStream: paint.metadata.streamId,
           selectionReplyStillHeld: !measurements.selectionReleased,
           qualification: "Actual loaded fixture client/DOM; selection transport is deliberately held. Not production queue/SQLite latency." };
         measurements.historyResponseBytes = Buffer.byteLength(JSON.stringify(history));
+        measurements.driverTimingQualification = "fullExchangeMs/clearMs include Playwright driver waits; traceJoin uses the executing browser clock. Spans overlap and are not additive.";
         const afterUsage = process.resourceUsage();
         const afterMetrics = await performanceSession.send("Performance.getMetrics");
         const metric = (value, name) => value.metrics.find(item => item.name === name)?.value ?? null;

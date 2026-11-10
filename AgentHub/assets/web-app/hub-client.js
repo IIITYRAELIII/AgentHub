@@ -3096,6 +3096,12 @@ function applyOpened(result, {
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
+  const historyTraceId = commandTrace.objectId(result) || commandTrace.objectId(history);
+  if (historyTraceId) commandTrace.record("ui-render", "history-page-apply",
+    commandTrace.now() - historyProjectionStarted, historyTraceId, {
+      streamId: history.streamId, provider: history.provider, threadId: history.threadId,
+      count: newest.length, clientAssetRevision: "hub436.history.1",
+    });
   traceHistoryCard(id, history, {
     liveBefore,
     cleared: liveCleared,
