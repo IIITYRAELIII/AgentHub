@@ -271,7 +271,10 @@ test("desktop client retains the acknowledgement connection after returning its 
       server.listen(desktopControlEndpoint(runtimeRoot, descriptor), resolve);
     });
     assert.deepEqual(await callDesktopControl("send-message", {}, { runtimeRoot, commandId, timeoutMs: 1000 }), { accepted: true });
-    assert.equal(await acknowledged.promise, commandId);
+    assert.equal(await Promise.race([
+      acknowledged.promise,
+      closed.promise.then(() => { throw new Error("Connection closed before result acknowledgement"); }),
+    ]), commandId);
     const closedBeforeRetirement = await Promise.race([
       closed.promise,
       new Promise(resolve => { observationTimer = setTimeout(() => resolve(false), 100); }),
