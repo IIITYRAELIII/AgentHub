@@ -48,6 +48,19 @@ Already admitted lost replies read their exact durable identity. Foreign or
 unproved requests keep UNKNOWN, and installer-proof refusals retain a bounded
 target/status/cursor reason without response bodies or credentials.
 
+The first 2.1.7 publisher refused its missing executor pin before spawning;
+its failed receipt is NOT_APPLIED and later targets never started. The existing
+recovery owner admits this distinct boundary only after all-target not-applied
+proof. Core retains the same generation, canonical receipt/history CAS and test
+inventory. The Await adapter rechecks complete accepted selection, frozen bytes
+and notes. The product adapter verifies unstarted execution namespaces, the
+classified old runtime and remote publication base, absence of public tag/release,
+and the exact external tool under the installation lease. Recovery durably binds
+that verified executor before background continuation; ambient configuration
+cannot retarget it. The original full pipeline remains pending and required.
+This branch performs no publication or installation during admission and creates
+no new generation, allocator, publisher, ledger or original operation.
+
 ## Evidence and limits
 
 Maintained tests cover kernel Job/handle closure, bounded forced stop and foreign

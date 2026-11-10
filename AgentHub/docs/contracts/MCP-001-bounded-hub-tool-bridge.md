@@ -1,7 +1,7 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
 
-## Partial-publication continuation admission (ADR-HUB-429)
+## Failed-publication continuation admission (ADR-HUB-429)
 
 A plain addressed release continuation with generation greater than zero may
 reconcile an outer pending/UNKNOWN command against its already durable
@@ -25,6 +25,18 @@ The existing command ledger atomically retains the prior receipt and stores the
 verified result. Changed, foreign, mixed, partially admitted or unproven inputs
 remain refused with their history and unknown effects intact. All other
 unadmitted pending/UNKNOWN requests retain their existing refusal.
+
+A distinct failed-before-publisher boundary requires the first target's exact
+failed NOT_APPLIED receipt, no receipts for later targets, unchanged generation
+and no applied target effects. Under the same admission, the adapter must prove
+all original targets not applied with fresh frozen/selection/executor/current
+custody and public absence evidence. SQL repeats the canonical failed receipt
+boundary. This does not infer absence from UNKNOWN or allow a second original,
+compose, freeze or version allocation. The original test plan and pending full
+pipeline remain mandatory. First publication and installation may run only as
+the original's remaining work; prior effects never replay. The admitted recovery
+retains the exact verified executor location for a replacement owner whose
+ambient tool pin is absent.
 
 ## Interrupted first-compose continuation admission
 

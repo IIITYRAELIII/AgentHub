@@ -30,6 +30,22 @@ retain refusal. Existing operation scheduling resumes only recorded work.
 An installer-proof refusal preserves its content-free target/status/cursor reason
 so a failed Ready observation can be distinguished from changed custody or payload.
 
+A separate not-applied publication recovery admits a definite first-target
+failure before publisher launch. Its exact failed receipt must be NOT_APPLIED;
+later targets have no receipts and no target effect is applied. The original
+compose/validation receipts, candidate, complete accepted selection, test plan,
+version and notes remain unchanged. The existing Await owner rechecks selection
+and frozen custody, and the product owner proves every target not applied under
+the installation lease: execution namespaces are unstarted, remote main and the
+classified installed current still match the publication base, and the public
+version has neither tag nor release. Tool identity and physical location are
+verified and retained in the durable recovery before scheduling. SQL repeats
+the exact failed boundary and CAS. Foreign, changed, partial, applied or UNKNOWN
+evidence cannot enter this mode; the prior partial-publication route retains its
+own proof. Only remaining publication resumes, including the original full
+pipeline when still pending. No compose, clone, freeze or version reallocation
+occurs. Failed attempts and lost-reply admission history remain intact.
+
 Multiple authorized publication targets for one canonical repository share one
 repository approval only when both exact local-main and origin-main pins agree.
 Both target identities and publication ordering remain in original authorization.

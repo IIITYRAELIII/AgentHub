@@ -127,6 +127,38 @@ test("publication reservation uses the Workspace Await boundary for the exact ge
   ]);
 });
 
+test("not-applied recovery holds one Await boundary and rechecks selection and frozen authority", async () => {
+  for (const drift of [null, "selection", "frozen"]) {
+    let selected = [{ taskId: "task-a", resultCommit: "result-a", acceptanceRevision: 2 }];
+    const f = fixture(selected);
+    let depth = 0, locks = 0, frozen = "original-frozen", admissions = 0;
+    f.adapter.releasePreflight.withAwaitTransition = async (_workspace, action) => {
+      assert.equal(depth, 0, "no nested Await acquisition"); locks++; depth++;
+      try { return await action(); } finally { depth--; }
+    };
+    f.adapter.releasePreflight.operationSelection = async () => structuredClone(selected);
+    f.adapter.releasePreflight.releaseGitWorkspaces = { inspectRetainedGeneration: async () => {
+      assert.equal(depth, 1); return { commit: frozen };
+    } };
+    f.adapter.publication.withPublicationRecovery = async ({ commit }) => commit({ kind: "fixture-owning-proof", readbacks: [] }, async () => {
+      assert.equal(depth, 1);
+    });
+    const operation = { operationId: "same", workspaceId: "workspace", authorization: {
+      taskScope: "all_await", taskIds: ["task-a"], approvedTargets: [] } };
+    const generation = { generation: 1, selectedResults: structuredClone(selected), candidates: [{ repositoryRoot: "fixture" }] };
+    const result = f.adapter.withPublicationRecovery({ operation, generation,
+      boundary: { kind: "not-applied-publication-recovery-v1" }, commit: async (evidence, validate) => {
+        assert.deepEqual(evidence.frozen, [{ commit: "original-frozen" }]);
+        if (drift === "selection") selected = [{ ...selected[0], resultCommit: "changed" }];
+        if (drift === "frozen") frozen = "changed-frozen";
+        await validate(); admissions++; return { accepted: true };
+      } });
+    if (drift) await assert.rejects(result, /selection changed|frozen authority changed/u);
+    else assert.equal((await result).accepted, true);
+    assert.equal(locks, 1); assert.equal(depth, 0); assert.equal(admissions, drift ? 0 : 1);
+  }
+});
+
 test("terminal operation cleanup delegates only the persisted immutable generation", async () => {
   const f = fixture([]);
   const generation = { operationId: "operation-1", generation: 2, candidates: [] };
