@@ -142,7 +142,7 @@ test("not-applied first publication resumes SAME generation and preserves pendin
   assert.equal(before.receipts.find(row => row.stepId === "publish:git").effect.status, "not_applied");
   assert.equal(before.receipts.some(row => row.stepId === "publish:runtime"), false);
   assert.equal(before.receipts.find(row => row.stepId === "validate").effect.pipelineValidationRequired, true);
-  await assert.rejects(f.service.continue(f.operationId, options), /tool pin still missing/u);
+  await assert.rejects(async () => f.service.continue(f.operationId, options), /tool pin still missing/u);
   assert.deepEqual(f.store.snapshot(f.operationId), before);
   f.fixPin();
   assert.equal((await f.service.continue(f.operationId, options)).accepted, true);
