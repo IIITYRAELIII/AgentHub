@@ -70,7 +70,7 @@ export function createDesktopApplicationRouter({
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "browseDirectory",
     "submitBugReport", "reportDiagnostic", "trustedDevices", "createDevicePairing", "revokeDevice",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
-    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
+    "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
     "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
     "messagePinSet", "messagePinsClear",
