@@ -53,7 +53,7 @@ for (const count of [1, 25]) {
       await page.evaluate(() => window.__dispatchClientFixture("task:select", { id: "stream-a" }));
       await page.waitForFunction(id => window.__clientProjectionFixture.messages["stream-a"]?.some(m => m.clientUserMessageId === id && m.projectionAuthority === "canonical"), clientId);
       if (count > 20) {
-        await page.evaluate(() => window.__dispatchClientFixture("history:load-older", { taskId: "stream-a" }));
+        await page.locator("[data-history-load]").evaluate(button => button.click());
         await page.waitForFunction(total => window.__clientProjectionFixture.messages["stream-a"]?.length === total, count+1);
       }
       const before = await page.evaluate(() => structuredClone(window.__clientProjectionFixture));
@@ -70,8 +70,56 @@ for (const count of [1, 25]) {
       assert.equal(after.pagination["stream-a"].hasOlder, before.pagination["stream-a"].hasOlder);
       assert.equal(after.messages["stream-a"].filter(m => m.role === "agent").length, 0, "unfinished response remains on the live surface");
       assert.equal(await page.getByText("Accepted question", { exact: true }).count(), 1);
-      if (count > 20) assert.ok(reads.some(read => read.before !== null), "older page goes through the real Desktop read factory");
+      if (count > 20) assert.ok(reads.some(read => read.before === count - 20 && read.limit === 20), "older button sends the exact cursor and bound through the real Desktop read factory");
       assert.deepEqual(errors, []);
     } finally { await browser.close(); }
   });
 }
+
+test("older page refuses a cursor crossing reply, then prepends the valid page without moving the reader", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  let page;
+  const identity = { provider: "codex", threadId: "thread-a", streamId: "stream-a" };
+  const turns = Array.from({ length: 40 }, (_, i) => ({ id: `old-${i}`, completed: true, status: "completed",
+    messages: [{ role: "user", itemId: `user-${i}`, clientUserMessageId: `client-${i}`, text: `Question ${i} ${"visible history ".repeat(40)}` }] }));
+  const history = { ...identity, start: 20, end: 40, total: 40, nextBefore: 20, messageTotal: 40, version: "all-forty", items: turns.slice(20) };
+  const requests = [];
+  try {
+    page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const errors = await openClientEventFixture(page, { surface: "web", fixtureHistory: history });
+    await page.route("**/api/control", async route => {
+      const request = route.request().postDataJSON();
+      if (request.action !== "task-history" || request.params.streamId !== identity.streamId || request.params.before == null) return route.fallback();
+      requests.push(request.params);
+      const result = requests.length === 1
+        ? { ...history, start: 20, end: 21, items: [{ id: "past-cursor", completed: true,
+          messages: [{ role: "user", itemId: "bad-item", text: "Must not enter history" }] }] }
+        : { ...history, start: 0, end: 20, nextBefore: null, items: turns.slice(0,20) };
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result }) });
+    });
+    await page.locator('[data-stream-task-id="stream-a"]:visible').first().click();
+    await page.waitForFunction(() => window.__clientProjectionFixture.messages["stream-a"]?.length === 20);
+    const before = await page.evaluate(() => window.__clientProjectionFixture.messages["stream-a"].map(item => item.id));
+    await page.evaluate(() => window.__dispatchClientFixture("history:load-older", { taskId: "stream-a" }));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].before, 20);
+    assert.equal(requests[0].limit, 20);
+    assert.deepEqual(await page.evaluate(() => window.__clientProjectionFixture.messages["stream-a"].map(item => item.id)), before);
+    assert.equal(await page.getByText("Must not enter history", { exact: true }).count(), 0);
+    await page.evaluate(() => { document.querySelector("[data-chat-pane] .chat-scroll").scrollTop = 200; });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const anchor = page.locator('[data-role="user"][data-turn-id="old-25"]');
+    const top = await anchor.evaluate(node => node.getBoundingClientRect().top);
+    await page.evaluate(() => window.__dispatchClientFixture("history:load-older", { taskId: "stream-a" }));
+    await page.waitForFunction(() => window.__clientProjectionFixture.messages["stream-a"]?.length === 40);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].before, 20);
+    assert.equal(requests[1].limit, 20);
+    assert.ok(Math.abs(await anchor.evaluate(node => node.getBoundingClientRect().top) - top) < 2, "the same retained message stays at the same reader offset");
+    const after = await page.evaluate(() => window.__clientProjectionFixture.messages["stream-a"]);
+    assert.deepEqual(after.slice(20).map(item => item.id), before);
+    assert.equal(new Set(after.map(item => item.id)).size, 40);
+    assert.deepEqual(errors, []);
+  } finally { await page?.unrouteAll({ behavior: "wait" }); await browser.close(); }
+});

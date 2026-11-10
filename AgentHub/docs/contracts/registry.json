@@ -119,6 +119,7 @@
         "tests/public/cold-chat-selection.test.mjs",
         "docs/testing/UI_BEHAVIOR_CHECKS.md",
         "tests/public/active-history-projection-dom.test.mjs",
+        "tests/public/chat-surface-behavior-dom.test.mjs",
         "tests/public/client-canonical-state-dom.test.mjs",
         "tests/public/client-event.fixture.mjs",
         "tests/public/client-policy-dom.test.mjs",

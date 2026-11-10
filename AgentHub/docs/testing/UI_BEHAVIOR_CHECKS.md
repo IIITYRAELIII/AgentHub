@@ -23,6 +23,16 @@ The original failed release run remains a separate result.
 | Generated journal script spelling | `vscode-journal-dom.test.mjs` executes the complete generated HTML: theme messages/state, heading, moved rate-limit chips, duplicate collapse button, refresh and explicit empty disclosure state after recreation. |
 | Stable Stream / multi-column / delayed-image source duplicates | The maintained rotation, parallel-history, closed-chat, durable-final, stream-tabs and composer cases exercise these behaviors through their existing APIs and DOM. Their meaningful oracles are retained; source-text duplicates add no behavior coverage. |
 | Browser audit executable pin | `file-transfer-browser-feasibility.test.mjs` launches installed Chrome and Edge by Playwright channel. Both retain the interrupted download and rejected unsigned-resume cases. No audit checkout/configuration selects Chrome. |
+| Loading/empty message-owner source strings | `chat-surface-behavior-dom.test.mjs`: unread history shows loading; a loaded empty page clears it; a real public message becomes visible. The whole-client foreign-owner case remains separate. |
+| Subagent title/disclosure, GFM and separate live reasoning source strings | The same view-owner file renders a collapsed readable child, opens its real disclosure, renders table cells and keeps reasoning Markdown separate from answer Markdown. It loads the whole app without starting the transport client. |
+| Document input, clipboard items/files and local file citation spelling | The same file exercises real file input and paste events, exact one-card-per-file behavior and file-citation target/location. Existing upload negotiation/refusal/recovery and Chrome/Edge download/resume cases keep transport/size authority; an old hard-coded size expression is not the policy. |
+| Image Back/arrows, left-edge swipe, host viewport and Telegram method spelling | The same file uses viewer keys and the public Back API, canceled/middle/vertical/edge gestures with retained draft, real rendered viewport versus a different host width, and a synthetic Telegram host port. Android native forwarding is not executed by these browser cases; its old source string was not an executable Android proof. |
+| Older-page private helper and cursor regexes | The view case distinguishes short/canceled/released/in-flight/hidden-pane pulls and button intent. `active-history-projection-dom.test.mjs` runs the complete transport client: a cursor-crossing reply is refused; a valid exact page prepends unique IDs without moving the reader. The existing 25-turn durable-question oracle is preserved. |
+| Shared-composer header, diff/settings and Sync `askText` signatures | Public DOM cases activate diff for the exact Stream, open/close Stream settings independently of general settings, and complete nickname/enrollment/invite through the real shared dialog. No native browser prompt may occur. |
+| Grouped Claude and recursive child source strings | The view case runs actual journal recomposition: latest content stays open, earlier and two nested child disclosures open independently, and Collapse All closes them. The generated VS Code journal case separately retains recreation/empty-state coverage. |
+| Journal grouping/pagination/title helper spelling | `journal-view-controller.test.mjs` checks stable Workspace/Stream/Claude identities, compact grouping and distinct root/child identity. `journal-virtual-ui.test.mjs` checks current grouped DOM, bounded on-demand cursor requests and exact identity across overlapping pages. Mobile linked titles retain a link without acquiring another expansion action. |
+| Dispatching/deferred source duplicate and legacy Project-renderer absence | Existing `managed queue omits unsolicited caption and preserves user content and actionable states`, `production queue corrects stale idle placement and survives receipt eviction` and the canonical-state client cases retain delivery/queue authority. Maintained catalog/navigation cases use stable Workspace/Stream/Thread identity; absence of a private legacy function adds no contract. |
+| Journal traversal/source-order spelling | Retired implementation-shape duplicates do not assert an algorithm through function names. Current grouping/recreation/identity and observed trace/DOM requirements remain executable. These checks do not claim proof that every possible body-wide scan is absent, or a production journal latency bound. |
 | Backend function-name assertions in the UI lifecycle suite | The existing provider service tests exercise disabled/enabled cleanup with the exact Thread/turn/item; provider event tests exercise a lost separate completion event and an unregistered completed compaction. These preserve real leaf requirements. Neither these cases nor the retired source strings prove the whole application `isMaintenanceActive` registration; no new whole-composition coverage is claimed. Backend production is unchanged. |
 
 Paths in this table are relative to `tests/public/`, except the lifecycle
@@ -71,3 +81,20 @@ Use named failed/affected cases after a correction. Do not rerun the full releas
 suite, the expensive long final-history cases or a browser matrix with unchanged
 inputs solely to produce a new aggregate. Runtime installation, release
 membership and original user-window acceptance belong to their normal owners.
+
+## CORE correction boundary
+
+The independent review of `fa04` returned the remaining CORE source-form gap.
+The correction retires 24 source-only cases and the current-dialog implementation
+clause in a mixed settings/statistics case. Unrelated theme/statistics assertions
+are unchanged. The three production modules remain byte-for-byte `fa04`; this
+correction adds view/transport behavior coverage and removes source duplicates.
+
+New view cases use the app's public projection APIs with its transport client
+absent. Real history protocol/cursor checks use the complete client separately.
+Fixture setup failures are retained: the pull began before scroll restoration
+settled, the diff test initially expected the wrong public event field, and the
+Sync waiter initially assumed a button label changed after enrollment. These
+are corrected without extending timeouts. A synthetic journal's compact rows
+can overlap; nested native disclosures are exercised through focus and Enter,
+without forced pointer clicks or changing production layout.

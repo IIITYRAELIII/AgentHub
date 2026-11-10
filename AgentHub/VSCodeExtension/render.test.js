@@ -621,35 +621,6 @@ test("panel starts in the theme the extension restored", () => {
     /<html lang="ru" data-theme="orbit" data-surface="desktop">/,
   );
 });
-
-
-test("grouped Claude work keeps the latest turn visible and collapses previous turns", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  const workLogStyles = fs.readFileSync(require.resolve("../work-log.css"), "utf8");
-  assert.match(app, /function replaceCollapsedTurnList\(list, entries\)/u);
-  assert.match(app, /data-work-log-previous-turns-closed/u);
-  assert.match(app, /Показать предыдущие ходы/u);
-  assert.match(app, /replaceCollapsedTurnList\(list, entries\)/u);
-  assert.doesNotMatch(app, /if \(list\) list\.replaceChildren\(\.\.\.entries\)/u);
-  assert.match(styles, /details\[data-work-log-previous-turns\] \{[\s\S]*?display: block;/u);
-  assert.match(workLogStyles, /details\[data-work-log-previous-turns\] \{[\s\S]*?display: block;/u);
-});
-
-test("chat controls live in the shared composer without a chat header", () => {
-  const index = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(path.join(WEB_APP_ROOT, "styles.css"), "utf8");
-  assert.doesNotMatch(index, /class="chat-head"|data-mobile-chat-actions|class="chat-actions"|class="overflow"/u);
-  assert.match(index, /class="chat-overlay-actions"[\s\S]*?data-action="task-diff"[\s\S]*?data-action="task-settings"/u);
-  assert.doesNotMatch(index, /data-chat-(?:title|subtitle|provider-dot|running)/u);
-  assert.doesNotMatch(app, /buildSubtitleChips|chatProviderDot|chatSubtitle|chatTitle|chatRunning|syncChatActionsPlacement|mobileChatActions|chatHead/u);
-  assert.match(styles, /\.chat-pane\s*\{[\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\);/u);
-  assert.match(styles, /\.chat-scroll\s*\{[\s\S]*?grid-row:\s*1;/u);
-});
-
-/* фон BlackHole приходит из workspace через webview, поэтому его источник
-   должен попадать в img-src — но ничего удалённого туда попасть не должно */
 test("panel allows the webview's own resources and data URIs, but no remote source", () => {
   assert.match(webviewHtml({}), /default-src 'none'; img-src data:;/);
   assert.match(
@@ -806,7 +777,6 @@ test("general settings and current-dialog settings stay separate", async () => {
   assert.match(html, /data-dialog-options="mode"/u);
   assert.match(html, /data-dialog-working-directory/u);
   assert.doesNotMatch(html, /data-dialog-options="project"/u);
-  assert.match(app, /chatPane\.toggleAttribute\("data-dialog-settings-open", visible\)/u);
   assert.doesNotMatch(html, /data-token-breakdown-toggle/u);
   assert.match(html, /data-claude-group-toggle/u);
   assert.match(html, /data-usage-unit="rub">₽<\/button>/u);
@@ -1255,15 +1225,6 @@ test("turn header keeps its actions in the trailing columns", () => {
   );
 });
 
-test("subagent responses render collapsed with a readable title", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(app, /el\(subagent \? "details" : "article"/u);
-  assert.match(app, /"data-subagent-response": true/u);
-  assert.match(app, /function subagentResponseTitle\(message\)/u);
-  assert.match(styles, /\.msg-subagent\[open\] \.msg-subagent-chevron-icon/u);
-});
-
 test("task rail width does not collide with decorative rail thickness", () => {
   const dialogArea = fs.readFileSync(
     require.resolve("../assets/web-app/dialog-area.css"),
@@ -1286,92 +1247,6 @@ test("journal width stays fixed while days and turns are expanded", () => {
   assert.match(
     styles,
     /html\[data-surface="mobile"\]\[data-view="journal"\] \.journal-view\s*\{[^}]*width:\s*100%;/su,
-  );
-});
-
-test("journal keeps explicit Workspace and Stream grouping modes", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(
-    require.resolve("../assets/web-app/styles.css"),
-    "utf8",
-  );
-  assert.match(
-    styles,
-    /\.journal details\[data-work-log-workspace\]\s*\{[^}]*border:\s*1px solid var\(--line\);[^}]*overflow:\s*hidden;/su,
-  );
-  assert.match(
-    styles,
-    /\.journal summary\[data-work-log-workspace-header\]\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*1rem 17\.5rem minmax\(0, 1fr\);/su,
-  );
-  assert.match(
-    styles,
-    /\.journal details\[data-work-log-stream\]\[open\]\s*\{[^}]*display:\s*block;/su,
-  );
-  assert.match(styles, /\.journal span\[data-work-log-turn-stream\]\s*\{[^}]*border-radius:\s*999px;/su);
-  assert.match(styles, /\.journal summary\[data-work-log-stream-summary\]\s*\{[^}]*cursor:\s*pointer;[^}]*display:\s*grid;/su);
-  assert.match(app, /function upgradeLegacyWorkspaceGroups\(scope = journal\)/u);
-  assert.match(app, /function decorateLegacyStreamTurns\(scope = journal\)/u);
-  assert.doesNotMatch(app, /function flattenWorkspaceStreams\(scope = journal\)/u);
-  assert.doesNotMatch(app, /function applyStreamCollapse\(value,/u);
-  assert.doesNotMatch(app, /function setStreamsCollapsed\(collapsed,/u);
-  assert.match(app, /agent-hub-collapse-streams/u);
-  assert.doesNotMatch(styles, /data-work-log-streams-collapsed/u);
-  assert.match(app, /taskGroupsFrom\(source, \{ hierarchy: mode \}\)/u);
-  assert.match(
-    app,
-    /text: `\$\{workspaceTitle\} - \$\{streamTitle\}`/u,
-  );
-  assert.match(
-    app,
-    /journalGroupSection\(group, groups, \{ showStreams: mode !== "stream" \}\)/u,
-  );
-  assert.match(app, /JournalView\.groupIdentity/u);
-  assert.doesNotMatch(
-    styles,
-    /\[data-journal-ledger-title\]::before\s*\{[^}]*mask:/su,
-  );
-  assert.match(styles, /span\[data-work-log-duration-summary\][\s\S]*?grid-column:\s*1 \/ -1;/u);
-  assert.match(
-    styles,
-    /details\[data-work-log-collapsed-workspace-usage-details\][\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\) auto auto;[\s\S]*?> span\[data-work-log-duration-summary\][\s\S]*?display:\s*contents;/u,
-  );
-  assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
-});
-
-test("task-grouped journal pages large histories without per-row Metropolis blur", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = themeFile("metropolis");
-  assert.match(app, /const TASK_GROUP_TURN_PAGE_SIZE = 30/u);
-  assert.match(app, /const taskGroupTurns = new WeakMap\(\)/u);
-  assert.match(app, /function appendTaskGroupTurnPage\(details, \{ nextPage = false \} = \{\}\)/u);
-  assert.match(app, /Показать ещё \(\$\{turns\.length - next\}\)/u);
-  assert.match(app, /details\[data-work-log-task-group\]\[open\][\s\S]*appendTaskGroupTurnPage/u);
-  assert.match(
-    styles,
-    /html\[data-theme="metropolis"\]:is\(\[data-grouping="stream"\], \[data-grouping="workspace"\]\)[\s\S]*details\[data-work-log-turn-details\][\s\S]*backdrop-filter:\s*none/u,
-  );
-});
-
-test("day-grouped journal uses Workspace cards and plain credit values", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(
-    require.resolve("../assets/web-app/styles.css"),
-    "utf8",
-  );
-  assert.match(app, /function workspaceGroupsFrom\(day\)/u);
-  assert.match(app, /taskGroupsFrom\(day, \{ workspace \}\)/u);
-  assert.doesNotMatch(app, /holder\.append\(day\.cloneNode\(true\)\)/u);
-  assert.match(app, /data-work-log-collapsed-workspace-usage-details/u);
-  assert.match(app, /journalLedgerSummary\(total, \{ label: dateLabel, showStreams: false \}\)/u);
-  assert.match(app, /data-journal-day-picker-turns/u);
-  const lazyDayBody = app.slice(
-    app.indexOf("async function loadLazyDay"),
-    app.indexOf("async function loadLazyTurn"),
-  );
-  assert.doesNotMatch(lazyDayBody, /setStreamsCollapsed\(collapseStreams, replacement\)/u);
-  assert.match(
-    styles,
-    /\.journal-ledger \.journal span\[data-kilo-usage\][\s\S]*?background:\s*transparent;[\s\S]*?box-shadow:\s*none;/u,
   );
 });
 
@@ -1418,82 +1293,6 @@ test("mobile task list cannot widen the viewport", () => {
   );
 });
 
-test("narrow desktop measures the document viewport before host window width", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const resolver = app.match(
-    /function layoutViewportWidth\(\) \{[\s\S]*?\r?\n\}\r?\n\r?\nfunction resolveSurface\(\) \{[\s\S]*?\r?\n\}/u,
-  )?.[0];
-  assert.ok(resolver, "surface resolver is present");
-  assert.doesNotMatch(resolver, /return window\.innerWidth < compactSurfaceWidth/u);
-
-  const surfaceFor = ({ documentWidth, windowWidth }) => vm.runInNewContext(`
-    const telegramMode = false;
-    const telegramPlatform = "";
-    const mobileTelegramPlatforms = new Set(["android", "ios"]);
-    const compactSurfaceWidth = 860;
-    ${resolver}
-    resolveSurface();
-  `, {
-    document: { documentElement: { clientWidth: documentWidth } },
-    window: { innerWidth: windowWidth },
-  });
-
-  /* Edge Web App can expose the host width through window.innerWidth while
-     the actual webview is much narrower. The compact CSS then keeps the
-     workspace in one column, so it cannot create a horizontal page overflow. */
-  assert.equal(surfaceFor({ documentWidth: 380, windowWidth: 545 }), "mobile");
-  assert.equal(surfaceFor({ documentWidth: 920, windowWidth: 545 }), "desktop");
-});
-
-test("mobile journal task links do not become nested expansion buttons", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(
-    app,
-    /if \(title\.querySelector\("\[data-open-task\]"\)\) \{[\s\S]*title\.removeAttribute\("role"\)/u,
-  );
-  assert.match(app, /if \(event\.target\.closest\("\[data-open-task\]"\)\) return;/u);
-});
-
-test("chat distinguishes loading history from an empty task", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /const historyLoaded = state\.messages\.has\(taskId\)/u);
-  assert.match(app, /MessageView\.claimKeyedChildrenOwner\(chatLog, taskId\)/u);
-  assert.match(app, /Загрузка истории…/u);
-});
-
-
-test("journal navigation avoids body-wide select and motion subtree scans", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const bootstrap = fs.readFileSync(require.resolve("./vscode-bootstrap.js"), "utf8");
-  assert.match(app, /node === journal \|\| journal\.contains\(node\)[\s\S]*node\.querySelector\?\.\("select"\)/u);
-  assert.match(bootstrap, /!node\?\.closest\?\.\("\[data-journal\]"\)[\s\S]*MOTION_TARGET_SELECTOR/u);
-});
-
-
-test("Sync controls use the shared text dialog in VS Code webviews", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.doesNotMatch(app, /window\.prompt/u);
-  assert.match(app, /await askText\(\{ title: "Никнейм этого устройства для Sync"/u);
-  assert.match(app, /await askText\(\{ title: "Код подключения Sync для другого устройства"/u);
-  assert.match(app, /await askText\(\{ title: "Введите код подключения Sync"/u);
-});
-
-  test("dispatching deferred messages stay in the queue until provider acceptance", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.doesNotMatch(app, /\.filter\(\(entry\) => entry\.state !== "dispatching" && entry\.state !== "steering"\)/u);
-  assert.equal((app.match(/MessageView\.conversationSurfaceMessages\(/gu) ?? []).length, 2);
-  assert.match(app, /Date\.parse\(left\.createdAt \|\| 0\)/u);
-    assert.match(
-      client,
-      /function deferredEntriesForTask[\s\S]*queuedCommandUsesQueue\(item, snapshot\?\.messageReceipts\)/u,
-    );
-    assert.match(
-      client,
-      /const deferredDeliveryState = queuedCommandDeliveryState\([\s\S]*\.\.\.deliveryPatch\(deferredDeliveryState\)/u,
-    );
-});
-
 test("VS Code resolves, opens, copies and offers saving only the exact attachment identity", async () => {
   const harness = panelHarness();
   const opened = [], copied = [], resolved = [];
@@ -1524,83 +1323,6 @@ test("VS Code resolves, opens, copies and offers saving only the exact attachmen
 });
 
 
-test("Codex file citations render as compact local links", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(app, /function codexFileCitation\(raw\)/u);
-  assert.match(app, /token\.startsWith\(":codex-file-citation\{"\)/u);
-  assert.match(app, /link\.dataset\.agentHubLocalLink = targetLink\.localPath/u);
-  assert.match(styles, /\.file-citation\s*\{/u);
-});
-
-test("composer accepts documents and renders downloadable file cards", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(html, /data-file-input/u);
-  assert.doesNotMatch(html, /data-file-input[^>]*accept=["']image\/\*/u);
-  assert.match(app, /async function readAttachmentFiles\(files\)/u);
-  assert.match(app, /file\.size <= 20 \* 1024 \* 1024/u);
-  assert.match(app, /attachment-file-card/u);
-  assert.match(client, /X-Agent-Hub-File-Name/u);
-  assert.match(client, /async function saveBlob\(blob, name\)/u);
-  assert.match(client, /downloadBlob\(blob, name\)/u);
-});
-
-test("mobile navigation backs out from image to chat and from chat to tasks", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const android = fs.readFileSync(
-    require.resolve("../AndroidApp/app/src/main/java/app/agenthub/mobile/MainActivity.java"),
-    "utf8",
-  );
-  assert.match(html, /data-attachment-viewer[\s\S]*data-attachment-viewer-close/u);
-  assert.match(html, /data-attachment-viewer-previous[\s\S]*data-attachment-viewer-next/u);
-  assert.match(app, /function navigateBack\(\)[\s\S]*closeAttachmentViewer\(\)[\s\S]*setPane\("tasks"\)/u);
-  assert.match(app, /event\.key === "ArrowLeft"[\s\S]*event\.key === "ArrowRight"/u);
-  assert.match(app, /dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
-  assert.match(android, /window\.AgentHub\.navigateBack/u);
-});
-
-test("annotation actions preserve native selection and keep per-quote comments", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const android = fs.readFileSync(
-    require.resolve("../AndroidApp/app/src/main/java/app/agenthub/mobile/MainActivity.java"),
-    "utf8",
-  );
-  assert.doesNotMatch(html, /data-action="annotate"/u);
-  assert.match(app, /showToast\("Выделите фрагмент сообщения или рассуждения\."\)/u);
-  assert.match(html, /data-annotation-context-menu[\s\S]*Цитировать выделение/u);
-  assert.match(app, /async function addAnnotation\(selection\)/u);
-  assert.match(app, /addAnnotation\(selectedQuotableSelection\(\) \|\| lastAnnotationSelection\)/u);
-  assert.match(app, /data-annotation-comment-index/u);
-  assert.match(app, /pointer: coarse/u);
-  assert.match(app, /function handleAnnotationContextMenu\(event\)[\s\S]*openAnnotationContextMenu\(event, selected \?\? lastAnnotationSelection\)/u);
-  assert.match(app, /document\.addEventListener\("contextmenu", handleAnnotationContextMenu, \{ capture: true \}\)/u);
-  assert.match(app, /selectedQuotableSelection\(\) \|\| lastAnnotationSelection/u);
-  assert.match(android, /MENU_ANNOTATE_SELECTION[\s\S]*"Цитировать"/u);
-  assert.match(android, /SHOW_AS_ACTION_ALWAYS \| MenuItem\.SHOW_AS_ACTION_WITH_TEXT/u);
-  assert.match(android, /ActionMode\.Callback2[\s\S]*onGetContentRect/u);
-});
-
-
-test("journal preserves recursive subagent trees in date and task groupings", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  const workLogStyles = fs.readFileSync(require.resolve("../work-log.css"), "utf8");
-  assert.match(app, /function isRootTurnEntry\(entry\)/u);
-  assert.match(app, /if \(isRootTurnEntry\(entry\)\) group\.turns\.push/u);
-  assert.match(styles, /\.journal div\[data-work-log-turn-children\]/u);
-  assert.match(workLogStyles, /div\[data-work-log-turn-children\]/u);
-  assert.match(app, /subagents: \[\.\.\.journal\.querySelectorAll\("details\[data-work-log-turn-children-details\]\[open\]"\)\]/u);
-  assert.match(app, /openState\.subagents \?\? \[\]/u);
-  assert.match(app, /collapseAllButton\.addEventListener\("click",[\s\S]*querySelectorAll\("details\[open\]"\)/u);
-  assert.match(styles, /details\[data-work-log-turn-children-details\] > summary/u);
-  assert.match(workLogStyles, /details\[data-work-log-turn-children-details\] > summary/u);
-});
-
-
 test("desktop settings stay available with the mobile composer layout", () => {
   const html = fs.readFileSync(
     require.resolve("../assets/web-app/index.html"),
@@ -1618,30 +1340,6 @@ test("desktop settings stay available with the mobile composer layout", () => {
   );
 });
 
-test("Telegram mobile chat disables the host vertical collapse gesture", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /telegram\?\.expand\(\);\s*telegram\?\.disableVerticalSwipes\?\.\(\);/u);
-});
-
-
-test("left-edge swipe uses in-app back and prevents browser history navigation", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /const EDGE_SWIPE_ZONE = 32;/u);
-  assert.match(app, /fromLeftEdge: touch\.clientX <= EDGE_SWIPE_ZONE/u);
-  assert.match(app, /\.markdown-table-scroll/u);
-  assert.match(app, /touchmove[\s\S]*swipeStart\?\.fromLeftEdge[\s\S]*event\.preventDefault\(\)/u);
-  assert.match(app, /if \(!fromLeftEdge \|\| dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
-  assert.match(app, /function navigateBack\(\) \{\s*if \(composerShortcuts\.handleBack\(\)\) return true;\s*saveDraft\(\);[\s\S]*root\.dataset\.view !== "chat"[\s\S]*setPane\("tasks"\)/u);
-});
-
-test("task list no longer exposes legacy Project groups", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.doesNotMatch(app, /const hasProject = visible\.some/u);
-  assert.doesNotMatch(app, /function renderTaskProjectGroup\(/u);
-  assert.doesNotMatch(styles, /\.task-project-heading\s*\{/u);
-});
-
 
 test("metropolis uses square pixel rain cells on mobile", () => {
   const shader = fs.readFileSync(
@@ -1656,46 +1354,6 @@ test("metropolis uses square pixel rain cells on mobile", () => {
   assert.doesNotMatch(shader, /smoothstep\(0\.026, 0\.012/u);
   assert.match(shader, /1\.0 - smoothstep\(0\.02, 0\.03, length\(dropPosition\)\)/u);
   assert.match(shader, /1\.0 - smoothstep\(y, 0\.5, cellUv\.y\)/u);
-});
-
-test("chat loads older pages from a button and a cancellable mobile pull gesture", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(html, /data-history-loader[\s\S]*data-history-load/u);
-  assert.match(app, /const HISTORY_PULL_THRESHOLD = 84;/u);
-  assert.match(app, /touchmove[\s\S]*historyPull\.armed = damped >= HISTORY_PULL_THRESHOLD/u);
-  assert.match(app, /touchend[\s\S]*if \(shouldLoad\) requestOlderHistory\(\)/u);
-  assert.match(app, /emit\("history:load-older", \{ taskId: state\.selectedId \}\)/u);
-  assert.match(app, /function captureChatAnchor\(\)[\s\S]*function restoreChatAnchor\(anchor\)/u);
-  assert.match(client, /const requestedBefore = Number\(page\.nextBefore\)[\s\S]*control\("task-history", \{[\s\S]*before: requestedBefore,[\s\S]*limit: 20/u);
-  assert.match(client, /returnedEnd > requestedBefore[\s\S]*returnedStart >= requestedBefore/u);
-  assert.match(client, /prependOlderHistory[\s\S]*preserveScroll: true/u);
-  assert.match(styles, /html\[data-surface="mobile"\] \.chat-history-loader\[data-pulling\]/u);
-});
-
-
-test("live reasoning renders Markdown separately from the response", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  assert.match(html, /data-live-reasoning/u);
-  assert.match(html, /data-live-body/u);
-  assert.match(app, /const reasoning = node\.querySelector\("\[data-live-reasoning\]"\);/u);
-  assert.match(app, /const body = node\.querySelector\("\[data-live-body\]"\);/u);
-});
-
-test("shared chat Markdown renders GFM tables responsively", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(app, /function markdownTableCells\(line\)/u);
-  assert.match(app, /\^:\?-\{3,\}:\?\$/u);
-  assert.match(app, /el\("table", \{ class: "markdown-table" \}/u);
-  assert.match(styles, /\.markdown-table-scroll[\s\S]*overflow-x: auto;/u);
-  assert.match(styles, /\.markdown-table[\s\S]*border-collapse: collapse;/u);
-  assert.match(styles, /\.markdown-table[\s\S]*table-layout: fixed;[\s\S]*width: 100%;/u);
-  assert.match(styles, /\.markdown-table th,[\s\S]*overflow-wrap: anywhere;/u);
-  assert.match(styles, /\.markdown-table tr > :first-child:nth-last-child\(2\)[\s\S]*width: clamp\(9rem, 30%, 18rem\);/u);
 });
 
 
@@ -1989,15 +1647,6 @@ test("maintained shells package derivatives of the unified Agent Hub mark", () =
   assert.match(androidManifest, /android:icon="@drawable\/ic_agent_hub"/u);
   assert.match(androidManifest, /android:roundIcon="@drawable\/ic_agent_hub"/u);
   assert.equal(androidIcon.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
-});
-
-test("composer pastes arbitrary clipboard files and falls back to the files list", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /function clipboardAttachmentFiles\(clipboardData\)/u);
-  assert.match(app, /clipboardData\?\.items/u);
-  assert.match(app, /clipboardData\?\.files/u);
-  assert.match(app, /const values = itemFiles\.length > 0 \? itemFiles :/u);
-  assert.match(app, /void readAttachmentFiles\(files\)/u);
 });
 
 
