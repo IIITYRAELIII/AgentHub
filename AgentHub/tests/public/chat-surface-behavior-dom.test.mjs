@@ -389,3 +389,44 @@ test("mobile journal task links keep link ownership without a second expansion a
     assert.equal(await page.locator("[data-journal] [data-mobile-open]").count(), 0);
   }, { mobile: true, beforeOpen: page => page.addInitScript(() => localStorage.setItem("agent-hub-grouping", "date")) });
 });
+
+
+test("narrow chat contains long GFM table cells without page overflow or clipped content", { timeout: 30_000 }, async () => {
+  await withSurface(async page => {
+    const long = "LongUnbrokenCell".repeat(18);
+    const wideCells = Array.from({ length: 8 }, (_, i) => `Column${i}-${long}`);
+    const markdown = `| Name | Value |\n| :--- | ---: |\n| ${long} | Exact two-column value |\n\n`
+      + `| ${wideCells.map((_, i) => `Header ${i}`).join(" | ")} |\n| ${wideCells.map(() => "---").join(" | ")} |\n| ${wideCells.join(" | ")} |`;
+    await page.evaluate(text => window.AgentHub.setMessages("stream-a", [{ id: "responsive-tables", role: "agent", text }]), markdown);
+    const tables = page.locator('[data-message-id="responsive-tables"] table');
+    assert.equal(await tables.count(), 2);
+    assert.deepEqual(await tables.nth(0).locator("td").allTextContents(), [long, "Exact two-column value"]);
+    assert.deepEqual(await tables.nth(1).locator("td").allTextContents(), wideCells);
+    assert.deepEqual(await tables.nth(1).locator("th").allTextContents(), wideCells.map((_, i) => `Header ${i}`));
+    const bounds = await tables.evaluateAll(nodes => nodes.map(table => {
+      const scroller = table.closest(".markdown-table-scroll");
+      const chat = table.closest(".chat-scroll");
+      const rect = scroller?.getBoundingClientRect();
+      const chatRect = chat?.getBoundingClientRect();
+      const before = scroller?.scrollLeft;
+      if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+      return { hasLocalOwner: Boolean(scroller), viewport: document.documentElement.clientWidth,
+        pageWidth: document.documentElement.scrollWidth, left: rect?.left, right: rect?.right,
+        chatLeft: chatRect?.left, chatRight: chatRect?.right,
+        clientWidth: scroller?.clientWidth, scrollWidth: scroller?.scrollWidth,
+        localScrollWorks: scroller && (scroller.scrollWidth <= scroller.clientWidth + 1 || scroller.scrollLeft > before),
+        overflow: scroller && getComputedStyle(scroller).overflowX,
+        clippedCells: [...table.querySelectorAll("th, td")].filter(cell => cell.scrollWidth > cell.clientWidth + 1).length };
+    }));
+    for (const entry of bounds) {
+      assert.equal(entry.hasLocalOwner, true);
+      assert.equal(entry.viewport, 390);
+      assert.ok(entry.pageWidth <= entry.viewport, JSON.stringify(entry));
+      assert.ok(entry.left >= entry.chatLeft - 1 && entry.right <= entry.chatRight + 1, JSON.stringify(entry));
+      assert.ok(entry.clientWidth > 0);
+      assert.equal(entry.localScrollWorks, true);
+      if (entry.scrollWidth > entry.clientWidth + 1) assert.ok(["auto", "scroll"].includes(entry.overflow));
+      assert.equal(entry.clippedCells, 0, JSON.stringify(entry));
+    }
+  }, { mobile: true });
+});
