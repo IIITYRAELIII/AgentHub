@@ -1,7 +1,7 @@
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { openReleaseApiHost } from "./src/interfaces/mcp/release-api-host.mjs";
+import { openReleaseApiHost } from "./src/composition/release-api-runtime.mjs";
 
 export function parseApiArguments(args) {
   const options = {};

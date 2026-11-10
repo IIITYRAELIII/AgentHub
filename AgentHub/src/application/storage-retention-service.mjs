@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { MAINTENANCE_OPERATION_KINDS } from "../domain/maintenance-operation.mjs";
-import { AsyncSqliteMutationQueue } from "../infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 
 export const STORAGE_RETENTION_VERSION = 1;
 export const STORAGE_RETENTION_POLICY_VERSION = 4;
@@ -37,12 +36,11 @@ export class StorageRetentionService {
   #stopped = true;
   #closed = false;
   #last = { state: "not-run" };
-  #mutations = new AsyncSqliteMutationQueue();
 
   constructor({ store, owners, readContext, withLease, timers = null,
     isStopping = () => false, now = () => new Date(), clock = () => performance.now(),
     intervalMs = 6 * 60 * 60_000, budgetMs = 20_000, maxUnits = 3, logger = console } = {}) {
-    for (const name of ["get", "create", "transition", "activeFor", "settle"]) {
+    for (const name of ["get", "create", "transition", "activeFor", "settle", "runMaintenanceMutation"]) {
       if (typeof store?.[name] !== "function") throw new TypeError(`Retention store requires ${name}`);
     }
     if (!Array.isArray(owners) || owners.length > 16 || new Set(owners.map(o => o.id)).size !== owners.length
@@ -116,7 +114,7 @@ export class StorageRetentionService {
   // Retry only canonical SQL bookkeeping, never owner preview/effect/reconcile.
   // A contended create keeps its original identity throughout the bounded wait.
   #write(lease, operation, requestId) {
-    return this.#mutations.run(async () => {
+    return this.store.runMaintenanceMutation(async () => {
       await lease.assertOwned();
       return operation();
     }, { requestId });

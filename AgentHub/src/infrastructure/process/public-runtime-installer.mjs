@@ -15,8 +15,6 @@ import { packageBindingDigest, packageDirectory, packageFile, verifyPublicPackag
 import { withRuntimeInstallationLease } from "../filesystem/runtime-installation-custody.mjs";
 import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
 import { loadProjects } from "../filesystem/config.mjs";
-import { publicationRuntimeStatus, startInstalledPublicationRuntime } from "../../runtime/runtime-publication-start.mjs";
-import { waitForRuntimeReplacement } from "../../runtime/publication-readiness.mjs";
 import { clearInheritedPublicationOwnership, publicationLockOwned } from "./publication-lock.mjs";
 
 const json = async file => JSON.parse(await readFile(file, "utf8"));
@@ -147,10 +145,10 @@ async function installedManifest(runtimeRoot, input) {
 }
 
 export function createPublicRuntimeInstaller({ operation, generation, target, runtimeRoot, journal, tool,
-  readPublishedInput, readStatus = publicationRuntimeStatus,
+  readPublishedInput, readStatus,
   readMaintenance = id => new MaintenanceOperationStore({ dataDir: path.join(runtimeRoot, "data") }).getReadonly(id),
-  verifyInstalled = installedManifest, verifyReady = waitForRuntimeReplacement,
-  startRuntime = startInstalledPublicationRuntime,
+  verifyInstalled = installedManifest, verifyReady,
+  startRuntime,
   withInstallationLease = withRuntimeInstallationLease, spawnImpl = spawn,
   environment = process.env, assertOutsidePublicationLock = () => {
     if (publicationLockOwned({ environment })) throw new Error("Public installer must launch after releasing the publication lock");
@@ -158,6 +156,9 @@ export function createPublicRuntimeInstaller({ operation, generation, target, ru
 } = {}) {
   const binding = publicRuntimeInstallerBinding({ operation, generation, target });
   if (!binding) throw new Error("Public installer policy is absent from this original authorization");
+  for (const [name, port] of Object.entries({ readStatus, verifyReady })) {
+    if (typeof port !== "function") throw new TypeError(`Public installer requires ${name} composition port`);
+  }
   const candidate = candidateFor(generation, target);
   const frozen = frozenInput(operation, generation, candidate);
   const operationId = `release-package-${releaseIdentitySha256(binding)}`;
@@ -244,6 +245,7 @@ export function createPublicRuntimeInstaller({ operation, generation, target, ru
     const input = await assertInput(saved);
     await verifyInstalled(runtimeRoot, input);
     await configurationSelection(runtimeRoot, candidate.repositoryRoot);
+    if (typeof startRuntime !== "function") throw new TypeError("Public installer requires startRuntime composition port");
     const intent = { ...saved, phase: "cold_start_intent", startIntentAt: now() };
     await save(intent);
     await startRuntime({ runtimeRoot, expectedReleaseId: input.target.releaseId });

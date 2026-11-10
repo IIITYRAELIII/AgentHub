@@ -17,7 +17,8 @@ import { assertPackageFiles, capturePackageRuntime, packageBindingDigest, packag
   packageFile, packageDirectory, verifyPublicPackageTarget } from "../infrastructure/filesystem/runtime-package-target.mjs";
 import { waitForReplacementLock, directWindowsLauncherInvocation } from "./runtime-restart.mjs";
 import { waitForRuntimeReplacement } from "./publication-readiness.mjs";
-import { runtimeManifestMatchesPackage } from "../domain/runtime-package-identity.mjs";
+import { runtimeManifestMatchesPackage, packageHandoffBinding, packageRestartInput, packageResumeInput } from "../domain/runtime-package-identity.mjs";
+import { assertOldPackageCurrent } from "../infrastructure/filesystem/runtime-package-current.mjs";
 import { assertAgentHubUpgrade } from "../domain/agent-hub-version.mjs";
 import { callDesktopControl } from "../infrastructure/process/desktop-control.mjs";
 import { runtimeStatus } from "./runtime-manager.mjs";
@@ -35,15 +36,7 @@ function assertRetainedPackageRequest(input, evidence, root, existing) {
       && existing.metadata?.packageHandoff?.binding?.runtimeRoot === root)) throw new Error("Original package update input changed");
 }
 
-export function packageHandoffBinding(operation) {
-  const envelope = operation?.metadata?.packageHandoff;
-  if (!envelope || envelope.schema !== 1 || !envelope.binding
-    || packageBindingDigest(envelope.binding) !== envelope.sha256
-    || envelope.binding.operationId !== operation.operationId || operation.kind !== "restart") {
-    throw new Error("Restart has no exact admitted package binding");
-  }
-  return envelope.binding;
-}
+export { packageHandoffBinding };
 
 function packageIntakeReadback(operation, retainedPackage) {
   const result = { operationId: operation.operationId, status: operation.status,
@@ -58,31 +51,7 @@ function packageIntakeReadback(operation, retainedPackage) {
   return result;
 }
 
-export function packageRestartInput(input) {
-  const keys = ["operationId", "tag", "archive", "descriptor", "installer"];
-  if (!input || Object.keys(input).some((key) => !keys.includes(key))
-    || keys.some((key) => typeof input[key] !== "string" || !input[key])) {
-    throw new Error("Package restart requires only its exact original and public asset paths");
-  }
-  return { operationId: input.operationId, tag: input.tag,
-    archive: path.resolve(input.archive), descriptor: path.resolve(input.descriptor), installer: path.resolve(input.installer) };
-}
-
-export function packageResumeInput(value) {
-  if (!value || Object.keys(value).sort().join(",") !== "expectedBindingSha256,expectedCurrent,expectedRevision,input"
-    || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1
-    || !/^[a-f0-9]{64}$/u.test(value.expectedBindingSha256 ?? "")) throw new Error("Package continuation requires its exact failed revision and binding");
-  const old = value.expectedCurrent;
-  if (!old || Object.keys(old).sort().join(",") !== "currentSha256,instanceSha256,manifestSha256,pid,releaseId"
-    || !Number.isSafeInteger(old.pid) || old.pid < 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(old.releaseId ?? "")
-    || ["currentSha256", "instanceSha256", "manifestSha256"].some(key => !/^[a-f0-9]{64}$/u.test(old[key] ?? ""))) {
-    throw new Error("Package continuation requires exact fresh current identity");
-  }
-  return { input: packageRestartInput(value.input), expectedRevision: value.expectedRevision,
-    expectedBindingSha256: value.expectedBindingSha256,
-    expectedCurrent: { releaseId: old.releaseId, pid: old.pid, currentSha256: old.currentSha256,
-      instanceSha256: old.instanceSha256, manifestSha256: old.manifestSha256 } };
-}
+export { packageRestartInput, packageResumeInput };
 
 export async function preparePackageRestart(input, { dataDir, environment = process.env,
   verifyTarget = verifyPublicPackageTarget, captureCurrent = capturePackageRuntime,
@@ -95,7 +64,7 @@ export async function preparePackageRestart(input, { dataDir, environment = proc
   }
   const target = await verifyTarget(input);
   const current = await captureCurrent(environment.AGENT_HUB_RUNTIME_ROOT, dataDir,
-    { hostPid: Number(environment.AGENT_HUB_HOST_PID) });
+    { hostPid: Number(environment.AGENT_HUB_HOST_PID), verifyReady: waitForRuntimeReplacement });
   if (current.old.releaseId === target.releaseId) throw new Error("Target is already the running release");
   await preflightRuntimeBackupScope({ runtimeRoot: current.runtimeRoot });
   // The verified public installer already belongs to the retained external
@@ -140,24 +109,7 @@ export async function packageCheckpoint(store, operationId, phase, metadata = {}
   }, { requestId: operationId });
 }
 
-export async function assertOldPackageCurrent(binding, { requireInstance = false } = {}) {
-  const root = binding.runtimeRoot;
-  if (!binding.roots || packageBindingDigest(await packageDirectory(root)) !== packageBindingDigest(binding.roots.runtime)
-    || packageBindingDigest(await packageDirectory(binding.dataDir)) !== packageBindingDigest(binding.roots.data)
-    || await realpath(root) !== root
-    || packageDigest(await readFile(path.join(root, "current.json"))) !== binding.old.currentSha256
-    || packageDigest(await readFile(path.join(root, "releases", binding.old.releaseId,
-      "runtime-manifest.json"))) !== binding.old.manifestSha256) {
-    throw new Error("Admitted old runtime identity changed");
-  }
-  if (requireInstance) {
-    const lock = JSON.parse(await readFile(path.join(binding.dataDir, "bot.lock"), "utf8"));
-    if (lock.pid !== binding.old.pid || lock.releaseId !== binding.old.releaseId
-      || packageDigest(lock.instanceToken ?? "") !== binding.old.instanceSha256) {
-      throw new Error("Admitted old instance changed");
-    }
-  }
-}
+export { assertOldPackageCurrent };
 
 // Use the installer's existing domain policy on its exact inspected manifest.
 // This is repeated while admission is open, before the stopping fence. The
@@ -571,6 +523,7 @@ async function armPackageBootstrap(store, current, root, environment) {
   await assertPackageFiles(bootstrap.target);
   const captured = await capturePackageRuntime(root, path.join(root, "data"), {
     pid: Number(environment.AGENT_HUB_PACKAGE_OLD_NODE_PID), hostPid: Number(environment.AGENT_HUB_PACKAGE_OLD_HOST_PID),
+    verifyReady: waitForRuntimeReplacement,
   });
   for (const field of ["pid", "releaseId", "currentSha256", "manifestSha256", "instanceSha256"]) {
     if (captured.old[field] !== bootstrap.old[field]) throw new Error("Old runtime drifted before package admission");

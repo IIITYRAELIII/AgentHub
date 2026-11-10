@@ -1,3 +1,4 @@
+import { openReleaseApiHost as openReleaseApiHostPort } from "../interfaces/mcp/release-api-host.mjs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -111,4 +112,8 @@ export async function executeRelease(input, {
     if (replyError) throw replyError;
     return snapshot;
   } finally { await runtime.close(); }
+}
+
+export function openReleaseApiHost(identity, { openRuntime = openReleaseRuntime, ...options } = {}) {
+  return openReleaseApiHostPort(identity, { ...options, openRuntime });
 }

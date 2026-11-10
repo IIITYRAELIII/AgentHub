@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -128,13 +131,25 @@ test("production modules never depend on the Agent Hub composition root", async 
   assert.deepEqual(offenders, []);
 });
 
-test("Agent Hub executable entrypoint contains bootstrap only", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-main.mjs"), "utf8");
-  const imports = relativeImports(source);
-  assert.deepEqual(imports, ["./agent-hub-server.mjs"]);
-  assert.equal(source.includes("startAgentHub()"), true);
-  assert.equal(source.includes("shutdownAgentHub("), true);
-  assert.doesNotMatch(source, /TelegramClient|AgentProviderRegistry|TaskRunRegistry|loadConfig/u);
+test("Agent Hub executable bootstrap starts once and routes signals and failures to its shutdown owner", async () => {
+  for (const mode of ["success", "failure"]) {
+    const { stdout, stderr } = await promisify(execFile)(process.execPath,
+      [fileURLToPath(new URL("../fixtures/bootstrap-entry-observation.mjs", import.meta.url)), mode],
+      { windowsHide: true });
+    assert.equal(stderr, "");
+    const observed = JSON.parse(stdout);
+    assert.deepEqual(observed.fatalOptions, [
+      { sameShutdown: true, exitAfterShutdown: false },
+      { sameShutdown: true, exitAfterShutdown: true },
+    ]);
+    assert.deepEqual(observed.events, [
+      ["start"],
+      ...(mode === "failure" ? [["fatal", "startup failed", "startup", true], ["shutdown", "startup failed"]] : []),
+      ["shutdown", "SIGINT"], ["shutdown", "SIGTERM"],
+      ["fatal", "unhandled rejection", "rejection", false], ["shutdown", "unhandled rejection"],
+      ["fatal", "uncaught exception", "exception", false], ["shutdown", "uncaught exception"],
+    ]);
+  }
 });
 
 test("unit tests live under the mirrored tests tree instead of the package root", async () => {
