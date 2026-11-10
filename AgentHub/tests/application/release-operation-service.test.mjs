@@ -304,6 +304,39 @@ test("public not-applied publication pin recovery preserves SAME UNKNOWN, actor 
   assert.deepEqual(f.store.snapshot(f.operationId).receipts, before.receipts);
 });
 
+test("public not-applied recovery preserves terminal refusal before a fresh addressed same-generation continuation", async t => {
+  const { before, catalog, hub, args, ...f } = await publicPartialPublicationFixture(t, {}, unstartedPublicationFixture);
+  const continuation = f.service.continue.bind(f.service);
+  // Existing protocol before this recovery mode returned a definite cached refusal.
+  f.service.continue = () => ({ accepted: false, reason: "terminal", operation: before.operation });
+  const refused = await hub.call("hub_release_continue", args);
+  assert.equal(refused.accepted, false);
+  assert.equal(refused.reason, "terminal");
+  const oldReceipt = catalog.mcpOperation(args.request_id);
+  assert.equal(oldReceipt.status, "succeeded");
+  f.service.continue = continuation;
+  f.fixPin();
+  assert.deepEqual(await hub.call("hub_release_continue", args), refused);
+  assert.deepEqual(catalog.mcpOperation(args.request_id), oldReceipt);
+  assert.deepEqual(f.store.snapshot(f.operationId), before);
+  const readback = await hub.call("hub_release_get", { context_token: args.context_token,
+    operation_request_id: args.request_id, original_arguments: args });
+  assert.equal(readback.originalCommand.status, "succeeded");
+  assert.equal(readback.originalCommand.terminal, true);
+  assert.equal(readback.originalCommand.active, false);
+  const next = { ...args, request_id: "explicit-after-definite-terminal-refusal" };
+  const result = await hub.call("hub_release_continue", next);
+  assert.equal(result.accepted, true);
+  assert.equal(f.scheduled.length, 1);
+  assert.equal(f.store.get(f.operationId).currentGeneration, 1);
+  assert.equal(f.store.get(f.operationId).publicationRecoveries.length, 1);
+  assert.equal(f.store.get(f.operationId).publicationRecoveries[0].requestId, next.request_id);
+  assert.deepEqual(f.store.snapshot(f.operationId).generations, before.generations);
+  assert.deepEqual(f.store.snapshot(f.operationId).receipts, before.receipts);
+  assert.deepEqual(catalog.mcpOperation(args.request_id), oldReceipt);
+  assert.deepEqual(await hub.call("hub_release_continue", next), result);
+});
+
 test("public partial publication lost ACK reconciles only its durable SAME admission and actor", async t => {
   const { before, catalog, hub, args, releaseManager, ...f } = await publicPartialPublicationFixture(t);
   const complete = catalog.completeMcpOperation.bind(catalog);

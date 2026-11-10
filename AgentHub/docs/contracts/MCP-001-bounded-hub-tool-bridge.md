@@ -38,6 +38,12 @@ the original's remaining work; prior effects never replay. The admitted recovery
 retains the exact verified executor location for a replacement owner whose
 ambient tool pin is absent.
 
+A previously succeeded command whose stored result definitively refused
+admission remains immutable and replays that refusal. After authoritative
+terminal readback, an explicitly addressed new continuation may use the same
+release/generation and fresh CAS. This never replaces a pending/UNKNOWN command
+or grants replay authority from a timeout or missing receipt.
+
 ## Interrupted first-compose continuation admission
 
 An exact ordinary `hub_release_continue` with generation-zero and revision CAS
