@@ -564,6 +564,9 @@ Thread. Recovery commits only the addressed turn positions and their history
 search documents through the existing asynchronous SQLite mutation owner.
 Already repaired pages remain read-only; stale cached or delayed history cannot
 replace the durable `terminal-ledger` authority.
+The persisted user-recovery version includes attachment recovery. Version-1
+pages receive one bounded upgrade through the same owner. Version-2 pages do
+not repeat terminal payload reads or enter the mutation lane solely for recovery.
 
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has
