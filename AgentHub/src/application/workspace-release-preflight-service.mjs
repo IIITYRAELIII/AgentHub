@@ -476,7 +476,13 @@ export class WorkspaceReleasePreflightService {
     return this.withAwaitTransition(workspaceId, () => this.#prepareOperationGenerationLocked({ workspaceId, ...input }));
   }
 
-  async #prepareOperationGenerationLocked({
+  async #prepareOperationGenerationLocked(input) {
+    const capture = () => this.#captureOperationGeneration(input);
+    return typeof this.releaseGitWorkspaces.withMainReviewReuse === "function"
+      ? this.releaseGitWorkspaces.withMainReviewReuse(capture) : capture();
+  }
+
+  async #captureOperationGeneration({
     workspaceId, operationId, generation, taskIds, approvedRepositories = [], changelogContent = undefined,
     previousSelectedResults = [], releaseVersion = undefined, frozenVersions = [],
     uncapturedFirstGenerations = [], inspectOnly = false, validateBeforeCommit = async () => {},

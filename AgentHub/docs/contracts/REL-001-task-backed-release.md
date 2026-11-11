@@ -1,5 +1,23 @@
 # REL-001 — Task-backed Workspace release
 
+## Invocation-scoped main disclosures (ADR-HUB-429-main-disclosures)
+
+One generation-capture invocation may reuse only the disclosed changed-path
+lists for exact commit identities and equal current primary, published baseline,
+local/origin main, revision sets, release-clone identity and effective isolated
+Git configuration. The owning invocation discards them on success or failure;
+there is no durable cache or reuse across captures. Returned audit arrays do not
+own the retained lists.
+
+Every review still acquires its repository owner, fetches current main/origin,
+checks baseline ancestry and current primary state, and derives approval from
+the current explicit pins. Author/committer/signature metadata is reread in
+bounded Git batches on every review. Membership flags come from the freshly
+read revision sets. Reuse is never approval, a skipped fresh guard, a publication
+receipt or permission to change the registered primary. Main, baseline, primary
+or effective-configuration drift discards the reusable paths. Normal Await,
+Task membership, generation identity and commit-time CAS remain unchanged.
+
 ## Generation-scoped recovered executor (ADR-HUB-429-generation-executor)
 
 A recorded publication recovery binds the executor only for its own immutable

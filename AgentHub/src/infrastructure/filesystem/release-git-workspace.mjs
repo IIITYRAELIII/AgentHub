@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { performance } from "node:perf_hooks";
 import { preparationIsolationLayout, isolationDigest, assertPlainIsolationPath,
   withPreparationGitIsolation, preparationGitInvocation, preparationGitIsolationActive, guardedPreparationGit, preparationObjectStore, assertPreparationProcessOwned } from "./preparation-git-isolation.mjs";
 import { createHash, randomUUID } from "node:crypto";
@@ -484,16 +486,41 @@ function releaseImpact(files) {
   return [...categories].sort();
 }
 
-async function disclosedCommit(root, commit, { localMain, originMain }) {
-  const fields = String(await runGit([
-    "show", "-s", "--format=%H%x00%P%x00%an%x00%ae%x00%cn%x00%ce%x00%aI%x00%cI%x00%G?%x00%GS%x00%s",
-    commit,
-  ], { cwd: root })).split("\0");
-  const parents = String(fields[1] ?? "").split(" ").filter(Boolean);
-  const files = String(await runGit([
-    "diff", "--name-only", "--diff-filter=ACMRTUXB", parents[0], commit, "--",
-  ], { cwd: root })).split(/\r?\n/u).filter(Boolean).sort();
-  return {
+async function disclosedCommits(root, commitIds, { localCommits, originCommits, priorFiles, work }) {
+  const metadata = new Map();
+  // Signature/trust metadata is fresh on every review. Only immutable changed
+  // path lists may be reused by the owning capture invocation below.
+  const format = "--format=%H%x00%P%x00%an%x00%ae%x00%cn%x00%ce%x00%aI%x00%cI%x00%G?%x00%GS%x00%s%x00";
+  for (let offset = 0; offset < commitIds.length; offset += 64) {
+    const chunk = commitIds.slice(offset, offset + 64);
+    const started = performance.now();
+    let text;
+    try { text = String(await runGit(["show", "-s", format, ...chunk], { cwd: root })); }
+    finally { work.metadataMs += performance.now() - started; work.metadataCommands++; }
+    const fields = text.split("\0");
+    if (fields.length !== chunk.length * 11 + 1 || fields.at(-1) !== "") throw new Error("Main disclosure metadata is incomplete");
+    for (let i = 0; i < chunk.length; i++) {
+      const record = fields.slice(i * 11, (i + 1) * 11);
+      record[0] = record[0].replace(/^\r?\n/u, "");
+      record[10] = record[10].trimEnd();
+      if (!chunk.includes(record[0]) || metadata.has(record[0])) throw new Error("Main disclosure metadata identity differs");
+      metadata.set(record[0], record);
+    }
+  }
+  const commits = [];
+  for (const commit of commitIds) {
+    const fields = metadata.get(commit);
+    const parents = String(fields[1] ?? "").split(" ").filter(Boolean);
+    let files = priorFiles?.get(commit);
+    if (files) files = [...files];
+    else {
+      const started = performance.now();
+      try { files = String(await runGit([
+        "diff", "--name-only", "--diff-filter=ACMRTUXB", parents[0], commit, "--",
+      ], { cwd: root })).split(/\r?\n/u).filter(Boolean).sort();
+      } finally { work.pathMs += performance.now() - started; work.pathCommands++; }
+    }
+    commits.push({
     commit: fields[0],
     parents,
     subject: fields[10] ?? "",
@@ -512,9 +539,11 @@ async function disclosedCommit(root, commit, { localMain, originMain }) {
     signature: { status: fields[8] ?? "N", signer: fields[9] ?? "" },
     files,
     impact: releaseImpact(files),
-    inLocalMain: await gitMaybe(["merge-base", "--is-ancestor", commit, localMain], { cwd: root }) !== null,
-    inOriginMain: await gitMaybe(["merge-base", "--is-ancestor", commit, originMain], { cwd: root }) !== null,
-  };
+    inLocalMain: localCommits.has(commit),
+    inOriginMain: originCommits.has(commit),
+    });
+  }
+  return commits;
 }
 
 async function revisionList(root, args) {
@@ -771,6 +800,7 @@ export class ReleaseGitWorkspaceService {
 
   #repositoryOwner;
   #ownedInputs = [];
+  #mainReviewReuse = new AsyncLocalStorage();
 
   constructor({
     dataDir, contourExternalEffects = null, environment = process.env,
@@ -839,6 +869,16 @@ export class ReleaseGitWorkspaceService {
     return withInterprocessLocks([lock], operation);
   }
 
+  async withMainReviewReuse(operation) {
+    if (typeof operation !== "function") throw new TypeError("Main review operation is required");
+    if (this.#mainReviewReuse.getStore()?.closed === false) return operation();
+    const scope = { closed: false, rows: new Map() };
+    return this.#mainReviewReuse.run(scope, async () => {
+      try { return await operation(); }
+      finally { scope.closed = true; scope.rows.clear(); }
+    });
+  }
+
   async inspectMainChanges({
     projectRoot, publishedRevision, approvedLocalMainCommit = null, approvedOriginMainCommit = null,
   } = {}) {
@@ -898,21 +938,31 @@ export class ReleaseGitWorkspaceService {
       }
       return { localContainsPublished, publishedContainsLocal, originContainsPublished };
       });
-      const commitIds = await measured("revision-list", async () => new Set([
-        ...(localContainsPublished ? await revisionList(clone.releaseRoot, [localMain, `^${baseline}`]) : []),
-        ...await revisionList(clone.releaseRoot, [originMain, `^${baseline}`]),
-        ...(!localContainsPublished && publishedContainsLocal
-          ? await revisionList(clone.releaseRoot, [baseline, `^${localMain}`])
-          : []),
-      ]));
+      const { localIds, originIds, publishedIds } = await measured("revision-list", async () => ({
+        localIds: localContainsPublished ? await revisionList(clone.releaseRoot, [localMain, `^${baseline}`]) : [],
+        originIds: await revisionList(clone.releaseRoot, [originMain, `^${baseline}`]),
+        publishedIds: !localContainsPublished && publishedContainsLocal
+          ? await revisionList(clone.releaseRoot, [baseline, `^${localMain}`]) : [],
+      }));
+      const commitIds = [...new Set([...localIds, ...originIds, ...publishedIds])];
+      // The native owner disables replace objects and uses its isolated config.
+      // Bind the effective config too; a changed diff setup is not reusable.
+      const configuration = await measured("disclosure-input", () => runGit(["config", "--null", "--list"], { cwd: clone.releaseRoot }));
+      const inputSha256 = sha256(stableManifest({ root: primary.root, commonDir: primary.commonDir,
+        head: primary.headCommit, branch: primary.branchRef, index: primary.dirty.indexFingerprint,
+        dirty: primary.dirty.fingerprint, clone: clone.releaseRoot, baseline, localMain, originMain,
+        configuration: sha256(configuration), localIds, originIds, publishedIds }));
+      const scope = this.#mainReviewReuse.getStore();
+      const prior = !scope?.closed && scope?.rows.get(primary.root);
+      const priorFiles = prior?.inputSha256 === inputSha256 ? prior.files : null;
+      if (scope && !scope.closed && !priorFiles) scope.rows.delete(primary.root);
+      const work = { metadataMs: 0, pathMs: 0, metadataCommands: 0, pathCommands: 0 };
       const commits = await measured("disclosures", async () => {
-        const commits = [];
-        for (const commit of commitIds) commits.push(await disclosedCommit(clone.releaseRoot, commit, {
-          localMain,
-          originMain,
-        }));
-        return commits;
-      }, { commitCount: commitIds.size });
+        try { return await disclosedCommits(clone.releaseRoot, commitIds, { priorFiles, work,
+          localCommits: new Set(localIds), originCommits: new Set([...originIds, ...publishedIds]) }); }
+        finally { recordTaskOperationTiming("release:main-review:disclosure-work", {
+          inputSha256, commitCount: commitIds.length, reusedPaths: Boolean(priorFiles), ...work }); }
+      }, { commitCount: commitIds.length });
       const approved = String(approvedLocalMainCommit ?? "").trim() === localMain
         && String(approvedOriginMainCommit ?? "").trim() === originMain;
       const audit = {
@@ -939,6 +989,8 @@ export class ReleaseGitWorkspaceService {
       ) {
         throw new Error("registered primary Workspace changed during main review");
       }
+      if (scope && !scope.closed) scope.rows.set(primary.root, { inputSha256,
+        files: new Map(commits.map(item => [item.commit, [...item.files]])) });
       return audit;
     })));
   }
