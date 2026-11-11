@@ -320,7 +320,9 @@ test("publication stage timeout terminates the complete process tree", async () 
     timeoutMs: 1,
   }, {
     spawnImpl: () => child,
-    stopTree: async (pid) => { stoppedPid = pid; },
+    stopTree: async (pid) => {
+      stoppedPid = pid; child.emit("exit", 0, null); child.emit("close", 0, null); return true;
+    },
   }), /превышен таймаут/u);
   assert.equal(stoppedPid, 4242);
 });
@@ -336,7 +338,7 @@ test("publication stage forwards its test checkpoint identity", async () => {
   }, {
     spawnImpl: (_command, _args, options) => {
       spawnedEnvironment = options.env;
-      queueMicrotask(() => child.emit("exit", 0, null));
+      queueMicrotask(() => { child.emit("exit", 0, null); child.emit("close", 0, null); });
       return child;
     },
   });

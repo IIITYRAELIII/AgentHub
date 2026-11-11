@@ -42,7 +42,7 @@ test("stable executor runs every candidate command from the candidate AgentHub r
     workingDirectories.push(spawnOptions.cwd);
     const child = new EventEmitter();
     child.pid = 1234;
-    queueMicrotask(() => child.emit("exit", 0, null));
+    queueMicrotask(() => { child.emit("exit", 0, null); child.emit("close", 0, null); });
     return child;
   };
   await publishChanged(["--full-tests"], {
