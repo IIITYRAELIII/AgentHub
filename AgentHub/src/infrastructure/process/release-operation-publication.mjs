@@ -230,7 +230,7 @@ export class ReleaseOperationPublication {
   }
 
   #recoveredPublicationExecutor(operation, generation, target) {
-    const recovery = operation.publicationRecoveries?.at(-1);
+    const recovery = operation.publicationRecoveries?.findLast(item => item.generation === generation.generation);
     if (recovery?.boundary?.kind !== "not-applied-publication-recovery-v1") return null;
     const { identitySha256, ...contents } = recovery;
     const matches = recovery.evidence?.targets?.filter(item => item.targetId === target.targetId);
@@ -555,7 +555,22 @@ export class ReleaseOperationPublication {
   async withPublicationRecovery({ operation, generation, boundary = null, commit }) {
     // Compatibility for the exact pre-resolver failure. Other terminal errors
     // require their own owning evidence, never a generic terminal retry.
-    if (operation.lastError?.message !== "External release tool requires AGENT_HUB_RELEASE_TOOLS_ROOT and its SHA256 pin") {
+    const previous = operation.publicationRecoveries?.at(-1);
+    const { identitySha256: previousIdentity, ...previousContents } = previous ?? {};
+    const historicalExecutorRefusal = operation.lastError?.message === "Original publication recovery executor authority changed"
+      && operation.state === "failed" && !operation.owner && operation.lastError.step === "publish"
+      && operation.currentGeneration === generation.generation
+      && boundary?.kind === "not-applied-publication-recovery-v1"
+      && boundary.generation === generation.generation && boundary.candidate === generation.identitySha256
+      && previous?.boundary?.kind === "not-applied-publication-recovery-v1"
+      && Number.isSafeInteger(previous.generation) && previous.generation >= 1
+      && previous.generation < generation.generation && previous.boundary.generation === previous.generation
+      && previous.operationId === operation.operationId
+      && previous.authorizationFingerprint === operation.authorization.fingerprint
+      && releaseIdentitySha256(previousContents) === previousIdentity
+      && !operation.publicationRecoveries.some(item => item.generation === generation.generation);
+    if (operation.lastError?.message !== "External release tool requires AGENT_HUB_RELEASE_TOOLS_ROOT and its SHA256 pin"
+        && !historicalExecutorRefusal) {
       throw new Error("Publication failure has no executor recovery proof");
     }
     const targets = releaseApprovedTargets(operation);

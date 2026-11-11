@@ -231,6 +231,134 @@ test("unstarted recovery persists its exact executor across missing ambient pin 
   assert.deepEqual(runner.toolPackage, f.tool.location);
 });
 
+async function executorGenerationFixture(t) {
+  const f = await unstartedPublicationOwnerFixture(t);
+  let evidence;
+  await f.publication.withPublicationRecovery({ ...f, commit: async (value, validate) => { await validate(); evidence = value; } });
+  const contents = { requestId: "generation-one-recovery", operationId: f.operation.operationId, generation: 1,
+    priorRevision: 3, authorizationFingerprint: f.operation.authorization.fingerprint,
+    boundary: { ...f.boundary, generation: 1, candidate: f.generation.identitySha256 }, evidence };
+  const oldRecovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+  f.operation.publicationRecoveries = [oldRecovery];
+  const oldSource = f.generation.candidates[0];
+  const nextRoot = path.join(f.root, "generation-two");
+  const git = async (cwd, ...args) => (await promisify(execFile)("git", args,
+    { cwd, windowsHide: true, encoding: "utf8" })).stdout.trim();
+  await git(f.root, "clone", "--no-local", oldSource.releaseRoot, nextRoot);
+  await writeFile(path.join(nextRoot, "amendment.txt"), "generation two retained correction\n");
+  await git(nextRoot, "add", "-A");
+  await git(nextRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "amended candidate");
+  const commit = await git(nextRoot, "rev-parse", "HEAD"), tree = await git(nextRoot, "rev-parse", "HEAD^{tree}");
+  await writeJson(path.join(nextRoot, ".git/agent-hub-release-clone.json"), {
+    schemaVersion: 1, kind: "agent-hub-owned-release-clone", primaryRoot: oldSource.repositoryRoot,
+    primaryGitCommonDir: path.join(oldSource.repositoryRoot, ".git"), releaseRoot: nextRoot, releaseGitCommonDir: path.join(nextRoot, ".git"),
+  });
+  const candidate = { ...oldSource, releaseRoot: nextRoot, commit, tree,
+    manifest: { ...oldSource.manifest, publication: { ...oldSource.manifest.publication, head: commit } } };
+  const generation = { ...f.generation, generation: 2, identitySha256: "d".repeat(64), candidates: [candidate] };
+  f.operation.currentGeneration = 2;
+  const tool = { ...f.tool, version: "0.1.4", sha256: "e".repeat(64), root: path.join(f.root, "tool014") };
+  tool.location = { ...f.tool.location, root: tool.root, version: tool.version, sha256: tool.sha256 };
+  f.environment.AGENT_HUB_RELEASE_TOOLS_ROOT = tool.root;
+  f.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 = tool.sha256;
+  f.publication.readToolPackage = async input => {
+    assert.equal(input.root, tool.root);
+    assert.equal(input.expectedSha256, tool.sha256);
+    return { ...tool, assertUnchanged: async () => {}, module: async () => ({ publicInstallerHandoffProtocol: PUBLIC_INSTALLER_HANDOFF }) };
+  };
+  const execution = releaseTargetExecutionRoot(f.publication.dataDir, f.operation, generation, f.publicTarget);
+  let children = 0;
+  f.publication.spawnImpl = (_exe, _args, options) => {
+    children++;
+    assert.equal(options.env.AGENT_HUB_RELEASE_TOOLS_ROOT, tool.root);
+    assert.equal(options.env.AGENT_HUB_RELEASE_TOOLS_SHA256, tool.sha256);
+    const child = new EventEmitter(); child.pid = 1234567; child.unref = () => {};
+    queueMicrotask(async () => {
+      await writeJson(path.join(execution, "result.json"), { status: "applied", operationId: f.operation.operationId,
+        generation: 2, targetId: f.publicTarget.targetId, candidate: generation.identitySha256,
+        revision: commit, deploymentProfile: "github-release", tool: { name: tool.name, version: tool.version, sha256: tool.sha256 },
+        distribution: { sourceCommit: commit } });
+      child.emit("exit", 0);
+    });
+    return child;
+  };
+  return { ...f, generation, candidate, tool, execution, oldRecovery, children: () => children };
+}
+
+test("old generation recovery remains history while amended generation launches its normal 014 executor", async t => {
+  const f = await executorGenerationFixture(t);
+  const history = structuredClone(f.operation.publicationRecoveries);
+  assert.equal((await f.publication.publish({ ...f, target: f.publicTarget })).status, "applied");
+  assert.equal(f.children(), 1);
+  const runner = JSON.parse(await readFile(path.join(f.execution, "runner.json")));
+  assert.equal(runner.generation, 2);
+  assert.deepEqual(runner.toolPackage, f.tool.location);
+  assert.deepEqual(f.operation.publicationRecoveries, history);
+});
+
+test("current generation executor authority cannot be masked by trailing old history or changed proof", async t => {
+  const f = await executorGenerationFixture(t);
+  const contents = { ...f.oldRecovery, generation: 2,
+    boundary: { ...f.oldRecovery.boundary, generation: 2, candidate: f.generation.identitySha256 },
+    evidence: { targets: [{ targetId: f.publicTarget.targetId, candidate: f.candidate.commit, tool: f.tool.location }] } };
+  delete contents.identitySha256;
+  const current = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+  for (const change of [
+    row => { row.boundary.candidate = "0".repeat(64); },
+    row => { row.authorizationFingerprint = "0".repeat(64); },
+    row => { row.evidence.targets[0].candidate = "0".repeat(40); },
+    row => { row.operationId = "foreign-operation"; },
+    row => { row.evidence.targets.push(structuredClone(row.evidence.targets[0])); },
+  ]) {
+    const bad = structuredClone(current); change(bad);
+    const { identitySha256, ...body } = bad;
+    bad.identitySha256 = releaseIdentitySha256(body);
+    f.operation.publicationRecoveries = [bad, f.oldRecovery];
+    await assert.rejects(f.publication.publish({ ...f, target: f.publicTarget }), /executor authority changed/u);
+  }
+  f.operation.publicationRecoveries = [{ ...current, identitySha256: "0".repeat(64) }, f.oldRecovery];
+  await assert.rejects(f.publication.publish({ ...f, target: f.publicTarget }), /executor authority changed/u);
+  const changedTool = structuredClone(current); changedTool.evidence.targets[0].tool.sha256 = "0".repeat(64);
+  const { identitySha256, ...body } = changedTool; changedTool.identitySha256 = releaseIdentitySha256(body);
+  f.operation.publicationRecoveries = [changedTool, f.oldRecovery];
+  await assert.rejects(f.publication.publish({ ...f, target: f.publicTarget }), /strictEqual|equal|tool|pin/iu);
+  assert.equal(f.children(), 0);
+  f.operation.publicationRecoveries = [current, f.oldRecovery];
+  f.environment.AGENT_HUB_RELEASE_TOOLS_ROOT = path.join(f.root, "changed-ambient-executor");
+  f.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 = "0".repeat(64);
+  assert.equal((await f.publication.publish({ ...f, target: f.publicTarget })).status, "applied");
+  const runner = JSON.parse(await readFile(path.join(f.execution, "runner.json")));
+  assert.deepEqual(runner.toolPackage, f.tool.location);
+  assert.equal(f.children(), 1);
+});
+
+test("historical executor refusal requires exact old proof and fresh both-target absence before same-generation recovery", async t => {
+  const f = await executorGenerationFixture(t);
+  Object.assign(f.operation, { state: "failed", owner: null, lastError: { step: "publish", message: "Original publication recovery executor authority changed" } });
+  const boundary = { kind: "not-applied-publication-recovery-v1", generation: 2, candidate: f.generation.identitySha256 };
+  let admitted = 0;
+  const recover = () => f.publication.withPublicationRecovery({ ...f, boundary, commit: async (evidence, validate) => {
+    assert.deepEqual(evidence.readbacks.map(row => row.evidence.status), ["not_applied", "not_applied"]);
+    await validate(); admitted++;
+  } });
+  const history = structuredClone(f.operation.publicationRecoveries);
+  const currentBody = { ...f.oldRecovery, generation: 2 };
+  delete currentBody.identitySha256;
+  f.operation.publicationRecoveries = [{ ...currentBody, identitySha256: releaseIdentitySha256(currentBody) }];
+  await assert.rejects(recover(), /no executor recovery proof/u);
+  f.operation.publicationRecoveries = structuredClone(history);
+  f.operation.publicationRecoveries[0].identitySha256 = "0".repeat(64);
+  await assert.rejects(recover(), /no executor recovery proof/u);
+  f.operation.publicationRecoveries = structuredClone(history);
+  f.setTag({ object: { sha: f.candidate.commit } });
+  await assert.rejects(recover(), /tag already exists/u); f.setTag(null);
+  await writeFile(path.join(f.firstRoot, "history-only.bin"), "retained historical namespace\n");
+  await recover();
+  assert.equal(admitted, 1);
+  assert.equal(f.children(), 0);
+  assert.deepEqual(f.operation.publicationRecoveries, history);
+});
+
 async function fixture(t, { realFrozen = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-public-package-consumer-"));
   t.after(() => rm(root, { recursive: true, force: true }));

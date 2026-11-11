@@ -1,5 +1,22 @@
 # REL-001 — Task-backed Workspace release
 
+## Generation-scoped recovered executor (ADR-HUB-429-generation-executor)
+
+A recorded publication recovery binds the executor only for its own immutable
+generation. Later amended generations retain that history and use their own
+normal pinned executor, or their exact same-generation recovery. A current
+record cannot be masked by a later historical entry. Candidate, authorization,
+record digest, target, tool and namespace checks remain required for the selected
+record; historical records are never rewritten or retargeted.
+
+The specific older implementation refusal caused by applying a valid older
+generation's recovery to a later generation may enter the existing not-applied
+continuation only with its exact failed-generation boundary, valid prior record,
+no current-generation recovery and fresh complete all-target absence proof.
+It reuses that generation/candidate/version through normal SQL admission and
+remaining publication. Current-generation authority failures, unproved namespace,
+partial or UNKNOWN effects retain their existing blockers.
+
 ## Pre-publication validation and same amendment recovery (ADR-HUB-429-amendment)
 
 A missing public installer checkpoint after validation failure requires the
