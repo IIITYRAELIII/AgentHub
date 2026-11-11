@@ -1,5 +1,29 @@
 # REL-001 — Task-backed Workspace release
 
+## Pre-publication validation and same amendment recovery (ADR-HUB-429-amendment)
+
+A missing public installer checkpoint after validation failure requires the
+existing publication owner to distinguish an unstarted local consumer from
+partially published work. Positive absence binds the original closed failed
+publisher, exact selected/GitHub stage contract, empty progress, current failed
+validation checkpoint and frozen test plan. Every artifact/Git/distribution
+effect stage must remain pending. Under installation custody the owner also
+verifies all target namespaces, frozen source, approved main/origin, classified
+current runtime/publication and public tag/release absence. Changed, foreign,
+active or contradictory evidence retains the partial/unknown blocker. Refusal
+exposes only its fixed proof phase and canonical target identity.
+
+An outer pending/UNKNOWN explicit whole-Await selection/notes amendment can
+continue through that same existing owner. Exact request, actor, arguments and
+CAS remain required. A previously recorded amendment is read back. Unadmitted
+continuation requires the idle validation-failed boundary, complete positive
+not-applied readbacks repeated before admission, and canonical same-request
+amendment absence plus unchanged history digest inside SQL. Old receipt,
+generation, authorization and failure evidence remain retained. The ordinary
+amendment alone admits the next checked generation with current full membership,
+notes and test selection. Future compose intents, immutable future generations,
+applied, partial or UNKNOWN effects require their own existing recovery.
+
 ## Exact prepared evidence reconciliation (ADR-HUB-429-prepared-evidence)
 
 The existing release metadata recovery owner may restore a missing prepared

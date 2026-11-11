@@ -2863,7 +2863,7 @@ export class HubMcpService {
       ? { execution: { localActive: this.#releaseOperation().hasLocalWork(snapshot.operation.operationId) } } : {}) };
   }
 
-  #continueReleaseOperation(context, args, { reconcileFirstCompose = false, reconcilePublication = false } = {}) {
+  #continueReleaseOperation(context, args, { reconcileFirstCompose = false, reconcilePublication = false, reconcileTestSelection = false } = {}) {
     const operationId = requiredText(args.operation_id, "operation id", 200);
     const snapshot = this.#releaseOperation().get(operationId);
     this.#workspace(context, snapshot.operation.workspaceId);
@@ -2887,6 +2887,10 @@ export class HubMcpService {
     });
     if (reconcilePublication) return owner.reconcilePublicationContinuation(operationId, {
       requestId: args.request_id, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
+    });
+    if (reconcileTestSelection) return owner.reconcileTestSelectionContinuation(operationId, {
+      requestId: args.request_id, testSelection: args.test_selection, taskIds: args.task_ids, taskScope: args.task_scope,
+      releaseMetadata: args.release_metadata, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
     });
     return owner.continue(operationId, {
       requestId: args.request_id, reviewedMain: args.reviewed_main,
@@ -3419,7 +3423,13 @@ export class HubMcpService {
       && Number.isSafeInteger(args.expected_generation) && args.expected_generation > 0 && Number.isSafeInteger(args.expected_revision)
       && Object.keys(args).every(key => ["context_token", "operation_id", "request_id", "expected_revision", "expected_generation"].includes(key))
       && typeof this.releaseOperations?.reconcilePublicationContinuation === "function";
-    const ownerContinuation = firstComposeContinuation || publicationContinuation;
+    const testSelectionContinuation = toolName === "hub_release_continue" && started.replayed
+      && Number.isSafeInteger(args.expected_generation) && args.expected_generation > 0 && Number.isSafeInteger(args.expected_revision)
+      && args.test_selection != null && Array.isArray(args.task_ids) && args.task_scope === "all_await" && args.release_metadata != null
+      && Object.keys(args).every(key => ["context_token", "operation_id", "request_id", "expected_revision", "expected_generation",
+        "test_selection", "task_ids", "task_scope", "release_metadata"].includes(key))
+      && typeof this.releaseOperations?.reconcileTestSelectionContinuation === "function";
+    const ownerContinuation = firstComposeContinuation || publicationContinuation || testSelectionContinuation;
     if (started.status === "unknown" && toolName === "hub_task_claim" && !custodyConsume) {
       const reconciled = await this.#reconcileClaimAdmissionNoEffect(context, args, started).catch(() => null);
       if (reconciled) {
@@ -3479,7 +3489,7 @@ export class HubMcpService {
             { committedClaimReadback })
           : ownerContinuation
             ? await this.#continueReleaseOperation(context, args, { reconcileFirstCompose: firstComposeContinuation,
-              reconcilePublication: publicationContinuation })
+              reconcilePublication: publicationContinuation, reconcileTestSelection: testSelectionContinuation })
             : await operation(started);
         effectCompleted = true;
         if (toolName === "hub_release_prepare") {
@@ -3497,8 +3507,9 @@ export class HubMcpService {
         if (ownerContinuation) {
           const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, {
             workspaceId: context.workspaceId, toolName, result,
-            reconciliation: { kind: firstComposeContinuation ? "failed-first-compose-owner-continuation-v1" : "failed-publication-admission-readback-v1", operationId: args.operation_id,
-              recovery: result.recovery, priorReceipt: { status: started.status, error: started.error,
+            reconciliation: { kind: firstComposeContinuation ? "failed-first-compose-owner-continuation-v1"
+              : testSelectionContinuation ? "test-selection-amendment-owner-continuation-v1" : "failed-publication-admission-readback-v1", operationId: args.operation_id,
+              recovery: result.recovery ?? result.amendment?.identitySha256, priorReceipt: { status: started.status, error: started.error,
                 createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs } },
           });
           return completed.result;

@@ -32,6 +32,26 @@ function stageRecord(label) {
 export function failedFrozenPublicationEvidence(run, checkpoint, {
   expectedRunId, allowLegacyHashBound = false,
 } = {}) {
+  return failedValidationEvidence(run, checkpoint, { expectedRunId, allowLegacyHashBound }, PUBLICATION_STAGE_CONTRACT);
+}
+
+export function failedPublicPackageValidationEvidence(run, checkpoint, { expectedRunId } = {}) {
+  if (run?.identity?.deploymentProfile !== "github-release" || !run.identity.testPlan) {
+    throw new Error("Public package validation requires its original selected distribution profile");
+  }
+  return failedValidationEvidence(run, checkpoint, { expectedRunId, allowLegacyHashBound: false, bindTestPlan: true }, [
+    PUBLICATION_STAGE_CONTRACT[0],
+    { id: null, label: "Выбранные тесты Agent Hub", effect: false },
+    PUBLICATION_STAGE_CONTRACT[2],
+    { id: null, label: "Упаковка установочного архива", effect: true },
+    PUBLICATION_STAGE_CONTRACT[3],
+    { id: null, label: "Публикация GitHub Release", effect: true },
+  ]);
+}
+
+function failedValidationEvidence(run, checkpoint, { expectedRunId, allowLegacyHashBound, bindTestPlan = false }, stageContract) {
+  const stageLabels = stageContract.map(stage => stage.label);
+  const preEffectSteps = new Set(stageContract.filter(stage => !stage.effect).map(stage => stage.label));
   if (run?.version !== 2 || run.status !== "failed" || !run.finishedAt || run.currentStep !== null
       || !emptyRecord(run.progress) || run.runId !== expectedRunId) {
     throw new Error("publication freeze recovery requires one exact terminal failed publication run");
@@ -39,7 +59,7 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
   const steps = Array.isArray(run.steps) ? run.steps : [];
   const labels = steps.map((step) => step.label);
   if (stableText(run.identity?.labels ?? []) !== stableText(labels)
-      || stableText(labels) !== stableText(PUBLICATION_STAGE_LABELS)) {
+      || stableText(labels) !== stableText(stageLabels)) {
     throw new Error("publication freeze recovery found an unknown or incomplete publication stage contract");
   }
   const legacy = run.stageContractVersion == null;
@@ -50,7 +70,7 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
     throw new Error("publication freeze recovery publication stage schema changed");
   }
   for (let index = 0; index < steps.length; index += 1) {
-    const expectedStage = PUBLICATION_STAGE_CONTRACT[index];
+    const expectedStage = stageContract[index];
     const step = steps[index];
     if ((!legacy && step.stageId !== expectedStage.id)
         || (expectedStage.effect && step.status !== "pending")) {
@@ -74,8 +94,9 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
     const expectedScope = {
       mode: "changed", from: run.identity?.from, runtimeRoot: run.identity?.runtimeRoot,
       validationMode: run.identity?.validationMode,
+      ...(bindTestPlan ? { testPlan: run.identity.testPlan } : {}),
     };
-    if (stableText(checkpointIdentity?.labels ?? []) !== stableText(PUBLICATION_STAGE_LABELS)
+    if (stableText(checkpointIdentity?.labels ?? []) !== stableText(stageLabels)
         || stableText(checkpoint.checkpointScope) !== stableText(expectedScope)
         || checkpointIdentity?.mode !== run.identity?.mode
         || checkpointIdentity?.from !== run.identity?.from
@@ -90,10 +111,10 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
     const completedLabels = [...(checkpoint.completedLabels ?? [])];
     const fingerprintLabels = Object.keys(checkpoint.completedFingerprints ?? {});
     const fingerprintValues = completedLabels.map((label) => checkpoint.completedFingerprints?.[label]);
-    const orderedPrefix = PUBLICATION_STAGE_LABELS.slice(0, completedLabels.length);
+    const orderedPrefix = stageLabels.slice(0, completedLabels.length);
     if (stableText(completedLabels) !== stableText(fingerprintLabels)
         || stableText(completedLabels) !== stableText(orderedPrefix)
-        || completedLabels.some((label) => !PRE_EFFECT_STEPS.has(label))) {
+        || completedLabels.some((label) => !preEffectSteps.has(label))) {
       throw new Error("publication freeze recovery publication checkpoint reached an effect stage");
     }
     if (fingerprintValues.some((value) => typeof value !== "string" || !value.trim())) {
@@ -104,19 +125,19 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
       if (contourFailed) {
         throw new Error("publication freeze recovery contour failure cannot own a current checkpoint");
       }
-      const expectedCompleted = PUBLICATION_STAGE_LABELS.slice(0, failedStageIndex);
+      const expectedCompleted = stageLabels.slice(0, failedStageIndex);
       if (stableText(completedLabels) !== stableText(expectedCompleted)) {
         throw new Error("publication freeze recovery current publication checkpoint contradicts the failed stage");
       }
       checkpointObservation = "current-candidate";
     } else {
-      if (completedLabels.length < 1 || completedLabels.length > PRE_EFFECT_STEPS.size) {
+      if (completedLabels.length < 1 || completedLabels.length > preEffectSteps.size) {
         throw new Error("publication freeze recovery retained checkpoint has no durable pre-effect prefix");
       }
       if (contourCompleted) {
         throw new Error("publication freeze recovery completed contour requires its current checkpoint");
       }
-      if (contourReused && completedLabels[0] !== PUBLICATION_STAGE_LABELS[0]) {
+      if (contourReused && completedLabels[0] !== stageLabels[0]) {
         throw new Error("publication freeze recovery reused contour lacks retained checkpoint evidence");
       }
       const checkpointGeneration = [
@@ -140,8 +161,8 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
   }
   return {
     stageContractVersion: legacy ? "legacy-hash-bound-v1" : PUBLICATION_STAGE_CONTRACT_VERSION,
-    stageIds: PUBLICATION_STAGE_CONTRACT.map((stage) => stage.id),
-    failedStageId: PUBLICATION_STAGE_CONTRACT[failedStageIndex].id,
+    stageIds: stageContract.map((stage) => stage.id),
+    failedStageId: stageContract[failedStageIndex].id,
     checkpointObservation,
   };
 }

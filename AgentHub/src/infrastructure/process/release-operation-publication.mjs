@@ -7,7 +7,7 @@ import path from "node:path";
 
 import { processIsAlive } from "./process-liveness.mjs";
 import { readPublicationState } from "../persistence/publication-state.mjs";
-import { publicationRunStore, failedFrozenPublicationEvidence } from "../persistence/publication-run-store.mjs";
+import { publicationRunStore, failedFrozenPublicationEvidence, failedPublicPackageValidationEvidence } from "../persistence/publication-run-store.mjs";
 import { PUBLIC_INSTALLER_HANDOFF, readPublicationCheckpoint } from "../persistence/publication-checkpoint.mjs";
 import { PUBLIC_RUNTIME_INSTALLATION } from "../../domain/public-runtime-installation.mjs";
 import { releaseApprovedTargets, releaseIdentitySha256 } from "../../domain/release-operation.mjs";
@@ -612,22 +612,62 @@ export class ReleaseOperationPublication {
     });
   }
 
-  async #withUnstartedPublicationRecovery({ operation, generation, targets, commit }) {
+  async #withUnstartedPublicationRecovery({ operation, generation, targets, commit, failedValidation = false }) {
+    let proofStage = "installation-custody", proofTarget = null;
     return withRuntimeInstallationLease(this.runtimeRoot, async lease => {
       const physicalRoot = await realpath(this.runtimeRoot);
-      const inspectNamespace = async layout => {
+      const inspectNamespace = async (layout, target, candidate) => {
         const entry = await lstat(layout.root, { bigint: true }).catch(error => {
           if (error.code === "ENOENT") return null;
           throw error;
         });
         if (!entry) return { kind: "absent" };
-        if (!entry.isDirectory() || entry.isSymbolicLink() || (await readdir(layout.root)).length) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) {
           throw new Error("Publication recovery executor namespace is not positively unstarted");
+        }
+        const names = await readdir(layout.root);
+        if (names.length) {
+          if (!failedValidation || target.environment !== "github-release") {
+            throw new Error("Publication recovery executor namespace is not positively unstarted");
+          }
+          const allowed = new Set(["runner.json", "result.json", "publication-status.json", "publication-checkpoint.json",
+            "publication-runs", "stdout.log", "stderr.log"]);
+          for (const name of names) {
+            const info = await lstat(path.join(layout.root, name));
+            if (!allowed.has(name) || info.isSymbolicLink()
+                || (name === "publication-runs" ? !info.isDirectory() : !info.isFile())) {
+              throw new Error("Failed validation namespace has unclassified custody");
+            }
+          }
+          const runner = await readJson(layout.stateFile);
+          const result = await readJson(layout.resultFile);
+          if (!runner || runner.operationId !== operation.operationId || runner.generation !== generation.generation
+              || runner.targetId !== target.targetId || runner.candidate !== generation.identitySha256
+              || runner.status !== "exited" || !Number.isInteger(runner.exitCode) || runner.exitCode === 0
+              || !runner.completedAt || this.processAlive(runner.pid) || result) {
+            throw new Error("Failed validation publisher is not positively closed without a result");
+          }
+          const saved = await this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment }).read();
+          const checkpoint = await this.readPublicationCheckpoint(path.join(layout.root, "publication-checkpoint.json"));
+          const plan = generation.testPlans?.find(item => path.resolve(item.repositoryRoot) === path.resolve(candidate.repositoryRoot))?.plan;
+          if (saved?.identity?.revision !== candidate.commit
+              || path.resolve(saved.identity.worktreeRoot ?? "") !== path.resolve(candidate.releaseRoot)
+              || path.resolve(saved.identity.runtimeRoot ?? "") !== physicalRoot
+              || saved.identity.workspaceId !== operation.workspaceId
+              || saved.identity.release?.preReleaseHead !== candidate.commit
+              || !plan || releaseIdentitySha256(saved.identity.testPlan) !== releaseIdentitySha256(plan)) {
+            throw new Error("Failed validation journal does not bind its frozen candidate and test plan");
+          }
+          const proof = failedPublicPackageValidationEvidence(saved, checkpoint, { expectedRunId: saved.runId });
+          return { kind: "failed-prepublication-validation", physicalRoot: await realpath(layout.root),
+            dev: String(entry.dev), ino: String(entry.ino), runnerSha256: releaseIdentitySha256(runner),
+            journalSha256: releaseIdentitySha256(saved), checkpointSha256: releaseIdentitySha256(checkpoint), proof };
         }
         return { kind: "empty-directory", physicalRoot: await realpath(layout.root),
           dev: String(entry.dev), ino: String(entry.ino) };
       };
       const inspect = async () => {
+        proofStage = "runtime-current"; proofTarget = null;
         await lease.assertOwned();
         const pointer = await readRuntimePointer(physicalRoot);
         const currentRoot = runtimeReleaseDirectory(physicalRoot, pointer.current);
@@ -639,8 +679,10 @@ export class ReleaseOperationPublication {
         const publication = await this.readPublicationState();
         const remotes = new Map(), readbacks = [], targetEvidence = [];
         for (const target of targets) {
+          proofStage = "executor-namespace"; proofTarget = target.targetId;
           const candidate = candidateFor(generation, target), layout = this.#layout(operation, generation, target);
-          const namespace = await inspectNamespace(layout);
+          const namespace = await inspectNamespace(layout, target, candidate);
+          proofStage = "frozen-candidate";
           const frozen = await assertReleaseCandidateContourSource({ sourceRoot: path.join(candidate.releaseRoot, "AgentHub") });
           const marker = await readJson(frozen.markerFile);
           const git = async (root, args) => (await promisify(execFile)("git", ownedGitArguments(args),
@@ -660,15 +702,18 @@ export class ReleaseOperationPublication {
             throw new Error("Publication recovery current runtime is not the original publication base");
           }
           const key = path.resolve(candidate.repositoryRoot);
+          proofStage = "remote-main";
           if (!remotes.has(key)) remotes.set(key, await this.gitRemoteHead(candidate));
           if (remotes.get(key) !== base || target.approvedOriginMainCommit !== base) {
             throw new Error("Publication recovery remote effect is not positively absent");
           }
+          proofStage = "tool-executor";
           const tool = await this.#originalTool(layout);
           const capabilities = await tool.module("src/publication-artifacts.mjs");
           if (capabilities.publicInstallerHandoffProtocol !== PUBLIC_INSTALLER_HANDOFF) throw new Error("Publication recovery executor policy changed");
           let publicAbsence = null;
           if (target.environment === "github-release") {
+            proofStage = "public-repository";
             const remote = parseGitHubRemote(await git(candidate.repositoryRoot, ["remote", "get-url", "origin"]));
             if (!remote) throw new Error("Publication recovery public repository is unproved");
             const route = `/repos/${remote.owner}/${remote.repo}`;
@@ -677,6 +722,7 @@ export class ReleaseOperationPublication {
             if (repository?.private !== false || repository.full_name?.toLowerCase() !== `${remote.owner}/${remote.repo}`.toLowerCase()
               || !Number.isSafeInteger(repository.id) || !Number.isSafeInteger(repository.owner?.id)) throw new Error("Publication recovery public repository is unproved");
             const version = artifactVersionIdentity(candidate.manifest.publication.runtimeReleaseVersion).publicVersion;
+            proofStage = "public-tag-release";
             const tag = await api("GET", `${route}/git/ref/tags/${encodeURIComponent(version)}`, { missing: true });
             const release = await api("GET", `${route}/releases/tags/${encodeURIComponent(version)}`, { missing: true });
             if (tag !== null || release !== null) throw new Error("Publication recovery public release or tag already exists");
@@ -700,6 +746,9 @@ export class ReleaseOperationPublication {
           throw new Error("Publication recovery not-applied authority changed before admission");
         }
       });
+    }).catch(error => {
+      if (failedValidation) Object.assign(error, { publicationAbsenceStage: proofStage, publicationAbsenceTarget: proofTarget });
+      throw error;
     });
   }
 
@@ -844,9 +893,22 @@ export class ReleaseOperationPublication {
         && releaseIdentitySha256(operation.publicationEffects.targets?.[target.targetId]) === releaseIdentitySha256(result)) return result;
       const journal = this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment });
       const saved = await journal.read();
-      if (!saved?.progress?.publicRuntimeInstaller) return {
-        status: "partial", cursor: { reason: "public-installer-required" },
-      };
+      if (!saved?.progress?.publicRuntimeInstaller) {
+        if (operation.state === "waiting" && operation.currentStep === "validate"
+            && operation.waitReason?.code === "validation_failed" && !operation.owner
+            && operation.currentGeneration === generation.generation) {
+          try {
+            return await this.#withUnstartedPublicationRecovery({ operation, generation,
+              targets: releaseApprovedTargets(operation), failedValidation: true,
+              commit: evidence => ({ status: "not_applied", revision: evidence.runtime.publicationRevision,
+                source: "failed-prepublication-validation-owner-v1", evidence }) });
+          } catch (error) {
+            return { status: "partial", cursor: { reason: "public-prepublication-absence-unproved",
+              proofStage: error.publicationAbsenceStage ?? "installation-custody", proofTarget: error.publicationAbsenceTarget ?? null } };
+          }
+        }
+        return { status: "partial", cursor: { reason: "public-installer-required" } };
+      }
       if (!runner?.tool || saved.identity?.revision !== candidate.commit) return {
         status: "unknown", cursor: { reason: "public-installer-runner-binding" },
       };

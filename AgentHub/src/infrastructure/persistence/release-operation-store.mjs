@@ -9,6 +9,7 @@ import { normalizedOwnGitPublication } from "../../domain/release-base-provenanc
 import {
   retainedGenerationRecovery,
   failedPublicationRecovery,
+  failedValidationAmendmentBoundary,
   createCandidateGeneration,
   completedReleaseGenerationEvidence,
   effectiveReleaseTaskIds,
@@ -694,6 +695,20 @@ export class ReleaseOperationStore {
         if (testSelectionAmendment && expectedRevision === current.revision) {
           const raw = JSON.parse(row.operation_json);
           if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("Test selection amendment is source-owner-fenced");
+          const admission = testSelectionAmendment.admission;
+          if (admission) {
+            const boundary = failedValidationAmendmentBoundary({ operation: current,
+              receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=?")
+                .all(id).map(row => readJson(row.receipt_json)),
+              generations: database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=?")
+                .all(id).map(row => readJson(row.generation_json)) });
+            if (admission.kind !== "uncaptured-test-selection-amendment-v1" || !boundary
+                || releaseIdentitySha256(boundary) !== releaseIdentitySha256(admission.boundary)
+                || admission.amendmentsSha256 !== releaseIdentitySha256(current.testSelectionAmendments ?? [])
+                || current.testSelectionAmendments?.some(item => item.requestId === testSelectionAmendment.requestId)) {
+              throw new Error("Test selection amendment admission is not positively uncaptured");
+            }
+          }
           const captured = failedCompositionRecovery({ operation: current,
             receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=?")
               .all(id).map(row => readJson(row.receipt_json)),

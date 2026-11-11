@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -275,6 +276,109 @@ async function publicPartialPublicationFixture(t, overrides = {}, publicationFix
     operation_id: f.operationId, request_id: "same-public-partial", expected_revision: before.operation.revision, expected_generation: 1 };
   return { ...f, before, catalog, hub, args, releaseManager };
 }
+
+async function failedValidationAmendmentFixture(t) {
+  const scheduled = [];
+  let absent = false, initialRun = true;
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback),
+    validate: async () => ({ status: "ready", pipelineValidationRequired: true }),
+    publishTarget: async () => { throw Object.assign(new Error("original validation failed"), { code: "RELEASE_VALIDATION_FAILED" }); },
+    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({
+      repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection, ["tests/required.test.mjs"]),
+    })),
+    readTarget: async () => ({ status: initialRun || absent ? "not_applied" : "partial" }),
+    withTaskSelection: async ({ taskIds: selected, commit }) => {
+      assert.deepEqual(selected, taskIds);
+      return commit(generation().selectedResults, async () => {});
+    },
+  });
+  const ack = start(f.service, "original-validation-before-publication");
+  scheduled.shift()(); await f.service.drain(ack.operationId);
+  initialRun = false;
+  assert.equal(f.store.latestStep(ack.operationId, 1, "validate").status, "applied");
+  assert.equal(f.store.latestStep(ack.operationId, 1, "publish:git").effect.status, "not_applied");
+  return { ...f, scheduled, operationId: ack.operationId, proveAbsent: () => { absent = true; } };
+}
+
+async function publicValidationAmendmentFixture(t) {
+  const f = await publicPartialPublicationFixture(t, {}, failedValidationAmendmentFixture);
+  const notes = "Consolidated fixture notes\n", sourcePath = path.join(f.root, "notes.md");
+  await writeFile(sourcePath, notes);
+  const digest = createHash("sha256").update(notes).digest("hex");
+  f.args = { ...f.args, request_id: "same-unknown-validation-amendment", task_ids: taskIds,
+    task_scope: "all_await", test_selection: { mode: "include", ids: ["tests/required.test.mjs"] },
+    release_metadata: { sourcePath, byteLength: Buffer.byteLength(notes), rawSha256: digest, canonicalSha256: digest } };
+  return f;
+}
+
+test("SAME public UNKNOWN amendment requires positive absence, keeps actor and survives lost admission ACK", async t => {
+  const f = await publicValidationAmendmentFixture(t);
+  await assert.rejects(f.hub.call("hub_release_continue", f.args), /publication effect is partial/u);
+  const unknown = f.catalog.mcpOperation(f.args.request_id);
+  assert.equal(unknown.status, "unknown");
+  assert.deepEqual(f.store.snapshot(f.operationId), f.before);
+  for (const changed of [
+    { ...f.args, expected_revision: 1 },
+    { ...f.args, task_ids: ["task-a"] },
+    { ...f.args, release_metadata: { ...f.args.release_metadata, rawSha256: "0".repeat(64) } },
+    { ...f.args, context_token: f.hub.contextToken({ provider: "codex", threadId: "other-thread" }) },
+  ]) await assert.rejects(f.hub.call("hub_release_continue", changed), /another operation/u);
+  await assert.rejects(f.hub.call("hub_release_continue", f.args), /publication effect is partial/u);
+  assert.equal(f.catalog.mcpOperation(f.args.request_id).status, "unknown");
+  assert.deepEqual(f.store.snapshot(f.operationId), f.before);
+  f.proveAbsent();
+  const complete = f.catalog.completeUnknownMcpOperation.bind(f.catalog);
+  f.catalog.completeUnknownMcpOperation = () => { throw Error("controlled lost amendment reply"); };
+  await assert.rejects(f.hub.call("hub_release_continue", f.args), /receipt reconciliation is required/u);
+  f.catalog.completeUnknownMcpOperation = complete;
+  const result = await f.hub.call("hub_release_continue", f.args);
+  assert.equal(result.accepted, true);
+  assert.equal(result.operatorReconciliation.kind, "test-selection-amendment-owner-continuation-v1");
+  assert.equal(result.operatorReconciliation.priorReceipt.createdAtMs, unknown.createdAtMs);
+  assert.equal(f.catalog.mcpOperation(f.args.request_id).argumentsHash, unknown.argumentsHash);
+  assert.equal(f.store.get(f.operationId).testSelectionAmendments.length, 1);
+  assert.equal(f.store.get(f.operationId).testSelectionAmendments[0].admission.kind, "uncaptured-test-selection-amendment-v1");
+  assert.equal(f.scheduled.length, 1);
+  assert.deepEqual(f.store.snapshot(f.operationId).generations, f.before.generations);
+  assert.deepEqual(f.store.snapshot(f.operationId).receipts, f.before.receipts);
+  assert.deepEqual(await f.hub.call("hub_release_continue", f.args), result);
+  const readback = await f.hub.call("hub_release_get", { context_token: f.args.context_token,
+    operation_request_id: f.args.request_id, original_arguments: f.args });
+  assert.equal(readback.originalCommand.status, "succeeded");
+  assert.equal(readback.originalCommand.terminal, true);
+  assert.equal(f.calls.some(call => call[0] === "publish"), false);
+});
+
+test("SAME UNKNOWN amendment refuses late target drift before its canonical admission", async t => {
+  const f = await publicValidationAmendmentFixture(t);
+  await assert.rejects(f.hub.call("hub_release_continue", f.args), /publication effect is partial/u);
+  let reads = 0;
+  f.service.readTarget = async () => ({ status: ++reads > 2 ? "partial" : "not_applied" });
+  await assert.rejects(f.hub.call("hub_release_continue", f.args), /absence changed before admission/u);
+  assert.deepEqual(f.store.snapshot(f.operationId), f.before);
+  assert.equal(f.catalog.mcpOperation(f.args.request_id).status, "unknown");
+  assert.equal(f.scheduled.length, 0);
+});
+
+test("SAME UNKNOWN amendment repeats failed-boundary absence inside SQL admission", async t => {
+  const f = await publicValidationAmendmentFixture(t);
+  await assert.rejects(f.hub.call("hub_release_continue", f.args), /publication effect is partial/u);
+  f.proveAbsent();
+  const transition = f.store.transition.bind(f.store);
+  f.store.transition = (id, patch, options) => {
+    if (options?.testSelectionAmendment) {
+      f.store.beginStep({ operationId: id, generation: 1, stepId: "publish:git",
+        input: { candidate: f.before.generations[0].identitySha256, target: targets[0] } });
+    }
+    return transition(id, patch, options);
+  };
+  await assert.rejects(f.hub.call("hub_release_continue", f.args), /not positively uncaptured/u);
+  assert.equal(f.store.get(f.operationId).revision, f.before.operation.revision);
+  assert.equal(f.store.get(f.operationId).testSelectionAmendments?.length ?? 0, 0);
+  assert.equal(f.catalog.mcpOperation(f.args.request_id).status, "unknown");
+  assert.equal(f.store.latestStep(f.operationId, 1, "publish:git").status, "intent");
+  assert.equal(f.scheduled.length, 0);
+});
 
 test("public not-applied publication pin recovery preserves SAME UNKNOWN, actor and lost admission ACK", async t => {
   const { before, catalog, hub, args, ...f } = await publicPartialPublicationFixture(t, {}, unstartedPublicationFixture);

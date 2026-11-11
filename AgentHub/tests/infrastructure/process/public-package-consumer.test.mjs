@@ -15,6 +15,7 @@ import { captureRuntimeReleaseBinding } from "../../../src/infrastructure/filesy
 import { PUBLIC_INSTALLER_HANDOFF } from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
 import { EventEmitter } from "node:events";
 import { releaseIdentitySha256 } from "../../../src/domain/release-operation.mjs";
+import { resolveTestSelection } from "../../../src/domain/test-selection.mjs";
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const writeJson = async (file, value) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, JSON.stringify(value)); };
@@ -97,6 +98,75 @@ test("unstarted publication owner proves both absent effects and repeats exact p
   assert.equal(admissions, 1); assert.equal(f.publications(), 0);
   assert.equal(f.requests.length, 6);
   assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), before);
+});
+
+test("failed selected public validation proves both targets unapplied before an installer exists", async t => {
+  const f = await unstartedPublicationOwnerFixture(t);
+  Object.assign(f.operation, { workspaceId: "workspace", state: "waiting", currentStep: "validate",
+    currentGeneration: 1, owner: null, waitReason: { code: "validation_failed" } });
+  const candidate = f.generation.candidates[0];
+  const plan = resolveTestSelection({ mode: "include", ids: ["tests/required.test.mjs"] }, ["tests/required.test.mjs"]);
+  f.generation.testPlans = [{ repositoryRoot: candidate.repositoryRoot, plan }];
+  const labels = ["Проверка release candidate в изолированном контуре", "Выбранные тесты Agent Hub",
+    "Подготовка артефактов публикации", "Упаковка установочного архива", "Публикация Git", "Публикация GitHub Release"];
+  const identity = { mode: "changed", from: candidate.baseCommit, revision: candidate.commit,
+    worktreeRoot: candidate.releaseRoot, runtimeRoot: f.runtimeRoot, validationMode: "include", testPlan: plan,
+    deploymentProfile: "github-release", workspaceId: f.operation.workspaceId, artifactProtocol: 1, labels,
+    release: { workspaceId: f.operation.workspaceId, primaryRoot: candidate.repositoryRoot, preReleaseHead: candidate.commit } };
+  const journal = publicationRunStore({ runtimeRoot: f.firstRoot });
+  await journal.start(identity, labels.map(label => ({ label })));
+  await journal.stepStarted(labels[0]); await journal.stepFinished(labels[0], { status: "completed" });
+  await journal.stepStarted(labels[1]); await journal.stepFinished(labels[1], { status: "failed", error: "validation failed" });
+  await journal.finish("failed", "validation failed");
+  const checkpoint = { identity, checkpointScope: { mode: "changed", from: identity.from,
+    runtimeRoot: identity.runtimeRoot, validationMode: identity.validationMode, testPlan: plan },
+    completedLabels: [labels[0]], completedFingerprints: { [labels[0]]: "exact-contour" } };
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), checkpoint);
+  await writeJson(path.join(f.firstRoot, "runner.json"), { status: "exited", exitCode: 1, completedAt: new Date().toISOString(),
+    operationId: f.operation.operationId, generation: 1, targetId: f.publicTarget.targetId,
+    candidate: f.generation.identitySha256, tool: { name: f.tool.name, version: f.tool.version, sha256: f.tool.sha256 } });
+  const local = f.operation.authorization.approvedTargets[1];
+  const beforePointer = await readFile(path.join(f.runtimeRoot, "current.json"));
+  const beforeRun = await readFile(path.join(f.firstRoot, "publication-status.json"));
+  const readback = () => f.publication.readback({ operation: f.operation, generation: f.generation, target: local });
+  const result = await readback();
+  assert.equal(result.status, "not_applied");
+  assert.equal(result.source, "failed-prepublication-validation-owner-v1");
+  assert.deepEqual(result.evidence.readbacks.map(item => item.evidence.status), ["not_applied", "not_applied"]);
+  assert.equal(result.evidence.targets[0].namespace.kind, "failed-prepublication-validation");
+  assert.equal(result.evidence.targets[1].namespace.kind, "absent");
+  assert.equal(f.publications(), 0);
+  assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), beforePointer);
+  assert.deepEqual(await readFile(path.join(f.firstRoot, "publication-status.json")), beforeRun);
+  for (const [mutate, stage] of [
+    [() => f.setTag({ object: { sha: candidate.commit } }), "public-tag-release"],
+    [() => f.setRelease({ id: 1 }), "public-tag-release"],
+    [() => f.setRemote(candidate.commit), "remote-main"],
+  ]) {
+    mutate();
+    const refused = await readback();
+    assert.equal(refused.status, "partial");
+    assert.equal(refused.cursor.proofStage, stage);
+    assert.equal(refused.cursor.proofTarget, f.publicTarget.targetId);
+    f.setTag(null); f.setRelease(null); f.setRemote(candidate.baseCommit);
+  }
+  await writeFile(path.join(f.firstRoot, "foreign.bin"), "unclassified");
+  assert.equal((await readback()).status, "partial"); await rm(path.join(f.firstRoot, "foreign.bin"));
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), { ...checkpoint, completedLabels: [...labels] });
+  assert.equal((await readback()).status, "partial");
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), checkpoint);
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), { ...checkpoint,
+    checkpointScope: { ...checkpoint.checkpointScope, testPlan: { ...plan, selection: { mode: "none", ids: [] } } } });
+  assert.equal((await readback()).status, "partial");
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), checkpoint);
+  const changed = JSON.parse(beforeRun);
+  changed.progress.githubDistribution = { createStarted: true };
+  await writeJson(path.join(f.firstRoot, "publication-status.json"), changed);
+  assert.equal((await readback()).status, "partial");
+  await writeFile(path.join(f.firstRoot, "publication-status.json"), beforeRun);
+  f.operation.waitReason = { code: "external_effect_readback" };
+  assert.equal((await readback()).status, "partial");
+  assert.equal(f.publications(), 0);
 });
 
 test("unstarted publication owner refuses missing pin, namespace, remote, public and current drift", async t => {

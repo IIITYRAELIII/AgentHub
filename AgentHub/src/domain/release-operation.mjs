@@ -759,6 +759,36 @@ export function createCandidateGeneration({
   return value;
 }
 
+export function failedValidationAmendmentBoundary({ operation, generations = [], receipts = [] }) {
+  if (operation?.state !== "waiting" || operation.owner || operation.currentStep !== "validate"
+      || operation.waitReason?.code !== "validation_failed" || operation.currentGeneration < 1) return null;
+  const generation = generations.find(item => item.generation === operation.currentGeneration);
+  if (!generation || generation.operationId !== operation.operationId
+      || generations.some(item => item.generation > generation.generation)
+      || receipts.some(item => item.generation > generation.generation)) return null;
+  const { identitySha256, ...contents } = generation;
+  if (releaseIdentitySha256(contents) !== identitySha256) return null;
+  const current = receipts.filter(item => item.generation === generation.generation);
+  const latest = step => current.filter(item => item.stepId === step).sort((a, b) => a.attempt - b.attempt).at(-1);
+  if (latest("compose")?.status !== "applied" || latest("compose").effect?.identitySha256 !== identitySha256) return null;
+  const targets = releaseApprovedTargets(operation);
+  const publications = current.filter(item => item.stepId.startsWith("publish:"));
+  if (publications.some(item => item.status !== "failed" || item.effect?.status !== "not_applied"
+      || item.input?.candidate !== identitySha256 || releaseIdentitySha256(item.input) !== item.inputSha256
+      || !targets.some(target => item.stepId === `publish:${target.targetId}`
+        && releaseIdentitySha256(item.input.target) === releaseIdentitySha256(target)))) return null;
+  if (Object.values(operation.publicationEffects?.targets ?? {}).some(effect => effect.status !== "not_applied")) return null;
+  const deferredValidation = operation.lastError?.code === "RELEASE_VALIDATION_FAILED"
+    && latest("validate")?.status === "applied" && latest("validate").effect?.pipelineValidationRequired === true;
+  const failure = operation.lastError?.step === "publish" || deferredValidation
+    ? publications.sort((a, b) => a.attempt - b.attempt).at(-1) : latest("validate");
+  if (failure?.status !== "failed" || failure.error !== operation.lastError?.message) return null;
+  return { operationId: operation.operationId, priorRevision: operation.revision, generation: generation.generation,
+    candidate: identitySha256, inputSha256: releaseIdentitySha256(releaseCompositionInput(operation)),
+    receiptsSha256: releaseIdentitySha256([...receipts].sort((a, b) => a.generation - b.generation
+      || a.stepId.localeCompare(b.stepId) || a.attempt - b.attempt)) };
+}
+
 export function normalizeTestSelectionAmendment(value, operation) {
   const { identitySha256, ...contents } = value ?? {};
   if (typeof contents.requestId !== "string" || !contents.requestId.trim()
@@ -772,6 +802,11 @@ export function normalizeTestSelectionAmendment(value, operation) {
       || contents.taskSelection != null && JSON.stringify([...new Set(contents.taskSelection.map(item => item.taskId))].sort()) !== JSON.stringify(contents.taskIds)
       || contents.releaseMetadata != null && releaseIdentitySha256(normalizedReleaseMetadata(contents.releaseMetadata)) !== releaseIdentitySha256(contents.releaseMetadata)
       || contents.requestArguments != null && !validAmendmentRequest(contents)
+      || contents.admission != null && (contents.admission.kind !== "uncaptured-test-selection-amendment-v1"
+        || contents.admission.boundary?.operationId !== operation.operationId
+        || contents.admission.boundary.priorRevision !== contents.priorRevision
+        || contents.admission.boundary.generation !== contents.priorGeneration
+        || !/^[a-f0-9]{64}$/u.test(contents.admission.amendmentsSha256 ?? ""))
       || !Array.isArray(contents.readbacks) || contents.readbacks.length !== operation.authorization.approvedTargets.length
       || operation.authorization.approvedTargets.some(target => contents.readbacks.filter(item => item.targetId === target.targetId
         && item.generation === contents.priorGeneration && item.evidence?.status === "not_applied").length !== 1)) {

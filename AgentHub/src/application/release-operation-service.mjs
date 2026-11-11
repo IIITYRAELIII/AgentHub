@@ -13,6 +13,7 @@ import {
   failedFirstComposeRecovery,
   retainedGenerationRecovery,
   failedPublicationRecovery,
+  failedValidationAmendmentBoundary,
   releaseCompositionInput,
   releaseApprovedTargets,
   effectiveTestSelection,
@@ -703,7 +704,22 @@ export class ReleaseOperationService {
       revision: result.operation.revision, recovery: recovery.identitySha256 };
   }
 
-  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, taskScope, releaseMetadata, expectedRevision, expectedGeneration, reviewedMain }) {
+  async reconcileTestSelectionContinuation(operationId, options) {
+    const current = this.store.get(requiredText(operationId, "operationId"));
+    const previous = current?.testSelectionAmendments?.find(item => item.requestId === options.requestId);
+    if (!previous && (!failedValidationAmendmentBoundary(this.store.snapshot(operationId))
+        || this.#running.has(operationId) || this.#scheduled.has(operationId))) {
+      throw new Error("Test selection continuation has no exact unadmitted failed-validation boundary");
+    }
+    const result = await this.#amendTestSelection(operationId, { ...options, reconcileUnknown: !previous });
+    if (!result.accepted) throw new Error("Test selection continuation has no durable same-request amendment");
+    if (previous && current.state === "compose" && current.currentGeneration === options.expectedGeneration) {
+      this.#observe(operationId); this.#schedule(operationId);
+    }
+    return result;
+  }
+
+  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, taskScope, releaseMetadata, expectedRevision, expectedGeneration, reviewedMain, reconcileUnknown = false }) {
     if (reviewedMain != null) throw new Error("Use separate original amendments for reviewed main and test selection");
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
@@ -749,6 +765,8 @@ export class ReleaseOperationService {
     }
     const generation = this.store.generation(operationId, current.currentGeneration);
     if (!generation) throw new Error("Original generation is missing");
+    const boundary = reconcileUnknown ? failedValidationAmendmentBoundary(this.store.snapshot(operationId)) : null;
+    if (reconcileUnknown && !boundary) throw new Error("Test selection failed-validation proof changed");
     const scope = taskScope == null ? effectiveReleaseTaskScope(current) : requestArguments.taskScope;
     const commit = async (taskSelection = null, validateBeforeCommit = async () => {}) => {
     const readbacks = [];
@@ -758,9 +776,19 @@ export class ReleaseOperationService {
       readbacks.push({ targetId: target.targetId, generation: current.currentGeneration, evidence });
     }
     await validateBeforeCommit();
+    if (reconcileUnknown) {
+      for (const target of releaseApprovedTargets(current)) {
+        const fresh = normalizeReadback(await this.readTarget({ operation: current, generation, target }));
+        if (releaseIdentitySha256(fresh) !== releaseIdentitySha256(readbacks.find(item => item.targetId === target.targetId).evidence)) {
+          throw new Error("Test selection publication absence changed before admission");
+        }
+      }
+    }
     const composeRecovery = failedCompositionRecovery(this.store.snapshot(operationId));
     const capturedTaskIds = taskSelection ? [...new Set(taskSelection.map(item => item.taskId))].sort() : selectedTaskIds;
     const contents = { requestId, requestArguments, selection, taskIds: capturedTaskIds, taskSelection,
+      ...(reconcileUnknown ? { admission: { kind: "uncaptured-test-selection-amendment-v1", boundary,
+        amendmentsSha256: releaseIdentitySha256(current.testSelectionAmendments ?? []) } } : {}),
       ...(scope == null ? {} : { taskScope: scope }),
       ...(composeRecovery ? { composeRecovery } : {}),
       ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }), priorRevision: current.revision, priorGeneration: current.currentGeneration,

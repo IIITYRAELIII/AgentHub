@@ -1,5 +1,23 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Failed-validation amendment continuation (ADR-HUB-429-amendment)
+
+An exact pending/UNKNOWN whole-Await test-selection and notes amendment may
+re-enter its existing owner with the same request, actor, arguments hash and
+revision/generation CAS. A durable same-request amendment supplies readback
+after a lost admission reply. Otherwise the owner requires the original idle
+validation-failed boundary, immutable candidate and failed receipts, unchanged
+amendment-history digest and fresh positive absence for every publication target.
+The existing SQL admission repeats that boundary and history absence before
+appending the amendment. UNKNOWN remains retained until admission is durable.
+Fresh selection, notes, Git and target proofs retain their normal owners.
+
+Changed arguments or identity, partial/applied/UNKNOWN target evidence, future
+compose evidence and a changed canonical boundary refuse continuation. The
+existing outer receipt retains its prior diagnostic when the owner result is
+recorded. Only the same admitted amendment can schedule the next generation.
+Unrelated UNKNOWN families retain their existing authority requirements.
+
 
 ## Failed-publication continuation admission (ADR-HUB-429)
 
