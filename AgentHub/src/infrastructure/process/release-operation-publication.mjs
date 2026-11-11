@@ -644,7 +644,8 @@ export class ReleaseOperationPublication {
           if (!runner || runner.operationId !== operation.operationId || runner.generation !== generation.generation
               || runner.targetId !== target.targetId || runner.candidate !== generation.identitySha256
               || runner.status !== "exited" || !Number.isInteger(runner.exitCode) || runner.exitCode === 0
-              || !runner.completedAt || this.processAlive(runner.pid) || result) {
+              || !runner.completedAt || !Number.isSafeInteger(runner.pid) || runner.pid <= 0
+              || this.processAlive(runner.pid) !== false || result) {
             throw new Error("Failed validation publisher is not positively closed without a result");
           }
           const saved = await this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment }).read();

@@ -122,9 +122,10 @@ test("failed selected public validation proves both targets unapplied before an 
     runtimeRoot: identity.runtimeRoot, validationMode: identity.validationMode, testPlan: plan },
     completedLabels: [labels[0]], completedFingerprints: { [labels[0]]: "exact-contour" } };
   await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), checkpoint);
-  await writeJson(path.join(f.firstRoot, "runner.json"), { status: "exited", exitCode: 1, completedAt: new Date().toISOString(),
+  const runner = { status: "exited", exitCode: 1, completedAt: new Date().toISOString(), pid: 2147483647,
     operationId: f.operation.operationId, generation: 1, targetId: f.publicTarget.targetId,
-    candidate: f.generation.identitySha256, tool: { name: f.tool.name, version: f.tool.version, sha256: f.tool.sha256 } });
+    candidate: f.generation.identitySha256, tool: { name: f.tool.name, version: f.tool.version, sha256: f.tool.sha256 } };
+  await writeJson(path.join(f.firstRoot, "runner.json"), runner);
   const local = f.operation.authorization.approvedTargets[1];
   const beforePointer = await readFile(path.join(f.runtimeRoot, "current.json"));
   const beforeRun = await readFile(path.join(f.firstRoot, "publication-status.json"));
@@ -159,6 +160,11 @@ test("failed selected public validation proves both targets unapplied before an 
     checkpointScope: { ...checkpoint.checkpointScope, testPlan: { ...plan, selection: { mode: "none", ids: [] } } } });
   assert.equal((await readback()).status, "partial");
   await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), checkpoint);
+  for (const pid of [undefined, process.pid]) {
+    await writeJson(path.join(f.firstRoot, "runner.json"), { ...runner, pid });
+    assert.equal((await readback()).status, "partial");
+  }
+  await writeJson(path.join(f.firstRoot, "runner.json"), runner);
   const changed = JSON.parse(beforeRun);
   changed.progress.githubDistribution = { createStarted: true };
   await writeJson(path.join(f.firstRoot, "publication-status.json"), changed);
