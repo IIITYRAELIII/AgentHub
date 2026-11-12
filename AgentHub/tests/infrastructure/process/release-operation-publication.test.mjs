@@ -9,11 +9,11 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { releaseOperationPublicationArguments, releaseOperationRuntimePublicationInput } from "../../../release-operation-publication-runner.mjs";
+import { releaseOperationPublicationArguments, releaseOperationRuntimePublicationInput, agentHubCalendarVersion } from "../../helpers/external-release-recipe.fixture.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
-import { agentHubCalendarVersion } from "../../../src/infrastructure/filesystem/release-version.mjs";
+
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
-import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
+import { ProductPublicationOwner as ReleaseOperationPublication } from "../../helpers/external-release-recipe.fixture.mjs";
 
 const execute = promisify(execFile);
 
@@ -285,6 +285,7 @@ test("publication launches the stable owner runner and reads its exact generatio
           revision: "published-commit",
         })}\n`, "utf8");
         child.emit("exit", 0);
+        child.emit("close", 0);
       });
       return child;
     },
@@ -436,7 +437,7 @@ for (const [event, value] of [["exit", 1], ["error", new Error("spawn failed imm
         const child = new EventEmitter();
         child.pid = 4321;
         child.unref = () => {};
-        queueMicrotask(() => child.emit(event, value));
+        queueMicrotask(() => { child.emit(event, value); child.emit("close", event === "exit" ? value : -1); });
         return child;
       },
     });
@@ -480,7 +481,7 @@ test("publication classifies a failed pre-effect pipeline step as validation fai
       const child = new EventEmitter();
       child.pid = 654;
       child.unref = () => {};
-      setTimeout(() => child.emit("exit", 1), 10);
+      setTimeout(() => { child.emit("exit", 1); child.emit("close", 1); }, 10);
       return child;
     },
   });
@@ -534,7 +535,9 @@ test("publication forwards its stable dependency root to frozen Worker builds", 
     `);
     const publication = new ReleaseOperationPublication({
       dataDir: path.join(directory, "data"), runtimeRoot: path.join(directory, "runtime"), runnerFile,
-      environment: mode === "explicit" ? { AGENT_HUB_DEPENDENCY_ROOT: dependencyRoot } : {},
+      environment: { AGENT_HUB_RELEASE_TOOLS_ROOT: process.env.AGENT_HUB_RELEASE_TOOLS_ROOT,
+         AGENT_HUB_RELEASE_TOOLS_SHA256: process.env.AGENT_HUB_RELEASE_TOOLS_SHA256,
+         ...(mode === "explicit" ? { AGENT_HUB_DEPENDENCY_ROOT: dependencyRoot } : {}) },
       readPublicationStateImpl: async () => null, gitRemoteHeadImpl: async () => "a".repeat(40),
       publicationRunStoreFactory: () => ({ read: async () => null }),
     });

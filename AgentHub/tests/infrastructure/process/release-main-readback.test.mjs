@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
-import { PUBLICATION_STAGE_CONTRACT } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
+import { ProductPublicationOwner as ReleaseOperationPublication } from "../../helpers/external-release-recipe.fixture.mjs";
+import { PUBLICATION_STAGE_CONTRACT } from "../../helpers/external-release-recipe.fixture.mjs";
 
 const exec = promisify(execFile);
 const git = async (cwd, ...args) => (await exec("git", args, { cwd, encoding: "utf8", windowsHide: true })).stdout.trim();

@@ -1,23 +1,21 @@
 import { readFile, mkdir, cp, rename, rm, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
-import { installPreparedRuntime, activateRuntime, runtimeStatus } from "./runtime/src/runtime/runtime-manager.mjs";
-import { verifyRuntimeManifest } from "./runtime/src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
-import { protectRuntimeDirectory, protectRuntimeConfig } from "./runtime/src/infrastructure/filesystem/runtime-security.mjs";
-import { withPublicationLock } from "./runtime/src/infrastructure/process/publication-lock.mjs";
-import { assertAgentHubUpgrade } from "./runtime/src/domain/agent-hub-version.mjs";
-import { runtimeManifestMatchesPackage } from "./runtime/src/domain/runtime-package-identity.mjs";
-import { initialRuntimeProjectConfiguration } from "./runtime/src/infrastructure/filesystem/config.mjs";
+import { installPreparedRuntime, activateRuntime, runtimeStatus } from "./runtime-manager.mjs";
+import { verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
+import { protectRuntimeDirectory, protectRuntimeConfig } from "../infrastructure/filesystem/runtime-security.mjs";
+import { withPublicationLock } from "../infrastructure/process/publication-lock.mjs";
+import { assertAgentHubUpgrade } from "../domain/agent-hub-version.mjs";
+import { runtimeManifestMatchesPackage } from "../domain/runtime-package-identity.mjs";
+import { initialRuntimeProjectConfiguration } from "../infrastructure/filesystem/config.mjs";
 
-// Packaged entry: it delegates pointer/stable-launcher/rollback to the existing
-// runtime owner. It never builds, starts, stops or restarts a process.
-const packageRoot = path.dirname(fileURLToPath(import.meta.url));
+// Application maintenance owns stable files, stopped-writer checks and pointer
+// transitions. An external recipient calls this through the public JSON CLI.
+export async function installReadyPackage({ packageRoot, runtimeRoot: root, command, projectRoot } = {}) {
 if (process.platform !== "win32" || process.arch !== "x64") throw new Error("This ready package supports Windows x64 only");
-const [command, root, projectOption, projectRoot] = process.argv.slice(2);
-if (!["install", "rollback"].includes(command) || !root
-  || !(process.argv.length === 4 || process.argv.length === 6 && command === "install" && projectOption === "--project-root" && projectRoot)) {
-  throw new Error("Usage: node install-prepared.mjs install|rollback <explicit-runtime-root> [--project-root <selected-project>]");
+if (!["install", "rollback"].includes(command) || !path.isAbsolute(root ?? "")
+    || !path.isAbsolute(packageRoot ?? "") || projectRoot != null && (command !== "install" || typeof projectRoot !== "string")) {
+  throw new Error("Invalid ready-package maintenance input");
 }
 const runtimeRoot = path.resolve(root);
 if (runtimeRoot === path.parse(runtimeRoot).root
@@ -44,7 +42,7 @@ await requireRegularAncestors(runtimeRoot);
 await requireStopped();
 await mkdir(runtimeRoot, { recursive: true });
 await protectRuntimeDirectory(runtimeRoot);
-await withPublicationLock(async () => {
+return withPublicationLock(async () => {
   await requireStopped();
   const releases = path.join(runtimeRoot, "releases");
   await requireRegularAncestors(releases);
@@ -113,6 +111,8 @@ await withPublicationLock(async () => {
     beforeStableLauncherCommit: async () => { await requireStopped(); await requireUpgrade(); },
     beforePointerCommit: async () => { await requireStopped(); await requireUpgrade(); } });
   await activateRuntime({ sourceRoot: releaseRoot, runtimeRoot, retireLegacyConfig: false, retireWorkspaceRuntime: false });
-  console.log(JSON.stringify({ installed: installed.releaseId, restarted: false,
-    next: "Configure your project/provider, then start the installed RuntimeHost explicitly." }));
+  return { installed: installed.releaseId, restarted: false,
+    next: "Configure your project/provider, then start the installed RuntimeHost explicitly." };
 }, { lockTarget: path.join(runtimeRoot, "publication"), timeoutMs: 10_000 });
+
+}

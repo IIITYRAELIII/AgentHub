@@ -8,7 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { runtimeHostCompilerCandidates } from "../../src/infrastructure/process/runtime-host-builder.mjs";
+import { runtimeHostCompilerCandidates } from "../helpers/external-runtime-builder.fixture.mjs";
 import { runtimeSecretAclArguments, runtimeDirectoryAclArguments } from "../../src/infrastructure/filesystem/runtime-security.mjs";
 import { recordingContourEnvironment } from "../../src/infrastructure/filesystem/test-contour-recording-environment.mjs";
 

@@ -6,13 +6,14 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createPublicRuntimeInstaller, readPublishedRuntimePackage, releaseTargetExecutionRoot } from "../../../src/infrastructure/process/public-runtime-installer.mjs";
-import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
+import { createPublicRuntimeInstaller, readPublishedRuntimePackage, releaseTargetExecutionRoot, publicationRunStore, PUBLIC_INSTALLER_HANDOFF } from "../../helpers/external-release-recipe.fixture.mjs";
+import { ProductPublicationOwner as ReleaseOperationPublication } from "../../helpers/external-release-recipe.fixture.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
-import { publicationRunStore } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
+
 import { packageBindingDigest } from "../../../src/infrastructure/filesystem/runtime-package-target.mjs";
 import { captureRuntimeReleaseBinding } from "../../../src/infrastructure/filesystem/runtime-installation-custody.mjs";
-import { PUBLIC_INSTALLER_HANDOFF } from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
+
+import { controlledProductInstallerOwner } from "../../helpers/controlled-product-api.fixture.mjs";
 import { EventEmitter } from "node:events";
 import { releaseIdentitySha256 } from "../../../src/domain/release-operation.mjs";
 import { resolveTestSelection } from "../../../src/domain/test-selection.mjs";
@@ -29,6 +30,7 @@ async function unstartedPublicationOwnerFixture(t) {
   await mkdir(path.join(primary, "AgentHub"), { recursive: true });
   await git(primary, "init", "--initial-branch=main");
   await writeFile(path.join(primary, "AgentHub/package.json"), '{"name":"fixture","version":"2.1.6"}\n');
+  await writeFile(path.join(primary, "AgentHub/release-operation-publication-runner.mjs"), "// Literal retained caller data; controlled spawn does not execute it.\n");
   await git(primary, "add", "-A");
   await git(primary, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "base");
   const base = await git(primary, "rev-parse", "HEAD");
@@ -221,7 +223,7 @@ test("unstarted recovery persists its exact executor across missing ambient pin 
         revision: f.generation.candidates[0].commit, deploymentProfile: "github-release",
         tool: { name: f.tool.name, version: f.tool.version, sha256: f.tool.sha256 },
         distribution: { sourceCommit: f.generation.candidates[0].commit } });
-      child.emit("exit", 0);
+      child.emit("exit", 0); child.emit("close", 0);
     });
     return child;
   };
@@ -257,7 +259,7 @@ async function executorGenerationFixture(t) {
     manifest: { ...oldSource.manifest, publication: { ...oldSource.manifest.publication, head: commit } } };
   const generation = { ...f.generation, generation: 2, identitySha256: "d".repeat(64), candidates: [candidate] };
   f.operation.currentGeneration = 2;
-  const tool = { ...f.tool, version: "0.1.4", sha256: "e".repeat(64), root: path.join(f.root, "tool014") };
+  const tool = { ...f.tool, recipe: { apiVersion: 1 }, version: "0.2.0", sha256: "e".repeat(64), root: path.join(f.root, "recipe020") };
   tool.location = { ...f.tool.location, root: tool.root, version: tool.version, sha256: tool.sha256 };
   f.environment.AGENT_HUB_RELEASE_TOOLS_ROOT = tool.root;
   f.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 = tool.sha256;
@@ -278,14 +280,14 @@ async function executorGenerationFixture(t) {
         generation: 2, targetId: f.publicTarget.targetId, candidate: generation.identitySha256,
         revision: commit, deploymentProfile: "github-release", tool: { name: tool.name, version: tool.version, sha256: tool.sha256 },
         distribution: { sourceCommit: commit } });
-      child.emit("exit", 0);
+      child.emit("exit", 0); child.emit("close", 0);
     });
     return child;
   };
   return { ...f, generation, candidate, tool, execution, oldRecovery, children: () => children };
 }
 
-test("old generation recovery remains history while amended generation launches its normal 014 executor", async t => {
+test("old generation recovery remains history while amended generation launches its explicitly selected recipe executor", async t => {
   const f = await executorGenerationFixture(t);
   const history = structuredClone(f.operation.publicationRecoveries);
   assert.equal((await f.publication.publish({ ...f, target: f.publicTarget })).status, "applied");
@@ -528,12 +530,14 @@ test("actual publication readback requires same canonical maintenance, installed
   assert.equal(children, 1); assert.equal(joined, 1);
   const saved = (await journal.read()).progress.publicRuntimeInstaller;
   await writeJson(path.join(localRoot, "runner.json"), { candidate: generation.identitySha256, tool, status: "exited", exitCode: 0 });
-  const publication = new ReleaseOperationPublication({ dataDir, runtimeRoot,
+  const publication = await controlledProductInstallerOwner(t, input => createPublicRuntimeInstaller({
+    ...input, ...ports, readPublishedInput: () => readPublishedRuntimePackage(f.options),
+  }), { dataDir, runtimeRoot,
     spawnImpl: () => { publicationChildren++; return spawn(process.execPath, ["-e", "process.exit(0)"], { windowsHide: true, stdio: "ignore" }); },
     processAliveImpl: () => false, readPublicationStateImpl: async () => ({ revision: identity.revision }),
     readToolPackage: async () => ({ ...tool, assertUnchanged: async () => {} }),
     createArtifactSteps: () => ({ preparedRuntimeReceipt: async () => f.prepared }),
-    distributionApi: f.options.api, publicRuntimeInstallerPorts: ports,
+    distributionApi: f.options.api,
   });
   const readback = () => publication.readback({ operation, generation, target });
   assert.equal((await readback()).status, "unknown");

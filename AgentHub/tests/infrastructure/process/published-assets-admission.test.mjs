@@ -12,8 +12,8 @@ import { ReleaseOperationService } from "../../../src/application/release-operat
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
-import { publicationRunStore } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
-import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
+import { publicationRunStore } from "../../helpers/external-release-recipe.fixture.mjs";
+import { ProductPublicationOwner as ReleaseOperationPublication } from "../../helpers/external-release-recipe.fixture.mjs";
 import { readReleaseToolPackage } from "../../../src/infrastructure/process/release-tool-package.mjs";
 import { executeRelease } from "../../../release.mjs";
 

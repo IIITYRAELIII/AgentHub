@@ -8,9 +8,9 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { publishAll, publicationSteps, runStep } from "../../../publish-all.mjs";
 import { parseRuntimeArguments } from "../../../src/runtime/runtime-manager.mjs";
-import { prepareCommittedAgentHubReleaseVersion } from "../../../src/infrastructure/filesystem/release-version.mjs";
+import { productToolsFor, prepareCommittedAgentHubReleaseVersion, releaseOperationRuntimePublicationInput } from "../../helpers/external-release-recipe.fixture.mjs";
 import { freezePreparedPublication } from "../../../publish-changed.mjs";
-import { releaseOperationRuntimePublicationInput } from "../../../release-operation-publication-runner.mjs";
+
 import { ReleaseGitWorkspaceService, assertReleaseCandidateContourSource } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { withPreparationGitIsolation } from "../../../src/infrastructure/filesystem/preparation-git-isolation.mjs";
 
@@ -230,26 +230,23 @@ test("full consumer passes the same frozen artifact to real Android input and ru
   assert.deepEqual(value, { releaseVersion: original.releaseVersion, runtimeReleaseVersion: original.runtimeReleaseVersion, head: original.head });
   const actual = path.resolve(import.meta.dirname, "../../..");
   const runner = path.join(f.primary, "..", "android-input");
-  for (const file of ["AndroidApp/build.ps1", "release-version.mjs", "src/domain/agent-hub-version.mjs", "src/infrastructure/filesystem/release-version.mjs"]) {
-    await mkdir(path.dirname(path.join(runner, file)), { recursive: true });
-    await writeFile(path.join(runner, file), await readFile(path.join(actual, file)));
-  }
-  const pkg = JSON.parse(await readFile(path.join(actual, "package.json"), "utf8"));
-  await writeFile(path.join(runner, "package.json"), JSON.stringify({ name: "agent-hub", version: value.releaseVersion,
-    type: "module", scripts: { "android:build": pkg.scripts["android:build"] } }));
+  await mkdir(path.join(runner, "AndroidApp"), { recursive: true });
+  await writeFile(path.join(runner, "package.json"), JSON.stringify({ name: "agent-hub", version: value.releaseVersion, type: "module" }));
+  const product = productToolsFor(runner);
   const logFile = path.join(runner, "android-input.log");
   let calls = 0;
-  await assert.rejects(publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
+  await assert.rejects(product.publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
     exclusive: action => action(), revision: async () => original.head,
     freezeVersion: () => freezePreparedPublication(options),
     prepareVersion: version => prepareCommittedAgentHubReleaseVersion({ root: path.join(f.candidate.releaseRoot, "AgentHub"), ...version }),
     run: async step => {
       calls++;
       assert.equal(step.label, "Сборка Agent Hub Mobile");
-      assert.deepEqual(step.args.slice(-3), ["--", "-ArtifactVersion", original.runtimeReleaseVersion]);
-      // Execute actual npm → actual wrapper → actual frozen identity parser.
+      assert.deepEqual(step.args.slice(-2), ["-ArtifactVersion", original.runtimeReleaseVersion]);
+      assert.equal(step.args[step.args.indexOf("-SourceRoot") + 1], runner);
+      // Execute the external recipe script and its frozen identity parser.
       // A deliberately absent SDK stops before Gradle or any APK/build output.
-      await runStep({ ...step, cwd: runner, logFile, timeoutMs: 30_000,
+      await product.runStep({ ...step, cwd: runner, logFile, timeoutMs: 30_000,
         env: { ANDROID_SDK_ROOT: path.join(runner, "absent-sdk"), ANDROID_HOME: path.join(runner, "absent-sdk") } });
     },
   }), /процесс завершён/u);
@@ -506,8 +503,9 @@ test("frozen candidate projection carries original artifact identity into Androi
   });
   assert.equal(input.version, publication.runtimeReleaseVersion);
   assert.equal(input.sourceCommit, publication.head);
-  const { createPublicationArtifactSteps } = await import("../../../src/infrastructure/process/publication-artifacts.mjs");
+  const { createPublicationArtifactSteps } = await import("../../helpers/external-release-recipe.fixture.mjs");
   let builds = 0;
+  await mkdir(path.join(f.primary, "..", "runtime-artifacts"), { recursive: true });
   const artifacts = createPublicationArtifactSteps({
     sourceRoot: path.join(f.candidate.releaseRoot, "AgentHub"),
     runtimeRoot: path.join(f.primary, "..", "runtime-artifacts"),
@@ -516,7 +514,7 @@ test("frozen candidate projection carries original artifact identity into Androi
     run: async step => {
       builds++;
       assert.equal(step.label, "Сборка Agent Hub Mobile");
-      assert.deepEqual(step.args.slice(-3), ["--", "-ArtifactVersion", publication.runtimeReleaseVersion]);
+      assert.deepEqual(step.args.slice(-2), ["-ArtifactVersion", publication.runtimeReleaseVersion]);
       throw new Error("captured Android input before build");
     },
   });

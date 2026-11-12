@@ -5,7 +5,7 @@ import path from "node:path";
 import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash,
   normalizedReleaseBaseProvenance, assertHistoricalChangelogOriginal } from "../../domain/release-base-provenance.mjs";
 import { runtimeRetirementCandidates } from "./runtime-release-retention-policy.mjs";
-import { runtimeHostSourceHash } from "../process/runtime-host-builder.mjs";
+import { runtimeHostSourceHash } from "../process/runtime-host-source-identity.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { publicationStateRepositories } from "../persistence/publication-state.mjs";

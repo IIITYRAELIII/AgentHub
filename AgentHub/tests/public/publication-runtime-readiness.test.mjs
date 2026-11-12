@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { restartRuntimeAndVerify, waitForRuntimeReplacement } from "../../publish-all.mjs";
-import { publicationRuntimeStatus, startInstalledPublicationRuntime } from "../../src/runtime/runtime-publication-start.mjs";
+import { publicationRuntimeStatus, startInstalledPublicationRuntime } from "../helpers/external-release-recipe.fixture.mjs";
 import { runtimeLayout } from "../../src/infrastructure/filesystem/runtime-layout.mjs";
 
 const ready = { current: "new", runningRelease: "new", running: true, ready: true, pid: 42 };

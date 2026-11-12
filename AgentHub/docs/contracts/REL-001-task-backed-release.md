@@ -1,23 +1,5 @@
 # REL-001 — Task-backed Workspace release
 
-## Invocation-scoped main disclosures (ADR-HUB-429-main-disclosures)
-
-One generation-capture invocation may reuse only the disclosed changed-path
-lists for exact commit identities and equal current primary, published baseline,
-local/origin main, revision sets, release-clone identity and effective isolated
-Git configuration. The owning invocation discards them on success or failure;
-there is no durable cache or reuse across captures. Returned audit arrays do not
-own the retained lists.
-
-Every review still acquires its repository owner, fetches current main/origin,
-checks baseline ancestry and current primary state, and derives approval from
-the current explicit pins. Author/committer/signature metadata is reread in
-bounded Git batches on every review. Membership flags come from the freshly
-read revision sets. Reuse is never approval, a skipped fresh guard, a publication
-receipt or permission to change the registered primary. Main, baseline, primary
-or effective-configuration drift discards the reusable paths. Normal Await,
-Task membership, generation identity and commit-time CAS remain unchanged.
-
 ## Generation-scoped recovered executor (ADR-HUB-429-generation-executor)
 
 A recorded publication recovery binds the executor only for its own immutable
@@ -397,9 +379,12 @@ with request-addressed release recovery; no replacement mutation is inferred.
 The existing operation-ID read remains unchanged. Waiting and inactive unknown
 results are owner boundaries, not automatic continuation permission.
 
-Publication execution order, artifact orchestration, archive packaging and
-GitHub effects are supplied by the independently pinned external tool to the
-existing Hub state/domain ports. The existing runner intent binds tool
+Product metadata, validation inventory, build, artifact orchestration, archive
+packaging, publication and installation orchestration belong to the independently
+pinned external recipe. Hub supplies the generic candidate/Git execution API,
+not Agent Hub build/install callbacks or private replacement owners. The recipe
+uses the application's explicit maintenance CLI for application-owned status,
+Ready, installation and maintenance readback. The existing runner intent binds tool
 name/version/digest separately from its immutable application generation and
 candidate before launch. Tool updates happen between joined consumers. A saved
 runner cannot acquire a different tool, and a historical runner without that
@@ -407,9 +392,13 @@ binding retains its original executor. Applied historical readbacks remain
 unchanged. The existing package checkpoint binds the external tool and explicit
 recipient files, never modifies the prepared source manifest and never becomes
 an orchestration ledger. Source-only operators and the tool package are excluded
-from the runtime artifact; Hub retains its minimal independent self-build API.
-See ADR-HUB-419-independent-release-tools. Legacy in-process exported helpers are
-Hub owner adapters for retained callers, not an external CLI importing Hub.
+from the runtime artifact. Development aliases delegate to the explicit pinned
+recipe instead of retaining a private runtime builder. Legacy codecs read only
+already admitted authorization and journal schemas, with the removal condition
+in ADR-HUB-429-external-product-recipe. They do not select a fallback for new
+intakes. Product checks move with the recipe; project checks use the candidate's
+public test inventory. Changed inventory requires a new authorized selection,
+never a rewrite of a frozen plan or an assertion that old failures passed.
 
 Native resolution is ordinary Git work in the issued owner checkout. It needs
 no review envelope, approval receipt or review bundle. Auto-review remains the

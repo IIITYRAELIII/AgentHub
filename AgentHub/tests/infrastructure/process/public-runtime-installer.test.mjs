@@ -4,11 +4,11 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
+import { ProductPublicationOwner as ReleaseOperationPublication } from "../../helpers/external-release-recipe.fixture.mjs";
 import { createExternalPublicationTools } from "../../../src/composition/release-tooling-composition.mjs";
-import { publicationCheckpointStore } from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
-import { publicationRunStore } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
-import { publicRuntimeInstallerBinding, releaseTargetExecutionRoot } from "../../../src/infrastructure/process/public-runtime-installer.mjs";
+import { publicationCheckpointStore, publicationRunStore, publicRuntimeInstallerBinding, releaseTargetExecutionRoot } from "../../helpers/external-release-recipe.fixture.mjs";
+
+
 
 async function publicationFixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-public-runtime-"));

@@ -13,8 +13,8 @@ import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline } fr
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
 import { readAgentHubVersion } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
-import { nextRuntimeReleaseVersion } from "../../../src/infrastructure/filesystem/runtime-release-version.mjs";
-import { runtimeHostSourceHash } from "../../../src/infrastructure/process/runtime-host-builder.mjs";
+import { nextRuntimeReleaseVersion } from "../../helpers/external-release-recipe.fixture.mjs";
+import { runtimeHostSourceHash } from "../../helpers/external-runtime-builder.fixture.mjs";
 import { ReleasePreparationRejectedError } from "../../../src/domain/release-preparation.mjs";
 
 const run = promisify(execFile);

@@ -11,10 +11,10 @@ import { ReleaseOperationCommandService } from "../../src/application/release-op
 import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
-import { ReleaseOperationPublication } from "../../src/infrastructure/process/release-operation-publication.mjs";
+import { ProductPublicationOwner as ReleaseOperationPublication } from "../helpers/external-release-recipe.fixture.mjs";
 import { OwnedNativeObjectStore } from "../../src/infrastructure/filesystem/owned-native-object-store.mjs";
-import { buildArtifact } from "../../src/infrastructure/process/publication-artifacts.mjs";
-import { nextRuntimeReleaseVersion } from "../../src/infrastructure/filesystem/runtime-release-version.mjs";
+import { buildArtifact, nextRuntimeReleaseVersion } from "../helpers/external-release-recipe.fixture.mjs";
+
 import { createReleaseOperation, createCandidateGeneration, releaseIdentitySha256 } from "../../src/domain/release-operation.mjs";
 import * as releaseDomain from "../../src/domain/release-operation.mjs";
 import { resolveTestSelection } from "../../src/domain/test-selection.mjs";

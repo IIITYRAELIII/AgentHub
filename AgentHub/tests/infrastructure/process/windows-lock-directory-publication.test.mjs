@@ -8,7 +8,7 @@ import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { relativeModuleSpecifiers } from "../../../src/infrastructure/filesystem/module-import-specifiers.mjs";
-import { RUNTIME_HOST_SOURCE_INPUTS } from "../../../src/infrastructure/process/runtime-host-builder.mjs";
+import { RUNTIME_HOST_SOURCE_INPUTS, runtimeHostSourceHash } from "../../helpers/external-runtime-builder.fixture.mjs";
 
 const source = fileURLToPath(new URL("../../../", import.meta.url));
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -69,7 +69,7 @@ async function copyClosure(destination) {
       pending.push(path.posix.normalize(path.posix.join(path.posix.dirname(relative), specifier)));
     }
   }
-  for (const relative of RUNTIME_HOST_SOURCE_INPUTS) {
+  for (const relative of [...RUNTIME_HOST_SOURCE_INPUTS, "src/infrastructure/process/release-lock-publisher.cs"]) {
     const target = path.join(destination, relative);
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.copyFile(path.join(source, relative), target);
@@ -105,8 +105,8 @@ test("fixed lock publisher bootstraps from source and ships through the canonica
     publisher = first;
     assert.equal(first, second);
     assert.equal(publisher.provenance.mode, "source");
-    assert.equal(publisher.provenance.compilerExecutions.length, 3);
-    assert.equal(publisher.provenance.sourceInputs.length, 4);
+    assert.equal(publisher.provenance.compilerExecutions.length, 1);
+    assert.equal(publisher.provenance.sourceInputs.length, 1);
     const compiledRoot = path.dirname(publisher.provenance.executable);
 
     const longParent = path.join(root, "a".repeat(100), "b".repeat(100), "c".repeat(80));
@@ -123,13 +123,13 @@ test("fixed lock publisher bootstraps from source and ships through the canonica
     // builder output. The canonical producer still owns manifest/copy checks.
     await fs.mkdir(runtime);
     await fs.copyFile(publisher.provenance.executable, path.join(runtime, "AgentHub.RuntimeHost.exe"));
-    await fs.writeFile(path.join(runtime, "AgentHub.RuntimeHost.source.sha256"), publisher.provenance.sourceHash);
+    await fs.writeFile(path.join(runtime, "AgentHub.RuntimeHost.source.sha256"), await runtimeHostSourceHash(input));
     await fs.writeFile(path.join(runtime, "AgentHub.RuntimeHost.exe.sha256"), publisher.provenance.binaryHash);
     const { prepareRuntime } = await import(pathToFileURL(path.join(input, "src/runtime/runtime-manager.mjs")));
     const prepared = await prepareRuntime({ sourceRoot: input, runtimeRoot: runtime, releaseId: "lock-consumer",
       installProductionDependencies: () => assert.fail("dependency-free fixture cannot install dependencies") });
     const manifest = JSON.parse(await fs.readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
-    for (const name of RUNTIME_HOST_SOURCE_INPUTS) {
+    for (const name of ["src/infrastructure/process/release-lock-publisher.cs"]) {
       const bytes = await fs.readFile(path.join(input, name));
       assert.deepEqual(await fs.readFile(path.join(prepared.releaseRoot, name)), bytes);
       assert.equal(manifest.files.find((entry) => entry.path === name)?.sha256, sha(bytes));
@@ -138,12 +138,13 @@ test("fixed lock publisher bootstraps from source and ships through the canonica
     preparedPublisher = await preparedApi.prepareWindowsLockDirectoryPublisher();
     assert.equal(preparedPublisher.provenance.mode, "prepared");
     assert.equal(preparedPublisher.provenance.compilerExecutions.length, 0);
-    assert.equal(preparedPublisher.provenance.binaryHash, publisher.provenance.binaryHash);
+    assert.equal(preparedPublisher.provenance.binaryHash,
+      manifest.files.find(entry => entry.path === "ReleaseLockPublisher.exe").sha256);
     const target = path.join(root, "prepared.lock"), own = await ready(target);
     await preparedPublisher.publish(own.root, target);
     assert.deepEqual(await fs.readFile(path.join(target, own.file)), own.bytes);
 
-    const required = path.join(input, RUNTIME_HOST_SOURCE_INPUTS[0]);
+    const required = path.join(input, "src/infrastructure/process/release-lock-publisher.cs");
     const retained = await fs.readFile(required);
     await fs.unlink(required);
     try {
@@ -153,7 +154,7 @@ test("fixed lock publisher bootstraps from source and ships through the canonica
 
     await preparedPublisher.shutdown();
     preparedPublisher = null;
-    const binary = path.join(prepared.releaseRoot, "AgentHub.RuntimeHost.exe");
+    const binary = path.join(prepared.releaseRoot, "ReleaseLockPublisher.exe");
     await fs.appendFile(binary, "drift");
     const corrupt = await import(pathToFileURL(path.join(prepared.releaseRoot, "src/infrastructure/process/windows-lock-directory-publication.mjs")).href + "?corrupt");
     await assert.rejects(corrupt.prepareWindowsLockDirectoryPublisher(), /size mismatch|hash mismatch/u);

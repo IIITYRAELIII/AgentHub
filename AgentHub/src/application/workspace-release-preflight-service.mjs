@@ -476,15 +476,9 @@ export class WorkspaceReleasePreflightService {
     return this.withAwaitTransition(workspaceId, () => this.#prepareOperationGenerationLocked({ workspaceId, ...input }));
   }
 
-  async #prepareOperationGenerationLocked(input) {
-    const capture = () => this.#captureOperationGeneration(input);
-    return typeof this.releaseGitWorkspaces.withMainReviewReuse === "function"
-      ? this.releaseGitWorkspaces.withMainReviewReuse(capture) : capture();
-  }
-
-  async #captureOperationGeneration({
+  async #prepareOperationGenerationLocked({
     workspaceId, operationId, generation, taskIds, approvedRepositories = [], changelogContent = undefined,
-    previousSelectedResults = [], releaseVersion = undefined, frozenVersions = [],
+    previousSelectedResults = [], releaseVersion = undefined, frozenVersions = [], expectedRecipeExecutor = undefined,
     uncapturedFirstGenerations = [], inspectOnly = false, validateBeforeCommit = async () => {},
   } = {}) {
     if (inspectOnly && !uncapturedFirstGenerations.length) throw new Error("First capture inspection requires original absence evidence");
@@ -567,7 +561,7 @@ export class WorkspaceReleasePreflightService {
         continue;
       }
       const candidate = await this.measureOperation("release:capture-prepared", () => this.releaseGitWorkspaces.prepareGeneration({
-        operationId, generation, workspaceId, projectRoot: repository.projectRoot,
+        operationId, generation, workspaceId, projectRoot: repository.projectRoot, expectedRecipeExecutor,
         planRevision: plan.revision, approvedBaseCommit: source.baseCommit,
         baseProvenance: source.manifest.baseProvenance, frozenTasks: source.manifest.tasks,
         ...(changelogContent === undefined ? {} : { changelogContent }), validateBeforeCommit: validate,
@@ -585,7 +579,7 @@ export class WorkspaceReleasePreflightService {
   }
 
   async firstOperationGeneration({ workspaceId, operationId, generation, taskIds, approvedRepositories,
-    changelogContent, releaseVersion, inspectOnly, expectedBindings = [], validateBeforeCommit = async () => {} }) {
+    changelogContent, releaseVersion, expectedRecipeExecutor, inspectOnly, expectedBindings = [], validateBeforeCommit = async () => {} }) {
     if (generation !== 1) throw new Error("First compose recovery requires generation one");
     requiredMethod(this.releaseGitWorkspaces, "firstFrozenGeneration");
     return this.withAwaitTransition(workspaceId, async () => {
@@ -607,7 +601,7 @@ export class WorkspaceReleasePreflightService {
           throw new Error("Uncaptured first generation prepared binding is missing");
         }
         return this.#prepareOperationGenerationLocked({ workspaceId, operationId, generation, taskIds, approvedRepositories,
-          changelogContent, releaseVersion, uncapturedFirstGenerations: bindings, inspectOnly, validateBeforeCommit });
+          changelogContent, releaseVersion, expectedRecipeExecutor, uncapturedFirstGenerations: bindings, inspectOnly, validateBeforeCommit });
       }
       const actualIds = [...new Set(releaseCandidates.flatMap(item => item.candidate.manifest.taskIds))].sort();
       if (JSON.stringify(actualIds) !== JSON.stringify([...taskIds].sort())) {

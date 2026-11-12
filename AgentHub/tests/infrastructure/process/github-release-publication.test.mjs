@@ -8,11 +8,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { publishChanged } from "../../../publish-changed.mjs";
-import { distributionArtifactAdapter, releaseOperationDeploymentProfile } from "../../../release-operation-publication-runner.mjs";
-import { createGitHubDistributionSteps, githubReleaseTransport } from "../../../src/infrastructure/process/github-release-publication.mjs";
-import { publicationRunStore } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
-import { publicationCheckpointStore } from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
-import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
+import { distributionArtifactAdapter, releaseOperationDeploymentProfile, createGitHubDistributionSteps, githubReleaseTransport, publicationRunStore, publicationCheckpointStore } from "../../helpers/external-release-recipe.fixture.mjs";
+
+
+
+import { ProductPublicationOwner as ReleaseOperationPublication } from "../../helpers/external-release-recipe.fixture.mjs";
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const names = ["AgentHub-win32-x64.zip", "AgentHub-win32-x64.zip.json", "install_release.py", "SHA256SUMS"];

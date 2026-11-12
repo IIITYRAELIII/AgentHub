@@ -1,5 +1,16 @@
 # Source and distribution boundary
 
+The maintained recipient, archive builder and their product checks have moved
+to the independently pinned `IIITYRAELIII/AgentHub-ReleaseTools` recipe. This
+directory retains source-history migration material and controlled application
+update fixtures; it is not the current recipient root. Use the tool's `recipient`
+directory as the explicit package input. `npm run test:distribution` delegates
+recipient checks to that verified recipe and keeps source-export checks here.
+Old frozen packages, tool versions, installer receipts and update originals keep
+their original bytes and identities. The new recipient calls the packaged
+`runtime-maintenance.mjs` public application API instead of importing private
+runtime modules. See ADR-HUB-429-external-product-recipe.
+
 Affected isolated recovery checks reuse `whole_update.mjs <artifacts.json>
 <new-output> downgrade|poststop-recovery`. The first requires a lower target
 build and verifies rejection before stopping; the second requires a legitimate

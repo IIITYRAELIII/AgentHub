@@ -10,11 +10,7 @@ import {
   readAgentHubReleaseVersion,
   readAgentHubVersion,
 } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
-import {
-  agentHubCalendarVersion,
-  prepareAgentHubReleaseVersion,
-  prepareCommittedAgentHubReleaseVersion,
-} from "../../../src/infrastructure/filesystem/release-version.mjs";
+import { agentHubCalendarVersion, prepareAgentHubReleaseVersion, prepareCommittedAgentHubReleaseVersion } from "../../helpers/external-release-recipe.fixture.mjs";
 
 test("Agent Hub package metadata is the canonical product version", () => {
   assert.equal(readAgentHubVersion(), AGENT_HUB_VERSION);

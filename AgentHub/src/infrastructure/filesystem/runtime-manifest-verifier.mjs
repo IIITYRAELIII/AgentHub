@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { RUNTIME_HOST_SOURCE_INPUTS } from "../process/runtime-host-builder.mjs";
+import { RUNTIME_HOST_SOURCE_INPUTS } from "../process/runtime-host-source-identity.mjs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -7,6 +7,7 @@ import { agentHubReleaseSequence, readAgentHubVersion } from "./agent-hub-packag
 import { relativeModuleSpecifiers } from "./module-import-specifiers.mjs";
 import { manifestVersionIdentity } from "../../domain/agent-hub-version.mjs";
 
+export const LOCK_PUBLISHER_RUNTIME_ASSET = "src/infrastructure/process/release-lock-publisher.cs";
 export const NATIVE_CAPTURE_RUNTIME_ASSET = "src/infrastructure/filesystem/sealed-native-capture.cs";
 
 const MODULE_FILE_PATTERN = /\.(?:cjs|mjs)$/iu;
@@ -17,7 +18,7 @@ export const RELEASE_PROGRESS_RUNTIME_ASSETS = Object.freeze([
 ]);
 const RELEASE_PROGRESS_RUNTIME_FILES = new Set(RELEASE_PROGRESS_RUNTIME_ASSETS);
 const SOURCE_OPERATOR_FILES = new Set([
-  "release.mjs", "publish-all.mjs", "publish-changed.mjs", "release-api.mjs", "build-runtime.mjs",
+  "recipe.mjs", "release-version.mjs", "wrangler-runner.mjs", "release.mjs", "publish-all.mjs", "publish-changed.mjs", "release-api.mjs", "build-runtime.mjs",
   "src/composition/release-api-runtime.mjs", "src/interfaces/mcp/release-api-host.mjs",
 ]);
 
@@ -26,6 +27,8 @@ const RUNTIME_TOP_LEVEL_FILES = new Set([
   "package.json",
   "package-lock.json",
   "RuntimeHost.release-acceptance-v1.json",
+  "ReleaseLockPublisher.exe",
+  "ReleaseLockPublisher.source.sha256",
   "codex-process-ancestry.ps1",
   "codex-rollout-processes.ps1",
   "claude-session-processes.ps1",
@@ -61,6 +64,7 @@ export function isRuntimeSourceFile(relative) {
   return RUNTIME_TOP_LEVEL_FILES.has(file) || RUNTIME_HOST_SOURCE_INPUTS.includes(file) || file.startsWith("assets/")
     // This declared module companion is also required by native source closure.
     || file === "src/infrastructure/filesystem/git-invocation-policy.json"
+    || file === LOCK_PUBLISHER_RUNTIME_ASSET
     || file === NATIVE_CAPTURE_RUNTIME_ASSET
     || RELEASE_PROGRESS_RUNTIME_FILES.has(file) || isRuntimeSourceModule(file);
 }
@@ -70,6 +74,11 @@ export async function verifyRuntimeImportClosure(releaseRoot, files, {
 } = {}) {
   const included = new Set(files.map((entry) => normalizedRelative(entry.path ?? entry)));
   const missing = [];
+  if (included.has("src/infrastructure/process/lock-publisher-protocol.mjs")
+      && !included.has(LOCK_PUBLISHER_RUNTIME_ASSET)) {
+    missing.push({ importer: "src/infrastructure/process/windows-lock-directory-publication.mjs",
+      specifier: "./release-lock-publisher.cs", target: LOCK_PUBLISHER_RUNTIME_ASSET });
+  }
   const captureModule = "src/infrastructure/filesystem/sealed-native-capture.mjs";
   if (included.has(captureModule) && !included.has(NATIVE_CAPTURE_RUNTIME_ASSET)) {
     missing.push({ importer: captureModule, specifier: "./sealed-native-capture.cs", target: NATIVE_CAPTURE_RUNTIME_ASSET });
@@ -122,6 +131,15 @@ export async function verifyRuntimeManifest(releaseRoot, releaseId) {
   }
   if (!Array.isArray(manifest.files)) throw new Error("Agent Hub runtime manifest has no file list");
   await verifyRuntimeImportClosure(releaseRoot, manifest.files);
+  if (manifest.files.some(entry => entry.path === "src/infrastructure/process/lock-publisher-protocol.mjs")) {
+    const sourceEntry = manifest.files.find(entry => entry.path === LOCK_PUBLISHER_RUNTIME_ASSET);
+    const binary = manifest.files.find(entry => entry.path === "ReleaseLockPublisher.exe");
+    const sourceDigest = manifest.files.find(entry => entry.path === "ReleaseLockPublisher.source.sha256");
+    if (!sourceEntry || !binary || !sourceDigest
+        || (await readFile(releasePath(releaseRoot, sourceDigest.path), "utf8")).trim() !== sourceEntry.sha256) {
+      throw new Error("Prepared lock publisher provenance mismatch");
+    }
+  }
   for (const entry of manifest.files) {
     const relative = String(entry?.path ?? "");
     const target = releasePath(releaseRoot, relative);

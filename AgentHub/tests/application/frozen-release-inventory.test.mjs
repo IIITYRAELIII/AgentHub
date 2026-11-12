@@ -8,10 +8,10 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { publishChanged, selectedPublicationSteps } from "../../publish-changed.mjs";
 import { resolveTestSelection, verifyTestPlan } from "../../src/domain/test-selection.mjs";
-import { discoverReleaseTestInventory, releaseTestPlans } from "../../src/infrastructure/filesystem/release-test-inventory.mjs";
+import { discoverReleaseTestInventory } from "../../src/infrastructure/filesystem/release-test-inventory.mjs";
 import { resolveTestContourSource } from "../../src/runtime/test-contour-manager.mjs";
 import { preparePublicationTestSelection, readPublicationTestSelection } from "../../src/infrastructure/filesystem/publication-test-selection.mjs";
-import { runPublicationSteps } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
+import { releaseTestPlans, RECIPE_CHECK_IDS, runPublicationSteps } from "../helpers/external-release-recipe.fixture.mjs";
 
 const exec = promisify(execFile);
 const all = { mode: "all", ids: [] };
@@ -25,6 +25,11 @@ async function fixture(t) {
   await mkdir(path.join(sourceRoot, "tests"), { recursive: true });
   await git(repository, "init", "--initial-branch=main");
   await writeFile(path.join(sourceRoot, "tests", "core.test.mjs"), "// inventory only; never executed\n");
+  await writeFile(path.join(sourceRoot, "test-suite.mjs"), `
+import { discoverReleaseTestInventory } from ${JSON.stringify(new URL("../../src/infrastructure/filesystem/release-test-inventory.mjs", import.meta.url).href)};
+if (process.argv[2] !== "--list-tests") throw new Error("Inventory fixture accepts only public discovery");
+console.log(JSON.stringify(await discoverReleaseTestInventory(import.meta.dirname)));
+`);
   await git(repository, "add", ".");
   await git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "frozen source");
   const head = await git(repository, "rev-parse", "HEAD");
@@ -52,7 +57,7 @@ test("frozen main all-plan dispatches exact candidate contour and every core che
   }
   assert.equal(contours.length, 1);
   assert.equal(contours[0].args.includes("--require-installed"), true);
-  const core = plan.inventory.filter(id => !id.startsWith("check:"));
+  const core = plan.inventory.filter(id => !RECIPE_CHECK_IDS.includes(id));
   assert.ok(core.includes("tests/core.test.mjs"));
   const suite = steps.find(step => step.args[0] === "test-suite.mjs");
   const selected = JSON.parse(suite.args.find(arg => arg.startsWith("--selection=")).slice(12));
@@ -110,6 +115,11 @@ async function selectionFixture(t, count = 1) {
   await writeFile(path.join(f.sourceRoot, "test-suite.mjs"), `
 import { createHash } from "node:crypto";
 import { readPublicationTestSelection } from ${JSON.stringify(new URL("../../src/infrastructure/filesystem/publication-test-selection.mjs", import.meta.url).href)};
+if (process.argv[2] === "--list-tests") {
+  const { discoverReleaseTestInventory } = await import(${JSON.stringify(new URL("../../src/infrastructure/filesystem/release-test-inventory.mjs", import.meta.url).href)});
+  console.log(JSON.stringify(await discoverReleaseTestInventory(import.meta.dirname)));
+  process.exit(0);
+}
 const args = process.argv.slice(3);
 const selection = args.some(arg => arg.startsWith("--selection-file="))
   ? await readPublicationTestSelection(args, { sourceRoot: import.meta.dirname })
@@ -137,8 +147,10 @@ test("publication launches an oversized whole selection through bounded argv and
   if (process.platform === "win32") {
     await assert.rejects(async () => exec(legacy.command, legacy.args, { cwd: f.sourceRoot, windowsHide: true }), { code: "ENAMETOOLONG" });
   }
+  const [{ plan: recipePlan }] = await releaseTestPlans([{ repositoryRoot: f.repository, releaseRoot: f.repository }], all);
   let saved = null;
   let selectedLaunches = 0;
+  let recipeLaunches = 0;
   let failWorker = true;
   const checkpoint = { read: async () => saved, write: async value => { saved = value; }, clear: async () => { saved = null; } };
   const options = {
@@ -155,18 +167,23 @@ test("publication launches an oversized whole selection through bounded argv and
         t.diagnostic(JSON.stringify({ legacyArgumentUtf16: legacyArgument.length,
           boundedArgc: step.args.length, largestArgumentUtf16: Math.max(...step.args.map(arg => arg.length)),
           selectedCoreIds: coreSelection(f.plan).ids.length, childJoined: true }));
+      } else if (step.args[0]?.endsWith("recipe-checks.mjs") && JSON.parse(step.args[1]).includes("recipe:publication-stage-budget.test.mjs")) {
+        recipeLaunches++;
+        assert.equal(step.env.AGENT_HUB_RECIPE_TEST_SOURCE, f.sourceRoot);
       } else if (step.args.includes("worker:verify") && failWorker) throw new Error("controlled worker failure");
     },
   };
-  const args = ["--from", f.head, `--test-plan=${JSON.stringify(f.plan)}`];
+  const args = ["--from", f.head, `--test-plan=${JSON.stringify(recipePlan)}`];
   await assert.rejects(publishChanged(args, options), /controlled worker failure/u);
   assert.equal(selectedLaunches, 1);
   assert.ok(saved.completedLabels.includes("Выбранные тесты Agent Hub"));
-  assert.deepEqual(saved.identity.testPlan, f.plan);
+  assert.deepEqual(saved.identity.testPlan, recipePlan);
+  assert.equal(recipeLaunches, 1);
   failWorker = false;
   assert.equal((await publishChanged(args, options)).status, "published");
   assert.equal(selectedLaunches, 1, "the completed selected step is reused through its existing checkpoint");
   assert.equal(saved, null);
+  assert.equal(recipeLaunches, 1);
   assert.equal(await git(f.repository, "status", "--porcelain=v1"), "");
 });
 

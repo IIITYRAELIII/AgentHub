@@ -855,22 +855,6 @@ subsequent reads are SELECT-only and remain available while another WAL writer
 holds its transaction. Compaction persistence queues are scoped to their Thread,
 so a busy transition does not serialize unrelated Thread processing.
 
-## Main-disclosure work during generation capture
-
-The existing original-operation timing owner reports one fixed disclosure-work
-checkpoint per main review: an opaque input SHA-256, commit count, reuse boolean,
-metadata/path command counts and their inclusive elapsed intervals. It records
-no Git configuration, refs, paths, commit identities, subjects or author data.
-The checkpoint survives a disclosure failure; the ordinary owner still emits
-its error and summary. Nested measurements are not additive wall time.
-
-ADR-HUB-429-main-disclosures batches fresh metadata and reuses only exact
-invocation-scoped changed paths. Reduced Git work in a disposable fixture is
-separate from installed runtime latency. Historical repeated disclosure spans
-without exact input hashes do not establish equal historical inputs or a
-retrospectively proven cache hit. The release owner retains fresh authority
-checks and its ordinary execution/validation lifecycle.
-
 ## Navigation responsiveness
 
 Retained chat selection paints its canonical window before the ordered

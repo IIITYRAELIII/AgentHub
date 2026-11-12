@@ -15,13 +15,11 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 
-import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
-import { artifactVersionIdentity, SEMVER_BUILD_SCHEME } from "../domain/agent-hub-version.mjs";
+import { artifactVersionIdentity } from "../domain/agent-hub-version.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
-import { NATIVE_CAPTURE_RUNTIME_ASSET, RELEASE_PROGRESS_RUNTIME_ASSETS, isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
-import { nextRuntimeReleaseVersion } from "../infrastructure/filesystem/runtime-release-version.mjs";
+import { verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
+import { releaseRecipeModule } from "../infrastructure/process/release-recipe.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
-import { buildWindowsRuntimeHost, runtimeHostSourceHash, RUNTIME_HOST_SOURCE_INPUTS } from "../infrastructure/process/runtime-host-builder.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 import { migrateUsageSyncServerSetting } from "../infrastructure/filesystem/usage-sync-settings-migration.mjs";
@@ -29,24 +27,6 @@ import { captureRuntimeReleaseBinding, readRuntimePointer, withRuntimeInstallati
 import { runtimePointerTransition, runtimeRollbackPointer } from "../infrastructure/filesystem/runtime-release-retention-policy.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
-const RUNTIME_MODULE_ASSETS = [
-  ...RUNTIME_HOST_SOURCE_INPUTS.map(asset => ["src/infrastructure/process/windows-lock-directory-publication.mjs", asset]),
-  ["src/infrastructure/filesystem/preparation-git-isolation.mjs",
-    "src/infrastructure/filesystem/git-invocation-policy.json"],
-  ["src/infrastructure/process/test-resource-monitor.mjs",
-    "src/infrastructure/process/test-resource-accounting.cs"],
-  ["src/infrastructure/process/codex-executable-custody.mjs",
-    "src/infrastructure/process/codex-executable-custody.cs"],
-  ...RELEASE_PROGRESS_RUNTIME_ASSETS
-    .map(asset => ["src/infrastructure/process/release-progress-monitor.mjs", asset]),
-  ["src/infrastructure/filesystem/sealed-native-capture.mjs", NATIVE_CAPTURE_RUNTIME_ASSET],
-  ["src/infrastructure/filesystem/sealed-runtime-release.mjs",
-    "src/infrastructure/filesystem/sealed-runtime-release.cs"],
-  ["src/infrastructure/filesystem/sealed-transport-delete.mjs",
-    "src/infrastructure/filesystem/sealed-transport-delete.cs"],
-  ["src/infrastructure/persistence/windows-delete-verified-entry.mjs",
-    "src/infrastructure/persistence/windows-delete-verified-entry.cs"],
-];
 
 async function exists(target) {
   return access(target).then(() => true, () => false);
@@ -62,70 +42,6 @@ async function atomicJson(target, value) {
   await chmod(target, 0o600).catch(() => {});
 }
 
-async function releaseFileNames(sourceRoot) {
-  const entries = await readdir(sourceRoot, { withFileTypes: true });
-  const topLevel = entries
-    .filter((entry) => (
-      (entry.isFile() && (
-        isRuntimeSourceFile(entry.name)
-      ))
-      || (entry.isDirectory() && entry.name === "assets")
-    ))
-    .map((entry) => entry.name)
-    .sort();
-  const internal = [];
-  async function visitInternal(relative) {
-    const entries = await readdir(path.join(sourceRoot, relative), { withFileTypes: true });
-    for (const entry of entries) {
-      const child = path.join(relative, entry.name);
-      if (entry.isDirectory()) {
-        await visitInternal(child);
-      } else if (
-        isRuntimeSourceModule(child)
-      ) {
-        internal.push(child);
-      }
-    }
-  }
-  if (entries.some((entry) => entry.isDirectory() && entry.name === "src")) {
-    await visitInternal("src");
-  }
-  for (const [module, asset] of RUNTIME_MODULE_ASSETS) {
-    if (!internal.includes(path.normalize(module))) continue;
-    const info = await stat(path.join(sourceRoot, asset)).catch((error) => {
-      if (error?.code === "ENOENT") return null;
-      throw error;
-    });
-    if (!info?.isFile()) throw new Error(`Runtime module asset is missing: ${asset}`);
-    internal.push(path.normalize(asset));
-  }
-  return [...topLevel, ...internal].sort();
-}
-
-async function installLockedRuntimeDependencies(stagingRoot) {
-  const windows = process.platform === "win32";
-  const command = windows ? "cmd.exe" : "npm";
-  const args = ["ci", "--omit=dev", "--include=optional", "--ignore-scripts", "--no-bin-links", "--no-audit", "--no-fund"];
-  await new Promise((resolve, reject) => {
-    const child = spawn(command, windows ? ["/d", "/s", "/c", "npm.cmd", ...args] : args, {
-      cwd: stagingRoot,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let diagnostic = "";
-    for (const stream of [child.stdout, child.stderr]) {
-      stream.on("data", (chunk) => {
-        diagnostic = `${diagnostic}${chunk.toString("utf8")}`.slice(-16_384);
-      });
-    }
-    child.once("error", reject);
-    child.once("close", (code, signal) => {
-      if (code === 0 && !signal) resolve();
-      else reject(new Error(`Locked runtime dependency install failed (${signal ?? code}): ${diagnostic}`));
-    });
-  });
-}
-
 async function hashFile(target) {
   return createHash("sha256").update(await readFile(target)).digest("hex");
 }
@@ -135,31 +51,6 @@ async function sameFileContents(left, right) {
   if (leftInfo.size !== rightInfo.size) return false;
   const [leftContents, rightContents] = await Promise.all([readFile(left), readFile(right)]);
   return leftContents.equals(rightContents);
-}
-
-async function releaseManifest(releaseRoot, names) {
-  const files = [];
-  const directories = [];
-  async function visit(relative) {
-    const full = path.join(releaseRoot, relative);
-    const info = await stat(full);
-    if (info.isDirectory()) {
-      directories.push(relative.replaceAll("\\", "/"));
-      for (const child of await readdir(full)) await visit(path.join(relative, child));
-      return;
-    }
-    files.push({
-      path: relative.replaceAll("\\", "/"),
-      bytes: info.size,
-      sha256: await hashFile(full),
-    });
-  }
-  for (const name of names) await visit(name);
-  return { files: files.sort((left, right) => left.path.localeCompare(right.path)), directories: directories.sort() };
-}
-
-function newReleaseId(now = new Date()) {
-  return `${now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${randomUUID().slice(0, 8)}`;
 }
 
 async function pruneReplacedStableFiles(layout) {
@@ -278,144 +169,9 @@ async function installStableRuntimeFiles(layout, releaseRoot, {
 }
 
 export async function prepareRuntime(options = {}) {
-  const runtimeRoot = options.runtimeRoot ?? defaultRuntimeRoot();
-  return withRuntimeInstallationLease(runtimeRoot, lease => prepareRuntimeOwned({ ...options, runtimeRoot, lease }));
-}
-
-async function prepareRuntimeOwned({
-  sourceRoot = SOURCE_ROOT,
-  runtimeRoot = defaultRuntimeRoot(),
-  releaseId = newReleaseId(),
-  publicationRevision = null,
-  expectedReleaseVersion = null,
-  mobileAssetsRoot = null,
-  beforeManifest,
-  installProductionDependencies = installLockedRuntimeDependencies,
-  lease,
-} = {}) {
-  const layout = runtimeLayout(runtimeRoot);
-  const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
-  const staging = `${releaseRoot}.staging-${randomUUID()}`;
-  await mkdir(layout.root, { recursive: true });
-  await protectRuntimeDirectory(layout.root);
-  await mkdir(layout.releasesDir, { recursive: true });
-  await protectRuntimeDirectory(layout.releasesDir);
-  const pointer = await readRuntimePointer(runtimeRoot);
-  if (pointer.runtimeRetention?.retired?.some?.(entry => entry.releaseId === releaseId && entry.operationId)) {
-    throw new Error("Partially retired runtime cannot be prepared again");
-  }
-  // A frozen publication may require one exact allocator result. Check it
-  // under the existing installation lease, before copying, compiling or npm ci.
-  // Reuse of an already prepared body belongs to the publication checkpoint.
-  let frozenReleaseVersion = null;
-  const allocationPackageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
-  const expected = typeof expectedReleaseVersion === "string" && expectedReleaseVersion.includes("+build.")
-    ? artifactVersionIdentity(expectedReleaseVersion) : null;
-  frozenReleaseVersion = await nextRuntimeReleaseVersion({
-    releasesDir: layout.releasesDir, packageVersion: allocationPackageVersion,
-    ...(expected ? { allocationFloor: expected.buildNumber - 1 } : {}),
-  });
-  if (expectedReleaseVersion !== null) {
-    if (typeof expectedReleaseVersion !== "string" || expectedReleaseVersion !== frozenReleaseVersion) {
-      throw new Error(`Frozen runtime version differs from the next allocated version: ${frozenReleaseVersion}`);
-    }
-  }
-  await mkdir(staging, { recursive: true });
-  try {
-    const names = await releaseFileNames(sourceRoot);
-    for (const name of names) {
-      const target = path.join(staging, name);
-      await mkdir(path.dirname(target), { recursive: true });
-      await cp(path.join(sourceRoot, name), target, {
-        recursive: true,
-        force: false,
-        errorOnExist: true,
-      });
-    }
-    if (process.platform === "win32") {
-      const sourceHash = await runtimeHostSourceHash(sourceRoot);
-      const cachedHash = await readFile(layout.runtimeHostSourceHashFile, "utf8")
-        .then((value) => value.trim().toLowerCase(), () => "");
-      const cachedBinaryHash = await readFile(layout.runtimeHostBinaryHashFile, "utf8")
-        .then((value) => value.trim().toLowerCase(), () => "");
-      const actualCachedBinaryHash = await exists(layout.launcherFile)
-        ? await hashFile(layout.launcherFile)
-        : "";
-      const stagedHost = path.join(staging, "AgentHub.RuntimeHost.exe");
-      if (cachedHash === sourceHash
-        && cachedBinaryHash === actualCachedBinaryHash
-        && actualCachedBinaryHash) {
-        await cp(layout.launcherFile, stagedHost, { force: false, errorOnExist: true });
-      } else {
-        await buildWindowsRuntimeHost({ sourceRoot, outputFile: stagedHost });
-      }
-      await writeFile(
-        path.join(staging, "AgentHub.RuntimeHost.source.sha256"),
-        `${sourceHash}\n`,
-        "utf8",
-      );
-      await writeFile(
-        path.join(staging, "AgentHub.RuntimeHost.exe.sha256"),
-        `${await hashFile(stagedHost)}\n`,
-        "utf8",
-      );
-      names.push(
-        "AgentHub.RuntimeHost.exe",
-        "AgentHub.RuntimeHost.exe.sha256",
-        "AgentHub.RuntimeHost.source.sha256",
-      );
-      names.sort();
-    }
-    // Customize only the unpublished copy. Manifest bytes become immutable
-    // before the release is renamed or any stable launcher/pointer is changed.
-    if (mobileAssetsRoot) {
-      await mkdir(path.join(staging, "assets", "mobile"), { recursive: true });
-      for (const name of ["AgentHub-Mobile.apk", "update.json"]) {
-        await cp(path.join(mobileAssetsRoot, name), path.join(staging, "assets", "mobile", name));
-      }
-    }
-    await beforeManifest?.({ stagingRoot: staging, releaseId });
-    const sourcePackage = JSON.parse(await readFile(path.join(sourceRoot, "package.json"), "utf8"));
-    if (Object.keys(sourcePackage.dependencies ?? {}).length) {
-      if (!names.includes("package-lock.json")) {
-        throw new Error("Runtime production dependencies require a pinned package-lock.json");
-      }
-      await installProductionDependencies(staging);
-      if (!await exists(path.join(staging, "node_modules", ".package-lock.json"))) {
-        throw new Error("Runtime production dependency installation has no lock evidence");
-      }
-      names.push("node_modules");
-    }
-    const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
-    const allocatedVersion = frozenReleaseVersion ?? await nextRuntimeReleaseVersion({
-      releasesDir: layout.releasesDir, packageVersion,
-    });
-    const semanticBuild = allocatedVersion.includes("+build.") ? artifactVersionIdentity(allocatedVersion) : null;
-    const manifest = {
-      releaseId,
-      version: packageVersion,
-      releaseVersion: allocatedVersion,
-      ...(semanticBuild ? { versionScheme: SEMVER_BUILD_SCHEME,
-        publicVersion: packageVersion, buildNumber: semanticBuild.buildNumber } : {}),
-      createdAt: new Date().toISOString(),
-      sourceRoot: path.resolve(sourceRoot),
-      ...(publicationRevision ? { publicationRevision } : {}),
-      ...await releaseManifest(staging, names),
-    };
-    await verifyRuntimeImportClosure(staging, manifest.files);
-    await writeFile(path.join(staging, "runtime-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    await lease.assertOwned();
-    await rename(staging, releaseRoot);
-    // Staging is created below the already protected releases directory, so
-    // every copied file inherits the owner-only ACL. Running icacls /T with
-    // directory inheritance flags would strip effective ACEs from files.
-    await protectRuntimeDirectory(releaseRoot);
-
-    return { layout, releaseId, releaseRoot };
-  } catch (error) {
-    await rm(staging, { recursive: true, force: true });
-    throw error;
-  }
+  const { recipe } = await releaseRecipeModule();
+  if (typeof recipe.prepareArtifact !== "function") throw new Error("Pinned recipe has no artifact preparation API");
+  return recipe.prepareArtifact({ sourceRoot: SOURCE_ROOT, ...options });
 }
 
 export async function verifyInstalledRuntime({ runtimeRoot = defaultRuntimeRoot(), releaseId, releaseRoot }) {

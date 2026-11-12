@@ -5,9 +5,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createPublicRuntimeInstaller, releaseTargetExecutionRoot } from "../../../src/infrastructure/process/public-runtime-installer.mjs";
+import { createPublicRuntimeInstaller, releaseTargetExecutionRoot, publicationRunStore, externalRecipeEntrypoint } from "../../helpers/external-release-recipe.fixture.mjs";
 import { packageBindingDigest, packageFile } from "../../../src/infrastructure/filesystem/runtime-package-target.mjs";
-import { publicationRunStore } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
+
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 
 async function fixture(t, { childExit = 0, initiallyStopped = false, firstInstall = false, lostStartReply = false,
@@ -43,7 +43,7 @@ async function fixture(t, { childExit = 0, initiallyStopped = false, firstInstal
   let held = false, outerHeld = false, children = 0, joined = 0, verified = 0, readyChecks = 0, starts = 0;
   const invocations = [];
   let duringInput = async () => {};
-  const options = { operation, generation, target, runtimeRoot, journal,
+  const options = { operation, generation, target, runtimeRoot, journal, sourceRoot: path.resolve(import.meta.dirname, "../../.."),
     tool: { name: "release-tools", version: "0.1.2", sha256: "f".repeat(64) },
     readPublishedInput: async () => { await duringInput(); return structuredClone(input); },
     readStatus: async () => structuredClone(status), readMaintenance: id => maintenance.getReadonly(id),
@@ -248,11 +248,14 @@ for (const lostStartReply of [false, true]) test(`independent publication runner
     createInstaller: async options => {
       const { readStatus, verifyReady, startRuntime, ...runnerInput } = options;
       const { createReleaseOperationPublicInstaller } = await importCompositionWithPorts(
-        new URL("../../../release-operation-publication-runner.mjs", import.meta.url), {
-          "./src/runtime/runtime-publication-start.mjs": {
-            publicationRuntimeStatus: readStatus, startInstalledPublicationRuntime: startRuntime,
+        externalRecipeEntrypoint, {
+          "./application-client.mjs": { applicationMaintenance: () => (action, input) => {
+            assert.equal(action, "status"); return readStatus(input);
+          } },
+          "./agent-hub/src/runtime/runtime-publication-start.mjs": {
+            startInstalledPublicationRuntime: startRuntime,
           },
-          "./src/runtime/publication-readiness.mjs": { waitForRuntimeReplacement: verifyReady },
+          "./agent-hub/src/runtime/publication-readiness.mjs": { waitForRuntimeReplacement: verifyReady },
         });
       return createReleaseOperationPublicInstaller(runnerInput);
     },

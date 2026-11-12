@@ -18,7 +18,7 @@ import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspac
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
-import { releaseTestPlans } from "../../src/infrastructure/filesystem/release-test-inventory.mjs";
+import { releaseTestPlans } from "../helpers/external-release-recipe.fixture.mjs";
 import * as releaseDomain from "../../src/domain/release-operation.mjs";
 const { createReleaseOperation, restoreReleaseOperation, effectiveReleaseTaskScope } = releaseDomain;
 

@@ -430,31 +430,6 @@ test("first compose preflight fences whole original bindings before recovery and
   assert.equal(versions.length, 1);
 });
 
-test("generation capture scopes repeated main checks through the existing Git owner and closes on failure", async () => {
-  const f = localSourceFixture();
-  let active = false, entered = 0, audits = 0, captures = 0;
-  f.service.releaseGitWorkspaces.withMainReviewReuse = async operation => {
-    assert.equal(active, false); active = true; entered++;
-    try { return await operation(); } finally { active = false; }
-  };
-  const inspect = f.service.releaseGitWorkspaces.inspectMainChanges;
-  f.service.releaseGitWorkspaces.inspectMainChanges = async request => {
-    assert.equal(active, true); audits++; return inspect(request);
-  };
-  f.service.releaseGitWorkspaces.prepareGeneration = async request => {
-    assert.equal(active, true); captures++;
-    await request.validateBeforeCommit(); return f.candidate;
-  };
-  const request = { workspaceId: "workspace-1", operationId: "release-original", generation: 1, taskIds: ["task-current"] };
-  await f.service.prepareOperationGeneration(request);
-  assert.equal(entered, 1); assert.equal(active, false); assert.equal(captures, 1);
-  assert.ok(audits >= 3);
-  const failure = new Error("canonical admission changed");
-  await assert.rejects(f.service.prepareOperationGeneration({ ...request,
-    validateBeforeCommit: async () => { assert.equal(active, true); throw failure; } }), error => error === failure);
-  assert.equal(entered, 2); assert.equal(active, false); assert.equal(captures, 1);
-});
-
 test("installed local source generation reuses the sealed exact selection without changing agreed main", async () => {
   const f = localSourceFixture();
   let generationCalls = 0;

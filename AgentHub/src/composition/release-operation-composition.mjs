@@ -1,6 +1,4 @@
-import { publicationRuntimeStatus, startInstalledPublicationRuntime } from "../runtime/runtime-publication-start.mjs";
-import { waitForRuntimeReplacement } from "../runtime/publication-readiness.mjs";
-import { releaseTestPlans } from "../infrastructure/filesystem/release-test-inventory.mjs";
+import { releasePublicationPlatform } from "./release-tooling-composition.mjs";
 import { ReleaseOperationService } from "../application/release-operation-service.mjs";
 import { ReleaseOperationCommandService } from "../application/release-operation-command-service.mjs";
 import { ReleaseOperationFinalization } from "../application/release-operation-finalization.mjs";
@@ -19,10 +17,7 @@ export function createReleaseOperationServices({
   recordCommandTrace = () => false,
   observeOperation = createReleaseProgressObserver({ runtimeRoot }),
   store = new ReleaseOperationStore({ dataDir }),
-  publication = new ReleaseOperationPublication({ dataDir, runtimeRoot,
-    publicRuntimeInstallerPorts: { readStatus: publicationRuntimeStatus,
-      verifyReady: waitForRuntimeReplacement, startRuntime: startInstalledPublicationRuntime },
-  }),
+  publication = new ReleaseOperationPublication({ dataDir, runtimeRoot, platform: releasePublicationPlatform() }),
   finalization = new ReleaseOperationFinalization({ taskBoard, releaseGitWorkspaces, taskGitWorkspaces }),
 } = {}) {
   store.recordPersistence = diagnostic => {
@@ -32,7 +27,8 @@ export function createReleaseOperationServices({
   };
   const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight, publication, finalization });
   const operations = new ReleaseOperationService({
-    resolveTestPlans: releaseTestPlans,
+    loadAuthorizationPolicy: () => publication.loadAuthorizationPolicy(),
+    resolveTestPlans: (candidates, selection) => publication.resolveTestPlans(candidates, selection),
     withTaskSelection: input => adapter.withTaskSelection(input),
     store,
     compose: input => taskGitWorkspaces.withOperationTrace({

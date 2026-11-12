@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { selectedCompositionFields } from "./task-selected-composition.mjs";
 import { semanticVersion } from "./agent-hub-version.mjs";
-import { normalizedRuntimeInstallation, PUBLIC_RUNTIME_INSTALLATION } from "./public-runtime-installation.mjs";
+import { normalizedRuntimeInstallation, PUBLIC_RUNTIME_INSTALLATION } from "./legacy-release-authorization.mjs";
+import { normalizedRecipeAuthorization } from "./release-recipe-authorization.mjs";
 
 
 export const RELEASE_OPERATION_STATES = Object.freeze({
@@ -151,6 +152,7 @@ function normalizedAuthorization(value = {}) {
     ...(value.releaseMetadata ? { releaseMetadata: normalizedReleaseMetadata(value.releaseMetadata) } : {}),
     ...(value.releaseVersion !== undefined ? { releaseVersion: normalizeReleaseVersion(value.releaseVersion) } : {}),
     ...normalizedRuntimeInstallation(value.runtimeInstallation, approvedTargets),
+    ...normalizedRecipeAuthorization(value.recipe, approvedTargets),
   };
   return { ...authorization, fingerprint: releaseIdentitySha256(authorization) };
 }
@@ -223,7 +225,7 @@ export function reviewedMainBinding(operation, value) {
       || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1
       || !Array.isArray(value.approvedRepositories) || !value.approvedRepositories.length) throw new TypeError("Invalid reviewed-main binding");
   const roots = new Set(operation.authorization.approvedTargets.map(target => {
-    if (target.kind !== "agent-hub-publication" || !target.repositoryRoot) {
+    if (!target.repositoryRoot) {
       throw new Error("Reviewed-main binding requires original repository publication targets");
     }
     return repositoryKey(target.repositoryRoot);
@@ -475,6 +477,9 @@ export function releaseApprovedTargets(operation) {
     return approval ? { ...target, approvedLocalMainCommit: approval.approvedLocalMainCommit,
       approvedOriginMainCommit: approval.approvedOriginMainCommit } : target;
   });
+  if (operation.authorization.recipe) {
+    return operation.authorization.recipe.targetOrder.map(id => targets.find(target => target.targetId === id));
+  }
   return operation.authorization.runtimeInstallation === PUBLIC_RUNTIME_INSTALLATION
     ? [...targets.filter(target => target.environment === "github-release"),
       ...targets.filter(target => target.environment !== "github-release")]

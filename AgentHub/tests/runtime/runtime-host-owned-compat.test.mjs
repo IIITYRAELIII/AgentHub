@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";import test from "node:test";
 import {mkdtemp,mkdir,writeFile,readFile,rm} from "node:fs/promises";import os from "node:os";import path from "node:path";import {createHash} from "node:crypto";import {execFile} from "node:child_process";import {promisify} from "node:util";
-import {buildWindowsRuntimeHost} from "../../src/infrastructure/process/runtime-host-builder.mjs";
+import {buildWindowsRuntimeHost} from "../helpers/external-runtime-builder.fixture.mjs";
 const exec=promisify(execFile);
 test("controlled direct invocation owns its actual Node child through exit",{skip:process.platform!=="win32"},async t=>{
  const root=await mkdtemp(path.join(os.tmpdir(),"hub-owned-host-"));t.after(()=>rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100}));

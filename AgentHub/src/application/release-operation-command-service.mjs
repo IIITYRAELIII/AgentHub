@@ -1,5 +1,3 @@
-import { publicRuntimeInstallationAuthorization } from "../domain/public-runtime-installation.mjs";
-
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
 }
@@ -41,10 +39,11 @@ export function preparedAwaitAuthorization(taskBoard, workspaceId, expectedTaskI
       }
     }
     return { ...authorization, taskIds,
+      ...(original?.authorization.recipe === undefined ? {} : { recipe: structuredClone(original.authorization.recipe) }),
       ...(original
         ? original.authorization.runtimeInstallation === undefined ? {}
           : { runtimeInstallation: original.authorization.runtimeInstallation }
-        : publicRuntimeInstallationAuthorization(authorization.approvedTargets)),
+        : {}),
       ...(original
         ? original.authorization.taskScope == null ? {} : { taskScope: original.authorization.taskScope }
         : { taskScope: "all_await" }) };

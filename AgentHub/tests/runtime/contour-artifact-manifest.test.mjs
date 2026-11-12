@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { prepareTestContourCandidate } from "../../src/runtime/test-contour-manager.mjs";
 import { verifyRuntimeManifest } from "../../src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
-import { runtimeHostSourceHash } from "../../src/infrastructure/process/runtime-host-builder.mjs";
+import { runtimeHostSourceHash } from "../helpers/external-runtime-builder.fixture.mjs";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 async function fixture(t, html = "<html><body>synthetic</body></html>") {

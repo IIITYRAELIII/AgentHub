@@ -210,6 +210,7 @@ export class ReleaseOperationService {
     recoverFirstCompose = null,
     withRetainedGeneration = null,
     withPublicationRecovery = null,
+    loadAuthorizationPolicy = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -235,6 +236,9 @@ export class ReleaseOperationService {
       if (port != null && typeof port !== "function") throw new TypeError("First compose recovery port must be a function");
     }
     if (typeof processAlive !== "function") throw new TypeError("processAlive is required");
+    if (loadAuthorizationPolicy != null && typeof loadAuthorizationPolicy !== "function") {
+      throw new TypeError("loadAuthorizationPolicy must be a function");
+    }
     if (typeof schedule !== "function") throw new TypeError("schedule is required");
     this.store = store;
     this.compose = compose;
@@ -265,9 +269,39 @@ export class ReleaseOperationService {
     this.recoverFirstCompose = recoverFirstCompose;
     this.withRetainedGeneration = withRetainedGeneration;
     this.withPublicationRecovery = withPublicationRecovery;
+    this.loadAuthorizationPolicy = loadAuthorizationPolicy;
   }
 
-  start({ requestId, workspaceId, streamId, threadId, authorization, resolveAuthorization = null } = {}) {
+  start(input = {}) {
+    if (!this.loadAuthorizationPolicy) return this.#start(input);
+    const start = policy => {
+      const resolve = input.resolveAuthorization;
+      return this.#start({ ...input, resolveAuthorization: original => {
+        const authorization = resolve ? resolve(original) : input.authorization;
+        if (original) {
+          if (authorization?.recipe !== undefined
+              && releaseIdentitySha256(authorization.recipe) !== releaseIdentitySha256(original.authorization.recipe)) {
+            throw new Error("Original recipe authorization differs");
+          }
+          // Recipe policy is derived at admission, not a new caller option.
+          // Preserve only that original derivation; ordinary authority/hash
+          // checks still compare every requested target and membership field.
+          return { ...authorization, ...(original.authorization.recipe === undefined ? {}
+            : { recipe: structuredClone(original.authorization.recipe) }) };
+        }
+        if (typeof policy !== "function") throw new TypeError("Recipe authorization policy is required");
+        const prepared = policy(structuredClone(authorization));
+        if (!prepared || Object.keys(prepared).join() !== "recipe") {
+          throw new TypeError("Recipe policy may derive configuration, never grant release authority");
+        }
+        return { ...authorization, recipe: prepared.recipe };
+      } });
+    };
+    if (this.store.getByRequest(input.workspaceId, input.requestId)) return start(null);
+    return Promise.resolve(this.loadAuthorizationPolicy()).then(start);
+  }
+
+  #start({ requestId, workspaceId, streamId, threadId, authorization, resolveAuthorization = null } = {}) {
     const created = this.store.create({
       requestId, workspaceId, streamId, threadId, authorization,
       runnerVersion: this.runnerVersion,
@@ -422,8 +456,7 @@ export class ReleaseOperationService {
     const target = structuredClone(requested.target);
     if (!target || typeof target !== "object" || Array.isArray(target)
         || Object.keys(target).sort().join() !== "environment,kind,repositoryRoot,targetId"
-        || target.kind !== "agent-hub-publication" || target.environment !== "github-release"
-        || target.targetId !== "agent-hub-github-release"
+        || [target.kind, target.environment, target.targetId].some(value => typeof value !== "string" || !value.trim())
         || typeof target.repositoryRoot !== "string" || !target.repositoryRoot.trim() || !Number.isSafeInteger(expectedRevision)
         || !Number.isSafeInteger(expectedGeneration)) throw new Error("Invalid assets-only publication target");
     const operation = this.store.get(operationId);
