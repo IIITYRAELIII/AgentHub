@@ -312,7 +312,7 @@ export async function createHubInfrastructure({
     // The same HTTP owner serves its startup shell/health while infrastructure
     // safety is pending. It opens no journal and accepts no business intake.
     agentHubRuntimeHealth.begin({ operations: [
-      { id: "database", label: "Проверка базы данных" },
+      { id: "database", label: "Подготовка данных" },
       { id: "infrastructure", label: "Загрузка инфраструктуры" },
     ] });
     agentHubRuntimeHealth.startOperation("database");

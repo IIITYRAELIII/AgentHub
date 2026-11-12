@@ -10,6 +10,8 @@ import { CommandTraceService } from "../../src/application/command-trace-service
 import { CommandTraceWorkerStore } from "../../src/infrastructure/persistence/command-trace-worker-store.mjs";
 import { withInterprocessLocks, readInterprocessLockStatus } from "../../src/infrastructure/process/interprocess-lock.mjs";
 
+import { seedSqliteRecoveryIntent } from "../helpers/sqlite-recovery-intent.fixture.mjs";
+
 test("existing startup trace persists copy bytes, worker work and cleanup under one original identity", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "startup-inspection-phases-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -17,6 +19,7 @@ test("existing startup trace persists copy bytes, worker work and cleanup under 
   const db = new DatabaseSync(databaseFile);
   db.exec("CREATE TABLE sample(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO sample VALUES(1,'preserved')");
   db.close();
+  await seedSqliteRecoveryIntent(databaseFile);
   const original = await fs.readFile(databaseFile);
   const logs = [];
   const coordinator = new SharedSqliteRecoveryCoordinator({ databaseFile });
@@ -73,6 +76,7 @@ test("copy failure retains its original error and content-free same-startup phas
   const db = new DatabaseSync(databaseFile);
   db.exec("CREATE TABLE sample(id INTEGER PRIMARY KEY)");
   db.close();
+  await seedSqliteRecoveryIntent(databaseFile);
   const logs = [];
   const failure = Object.assign(new Error("fixture copy unavailable"), { code: "EIO" });
   const coordinator = new SharedSqliteRecoveryCoordinator({ databaseFile,
@@ -152,7 +156,7 @@ test("existing startup owner distinguishes admission from recovery without chang
   });
   assert.deepEqual(measurement.value, { degraded: false });
   const phases = healthyLogs.filter(x => x.phase);
-  const names = ["database-lock", "recovery-lock-acquire", "marker-read", "intent-read", "database-stat", "recovery-lock-release"];
+  const names = ["database-lock", "recovery-lock-acquire", "marker-read", "intent-read", "recovery-lock-release"];
   assert.deepEqual(phases.map(x => [x.phase, x.outcome]), names.flatMap(p => [[p, "started"], [p, "succeeded"]]));
   assert.equal(new Set(healthyLogs.map(x => x.operationSpanId)).size, 1);
   assert.equal(phases.some(x => x.phase === "database-check"), false);

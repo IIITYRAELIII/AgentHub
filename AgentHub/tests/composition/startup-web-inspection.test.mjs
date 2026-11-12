@@ -14,6 +14,8 @@ import { createLocalWebviewSession } from "../../src/interfaces/web/local-webvie
 import { importCompositionWithPorts } from "../helpers/composition-ports.fixture.mjs";
 import * as startupTrace from "../../src/composition/command-trace-composition.mjs";
 
+import { seedSqliteRecoveryIntent } from "../helpers/sqlite-recovery-intent.fixture.mjs";
+
 test("actual infrastructure serves the existing web shell while its database copy is held", async (t) => {
   const oldRelease = process.env.AGENT_HUB_RELEASE_ID;
   process.env.AGENT_HUB_RELEASE_ID = "isolated-hub297-startup-web";
@@ -33,6 +35,7 @@ test("actual infrastructure serves the existing web shell while its database cop
   const db = new DatabaseSync(databaseFile);
   db.exec("CREATE TABLE sample(id INTEGER PRIMARY KEY); INSERT INTO sample VALUES(1)");
   db.close();
+  await seedSqliteRecoveryIntent(databaseFile);
   const original = await fs.readFile(databaseFile);
   let release, entered;
   const gate = new Promise(resolve => { release = resolve; });
@@ -109,7 +112,7 @@ test("actual infrastructure serves the existing web shell while its database cop
     await page.waitForFunction(() => {
       const screen = document.querySelector(".hub-startup-screen");
       return screen && getComputedStyle(screen).display !== "none"
-        && screen.textContent.includes("Проверка базы данных");
+        && screen.textContent.includes("Подготовка данных");
     });
     const startupScreenMs = performance.now() - navigationStarted;
     assert.equal((await (await fetch(first + "health")).json()).ready, false);
