@@ -1985,7 +1985,7 @@ export class TaskLifecycleService {
     });
   }
 
-  async #completeAbandonedReleaseService({ taskId, operationId, confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, assertReleaseInactive }) {
+  async #completeAbandonedReleaseService({ taskId, operationId, confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, assertReleaseInactive, releaseActor }) {
     requiredMethod(this.taskGitWorkspaces, "abandonedReleaseServiceEvidenceOwned");
     requiredMethod(this.releasePreflight, "withAwaitTransition");
     const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
@@ -2000,8 +2000,11 @@ export class TaskLifecycleService {
       if (task.status === "done" || !["new", "in_progress", "blocked"].includes(task.workflowStatus)) throw new Error("Abandoned release service must remain open outside Test/Await");
       if (typeof assertReleaseInactive !== "function") throw new Error("Release execution owner is required");
       const read = async () => {
+        const actor = releaseActor && this.workspaceCatalog.stream(releaseActor.streamId);
+        if (!actor || releaseActor.workspaceId !== task.workspaceId || actor.workspaceId !== task.workspaceId
+            || actor.settings?.releaseManager !== true) throw new Error("Abandoned release requires its current Workspace RM actor");
         assertReleaseInactive(abandonedRelease?.operationId);
-        const proof = await this.taskGitWorkspaces.abandonedReleaseServiceEvidenceOwned({ source: task, input: abandonedRelease, lease });
+        const proof = await this.taskGitWorkspaces.abandonedReleaseServiceEvidenceOwned({ source: task, input: abandonedRelease, lease, actor: releaseActor });
         assertReleaseInactive(abandonedRelease.operationId);
         return proof;
       };
@@ -2094,7 +2097,7 @@ export class TaskLifecycleService {
   async complete({
     taskId, operationId, confirmCleanup = false, expectedCleanupToken = null,
     absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, originalArguments = null, completedOperationRequestId = null,
-    abandonedRelease = null, assertReleaseInactive = null,
+    abandonedRelease = null, assertReleaseInactive = null, releaseActor = null,
   } = {}) {
     if (completionMode != null && !["published_release_service", "published_delivery", "operational", "abandoned_release_service"].includes(completionMode)) {
       throw new Error("Unsupported Task completion mode");
@@ -2106,7 +2109,7 @@ export class TaskLifecycleService {
     if (completedOperationRequestId && completionMode !== "operational") throw Error("Historical completion proof requires operational cleanup mode");
     if (abandonedRelease && completionMode !== "abandoned_release_service") throw Error("Abandoned release proof requires its explicit completion mode");
     if (completionMode === "abandoned_release_service") return this.#completeAbandonedReleaseService({ taskId, operationId,
-      confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, assertReleaseInactive });
+      confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, assertReleaseInactive, releaseActor });
     if (["published_delivery", "operational"].includes(completionMode)) return this.#completePublishedDelivery({ taskId, operationId,
       confirmCleanup, expectedCleanupToken, publishedDelivery, originalArguments, operational: completionMode === "operational", completedOperationRequestId });
     if (completionMode === "published_release_service") return this.#completePublishedReleaseService({

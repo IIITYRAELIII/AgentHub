@@ -44,3 +44,25 @@ The mode does not settle whether any failed release external step had effects.
 It does not repair or resume the abandoned release. Legacy originals without
 positive canonical generation/checklist bindings remain refused rather than
 being reconstructed from notes or error text.
+
+## Null-Stream service and retained preview correction
+
+The first operational preview exposed a genuine Workspace card whose Stream was
+null. The initial fixture had assigned that field and missed this input. Release
+Stream authority belongs to the authenticated current RM caller, not a missing
+card assignment. The original must match that actor's Workspace and Stream, and
+an assigned card must match as well. Preserve null rather than assigning the card.
+
+The first preview's exact request remains UNKNOWN until the existing public
+reconciliation owner validates its retained original execution arguments/hash,
+same actor, readonly argument family and absence of lifecycle intent/outcome.
+That owner can read a fresh preserve-only preview, retain the prior diagnostic
+in reconciliation evidence and complete the same original receipt. It grants no
+archive effect: the fresh token still requires a separate confirmed request.
+Changed, foreign, cancelled, confirmed or operational originals do not enter
+this route. A lost reply uses the original preview readback, without resubmission.
+
+Maintained fixtures now distinguish journal and release databases, use real
+persistence capabilities, and exercise the existing openReleaseRuntime with its
+default canonical release services and real preflight/leases for the null-card
+and same-preview recovery cases. These checks perform no production effects.

@@ -233,6 +233,23 @@ original's durable archive intent or outcome, with its complete original argumen
 hash. Missing or contradictory evidence refuses; an earlier unsealed operational
 UNKNOWN is not adopted. See ADR-HUB-444-abandoned-release-service.
 
+An unassigned Workspace service card retains `streamId=null`. The authenticated
+current RM actor supplies the release Stream binding; that Stream must match the
+canonical original. An assigned service Stream must also match. Caller Workspace,
+current RM role and original/checklist/custody checks remain mandatory; a missing
+card assignment is never permission to adopt another Stream's release.
+
+For the exact abandoned-service preview argument family only, the existing
+operation-reconcile owner may recover an UNKNOWN preview from its retained
+interruption execution arguments. Original actor/Task/Workspace/hash and protocol
+must match, no confirm/token/foreign argument or cancellation is accepted, and
+no lifecycle intent/outcome may exist. The owner reads a fresh preserve-only
+preview through the same leases and canonical checks, then settles that original
+with its preview result and retained prior diagnostic. It neither archives nor
+replays a confirmed operation. The fresh token still needs separate confirmation.
+Original operation-get reads that result after a lost reconciliation reply.
+Other unsealed UNKNOWN families remain unchanged.
+
 ## Original published dev synchronization
 
 `hub_release_continue` optionally carries exclusive `published_dev_sync` with

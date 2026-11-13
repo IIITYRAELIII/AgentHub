@@ -1817,6 +1817,15 @@ Preview/confirmation bind and recheck the whole original and custody; existing
 durable lifecycle intent/outcome permits only same-original recovery. Earlier
 unsealed UNKNOWN operations remain untouched (ADR-HUB-444).
 
+For a Workspace service with no assigned Stream, the authenticated current RM
+Stream must match the original release Stream; no assignment is manufactured.
+A present card assignment must match too. Existing Complete preview recovery can
+read only the exact retained abandoned-preview arguments/hash under the same
+actor and leases. It records a fresh preview result on that original, preserving
+the previous UNKNOWN diagnostic; confirmation remains a separate action. It
+does not recover a confirmed archive without its durable intent/outcome or adopt
+an old operational UNKNOWN.
+
 A metadata-only service with no managed source may use the published owner without
 creating a worktree. Its canonical Done members must name exactly one repository
 and one result each. The exact indexed completed original must positively match

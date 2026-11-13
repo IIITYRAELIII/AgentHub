@@ -6233,14 +6233,18 @@ export class TaskGitWorkspaceService {
     return visit(0, lease);
   }
 
-  async abandonedReleaseServiceEvidenceOwned({ source, input, lease } = {}) {
+  async abandonedReleaseServiceEvidenceOwned({ source, input, lease, actor } = {}) {
     this.#assertAvailable("abandonedReleaseServiceEvidenceOwned");
     await requiredGuardLease(lease).assertOwned();
+    if (!actor?.streamId || actor.workspaceId !== source.workspaceId
+        || (source.streamId != null && source.streamId !== actor.streamId)) {
+      throw new Error("Abandoned release service actor or assigned Stream differs");
+    }
     if ((source.gitReferences ?? []).length || (source.gitAdoptions ?? []).length || source.squashTransfer || source.squashAbsorbedBy) {
       throw new Error("Abandoned release service must not own implementation evidence");
     }
     const readOriginal = () => readAbandonedReleaseServiceGeneration({ dataDir: this.dataDir,
-      workspaceId: source.workspaceId, streamId: source.streamId, input, checklist: source.checklist });
+      workspaceId: source.workspaceId, streamId: actor.streamId, input, checklist: source.checklist });
     const original = readOriginal(), workspaces = await this.describe(source.id);
     if (workspaces.length > 1 || workspaces.some(item => item.dirty)) throw new Error("Abandoned release source custody is not clean");
     if (!workspaces.length) {
@@ -6269,7 +6273,8 @@ export class TaskGitWorkspaceService {
         || JSON.stringify(readOriginal()) !== JSON.stringify(original)) throw new Error("Abandoned release custody changed");
     await lease.assertOwned();
     return { version: 1, mode: "abandoned_release_service", disposition: "abandoned",
-      source: { taskId: source.id, taskRevision: source.revision, workflowStatus: source.workflowStatus },
+      source: { taskId: source.id, taskRevision: source.revision, workflowStatus: source.workflowStatus, streamId: source.streamId ?? null },
+      actor: { workspaceId: actor.workspaceId, streamId: actor.streamId },
       original, cleanupPlan: { strategy: workspaces.length ? "preserve_managed_source" : "metadata_only", deleting: [] },
       preserving: workspaces.map(item => ({ kind: "managed_source", projectRoot: item.projectRoot, headCommit: item.headCommit })) };
   }

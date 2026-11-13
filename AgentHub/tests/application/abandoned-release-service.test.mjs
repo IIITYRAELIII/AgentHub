@@ -9,17 +9,20 @@ import { promisify } from "node:util";
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
-import { createTaskBoardMutationOwner } from "../../src/application/sqlite-mutation-owner.mjs";
+import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { openReleaseRuntime } from "../../release.mjs";
+import { createPersistenceMutationCapabilities } from "../../src/composition/persistence-mutation-composition.mjs";
+import { readAbandonedReleaseServiceGeneration } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 
 const exec = promisify(execFile);
 const git = async (cwd, ...args) => String((await exec("git", args, { cwd, windowsHide: true })).stdout).trim();
 
-async function fixture(t) {
+async function fixture(t, { assignedStream = true, canonicalRuntime = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-abandoned-release-"));
   const primary = path.join(root, "repository"), dataDir = path.join(root, "data");
   await mkdir(primary); await mkdir(dataDir);
@@ -28,7 +31,7 @@ async function fixture(t) {
   await git(primary, "add", ".");
   await git(primary, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", "source");
   const commit = await git(primary, "rev-parse", "HEAD"), tree = await git(primary, "rev-parse", "HEAD^{tree}");
-  const databaseFile = path.join(dataDir, "runtime.sqlite");
+  const databaseFile = path.join(dataDir, "journal.sqlite");
   const catalog = new WorkspaceCatalogStore({ databaseFile }); await catalog.load();
   const store = new TaskBoardStore({ databaseFile });
   t.after(async () => { store.close(); catalog.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
@@ -38,12 +41,13 @@ async function fixture(t) {
   const stream = await catalog.runMutation(() => catalog.createStream({ workspaceId: workspace.id, name: "RM",
     settings: { releaseManager: true, workingDirectory: primary } }));
   await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: "rm", streamId: stream.id }));
-  const board = new TaskBoardService({ store: createTaskBoardMutationOwner(store), workspaceCatalog: catalog });
+  const capabilities = createPersistenceMutationCapabilities({ rawWorkspaceCatalogStore: catalog, rawTaskBoardStore: store });
+  const board = new TaskBoardService({ store: capabilities.taskBoardStore, workspaceCatalog: capabilities.workspaceCatalogStore });
   const child = store.create({ text: "Selected source", bucket: "workspace", workspaceId: workspace.id, taskPrefix: "HUB", triageStatus: "disabled" });
   const task = store.create({ text: "Abandoned release", bucket: "workspace", workspaceId: workspace.id, taskPrefix: "HUB", triageStatus: "disabled" });
   // Seed a historical accepted reference in this disposable SQLite fixture only.
   const db = new DatabaseSync(databaseFile);
-  db.prepare("UPDATE hub_board_tasks SET stream_id=? WHERE id=?").run(stream.id, task.id);
+  if (assignedStream) db.prepare("UPDATE hub_board_tasks SET stream_id=? WHERE id=?").run(stream.id, task.id);
   db.prepare("UPDATE hub_board_tasks SET workflow_status='awaiting_implementation' WHERE id=?").run(child.id);
   db.prepare("INSERT INTO hub_task_git_references (task_id,project_root,branch,result_commit,updated_at_ms) VALUES (?,?,?,?,1)")
     .run(child.id, primary, child.taskNumber, commit);
@@ -68,7 +72,11 @@ async function fixture(t) {
     { expectedRevision: releases.get(operation.operationId).revision });
   const taskGit = new TaskGitWorkspaceService({ dataDir, prepareDependencies: async () => ({}), recordTiming: () => {} });
   const releaseGit = new ReleaseGitWorkspaceService({ dataDir });
-  const preflight = { withAwaitTransition: (id, fn) => releaseGit.withAwaitTransition(id, fn), preflight: () => assert.fail("no publication preparation") };
+  const preflight = new WorkspaceReleasePreflightService({ releasePlanner: { plan: () => assert.fail("no publication selection") },
+    taskGitWorkspaces: taskGit, releaseGitWorkspaces: releaseGit,
+    resolveReleaseValidationSource: () => assert.fail("no validation source"),
+    readPublicationState: () => assert.fail("no publication read"),
+    validateProductionCandidate: () => assert.fail("no publication validation") });
   const lifecycle = new TaskLifecycleService({ taskBoard: board, workspaceCatalog: catalog, taskGitWorkspaces: taskGit, releasePreflight: preflight });
   const execution = { active: false };
   const hub = new HubMcpService({ workspaceCatalog: catalog, taskBoard: board, taskGitWorkspaces: taskGit, taskLifecycle: lifecycle,
@@ -76,14 +84,28 @@ async function fixture(t) {
     releaseCompleter: { completeRelease: () => assert.fail("no publication") },
     releaseOperations: { setEventDelivery() {}, hasLocalWork: () => execution.active },
     workLog: { threadTurns: () => [] }, attachmentDirectory: root, secret: "fixture", reconcilePendingOnStartup: false });
+  if (canonicalRuntime) {
+    const runtime = await openReleaseRuntime({ enablePersistenceTrace: false, openTaskRuntime: async () => ({ service: hub,
+      config: { dataDir }, taskBoard: board, workspaceCatalog: capabilities.workspaceCatalogStore, close() {} }) });
+    t.after(() => runtime.close());
+  }
   const token = hub.contextToken({ provider: "codex", threadId: "rm" });
   const call = (name, args) => hub.call(name, { context_token: token, ...args });
   const failed = releases.get(operation.operationId);
   const input = { operationId: failed.operationId, expectedRevision: failed.revision, expectedGeneration: failed.currentGeneration };
   const args = { task_id: task.id, completion_mode: "abandoned_release_service", abandoned_release: input };
-  return { root, primary, dataDir, store, board, catalog, task, child, releases, taskGit, lifecycle, hub, call, args, failed, execution,
+  return { root, primary, dataDir, store, board, catalog, task, child, releases, taskGit, lifecycle, hub, call, args, failed, execution, stream,
     preview: () => call("hub_task_complete", { ...args, request_id: "preview" }),
     confirm: p => call("hub_task_complete", { ...args, request_id: "confirmed", confirm_cleanup: true, expected_cleanup_token: p.cleanupToken }) };
+}
+
+async function retainLegacyPreviewFailure(f) {
+  const owner = f.taskGit.abandonedReleaseServiceEvidenceOwned.bind(f.taskGit);
+  f.taskGit.abandonedReleaseServiceEvidenceOwned = ({ source, input }) => readAbandonedReleaseServiceGeneration({
+    dataDir: f.dataDir, workspaceId: source.workspaceId, streamId: source.streamId, input, checklist: source.checklist });
+  try { await assert.rejects(f.preview(), /exact idle FAILED boundary/); }
+  finally { f.taskGit.abandonedReleaseServiceEvidenceOwned = owner; }
+  return f.catalog.mcpOperation("preview");
 }
 
 test("abandoned metadata-only release archives with FAILED and unfinished members preserved", async t => {
@@ -99,6 +121,82 @@ test("abandoned metadata-only release archives with FAILED and unfinished member
   assert.deepEqual(f.store.task(f.child.id), child);
   assert.equal(await readFile(path.join(f.primary, "source.txt"), "utf8"), "retained source\n");
   assert.deepEqual(f.store.task(f.task.id).gitReferences, []);
+});
+
+test("unassigned workspace service uses the genuine RM release owner without assigning a Stream", async t => {
+  const f = await fixture(t, { assignedStream: false, canonicalRuntime: true });
+  assert.equal(f.board.task(f.task.id).streamId, null);
+  const before = f.releases.snapshot(f.failed.operationId), p = await f.preview();
+  assert.equal(p.preview.releaseService.actor.streamId, f.stream.id);
+  const result = await f.confirm(p);
+  assert.equal(result.status, "done");
+  assert.equal(result.workflowStatus, "new");
+  assert.equal(f.board.task(f.task.id).streamId, null);
+  assert.deepEqual(f.releases.snapshot(f.failed.operationId), before);
+});
+
+test("same UNKNOWN abandoned preview recovers its exact readonly intent with a null-Stream card", async t => {
+  const f = await fixture(t, { assignedStream: false, canonicalRuntime: true });
+  // Reproduce the shipped incorrect card-Stream read through the real reader.
+  const original = await retainLegacyPreviewFailure(f), before = f.releases.snapshot(f.failed.operationId);
+  assert.equal(original.status, "unknown");
+  assert.equal(f.board.lifecycleTransition("preview"), null);
+  await assert.rejects(f.call("hub_task_operation_reconcile", { request_id: "bad-preview-hash", task_id: f.task.id,
+    operation_request_id: "preview", expected_arguments_hash: "0".repeat(64), confirm_reconcile: true }), /preview.*identity|preview.*arguments/i);
+  const recovered = await f.call("hub_task_operation_reconcile", { request_id: "recover-preview", task_id: f.task.id,
+    operation_request_id: "preview", expected_arguments_hash: original.argumentsHash, confirm_reconcile: true });
+  assert.equal(recovered.outcome, "PREVIEW_RECOVERED");
+  assert.equal(recovered.result.confirmationRequired, true);
+  assert.equal(f.board.task(f.task.id).status, "open");
+  assert.equal(f.board.lifecycleOutcome("preview"), null);
+  const readback = await f.call("hub_task_operation_get", { operation_request_id: "preview", task_id: f.task.id,
+    expected_arguments_hash: original.argumentsHash });
+  assert.equal(readback.taskOperation.status, "succeeded");
+  assert.equal(readback.result.cleanupToken, recovered.result.cleanupToken);
+  assert.equal(readback.result.operatorReconciliation.priorReceipt.error, original.error);
+  assert.equal((await f.confirm(recovered.result)).status, "done");
+  assert.deepEqual(f.releases.snapshot(f.failed.operationId), before);
+});
+
+test("null service assignment does not grant another RM the release or preview original", async t => {
+  const f = await fixture(t, { assignedStream: false, canonicalRuntime: true }), original = await retainLegacyPreviewFailure(f);
+  const other = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId: f.stream.workspaceId, name: "Other RM",
+    settings: { releaseManager: true, workingDirectory: f.primary } }));
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "other-rm", streamId: other.id }));
+  const token = f.hub.contextToken({ provider: "codex", threadId: "other-rm" });
+  await assert.rejects(f.hub.call("hub_task_operation_reconcile", { context_token: token, request_id: "foreign-preview-reconcile",
+    task_id: f.task.id, operation_request_id: "preview", expected_arguments_hash: original.argumentsHash, confirm_reconcile: true }), /preview original identity/);
+  await assert.rejects(f.hub.call("hub_task_complete", { context_token: token, ...f.args, request_id: "foreign-release-preview" }), /exact idle FAILED/);
+  assert.deepEqual(f.catalog.mcpOperation("preview"), original);
+  const db = new DatabaseSync(path.join(f.dataDir, "journal.sqlite"));
+  db.prepare("UPDATE hub_board_tasks SET stream_id=? WHERE id=?").run(other.id, f.task.id); db.close();
+  await assert.rejects(f.call("hub_task_complete", { ...f.args, request_id: "foreign-assigned-preview" }), /actor or assigned Stream differs/);
+  assert.equal(f.board.task(f.task.id).status, "open");
+  assert.equal(f.releases.get(f.failed.operationId).state, "failed");
+});
+
+test("lost preview-reconciliation reply reads the same completed preview without archiving twice", async t => {
+  const f = await fixture(t, { assignedStream: false, canonicalRuntime: true }), original = await retainLegacyPreviewFailure(f);
+  const complete = f.catalog.completeMcpOperation.bind(f.catalog); let lost = false;
+  f.catalog.completeMcpOperation = (id, ...args) => {
+    if (id === "recover-preview" && !lost) { lost = true; throw Error("controlled lost reconciliation reply"); }
+    return complete(id, ...args);
+  };
+  await assert.rejects(f.call("hub_task_operation_reconcile", { request_id: "recover-preview", task_id: f.task.id,
+    operation_request_id: "preview", expected_arguments_hash: original.argumentsHash, confirm_reconcile: true }), /effect completed but receipt reconciliation is required/);
+  const stored = f.catalog.mcpOperation("preview");
+  assert.equal(stored.status, "succeeded");
+  assert.equal(f.board.task(f.task.id).status, "open");
+  assert.equal(f.board.lifecycleOutcome("preview"), null);
+  const readback = await f.call("hub_task_operation_get", { operation_request_id: "preview", task_id: f.task.id,
+    expected_arguments_hash: original.argumentsHash });
+  assert.equal(readback.result.cleanupToken, stored.result.cleanupToken);
+  const again = await f.call("hub_task_operation_reconcile", { request_id: "preview-read-again", task_id: f.task.id,
+    operation_request_id: "preview", expected_arguments_hash: original.argumentsHash, confirm_reconcile: true });
+  assert.equal(again.result.cleanupToken, stored.result.cleanupToken);
+  assert.deepEqual(f.catalog.mcpOperation("preview"), stored);
+  assert.equal((await f.confirm(readback.result)).status, "done");
+  assert.equal(f.releases.get(f.failed.operationId).state, "failed");
 });
 
 test("abandoned closure refuses stale/foreign originals and a running worker before intake", async t => {
