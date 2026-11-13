@@ -1640,7 +1640,12 @@ test("reviewer lost public MCP receipt keeps stores alive until the addressed ow
   const open = async () => {
     runtime = await openReleaseRuntime({
       createServices: args => createReleaseOperationServices({ ...args,
-        publication: { publish: async () => { published++; return {status:"applied"}; }, readback: async()=>({status:"not_applied"}) },
+        publication: { async loadAuthorizationPolicy() {
+          const { readReleaseToolPackage } = await import("../../../src/infrastructure/process/release-tool-package.mjs");
+          const tool = await readReleaseToolPackage();
+          return authorization => ({ recipe: { apiVersion: 1, id: "controlled-lifetime-fixture", configuration: {},
+            targetOrder: authorization.approvedTargets.map(target => target.targetId), executor: structuredClone(tool.location) } });
+        }, publish: async () => { published++; return {status:"applied"}; }, readback: async()=>({status:"not_applied"}) },
         finalization: { finalize: async()=>({status:"fixture-terminal"}) } }),
       openTaskRuntime: async () => {
         const r=await openTaskAwaitCutoverRuntime({config:{dataDir:path.dirname(f.databaseFile),taskBoard:{autoPlaceConfidence:0.8}},
