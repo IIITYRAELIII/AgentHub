@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
 import { runTaskGitCommand, TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { assertNativeMergedResults, assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY }
@@ -107,7 +108,9 @@ test("published ordinary Test replay binds its original identity without changin
   await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\n\nmiddle\n\nfooter\n");
   const main = await commit(f.sourceRoot, "agreed base");
   await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\n\nmiddle\npublished once\nfooter\n");
+  await writeFile(path.join(f.sourceRoot, "retired.txt"), "inherited publication artifact\n");
   const published = await commit(f.sourceRoot, "publication");
+  await rm(path.join(f.sourceRoot, "retired.txt"));
   await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\npublished once\nmiddle\n\nfooter\n");
   const dev = await commit(f.sourceRoot, "move inherited block in dev");
   await gitAt(f.sourceRoot, ["checkout", "--detach", published]);
@@ -143,6 +146,40 @@ test("published ordinary Test replay binds its original identity without changin
   await assert.rejects(f.compose(regressed, tasks, { identity: { ...identity, before: regressed } }, "lost-own"),
     error => error.code === "RELEASE_SELECTED_CONTENT_MISSING" && error.missingPaths.includes("own.txt"));
   assert.equal(await gitAt(f.sourceRoot, ["rev-parse", "main"]), dev);
+});
+
+test("a repeated published Test retains its full own delta when the common parent is an earlier own result", async t => {
+  const f = await fixture(t), main = f.base;
+  await writeFile(path.join(f.sourceRoot, "inherited.txt"), "published artifact\n");
+  const published = await commit(f.sourceRoot, "publication after the agreed Task base");
+  await writeFile(path.join(f.sourceRoot, "own.txt"), "first own result\n");
+  const first = await commit(f.sourceRoot, "first Task result already integrated into dev");
+  await rm(path.join(f.sourceRoot, "inherited.txt"));
+  await writeFile(path.join(f.sourceRoot, "other.txt"), "independent dev context\n");
+  const dev = await commit(f.sourceRoot, "retire inherited publication artifact in dev");
+  await gitAt(f.sourceRoot, ["checkout", "--detach", first]);
+  await writeFile(path.join(f.sourceRoot, "correction.txt"), "second own correction\n");
+  const result = await commit(f.sourceRoot, "later correction in the same Task");
+  const tasks = [{ taskId: "selected", baseCommit: main, resultCommit: result }];
+  const publication = { generation: "sealed-publication", repositoryRoot: f.sourceRoot,
+    recordHash: taskGitIdentityHash({ root: f.sourceRoot, revision: published }), commit: published,
+    tree: await gitAt(f.sourceRoot, ["rev-parse", `${published}^{tree}`]) };
+  const identity = { policy: "native-dev-merge-v1", taskId: "selected", resultCommit: result, before: dev, mainCommit: main,
+    nativeHistoryAuthority: { baseline: null, adoptions: [], publishedMetadata: publication } };
+  assert.equal(await gitAt(f.sourceRoot, ["merge-base", "--all", dev, result]), first);
+  const value = await f.compose(dev, tasks, { identity }, "repeated-Test");
+  await assert.rejects(gitAt(value.root, ["cat-file", "-e", "HEAD:inherited.txt"]));
+  assert.equal(await gitAt(value.root, ["show", "HEAD:own.txt"]), "first own result");
+  assert.equal(await gitAt(value.root, ["show", "HEAD:correction.txt"]), "second own correction");
+  assert.equal(await gitAt(value.root, ["show", "HEAD:other.txt"]), "independent dev context");
+  await gitAt(f.sourceRoot, ["checkout", "--detach", dev]);
+  await rm(path.join(f.sourceRoot, "own.txt"));
+  const lost = await commit(f.sourceRoot, "lose an earlier own Task addition");
+  await assert.rejects(f.compose(lost, tasks, { identity: { ...identity, before: lost } }, "lost-prior-own"),
+    error => error.code === "RELEASE_SELECTED_CONTENT_MISSING" && error.missingPaths.includes("own.txt"));
+  const unbound = { ...identity, nativeHistoryAuthority: { baseline: null, adoptions: [] } };
+  await assert.rejects(f.compose(dev, tasks, { identity: unbound }, "missing-publication"),
+    error => error.code === "RELEASE_SELECTED_CONTENT_MISSING" && error.missingPaths.includes("inherited.txt"));
 });
 
 test("an ancestor result cannot silently lose its selected content", async t => {

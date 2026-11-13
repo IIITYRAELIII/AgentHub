@@ -66,3 +66,24 @@ Maintained fixtures now distinguish journal and release databases, use real
 persistence capabilities, and exercise the existing openReleaseRuntime with its
 default canonical release services and real preflight/leases for the null-card
 and same-preview recovery cases. These checks perform no production effects.
+
+## Repeated normal Test dependency
+
+The corrected result's ordinary Test exposed a separate content-proof defect.
+Its unique common parent with dev was this Task's previous integrated result,
+which descends from the sealed publication. The existing publication reader
+credited only an exact publication/common-parent match and fell back to the old
+pre-publication Task base. Seven unchanged inherited publication files, already
+retired by independent dev work, were then mistaken for new own Task changes.
+The issued candidate was exactly the unforced native merge; the original UNKNOWN
+and capture remain intact.
+
+The same selected-content owner consumes its already sealed publication when
+that publication is an ancestor of the single exact common parent. It still
+replays the complete own delta from publication, not from the previous own
+result. A removed earlier own addition therefore still refuses. Existing
+publication identity, agreed-base ancestry, history/CAS/effect guards remain;
+multiple or foreign common bases gain no credit. No original, Task base, shared
+branch or journal is rewritten. New tests preserve independent dev context and
+reject both lost own work and absent publication authority. ADR-HUB-400's other
+selection-policy boundaries remain in force.

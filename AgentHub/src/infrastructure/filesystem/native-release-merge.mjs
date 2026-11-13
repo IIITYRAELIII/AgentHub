@@ -424,9 +424,13 @@ async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
       || String(await git(["rev-parse", `${publication.commit}^{tree}`])) !== publication.tree) {
     throw failure("Native Test published content authority changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
-  // Credit only this exact, single published parent boundary. Other histories,
-  // including virtual multiple bases, retain their existing replay policy.
-  if (String(await git(["merge-base", "--all", baseCommit, task.resultCommit])) !== publication.commit) return null;
+  // A repeated Test can share its earlier own result with dev. Keep replaying
+  // the FULL own delta from the sealed publication, not from that later result:
+  // a lost earlier own addition must still refuse. Multiple/foreign bases keep
+  // their prior policy and receive no inferred publication authority.
+  const commonBase = String(await git(["merge-base", "--all", baseCommit, task.resultCommit]));
+  if (commonBase !== publication.commit && (!/^[a-f0-9]{40}$/u.test(commonBase)
+      || await maybe(git, ["merge-base", "--is-ancestor", publication.commit, commonBase]) === null)) return null;
   if (await maybe(git, ["merge-base", "--is-ancestor", task.baseCommit || baseCommit, publication.commit]) === null) {
     throw failure("Native Test published content base is outside its agreed history", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
