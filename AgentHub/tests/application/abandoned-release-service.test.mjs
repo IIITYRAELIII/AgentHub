@@ -168,6 +168,9 @@ test("unsealed old operational UNKNOWN cannot be adopted by abandoned closure", 
     operation_request_id: "old-operational", confirm_reconcile: true }), /unsealed originals remain unknown/);
   assert.deepEqual(f.catalog.mcpOperation("old-operational"), original);
   assert.equal(f.board.task(f.task.id).status, "open");
+  const preview = await f.preview();
+  assert.equal((await f.confirm(preview)).status, "done");
+  assert.deepEqual(f.catalog.mcpOperation("old-operational"), original, "fresh archive cannot settle the old UNKNOWN");
 });
 
 test("base-only managed service custody is preserved and local source changes refuse archive", async t => {
