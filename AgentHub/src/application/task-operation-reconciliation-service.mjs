@@ -7,7 +7,7 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { normalizedTaskWorkflowStatus, TaskLifecycleNoEffectError, TaskOperationReconciliationRefusedError,
-  workflowAdmissionNoEffectEvidence } from "../domain/task-board-task.mjs";
+  workflowAdmissionNoEffectEvidence, ordinaryAwaitOriginalArguments } from "../domain/task-board-task.mjs";
 
 import { normalizePublishedResolution } from "../domain/published-resolution.mjs";
 import { selectedAbsorptionHandoff } from "../domain/task-selected-composition.mjs";
@@ -413,6 +413,20 @@ export class TaskOperationReconciliationService {
       stream: task.streamId ? this.workspaceCatalog.stream(task.streamId) : null,
     });
     const malformed = malformedWorkflowArguments(receipt);
+    const unentered = !transition && !outcome && ordinaryAwaitOriginalArguments(receipt);
+    if (unentered && receipt.operationStatus === "pending" && receipt.receiptState === "unknown"
+        && receipt.workspaceId === workspace.id && receipt.taskExecution.taskId === task.id
+        && options.expectedArgumentsHash === receipt.argumentsHash
+        && workflowCas?.expected_task_revision === unentered.expected_task_revision
+        && workflowCas?.expected_workflow_status === "testing"
+        && task.revision === unentered.expected_task_revision && task.workflowStatus === "testing"
+        && root && taskRoot && samePath(root, taskRoot) && !exactGuardId
+        && !squash && !selected && !initial && !cutover && options.nativeResolutionReview == null) {
+      // This is only a candidate for the existing locked owner, never a
+      // certificate from absent rows or an exception string.
+      return { workspace, task, receipt, transition, outcome, operationId, projectRoot: root,
+        state: "unentered_await", targetWorkflowStatus: unentered.status };
+    }
     if (malformed) {
       const stream = this.workspaceCatalog.stream(receipt.streamId);
       if (transition || outcome || receipt.result != null || receipt.preparationState || receipt.claimCustody
@@ -805,6 +819,14 @@ export class TaskOperationReconciliationService {
       let effectsStarted = false;
       try {
       let identity = this.#identity(options);
+      if (identity.state === "unentered_await") {
+        requiredMethod(this.taskLifecycle, "refuseUnadmittedAwaitOwned");
+        await this.taskLifecycle.refuseUnadmittedAwaitOwned({ taskId: identity.task.id, receipt: identity.receipt,
+          projectRoot: identity.projectRoot, lease, beforeRecord: () => { effectsStarted = true; } });
+        identity = this.#identity(options);
+        if (identity.state !== "no_effect") throw new Error("Unadmitted Await durable refusal is not confirmed");
+        return this.#settle(identity);
+      }
       if (identity.state === "invalid_input") {
         return await this.#settleMalformed(identity, options, lease, () => { effectsStarted = true; });
       }

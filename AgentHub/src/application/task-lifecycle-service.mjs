@@ -220,10 +220,25 @@ export class TaskLifecycleService {
     if (!this.releasePreflight) {
       throw new Error("Release preflight is unavailable; workflow status was not changed");
     }
-    const result = await this.#measure("await-transition", () => this.releasePreflight.withAwaitTransition(
-      workspace.id,
-      () => this.#measure("await-admitted", () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true })),
-    ));
+    let entered = false, result;
+    try {
+      result = await this.#measure("await-transition", () => this.releasePreflight.withAwaitTransition(
+        workspace.id,
+        () => { entered = true; return this.#measure("await-admitted", () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true })); },
+      ));
+    } catch (error) {
+      const lockAdmission = !entered && options.admissionReceipt?.replayed === false
+        && options.status === "awaiting_implementation"
+        && this.releasePreflight.awaitTransitionAdmissionNoEffect?.(workspace.id, error);
+      if (!lockAdmission) throw error;
+      let outcome;
+      try {
+        const receipt = this.workspaceCatalog.mcpOperation(options.operationId);
+        outcome = await this.#mutation(() => this.taskBoard.recordUnadmittedAwaitRefusal({ taskId: task.id, receipt,
+          projectRoot: options.projectRoot || this.#projectRoot(task), lockAdmission }), options.operationId);
+      } catch (persistenceError) { throw new TaskLifecyclePersistenceError(error, persistenceError); }
+      throw new TaskLifecycleNoEffectError(outcome.result.noEffect, { cause: error });
+    }
     if (result?.task?.workflowStatus === "awaiting_implementation") this.#releaseOperationWake?.(result.task.id);
     return result;
   }
@@ -1382,6 +1397,15 @@ export class TaskLifecycleService {
         )
         )));
     return this.releasePreflight.withAwaitTransition(workspace.id, locked);
+  }
+
+  async refuseUnadmittedAwaitOwned({ taskId, receipt, projectRoot, lease, beforeRecord = () => {} } = {}) {
+    await this.#assertOwned(lease);
+    requiredMethod(this.taskGitWorkspaces, "assertNoProcessTreeGuardOwned");
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(taskId, { lease });
+    await this.#assertOwned(lease);
+    beforeRecord();
+    return this.#mutation(() => this.taskBoard.recordUnadmittedAwaitRefusal({ taskId, receipt, projectRoot }), receipt.requestId);
   }
 
   async assertMalformedWorkflowIdleOwned({ taskId, operationId, lease } = {}) {

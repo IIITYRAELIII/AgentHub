@@ -1,5 +1,16 @@
 # REL-001 — Task-backed Workspace release
 
+## Await admission before lifecycle intent
+
+The existing lifecycle/outcome owner distinguishes a proven Await-lock admission
+refusal from an admitted Git failure. Explicit original reconciliation may fence
+an exact ordinary Await with no lifecycle transition/outcome only under its
+existing recovery leases and canonical MCP/Task CAS transaction. The terminal
+outcome blocks a late original BEGIN before Git; an already committed BEGIN or
+any real process guard prevents this refusal path. Previous UNKNOWN evidence is
+retained. No generation, candidate, accepted membership or old publication is
+changed by settling this original receipt. MCP-001 defines the addressed protocol.
+
 ## Generation-scoped recovered executor (ADR-HUB-429-generation-executor)
 
 A recorded publication recovery binds the executor only for its own immutable

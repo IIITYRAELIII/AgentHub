@@ -321,6 +321,10 @@ export class WorkspaceReleasePreflightService {
     return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, operation);
   }
 
+  awaitTransitionAdmissionNoEffect(workspaceId, error) {
+    return this.releaseGitWorkspaces.awaitTransitionAdmissionNoEffect?.(workspaceId, error) ?? null;
+  }
+
   async initialNativeTestState({ workspaceId, projectRoot } = {}) {
     const plan = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId));
     if (plan.blocked?.length) throw new Error("Initial native Test current release plan is blocked");
