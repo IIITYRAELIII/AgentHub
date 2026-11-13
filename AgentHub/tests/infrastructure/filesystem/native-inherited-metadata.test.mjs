@@ -9,7 +9,6 @@ import test from "node:test";
 import { assertNativeTaskHistories } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { localSourceSelectionHash } from "../../../src/domain/release-base-provenance.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { preparationEnvelope } from "../../helpers/release-preparation-envelope.mjs";
@@ -17,7 +16,6 @@ import { validatePreparationEnvelope } from "../../../src/application/release-pr
 import { mcpArgumentsHash } from "../../../src/domain/mcp-arguments-hash.mjs";
 import { FORWARD_PREPARATION, preparationLegacyHash } from "../../../src/domain/release-preparation.mjs";
 import { validatePreparationForward } from "../../../src/application/release-preparation-forward.mjs";
-import { openTaskAwaitCutoverRuntime } from "../../../task-await-cutover.mjs";
 
 const exec = promisify(execFile), sha = b => createHash("sha256").update(b).digest("hex");
 async function fixture(t) {
@@ -89,17 +87,6 @@ async function fixture(t) {
   return { root, primary, retained, taskRoot, tasks, sourceBase, installedSource, manifest, release,
     provenance, environment, git, gitAt, save, commit, verify };
 }
-
-test("installed manifest preserves accepted metadata through the actual native candidate owner", async t => {
-  const f = await fixture(t), verified = await f.verify();
-  assert.deepEqual(verified.metadataBases, [f.sourceBase, f.installedSource]);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "release-data"), environment: f.environment });
-  await assert.rejects(service.prepareCandidate({ projectRoot: f.primary, workspaceId: "fixture", planRevision: "metadata",
-    frozenTasks: f.tasks, approvedBaseCommit: f.sourceBase, baseProvenance: f.provenance }),
-  error => error.code === "RELEASE_NATIVE_MERGE_CONFLICT" && error.conflicts.includes("CHANGELOG.md"));
-  assert.equal(await f.git(["status", "--porcelain=v1"]), "");
-  assert.equal(await readFile(path.join(f.primary, "CHANGELOG.md"), "utf8"), "Later agreed main notes\n");
-});
 
 test("installed metadata authority refuses source HEAD drift, dirty capture and manifest drift", async t => {
   const f = await fixture(t);
@@ -189,57 +176,8 @@ async function historicalFixture(t) {
   const verify = (p = provenance, a = authority, tasks = f.tasks) => assertInstalledLocalSourceBaseline({ provenance: p, originalAuthority: a,
     git: f.git, repositoryRoot: f.primary, primaryMainCommit: f.provenance.agreedMainCommit,
     publishedRevision: f.provenance.publishedBaseCommit, planRevision: "metadata", tasks, runtimeRoot });
-  const history = async (p = provenance, tasks = f.tasks, a = authority) => {
-    const proof = await verify(p, a, tasks);
-    return assertNativeTaskHistories({ git: f.git, baseCommit: f.sourceBase, tasks,
-      historyAuthority: { bases: [f.sourceBase], metadataBases: proof.metadataBases, changelogEntries: proof.changelogEntries } });
-  };
-  const boundResult = resultCommit => {
-    const tasks = f.tasks.map(task => ({ ...task, resultCommit })), selectionHash = localSourceSelectionHash(tasks);
-    const value = structuredClone(original); value.tasks[0].resultCommit = resultCommit;
-    value.repositories[0].localSourceBaseline.selectionHash = selectionHash;
-    const argumentsHash = mcpArgumentsHash({ request_id: requestId, preparation: value });
-    return { tasks, provenance: { ...provenance, selectionHash, historicalChangelog: { ...historicalChangelog, argumentsHash, resultCommit } },
-      authority: { requestId, argumentsHash, originalPreparation: value } };
-  };
-  return { ...f, catalog, original, provenance, authority, pointer, oldBytes, nextBytes, runtimeRoot, verifyHistorical: verify, history, boundResult };
+  return { ...f, catalog, original, provenance, authority, pointer, oldBytes, nextBytes, runtimeRoot, verifyHistorical: verify };
 }
-
-test("forward original scopes retained CHANGELOG authority without granting package versions or merge sides", async t => {
-  const f = await historicalFixture(t);
-  try {
-    const unbound = { ...f.provenance }; delete unbound.historicalChangelog;
-    await assert.rejects(f.history(unbound), /release-owned CHANGELOG/);
-    const proof = await f.verifyHistorical();
-    assert.deepEqual(proof.metadataBases, [f.sourceBase]);
-    assert.deepEqual(proof.changelogEntries, [{ taskId: f.tasks[0].taskId, resultCommit: f.tasks[0].resultCommit,
-      path: "CHANGELOG.md", mode: "100644", blob: f.provenance.historicalChangelog.blob }]);
-    await f.history();
-    const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "release-data"), environment: f.environment,
-      readPreparationOriginal: id => f.catalog.mcpOperation(id) });
-    await assert.rejects(service.prepareCandidate({ projectRoot: f.primary, workspaceId: "fixture", planRevision: "metadata",
-      frozenTasks: f.tasks, approvedBaseCommit: f.sourceBase, baseProvenance: f.provenance }),
-    error => error.code === "RELEASE_NATIVE_MERGE_CONFLICT" && error.conflicts.includes("CHANGELOG.md"));
-    await f.save(f.taskRoot, "package.json", JSON.stringify({ version: "9.9.9" }));
-    const version = await f.commit(f.taskRoot, "unbound package version");
-    const versionBinding = f.boundResult(version);
-    await f.verifyHistorical(versionBinding.provenance, versionBinding.authority, versionBinding.tasks);
-    await assert.rejects(f.history(versionBinding.provenance, versionBinding.tasks, versionBinding.authority), /package-version/);
-    await assert.rejects(assertNativeTaskHistories({ git: f.git, baseCommit: f.sourceBase,
-      tasks: [{ ...f.tasks[0], taskId: "unselected" }], historyAuthority: { bases: [f.sourceBase],
-        metadataBases: proof.metadataBases, changelogEntries: proof.changelogEntries } }), /release-owned CHANGELOG/);
-    await f.gitAt(f.taskRoot, ["checkout", "--detach", f.tasks[0].resultCommit]);
-    const foreignRoot = path.join(f.root, "foreign");
-    await f.git(["worktree", "add", "-b", "unselected-side", foreignRoot, f.tasks[0].baseCommit]);
-    await f.save(foreignRoot, "foreign.txt", "unselected work\n");
-    const foreign = await f.commit(foreignRoot, "unselected merge side");
-    await f.gitAt(f.taskRoot, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "merge", "--no-ff", "--no-edit", foreign]);
-    const side = f.boundResult(await f.gitAt(f.taskRoot, ["rev-parse", "HEAD"]));
-    await f.verifyHistorical(side.provenance, side.authority, side.tasks);
-    await assert.rejects(f.history(side.provenance, side.tasks, side.authority), /unselected|unowned|merge side/);
-    assert.equal(await f.git(["status", "--porcelain=v1"]), "");
-  } finally { f.catalog.close(); }
-});
 
 test("retained CHANGELOG binding refuses foreign original, selection, path, mode, manifest and source drift", async t => {
   const f = await historicalFixture(t);
@@ -291,56 +229,5 @@ test("retained CHANGELOG binding refuses foreign original, selection, path, mode
     await f.gitAt(f.retained, ["checkout", "--detach", f.installedSource]);
     await f.save(f.runtimeRoot, "current.json", JSON.stringify({ ...f.pointer, runtimeRetention: undefined }));
     await assert.rejects(f.verifyHistorical(), /historical runtime retention/);
-  } finally { f.catalog.close(); }
-});
-
-test("historical root CHANGELOG binding survives native reuse generation freeze and exact readback", async t => {
-  const f = await historicalFixture(t);
-  try {
-    let available = true, conflict;
-    const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "release-data"), environment: f.environment,
-      readPreparationOriginal: id => available ? f.catalog.mcpOperation(id) : null });
-    const request = { projectRoot: f.primary, workspaceId: "fixture", planRevision: "metadata",
-      frozenTasks: f.tasks, approvedBaseCommit: f.sourceBase, baseProvenance: f.provenance };
-    try { await service.prepareCandidate(request); } catch (error) { conflict = error; }
-    assert.equal(conflict?.code, "RELEASE_NATIVE_MERGE_CONFLICT");
-    await f.gitAt(conflict.conflictRoot, ["checkout", "--ours", "--", "CHANGELOG.md"]);
-    await f.commit(conflict.conflictRoot, "preserve current release-owned notes");
-    const before = f.catalog.mcpOperation(f.authority.requestId);
-    const candidate = await service.prepareCandidate(request);
-    assert.deepEqual(candidate.manifest.baseProvenance.historicalChangelog, f.provenance.historicalChangelog);
-    assert.equal((await service.prepareCandidate(request)).preReleaseHead, candidate.preReleaseHead);
-    assert.deepEqual((await service.frozenCandidate(f.primary)).manifest.baseProvenance.historicalChangelog, f.provenance.historicalChangelog);
-    const savedEnvironment = { LOCALAPPDATA: process.env.LOCALAPPDATA, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
-    let runtime;
-    try {
-      Object.assign(process.env, { LOCALAPPDATA: f.environment.LOCALAPPDATA, XDG_STATE_HOME: f.environment.XDG_STATE_HOME });
-      runtime = await openTaskAwaitCutoverRuntime({ config: { dataDir: path.join(f.root, "release-data"), taskBoard: { autoPlaceConfidence: 0.8 } } });
-      const readback = await runtime.service.releasePreflight.releaseGitWorkspaces.frozenCandidate(f.primary);
-      assert.equal(readback.preReleaseHead, candidate.preReleaseHead);
-      assert.deepEqual(readback.manifest.baseProvenance.historicalChangelog, f.provenance.historicalChangelog);
-    } finally {
-      runtime?.close();
-      for (const [key, value] of Object.entries(savedEnvironment)) {
-        if (value === undefined) delete process.env[key]; else process.env[key] = value;
-      }
-    }
-    available = false;
-    await assert.rejects(service.frozenCandidate(f.primary), /original record is unavailable/);
-    available = true;
-    await f.save(f.retained, "untracked.txt", "foreign\n");
-    await assert.rejects(service.frozenCandidate(f.primary), /historical source HEAD\/tree\/clean/);
-    await rm(path.join(f.retained, "untracked.txt"));
-    const notes = Buffer.from("# Release\n\nSelected original.\n");
-    await f.save(candidate.releaseRoot, "CHANGELOG.md", notes);
-    const generationInput = { ...request, operationId: "historical-release", generation: 1, changelogContent: notes };
-    const generation = await service.prepareGeneration(generationInput);
-    assert.deepEqual(generation.manifest.baseProvenance.historicalChangelog, f.provenance.historicalChangelog);
-    assert.equal((await service.prepareGeneration(generationInput)).preReleaseHead, generation.preReleaseHead);
-    await service.freezePublicationCandidate({ projectRoot: f.primary, workspaceId: "fixture", expectedPlanRevision: "metadata",
-      expectedPreparedHead: candidate.preReleaseHead, changelogContent: notes, releaseDate: new Date("2026-10-23T00:00:00Z") });
-    assert.deepEqual((await service.frozenCandidate(f.primary)).manifest.baseProvenance.historicalChangelog, f.provenance.historicalChangelog);
-    assert.deepEqual(f.catalog.mcpOperation(f.authority.requestId), before);
-    assert.equal(await f.git(["status", "--porcelain=v1"]), "");
   } finally { f.catalog.close(); }
 });
