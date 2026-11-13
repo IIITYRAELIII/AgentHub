@@ -70,6 +70,13 @@ configuration cannot replace it. Historical unbound runners require an explicit
 original-compatible pin. Missing future executor input is an external condition,
 not evidence of an unapplied target.
 
+Before a runner exists, a recorded canonical `authorization.recipe.executor`
+also binds loading, test-plan resolution and freeze. Reopening does not require
+ambient tool variables and cannot substitute a different ambient package. New
+intake and unbound historical paths still require an explicit verified pin.
+The whole saved location and frozen candidate binding are checked before product
+effects; malformed, changed or foreign authority is not an ambient fallback.
+
 The existing public continue may recover a positively qualified failed partial
 publication without composing or changing generation, input, authorization,
 selected results, applied effects or old receipts. Generic admission verifies
