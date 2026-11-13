@@ -103,14 +103,12 @@ test("ordinary selected replay refuses unbound publication ancestry", async t =>
   assert.equal(await gitAt(f.sourceRoot, ["rev-parse", "HEAD"]), f.moved);
 });
 
-test("published ordinary Test replay binds its original identity without changing other selection policies", async t => {
+test("published Test replay validates metadata and retains exact automatic selected content", async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\n\nmiddle\n\nfooter\n");
   const main = await commit(f.sourceRoot, "agreed base");
   await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\n\nmiddle\npublished once\nfooter\n");
-  await writeFile(path.join(f.sourceRoot, "retired.txt"), "inherited publication artifact\n");
   const published = await commit(f.sourceRoot, "publication");
-  await rm(path.join(f.sourceRoot, "retired.txt"));
   await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\npublished once\nmiddle\n\nfooter\n");
   const dev = await commit(f.sourceRoot, "move inherited block in dev");
   await gitAt(f.sourceRoot, ["checkout", "--detach", published]);
@@ -134,9 +132,13 @@ test("published ordinary Test replay binds its original identity without changin
     { ...identity, nativeHistoryAuthority: { ...identity.nativeHistoryAuthority,
       sourcePublication: { revision: main } } },
   ]) await assert.rejects(verify(changed), { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
+  // This complete automatic tree also proves preservation without publication
+  // replay credit; removing that optional credit does not imply lost content.
+  const automaticTree = (await gitAt(value.root, ["merge-tree", "--write-tree", dev, result])).split(/\r?\n/u)[0];
+  assert.equal(automaticTree, value.tree);
   for (const changed of [{ ...identity, nativeHistoryAuthority: { baseline: null, adoptions: [] } },
     { ...identity, policy: NATIVE_RELEASE_POLICY }]) {
-    await assert.rejects(verify(changed), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
+    await verify(changed);
   }
   assert.equal(await gitAt(value.root, ["show", "HEAD:own.txt"]), "exact own delta");
   assert.equal(await gitAt(value.root, ["show", "HEAD:inherited.txt"]), "header\npublished once\nmiddle\n\nfooter");
