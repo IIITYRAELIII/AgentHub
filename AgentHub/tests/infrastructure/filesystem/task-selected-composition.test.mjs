@@ -105,15 +105,26 @@ test("retained selected acceptance uses OWN historical facts after terminal and 
       manifest: { workspaceId: "workspace", compositionPolicy: "main-selected-git-merge-v1",
         baseProvenance: { publishedBaseCommit: f.published }, tasks } }], runnerVersion: "test" }).generation;
   const prior = makeGeneration(1, f.proof);
-  const next = makeGeneration(2, f.task);
   const applied = (generation, stepId, effect = null) => {
     const receipt = store.beginStep({ operationId: operation.operationId, generation, stepId, input: { fixture: stepId } }).receipt;
     store.finishStep(receipt, { status: "applied", effect });
   };
   const effect = { targetId: "production", status: "partial", revision: f.proof,
     releaseVersion: "2026.10.12", publicationStatus: "awaiting_restart" };
-  applied(1, "validate"); applied(1, "startup-readback:production", effect);
+  const advance = patch => {
+    const current = store.get(operation.operationId);
+    const result = store.transition(operation.operationId, patch, { expectedRevision: current.revision });
+    assert.equal(result.applied, true, result.reason);
+  };
+  applied(1, "compose", { identitySha256: prior.identitySha256 });
+  advance({ state: "validate", currentGeneration: 1, selectedResults: prior.selectedResults });
+  applied(1, "validate");
+  advance({ state: "publish" });
+  applied(1, "startup-readback:production", effect);
+  advance({ state: "compose" });
+  const next = makeGeneration(2, f.task);
   applied(2, "compose", { identitySha256: next.identitySha256 });
+  advance({ state: "validate", currentGeneration: 2, selectedResults: next.selectedResults });
   const binding = commit => ({ schemaVersion: 1, kind: "native-publication-owner-v1", admissionSha256: "b".repeat(64),
     source: { root: f.root, branch: "native-fixture", commit, tree: f.tree },
     intake: { taskRevision: 1, provider: "codex", threadId: "thread", turnId: "turn", serviceTaskId: "service", repositoryRoot: f.root } });
@@ -129,7 +140,7 @@ test("retained selected acceptance uses OWN historical facts after terminal and 
       releaseVersion: "2026.10.12", selectionSha256: releaseSelectionSha256(next.selectedResults), effects: [effect] } });
   const { fingerprint, ...oldAuthorization } = operation.authorization;
   const authorization = { ...oldAuthorization, nativeOwnerCutover: original };
-  const persisted = { ...operation, state: "failed", currentGeneration: 2, completedAt: new Date().toISOString(), owner: null,
+  const persisted = { ...store.get(operation.operationId), state: "failed", currentGeneration: 2, completedAt: new Date().toISOString(), owner: null,
     selectedResults: next.selectedResults, authorization: { ...authorization, fingerprint: releaseIdentitySha256(authorization) },
     nativeOwnerRecovery: recovery, nativeStartupCorrection: correction,
     publicationEffects: { generation: 2, targets: {}, priorGenerations: { 1: oldEffects } } };
