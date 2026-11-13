@@ -2,3 +2,5 @@
 
 /* Keep every stage and the detail panel reachable beside long test runs. */
 .stage{padding-top:10px;padding-bottom:10px;min-height:0;margin-bottom:4px}.stage .dot{top:15px}.stage:before{top:34px;bottom:-16px}.stage p{font-size:12px;line-height:1.35}.table-wrap{max-height:520px}thead{position:sticky;top:0;z-index:1}#errors{max-height:540px;overflow:auto}@media(max-width:700px){.stage{min-height:104px}.stage .dot{top:13px}table{min-width:480px}.table-wrap{max-height:440px}}
+
+#last-result{white-space:pre-line;overflow-wrap:anywhere}

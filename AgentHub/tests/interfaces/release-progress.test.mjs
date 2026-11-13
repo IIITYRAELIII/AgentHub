@@ -28,6 +28,22 @@ test('test projection preserves exact names and attaches repeated failure detail
   assert.equal(log.cases[1].name, 'unsafe <img src=x>'); assert.match(log.cases[1].details, /AssertionError/u);
   assert.equal(log.cases[1].status, 'failed');
 });
+
+test('active file observations keep nested invocations separate and never count a phase as PASS', () => {
+  const log = new TestLog();
+  const event = (invocationId, phase) => log.append('Test file progress: ' + JSON.stringify({
+    invocationId, identity: 'original', file: 'tests/exact.test.mjs', suite: 'unit', phase,
+    startedAt: 100, observedAt: 200, pid: 123, privateValue: 'not a projected field',
+  }) + '\n');
+  event('parent', 'execution'); event('nested', 'checkpoint-queued');
+  assert.equal(log.activeFiles.size, 2); assert.equal(log.cases.length, 0);
+  assert.equal(JSON.stringify([...log.activeFiles.values()]).includes('not a projected field'), false);
+  event('parent', 'finished');
+  assert.equal(log.activeFiles.size, 1);
+  assert.equal([...log.activeFiles.values()][0].invocationId, 'nested');
+  event('nested', 'finished');
+  assert.equal(log.activeFiles.size, 0); assert.equal(log.cases.length, 0);
+});
 test('reader incrementally decodes UTF8, resets after truncation and never labels stale running as terminal', async t => {
   const f = await fixture(t), reader = new ProgressReader({ runtimeRoot: f.root, operationId: 'original' });
   const before = await stat(f.log), first = await reader.snapshot();

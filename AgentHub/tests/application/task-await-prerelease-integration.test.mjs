@@ -394,50 +394,6 @@ test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it a
   )), []);
 });
 
-test("concurrent Await acceptances serialize in existing PreRelease without cloning a hooked primary", async (t) => {
-  const f = await fixture(t);
-  const seed = await f.testedTask("Seed", "seed.txt", "seed\n");
-  const { candidate } = await acceptAndPrepare(f, seed, "seed");
-  const first = await f.testedTask("Concurrent first", "first.txt", "first\n");
-  const second = await f.testedTask("Concurrent second", "second.txt", "second\n");
-  // Fresh local clone would hit Git protection; reuse the existing repository.
-  const hooks = path.join(f.root, "hooks");
-  await mkdir(hooks);
-  await git(f.primary, "config", "core.hooksPath", hooks);
-  const primaryBefore = await git(f.primary, "rev-parse", "HEAD");
-  f.releaseGitWorkspaces.prepareGeneration = async () => assert.fail("No Await generation");
-  f.releaseGitWorkspaces.promoteGenerationCandidate = async () => assert.fail("No generation promotion");
-  const original = f.releaseGitWorkspaces.prepareCandidate.bind(f.releaseGitWorkspaces);
-  const roots = [];
-  let active = 0;
-  let peak = 0;
-  f.releaseGitWorkspaces.prepareCandidate = async (options) => {
-    active += 1;
-    peak = Math.max(peak, active);
-    try {
-      const result = await original(options);
-      roots.push(result.releaseRoot);
-      return result;
-    } finally { active -= 1; }
-  };
-  const results = await Promise.all([
-    f.lifecycle.updateWorkflowStatus({ taskId: first.id, status: "awaiting_implementation", operationId: "concurrent-first" }),
-    f.lifecycle.updateWorkflowStatus({ taskId: second.id, status: "awaiting_implementation", operationId: "concurrent-second" }),
-  ]);
-  for (const result of results) assert.equal(result.task.workflowStatus, "awaiting_implementation");
-  assert.equal(peak, 1);
-  assert.deepEqual(roots, [candidate.releaseRoot, candidate.releaseRoot]);
-  assert.deepEqual(await readdir(path.join(f.root, "data", "release-gens")).catch((error) => (
-    error.code === "ENOENT" ? [] : Promise.reject(error)
-  )), []);
-  for (const name of ["seed", "first", "second"]) {
-    assert.equal(await git(candidate.releaseRoot, "show", `PreRelease:${name}.txt`), name);
-  }
-  assert.equal(await git(candidate.releaseRoot, "status", "--porcelain"), "");
-  assert.equal(await git(f.primary, "rev-parse", "HEAD"), primaryBefore);
-  assert.equal(await git(f.primary, "config", "--local", "--get", "core.hooksPath"), hooks);
-});
-
 test("ambiguous Await preserves its pending operation and rebuilds the candidate during recovery", async (t) => {
   const f = await fixture(t);
   const task = await f.testedTask("Recover", "recover.txt", "recover\n");

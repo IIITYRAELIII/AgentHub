@@ -74,10 +74,25 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
           fs.writeFileSync(root+'/result.json',JSON.stringify({ready:result.lock.ready,launches}));
         }catch(error){fs.writeFileSync(root+'/result.json',JSON.stringify({error:error.message,cleanup:error.replacementCleanup,launches}));}
       }`);
+    const launcherLog = path.join(root, 'launcher-error.log');
+    const priorLauncherLog = await readFile(launcherLog, 'utf8').catch(error => {
+      if (error.code === 'ENOENT') return ''; throw error;
+    });
     const result = await execute(driver, [run, process.execPath, submit, mode], { windowsHide: true, timeout: 45000 });
     assert.equal(result.stderr, '');
     const proof = JSON.parse(result.stdout), outcome = JSON.parse(await readFile(path.join(run, 'result.json'), 'utf8'));
-    t.diagnostic(JSON.stringify({ mode, ...proof, outcome }));
+    const launcherFailure = (await readFile(launcherLog, 'utf8').catch(error => {
+      if (error.code === 'ENOENT') return ''; throw error;
+    })).slice(priorLauncherLog.length);
+    t.diagnostic(JSON.stringify({ mode, ...proof, outcome,
+      launcherFailure: launcherFailure.slice(-4096),
+      nodeIdentityCreated: await readFile(path.join(run, 'actual-node.json'), 'utf8').then(() => true, error => {
+        if (error.code === 'ENOENT') return false; throw error;
+      }),
+      readyObservationCreated: await readFile(path.join(run, 'bot.lock'), 'utf8').then(() => true, error => {
+        if (error.code === 'ENOENT') return false; throw error;
+      }),
+    }));
     assert.equal(outcome.launches, 1, 'transport uncertainty never admits another launcher');
     if (mode === 'ready') {
       assert.equal(outcome.ready, true);

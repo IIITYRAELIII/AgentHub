@@ -34,6 +34,7 @@ export function describeTest(name) {
 
 export class TestLog {
   cases = []; tail = []; totalLines = 0; pending = ''; detailNext = false; detail = null; groups = [];
+  activeFiles = new Map();
   append(text) {
     this.pending += text;
     let end;
@@ -47,6 +48,20 @@ export class TestLog {
     const text = line.trimStart(), indent = line.length - text.length;
     this.totalLines++; this.tail.push(line);
     if (this.tail.length > 200) this.tail.shift(); // Display window; full log remains downloadable.
+    if (text.startsWith('Test file progress: ')) {
+      try {
+        const event = JSON.parse(text.slice('Test file progress: '.length));
+        const phases = ['execution', 'child-starting', 'child-exited', 'child-closed', 'cleanup', 'cleanup-finished', 'checkpoint-queued', 'checkpoint-writing', 'finished'];
+        if (typeof event.invocationId !== 'string' || typeof event.file !== 'string'
+          || !phases.includes(event.phase) || !Number.isFinite(event.startedAt) || !Number.isFinite(event.observedAt)) return;
+        const key = `${event.invocationId}:${event.file}`;
+        if (event.phase === 'finished') this.activeFiles.delete(key);
+        else this.activeFiles.set(key, { invocationId: event.invocationId, file: event.file,
+          suite: event.suite, phase: event.phase, startedAt: event.startedAt, observedAt: event.observedAt,
+          ...(Number.isSafeInteger(event.pid) && event.pid > 0 ? { pid: event.pid } : {}) });
+      } catch { /* A partial/foreign log line is not progress authority. */ }
+      return;
+    }
     if (text.startsWith('test at ')) { this.detailNext = true; return; }
     if (text.startsWith('▶ ')) { this.groups.push({ indent, name: text.slice(2) }); this.detail = null; this.detailNext = false; return; }
     const match = text.match(/^[✔✖﹣]\s+(.+?)\s+\(([\d.]+)ms\)(?:\s+#.*)?$/u);
@@ -109,6 +124,7 @@ export class ProgressReader {
       currentStep: status.currentStep, error: status.error ?? null, finishedAt: status.finishedAt ?? result?.finishedAt ?? result?.completedAt ?? null, terminalResultPresent: Boolean(result),
       steps: (status.steps ?? []).map(item => ({ ...item, title: STAGES[item.stageId]?.[0] ?? item.label, description: STAGES[item.stageId]?.[1] ?? 'Штатный этап pipeline.' })),
       counts, cases: this.log.cases, lastResult: this.log.cases.at(-1) ?? null,
+      activeFiles: [...this.log.activeFiles.values()],
       failures: this.log.cases.filter(item => item.status === 'failed'), log: this.log.tail.join('\n'),
       logLines: this.log.totalLines, logBytes: info.size, logModifiedAt: info.mtime.toISOString(), logFile };
   }

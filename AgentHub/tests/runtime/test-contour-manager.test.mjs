@@ -153,28 +153,32 @@ test("Test Contour uses a sibling runtime instead of production or source", () =
 test("Test Contour serializes overlapping lifecycle operations", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-lock-"));
   const entered = [];
-  let releaseFirst;
+  let releaseFirst, notifyFirstEntered, first, second;
   const firstCanFinish = new Promise((resolve) => { releaseFirst = resolve; });
+  const firstEntered = new Promise((resolve) => { notifyFirstEntered = resolve; });
   try {
     assert.equal(
       testContourOperationLockTarget(root),
       `${path.resolve(root)}-operation`,
     );
-    const first = withTestContourOperationLock(root, async () => {
+    first = withTestContourOperationLock(root, async () => {
       entered.push("first");
+      notifyFirstEntered();
       await firstCanFinish;
     });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    const second = withTestContourOperationLock(root, async () => {
+    await Promise.race([firstEntered, first.then(() => {
+      throw new Error("First lock operation completed before its entry event");
+    })]);
+    second = withTestContourOperationLock(root, async () => {
       entered.push("second");
     });
-    await new Promise((resolve) => setTimeout(resolve, 25));
     assert.deepEqual(entered, ["first"]);
     releaseFirst();
     await Promise.all([first, second]);
     assert.deepEqual(entered, ["first", "second"]);
   } finally {
     releaseFirst?.();
+    await Promise.allSettled([first, second].filter(Boolean));
     await rm(root, { recursive: true, force: true });
     await rm(`${root}-operation.lock`, { recursive: true, force: true });
   }

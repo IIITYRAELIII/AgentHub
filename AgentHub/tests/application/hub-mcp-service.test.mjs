@@ -293,7 +293,7 @@ test("release notifications persist creation, intake and provider dispatch under
   } finally { await traceStore.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("release notifications retain exact pending steer through reconnect and refuse a completed or rotated target", async t => {
+test("release notifications retain one message through reconnect and reach the current turn or ordinary idle send", async t => {
   for (const rotated of [false, true]) {
     const f = await releaseDeliveryFixture(t);
     const ack = await f.deliver();
@@ -301,10 +301,15 @@ test("release notifications retain exact pending steer through reconnect and ref
     f.reopen();
     f.setRun(rotated ? { ...f.active, id: "later-run", threadId: "later-thread", turnId: "later-turn" } : null);
     await f.controller.process(ack.id);
-    assert.equal(f.providerCalls.length, 0);
-    assert.equal(f.store.pending.get(ack.id).lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
-    assert.equal(f.store.pending.get(ack.id).clientUserMessageId, ack.clientUserMessageId);
-    assert.equal(f.store.pending.get(ack.id).steerTargetTurnId, "event-turn");
+    assert.equal(f.providerCalls.length, 1);
+    assert.equal(f.providerCalls[0].id, ack.clientUserMessageId);
+    assert.equal(f.providerCalls[0].method, rotated ? "steerTurn" : "startTurn");
+    assert.equal(f.ledger().get(ack.clientUserMessageId).result.turnId, rotated ? "later-turn" : "idle-turn");
+    assert.equal(f.store.size, 0);
+    await f.deliver();
+    f.reopen();
+    await f.controller.process(ack.id);
+    assert.equal(f.providerCalls.length, 1, "a reconnect/repeated event keeps the original delivery, not another send");
   }
 });
 
