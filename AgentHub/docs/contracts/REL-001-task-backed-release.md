@@ -1803,7 +1803,21 @@ cleanup plan; confirmation rechecks them. No result is fabricated and its clean
 managed worktree is retained. Publication, Task closure and cleanup remain
 separate facts.
 
-A metadata-only service with no managed source may use the same owner without
+An explicitly abandoned FAILED release service uses the separate RM-only
+`completion_mode=abandoned_release_service`, with exact original revision and
+generation. The existing lifecycle owner verifies the canonical idle FAILED
+operation, authorization, immutable generation and whole historical checklist
+selection under the Workspace Await and Task leases. It preserves the failed
+original, effects of unknown disposition, selected Tasks, frozen artifacts and
+history. No member Done or publication is asserted. The card archive preserves
+its prior workflow status. A missing managed source needs positive directory/ref
+absence; a present source must be clean and equal its immutable Task base, and
+is retained. The mode creates no implementation result and deletes no Git data.
+Preview/confirmation bind and recheck the whole original and custody; existing
+durable lifecycle intent/outcome permits only same-original recovery. Earlier
+unsealed UNKNOWN operations remain untouched (ADR-HUB-444).
+
+A metadata-only service with no managed source may use the published owner without
 creating a worktree. Its canonical Done members must name exactly one repository
 and one result each. The exact indexed completed original must positively match
 that complete selection, Workspace, immutable candidate tree, raw manifest,

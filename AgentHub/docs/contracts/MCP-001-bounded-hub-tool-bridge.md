@@ -214,6 +214,25 @@ before native cleanup. Partial deletion and lost replies retain that identity;
 terminal readback settles only that original. No no-effect claim, new Delete
 ID, raw receipt replacement or transfer of a separate claim's UNKNOWN occurs.
 
+## Abandoned release service archive
+
+RM-only `hub_task_complete completion_mode=abandoned_release_service` archives
+an explicitly abandoned service card without declaring publication or workflow
+Done. `abandoned_release` names the exact canonical `operationId`,
+`expectedRevision` and positive `expectedGeneration`. Under the existing Workspace
+Await and Task leases, the owner requires an idle terminal FAILED original,
+matching Workspace/Stream, immutable generation/authorization and complete
+historical checklist result references. Unfinished selected Tasks remain intact.
+No local release worker may be active. The preview token binds the whole original,
+Task revision and preserve-only custody; confirmation rechecks them before the
+existing lifecycle archive. No release continuation, publication, source cleanup,
+ledger rewrite or effect settlement occurs. FAILED and unknown effects remain.
+
+The same operation-reconcile owner can recover only this exact confirmed
+original's durable archive intent or outcome, with its complete original argument
+hash. Missing or contradictory evidence refuses; an earlier unsealed operational
+UNKNOWN is not adopted. See ADR-HUB-444-abandoned-release-service.
+
 ## Original published dev synchronization
 
 `hub_release_continue` optionally carries exclusive `published_dev_sync` with
