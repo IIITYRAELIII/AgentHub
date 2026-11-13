@@ -449,8 +449,12 @@ export class TaskOperationReconciliationService {
     }
     if (outcome?.result?.noEffect) {
       const proof = !transition && workflowAdmissionNoEffectEvidence(outcome, receipt);
+      const settled = proof && receipt.operationStatus === "failed" && receipt.receiptState === "failed"
+        && receipt.error === new TaskLifecycleNoEffectError(proof).message
+        && JSON.stringify(canonicalValue(receipt.result?.operatorReconciliation))
+          === JSON.stringify(canonicalValue({ outcome: "NO_EFFECT", durableState: "workflow_admission_refusal", evidence: proof }));
       if (!proof || proof.taskId !== task.id || proof.workspaceId !== workspace.id
-          || receipt.operationStatus !== "pending" || receipt.receiptState !== "unknown"
+          || (!(receipt.operationStatus === "pending" && receipt.receiptState === "unknown") && !settled)
           || (proof.projectRoot !== null && (!root || !samePath(root, proof.projectRoot))) || squash || cutover
           || (workflowCas?.expected_task_revision ?? null) !== proof.expectedRevision
           || (workflowCas?.expected_workflow_status ?? null) !== proof.expectedWorkflowStatus
@@ -458,7 +462,7 @@ export class TaskOperationReconciliationService {
             operationId, taskId: task.id, status: proof.targetWorkflowStatus, identityArguments: workflowCas,
           })) throw new Error("Workflow refusal identity does not match the original operation");
       return { workspace, task, receipt, transition, outcome, operationId, projectRoot: proof.projectRoot,
-        guardId: exactGuardId, state: "no_effect", noEffect: proof };
+        guardId: exactGuardId, state: "no_effect", noEffect: proof, receiptSettled: Boolean(settled) };
     }
     if (!root) throw new Error("Unknown workflow operation identity requires a project root");
 
@@ -674,7 +678,7 @@ export class TaskOperationReconciliationService {
     }
     if (identity.state === "no_effect") {
       const reconciliation = { outcome: "NO_EFFECT", durableState: "workflow_admission_refusal", evidence: identity.noEffect };
-      const receipt = await this.workspaceCatalog.failUnknownMcpOperation(identity.operationId, {
+      const receipt = identity.receiptSettled ? identity.receipt : await this.workspaceCatalog.failUnknownMcpOperation(identity.operationId, {
         workspaceId: identity.workspace.id, toolName: "hub_task_status_update",
         error: new TaskLifecycleNoEffectError(identity.noEffect), reconciliation,
       });
@@ -921,6 +925,7 @@ export class TaskOperationReconciliationService {
     } catch (error) {
       if (!lockEntered && initial.state === "invalid_input") this.#validationTrace(initial.operationId,
         "task-workflow-invalid-lock-wait", lockStarted, "failed");
+      if (!lockEntered) throw new TaskOperationReconciliationRefusedError(error);
       throw error;
     }
   }

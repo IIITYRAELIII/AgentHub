@@ -1232,6 +1232,18 @@ through the same capability and addressed-worker close/join. The external CLI
 `task-reconcile` reads its own control receipt by exact request/arguments identity;
 the addressed old Await and the reconciliation command have separate outcomes.
 
+If that ordinary reconciliation control itself is UNKNOWN, an explicit SAME
+control invocation with its unchanged actor, arguments hash and ordinary Await
+identity re-enters only the existing reconciliation owner. It does not resubmit
+the Await. The owner repeats its normal leases and exact original validation;
+an already settled admission refusal is read only from its matching durable
+outcome and canonical failure receipt. The control retains its previous UNKNOWN
+receipt when completed. A refusal during this continuation leaves that earlier
+UNKNOWN intact; it cannot disprove effects of the previous invocation. A fresh
+control that never entered the recovery lease callback fails before effects
+instead of creating another ambiguous original. Other reconciliation families
+retain their existing continuation rules.
+
 A local live invocation is reported as active, an explicit UNKNOWN receipt as
 unknown, and a nonterminal receipt without observed local execution as unresolved.
 Receipt presence and a missing worker never prove queue membership or completion;

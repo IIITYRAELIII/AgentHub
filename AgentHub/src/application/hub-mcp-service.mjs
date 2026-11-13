@@ -33,7 +33,7 @@ import {
   TaskLifecycleBeginRejectedError,
   TaskLifecycleNoEffectError,
   TaskOperationReconciliationRefusedError,
-  workflowAdmissionNoEffectEvidence, claimAdmissionNoEffectEvidence, claimAdmissionRefusalError, TaskClaimExecutorBusyError,
+  workflowAdmissionNoEffectEvidence, ordinaryAwaitOriginalArguments, claimAdmissionNoEffectEvidence, claimAdmissionRefusalError, TaskClaimExecutorBusyError,
   ReleaseCandidateFrozenError,
   TaskAbsorptionCompositionError,
 } from "../domain/task-board-task.mjs";
@@ -1163,6 +1163,15 @@ export class HubMcpService {
     });
   }
 
+  #ordinaryAwaitReconciliationContinuation(toolName, args, receipt) {
+    return toolName === "hub_task_operation_reconcile" && receipt?.status === "unknown"
+      && args.confirm_reconcile === true && args.expected_workflow_status === "testing"
+      && Number.isSafeInteger(args.expected_task_revision) && args.request_id !== args.operation_request_id
+      && Boolean(ordinaryAwaitOriginalArguments(this.workspaceCatalog.mcpOperation(args.operation_request_id)))
+      && Object.keys(args).every(key => ["context_token", "request_id", "task_id", "operation_request_id",
+        "expected_arguments_hash", "project_root", "confirm_reconcile", "expected_task_revision", "expected_workflow_status"].includes(key));
+  }
+
   async #submitTaskOperation(context, toolName, args, invoke) {
     const requestId = requiredText(args.request_id, "request id", 200);
     const existing = this.workspaceCatalog.mcpOperation(requestId);
@@ -1173,10 +1182,11 @@ export class HubMcpService {
         || existing.toolName !== toolName || existing.argumentsHash !== argumentsHash(args)) {
         throw new Error("MCP request_id was already used for another operation");
       }
-      // Only the canonical interruption owner can continue its exact UNKNOWN
-      // cancellation. Other historical operations and any live worker are read-only.
-      if (toolName !== "hub_task_operation_cancel" || existing.status !== "unknown"
-        || this.#pendingMutations.has(requestId) || !this.taskOperationInterruption) {
+      // Only the existing interruption/reconciliation owners may continue their
+      // addressed UNKNOWN control. Live workers and other history are read-only.
+      const continuation = toolName === "hub_task_operation_cancel" && this.taskOperationInterruption
+        || this.#ordinaryAwaitReconciliationContinuation(toolName, args, existing);
+      if (!continuation || existing.status !== "unknown" || this.#pendingMutations.has(requestId)) {
         return this.#taskOperationReadback(context, { operation_request_id: requestId, expected_arguments_hash: argumentsHash(args) });
       }
     }
@@ -3410,6 +3420,11 @@ export class HubMcpService {
     }
     const custodyConsume = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id);
     const custodyStage = toolName === "hub_task_operation_reconcile" && Boolean(args.claim_custody);
+    // Re-enter only the addressed ordinary Await reconciliation owner. This
+    // control never dispatches the old workflow; its leases and outcome fence
+    // decide whether to settle or read the already settled original.
+    const workflowReconciliationContinuation = started.replayed
+      && this.#ordinaryAwaitReconciliationContinuation(toolName, args, started);
     const interruption = toolName === "hub_task_operation_cancel";
     // This owner resumes only the same addressed assets input. Its canonical
     // step and GitHub journal recheck authority and reconcile remote intents
@@ -3444,7 +3459,7 @@ export class HubMcpService {
         throw terminal;
       }
     }
-    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption && !assetsContinuation && !ownerContinuation) {
+    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption && !assetsContinuation && !ownerContinuation && !workflowReconciliationContinuation) {
       throw new Error(`MCP operation outcome is unknown; reconcile authoritatively before retrying request_id ${requestId}`);
     }
     const inFlight = this.#pendingMutations.get(requestId);
@@ -3460,7 +3475,7 @@ export class HubMcpService {
       "hub_task_checklist_update",
       "hub_task_operation_cancel",
     ]);
-    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage && !assetsContinuation && !ownerContinuation) {
+    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage && !assetsContinuation && !ownerContinuation && !workflowReconciliationContinuation) {
       const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
       if (toolName !== "hub_release_prepare" || !started.preparationState) {
         await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
@@ -3513,6 +3528,14 @@ export class HubMcpService {
                 createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs } },
           });
           return completed.result;
+        } else if (workflowReconciliationContinuation) {
+          const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, {
+            workspaceId: context.workspaceId, toolName, result,
+            reconciliation: { kind: "ordinary-await-reconciliation-control-v1",
+              originalRequestId: args.operation_request_id, originalArgumentsHash: args.expected_arguments_hash,
+              previousReceipt: started },
+          });
+          return completed.result;
         } else if (assetsContinuation && started.status === "unknown") {
           const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
             result, reconciliation: { kind: "published-assets-owner-continuation-v1",
@@ -3552,6 +3575,9 @@ export class HubMcpService {
         if (completed?.status === "succeeded" && completed.argumentsHash === argumentsHash(args)) {
           return claimCustodyState(completed)?.result ?? completed.result;
         }
+        // A failed continuation does not erase the previous control UNKNOWN:
+        // effects of that older invocation may already be in the target owner.
+        if (workflowReconciliationContinuation) throw error;
         if (args.claim_custody && toolName === "hub_task_operation_reconcile") {
           const durable = claimCustodyState(observe(() => this.workspaceCatalog.mcpOperation(requestId)));
           if (durable) return durable.result;
@@ -3602,7 +3628,7 @@ export class HubMcpService {
         }
         const workflowRefusal = toolName === "hub_task_status_update" ? observe(() => this.#workflowAdmissionRefusal(started)) : null;
         const reconciliationRefusal = toolName === "hub_task_operation_reconcile"
-          && error instanceof TaskOperationReconciliationRefusedError;
+          && !workflowReconciliationContinuation && error instanceof TaskOperationReconciliationRefusedError;
         if (workflowRefusal || reconciliationRefusal) {
           try {
             await persist(() => this.workspaceCatalog.failMcpOperation(requestId, error, {
