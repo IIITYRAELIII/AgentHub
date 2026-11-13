@@ -9587,6 +9587,24 @@ function normalizedAnnotationQuote(value) {
   return String(value ?? "").trim();
 }
 
+function selectedMessageClipboard(selection) {
+  if (!selection?.surface?.isConnected) return null;
+  const range = domRangeFromOffsets(selection.surface, selection.offsets.start, selection.offsets.end);
+  return MessageView.messageSelectionClipboard(selection.surface, range);
+}
+
+document.addEventListener("copy", (event) => {
+  if (event.defaultPrevented || !event.clipboardData) return;
+  if (document.activeElement?.matches("input, textarea, [contenteditable]:not([contenteditable='false'])")) return;
+  const selection = selectedQuotableSelection();
+  if (!selection || !selection.message.closest("[data-chat-log], [data-chat-live]")) return;
+  const clipboard = selectedMessageClipboard(selection);
+  if (!clipboard) return;
+  event.clipboardData.setData("text/plain", clipboard.text);
+  event.clipboardData.setData("text/html", clipboard.html);
+  event.preventDefault();
+});
+
 function meaningfulAnnotationSelection(value) {
   return Boolean(String(value ?? "").trim());
 }
@@ -9714,7 +9732,10 @@ function closeAnnotationContextMenu() {
 }
 
 function openAnnotationContextMenu(event, selection) {
-  pendingAnnotationSelection = selection;
+  pendingAnnotationSelection = {
+    ...selection,
+    clipboardText: selectedMessageClipboard(selection)?.text ?? selection.quote,
+  };
   annotationContextMenu.hidden = false;
   const menuRect = annotationContextMenu.getBoundingClientRect();
   const chatRect = event.target.closest?.("[data-chat]")?.getBoundingClientRect();
@@ -9756,7 +9777,7 @@ annotationContextMenu.addEventListener("click", (event) => {
   const quote = selection?.quote ?? "";
   closeAnnotationContextMenu();
   if (action === "annotate-selection") void addAnnotation(selection);
-  else emit("clipboard:write", { text: quote });
+  else emit("clipboard:write", { text: selection?.clipboardText ?? quote });
 });
 
 document.addEventListener("pointerdown", (event) => {

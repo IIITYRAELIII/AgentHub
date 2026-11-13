@@ -55,6 +55,15 @@ navigation. Legacy citations already bound to shortened content are not rewritte
 
 ## Invariants
 
+- Copying a selected ordered list inside one message preserves its visible
+  ordinals in plain text, including a non-one start, selected item values,
+  nesting and selected line breaks. Partial selection includes only the selected
+  item text and retains its source ordinal. Ctrl+C and the message selection
+  menu share this clipboard projection. Quote source offsets/hashes and the
+  whole-message Markdown copy remain unchanged. Editable controls, selections
+  outside messages and plain text without ordered items keep native copying;
+  this introduces no keyboard shortcut or general clipboard interception.
+
 - Local sending is visible before a transport response. The exact durable Hub
   ACK updates that same command immediately, before snapshot/history refresh;
   its final selected state and displayed delivery label must agree. Explicit
