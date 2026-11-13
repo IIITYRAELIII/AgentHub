@@ -624,8 +624,25 @@
   // for quote offsets or the message's canonical Markdown.
   function messageSelectionClipboard(surface, range) {
     if (!surface || !range || range.collapsed) return null;
-    if (!surface.contains(range.startContainer) || !surface.contains(range.endContainer)) return null;
     const document = surface.ownerDocument;
+    const contents = document.createRange();
+    contents.selectNodeContents(surface);
+    range = range.cloneRange();
+    // Only an empty browser boundary outside this one message may be clipped.
+    // Whitespace selected INSIDE the message is body content, not quote trim.
+    if (range.compareBoundaryPoints(0, contents) < 0) {
+      const before = range.cloneRange();
+      before.setEnd(contents.startContainer, contents.startOffset);
+      if (before.toString().trim()) return null;
+      range.setStart(contents.startContainer, contents.startOffset);
+    }
+    if (range.compareBoundaryPoints(2, contents) > 0) {
+      const after = range.cloneRange();
+      after.setStart(contents.endContainer, contents.endOffset);
+      if (after.toString().trim()) return null;
+      range.setEnd(contents.endContainer, contents.endOffset);
+    }
+    if (!surface.contains(range.startContainer) || !surface.contains(range.endContainer)) return null;
     const selected = (node) => range.intersectsNode(node);
     const ordinals = new WeakMap();
     function ordinal(item) {
@@ -667,22 +684,29 @@
     const clone = cloneSelected(surface);
     if (!clone || !ordered) return null;
     const blocks = new Set(["P", "DIV", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6"]);
+    const separator = (text) => ({ text, separator: true });
+    function trimSeparators(parts) {
+      while (parts[0]?.separator) parts.shift();
+      while (parts.at(-1)?.separator) parts.pop();
+      return parts;
+    }
     function plain(node, depth = 0) {
-      if (node.nodeType === 3) return node.data;
-      if (node.tagName === "BR") return "\n";
+      if (node.nodeType === 3) return [{ text: node.data }];
+      if (node.tagName === "BR") return [{ text: "\n" }];
       const list = node.tagName === "OL" || node.tagName === "UL";
-      const text = [...node.childNodes].map((child) => plain(child, depth + (list ? 1 : 0))).join("");
+      const parts = [...node.childNodes].flatMap((child) => plain(child, depth + (list ? 1 : 0)));
       if (node.tagName === "LI") {
         const marker = node.parentElement.tagName === "OL" ? `${node.value}. ` : "- ";
-        return `${"  ".repeat(Math.max(0, depth - 1))}${marker}${text.replace(/^\n+|\n+$/gu, "")}\n`;
+        return [{ text: `${"  ".repeat(Math.max(0, depth - 1))}${marker}` },
+          ...trimSeparators(parts), separator("\n")];
       }
-      if (list) return `\n${text}`;
-      if (blocks.has(node.tagName)) return `\n${text}\n`;
-      if (node.tagName === "TR") return `${text}\n`;
-      if (node.tagName === "TD" || node.tagName === "TH") return `${text}\t`;
-      return text;
+      if (list) return [separator("\n"), ...parts];
+      if (blocks.has(node.tagName)) return [separator("\n"), ...parts, separator("\n")];
+      if (node.tagName === "TR") return [...parts, separator("\n")];
+      if (node.tagName === "TD" || node.tagName === "TH") return [...parts, separator("\t")];
+      return parts;
     }
-    return { text: plain(clone).replace(/^\n+|\n+$/gu, ""), html: clone.innerHTML };
+    return { text: trimSeparators(plain(clone)).map((part) => part.text).join(""), html: clone.innerHTML };
   }
 
   globalThis.AgentHubMessageView = Object.freeze({

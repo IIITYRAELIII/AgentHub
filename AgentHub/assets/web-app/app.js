@@ -9531,7 +9531,7 @@ function intersectedQuotableSelection(range) {
   return matches[0] ?? null;
 }
 
-function selectedQuotableSelection() {
+function selectedMessageDomRange() {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) return null;
   const range = selection.getRangeAt(0);
@@ -9548,12 +9548,18 @@ function selectedQuotableSelection() {
   });
   if (!scope) return null;
   if (scope.startSurface !== scope.endSurface) return null;
-  const offsets = domRangeOffsets(scope.startSurface, range);
+  return { ...scope, range, rangeCount: selection.rangeCount };
+}
+
+function selectedQuotableSelection() {
+  const scope = selectedMessageDomRange();
+  if (!scope) return null;
+  const offsets = domRangeOffsets(scope.startSurface, scope.range);
   if (!offsets) return null;
   const exactRange = domRangeFromOffsets(scope.startSurface, offsets.start, offsets.end);
   const quote = quotableSelectionText({
     text: exactRange?.toString(),
-    rangeCount: selection.rangeCount,
+    rangeCount: scope.rangeCount,
     startMessage: scope.message,
     endMessage: scope.message,
     startSurface: scope.startSurface,
@@ -9588,17 +9594,17 @@ function normalizedAnnotationQuote(value) {
 }
 
 function selectedMessageClipboard(selection) {
-  if (!selection?.surface?.isConnected) return null;
-  const range = domRangeFromOffsets(selection.surface, selection.offsets.start, selection.offsets.end);
-  return MessageView.messageSelectionClipboard(selection.surface, range);
+  const scope = selectedMessageDomRange();
+  if (!scope || scope.rangeCount !== 1 || (selection && scope.startSurface !== selection.surface)) return null;
+  return MessageView.messageSelectionClipboard(scope.startSurface, scope.range);
 }
 
 document.addEventListener("copy", (event) => {
   if (event.defaultPrevented || !event.clipboardData) return;
   if (document.activeElement?.matches("input, textarea, [contenteditable]:not([contenteditable='false'])")) return;
-  const selection = selectedQuotableSelection();
-  if (!selection || !selection.message.closest("[data-chat-log], [data-chat-live]")) return;
-  const clipboard = selectedMessageClipboard(selection);
+  const selection = selectedMessageDomRange();
+  if (!selection || selection.rangeCount !== 1 || !selection.message.closest("[data-chat-log], [data-chat-live]")) return;
+  const clipboard = MessageView.messageSelectionClipboard(selection.startSurface, selection.range);
   if (!clipboard) return;
   event.clipboardData.setData("text/plain", clipboard.text);
   event.clipboardData.setData("text/html", clipboard.html);

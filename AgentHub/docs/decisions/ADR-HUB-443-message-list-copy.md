@@ -14,6 +14,11 @@ one. Only selected text is cloned; structural list prefixes and line boundaries
 are added without adding unselected item bodies. A corresponding selected HTML
 fragment retains explicit item values. The original message DOM is not changed.
 
+The clipboard range is the original browser DOM range, separate from the
+normalized annotation range. Selected boundary spaces and line breaks are body
+content. Serialization tags its added structural separators separately, so
+removing an outer separator cannot trim a selected character.
+
 The copy event listener acts only on a selection owned by one rendered chat
 message and leaves editable controls and other selections to the browser. It
 does not register a hotkey or access unrelated clipboard data. The existing

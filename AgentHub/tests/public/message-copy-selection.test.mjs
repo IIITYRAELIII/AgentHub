@@ -107,6 +107,69 @@ test("one partial item, nested ordinals, explicit values and line breaks survive
   });
 });
 
+test("clipboard and menu retain selected boundary spaces independently of quote normalization", async () => {
+  await withMessage(async (page, body) => {
+    await body.evaluate((node) => { node.innerHTML = '<ol start="7"><li>Alpha Beta end</li></ol>'; });
+    const select = async () => {
+      await body.click();
+      await body.evaluate((node) => {
+        const text = node.querySelector("li").firstChild;
+        const range = document.createRange(); range.setStart(text, 5); range.setEnd(text, 11);
+        getSelection().removeAllRanges(); getSelection().addRange(range);
+      });
+    };
+    await select();
+    await page.keyboard.press("Control+C");
+    assert.equal(await paste(page), "7.  Beta ");
+    await body.click();
+    await body.evaluate((node) => {
+      const text = node.querySelector("li").firstChild;
+      const range = document.createRange(); range.setStart(text, 5); range.setEnd(text, 6);
+      getSelection().removeAllRanges(); getSelection().addRange(range);
+    });
+    await page.keyboard.press("Control+C");
+    assert.equal(await paste(page), "7.  ");
+    await select();
+    const quote = await body.evaluate((node) => window.AgentHubMessageDisclosure.domRangeOffsets(node, getSelection().getRangeAt(0)));
+    assert.ok(quote.end - quote.start === 4, "existing quote owner still normalizes its own range");
+    await page.evaluate(() => {
+      window.__requests = [];
+      window.AgentHub.on("clipboard:write", (request) => window.__requests.push(request.text));
+    });
+    await body.dispatchEvent("contextmenu", { button: 2, clientX: 400, clientY: 300 });
+    await page.locator('[data-annotation-context-menu] [data-action="copy-selection"]').click();
+    assert.equal((await page.evaluate(() => window.__requests)).at(-1), "7.  Beta ");
+  });
+});
+
+test("clipboard and menu preserve selected trailing LF without copying the following text", async () => {
+  await withMessage(async (page, body) => {
+    await body.evaluate((node) => {
+      node.innerHTML = '<ol start="7"><li style="white-space:pre-wrap">Alpha\nBeta\nGamma</li></ol>';
+    });
+    const select = async () => {
+      await body.click();
+      await body.evaluate((node) => {
+        const text = node.querySelector("li").firstChild;
+        const range = document.createRange(); range.setStart(text, 6); range.setEnd(text, 11);
+        getSelection().removeAllRanges(); getSelection().addRange(range);
+      });
+    };
+    await select();
+    assert.equal(await page.evaluate(() => getSelection().toString()), "Beta\n");
+    await page.keyboard.press("Control+C");
+    assert.equal(await paste(page), "7. Beta\n");
+    await select();
+    await page.evaluate(() => {
+      window.__requests = [];
+      window.AgentHub.on("clipboard:write", (request) => window.__requests.push(request.text));
+    });
+    await body.dispatchEvent("contextmenu", { button: 2, clientX: 400, clientY: 300 });
+    await page.locator('[data-annotation-context-menu] [data-action="copy-selection"]').click();
+    assert.equal((await page.evaluate(() => window.__requests)).at(-1), "7. Beta\n");
+  });
+});
+
 test("message menu copies the same numbered selection and whole-message action keeps Markdown", async () => {
   await withMessage(async (page, body) => {
     await page.evaluate(() => {
