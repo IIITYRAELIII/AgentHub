@@ -1133,9 +1133,31 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
-  recoverCompactedCleanupPreview(requestId, { argumentsHash, expectedResult, result, validate } = {}) {
+  recoverCompactedCleanupPreview(requestId, { argumentsHash, expectedResult, expectedReceipt = null, result, validate } = {}) {
     return this.#transaction(() => {
       const row = this.mcpOperation(requestId);
+      if (expectedReceipt) {
+        if (row?.status === "succeeded" && row.argumentsHash === argumentsHash
+            && cleanupConfirmationOriginal(row, false)?.absorbed_into_task_id
+            && row.result?.previewRecovery?.kind === "fresh-cleanup-preview-from-unknown-original-v1"
+            && JSON.stringify(row.result.previewRecovery.previousReceipt) === JSON.stringify(expectedReceipt)) return row;
+        const original = cleanupConfirmationOriginal(row, false);
+        if (row?.status !== "unknown" || row.argumentsHash !== argumentsHash || !original?.absorbed_into_task_id
+            || JSON.stringify({ ...row, replayed: undefined }) !== JSON.stringify(expectedReceipt)
+            || !cleanupConfirmationCapsule(result) || result.task.id !== row.taskExecution.taskId
+            || result.absorption?.taskId !== original.absorbed_into_task_id
+            || result.previewRecovery?.kind !== "fresh-cleanup-preview-from-unknown-original-v1"
+            || JSON.stringify(result.previewRecovery.previousReceipt) !== JSON.stringify(expectedReceipt)) {
+          throw new Error("Unknown combined preview original changed");
+        }
+        if (typeof validate !== "function" || validate()?.then) throw new TypeError("Cleanup readback validator must be synchronous");
+        const changed = this.#database.prepare(`UPDATE hub_mcp_operations
+          SET status='succeeded',receipt_state='succeeded',result_json=?,error_text='',completed_at_ms=?
+          WHERE request_id=? AND receipt_state='unknown' AND arguments_hash=? AND task_execution_json=?`)
+          .run(compactMcpOperationResult(result), this.#nowMs(), requestId, argumentsHash, JSON.stringify(row.taskExecution));
+        if (Number(changed.changes) !== 1) throw new Error("Unknown combined preview CAS changed");
+        return this.mcpOperation(requestId);
+      }
       if (row?.status === "succeeded" && row.argumentsHash === argumentsHash && cleanupConfirmationOriginal(row, false)
           && row.result?.previewRecovery?.kind === "fresh-cleanup-preview-from-compacted-original-v1"
           && JSON.stringify(row.result.previewRecovery.previousReceipt?.result) === JSON.stringify(expectedResult)) return row;

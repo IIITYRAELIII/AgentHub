@@ -6100,7 +6100,7 @@ export class TaskGitWorkspaceService {
     return { repositories, truncated: false };
   }
 
-  async withAbsorptionEvidenceOwned({ source, target, lease, nativeAbsorption = null } = {}, operation) {
+  async withAbsorptionEvidenceOwned({ source, target, lease, nativeAbsorption = null, retainedSource = null } = {}, operation) {
     this.#assertAvailable("withAbsorptionEvidenceOwned");
     await requiredGuardLease(lease).assertOwned();
     const workspaces = await this.describe(source.id);
@@ -6111,9 +6111,10 @@ export class TaskGitWorkspaceService {
         throw new Error("Source Task result has no managed worktree");
       }
     }
-    const evidence = [];
+    const evidence = [], retainedRepositories = [];
     const visit = async (index, ownedLease) => {
-      if (index === workspaces.length) return operation({ taskId: target.id, repositories: evidence }, ownedLease);
+      if (index === workspaces.length) return operation({ taskId: target.id, repositories: evidence,
+        ...(retainedRepositories.length ? { retainedRepositories } : {}) }, ownedLease);
       const workspace = workspaces[index];
       const repoRoot = workspace.repositoryRoot;
       return this.#withDevLock(repoRoot, ownedLease, async (devLease) => {
@@ -6127,6 +6128,23 @@ export class TaskGitWorkspaceService {
           throw new Error("Source Task worktree ownership changed");
         }
         const references = (target.gitReferences ?? []).filter((ref) => samePath(ref.projectRoot, repoRoot));
+        const activeSource = (source.gitReferences ?? []).some(ref => samePath(ref.projectRoot, repoRoot));
+        const historical = !activeSource && !references.length && retainedSource?.taskId === source.id
+          && retainedSource.taskRevision === source.revision
+          ? retainedSource.references.filter(ref => samePath(ref.projectRoot, repoRoot)) : [];
+        if (historical.length === 1) {
+          const ref = historical[0];
+          const head = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: workspace.projectRoot });
+          const saved = await gitMaybe(["rev-parse", "--verify", `${taskResultRef(source.id, workspace.repositoryKey)}^{commit}`], { cwd: repoRoot });
+          if (ref.branch !== workspace.branch || head !== ref.resultCommit || head !== workspace.headCommit || saved !== head
+              || await gitMaybe(["rev-parse", "--verify", "MERGE_HEAD"], { cwd: workspace.projectRoot }) !== null) {
+            throw new Error("Retained source repository changed since its canonical Test result");
+          }
+          retainedRepositories.push({ projectRoot: repoRoot, projectRootPreserved: workspace.projectRoot,
+            sourceHead: head, branch: ref.branch, disposition: "preserved",
+            claimOperationId: retainedSource.claimOperationId, testOperationId: retainedSource.testOperationId });
+          return visit(index + 1, devLease);
+        }
         if (references.length !== 1) throw new Error("Surviving Task requires one exact Test result per repository");
         const reference = references[0];
         const targetHead = await runGit(["rev-parse", `refs/heads/${reference.branch}^{commit}`], { cwd: repoRoot });

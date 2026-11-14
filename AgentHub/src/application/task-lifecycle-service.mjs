@@ -1700,7 +1700,10 @@ export class TaskLifecycleService {
       const selected = releaseWorkflow && targetRef ? this.taskBoard.selectedCompositionForRelease({
         taskId: target.id, projectRoot: targetRef.projectRoot, resultCommit: targetRef.resultCommit })?.selectedComposition : null;
       const nativeAbsorption = selected?.kind === "native-task-integration-v1" ? selected : null;
-      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease, nativeAbsorption }, async (gitEvidence, ownedLease) => {
+      const retainedSource = () => this.taskBoard.absorptionRetainedSource?.({ taskId: task.id,
+        projectRoot: this.#projectRoot(task) }) ?? null;
+      const retained = retainedSource();
+      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease, nativeAbsorption, retainedSource: retained }, async (gitEvidence, ownedLease) => {
         let composition = null;
         // This gate precedes lifecycle admission. Only this bounded scope can
         // classify composition failure as proof that no source closure began.
@@ -1714,7 +1717,8 @@ export class TaskLifecycleService {
           }
           // External editors and Git do not take Hub's leases. Reuse the held
           // repository leases to read both workspaces again after slow validation.
-          await this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease: ownedLease, nativeAbsorption }, async (fresh) => {
+          await this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease: ownedLease, nativeAbsorption,
+            retainedSource: retainedSource() }, async (fresh) => {
             if (JSON.stringify(fresh) !== JSON.stringify(gitEvidence)) {
               throw new Error("Task Git evidence changed during combined closure validation");
             }
@@ -1728,7 +1732,7 @@ export class TaskLifecycleService {
         const absorbedInto = { ...gitEvidence, taskRevision: target.revision,
           ...(composition ? { composition } : {}),
         };
-        const exactSquash = (gitEvidence.repositories ?? []).length > 0
+        const exactSquash = !(gitEvidence.retainedRepositories ?? []).length && (gitEvidence.repositories ?? []).length > 0
           && gitEvidence.repositories.every((item) => item.squashTransferHash
             && item.squashTransferHash === task.squashAbsorbedBy?.transferHash);
         const cleanup = exactSquash
@@ -1748,7 +1752,8 @@ export class TaskLifecycleService {
           if (!previewReadback) return preview;
           const validate = () => {
             if (this.#task(task.id).revision !== task.revision || this.#task(target.id).revision !== target.revision
-                || this.taskBoard.lifecycleTransition(operationId) || this.taskBoard.lifecycleOutcome(operationId)) {
+                || this.taskBoard.lifecycleTransition(operationId) || this.taskBoard.lifecycleOutcome(operationId)
+                || JSON.stringify(retainedSource()) !== JSON.stringify(retained)) {
               throw new Error("Combined preview original has lifecycle admission or Task drift");
             }
           };

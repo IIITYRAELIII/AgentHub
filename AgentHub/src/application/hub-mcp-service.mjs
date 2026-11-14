@@ -1183,7 +1183,8 @@ export class HubMcpService {
       const cleanupRecovery = !this.#pendingMutations.has(requestId)
         && ((existing.status === "succeeded" && cleanupConfirmationOriginal(existing, false)
           && existing.result?.receiptCompacted === true && !existing.result.cleanupToken)
-          || (existing.status === "unknown" && cleanupConfirmationOriginal(existing, true)));
+          || (existing.status === "unknown" && (cleanupConfirmationOriginal(existing, true)
+            || cleanupConfirmationOriginal(existing, false)?.absorbed_into_task_id)));
       recoveringCleanup = Boolean(cleanupRecovery);
       if (!cleanupRecovery && (toolName !== "hub_task_operation_cancel" || existing.status !== "unknown"
         || this.#pendingMutations.has(requestId) || !this.taskOperationInterruption)) {
@@ -3421,21 +3422,27 @@ export class HubMcpService {
       ...(admittedExecution ? { taskExecution: admittedExecution } : {}),
     }); });
     if (started.taskExecution?.cancellation) throw taskOperationInterrupted();
-    if (started.status === "succeeded") {
-      if (cleanupConfirmationOriginal(started, false) && started.result?.receiptCompacted === true
-          && !started.result.cleanupToken && started.result.taskId === args.task_id) {
+    const unknownAbsorbedPreview = started.status === "unknown"
+      && cleanupConfirmationOriginal(started, false)?.absorbed_into_task_id
+      && !this.#pendingMutations.has(requestId);
+    if (started.status === "succeeded" || unknownAbsorbedPreview) {
+      if (unknownAbsorbedPreview || (cleanupConfirmationOriginal(started, false) && started.result?.receiptCompacted === true
+          && !started.result.cleanupToken && started.result.taskId === args.task_id)) {
         this.#task(context, args.task_id);
         return this.taskLifecycle.recoverCleanupConfirmation({ taskId: args.task_id, operationId: requestId,
           action: toolName === "hub_task_complete" ? "complete" : "delete", preview: true,
           absorbedIntoTaskId: args.absorbed_into_task_id ?? null,
           readback: async ({ preview, validate }) => {
             const result = cleanupConfirmationCapsule({ ...preview, previewRecovery: {
-              kind: "fresh-cleanup-preview-from-compacted-original-v1", refreshedAtMs: Date.now(),
-              previousReceipt: { status: started.status, result: started.result, error: started.error,
-                createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs },
+              kind: unknownAbsorbedPreview ? "fresh-cleanup-preview-from-unknown-original-v1"
+                : "fresh-cleanup-preview-from-compacted-original-v1", refreshedAtMs: Date.now(),
+              previousReceipt: unknownAbsorbedPreview ? { ...started, replayed: undefined }
+                : { status: started.status, result: started.result, error: started.error,
+                  createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs },
             } });
             const saved = await this.workspaceCatalog.recoverCompactedCleanupPreview(requestId, {
-              argumentsHash: started.argumentsHash, expectedResult: started.result, result, validate });
+              argumentsHash: started.argumentsHash, expectedResult: started.result, result, validate,
+              ...(unknownAbsorbedPreview ? { expectedReceipt: { ...started, replayed: undefined } } : {}) });
             return saved.result;
           } });
       }

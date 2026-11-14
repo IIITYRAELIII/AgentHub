@@ -154,6 +154,58 @@ test("legacy absorbed preview uses SAME original and both real Task leases befor
     absorbed_into_task_id: f.task.id, context_token: f.token(restarted.hub) }), /already used/u);
 });
 
+test("UNKNOWN absorbed read-only preview recovers SAME original and preserves whole diagnostic", async t => {
+  const f = await fixture(t, { absorption: true });
+  const old = await f.seed("hub_task_complete", f.args);
+  const before = f.tasks.task(f.task.id);
+  const recovered = await f.hub.call("hub_task_complete", { ...f.args, context_token: f.token(f.hub) });
+  assert.match(recovered.cleanupToken, /^[a-f0-9]{64}$/u);
+  assert.deepEqual(recovered.previewRecovery.previousReceipt, old);
+  assert.equal(f.catalog.mcpOperation(f.args.request_id).status, "succeeded");
+  assert.deepEqual(f.tasks.task(f.task.id), before);
+  assert.equal(f.tasks.lifecycleTransition(f.args.request_id), null);
+  const reopened = await f.open();
+  assert.deepEqual((await f.read(reopened.hub)).result, recovered);
+  assert.equal(f.control.cleanupCalls, 0);
+  const closed = await reopened.hub.call("hub_task_complete", { ...f.args, request_id: "fresh-confirm-after-unknown",
+    confirm_cleanup: true, expected_cleanup_token: recovered.cleanupToken, context_token: f.token(reopened.hub) });
+  assert.equal(closed.status, "done");
+  assert.equal(reopened.tasks.task(f.survivor.id).workflowStatus, "testing");
+  assert.equal(f.control.cleanupCalls, 0);
+});
+
+test("concurrent SAME UNKNOWN absorbed previews join one preserved recovery result", async t => {
+  const f = await fixture(t, { absorption: true });
+  const old = await f.seed("hub_task_complete", f.args);
+  const results = await Promise.all([1, 2].map(() => f.hub.call("hub_task_complete", {
+    ...f.args, context_token: f.token(f.hub) })));
+  assert.deepEqual(results[0], results[1]);
+  assert.deepEqual(results[0].previewRecovery.previousReceipt, old);
+  assert.equal(f.tasks.lifecycleOutcome(f.args.request_id), null);
+  assert.equal(f.control.cleanupCalls, 0);
+});
+
+for (const scenario of ["extra-argument", "foreign-actor", "admitted", "late-survivor"]) test(`UNKNOWN absorbed preview refuses ${scenario}`, async t => {
+  const f = await fixture(t, { absorption: true });
+  const args = { ...f.args, ...(scenario === "extra-argument" ? { absorption_mode: "published_duplicate" } : {}) };
+  const old = await f.seed("hub_task_complete", args);
+  let token = f.token(f.hub);
+  if (scenario === "foreign-actor") {
+    const foreign = await f.catalog.createStream({ workspaceId: f.workspace.id, name: "Foreign" });
+    await f.catalog.bindThread({ streamId: foreign.id, provider: "codex", threadId: "foreign-thread", projectRoot: f.root });
+    token = f.hub.contextToken({ provider: "codex", threadId: "foreign-thread" });
+  }
+  if (scenario === "admitted") await f.tasks.beginLifecycleTransition({ id: f.task.id, operationId: args.request_id,
+    kind: "complete", expectedRevision: f.tasks.task(f.task.id).revision });
+  if (scenario === "late-survivor") f.control.afterProof = async () => {
+    f.control.afterProof = null;
+    await f.tasks.update({ id: f.survivor.id, title: f.survivor.title, description: "late current edit" });
+  };
+  await assert.rejects(f.hub.call("hub_task_complete", { ...args, context_token: token }));
+  assert.deepEqual(f.catalog.mcpOperation(args.request_id), old);
+  assert.equal(f.control.cleanupCalls, 0);
+});
+
 test("legacy absorbed recovery refuses survivor drift and keeps unrelated special originals unchanged", async t => {
   const f = await fixture(t, { absorption: true });
   const old = await f.seed("hub_task_complete", f.args, {

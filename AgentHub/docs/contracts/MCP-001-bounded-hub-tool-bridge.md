@@ -1323,6 +1323,18 @@ Source and survivor revisions and lifecycle absence are rechecked inside that
 transaction. A changed target, special mode or unproved original refuses. This
 recovers a fresh preview under the same original; it never closes either Task.
 
+An exact ordinary combined read-only preview may also continue its UNKNOWN
+receipt explicitly under the SAME tool/arguments/hash and original actor. Its
+protocol-v1 original must have no cancellation or lifecycle admission/outcome.
+The same combined owner proves fresh complete Git/composition under the existing
+Await, both Task and repository leases. The existing receipt transaction repeats
+Task revisions, retained source authority and the whole original receipt. It
+retains that complete UNKNOWN diagnostic in previewRecovery before recording the
+successful fresh preview. Failed proof keeps UNKNOWN unchanged. No error string,
+missing worker, fresh ID or inferred NO_EFFECT authorizes this continuation.
+Actual confirmation remains a separate exact-token command; other UNKNOWN modes
+are unchanged. See ADR-HUB-448-retained-absorption-preview.
+
 An owning typed token mismatch before admission is failed validation. An exact
 ordinary UNKNOWN original whose immutable args omitted the token may settle
 through that same validation owner after Task-lease, original/hash/actor,

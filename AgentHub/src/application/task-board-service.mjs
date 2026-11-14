@@ -373,6 +373,11 @@ export class TaskBoardService {
     return this.store.lifecycleOutcome(operationId);
   }
 
+  absorptionRetainedSource(payload) {
+    requiredMethod(this.store, "absorptionRetainedSource");
+    return this.store.absorptionRetainedSource(payload);
+  }
+
   committedNativeTestForDev(payload) {
     requiredMethod(this.store, "committedNativeTestForDev");
     return this.store.committedNativeTestForDev(payload);

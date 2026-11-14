@@ -1773,7 +1773,17 @@ and the repository dev lock protect the proof: same Workspace, open tested
 survivor, clean source and survivor, all source heads/results contained in the
 survivor's exact Test result, and no independent source-owned dev integration.
 Ownership excludes the survivor's own first-parent lineage, including legacy
-fast-forward inheritance. Every source repository must be represented. The
+fast-forward inheritance. Every current source repository must be represented. A
+separate retained repository may be preserved as history only when the canonical
+successful claim and committed Test outcome bind the current managed repository,
+the exact replaced prior references and the unchanged current source result.
+The historical managed branch, HEAD and owner result ref must still equal that
+prior result, with clean worktree and normal process/withdrawal guards. Missing,
+dirty, changed, unclassified or active additional repositories retain refusal.
+Current multi-repository contributions keep every original coverage check.
+Retained history is included in the full preview/token, read again after
+composition and kept with all its work; it supplies no cross-repository commit
+equivalence, survivor result or cleanup permission. See ADR-HUB-448. The
 confirmation token binds both Tasks and Git evidence; the durable completion
 receipt records the surviving Task. Closed sources are excluded from the release
 set. Ordinary claim cannot reopen them.

@@ -3130,6 +3130,56 @@ export class TaskBoardStore {
     });
   }
 
+  absorptionRetainedSource({ taskId, projectRoot } = {}) {
+    return this.#withDatabase(database => {
+      const current = this.#taskWithRelease(database, this.#taskRow(database, taskId));
+      const refs = current.gitReferences ?? [];
+      // This is a narrowly recorded repository replacement, not a filter on
+      // unreferenced folders. Ordinary multi-repository contributions stay active.
+      if (refs.length !== 1 || !sameResolvedPath(refs[0].projectRoot, projectRoot)) return null;
+      const equalRefs = (a, b) => a?.length === b?.length && a.every((ref, i) =>
+        sameResolvedPath(ref.projectRoot, b[i].projectRoot) && ref.branch === b[i].branch
+        && ref.resultCommit === b[i].resultCommit);
+      const rows = database.prepare(`SELECT operation_id,result_json,completed_at_ms FROM hub_task_lifecycle_outcomes
+        WHERE task_id=? AND kind='workflow' AND json_extract(result_json,'$.task.workflowStatus')='testing'
+          AND json_extract(result_json,'$.evidence.outcome')='integrated'
+        ORDER BY completed_at_ms DESC,operation_id DESC LIMIT 65`).all(taskId);
+      if (rows.length > 64) throw new Error("Absorption source Test history exceeds bounded lookup");
+      for (const row of rows) {
+        const value = JSON.parse(row.result_json), prior = value.priorTask, tested = value.task;
+        if (tested?.id !== taskId || tested.workspaceId !== current.workspaceId
+            || tested.revision > current.revision || tested.revision !== prior?.revision + 1
+            || prior.id !== taskId || prior.workspaceId !== current.workspaceId
+            || !["new", "in_progress", "blocked"].includes(prior.workflowStatus)
+            || !equalRefs(tested.gitReferences, refs) || value.evidence.resultCommit !== refs[0].resultCommit) continue;
+        const historical = (prior.gitReferences ?? []).filter(ref => !sameResolvedPath(ref.projectRoot, projectRoot));
+        if (!historical.length) continue;
+        const workspace = value.evidence.response?.gitWorkspace;
+        if (!workspace?.projectRoot || workspace.branch !== refs[0].branch || workspace.headCommit !== refs[0].resultCommit) continue;
+        const claims = database.prepare(`SELECT m.request_id,m.result_json,b.baseline_json FROM hub_task_turn_bindings b
+          JOIN hub_mcp_operations m ON m.request_id=b.operation_id
+          WHERE b.task_id=? AND b.operation_kind='claim' AND m.tool_name='hub_task_claim'
+            AND m.status='succeeded' AND m.receipt_state='succeeded' AND m.workspace_id=? AND m.stream_id=?
+            AND m.provider=b.provider AND m.provider_thread_id=b.provider_thread_id
+            AND m.completed_at_ms<=? ORDER BY m.completed_at_ms DESC,m.request_id DESC LIMIT 65`)
+          .all(taskId, current.workspaceId, current.streamId, row.completed_at_ms);
+        if (claims.length > 64) throw new Error("Absorption source claim history exceeds bounded lookup");
+        for (const claim of claims) {
+          const result = JSON.parse(claim.result_json), baseline = JSON.parse(claim.baseline_json);
+          if (result?.id !== taskId || !baseline?.repoRoot || !result.gitWorkspace?.projectRoot
+              || !sameResolvedPath(baseline.repoRoot, projectRoot)
+              || !baseline.tree || result.gitWorkspace.baseCommit !== baseline.tree || workspace.baseCommit !== baseline.tree
+              || !sameResolvedPath(result.gitWorkspace?.projectRoot, workspace.projectRoot)
+              || result.gitWorkspace?.branch !== refs[0].branch
+              || !equalRefs(result.gitReferences, prior.gitReferences)) continue;
+          return { taskId, taskRevision: current.revision, claimOperationId: claim.request_id,
+            testOperationId: row.operation_id, currentReferences: refs, references: historical };
+        }
+      }
+      return null;
+    });
+  }
+
   committedNativeTestForDev({ workspaceId, devCommit } = {}) {
     return this.#withDatabase(database => {
       const rows = database.prepare(`SELECT operation_id FROM hub_task_lifecycle_outcomes
