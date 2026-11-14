@@ -570,7 +570,6 @@ export async function createHubInfrastructure({
       ),
     },
     usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
-    workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
     fileTransferPolicy,
     fileTransferService,
     recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,

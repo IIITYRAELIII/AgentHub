@@ -26,7 +26,6 @@ import {
   publicJournalPayload,
 } from "./mini-app-journal-data.mjs";
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
-import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 import { validLocalWebviewSession } from "./local-webview-session.mjs";
 import { acquireAttachmentUploadService } from "../../infrastructure/filesystem/attachment-upload-service.mjs";
 import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
@@ -126,7 +125,6 @@ function workspaceFilePath(value) {
 
 export function workspaceFileRevealAccessError({
   authorizationSource = "",
-  hasWorkspaceFileRoots = false,
   hasRevealWorkspaceFile = false,
 } = {}) {
   if (!["local-mini-app", "trusted-device"].includes(String(authorizationSource))) {
@@ -136,7 +134,7 @@ export function workspaceFileRevealAccessError({
       error: "Показ файлов доступен только локальному Agent Hub или доверенному устройству.",
     };
   }
-  if (!hasWorkspaceFileRoots || !hasRevealWorkspaceFile) {
+  if (!hasRevealWorkspaceFile) {
     return {
       status: 503,
       code: "workspace-file-reveal-unavailable",
@@ -146,18 +144,8 @@ export function workspaceFileRevealAccessError({
   return null;
 }
 
-async function resolveWorkspaceFile(value, roots) {
+async function resolveWorkspaceFile(value) {
   const target = await realpath(workspaceFilePath(value));
-  const resolvedRoots = (await Promise.all((roots ?? []).map(async (root) => {
-    try {
-      return await realpath(root);
-    } catch {
-      return null;
-    }
-  }))).filter(Boolean);
-  if (!resolvedRoots.some((root) => pathInsideOrSame(target, root))) {
-    throw new Error("Файл находится вне Workspace");
-  }
   const info = await stat(target);
   if (!info.isFile() || info.size < 1 || info.size > MAX_WORKSPACE_FILE_BYTES) {
     throw new Error("Файл отсутствует, пуст или превышает 512 МБ");
@@ -602,7 +590,6 @@ export class MiniAppServer {
   #testContourRuntimeIdentity;
   #server = null;
   #closePromise = null;
-  #workspaceFileRoots;
   #workspaceFileTransferTickets;
 
   constructor({
@@ -634,7 +621,6 @@ export class MiniAppServer {
     journalProjectionService = null,
     usageSyncRemoteConfigStore = null,
     usageSyncService = null,
-    workspaceFileRoots = [],
     workspaceFileTransferTickets = null,
     fileTransferService = null,
     fileTransferPolicy = null,
@@ -681,10 +667,6 @@ export class MiniAppServer {
     this.#mobileUpdateDirectory = mobileUpdateDirectory
       ? path.resolve(mobileUpdateDirectory)
       : null;
-    this.#workspaceFileRoots = (workspaceFileRoots ?? [])
-      .map((root) => String(root ?? "").trim())
-      .filter(Boolean)
-      .map((root) => path.resolve(root));
     this.#workspaceFileTransferTickets = workspaceFileTransferTickets
       ?? new WorkspaceFileTransferTickets();
     if (!journalDatabase && !journalDatabaseFile) {
@@ -1322,13 +1304,13 @@ export class MiniAppServer {
       }
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
-      if (authorization.source !== "trusted-device" || !this.#workspaceFileRoots.length) {
+      if (authorization.source !== "trusted-device") {
         json(response, 403, { error: "Передача файла доступна доверенному браузеру." }, method);
         return;
       }
       try {
         const body = await readJsonBody(request);
-        const file = await resolveWorkspaceFile(body.path, this.#workspaceFileRoots);
+        const file = await resolveWorkspaceFile(body.path);
         const ticket = this.#workspaceFileTransferTickets.issue(file, {
           deviceId: authorization.deviceId,
         });
@@ -1382,12 +1364,12 @@ export class MiniAppServer {
       }
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
-      if (authorization.source !== "local-mini-app" || !this.#workspaceFileRoots.length) {
+      if (authorization.source !== "local-mini-app") {
         json(response, 403, { error: "Локальные файлы Workspace доступны только локальному Agent Hub." }, method);
         return;
       }
       try {
-        const file = await resolveWorkspaceFile(url.searchParams.get("path"), this.#workspaceFileRoots);
+        const file = await resolveWorkspaceFile(url.searchParams.get("path"));
         await sendBoundedFile(response, file.target, file.bytes, file.type, method, {
           "Content-Disposition": downloadDisposition(file.name),
         });
@@ -1408,14 +1390,13 @@ export class MiniAppServer {
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
       if (authorization.source !== "local-mini-app"
-        || !this.#workspaceFileRoots.length
         || !this.#copyWorkspaceFile) {
         json(response, 403, { error: "Копирование файлов Workspace доступно только локальному Agent Hub." }, method);
         return;
       }
       try {
         const body = await readJsonBody(request);
-        const file = await resolveWorkspaceFile(body.path, this.#workspaceFileRoots);
+        const file = await resolveWorkspaceFile(body.path);
         await this.#copyWorkspaceFile(file.target);
         json(response, 200, { ok: true }, method);
       } catch (error) {
@@ -1436,7 +1417,6 @@ export class MiniAppServer {
       if (!authorization) return;
       const accessError = workspaceFileRevealAccessError({
         authorizationSource: authorization.source,
-        hasWorkspaceFileRoots: Boolean(this.#workspaceFileRoots.length),
         hasRevealWorkspaceFile: Boolean(this.#revealWorkspaceFile),
       });
       if (accessError) {
@@ -1448,7 +1428,7 @@ export class MiniAppServer {
       }
       try {
         const body = await readJsonBody(request);
-        const file = await resolveWorkspaceFile(body.path, this.#workspaceFileRoots);
+        const file = await resolveWorkspaceFile(body.path);
         await this.#revealWorkspaceFile(file.target);
         json(response, 200, { ok: true }, method);
       } catch (error) {

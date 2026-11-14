@@ -90,12 +90,10 @@ test("local session trust uses the socket peer and rejects forwarded requests", 
 test("workspace file reveal access allows trusted devices and separates unavailable runtime", () => {
   assert.equal(workspaceFileRevealAccessError({
     authorizationSource: "trusted-device",
-    hasWorkspaceFileRoots: true,
     hasRevealWorkspaceFile: true,
   }), null);
   assert.deepEqual(workspaceFileRevealAccessError({
     authorizationSource: "telegram-mini-app",
-    hasWorkspaceFileRoots: true,
     hasRevealWorkspaceFile: true,
   }), {
     status: 403,
@@ -104,7 +102,6 @@ test("workspace file reveal access allows trusted devices and separates unavaila
   });
   assert.deepEqual(workspaceFileRevealAccessError({
     authorizationSource: "trusted-device",
-    hasWorkspaceFileRoots: true,
     hasRevealWorkspaceFile: false,
   }), {
     status: 503,
@@ -1883,7 +1880,7 @@ test("Mini App preserves an expected lifecycle conflict as HTTP 409", async () =
   }
 });
 
-test("local Mini App downloads and copies files only from configured Workspace roots", async () => {
+test("local Mini App downloads, copies and reveals files outside Workspace roots", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-file-"));
   const workspace = path.join(directory, "workspace");
   const outside = path.join(directory, "outside.txt");
@@ -1926,10 +1923,11 @@ test("local Mini App downloads and copies files only from configured Workspace r
     assert.equal(reveal.status, 200);
     assert.equal(revealed, await realpath(target));
 
-    const denied = await fetch(
+    const external = await fetch(
       `${address.url}api/workspace-file?path=${encodeURIComponent(outside)}`,
     );
-    assert.equal(denied.status, 404);
+    assert.equal(external.status, 200);
+    assert.equal(await external.text(), "secret");
   } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });
@@ -1947,7 +1945,6 @@ test("public Mini App cannot read local Workspace files", async () => {
     requireTelegramAuth: true,
     botToken: BOT_TOKEN,
     allowedUserIds: new Set([42]),
-    workspaceFileRoots: [directory],
     copyWorkspaceFile: async () => {},
   });
   try {
@@ -1974,14 +1971,24 @@ test("trusted browser receives one-time File Bridge transfer without generic fil
     journalDatabase: memoryJournal(),
     requireTelegramAuth: true,
     deviceStore: {
-      resolveSession: async () => ({ id: "session-1", deviceId: "browser-1" }),
+      resolveSession: async (token) => {
+        if (token !== "trusted-session") throw new Error("invalid session");
+        return { id: "session-1", deviceId: "browser-1" };
+      },
     },
-    workspaceFileRoots: [directory],
     revealWorkspaceFile: async (file) => { revealed = file; },
   });
   try {
     const address = await server.start();
     const headers = { Authorization: "device trusted-session", "Content-Type": "application/json" };
+    assert.equal((await fetch(`${address.url}api/workspace-file/transfer-ticket`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: target }),
+    })).status, 401);
+    assert.equal((await fetch(`${address.url}api/workspace-file/transfer-ticket`, {
+      method: "POST", headers: { ...headers, Authorization: "device invalid-session" },
+      body: JSON.stringify({ path: target }),
+    })).status, 403);
     const ticketResponse = await fetch(`${address.url}api/workspace-file/transfer-ticket`, {
       method: "POST",
       headers,
