@@ -65,12 +65,13 @@ test("composition validation excludes unrelated branch payloads without changing
   const unrelated = await f.result("unrelated-payload", randomBytes(256_000));
   const blob = await git(f.primary, "rev-parse", `${unrelated}:app.txt`);
   const before = await snapshot(f.dataDir), refs = await git(f.primary, "show-ref");
-  const prior = new Set(await readdir(os.tmpdir()));
+  await mkdir(f.dataDir, { recursive: true });
+  const prior = new Set(await readdir(f.dataDir));
   let inspections = 0;
   const proof = await f.service.validateCandidate({ ...f.request, validateBeforeCommit: async () => {
-    const temporary = (await readdir(os.tmpdir())).filter(name => name.startsWith("ah-composition-") && !prior.has(name));
+    const temporary = (await readdir(f.dataDir)).filter(name => name.startsWith("ah-composition-") && !prior.has(name));
     assert.equal(temporary.length, 1);
-    const repository = path.join(os.tmpdir(), temporary[0], "release-repositories", taskRepositoryKey(f.primary), "repository");
+    const repository = path.join(f.dataDir, temporary[0], "release-repositories", taskRepositoryKey(f.primary), "repository");
     await git(repository, "cat-file", "-e", `${f.left}^{commit}`);
     await assert.rejects(git(repository, "cat-file", "-e", `${unrelated}^{commit}`));
     await assert.rejects(git(repository, "cat-file", "-e", blob));
@@ -83,7 +84,7 @@ test("composition validation excludes unrelated branch payloads without changing
   assert.deepEqual(await snapshot(f.dataDir), before);
   assert.equal(await git(f.primary, "show-ref"), refs);
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
-  assert.deepEqual((await readdir(os.tmpdir())).filter(name => name.startsWith("ah-composition-") && !prior.has(name)), []);
+  assert.deepEqual((await readdir(f.dataDir)).filter(name => name.startsWith("ah-composition-") && !prior.has(name)), []);
 });
 
 test("composition validation uses canonical selected bytes without changing a prepared or frozen holder", async (t) => {

@@ -1052,6 +1052,15 @@ export class ReleaseGitWorkspaceService {
     return { ...layout, ...marker, markerFile };
   }
 
+  async #compositionRoot() {
+    // Immutable object links retain physical identity; their consumer must stay
+    // on the owning storage volume, even when system TEMP is elsewhere.
+    const dataDir = preparationObjectStore()?.dataDir ?? this.#repositoryOwner.dataDir;
+    await assertPlainIsolationPath(dataDir);
+    await mkdir(dataDir, { recursive: true });
+    return mkdtemp(path.join(dataDir, "ah-composition-"));
+  }
+
   // Revalidate an exact prepared native result, including its accepted resolutions.
   // Otherwise use the ordinary composer in a disposable owned repository.
   // No live candidate/checkpoint is promoted or rolled back.
@@ -1067,7 +1076,7 @@ export class ReleaseGitWorkspaceService {
         && checkpoint.baseCommit === approvedBaseCommit) {
       const input = { projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit,
         baseProvenance, exactBaseProvenance: true };
-      const verificationRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
+      const verificationRoot = await this.#compositionRoot();
       return withPreparationCleanup(verificationRoot, async () => {
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         const prepared = await measureTaskOperation("release:prepared-source", async () => this.#preparedGenerationSource({ ...input,
@@ -1085,7 +1094,7 @@ export class ReleaseGitWorkspaceService {
           mergedTaskIds: current.candidate.mergedTaskIds };
       });
     }
-    const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
+    const temporaryRoot = await this.#compositionRoot();
     return withPreparationCleanup(temporaryRoot, async () => {
       const isolated = new ReleaseGitWorkspaceService({
         dataDir: temporaryRoot, contourExternalEffects: this.#contourExternalEffects,

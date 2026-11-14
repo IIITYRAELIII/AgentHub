@@ -54,3 +54,12 @@ are read again after prospective composition and in the preview receipt CAS.
 Missing, foreign, stale, still-active or changed authority keeps refusal. This is
 not a fabricated native handoff, a second return, a dev rollback or a change to
 ordinary Test's multiple-merge-base policy.
+
+Prospective composition uses the existing repository/object owner for its
+invocation-only scratch location. System TEMP can be on another volume and
+cannot host consumers of physically identical hardlinked native objects.
+Both fresh composition and prepared verification therefore create their unique
+temporary root in that owner's data storage, retaining existing process/lease
+ownership and finally cleanup. Immutable object-link checks, prepared candidates,
+checkpoints and primary repositories keep their existing boundaries; no copy
+fallback, global environment rewrite or new materialization owner is added.

@@ -1703,7 +1703,12 @@ base, source or survivor invalidates confirmation. A Test survivor is projected
 as a future acceptance only; validation does not change its workflow status.
 
 Validation invokes the existing prepareCandidate implementation in a fresh
-temporary owned standalone clone. It never promotes or rolls back the live
+temporary owned standalone clone. Composition scratch and prepared-verification
+roots use the existing native object owner's data storage, independently of the
+system TEMP volume. Immutable object provisioning keeps its hardlink identity
+checks; HEAD, index, refs and configuration remain isolated. Normal cleanup also
+runs after validation refusal, without changing global TEMP or copying payloads.
+It never promotes or rolls back the live
 PreRelease, edits its checkpoint, or writes readiness into Task rows. Normal
 completion removes that temporary root. An interrupted process may leave only
 its isolated scratch data; this is never release authority. The fresh proof does
