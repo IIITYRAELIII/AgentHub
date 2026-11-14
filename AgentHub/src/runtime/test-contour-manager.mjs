@@ -70,7 +70,6 @@ export const TEST_CONTOUR_LUNA_MODEL = "gpt-5.6-luna";
 export const TEST_CONTOUR_FAKE_MODEL = "fake-codex";
 export const TEST_CONTOUR_MODEL = TEST_CONTOUR_FAKE_MODEL;
 export const TEST_CONTOUR_MODELS = Object.freeze([
-  Object.freeze({ value: TEST_CONTOUR_SPARK_MODEL, label: "GPT-5.3-Codex-Spark" }),
   Object.freeze({ value: TEST_CONTOUR_LUNA_MODEL, label: "GPT-5.6-Luna" }),
   Object.freeze({ value: TEST_CONTOUR_FAKE_MODEL, label: "Fake Codex · Принято" }),
 ]);

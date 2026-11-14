@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { isRetiredCodexModel } from "../domain/agent-runtime-settings.mjs";
 import { createContourExternalEffects } from "../infrastructure/filesystem/test-contour-external-effects.mjs";
 import { reconcileContourAwareStartupGit, refreshContourAwareExchangeRate } from "../application/contour-effect-operations.mjs";
 import { access, mkdir, readFile } from "node:fs/promises";
@@ -369,7 +370,8 @@ export async function createHubInfrastructure({
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
   });
   await startupStep("pre-turn-guide", () => preTurnInstructions.loadGuide());
-  const dashBotStream = config.taskBoard.triageEnabled
+  const triageEnabled = config.taskBoard.triageEnabled && !isRetiredCodexModel(config.taskBoard.triageModel ?? "gpt-5.3-codex-spark");
+  const dashBotStream = triageEnabled
     ? await startupStep("dashbot-stream", () => rawWorkspaceCatalogStore.runMutation(() => ensureDashBotStream(rawWorkspaceCatalogStore, {
       model: config.taskBoard.triageModel,
       projectRoot: config.projectRoot,
@@ -399,7 +401,7 @@ export async function createHubInfrastructure({
     workspaceCatalog: workspaceCatalogStore,
     streamId: dashBotTerraStream.id,
   });
-  const taskClassifier = config.taskBoard.triageEnabled
+  const taskClassifier = triageEnabled
     ? new CodexSparkTaskClassifier({
       requestedExecutable: config.codexExecutable,
       executableArgs: config.codexExecutableArgs,

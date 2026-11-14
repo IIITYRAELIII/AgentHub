@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { assertCodexModelAvailable } from "../../domain/agent-runtime-settings.mjs";
 import os from "node:os";
 import path from "node:path";
 
@@ -91,6 +92,7 @@ export function ensureDashBotStream(workspaceCatalog, {
   projectRoot = "",
 } = {}) {
   if (!workspaceCatalog) throw new TypeError("workspaceCatalog is required");
+  assertCodexModelAvailable(model);
   const experiments = workspaceCatalog.ensureExperiments();
   const storedStreamId = String(workspaceCatalog.meta(DASHBOT_STREAM_META_KEY) ?? "").trim();
   const storedStream = storedStreamId ? workspaceCatalog.stream(storedStreamId) : null;
@@ -140,6 +142,7 @@ export class CodexSparkTaskClassifier {
   }
 
   async classify(input) {
+    assertCodexModelAvailable(this.model);
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-triage-"));
     const schemaFile = path.join(directory, "output.schema.json");
     const outputFile = path.join(directory, "result.json");

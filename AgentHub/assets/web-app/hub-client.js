@@ -4458,7 +4458,6 @@ document.addEventListener("agenthub:board-action", (event) => {
       move: "board-task-move",
       complete: "board-task-complete",
       remove: "board-task-remove",
-      "retry-triage": "board-task-retry-triage",
       start: "board-task-start",
       "move-column": "board-column-move",
       "update-comment": "board-column-comment",

@@ -1,6 +1,7 @@
 import { unlink } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { buildCodexApplicationContext, buildCodexCollaborationMode } from "./codex/codex-settings.mjs";
+import { assertCodexModelAvailable } from "../domain/agent-runtime-settings.mjs";
 import {
   activeTurnMissing,
   interruptCodexTurnWithRecovery,
@@ -166,6 +167,7 @@ export class CodexTurnService {
     run.mcpCalls = [];
     run.toolMetricsKnown = true;
     try {
+      assertCodexModelAvailable(run.modelId);
       const namedTitle = await d.ensureThreadNamed?.({ provider: "codex", threadId: run.threadId });
       if (namedTitle) run.taskTitle = namedTitle;
       const developerInstructions = await d.developerInstructions({
@@ -325,6 +327,7 @@ export class CodexTurnService {
   }
 
   async steer({ run, target, input, clientUserMessageId }) {
+    assertCodexModelAvailable(run?.modelId ?? target?.modelId ?? target?.model);
     let turnId = await this.#registeredTurnId(target, run) ?? await this.#exactTurnId(target);
     if (!turnId) throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди");
     let request = {

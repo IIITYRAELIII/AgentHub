@@ -123,6 +123,7 @@ test("catalog assignment and provider rebind use the mandatory Workspace owner",
   assert.equal(entries.filter((entry) => entry.threadId === "catalog-thread").length, 1);
 
   const classifier = new CodexSparkTaskClassifier({
+    model: "gpt-6-sol",
     projectRoot: root,
     workspaceCatalog: workspaceOwner,
     streamId: stream.id,
