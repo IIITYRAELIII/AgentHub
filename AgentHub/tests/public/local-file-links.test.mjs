@@ -61,8 +61,10 @@ test("real Edge file-link menu downloads and reveals inside and outside files th
   const initial = snapshot();
   initial.tasks[0].projectRoot = workspace;
   initial.tasks[0].sessionCwd = workspace;
-  const history = { provider: "codex", threadId: "thread-a", streamId: "stream-a", items: [],
-    start: 0, end: 0, total: 0, messageTotal: 0, nextBefore: null, version: "empty" };
+  const history = { provider: "codex", threadId: "thread-a", streamId: "stream-a",
+    items: [{ id: "file-links-turn", completed: true, status: "completed", terminalRevision: 1,
+      answer: targets.map((file, index) => `[file-${index}](<${file.replaceAll("\\", "/")}>)`).join("\n\n") }],
+    start: 0, end: 1, total: 1, messageTotal: 1, nextBefore: null, version: "file-links" };
   const secret = "b".repeat(43);
   const server = new MiniAppServer({ port: 0, journalDatabase: journal(), localAccessSecret: secret,
     // A deliberately narrower legacy input cannot restrict local file links.
@@ -93,10 +95,9 @@ test("real Edge file-link menu downloads and reveals inside and outside files th
     await page.waitForFunction(() => Boolean(document.querySelector('[data-stream-task-id="stream-a"]')));
     await page.evaluate(() => window.AgentHub.selectTask("stream-a"));
     await page.waitForFunction(() => document.querySelector("[data-chat-pane]")?.dataset.streamChatTaskId === "stream-a");
-    await page.evaluate(({ targets }) => {
-      window.AgentHub.setMessages("stream-a", [{ id: "file-links", role: "assistant", provider: "codex",
-        threadId: "thread-a", text: targets.map((target, index) => `[file-${index}](<${target}>)`).join("\n\n") }]);
-    }, { targets: targets.map(file => file.replaceAll("\\", "/")) });
+    // Render the links from the authoritative HTTP history response. A later
+    // normal history refresh must retain them, not erase a manual DOM injection.
+    await page.getByRole("link", { name: "file-0", exact: true }).waitFor();
     for (let index = 0; index < targets.length; index += 1) {
       const link = page.getByRole("link", { name: `file-${index}`, exact: true });
       await link.click();
