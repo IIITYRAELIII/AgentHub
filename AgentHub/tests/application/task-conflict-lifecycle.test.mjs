@@ -362,6 +362,27 @@ test("returned ordinary absorption public SAME UNKNOWN preview joins before sepa
     argumentsHash: mcpArgumentsHash(args), taskExecution: hub.taskOperationInterruption.binding(args) });
   await caps.workspaceCatalogStore.markMcpOperationUnknown(args.request_id, new Error("Retained source ancestry refusal"));
   const old = caps.workspaceCatalogStore.mcpOperation(args.request_id), before = board.task(f.source.task.id);
+  // A disposable raw read-port fault changes only the return authority seen at
+  // receipt CAS, after both real Git proofs. It cannot update production state.
+  const readReturn = f.store.returnedNativeTestPriorResult.bind(f.store);
+  const recover = f.catalog.recoverCompactedCleanupPreview.bind(f.catalog);
+  let changedAtCas = false, reachedCas = false;
+  f.store.returnedNativeTestPriorResult = (...input) => {
+    const proof = readReturn(...input);
+    return changedAtCas ? { ...proof, returnOutcomeHash: proof.returnOutcomeHash.replace(/^./u, c => c === "0" ? "1" : "0") } : proof;
+  };
+  f.catalog.recoverCompactedCleanupPreview = (...input) => {
+    reachedCas = true; changedAtCas = true; return recover(...input);
+  };
+  await assert.rejects(async () => {
+    try { await hub.submitTaskOperation("hub_task_complete", call); }
+    finally { await hub.joinSubmittedTaskOperation(call); }
+  }, /Combined preview original has lifecycle admission or Task drift/u);
+  assert.equal(reachedCas, true);
+  assert.deepEqual(caps.workspaceCatalogStore.mcpOperation(args.request_id), old);
+  assert.deepEqual(board.task(f.source.task.id), before);
+  changedAtCas = false;
+  f.catalog.recoverCompactedCleanupPreview = recover;
   try { await hub.submitTaskOperation("hub_task_complete", call); }
   finally { await hub.joinSubmittedTaskOperation(call); }
   const saved = await hub.call("hub_task_operation_get", { context_token: token,
