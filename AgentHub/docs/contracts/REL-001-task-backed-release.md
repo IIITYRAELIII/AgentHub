@@ -1802,6 +1802,28 @@ confirmation token binds both Tasks and Git evidence; the durable completion
 receipt records the surviving Task. Closed sources are excluded from the release
 set. Ordinary claim cannot reopen them.
 
+An already ordinary-merged/Tested transfer by the same canonical executor can
+carry its positive returned-source authority through prospective composition
+without fabricating a native Test handoff or changing either Task result. The
+existing outcome reader binds the successful public claim/baseline, source
+Test/return, survivor Test, actor, current metadata/references and linked work.
+The held Git owner proves the exact ordered ordinary merge parents, source tree,
+tested survivor and full earlier/new source content. Only that precise merge
+side receives history credit; foreign sides and non-linear source history keep
+the generic native-history refusal. This is separate ordinary closure history,
+not selectedComposition or a release membership entry for the source.
+
+The real prospective composer consumes that canonical binding and rereads it
+during plan validation and SAME-preview receipt CAS. Both existing archive SQL
+boundaries repeat the proof. The existing completed absorbedInto outcome retains
+it for later ordinary survivor Await, frozen manifest and publication readback;
+the source must remain at its exact one-revision archive effect and all original
+claim/Test/return authorities must still agree. Later tested survivor results
+must descend the bound tested result and keep the exact merge history. Preview
+and separate confirmation use the same authority identity, independent of their
+different command IDs. No new Test, return, handoff, writer or migration is
+inferred; the independent ordinary Test multiple-base policy is unchanged.
+
 An already-published zero-own-delta duplicate uses the same lifecycle owner but
 requires the explicit `absorption_mode=published_duplicate` Release Manager
 request. It does not relax ordinary absorption's open/tested-survivor guard.

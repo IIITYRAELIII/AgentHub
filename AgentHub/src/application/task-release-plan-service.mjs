@@ -13,7 +13,7 @@ export class TaskReleasePlanService {
     this.taskGitWorkspaces = taskGitWorkspaces;
   }
 
-  async plan(workspaceId, { acceptingTask = null, selectedTaskIds = null } = {}) {
+  async plan(workspaceId, { acceptingTask = null, selectedTaskIds = null, ordinaryAbsorption = null } = {}) {
     let tasks = this.taskBoard.releaseTasks(workspaceId);
     if (selectedTaskIds != null) {
       const selected = [...new Set((Array.isArray(selectedTaskIds) ? selectedTaskIds : [])
@@ -58,6 +58,10 @@ export class TaskReleasePlanService {
         for (const reference of task.gitReferences ?? []) {
           const selected = this.taskBoard.selectedCompositionForRelease({
             taskId: task.id, ...reference,
+            ...(ordinaryAbsorption?.taskId === task.id ? { ordinaryAbsorption: {
+              ...ordinaryAbsorption, repository: ordinaryAbsorption.repositories.find(repo => repo.ordinaryMerge
+                && repo.projectRoot === reference.projectRoot),
+            } } : {}),
           });
           if (selected) selectedCompositions.push({ projectRoot: reference.projectRoot, ...selected });
           const evidence = await this.taskGitWorkspaces.releaseEvidence({

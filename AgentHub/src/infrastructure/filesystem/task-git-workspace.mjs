@@ -5775,7 +5775,7 @@ export class TaskGitWorkspaceService {
         baseCommit: evidence.baseCommit,
         resultCommit: evidence.resultCommit,
         ...selectedCompositionFields({ taskId: String(task.taskId), resultCommit: evidence.resultCommit,
-          ...(selectedComposition ? { selectedComposition } : authoritative) }),
+          ...authoritative, ...(selectedComposition ? { selectedComposition } : {}) }),
         integrations,
         lineage,
         ...(squashTransfer ? {
@@ -6262,11 +6262,38 @@ export class TaskGitWorkspaceService {
             }
           }
         }
+        let ordinaryMerge = null;
+        if (!squashTransfer && !nativeAbsorption && readReturnedSource
+            && source.streamId && source.streamId === target.streamId) {
+          const merges = String(await runGit(["rev-list", "--first-parent", "--parents", "--max-count=4097",
+            targetHead, `^${targetBase}`], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean)
+            .map(row => row.split(" ")).filter(row => row.length === 3 && row[2] === sourceHead);
+          if (merges.length === 1) {
+            const prior = returnedSource ?? await readReturnedSource();
+            const ref = source.gitReferences?.[0];
+            if (prior?.taskId !== source.id || prior.taskRevision !== source.revision
+                || source.gitReferences.length !== 1 || !samePath(prior.projectRoot, repoRoot)
+                || prior.resultCommit !== ref.resultCommit || prior.branch !== ref.branch
+                || await gitMaybe(["merge-base", "--is-ancestor", prior.resultCommit, sourceHead], { cwd: repoRoot }) === null) {
+              throw new Error("Ordinary absorption requires the exact canonical returned source");
+            }
+            await assertSelectedContent({
+              git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: repoRoot, lease: devLease }),
+              baseCommit: targetBase, tasks: [{ taskId: source.id, baseCommit: sourceBase, resultCommit: sourceHead }],
+              head: targetHead, resolutions: [], merges: [], identity: { policy: "ordinary-absorption-readback-v1" },
+            });
+            returnedSource = prior;
+            ordinaryMerge = { baseCommit: targetBase, sourceCommit: sourceHead,
+              sourceTree: await runGit(["rev-parse", `${sourceHead}^{tree}`], { cwd: repoRoot }),
+              survivorParentCommit: merges[0][1], absorptionCommit: merges[0][0], testedCommit: targetHead };
+          }
+        }
         evidence.push({
           projectRoot: repoRoot, sourceHead, targetHead, results,
           ...(squashTransfer ? { squashTransferHash: squashTransfer.transferHash } : {}),
           ...(nativeAbsorption ? { nativeAbsorptionHash: nativeAbsorption.descriptorHash } : {}),
           ...(returnedSource ? { returnedSource } : {}),
+          ...(ordinaryMerge ? { ordinaryMerge } : {}),
         });
         return visit(index + 1, devLease);
       });

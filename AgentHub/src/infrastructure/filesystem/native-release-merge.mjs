@@ -122,6 +122,24 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     // Fresh admission is supplied only by TaskLifecycle under both Task leases.
     // Release preparation uses the sealed descriptor from the committed Test.
     const absorbed = selected.selectedComposition?.absorptionInput ?? task.nativeAbsorptionInput;
+    const ordinarySides = [];
+    for (const history of selected.ordinaryAbsorptions ?? []) {
+      if (history.baseCommit !== (task.baseCommit || baseCommit)
+          || await maybe(git, ["merge-base", "--is-ancestor", history.testedCommit, task.resultCommit]) === null
+          || await maybe(git, ["merge-base", "--is-ancestor", history.absorptionCommit, history.testedCommit]) === null
+          || String(await git(["show", "-s", "--format=%P", history.absorptionCommit]))
+            !== `${history.survivorParentCommit} ${history.sourceCommit}`
+          || String(await git(["rev-parse", `${history.sourceCommit}^{tree}`])) !== history.sourceTree
+          || await maybe(git, ["merge-base", "--is-ancestor", history.baseCommit, history.sourceCommit]) === null) {
+        throw failure(`Task ${task.taskId} ordinary absorbed history differs from canonical closure`);
+      }
+      const sourceRows = String(await git(["rev-list", "--first-parent", "--parents", "--max-count=4097",
+        history.sourceCommit, `^${baseCommit}`])).split(/\r?\n/u).filter(Boolean);
+      if (sourceRows.length > 4096 || sourceRows.some(row => row.split(" ").length !== 2)) {
+        throw failure(`Task ${task.taskId} ordinary absorbed source requires explicit historical migration`);
+      }
+      ordinarySides.push({ commit: history.absorptionCommit, source: history.sourceCommit });
+    }
     let authorizedSide = null;
     if (absorbed) {
       const binding = normalizedSelectedAbsorption(absorbed);
@@ -159,6 +177,7 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
           if (await maybe(git, ["merge-base", "--is-ancestor", side, b]) !== null) { contained = true; break; }
         }
         if (!owned.has(side) && !(authorizedSide?.commit === commit && authorizedSide.source === side)
+            && !ordinarySides.some(bound => bound.commit === commit && bound.source === side)
             && !contained) {
           throw failure(`Task ${task.taskId} contains an unselected merge side; migrate it explicitly`,
             "RELEASE_NATIVE_HISTORY_REQUIRED", { taskId: task.taskId, sideCommit: side });

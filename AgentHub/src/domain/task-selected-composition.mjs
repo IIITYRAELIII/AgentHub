@@ -161,16 +161,50 @@ function canonical(value) {
 }
 
 export function selectedCompositionFields(task) {
-  if (task?.selectedComposition == null && !task?.selectedCompositionRequired) return {};
+  const ordinaryAbsorptions = task?.ordinaryAbsorptions;
+  const ordinary = ordinaryAbsorptions == null ? {} : {
+    ordinaryAbsorptions: normalizedOrdinaryAbsorptions(ordinaryAbsorptions, task.taskId),
+  };
+  if (task?.selectedComposition == null && !task?.selectedCompositionRequired) return ordinary;
   const proof = normalizedSelectedComposition(task?.selectedComposition);
   if (proof.taskId !== task.taskId || proof.taskCommit !== task.resultCommit) {
     throw selectedCompositionRequiredError("Task/result differs from durable selected Test");
   }
-  return { selectedCompositionRequired: true, selectedComposition: proof };
+  return { ...ordinary, selectedCompositionRequired: true, selectedComposition: proof };
+}
+
+// This is closure history from the existing canonical outcome owner, not a
+// selected Test descriptor or an authenticated handoff invented for an old Test.
+export function normalizedOrdinaryAbsorptions(values, taskId) {
+  if (!Array.isArray(values) || !values.length || values.length > 64) {
+    throw selectedCompositionRequiredError("ordinary absorption history is unbounded");
+  }
+  const fields = ["kind", "sourceTaskId", "sourceTaskRevision", "taskId", "taskRevision", "repositoryRoot",
+    "baseCommit", "sourceCommit", "sourceTree", "survivorParentCommit", "absorptionCommit", "testedCommit",
+    "authority", "authorityHash"];
+  const seen = new Set();
+  return values.map(value => {
+    if (!value || value.kind !== "ordinary-task-absorption-v1" || value.taskId !== taskId
+        || !value.sourceTaskId || value.sourceTaskId === taskId || !value.repositoryRoot
+        || Object.keys(value).some(key => !fields.includes(key))
+        || ["sourceTaskRevision", "taskRevision"].some(key => !Number.isSafeInteger(value[key]) || value[key] < 1)
+        || ["baseCommit", "sourceCommit", "sourceTree", "survivorParentCommit", "absorptionCommit", "testedCommit"]
+          .some(key => !/^[a-f0-9]{40}$/u.test(value[key] ?? ""))
+        || !value.authority || !/^[a-f0-9]{64}$/u.test(value.authorityHash ?? "")
+        || createHash("sha256").update(JSON.stringify(value.authority)).digest("hex") !== value.authorityHash
+        || seen.has(value.absorptionCommit)) {
+      throw selectedCompositionRequiredError("ordinary absorption identity or canonical authority changed");
+    }
+    seen.add(value.absorptionCommit);
+    return JSON.parse(JSON.stringify(value));
+  });
 }
 
 export function selectedCompositionIdentity(task) {
   const fields = selectedCompositionFields(task);
+  if (fields.ordinaryAbsorptions) {
+    return createHash("sha256").update(JSON.stringify(canonical(fields))).digest("hex");
+  }
   return fields.selectedComposition
     ? createHash("sha256").update(JSON.stringify(canonical(fields.selectedComposition))).digest("hex")
     : "";

@@ -1713,12 +1713,23 @@ export class TaskLifecycleService {
       };
       return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease, nativeAbsorption,
         retainedSource: retained, readReturnedSource }, async (gitEvidence, ownedLease) => {
+        const ordinaryAbsorption = gitEvidence.repositories.some(repo => repo.ordinaryMerge) ? {
+          taskId: target.id, sourceTaskId: task.id, sourceTaskRevision: task.revision,
+          targetTaskRevision: target.revision, operationId, repositories: gitEvidence.repositories,
+        } : null;
+        const readOrdinary = () => ordinaryAbsorption ? gitEvidence.repositories.filter(repo => repo.ordinaryMerge)
+          .flatMap(repository => this.taskBoard.selectedCompositionForRelease({ taskId: target.id,
+            projectRoot: repository.projectRoot, resultCommit: repository.targetHead,
+            ordinaryAbsorption: { ...ordinaryAbsorption, repository },
+          })?.ordinaryAbsorptions ?? []) : [];
+        const ordinary = readOrdinary();
         let composition = null;
         // This gate precedes lifecycle admission. Only this bounded scope can
         // classify composition failure as proof that no source closure began.
         try {
           composition = releaseWorkflow ? await this.releasePreflight.prepareAwaitSet({
             workspaceId: task.workspaceId, validateOnly: true, lease: ownedLease,
+            ...(ordinaryAbsorption ? { ordinaryAbsorption } : {}),
             ...(target.workflowStatus === "testing" ? { acceptingTask: { id: target.id, revision: target.revision } } : {}),
           }) : null;
           if (composition && !composition.taskIds.includes(target.id)) {
@@ -1739,6 +1750,7 @@ export class TaskLifecycleService {
           throw new TaskAbsorptionCompositionError(error);
         }
         const absorbedInto = { ...gitEvidence, taskRevision: target.revision,
+          ...(ordinary.length ? { ordinaryAbsorptions: ordinary.filter(proof => proof.sourceTaskId === task.id) } : {}),
           ...(composition ? { composition } : {}),
         };
         const exactSquash = !(gitEvidence.retainedRepositories ?? []).length && (gitEvidence.repositories ?? []).length > 0
@@ -1763,6 +1775,7 @@ export class TaskLifecycleService {
             if (this.#task(task.id).revision !== task.revision || this.#task(target.id).revision !== target.revision
                 || this.taskBoard.lifecycleTransition(operationId) || this.taskBoard.lifecycleOutcome(operationId)
                 || JSON.stringify(retainedSource()) !== JSON.stringify(retained)
+                || JSON.stringify(readOrdinary()) !== JSON.stringify(ordinary)
                 || gitEvidence.repositories.some(repo => repo.returnedSource
                   && JSON.stringify(readReturnedSource()) !== JSON.stringify(repo.returnedSource))) {
               throw new Error("Combined preview original has lifecycle admission or Task drift");

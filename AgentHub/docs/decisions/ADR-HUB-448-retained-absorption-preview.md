@@ -63,3 +63,34 @@ temporary root in that owner's data storage, retaining existing process/lease
 ownership and finally cleanup. Immutable object-link checks, prepared candidates,
 checkpoints and primary repositories keep their existing boundaries; no copy
 fallback, global environment rewrite or new materialization owner is added.
+
+The real composer also requires authority for the ordinary transfer merge side.
+An old ordinary Test has no native absorption descriptor. Retrofitting one would
+invent an authenticated handoff and require different lifecycle results. The
+existing canonical selected-composition read therefore also projects distinct
+ordinary absorption history, only for the same executor's successful public
+claim, exact normal source return and survivor Test. This internal closure
+context comes from held Git evidence and the current public complete original,
+not new public arguments. It binds the exact merge, source parent/tree, baseline,
+metadata, references, linked work and immutable authority hashes. Git's unchanged
+selected-content reader checks all earlier and newer source work first.
+
+Release planning hashes and transports that history through the real prospective
+composer. Native history validation permits only the bound ordered merge side;
+other unselected merges and non-linear source ancestry still refuse. At SAME
+preview CAS and both existing archive transaction boundaries the canonical
+authority is read again. The completed lifecycle absorbedInto outcome retains
+the proof, so the survivor's later ordinary Await and manifest readback use the
+same authority instead of failing after successful closure. The canonical archive
+increments the source revision exactly once; any further source mutation or
+reopen invalidates that history. Later tested survivor descendants retain the
+original merge proof without acquiring authority for another side.
+
+The primary regression uses guarded production stores and public claim/Test/
+normal-return, ordinary merge/survivor Test, SAME UNKNOWN preview, the real
+planner/preflight/Git composer, fresh token, separate confirmation and subsequent
+ordinary Await/readback. The prospective-composition port is not replaced.
+Foreign side, missing earlier/new work, newer source and late canonical authority
+mutation are negative cases. Earlier partial composer-port tests retain their
+limited attribution; neither they nor this owner correction change the separate
+multiple-base ordinary Test policy or settle its UNKNOWN original.

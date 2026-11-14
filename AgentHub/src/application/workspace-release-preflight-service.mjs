@@ -787,7 +787,7 @@ export class WorkspaceReleasePreflightService {
   }
 
   async #prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,
-    acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
+    acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false, ordinaryAbsorption = null,
     reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
     prospectiveOnly = false, freezeGeneration = true, ephemeralGeneration = false,
     previousSelectedResults = [], preparation = null, nativeAwaitRecovery = null,
@@ -798,7 +798,9 @@ export class WorkspaceReleasePreflightService {
     if (acceptingTask && !validateOnly && !prospectiveOnly && typeof commitPrepared !== "function") {
       throw new Error("Prospective Await preparation requires its lifecycle commit");
     }
-    const planOptions = selectedTaskIds ? { selectedTaskIds } : {};
+    if (ordinaryAbsorption && !validateOnly) throw new Error("Prospective ordinary absorption requires validation-only closure");
+    const planOptions = { ...(selectedTaskIds ? { selectedTaskIds } : {}),
+      ...(ordinaryAbsorption ? { ordinaryAbsorption } : {}) };
     const baseline = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId, planOptions));
     const plan = acceptingTask
       ? await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId, { ...planOptions, acceptingTask }))

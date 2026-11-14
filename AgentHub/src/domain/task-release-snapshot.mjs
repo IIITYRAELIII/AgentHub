@@ -74,7 +74,7 @@ export function taskReleasePlanRevision(workspaceId, tasks = [], { legacy = fals
       ...(task.selectedCompositions?.length ? { selectedCompositions: task.selectedCompositions
         .map((item) => ({ projectRoot: canonicalRoot(item.projectRoot),
           identity: selectedCompositionIdentity({ taskId: task.id,
-            resultCommit: item.selectedComposition?.taskCommit, ...item }) }))
+            resultCommit: item.selectedComposition?.taskCommit ?? item.resultCommit, ...item }) }))
         .sort((a, b) => a.projectRoot.localeCompare(b.projectRoot)) } : {}),
       ...(task.squashTransfer ? {
         squashTransferHash: normalizedTaskSquashTransfer(task.squashTransfer).transferHash,
