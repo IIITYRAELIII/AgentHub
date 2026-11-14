@@ -1703,7 +1703,16 @@ export class TaskLifecycleService {
       const retainedSource = () => this.taskBoard.absorptionRetainedSource?.({ taskId: task.id,
         projectRoot: this.#projectRoot(task) }) ?? null;
       const retained = retainedSource();
-      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease, nativeAbsorption, retainedSource: retained }, async (gitEvidence, ownedLease) => {
+      const readReturnedSource = () => {
+        if (task.gitReferences?.length !== 1 || !this.taskBoard.returnedNativeTestPriorResult) return null;
+        try { return this.taskBoard.returnedNativeTestPriorResult(task.id, { absorption: true }); }
+        catch (error) {
+          if (error.code === "TASK_SELECTED_PROJECTION_REQUIRED") return null;
+          throw error;
+        }
+      };
+      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease, nativeAbsorption,
+        retainedSource: retained, readReturnedSource }, async (gitEvidence, ownedLease) => {
         let composition = null;
         // This gate precedes lifecycle admission. Only this bounded scope can
         // classify composition failure as proof that no source closure began.
@@ -1718,7 +1727,7 @@ export class TaskLifecycleService {
           // External editors and Git do not take Hub's leases. Reuse the held
           // repository leases to read both workspaces again after slow validation.
           await this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease: ownedLease, nativeAbsorption,
-            retainedSource: retainedSource() }, async (fresh) => {
+            retainedSource: retainedSource(), readReturnedSource }, async (fresh) => {
             if (JSON.stringify(fresh) !== JSON.stringify(gitEvidence)) {
               throw new Error("Task Git evidence changed during combined closure validation");
             }
@@ -1753,7 +1762,9 @@ export class TaskLifecycleService {
           const validate = () => {
             if (this.#task(task.id).revision !== task.revision || this.#task(target.id).revision !== target.revision
                 || this.taskBoard.lifecycleTransition(operationId) || this.taskBoard.lifecycleOutcome(operationId)
-                || JSON.stringify(retainedSource()) !== JSON.stringify(retained)) {
+                || JSON.stringify(retainedSource()) !== JSON.stringify(retained)
+                || gitEvidence.repositories.some(repo => repo.returnedSource
+                  && JSON.stringify(readReturnedSource()) !== JSON.stringify(repo.returnedSource))) {
               throw new Error("Combined preview original has lifecycle admission or Task drift");
             }
           };

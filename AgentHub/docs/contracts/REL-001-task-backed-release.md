@@ -1783,7 +1783,16 @@ dirty, changed, unclassified or active additional repositories retain refusal.
 Current multi-repository contributions keep every original coverage check.
 Retained history is included in the full preview/token, read again after
 composition and kept with all its work; it supplies no cross-repository commit
-equivalence, survivor result or cleanup permission. See ADR-HUB-448. The
+equivalence, survivor result or cleanup permission. A successful normal return
+may leave the source's prior integration in dev ancestry. An ordinary merged and
+tested survivor may account for that exact boundary only through canonical
+committed Test/return outcomes, unchanged result/branch/revision bindings and the
+original Test dev commit; a later Test without its own return grants no credit.
+The existing selected-content proof must preserve the full source contribution,
+including earlier and newer work, and every separate integration must fall within
+that returned boundary. Authority and Git are reread after prospective composition
+and during preview receipt CAS. Active, foreign, stale or changed source evidence
+retains refusal. No native absorption descriptor is synthesized. See ADR-HUB-448. The
 confirmation token binds both Tasks and Git evidence; the durable completion
 receipt records the surviving Task. Closed sources are excluded from the release
 set. Ordinary claim cannot reopen them.

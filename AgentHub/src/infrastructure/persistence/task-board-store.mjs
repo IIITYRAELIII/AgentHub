@@ -2730,11 +2730,30 @@ export class TaskBoardStore {
     return priorResults;
   }
 
-  returnedNativeTestPriorResult(taskId) {
+  returnedNativeTestPriorResult(taskId, { absorption = false } = {}) {
     return this.#withDatabase(database => {
       const task = this.#taskWithRelease(database, this.#taskRow(database, taskId));
       const [prior] = this.#selectedAbsorptionPriorResults(database, [task], this.now());
       if (!prior) throw new Error("Returned native Test has no exact normal return result");
+      if (absorption) {
+        const tested = this.lifecycleOutcome(prior.testOperationId)?.result;
+        const returned = this.lifecycleOutcome(prior.returnOperationId)?.result;
+        const ref = task.gitReferences[0];
+        const laterTest = database.prepare(`SELECT operation_id FROM hub_task_lifecycle_outcomes
+          WHERE task_id=? AND kind='workflow'
+            AND json_extract(result_json,'$.task.workflowStatus')='testing'
+            AND json_extract(result_json,'$.evidence.outcome')='integrated'
+            AND json_extract(result_json,'$.task.revision')>? LIMIT 1`).get(task.id, prior.returnRevision);
+        if (!["new", "in_progress", "blocked"].includes(task.workflowStatus) || laterTest
+            || tested?.evidence.outcome !== "integrated"
+            || [tested?.task, returned?.task, returned?.priorTask].some(value =>
+              value?.gitReferences?.length !== 1 || value.gitReferences[0].branch !== ref.branch)
+            || !/^[0-9a-f]{40}$/u.test(tested?.evidence.devHeadCommit ?? "")) {
+          throw selectedCompositionRequiredError("ordinary absorbed source return or Test boundary changed");
+        }
+        return { ...prior, taskRevision: task.revision, branch: ref.branch,
+          devCommit: tested.evidence.devHeadCommit };
+      }
       return prior;
     });
   }

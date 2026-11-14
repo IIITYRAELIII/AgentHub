@@ -15,6 +15,9 @@ import { WorkspaceReleasePreflightService } from "../../src/application/workspac
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { TaskGitHistoryRejectedError } from "../../src/domain/task-git-reference.mjs";
 import { TaskIntegrationRejectedError } from "../../src/application/task-lifecycle-service.mjs";
+import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { createPersistenceMutationCapabilities } from "../../src/composition/persistence-mutation-composition.mjs";
+import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -67,7 +70,7 @@ async function fixture(t) {
     return { task, root: prepared.projectRoot };
   }
   const status = (id, value, operationId) => lifecycle.updateWorkflowStatus({ taskId: id, status: value, operationId });
-  return { root, primary, workspace, store, taskBoard, taskGitWorkspaces, lifecycle, create, status, timings,
+  return { root, primary, workspace, catalog, store, taskBoard, taskGitWorkspaces, lifecycle, create, status, timings,
     publish: (value) => { publication = value; } };
 }
 
@@ -236,6 +239,142 @@ test("combined closure rejects missing source commits, dirty work and a separate
   await writeFile(path.join(a.root, "unfinished.txt"), "unsaved\n");
   await assert.rejects(f.lifecycle.complete(options), /Save the source/);
   assert.notEqual(f.taskBoard.task(a.task.id).status, "done");
+});
+
+async function returnedAbsorption(t, { omit = null } = {}) {
+  const f = await fixture(t), source = await f.create("Returned source"), target = await f.create("Ordinary survivor");
+  for (const [file, text] of [["early.txt", "earlier source work\n"], ["new.txt", "new source work\n"]]) {
+    await writeFile(path.join(source.root, file), text);
+    await git(source.root, "add", file);
+    await git(source.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", file);
+  }
+  const tested = await f.status(source.task.id, "testing", "returned-source-test");
+  const returned = await f.status(source.task.id, "in_progress", "normal-source-return");
+  assert.equal(returned.acceptedResultPreserved, true);
+  await writeFile(path.join(target.root, "survivor.txt"), "survivor work\n");
+  await git(target.root, "add", "survivor.txt");
+  await git(target.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Save survivor");
+  await git(target.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", tested.task.gitReferences[0].resultCommit);
+  if (omit) {
+    await git(target.root, "rm", omit);
+    await git(target.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Lose selected source work");
+  }
+  await f.status(target.task.id, "testing", "ordinary-survivor-test");
+  let compositionCalls = 0, afterComposition = null;
+  f.lifecycle.releasePreflight.prepareAwaitSet = async () => {
+    compositionCalls++;
+    await afterComposition?.();
+    return { taskIds: [target.task.id], planRevision: "fresh-combined-plan" };
+  };
+  return { ...f, source, target, tested, returned,
+    compositionCalls: () => compositionCalls,
+    afterComposition: fn => { afterComposition = fn; },
+    preview: () => f.lifecycle.complete({ taskId: source.task.id, absorbedIntoTaskId: target.task.id, operationId: "returned-source-preview" }) };
+}
+
+test("normal returned source ancestry permits ordinary merge and tested survivor preview", async t => {
+  const f = await returnedAbsorption(t), beforeSource = f.taskBoard.task(f.source.task.id), beforeTarget = f.taskBoard.task(f.target.task.id);
+  const dev = await git(f.primary, "rev-parse", "dev");
+  const files = await Promise.all([f.source, f.target].flatMap(task => ["early.txt", "new.txt"].map(async file => ({
+    path: path.join(task.root, file), body: await readFile(path.join(task.root, file)),
+  }))));
+  const preview = await f.preview();
+  assert.match(preview.cleanupToken, /^[a-f0-9]{64}$/u);
+  assert.deepEqual(preview.preview.deleting, []);
+  const proof = preview.preview.absorbedInto.repositories[0].returnedSource;
+  assert.equal(proof.returnOperationId, "normal-source-return");
+  assert.equal(proof.testOperationId, "returned-source-test");
+  assert.equal(proof.devCommit, f.tested.evidence?.devHeadCommit ?? f.taskBoard.lifecycleOutcome("returned-source-test").result.evidence.devHeadCommit);
+  assert.equal(f.compositionCalls(), 1);
+  assert.deepEqual(f.taskBoard.task(f.source.task.id), beforeSource);
+  assert.deepEqual(f.taskBoard.task(f.target.task.id), beforeTarget);
+  assert.equal(await git(f.primary, "rev-parse", "dev"), dev);
+  for (const [file, body] of [["early.txt", "earlier source work\n"], ["new.txt", "new source work\n"]]) {
+    assert.equal(await git(f.source.root, "show", `HEAD:${file}`), body.trimEnd());
+    assert.equal(await git(f.target.root, "show", `HEAD:${file}`), body.trimEnd());
+  }
+  for (const file of files) assert.deepEqual(await readFile(file.path), file.body);
+  assert.equal(f.taskBoard.lifecycleOutcome("returned-source-preview"), null);
+});
+
+for (const file of ["early.txt", "new.txt"]) test(`returned ordinary absorption refuses lost ${file} contribution`, async t => {
+  const f = await returnedAbsorption(t, { omit: file });
+  await assert.rejects(f.preview(), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
+  assert.equal(f.compositionCalls(), 0);
+  assert.notEqual(f.taskBoard.task(f.source.task.id).status, "done");
+});
+
+test("returned ordinary absorption refuses foreign return proof", async t => {
+  const f = await returnedAbsorption(t);
+  const read = f.taskBoard.returnedNativeTestPriorResult.bind(f.taskBoard);
+  f.taskBoard.returnedNativeTestPriorResult = (...args) => ({ ...read(...args), taskId: f.target.task.id });
+  await assert.rejects(f.preview(), /separate dev integration/u);
+  assert.equal(f.compositionCalls(), 0);
+});
+
+test("returned ordinary absorption refuses active and stale returns after a later Test", async t => {
+  const f = await returnedAbsorption(t);
+  await f.status(f.source.task.id, "testing", "later-source-test");
+  await assert.rejects(f.preview(), /Return the source/u);
+  // Legacy direct status changes supply no normal return authority for this later Test.
+  await f.taskBoard.beginLifecycleTransition({ id: f.source.task.id, operationId: "later-direct-claim",
+    kind: "workflow", targetWorkflowStatus: "in_progress", expectedRevision: f.taskBoard.task(f.source.task.id).revision });
+  await f.taskBoard.commitWorkflowTransition({ operationId: "later-direct-claim", replaceGitReferences: false });
+  await assert.rejects(f.preview(), /separate dev integration/u);
+  assert.equal(f.compositionCalls(), 0);
+});
+
+for (const changed of ["Git", "authority"]) test(`returned ordinary absorption rereads ${changed} after prospective composition`, async t => {
+  const f = await returnedAbsorption(t);
+  f.afterComposition(async () => {
+    if (changed === "Git") {
+      await writeFile(path.join(f.source.root, "late.txt"), "late source work\n");
+      await git(f.source.root, "add", "late.txt");
+      await git(f.source.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "late");
+    } else {
+      await f.taskBoard.requestWorkflowStatus({ id: f.source.task.id, status: "testing" });
+    }
+  });
+  await assert.rejects(f.preview());
+  assert.equal(f.compositionCalls(), 1);
+  assert.equal(f.taskBoard.lifecycleOutcome("returned-source-preview"), null);
+});
+
+test("returned ordinary absorption public SAME UNKNOWN preview joins before separate confirmation", async t => {
+  const f = await returnedAbsorption(t);
+  const caps = createPersistenceMutationCapabilities({ rawWorkspaceCatalogStore: f.catalog, rawTaskBoardStore: f.store });
+  const board = new TaskBoardService({ store: caps.taskBoardStore, workspaceCatalog: caps.workspaceCatalogStore });
+  f.lifecycle.taskBoard = board;
+  f.lifecycle.workspaceCatalog = caps.workspaceCatalogStore;
+  const stream = await caps.workspaceCatalogStore.createStream({ workspaceId: f.workspace.id, name: "Original actor" });
+  await caps.workspaceCatalogStore.bindThread({ streamId: stream.id, provider: "codex", threadId: "original-thread", projectRoot: f.primary });
+  const hub = new HubMcpService({ workspaceCatalog: caps.workspaceCatalogStore, taskBoard: board,
+    taskLifecycle: f.lifecycle, taskGitWorkspaces: f.taskGitWorkspaces, secret: "isolated-original-secret",
+    workLog: { async threadTurns() { return []; } }, attachmentDirectory: f.root, reconcilePendingOnStartup: false,
+    releasePreflight: { ...f.lifecycle.releasePreflight, async preflight() { return {}; } },
+    releasePlanner: { async plan() { return { ready: [] }; } },
+    releaseCompleter: { async completeRelease() { assert.fail("preview cannot release"); } } });
+  const token = hub.contextToken({ provider: "codex", threadId: "original-thread", streamId: stream.id });
+  const args = { request_id: "old-returned-preview", task_id: f.source.task.id, absorbed_into_task_id: f.target.task.id };
+  const call = { ...args, context_token: token };
+  await caps.workspaceCatalogStore.beginMcpOperation({ requestId: args.request_id, toolName: "hub_task_complete",
+    workspaceId: f.workspace.id, streamId: stream.id, provider: "codex", threadId: "original-thread",
+    argumentsHash: mcpArgumentsHash(args), taskExecution: hub.taskOperationInterruption.binding(args) });
+  await caps.workspaceCatalogStore.markMcpOperationUnknown(args.request_id, new Error("Retained source ancestry refusal"));
+  const old = caps.workspaceCatalogStore.mcpOperation(args.request_id), before = board.task(f.source.task.id);
+  try { await hub.submitTaskOperation("hub_task_complete", call); }
+  finally { await hub.joinSubmittedTaskOperation(call); }
+  const saved = await hub.call("hub_task_operation_get", { context_token: token,
+    operation_request_id: args.request_id, task_id: args.task_id, expected_arguments_hash: mcpArgumentsHash(args) });
+  assert.equal(saved.taskOperation.status, "succeeded");
+  assert.deepEqual(saved.result.previewRecovery.previousReceipt, old);
+  assert.deepEqual(board.task(f.source.task.id), before);
+  const closed = await hub.call("hub_task_complete", { ...args, context_token: token,
+    request_id: "separate-returned-confirm", confirm_cleanup: true, expected_cleanup_token: saved.result.cleanupToken });
+  assert.equal(closed.status, "done");
+  assert.equal(board.task(f.target.task.id).workflowStatus, "testing");
+  assert.equal(await git(f.source.root, "status", "--porcelain"), "");
+  assert.equal(await readFile(path.join(f.source.root, "early.txt"), "utf8"), "earlier source work\n");
 });
 
 for (const [owner, change] of [["source", "dirty"], ["source", "commit"],

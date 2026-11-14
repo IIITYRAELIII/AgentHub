@@ -388,9 +388,9 @@ export class TaskBoardService {
     return this.store.recordWorkflowAdmissionRefusal(payload);
   }
 
-  returnedNativeTestPriorResult(taskId) {
+  returnedNativeTestPriorResult(taskId, options) {
     requiredMethod(this.store, "returnedNativeTestPriorResult");
-    return this.store.returnedNativeTestPriorResult(taskId);
+    return this.store.returnedNativeTestPriorResult(taskId, options);
   }
 
   failLifecycleTransition(operationId, error) {

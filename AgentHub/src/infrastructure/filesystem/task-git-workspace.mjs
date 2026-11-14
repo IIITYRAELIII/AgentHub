@@ -21,7 +21,7 @@ import { readSelectedCheckoutAuthority, verifySelectedCompositionFiles, verifySe
 import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
-import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, assertNativeMergeGraph, assertNativeMergedResults, nativeMergeBaseFields } from "./native-release-merge.mjs";
+import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, assertNativeMergeGraph, assertNativeMergedResults, assertSelectedContent, nativeMergeBaseFields } from "./native-release-merge.mjs";
 import { synchronizePublishedDev } from "./published-dev-sync.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { OwnedNativeObjectStore, nativeObjectStorageDescriptor } from "./owned-native-object-store.mjs";
@@ -6100,7 +6100,8 @@ export class TaskGitWorkspaceService {
     return { repositories, truncated: false };
   }
 
-  async withAbsorptionEvidenceOwned({ source, target, lease, nativeAbsorption = null, retainedSource = null } = {}, operation) {
+  async withAbsorptionEvidenceOwned({ source, target, lease, nativeAbsorption = null, retainedSource = null,
+    readReturnedSource = null } = {}, operation) {
     this.#assertAvailable("withAbsorptionEvidenceOwned");
     await requiredGuardLease(lease).assertOwned();
     const workspaces = await this.describe(source.id);
@@ -6227,10 +6228,32 @@ export class TaskGitWorkspaceService {
           "log", "--first-parent", "--format=%H %P", "--max-count=4097", dev, `^${main}`,
         ], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean);
         if (history.length > 4096) throw new Error("dev history exceeds the bounded proof");
+        let returnedSource = null, checkedReturn = false;
         if (!squashTransfer) {
           for (const entry of history) {
             const [commit, , ...parents] = entry.split(" ");
             for (const parent of parents.filter(parent => lineage.has(parent) && !targetLineage.has(parent))) {
+              if (!priorNativeSource && !nativeAbsorption && !checkedReturn && readReturnedSource) {
+                checkedReturn = true;
+                const prior = await readReturnedSource();
+                const refs = source.gitReferences ?? [];
+                if (prior?.taskId === source.id && prior.taskRevision === source.revision
+                    && refs.length === 1 && samePath(prior.projectRoot, repoRoot)
+                    && samePath(refs[0].projectRoot, repoRoot) && prior.branch === refs[0].branch
+                    && prior.resultCommit === refs[0].resultCommit
+                    && /^[0-9a-f]{40}$/u.test(prior.devCommit ?? "")
+                    && await gitMaybe(["merge-base", "--is-ancestor", prior.resultCommit, prior.devCommit], { cwd: repoRoot }) !== null) {
+                  // Reuse the unchanged selected-content owner: ancestry alone
+                  // cannot certify that the ordinary survivor kept earlier or new work.
+                  await assertSelectedContent({
+                    git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: repoRoot, lease: devLease }),
+                    baseCommit: targetBase, tasks: [{ taskId: source.id, baseCommit: sourceBase, resultCommit: sourceHead }],
+                    head: targetHead, resolutions: [], merges: [], identity: { policy: "ordinary-absorption-readback-v1" },
+                  });
+                  returnedSource = prior;
+                  priorNativeSource = prior;
+                }
+              }
               if (!priorNativeSource
                   || await gitMaybe(["merge-base", "--is-ancestor", parent, priorNativeSource.resultCommit], { cwd: repoRoot }) === null
                   || await gitMaybe(["merge-base", "--is-ancestor", commit, priorNativeSource.devCommit], { cwd: repoRoot }) === null) {
@@ -6243,6 +6266,7 @@ export class TaskGitWorkspaceService {
           projectRoot: repoRoot, sourceHead, targetHead, results,
           ...(squashTransfer ? { squashTransferHash: squashTransfer.transferHash } : {}),
           ...(nativeAbsorption ? { nativeAbsorptionHash: nativeAbsorption.descriptorHash } : {}),
+          ...(returnedSource ? { returnedSource } : {}),
         });
         return visit(index + 1, devLease);
       });

@@ -462,7 +462,7 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
 // Reachability alone does not prove content. Reproduce each selected delta, but
 // retain the actual automatic context and verified conflict resolutions instead
 // of requiring a message to authorize that same Git evidence.
-async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
+export async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
   const virtualReplay = await publishedVirtualReplay({ git, identity, baseCommit, tasks });
   const publishedBase = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
   const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit

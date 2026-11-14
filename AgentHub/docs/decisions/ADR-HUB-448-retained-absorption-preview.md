@@ -40,3 +40,17 @@ original. Actual closure is a separate confirmation with that fresh exact token.
 Unknown confirmations, special modes, foreign/changed actors or arguments and
 already admitted lifecycle work remain excluded. No new tool, schema, queue,
 writer, source transfer or release membership change is introduced.
+
+An ordinary positive return preserves the accepted source result and can leave
+its earlier dev integration reachable. The existing canonical returned-result
+reader binds that return to the committed source Test, exact current result and
+branch, original dev integration and both immutable outcome hashes. The ordinary
+absorption owner may use that boundary only while the source is returned, with
+no later successful Test after the return. The existing selected-content reader
+checks all of the source work against the exact tested survivor; source ancestry
+alone supplies no content credit. Every separate integration must be contained
+in the returned Test dev boundary. Both the Git proof and the canonical return
+are read again after prospective composition and in the preview receipt CAS.
+Missing, foreign, stale, still-active or changed authority keeps refusal. This is
+not a fabricated native handoff, a second return, a dev rollback or a change to
+ordinary Test's multiple-merge-base policy.
