@@ -555,8 +555,8 @@ namespace AgentHub.RuntimeHost
             else if (!checkOnly && !String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID"))
                 && inheritedAtEntry) throw new InvalidOperationException("Replacement Host must enter outside every inherited Job");
             Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_REPLACEMENT_OUTSIDE_JOBS", outsideInheritedJobs ? "1" : "0");
-            Mutex packageGate = EnterPackageGate(runtimeRoot);
-            Mutex acceptanceGate = EnterAcceptanceGate(runtimeRoot);
+            Mutex packageGate = MeasureStartup(runtimeRoot, "package-gate", "native", delegate { return EnterPackageGate(runtimeRoot); });
+            Mutex acceptanceGate = MeasureStartup(runtimeRoot, "acceptance-gate", "native", delegate { return EnterAcceptanceGate(runtimeRoot); });
             IntPtr runtimeJob = IntPtr.Zero;
             try
             {
@@ -571,7 +571,7 @@ namespace AgentHub.RuntimeHost
             }
             string currentFile = Path.Combine(runtimeRoot, "current.json");
             EnsureRegularFile(currentFile, "Agent Hub current.json is missing or unsafe");
-            Dictionary<string, object> pointer = ReadJsonObject(currentFile);
+            Dictionary<string, object> pointer = MeasureStartup(runtimeRoot, "current-pointer", "io", delegate { return ReadJsonObject(currentFile); });
             string current = RequiredString(pointer, "current");
             if (current == "." || current == ".." || !ReleaseIdPattern.IsMatch(current))
             {
@@ -587,12 +587,14 @@ namespace AgentHub.RuntimeHost
                 throw new InvalidOperationException("Agent Hub runtime release resolves outside releases");
             }
             EnsureDirectoryWithoutReparsePoint(releaseRoot, "Agent Hub runtime release is missing or unsafe");
-            VerifyManifest(releaseRoot, current);
+            MeasureStartup(runtimeRoot, "manifest-verify", "io", delegate { VerifyManifest(releaseRoot, current, runtimeRoot); });
 
             string packageEntry = Path.Combine(releaseRoot, "src", "runtime", "runtime-package-handoff.mjs");
-            bool packageHandoffAvailable = ManifestDeclares(releaseRoot, "src/runtime/runtime-package-handoff.mjs");
+            bool packageHandoffAvailable = MeasureStartup(runtimeRoot, "package-manifest", "io", delegate {
+                return ManifestDeclares(releaseRoot, "src/runtime/runtime-package-handoff.mjs");
+            });
             if (packageHandoffAvailable && !checkOnly)
-                ProbePackageAdmission(packageEntry, runtimeRoot);
+                MeasureStartup(runtimeRoot, "package-admission", "child-wait", delegate { ProbePackageAdmission(packageEntry, runtimeRoot); });
 
             string server = Path.Combine(releaseRoot, "agent-hub-main.mjs");
             EnsureRegularFile(server, "Agent Hub runtime entry point is missing or unsafe");
@@ -603,7 +605,7 @@ namespace AgentHub.RuntimeHost
             }
 
             SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
-            acceptanceGate = EnterAcceptanceGate(runtimeRoot);
+            acceptanceGate = MeasureStartup(runtimeRoot, "node-acceptance-gate", "native", delegate { return EnterAcceptanceGate(runtimeRoot); });
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = node;
             start.Arguments = QuoteArgument(server);
@@ -611,7 +613,7 @@ namespace AgentHub.RuntimeHost
             start.UseShellExecute = false;
             start.CreateNoWindow = true;
             start.WindowStyle = ProcessWindowStyle.Hidden;
-            ApplyReleaseAcceptanceEnvironment(runtimeRoot, start);
+            MeasureStartup(runtimeRoot, "acceptance-environment", "io", delegate { ApplyReleaseAcceptanceEnvironment(runtimeRoot, start); });
             if (runtimeJob == IntPtr.Zero) runtimeJob = CreateRuntimeJob();
             start.EnvironmentVariables["AGENT_HUB_CONFIG"] = Path.Combine(runtimeRoot, "config.json");
             start.EnvironmentVariables["AGENT_HUB_LAUNCHER"] = Assembly.GetExecutingAssembly().Location;
@@ -623,7 +625,7 @@ namespace AgentHub.RuntimeHost
             // and must not be inherited by provider children or public snapshots.
             start.EnvironmentVariables.Remove("AGENT_HUB_PACKAGE_LAUNCH_TOKEN");
 
-                using (Process process = Process.Start(start))
+                using (Process process = MeasureStartup(runtimeRoot, "node-create", "launch", delegate { return Process.Start(start); }))
                 {
                     if (process == null)
                     {
@@ -653,7 +655,8 @@ namespace AgentHub.RuntimeHost
             Mutex gate = new Mutex(false, AcceptanceObjectName(root) + ".package");
             try
             {
-                try { if (!gate.WaitOne(0)) throw new InvalidOperationException("An exact package handoff owns runtime admission"); }
+                try { if (!MeasureStartup(root, "package-gate-wait", "wait", delegate { return gate.WaitOne(0); }))
+                    throw new InvalidOperationException("An exact package handoff owns runtime admission"); }
                 catch (AbandonedMutexException) { /* Original operation is still checked by its continuation. */ }
                 return gate;
             }
@@ -1159,8 +1162,26 @@ namespace AgentHub.RuntimeHost
             return 0;
         }
 
+        private static T MeasureStartup<T>(string root, string stage, string kind, Func<T> work)
+        {
+            bool inJob;
+            if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inJob)) inJob = true;
+            WriteLifetime(root, stage, 0, null, inJob, null, null, 0, kind, "started");
+            Stopwatch clock = Stopwatch.StartNew();
+            bool completed = false;
+            try { T value = work(); completed = true; return value; }
+            finally { WriteLifetime(root, stage, 0, null, inJob, null, null,
+                clock.Elapsed.TotalMilliseconds, kind, completed ? "succeeded" : "failed"); }
+        }
+
+        private static void MeasureStartup(string root, string stage, string kind, Action work)
+        {
+            MeasureStartup(root, stage, kind, delegate { work(); return true; });
+        }
+
         private static void WriteLifetime(string runtimeRoot, string stage, int childPid, int? exitCode, bool inJob,
-            uint? externalParentPid = null, bool? childInJobBeforeResume = null)
+            uint? externalParentPid = null, bool? childInJobBeforeResume = null,
+            double? elapsedMs = null, string workKind = null, string outcome = null)
         {
             try
             {
@@ -1173,6 +1194,9 @@ namespace AgentHub.RuntimeHost
                 };
                 if (externalParentPid.HasValue) record["externalParentPid"] = externalParentPid.Value;
                 if (childInJobBeforeResume.HasValue) record["childInJobBeforeResume"] = childInJobBeforeResume.Value;
+                if (elapsedMs.HasValue) record["elapsedMs"] = elapsedMs.Value;
+                if (workKind != null) record["workKind"] = workKind;
+                if (outcome != null) record["outcome"] = outcome;
                 Guid operation;
                 string original = Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID");
                 if (Guid.TryParse(original, out operation)) record["operationId"] = original;
@@ -1407,7 +1431,8 @@ namespace AgentHub.RuntimeHost
             Mutex gate = new Mutex(false, AcceptanceObjectName(root) + ".gate");
             try
             {
-                try { if (!gate.WaitOne(5000)) throw new InvalidOperationException("Acceptance launch gate timed out"); }
+                try { if (!MeasureStartup(root, "acceptance-gate-wait", "wait", delegate { return gate.WaitOne(5000); }))
+                    throw new InvalidOperationException("Acceptance launch gate timed out"); }
                 catch (AbandonedMutexException) { /* ownership is acquired */ }
                 return gate;
             }
@@ -1482,11 +1507,12 @@ namespace AgentHub.RuntimeHost
             }
         }
 
-        private static void VerifyManifest(string releaseRoot, string releaseId)
+        private static void VerifyManifest(string releaseRoot, string releaseId, string traceRoot = null)
         {
             string manifestFile = Path.Combine(releaseRoot, "runtime-manifest.json");
             EnsureRegularFile(manifestFile, "Agent Hub runtime manifest is missing or unsafe");
-            Dictionary<string, object> manifest = ReadJsonObject(manifestFile);
+            Dictionary<string, object> manifest = traceRoot == null ? ReadJsonObject(manifestFile)
+                : MeasureStartup(traceRoot, "manifest-read", "io", delegate { return ReadJsonObject(manifestFile); });
             if (!String.Equals(RequiredString(manifest, "releaseId"), releaseId, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException("Agent Hub runtime manifest does not match current.json");
@@ -1510,8 +1536,14 @@ namespace AgentHub.RuntimeHost
 
             string releasePrefix = releaseRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             int count = 0;
+            Stopwatch fileStage = new Stopwatch();
+            double pathMilliseconds = 0, hashMilliseconds = 0;
+            bool verified = false;
+            try
+            {
             foreach (object value in files)
             {
+                fileStage.Restart();
                 Dictionary<string, object> item = value as Dictionary<string, object>;
                 if (item == null)
                 {
@@ -1533,7 +1565,10 @@ namespace AgentHub.RuntimeHost
                     throw new InvalidOperationException("Agent Hub runtime size mismatch: " + relative);
                 }
                 string expectedHash = RequiredString(item, "sha256").ToLowerInvariant();
+                pathMilliseconds += fileStage.Elapsed.TotalMilliseconds;
+                fileStage.Restart();
                 string actualHash = ComputeSha256(target);
+                hashMilliseconds += fileStage.Elapsed.TotalMilliseconds;
                 if (!String.Equals(expectedHash, actualHash, StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException("Agent Hub runtime hash mismatch: " + relative);
@@ -1543,6 +1578,20 @@ namespace AgentHub.RuntimeHost
             if (count == 0)
             {
                 throw new InvalidOperationException("Agent Hub runtime manifest is empty");
+            }
+            verified = true;
+            }
+            finally
+            {
+                if (traceRoot != null)
+                {
+                    bool inJob;
+                    if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inJob)) inJob = true;
+                    WriteLifetime(traceRoot, "manifest-path-checks", 0, null, inJob, null, null,
+                        pathMilliseconds, "io", verified ? "succeeded" : "incomplete");
+                    WriteLifetime(traceRoot, "manifest-file-hashes", 0, null, inJob, null, null,
+                        hashMilliseconds, "io", verified ? "succeeded" : "incomplete");
+                }
             }
         }
 

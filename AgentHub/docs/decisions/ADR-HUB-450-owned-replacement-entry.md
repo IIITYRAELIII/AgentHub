@@ -29,3 +29,11 @@ lost-reply cases and prove that each reached Node. Additional native fixtures
 refuse inherited, foreign and matching-name forged Jobs even with a supplied
 outside-Jobs flag, before Node. All processes belong to disposable private roots.
 These checks do not claim a historical legacy recipient update succeeded.
+
+Startup timing remains in the existing payload-free Host lifetime trace, bound
+to the same Host PID and restart operation when present. Native gate setup and
+actual mutex waits are separate observations. Pointer/manifest reads, aggregate
+path validation and file hashing, the package-admission child wait, acceptance
+environment preparation and Node creation expose elapsed time and outcome.
+These observations neither extend a readiness deadline nor supply Ready proof;
+an initial runtime reaching Ready after its observer expired remains a failure.
