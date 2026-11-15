@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
 import { runTaskGitCommand, TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { assertNativeMergedResults, assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY }
@@ -131,9 +132,13 @@ test("published ordinary Test replay binds its original identity without changin
     { ...identity, nativeHistoryAuthority: { ...identity.nativeHistoryAuthority,
       sourcePublication: { revision: main } } },
   ]) await assert.rejects(verify(changed), { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
+  // This complete automatic tree also proves preservation without publication
+  // replay credit; removing that optional credit does not imply lost content.
+  const automaticTree = (await gitAt(value.root, ["merge-tree", "--write-tree", dev, result])).split(/\r?\n/u)[0];
+  assert.equal(automaticTree, value.tree);
   for (const changed of [{ ...identity, nativeHistoryAuthority: { baseline: null, adoptions: [] } },
     { ...identity, policy: NATIVE_RELEASE_POLICY }]) {
-    await assert.rejects(verify(changed), { code: "RELEASE_SELECTED_CONTENT_MISSING" });
+    await verify(changed);
   }
   assert.equal(await gitAt(value.root, ["show", "HEAD:own.txt"]), "exact own delta");
   assert.equal(await gitAt(value.root, ["show", "HEAD:inherited.txt"]), "header\npublished once\nmiddle\n\nfooter");

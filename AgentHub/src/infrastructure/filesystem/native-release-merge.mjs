@@ -406,13 +406,14 @@ async function retainsConflictCleanContext(git, automaticTree, target, file, bef
   return preserved();
 }
 
-async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
+async function publishedTaskReplayEvidence({ git, baseCommit, tasks, identity }) {
   // TaskGit seals this repository publication in the original Test intent and
   // revalidates it through its existing source/origin/CAS fences. It is not a
   // new Task base or authority inferred from dev, a remote ref or merge output.
   const publication = identity.policy === "native-dev-merge-v1"
     ? identity.nativeHistoryAuthority?.publishedMetadata : null;
-  if (!publication) return null;
+  const absent = { baseCommit: null, inheritedCommit: null };
+  if (!publication) return absent;
   const task = tasks[0];
   if (tasks.length !== 1 || identity.taskId !== task.taskId || identity.resultCommit !== task.resultCommit
       || identity.before !== baseCommit || !publication.generation || !publication.repositoryRoot
@@ -424,13 +425,15 @@ async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
       || String(await git(["rev-parse", `${publication.commit}^{tree}`])) !== publication.tree) {
     throw failure("Native Test published content authority changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
-  // Credit only this exact, single published parent boundary. Other histories,
-  // including virtual multiple bases, retain their existing replay policy.
-  if (String(await git(["merge-base", "--all", baseCommit, task.resultCommit])) !== publication.commit) return null;
+  const bases = String(await git(["merge-base", "--all", baseCommit, task.resultCommit])).split(/\r?\n/u);
+  if (!bases.includes(publication.commit)) return absent;
   if (await maybe(git, ["merge-base", "--is-ancestor", task.baseCommit || baseCommit, publication.commit]) === null) {
     throw failure("Native Test published content base is outside its agreed history", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
-  return publication.commit;
+  // Multiple bases do not change the replay lower boundary. Their sealed
+  // publication can only identify unchanged inherited entries below.
+  return { baseCommit: bases.length === 1 ? publication.commit : null,
+    inheritedCommit: publication.commit };
 }
 
 // A replay can reinsert a complete block already present in the composition.
@@ -460,7 +463,10 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
 // of requiring a message to authorize that same Git evidence.
 async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
   const virtualReplay = await publishedVirtualReplay({ git, identity, baseCommit, tasks });
-  const publishedBase = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
+  const publication = await publishedTaskReplayEvidence({ git, baseCommit, tasks, identity });
+  const publishedBase = publication.baseCommit;
+  const inherited = publication.inheritedCommit
+    ? new Map(await entries(git, ["ls-tree", "-r", "-z", publication.inheritedCommit])) : new Map();
   const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit
     && Array.isArray(identity.tasks) && taskGitIdentityHash(identity.tasks) === taskGitIdentityHash(tasks);
   const target = new Map(await entries(git, ["ls-tree", "-r", "-z", head]));
@@ -477,6 +483,8 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     const actual = merged ? new Map(await entries(git, ["ls-tree", "-r", "-z",
       (String(await git(["merge-tree", "--write-tree", "--name-only", "-z", prefix, task.resultCommit],
         { acceptableExitCodes: [1] })).split("\0"))[0]])) : new Map();
+    const source = inherited.size
+      ? new Map(await entries(git, ["ls-tree", "-r", "-z", task.resultCommit])) : new Map();
     let replayBase = publishedBase || task.baseCommit || baseCommit;
     // The captured composition already owns its complete baseline tree. If
     // that exact baseline lies inside this selected history, replay only the
@@ -501,6 +509,11 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     for (const file of new Set([...expected.keys(), ...target.keys()])) {
       if (expected.get(file) === target.get(file) || resolvedPaths.has(file)
           || actual.get(file) === target.get(file) && actual.has(file)) continue;
+      // Absence is automatic evidence only for a whole unchanged published
+      // entry. Own earlier/new edits and an already-contained result cannot
+      // acquire deletion credit from an empty or unrelated automatic map.
+      if (merged && !actual.has(file) && !target.has(file)
+          && inherited.has(file) && source.get(file) === inherited.get(file)) continue;
       if ((!conflicts.has(file) || await changesCleanConflictContext(git, replayTree, head, file, replayBefore, task.resultCommit))
           && !await repeatsRetainedContent(git, head, replayTree, file)) missing.push(file);
     }
