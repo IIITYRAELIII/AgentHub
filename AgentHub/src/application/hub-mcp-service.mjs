@@ -1173,10 +1173,13 @@ export class HubMcpService {
         || existing.toolName !== toolName || existing.argumentsHash !== argumentsHash(args)) {
         throw new Error("MCP request_id was already used for another operation");
       }
-      // Only the canonical interruption owner can continue its exact UNKNOWN
-      // cancellation. Other historical operations and any live worker are read-only.
-      if (toolName !== "hub_task_operation_cancel" || existing.status !== "unknown"
-        || this.#pendingMutations.has(requestId) || !this.taskOperationInterruption) {
+      // Only the existing addressed owners can continue their exact UNKNOWN.
+      // A fenced claim still passes the genuine run, lease and SQL guards.
+      const custodyContinuation = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id)
+        && existing.status === "unknown" && !this.#pendingMutations.has(requestId);
+      if (custodyContinuation) this.#claimCustodySuccessor(context, args);
+      const continuation = toolName === "hub_task_operation_cancel" && this.taskOperationInterruption || custodyContinuation;
+      if (!continuation || existing.status !== "unknown" || this.#pendingMutations.has(requestId)) {
         return this.#taskOperationReadback(context, { operation_request_id: requestId, expected_arguments_hash: argumentsHash(args) });
       }
     }

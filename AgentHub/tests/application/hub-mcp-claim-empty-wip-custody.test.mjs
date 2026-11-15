@@ -145,21 +145,22 @@ test("same-owner custody resumes the SAME unknown successor through MCP with a f
   await server.start();
   t.after(() => server.close());
   let rpcId = 0;
-  const claim = async () => {
+  const invoke = async (name, args) => {
     const response = await fetch(server.url, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "tools/call",
-        params: { name: "hub_task_claim", arguments: f.consume } }) });
+        params: { name, arguments: args } }) });
     assert.equal(response.status, 200);
     const rpc = await response.json();
     assert.equal(rpc.error, undefined);
-    const receipt = rpc.result.structuredContent?.taskOperation;
-    if (receipt) {
-      // Current MCP acknowledges before execution; the source-baseline server
-      // replies after it. Join the exact fixture-owned worker before readback.
-      assert.equal(receipt.requestId, f.consume.request_id);
-      assert.equal(typeof f.hub.joinSubmittedTaskOperation, "function");
-      try { await f.hub.joinSubmittedTaskOperation(f.consume); } catch {}
-    }
+    return rpc.result;
+  };
+  const claim = async () => {
+    const rpc = await invoke("hub_task_claim", f.consume);
+    assert.equal(rpc.isError, false);
+    const receipt = rpc.structuredContent.taskOperation;
+    assert.equal(receipt.requestId, f.consume.request_id);
+    // MCP acknowledges before execution. Join only this fixture-owned worker.
+    try { await f.hub.joinSubmittedTaskOperation(f.consume); } catch {}
     return f.catalog.mcpOperation(f.consume.request_id);
   };
   const absent = await claim();
@@ -170,7 +171,45 @@ test("same-owner custody resumes the SAME unknown successor through MCP with a f
   assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
   const runs = new TaskRunRegistry([f.current]);
   f.hub.setActiveRuns(() => runs.values());
-  const reply = await claim();
+  for (const [name, args] of [
+    ["hub_task_claim", { ...f.consume, context_token: f.managerToken }],
+    ["hub_task_claim", { ...f.consume, dependency_mode: "skip" }],
+    ["hub_task_claim", { ...f.consume, forward_custody_request_id: "foreign-fence" }],
+    ["hub_task_status_update", { ...f.consume, status: "in_progress" }],
+  ]) {
+    const refused = await invoke(name, args);
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /another operation|Successor claim differs/);
+    assert.deepEqual(f.catalog.mcpOperation(f.consume.request_id), unknown);
+    assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
+  }
+  const ordinaryUnknown = await invoke("hub_task_claim", { ...f.originalArgs, context_token: f.successorToken });
+  assert.equal(ordinaryUnknown.structuredContent.taskOperation.status, "unknown");
+  assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
+  assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
+  const originalClaim = f.tasks.claim.bind(f.tasks);
+  let entered, release;
+  const atAssignment = new Promise(resolve => { entered = resolve; });
+  const blocked = new Promise(resolve => { release = resolve; });
+  let assignments = 0;
+  f.tasks.claim = async args => {
+    assignments += 1;
+    entered();
+    await blocked;
+    return originalClaim(args);
+  };
+  t.after(release);
+  const pending = claim();
+  let reply;
+  try {
+    await atAssignment;
+    const duplicate = await invoke("hub_task_claim", f.consume);
+    assert.equal(duplicate.structuredContent.taskOperation.active, true);
+    assert.equal(assignments, 1);
+    assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
+  } finally { release(); }
+  reply = await pending;
+  assert.equal(assignments, 1);
   assert.equal(reply.status, "succeeded");
   const result = reply.result;
   assert.equal(result.claimedTurnId, f.current.turnId);
@@ -196,7 +235,7 @@ test("same-owner custody resumes the SAME unknown successor through MCP with a f
 test("same-owner custody refuses incomplete, foreign, ambiguous, second and queued work", { timeout: 60000 }, async t => {
   const f = await ownClaimantFixture(t);
   for (const change of [{ id: "" }, { workspaceId: "foreign" }, { streamId: "foreign" },
-    { provider: "claude" }, { threadId: "old-thread" }, { turnId: "" }, { observer: true }]) {
+    { provider: "claude" }, { threadId: "old-thread" }, { turnId: "" }, { observer: true }, { status: "completed" }]) {
     const invalid = { ...f.current, ...change };
     f.hub.setActiveRuns(() => [invalid]);
     await assert.rejects(f.hub.call("hub_task_claim", f.consume), /complete exact run identity|no exact active run/);

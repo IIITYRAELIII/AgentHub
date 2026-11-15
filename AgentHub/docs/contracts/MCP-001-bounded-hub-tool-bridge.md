@@ -1089,6 +1089,10 @@ The active-run authority comes from the running Hub's RunCoordinator through
 its existing MCP composition. A source release runtime/caller token alone has
 no active-run authority. Correct owners must be delivered to that runtime before
 the genuine actor resumes the same addressed UNKNOWN successor through live MCP.
+The existing receipt-first MCP submit owner permits this exact fenced UNKNOWN
+continuation after unchanged actor/tool/argument-hash validation, then invokes
+the existing custody owner. Generic UNKNOWN operations remain read-only; an
+already active local invocation is joined/read, never dispatched a second time.
 
 An independently authorized unassigned original may explicitly pin
 `expected_owner_stream_id=null` only with `isolated-source-v1`. Missing/empty

@@ -250,3 +250,10 @@ No second binding or revision is created by committed readback. Ordinary claims
 retain their existing revision semantics. Filesystem absence, namespace, SQL and historical
 original fences are unchanged. Actual delivery and genuine successor outcome
 remain separate from the disposable regression.
+
+The full HTTP regression additionally found the receipt-first submit owner
+returned a historical UNKNOWN before reaching that existing continuation. Its
+actor/tool/complete-arguments identity check is retained. Only an inactive exact
+fenced successor UNKNOWN can now pass through to the same custody worker after
+fence validation. Other UNKNOWN operations and active invocations remain reads.
+This is an addressed continuation of the original ID, not generic replay.
