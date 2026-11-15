@@ -16,7 +16,7 @@ import { taskBranchName } from "../../src/domain/task-git-reference.mjs";
 
 const run = promisify(execFile);
 const hash = value => createHash("sha256").update(value).digest("hex");
-export async function claimCustodyFixture(t, { dataDir = null, unassigned = false, prepared = false } = {}) {
+export async function claimCustodyFixture(t, { dataDir = null, unassigned = false, prepared = false, emptyWip = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "claim-custody-"));
   const repository = path.join(root, "repo");
   await mkdir(repository);
@@ -58,7 +58,7 @@ export async function claimCustodyFixture(t, { dataDir = null, unassigned = fals
     branch: taskBranchName(task.id, repository, task.taskNumber),
     headCommit: await git(repository, "rev-parse", "HEAD"), baseCommit: await git(repository, "rev-parse", "HEAD"),
   } : await workspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: repository });
-  if (!unassigned || prepared) {
+  if ((!unassigned || prepared) && !emptyWip) {
     await mkdir(path.join(source.projectRoot, "WIP"));
     await writeFile(path.join(source.projectRoot, "WIP", "useful.txt"), "unfinished evidence\n");
   }
@@ -99,7 +99,7 @@ export async function claimCustodyFixture(t, { dataDir = null, unassigned = fals
       successor_claim_request_id: "custody-successor-claim", source: { projectRoot: source.projectRoot,
         headCommit: source.headCommit, tree: await git(source.projectRoot, "rev-parse", "HEAD^{tree}"),
         ...(unassigned ? { baseCommit: source.baseCommit, branch: source.branch } : {}),
-        wipPaths: unassigned && !prepared ? [] : ["WIP"], wipDigest: hash(JSON.stringify(unassigned && !prepared ? [] : wip)) },
+        wipPaths: emptyWip || unassigned && !prepared ? [] : ["WIP"], wipDigest: hash(JSON.stringify(emptyWip || unassigned && !prepared ? [] : wip)) },
     } };
   const fence = plan => ({ context_token: managerToken, request_id: "custody-fence", task_id: task.id,
     operation_request_id: original.requestId, confirm_reconcile: true,

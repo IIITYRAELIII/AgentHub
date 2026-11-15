@@ -818,6 +818,16 @@ insert/replace/rekey paths. An occupied ID refuses custody preparation rather
 than replacing a receipt or selecting another ID. Exact genuine replay remains
 readback of that same assignment and receipt.
 
+An existing clean managed source may explicitly declare `source.wipPaths: []`
+with SHA-256 of the JSON empty inventory. The same filesystem owner must prove
+absence of WIP throughout the bounded source directory inventory, including
+case variants on Windows. Known Git/dependency namespaces remain separate;
+other aliases cannot establish absence. Missing declaration is invalid.
+The existing repeated prepare/stage/fence/initial-successor reads must all
+observe the declared inventory. These are bounded observations, not a freeze
+of the legacy source or a historical NO_EFFECT claim. Nonempty WIP keeps its
+existing declared-path copy/hash safeguards and budget.
+
 ## Explicit release test-selection amendment
 
 `hub_release_run` optionally carries typed `test_selection` (`mode`, exact `ids`).

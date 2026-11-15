@@ -187,6 +187,34 @@ ordinary behavior, and genuine exact retry/reopen retains one assignment.
 
 ## Verification and retirement of compatibility
 
+### Explicit empty WIP of a preserved managed source
+
+The scoped RM decision for the saved Vega claim of
+[HUB-449](agent-hub://task/0409b27d-2b07-42f4-9a09-fcaf0cfcf7a8 "Убрать мерцание Nexus в Chrome")
+requires the discovered clean managed source itself, not substitution of the
+registered base. It has no WIP. The existing `source.wipPaths` can expressly be
+`[]`, with the SHA-256 digest of `JSON.stringify([])`. Omission remains invalid.
+No new command, state owner or receipt shape is introduced.
+
+For that declaration the existing filesystem inventory owner traverses only
+directory entries, under the existing depth/entry budget. It rejects any WIP
+entry (also Wip/wip), including empty directories, files or aliases. `.git` and
+`node_modules` are excluded as the existing separate Git/dependency custody
+boundaries; other links refuse because absence cannot be proved through them.
+Directory identity and names are checked before/end. Existing clean Git/source
+pins remain required; declared nonempty paths retain the old bounded inventory,
+copy and hash checks.
+
+The existing owner already repeats source inventory during prepare and fence,
+before/after independent staging, and checks the staged initial inventory before
+successor claim. New or changed WIP at those observations refuses without
+refreshing pins. This is not an atomic filesystem snapshot, proof of no
+intermediate appearance, nor perpetual absence. Late work written into the old
+root after the committed fence remains in that preserved old namespace; it does
+not regain successor authority. The independent namespace and SQL fences remain
+the forward guarantee. Partial old dependency aliases stay with their original
+owner; `dependencyPreparation=not-replayed` is not a ready-dependency receipt.
+
 Focused tests use public MCP, real disposable SQLite and managed Git, including
 late originals, one-winner intents, stale pins, every stage commit boundary,
 post-claim event loss, exact reopen, preserved WIP/history, busy/queued owner and
