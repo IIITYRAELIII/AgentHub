@@ -37,3 +37,15 @@ path validation and file hashing, the package-admission child wait, acceptance
 environment preparation and Node creation expose elapsed time and outcome.
 These observations neither extend a readiness deadline nor supply Ready proof;
 an initial runtime reaching Ready after its observer expired remains a failure.
+
+In a persistent isolated acceptance root, the suspended child first joins the
+already existing cohort Job and then the fresh per-Host Job. Adding that existing
+outer cohort after the fresh Job is assigned is rejected by Windows. The same
+acceptance gate and closed fence protect assignment; the launcher must already
+belong to the exact cohort, and the child must still be outside all Jobs. A
+marker alone cannot create or select a replacement cohort. Normal runtime entry
+rechecks the same cohort membership, and joined cleanup still owns every
+generation. A real native cohort regression covers this ordering; unowned and
+closed-cohort controls still refuse before Node. Hashing observations separately
+report file opening and stream read/digest work, without filenames, content or
+an inferred CPU/disk explanation. Full byte verification remains mandatory.

@@ -1067,6 +1067,7 @@ namespace AgentHub.RuntimeHost
                 string entryArguments = " --replacement-owned-entry " + launcher + " " + operation + " " + nonce;
                 child = CreateIndependentProcessCore(Assembly.GetExecutingAssembly().Location, entryArguments, runtimeRoot,
                     out parentPid, delegate(ProcessInformation suspended) {
+                        AssignOwnedAcceptanceChild(runtimeRoot, suspended);
                         IntPtr created = CreateJobObject(IntPtr.Zero, "Local\\IIITYRAELIII.AgentHub." + suspended.ProcessId);
                         int error = Marshal.GetLastWin32Error();
                         if (created == IntPtr.Zero) throw new Win32Exception(error);
@@ -1439,6 +1440,34 @@ namespace AgentHub.RuntimeHost
             catch { gate.Dispose(); throw; }
         }
 
+        private static void AssignOwnedAcceptanceChild(string root, ProcessInformation child)
+        {
+            if (ReadAcceptanceMarker(root) == null) return;
+            Mutex gate = EnterAcceptanceGate(root);
+            IntPtr cohort = IntPtr.Zero;
+            try
+            {
+                if (gate == null || File.Exists(Path.Combine(root, ".agent-hub-release-acceptance.closed")))
+                    throw new InvalidOperationException("Release acceptance is closed; no later runtime may start");
+                cohort = OpenJobObject(1 | 4, false, AcceptanceObjectName(root));
+                bool member, alreadyOwned;
+                if (cohort == IntPtr.Zero || !IsProcessInJob(GetCurrentProcess(), cohort, out member) || !member
+                    || !IsProcessInJob(child.Process, IntPtr.Zero, out alreadyOwned) || alreadyOwned)
+                    throw new InvalidOperationException("Replacement has no exact live acceptance cohort owner");
+                // Windows cannot insert the existing cohort outside an already assigned
+                // fresh Job. Join the verified cohort while still suspended, then let
+                // the caller assign its fresh per-Host child Job before ResumeThread.
+                if (!AssignProcessToJobObject(cohort, child.Process))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot own suspended acceptance replacement");
+                WriteLifetime(root, "replacement-acceptance-joined", (int)child.ProcessId, null, true);
+            }
+            finally
+            {
+                if (cohort != IntPtr.Zero) CloseHandle(cohort);
+                LeaveAcceptanceGate(ref gate);
+            }
+        }
+
         private static void LeaveAcceptanceGate(ref Mutex gate)
         {
             if (gate == null) return;
@@ -1537,6 +1566,7 @@ namespace AgentHub.RuntimeHost
             string releasePrefix = releaseRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             int count = 0;
             Stopwatch fileStage = new Stopwatch();
+            ManifestHashTiming hashTiming = traceRoot == null ? null : new ManifestHashTiming();
             double pathMilliseconds = 0, hashMilliseconds = 0;
             bool verified = false;
             try
@@ -1567,7 +1597,7 @@ namespace AgentHub.RuntimeHost
                 string expectedHash = RequiredString(item, "sha256").ToLowerInvariant();
                 pathMilliseconds += fileStage.Elapsed.TotalMilliseconds;
                 fileStage.Restart();
-                string actualHash = ComputeSha256(target);
+                string actualHash = ComputeSha256(target, hashTiming);
                 hashMilliseconds += fileStage.Elapsed.TotalMilliseconds;
                 if (!String.Equals(expectedHash, actualHash, StringComparison.Ordinal))
                 {
@@ -1591,6 +1621,10 @@ namespace AgentHub.RuntimeHost
                         pathMilliseconds, "io", verified ? "succeeded" : "incomplete");
                     WriteLifetime(traceRoot, "manifest-file-hashes", 0, null, inJob, null, null,
                         hashMilliseconds, "io", verified ? "succeeded" : "incomplete");
+                    WriteLifetime(traceRoot, "manifest-file-open", 0, null, inJob, null, null,
+                        hashTiming.OpenMilliseconds, "io", verified ? "succeeded" : "incomplete");
+                    WriteLifetime(traceRoot, "manifest-read-digest", 0, null, inJob, null, null,
+                        hashTiming.ReadDigestMilliseconds, "io", verified ? "succeeded" : "incomplete");
                 }
             }
         }
@@ -1664,9 +1698,19 @@ namespace AgentHub.RuntimeHost
             return result;
         }
 
-        private static string ComputeSha256(string path)
+        private sealed class ManifestHashTiming
         {
+            internal double OpenMilliseconds, ReadDigestMilliseconds;
+        }
+
+        private static string ComputeSha256(string path, ManifestHashTiming timing = null)
+        {
+            Stopwatch phase = timing == null ? null : Stopwatch.StartNew();
             using (FileStream stream = File.OpenRead(path))
+            {
+            if (phase != null) { timing.OpenMilliseconds += phase.Elapsed.TotalMilliseconds; phase.Restart(); }
+            try
+            {
             using (SHA256 hash = SHA256.Create())
             {
                 byte[] value = hash.ComputeHash(stream);
@@ -1676,6 +1720,9 @@ namespace AgentHub.RuntimeHost
                     result.Append(item.ToString("x2", CultureInfo.InvariantCulture));
                 }
                 return result.ToString();
+            }
+            }
+            finally { if (phase != null) timing.ReadDigestMilliseconds += phase.Elapsed.TotalMilliseconds; }
             }
         }
 

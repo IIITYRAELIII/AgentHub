@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -20,6 +21,7 @@ internal static class ReplacementJobProbe
         uint flags,IntPtr env,string cwd,ref Startup startup,out Created process);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr CreateJobObject(IntPtr a,string n);
     [DllImport("kernel32.dll")] private static extern bool AssignProcessToJobObject(IntPtr j,IntPtr p);
+    [DllImport("kernel32.dll")] private static extern bool IsProcessInJob(IntPtr p,IntPtr j,out bool member);
     [DllImport("kernel32.dll")] private static extern bool QueryInformationJobObject(IntPtr j,int c,out Accounting a,uint n,IntPtr r);
     [DllImport("kernel32.dll")] private static extern bool TerminateJobObject(IntPtr j,uint code);
     [DllImport("kernel32.dll")] private static extern uint ResumeThread(IntPtr t);
@@ -34,6 +36,15 @@ internal static class ReplacementJobProbe
         Process node=null,host=null;
         try
         {
+            if(args[3]=="ready-acceptance") {
+                CloseHandle(job);
+                using(SHA256 hash=SHA256.Create()) {
+                    string name="Local\\IIITYRAELIII.AgentHub.Acceptance."+BitConverter.ToString(hash.ComputeHash(
+                        Encoding.UTF8.GetBytes(Path.GetFullPath(Path.GetDirectoryName(root)).ToUpperInvariant()))).Replace("-","");
+                    job=CreateJobObject(IntPtr.Zero,name);
+                    Check(job!=IntPtr.Zero,"owned acceptance fixture Job");
+                }
+            }
             Startup si=new Startup();si.Size=(uint)Marshal.SizeOf(typeof(Startup));
             if(args[3].StartsWith("entry-",StringComparison.Ordinal)) {
                 string executable=Path.Combine(Path.GetDirectoryName(root),"AgentHub.RuntimeHost.exe");
@@ -60,10 +71,10 @@ internal static class ReplacementJobProbe
             // A signalled process handle may precede kernel Job accounting
             // removal. Observe the same retained Job, without excluding a PID.
             Accounting counts; Stopwatch accountingWait=Stopwatch.StartNew();
-            uint expected=args[3]=="extra"||args[3]=="foreign-ready" ? 1U : 0U;
+            uint expected=args[3]=="ready-acceptance" ? 2U : args[3]=="extra"||args[3]=="foreign-ready" ? 1U : 0U;
             do {
                 Check(QueryInformationJobObject(job,1,out counts,(uint)Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"same retained Job");
-                if(counts.Active<=expected||accountingWait.ElapsedMilliseconds>=1500)break;
+                if(args[3]=="ready-acceptance"||counts.Active<=expected||accountingWait.ElapsedMilliseconds>=1500)break;
                 System.Threading.Thread.Sleep(20);
             }while(true);
             string identity=Path.Combine(root,"actual-node.json"); bool alive=false;
@@ -72,7 +83,12 @@ internal static class ReplacementJobProbe
                 try {node=Process.GetProcessById(Convert.ToInt32(p["pid"]));host=Process.GetProcessById(Convert.ToInt32(p["hostPid"]));
                     alive=!node.HasExited&&!host.HasExited;} catch(ArgumentException) {}
             }
-            Console.WriteLine(new JavaScriptSerializer().Serialize(new {oldActive=counts.Active,newRuntimeAlive=alive}));
+            bool nodeMember=false,hostMember=false;
+            if(args[3]=="ready-acceptance"&&alive) {
+                Check(IsProcessInJob(node.Handle,job,out nodeMember)&&IsProcessInJob(host.Handle,job,out hostMember),"same acceptance cohort membership");
+            }
+            Console.WriteLine(new JavaScriptSerializer().Serialize(new {oldActive=counts.Active,newRuntimeAlive=alive,
+                acceptanceOwnsReplacement=nodeMember&&hostMember}));
             return 0;
         }
         catch(Exception e) {Console.Error.WriteLine(e);return 1;}

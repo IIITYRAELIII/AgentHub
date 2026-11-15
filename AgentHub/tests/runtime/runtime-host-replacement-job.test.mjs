@@ -21,7 +21,7 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
   await execute(runtimeHostCompilerCandidates()[0], ['/nologo', '/target:exe', `/out:${driver}`,
     '/reference:System.dll', '/reference:System.Web.Extensions.dll',
     path.join(source, 'tests/fixtures/runtime-host-replacement-job.cs')], { windowsHide: true });
-  for (const mode of ['ready', 'extra', 'not-ready', 'foreign-ready', 'lost-reply', 'entry-inherited', 'entry-foreign', 'entry-forged-job']) await t.test(mode, async () => {
+  for (const mode of ['ready', 'extra', 'not-ready', 'foreign-ready', 'lost-reply', 'entry-inherited', 'entry-foreign', 'entry-forged-job', 'ready-acceptance', 'acceptance-unowned', 'acceptance-closed']) await t.test(mode, async () => {
     const run = path.join(root, mode); await mkdir(run);
     // Actual compiled Host location owns its runtime root. Each mode is joined
     // before the next pointer change; no live Hub or provider is started.
@@ -45,6 +45,9 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
     }
     await writeFile(path.join(releaseRoot, 'runtime-manifest.json'), JSON.stringify(manifest));
     await writeFile(path.join(root, 'current.json'), JSON.stringify({ current: release }));
+    if (mode.includes('acceptance')) await writeFile(path.join(root, '.agent-hub-release-acceptance.json'),
+      JSON.stringify({ schemaVersion: 1, id: randomUUID(), root }));
+    if (mode === 'acceptance-closed') await writeFile(path.join(root, '.agent-hub-release-acceptance.closed'), '1');
     const submit = path.join(run, 'submit.mjs');
     await writeFile(submit, `import fs from 'node:fs';import {spawn} from 'node:child_process';
       import {botReplacementInvocation,launchReplacementAndWait} from ${JSON.stringify(pathToFileURL(path.join(source,'src/runtime/runtime-restart.mjs')).href)};
@@ -95,9 +98,22 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
     }
     const outcome = JSON.parse(await readFile(path.join(run, 'result.json'), 'utf8'));
     t.diagnostic(JSON.stringify({ mode, ...proof, outcome, nodeIdentityCreated: Boolean(nodeIdentity), launcherFailure: failure.slice(-4096) }));
+    if (mode === 'acceptance-unowned' || mode === 'acceptance-closed') {
+      assert.equal(outcome.launches, 1);
+      assert.ok(outcome.error);
+      assert.equal(nodeIdentity, null, 'unowned or closed acceptance cannot admit a new Node');
+      assert.match(failure, mode === 'acceptance-closed' ? /Release acceptance is closed/
+        : /no exact live acceptance cohort owner/);
+      return;
+    }
     assert.ok(nodeIdentity?.pid > 0 && nodeIdentity?.hostPid > 0, 'every Ready/cleanup/lost-reply oracle reaches the actual replacement Node');
     assert.equal(outcome.launches, 1, 'transport uncertainty never admits another launcher');
-    if (mode === 'ready') {
+    if (mode === 'ready-acceptance') {
+      assert.equal(outcome.ready, true);
+      assert.equal(proof.newRuntimeAlive, true);
+      assert.equal(proof.acceptanceOwnsReplacement, true, 'both actual Host and Node belong to the exact retained acceptance cohort');
+      assert.ok(proof.oldActive >= 2, 'cohort accounting includes the replacement, not a zero-old-Job assertion');
+    } else if (mode === 'ready') {
       assert.equal(outcome.ready, true);
       assert.equal(proof.newRuntimeAlive, true);
       assert.equal(proof.oldActive, 0, 'successor and completed relay must leave no member in the exact old Job');
