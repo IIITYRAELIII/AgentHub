@@ -29,6 +29,31 @@ function fixture(storage = new Map()) {
     hide: () => { window.document.hidden = true; listeners.get("visibilitychange")?.(); } };
 }
 
+test("compaction estimate paint survives the common client batch without losing neighbouring measurements", async () => {
+  const { trace, frames, advance } = fixture();
+  const retained = [];
+  trace.bindReporter(async batch => retained.push(...clientPerformanceTraceSpans(batch)));
+  trace.record("ui-render", "messages", 3, "neighbouring-render");
+  trace.afterPaint("context-estimate-paint", "compaction", trace.now(), "original-compaction", {
+    threadId: "exact-thread", turnId: "exact-turn", hasEstimate: true,
+    text: "PRIVATE body", token: "PRIVATE secret",
+  });
+  advance(12); frames.shift()(); advance(4); frames.shift()();
+  await trace.flush();
+  assert.equal(trace.diagnostics().failedBatches, 0);
+  assert.equal(trace.diagnostics().droppedCount, 0);
+  assert.equal(retained.length, 3);
+  assert.equal(retained[0].commandId, "neighbouring-render");
+  assert.deepEqual(retained.slice(1).map(span => [span.commandId, span.stage, span.outcome]), [
+    ["original-compaction", "context-estimate-paint", "started"],
+    ["original-compaction", "context-estimate-paint", "succeeded"],
+  ]);
+  assert.equal(retained.at(-1).monotonicDurationMs, 16);
+  assert.equal(retained.at(-1).metadata.threadId, "exact-thread");
+  assert.equal(retained.at(-1).metadata.turnId, "exact-turn");
+  assert.doesNotMatch(JSON.stringify(retained), /PRIVATE/u);
+});
+
 test("failed upload telemetry survives reporter outage and reload without retaining payloads", async () => {
   const storage = new Map();
   const first = fixture(storage);

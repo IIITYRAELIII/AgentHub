@@ -172,14 +172,23 @@ test("composed board snapshot invalidates for board and journal-only commits", a
   assert.ok(changed.boardTasks.some((item) => item.id === task.id));
   f.store.claim(task.id, { workspaceId: f.workspace.id, streamId: "stream", provider: "codex",
     threadId: "journal-thread", turnId: "journal-turn", operationId: "claim" });
-  await f.snapshot();
+  const claimed = await f.snapshot();
+  const beforeDetails = claimed.boardTasks.find((item) => item.id === task.id).detailsRevision;
   const beforeJournal = f.boardReads();
   await f.journal.upsertRecords([{ provider: "codex", threadId: "journal-thread", taskThreadId: "journal-thread",
     turnId: "journal-turn", projectRoot: f.root, title: "Completed", body: "private body",
     completedAt: "2026-10-15T00:00:00Z", status: "completed" }]);
   const completed = await f.snapshot();
   assert.equal(f.boardReads(), beforeJournal + 1);
-  assert.equal(completed.boardTasks.find((item) => item.id === task.id).workLog[0].summary, "Completed");
+  const summary = completed.boardTasks.find((item) => item.id === task.id);
+  assert.notEqual(summary.detailsRevision, beforeDetails);
+  assert.equal(summary.detailsDeferred, true);
+  assert.equal(Object.hasOwn(summary, "workLog"), false);
+  const details = await f.board.card(task.id);
+  assert.equal(details.detailsRevision, summary.detailsRevision);
+  assert.equal(details.workLog[0].summary, "Completed");
+  assert.equal(details.workLog[0].turnId, "journal-turn");
+  assert.equal(JSON.stringify(details).includes("private body"), false);
   assert.equal(JSON.stringify(completed.boardTasks).includes("private body"), false);
   f.taskRuns.revision += 1;
   await f.snapshot();

@@ -593,6 +593,7 @@ export function testContourConfig({
     projects: recording?.projects ?? [{ name: "Test Contour", path: paths.projectRoot }],
     ...(recording ? { testContourRecording: { schemaVersion: 1, root: recording.root } } : {}),
     dataDir: paths.dataDir,
+    usageSyncServerUrl: "",
     showProjectButton: false,
     showTaskProject: false,
     guardConcurrentRepositoryWrites: false,
@@ -895,6 +896,12 @@ export async function prepareTestContourCandidate({
     }
   };
   await revalidateReleaseSource();
+  const paths = testContourPaths(isolatedRoot);
+  const existingConfig = await readJson(paths.configFile);
+  if (existingConfig && existingConfig.usageSyncServerUrl !== "") {
+    await writeTextAtomic(paths.configFile,
+      `${JSON.stringify({ ...existingConfig, usageSyncServerUrl: "" }, null, 2)}\n`);
+  }
   const deployed = await deploy({
     sourceRoot: candidateSourceRoot,
     runtimeRoot: isolatedRoot,

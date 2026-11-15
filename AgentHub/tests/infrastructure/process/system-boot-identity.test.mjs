@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readTrustedSystemBootIdentity } from "../../../src/infrastructure/process/system-boot-identity.mjs";
+import { readTrustedSystemBootIdentity, trustedWindowsPowerShellPath } from "../../../src/infrastructure/process/system-boot-identity.mjs";
 
 test("trusted Windows boot identity comes from Win32_OperatingSystem", async () => {
   const calls = [];
@@ -38,4 +38,14 @@ test("trusted boot identity fails closed outside Windows or on invalid output", 
     platform: "win32",
     environment: { SystemRoot: "C:\\Repository\\Windows" },
   }), /SystemRoot is unavailable/u);
+});
+
+test("trusted shell accepts uppercase Windows environment without weakening path validation", () => {
+  const expected = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  assert.equal(trustedWindowsPowerShellPath({ SYSTEMROOT: "C:\\Windows" }), expected);
+  assert.equal(trustedWindowsPowerShellPath({ SystemRoot: "C:\\Windows", SYSTEMROOT: "C:\\Untrusted" }), expected);
+  for (const SYSTEMROOT of ["", "..\\Windows", "C:\\Repository\\Windows", "C:\\Windows\\..\\Other", "C:\\Windows\0suffix"]) {
+    assert.throws(() => trustedWindowsPowerShellPath({ SYSTEMROOT }), /SystemRoot is unavailable/u);
+  }
+  assert.throws(() => trustedWindowsPowerShellPath({ WINDIR: "C:\\Windows" }), /SystemRoot is unavailable/u);
 });

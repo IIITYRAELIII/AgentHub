@@ -4,11 +4,11 @@ import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelecte
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
-import { TaskLifecycleNoEffectError, TaskLifecycleBeginRejectedError } from "../domain/task-board-task.mjs";
+import { TaskLifecycleNoEffectError, TaskLifecycleBeginRejectedError, TaskOperationReconciliationRefusedError } from "../domain/task-board-task.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
-import { TaskGitHistoryRejectedError, normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
+import { TaskGitHistoryRejectedError, normalizedInitialNativeTest, normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
 import { nativeTestMetadataDrift, sameTaskWorkflowState } from "../domain/native-test-terminal-recovery.mjs";
 import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 
@@ -36,10 +36,18 @@ export class TaskIntegrationConflictError extends Error {
 
 export class TaskAwaitIntegrationError extends Error {
   constructor(cause) {
-    super(`Await integration evidence failed; Task status was not changed: ${cause.message}`);
+    super(`Await integration evidence failed; Task status was not changed: ${cause.message}`, { cause });
     this.code = "TASK_AWAIT_INTEGRATION_FAILED";
     if (cause.binding) this.details = { nativeResolutionBinding: cause.binding,
       diffPath: cause.diffPath, extraPaths: cause.extraPaths ?? [] };
+  }
+}
+
+export class TaskLifecyclePersistenceError extends AggregateError {
+  constructor(originalError, persistenceError) {
+    super([originalError, persistenceError], "Task lifecycle failure persistence failed; effect outcome remains unknown",
+      { cause: originalError });
+    this.code = "TASK_LIFECYCLE_PERSISTENCE_FAILED";
   }
 }
 
@@ -93,6 +101,8 @@ function confirmation(task, action, preview) {
     gitReferences: preview.gitReferences ?? [],
     absorbedInto: preview.absorbedInto ?? null,
     releaseService: preview.releaseService ?? null,
+    ...(preview.publishedDelivery ? { publishedDelivery: preview.publishedDelivery,
+      publishedCleanupReferences: preview.publishedCleanupReferences ?? [] } : {}),
     deleting: preview.deleting ?? [],
   })).digest("hex");
   return {
@@ -182,10 +192,15 @@ export class TaskLifecycleService {
   async #failWhileOwned(lease, operationId, error) {
     try {
       await this.#assertOwned(lease);
-      await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, error), operationId);
     } catch {
       // A fenced owner must not write after lease loss. Startup reconciliation
       // owns the remaining durable transition.
+      return;
+    }
+    try {
+      await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, error), operationId);
+    } catch (persistenceError) {
+      throw new TaskLifecyclePersistenceError(error, persistenceError);
     }
   }
 
@@ -973,15 +988,17 @@ export class TaskLifecycleService {
         } : {}),
         }), operationId);
       } catch (error) {
-        const current = this.#task(task.id);
         if (error instanceof TaskLifecycleBeginRejectedError && admissionReceipt?.replayed === false
-            && !(releaseWorkflow && task.workflowStatus === "blocked" && workflowStatus !== "blocked")
-            && ((expectedRevision != null && current.revision !== Number(expectedRevision))
-              || (expectedWorkflowStatus != null && current.workflowStatus !== String(expectedWorkflowStatus).trim()))) {
-          // BEGIN rolled back, and no preparation/effects preceded it. Seal the
-          // original CAS refusal rather than leaving a receipt-only crash gap.
-          return this.#refuseWorkflowAdmission({ taskId: task.id, admissionReceipt, projectRoot,
-            status: workflowStatus, expectedRevision, expectedWorkflowStatus }, lease);
+            && !(releaseWorkflow && task.workflowStatus === "blocked" && workflowStatus !== "blocked")) {
+          // Only a rolled-back admission can use this fresh CAS observation.
+          // A failed observation cannot replace the original persistence error.
+          let current;
+          try { current = this.#task(task.id); } catch { throw error; }
+          if ((expectedRevision != null && current.revision !== Number(expectedRevision))
+              || (expectedWorkflowStatus != null && current.workflowStatus !== String(expectedWorkflowStatus).trim())) {
+            return this.#refuseWorkflowAdmission({ taskId: task.id, admissionReceipt, projectRoot,
+              status: workflowStatus, expectedRevision, expectedWorkflowStatus }, lease);
+          }
         }
         throw error;
       }
@@ -1045,7 +1062,7 @@ export class TaskLifecycleService {
                   lease: repositoryLease,
                   operationId,
                   nativeAwaitRecovery,
-                  nativeResolutionReview: operationEvidence?.nativeResolutionReview ?? null,
+
                   commitPrepared: async (prepared) => {
                     if (prepared.task.resultCommit !== acceptedReference.resultCommit) {
                       throw new Error("Task prospective Await result changed before acceptance");
@@ -1145,7 +1162,7 @@ export class TaskLifecycleService {
           expectedResultReferences: task.workflowStatus === "testing" ? task.gitReferences ?? [] : null,
           nativeAbsorptionInput, nativeAbsorptionHistory, expectedTaskRevision: task.revision, validateAbsorption,
           initialNativeTest, validateInitialNativeTest,
-          nativeResolutionReview: operationEvidence?.nativeResolutionReview ?? null,
+
           lease,
         });
         if (!integration.resultProved || !integration.integrated) {
@@ -1367,17 +1384,58 @@ export class TaskLifecycleService {
     return this.releasePreflight.withAwaitTransition(workspace.id, locked);
   }
 
+  async assertMalformedWorkflowIdleOwned({ taskId, operationId, lease } = {}) {
+    await this.#assertOwned(lease);
+    if (this.taskBoard.lifecycleTransition(operationId) || this.taskBoard.lifecycleOutcome(operationId)) {
+      throw new Error("Malformed workflow original has lifecycle evidence");
+    }
+    requiredMethod(this.taskGitWorkspaces, "assertNoProcessTreeGuardOwned");
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(taskId, { lease });
+    await this.#assertOwned(lease);
+  }
+
+  async assertStoppedWorkflowIdleOwned({ taskId, operationId, lease } = {}) {
+    await this.#assertOwned(lease);
+    const transition = this.taskBoard.lifecycleTransition(operationId);
+    if (transition?.taskId !== taskId || transition.kind !== "workflow" || transition.phase !== "failed"
+        || this.taskBoard.lifecycleOutcome(operationId)) throw new Error("Stopped workflow lifecycle evidence differs");
+    requiredMethod(this.taskGitWorkspaces, "assertNoProcessTreeGuardOwned");
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(taskId, { lease });
+    await this.#assertOwned(lease);
+  }
+
   async reconcileUnknownWorkflowStatusOwned({
     taskId, operationId, projectRoot, guardId, proof, lease, finalizeCommittedWithdrawal = false,
     verifyInitialNativeTest = null,
     allowMetadataRecovery = false,
+    nativeResolutionReview = null,
   } = {}) {
     await this.#assertOwned(lease);
     const current = this.#task(taskId);
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
     if (allowMetadataRecovery) {
       if (guardId || !nativeTestMetadataDrift(current, transition)) throw new Error("Native Test metadata recovery state changed");
-      return this.taskGitWorkspaces.withAppliedNativeTerminalOwned({ taskId, operationId, projectRoot, lease },
+      const readCommittedSuccessor = devCommit => {
+        const outcome = this.taskBoard.committedNativeTestForDev({ workspaceId: current.workspaceId, devCommit });
+        const committed = outcome?.result?.task, evidence = outcome?.result?.evidence;
+        const receipt = this.workspaceCatalog.mcpOperation(outcome?.operationId);
+        const task = committed && this.#task(committed.id);
+        const reference = normalizedTaskGitReferences(committed?.gitReferences)
+          .find(ref => samePath(ref.projectRoot, projectRoot));
+        if (!committed || committed.id === taskId || !task
+            || committed.workspaceId !== current.workspaceId || task.workspaceId !== current.workspaceId
+            || !["testing", "awaiting_implementation", "done"].includes(task.workflowStatus)
+            || JSON.stringify(normalizedTaskGitReferences(task.gitReferences)) !== JSON.stringify(normalizedTaskGitReferences(committed.gitReferences))
+            || !reference || reference.resultCommit !== evidence?.resultCommit
+            || evidence.devHeadCommit !== devCommit || evidence.response?.gitIntegration?.integrated !== true
+            || receipt?.workspaceId !== current.workspaceId || receipt.toolName !== "hub_task_status_update"
+            || receipt.operationStatus !== "succeeded" || receipt.receiptState !== "succeeded") {
+          throw new Error("Native dev successor canonical Test identity changed");
+        }
+        return { taskId: committed.id, operationId: outcome.operationId, resultCommit: reference.resultCommit };
+      };
+      return this.taskGitWorkspaces.withAppliedNativeTerminalOwned({ taskId, operationId, projectRoot, lease,
+        nativeResolutionReview, readCommittedSuccessor },
         async (native, verify) => {
           const fresh = this.#task(taskId);
           if (!nativeTestMetadataDrift(fresh, this.taskBoard.lifecycleTransition(operationId))) {
@@ -1385,13 +1443,15 @@ export class TaskLifecycleService {
           }
           const nativeTerminalRecovery = { kind: "native-test-metadata-terminal-v1",
             expectedCurrentRevision: fresh.revision, sourceCommit: native.snapshot.headCommit,
-            devCommit: native.target, originalExpectedRevision: transition.expectedRevision };
+            devCommit: native.target, preservedDevCommit: native.preservedDevCommit,
+            originalExpectedRevision: transition.expectedRevision };
           const result = await this.#mutation(async () => {
             await verify();
             return this.taskBoard.commitWorkflowTransition({ operationId, metadataRecovery: nativeTerminalRecovery,
               gitReferences: [{ projectRoot: native.snapshot.repositoryRoot, branch: native.snapshot.branch,
                 resultCommit: native.snapshot.headCommit }],
-              evidence: { outcome: "integrated", resultCommit: native.snapshot.headCommit,
+              evidence: { ...(nativeResolutionReview ? { nativeResolutionReview } : {}),
+                outcome: "integrated", resultCommit: native.snapshot.headCommit,
                 devHeadCommit: native.target, nativeTerminalRecovery,
                 response: { gitWorkspace: { branch: native.snapshot.branch, projectRoot: native.snapshot.projectRoot,
                   baseCommit: native.snapshot.baseCommit, headCommit: native.snapshot.headCommit },
@@ -1878,11 +1938,16 @@ export class TaskLifecycleService {
       if (!taskIds.length || new Set(taskIds).size !== taskIds.length) {
         throw new Error("Published release service checklist must select distinct Tasks");
       }
-      const selectedTasks = taskIds.map((id) => {
+      const selectedTasks = taskIds.map((id, index) => {
         const selected = this.#task(id);
         if (selected.workspaceId !== task.workspaceId || selected.status !== "done"
             || selected.workflowStatus !== "done") {
           throw new Error("Published release service checklist contains an unfinished Task");
+        }
+        const reference = checklist[index].releaseReference;
+        if (reference && JSON.stringify(normalizedTaskGitReferences(selected.gitReferences))
+            !== JSON.stringify(normalizedTaskGitReferences(reference.gitReferences))) {
+          throw new Error("Published release service reference result changed");
         }
         return selected;
       });
@@ -1892,7 +1957,7 @@ export class TaskLifecycleService {
       const cleanup = { taskId: task.id, workspaces: [], gitReferences: [], dirty: false,
         unpublished: [], deleting: [], preserving: releaseService.preserving, releaseService };
       const preview = confirmation(task, "complete", cleanup);
-      preview.warning = "Close only the verified published release service Task; preserve its managed worktree and history.";
+      preview.warning = "Close only the verified published release service Task; preserve all existing source and history.";
       if (confirmCleanup !== true) return preview;
       if (String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
         throw new Error("Published release service confirmation is stale");
@@ -1920,16 +1985,83 @@ export class TaskLifecycleService {
     });
   }
 
+  async #completePublishedDelivery({ taskId, operationId, confirmCleanup, expectedCleanupToken, publishedDelivery, originalArguments, operational = false, completedOperationRequestId = null }) {
+    requiredMethod(this.taskGitWorkspaces, "publishedDeliveryPreviewOwned");
+    const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
+    if (outcome?.taskId === taskId && outcome.kind === "complete" && outcome.result?.evidence?.publishedDelivery) return outcome.result.result;
+    return this.#withLock(taskId, async lease => {
+      const task = this.#task(taskId), resumed = this.taskBoard.lifecycleTransition?.(operationId);
+      if ((!operational && task.status === "done")
+          || !["new", "in_progress", "blocked", ...(operational ? ["done"] : [])].includes(task.workflowStatus)) throw Error("Published cleanup requires a completed operational card or open source outside Test/Await");
+      const prior = resumed?.evidence;
+      if (resumed && (resumed.taskId !== taskId || resumed.kind !== "complete" || resumed.phase !== "cleanup"
+          || resumed.expectedRevision !== task.revision || !prior?.publishedDelivery
+          || JSON.stringify(prior.originalArguments) !== JSON.stringify(originalArguments))) throw Error("Original direct cleanup admission differs");
+      let operationalAuthority = null;
+      if (completedOperationRequestId) {
+        const completed = this.taskBoard.lifecycleOutcome(completedOperationRequestId);
+        const proof = completed?.result?.evidence?.releaseService;
+        if (!operational || task.status !== "done" || completed?.taskId !== taskId || completed.kind !== "complete"
+            || completed.result?.result?.status !== "done" || proof?.mode !== "published_release_service"
+            || proof.source?.taskId !== taskId || proof.preserving?.length !== 1) throw Error("Historical service cleanup requires its canonical closed outcome");
+        operationalAuthority = { completedOperation: { operationId: completedOperationRequestId,
+          sha256: createHash("sha256").update(JSON.stringify(completed)).digest("hex") },
+          requiredHead: proof.preserving[0].headCommit, publication: { root: proof.preserving[0].projectRoot,
+            revision: proof.publishedRevision, generation: proof.publicationGeneration } };
+      }
+      const cleanup = await this.taskGitWorkspaces.publishedDeliveryPreviewOwned({ task, input: publishedDelivery, lease,
+        admitted: prior?.publishedDelivery ?? null, operational, operationalAuthority });
+      const preview = confirmation(task, "complete", cleanup);
+      preview.warning = "Close this exact historically published Task and remove only the listed clean managed artifacts; publication history and workflow are preserved.";
+      if (confirmCleanup !== true) {
+        if (resumed) throw Error("Cleanup already admitted; reconcile the original confirmed operation");
+        return preview;
+      }
+      const token = prior?.confirmationToken ?? preview.cleanupToken;
+      if (expectedCleanupToken !== token) throw Error("Direct publication cleanup confirmation is stale");
+      if (prior) {
+        const before = prior.cleanup;
+        const pin = r => JSON.stringify({ ...r, branchHeadCommit: null });
+        if (!before || JSON.stringify(before.publishedDelivery) !== JSON.stringify(cleanup.publishedDelivery)
+            || cleanup.workspaces.some(w => !before.workspaces.some(p => JSON.stringify(w) === JSON.stringify(p)))
+            || cleanup.deleting.some(d => !before.deleting.some(p => JSON.stringify(d) === JSON.stringify(p)))
+            || [...cleanup.gitReferences, ...(cleanup.publishedCleanupReferences ?? [])].some(r =>
+              ![...before.gitReferences, ...(before.publishedCleanupReferences ?? [])].some(p => pin(r) === pin(p)))) {
+          throw Error("Remaining cleanup artifacts differ from the admitted original");
+        }
+      }
+      if (cleanup.dirty || cleanup.unpublished.length || cleanup.retainedIgnored.length) throw Error("Direct published source has unpublished or local data");
+      await this.#assertOwned(lease);
+      const evidence = prior ?? { publishedDelivery: cleanup.publishedDelivery, cleanup,
+        confirmationToken: token, originalArguments };
+      if (!resumed) await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+        id: taskId, operationId, kind: "complete", expectedRevision: task.revision, evidence,
+      }), operationId);
+      // The original durable cleanup intent survives partial Git deletion or a
+      // lost reply. No failure path manufactures a new publication or Test ref.
+      await this.taskGitWorkspaces.cleanupOwned(taskId, { lease, allowDirty: false, requirePublished: true,
+        gitReferences: task.gitReferences, expectedPreview: cleanup, publishedDelivery: cleanup.publishedDelivery });
+      await this.#assertOwned(lease);
+      return this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+        receiptEvidence: evidence, preserveCompletedTask: operational && task.status === "done",
+      }), operationId);
+    });
+  }
+
   async complete({
     taskId, operationId, confirmCleanup = false, expectedCleanupToken = null,
-    absorbedIntoTaskId = null, absorptionMode = null, completionMode = null,
+    absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, originalArguments = null, completedOperationRequestId = null,
   } = {}) {
-    if (completionMode != null && completionMode !== "published_release_service") {
+    if (completionMode != null && !["published_release_service", "published_delivery", "operational"].includes(completionMode)) {
       throw new Error("Unsupported Task completion mode");
     }
     if (completionMode && (absorptionMode || absorbedIntoTaskId)) {
       throw new Error("Release service completion cannot absorb another Task");
     }
+    if (publishedDelivery && completionMode !== "published_delivery") throw Error("Direct publication evidence requires its explicit completion mode");
+    if (completedOperationRequestId && completionMode !== "operational") throw Error("Historical completion proof requires operational cleanup mode");
+    if (["published_delivery", "operational"].includes(completionMode)) return this.#completePublishedDelivery({ taskId, operationId,
+      confirmCleanup, expectedCleanupToken, publishedDelivery, originalArguments, operational: completionMode === "operational", completedOperationRequestId });
     if (completionMode === "published_release_service") return this.#completePublishedReleaseService({
       taskId, operationId, confirmCleanup, expectedCleanupToken,
     });
@@ -1982,6 +2114,42 @@ export class TaskLifecycleService {
         await this.#failWhileOwned(lease, operationId, error);
         throw error;
       }
+    });
+  }
+
+  async resumeConfirmedDelete({ taskId, operationId, priorPreview, originalArguments, preservedFiles, previewRequestId }) {
+    return this.#withLock(taskId, async lease => {
+      let task, authority, cleanup, originalRevision;
+      try {
+        task = this.#task(taskId);
+        const transition = this.taskBoard.lifecycleTransition(operationId), prior = transition?.priorTask;
+        if (!transition || transition.kind !== "delete" || !["failed", "cleanup"].includes(transition.phase)
+            || prior?.revision !== priorPreview.task.revision || task.revision !== prior.revision
+            || ["workspaceId", "streamId", "workflowStatus", "status"].some(k => task[k] !== prior[k])
+            || JSON.stringify(task.gitReferences) !== JSON.stringify(prior.gitReferences)
+            || JSON.stringify(task.gitAdoptions) !== JSON.stringify(prior.gitAdoptions)) throw Error("Original Delete Task/CAS changed");
+        originalRevision = prior.revision;
+        authority = { previewRequestId, originalArguments, preservedFiles, preview: priorPreview.preview };
+        const saved = transition.evidence?.cleanupForward?.authority;
+        if (saved && JSON.stringify(saved) !== JSON.stringify(authority)) throw Error("Original Delete forward authority changed");
+        cleanup = await this.taskGitWorkspaces.confirmedDeleteResumePreviewOwned({ task, prior: priorPreview.preview, preservedFiles, lease });
+        await this.#assertOwned(lease);
+      } catch (error) {
+        // This live owner has not entered continuation admission or native
+        // deletion. Refuse only this reconciliation; the old UNKNOWN remains.
+        throw new TaskOperationReconciliationRefusedError(error);
+      }
+      await this.#mutation(() => this.taskBoard.resumeConfirmedDeleteTransition(operationId, {
+        taskId, expectedRevision: task.revision, originalRevision, evidence: { authority },
+      }), operationId);
+      await this.taskGitWorkspaces.cleanupOwned(taskId, { lease, allowDirty: true, requirePublished: false,
+        gitReferences: cleanup.gitReferences, squashAbsorbedBy: task.squashAbsorbedBy, expectedPreview: cleanup,
+        preservation: { workspaces: priorPreview.preview.workspaces, files: preservedFiles } });
+      await this.#assertOwned(lease);
+      const result = await this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+        deleteTask: true, receiptEvidence: { ...this.taskBoard.lifecycleTransition(operationId).evidence, cleanup },
+      }), operationId);
+      return { deleted: true, task: result.task, cleanup };
     });
   }
 

@@ -80,6 +80,9 @@ export class DeferredInputPresentationService {
         ...base,
         deferred: false,
         cancelled: true,
+        ...(started?.cancellationScope === "future-hub-dispatch" ? {
+          cancellationScope: "future-hub-dispatch", providerEffectOutcome: "unknown",
+        } : {}),
         message: "Сохранённое сообщение отменено.",
       });
     }

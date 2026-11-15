@@ -11,6 +11,12 @@ function cleanIdentity(value, limit = MAX_IDENTITY_LENGTH) {
   return text && text.length <= limit && !/[\u0000-\u001f\u007f]/u.test(text) ? text : "";
 }
 
+// Only an actual provider item ID may establish a trace surface's source.
+// A group label, sequence, current response or timestamp is not such an ID.
+export function normalizedResponseAnnotationItemId(value) {
+  return typeof value === "string" ? cleanIdentity(value) : "";
+}
+
 export function responseAnnotationSourceMessageKey({
   provider,
   threadId,

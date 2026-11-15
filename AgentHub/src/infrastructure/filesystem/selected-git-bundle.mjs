@@ -4,20 +4,35 @@ import path from "node:path";
 // Documented gitformat-bundle header + Git's complete pack stream. The caller
 // owns the output descriptor before Git starts; no temporary bare repository,
 // source ref mutation, pack buffering or recursive scratch deletion is needed.
-export async function createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt, mainCommit = null }) {
+export async function createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt, mainCommit = null,
+  prerequisites = [], verifyPrerequisites = null }) {
   const commits = [...new Set(inputs)];
   if (!commits.length || commits.length > 1024 || commits.some(c => !/^[a-f0-9]{40,64}$/u.test(c))) {
     throw new TypeError("Selected Git transport requires bounded exact commit identities");
   }
   if (mainCommit !== null && !commits.includes(mainCommit)) throw new TypeError("Transport main must be an exact selected input");
+  const required = [...new Set(prerequisites)];
+  if (required.some(c => !/^[a-f0-9]{40,64}$/u.test(c))
+      || required.length && typeof verifyPrerequisites !== "function") {
+    throw new TypeError("Incremental transport requires exact verified receiver prerequisites");
+  }
   if (path.dirname(path.resolve(bundle)) !== path.resolve(root)) throw new Error("Native transport escaped its owner root");
   const parent = await lstat(root, { bigint: true });
   if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Native transport root is not plain");
   const format = String(await gitAt(sourceRoot, ["rev-parse", "--show-object-format"]));
-  if (!["sha1", "sha256"].includes(format) || commits.some(c => c.length !== (format === "sha1" ? 40 : 64))) {
+  if (!["sha1", "sha256"].includes(format) || [...commits, ...required].some(c => c.length !== (format === "sha1" ? 40 : 64))) {
     throw new Error("Native transport object format changed");
   }
+  if (required.length) {
+    await verifyPrerequisites();
+    const types = String(await gitAt(sourceRoot, ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+      { input: required.join("\n") + "\n" })).split(/\r?\n/u);
+    if (types.length !== required.length || types.some((line, i) => line !== `${required[i]} commit`)) {
+      throw new Error("Incremental transport source prerequisites changed");
+    }
+  }
   const header = Buffer.from([...(format === "sha1" ? ["# v2 git bundle"] : ["# v3 git bundle", "@object-format=sha256"]),
+    ...required.map(commit => `-${commit} receiver-owned history`),
     ...(mainCommit === null ? [] : [`${mainCommit} refs/heads/main`]),
     ...commits.map((commit, i) => `${commit} refs/heads/selected-${i}`), "", ""].join("\n"));
   const handle = await open(bundle, "wx+").catch(error => {
@@ -28,9 +43,10 @@ export async function createSelectedGitBundle({ root, sourceRoot, bundle, inputs
     const created = await handle.stat({ bigint: true });
     await handle.writeFile(header);
     await gitAt(sourceRoot, ["pack-objects", "--stdout", "--revs"], {
-      input: `${commits.join("\n")}\n`, stdoutFd: handle.fd,
+      input: [...commits, ...required.map(c => `^${c}`)].join("\n") + "\n", stdoutFd: handle.fd,
     });
     await handle.sync();
+    if (required.length) await verifyPrerequisites();
     const marker = Buffer.alloc(4);
     await handle.read(marker, 0, 4, header.length);
     const [held, named, currentParent] = await Promise.all([handle.stat({ bigint: true }),

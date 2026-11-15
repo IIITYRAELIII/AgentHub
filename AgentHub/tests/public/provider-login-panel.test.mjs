@@ -17,6 +17,45 @@ async function panelApi() {
 
 const CODE = "Kc0de-AbC_123#sTaTe-456_xyz";
 
+test("hub410 actual client login handlers render compact replies before binding URLs without snapshot reads", async () => {
+  const handlers = new Map(), calls = [];
+  const tasks = [{ id: "unrelated-task" }], previous = { version: "same-version", tasks, server: { process: { pid: 42 }, components: ["retained"], accounts: [] } };
+  const accounts = [{ provider: "codex", status: "pending", attemptId: "1" }];
+  const context = {
+    Array, String, handlers, lastSnapshot: previous, vscode: null,
+    window: { open: (url, target, features) => calls.push(["open", url, target, features]) },
+    agentHub: {
+      on: (name, handler) => handlers.set(name, handler), toast() {},
+      setServerStatus: server => { context.renderedServer = server; calls.push(["render", server.accounts]); },
+      setProviderLoginUrl: (provider, local) => {
+        assert.equal(context.renderedServer.accounts, accounts);
+        calls.push(["bind", provider, local]);
+      },
+    },
+    runAction: action => action(),
+    control: async (action, params) => {
+      assert.notEqual(action, "snapshot", "login replies must not depend on another large IPC read");
+      calls.push([action, params]);
+      return { accepted: true, accounts, login: { provider: params.provider, attemptId: "1", authUrl: "https://auth.example/synthetic" } };
+    },
+  };
+  const first = hubClient.indexOf("function applyProviderLoginReply(");
+  const last = hubClient.indexOf('agentHub.on("server:config-update"', first);
+  assert.ok(first >= 0 && last > first);
+  vm.runInNewContext(hubClient.slice(first, last), context);
+  await handlers.get("server:provider-login")({ provider: "codex" });
+  assert.ok(calls.findIndex(call => call[0] === "render") < calls.findIndex(call => call[0] === "bind"));
+  assert.equal(context.lastSnapshot.tasks, tasks);
+  assert.equal(context.lastSnapshot.server.process, previous.server.process);
+  assert.deepEqual(previous.server.accounts, []);
+  assert.equal(calls.filter(call => call[0] === "open").length, 1);
+  await handlers.get("server:provider-login-code")({ provider: "claude", attemptId: "1", code: CODE });
+  await handlers.get("server:provider-login-cancel")({ provider: "claude" });
+  assert.equal(calls.filter(call => call[0] === "render").length, 3);
+  assert.equal(calls.filter(call => call[0] === "open").length, 1);
+  assert.equal(calls.filter(call => call[0] === "submit-provider-login-code")[0][1].code, CODE);
+});
+
 test("current account replaces attempt history and account switches change the render key", async () => {
   const panel = await panelApi();
   const account = { provider: "codex", status: "idle", currentAccount: { state: "signed-in", email: "one@example.test", method: "chatgpt" } };
@@ -126,11 +165,6 @@ test("the page keeps the code local: memory-only draft, cleared on submit, never
   assert.match(app, /const providerLoginCodeDrafts = new Map\(\);/u);
   assert.match(app, /providerLoginCodeDrafts\.delete\(view\.provider\);\s*input\.value = "";/u);
   assert.match(app, /if \(!panel\.retainLocal\(account, providerLoginLocal\.get\(account\?\.provider\)\)\) \{/u);
-  assert.match(
-    hubClient,
-    /control\("start-provider-login", \{ provider \}\);[\s\S]*?applySnapshot\(result\.snapshot\);[\s\S]*?agentHub\.setProviderLoginUrl\?\.\(provider,/u,
-    "the start response binds its attempt only after the new snapshot is applied",
-  );
   assert.doesNotMatch(app, /localStorage[^\n]*providerLogin|sessionStorage[^\n]*providerLogin/u);
   assert.match(hubClient, /control\("submit-provider-login-code", \{ provider, attemptId, code \}\)/u);
   assert.match(hubClient, /if \(provider === "codex" && login\?\.authUrl\) await openProviderLoginPage\(login\.authUrl\);/u);

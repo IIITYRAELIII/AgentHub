@@ -13,12 +13,30 @@ import { usageTurnFactId } from "../../domain/usage-facts.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
 import { configureTaskTurnProjection } from "./task-turn-projection.mjs";
+import { claimCustodyNamespaces, withClaimCustodySqlPermit } from "./claim-custody-fence.mjs";
 
 const SCHEMA_VERSION = 3;
 const LEDGER_VERSION = 9;
 const LEGACY_IMPORT_KEY = "work-log-usage-v1";
 const ACCOUNT_USAGE_PROJECTION_VERSION_KEY = "account_usage_projection_version";
 const JOURNAL_DAY_ORDER = "substr(date, 7, 4), substr(date, 4, 2), substr(date, 1, 2)";
+
+// Only the canonical journal_records INSERT/UPDATE statements use this join.
+// Their existing triggers derive Task history from exact bindings, never from
+// record JSON. Reuse the transaction-local permit for that derived index; no
+// Task mutation, arbitrary SQL, DDL or external callback receives authority.
+function journalRecordStatement(database, sql) {
+  const statement = database.prepare(sql);
+  return { run(...args) {
+    const states = claimCustodyNamespaces(database);
+    const visit = i => i === states.length ? statement.run(...args)
+      : withClaimCustodySqlPermit(database, {
+        taskId: states[i].taskId, epoch: states[i].namespace.epoch,
+        fenceRequestId: states[i].requestId, operationId: "journal-task-turn-projection",
+      }, () => visit(i + 1));
+    return visit(0);
+  } };
+}
 
 function configure(database) {
   database.exec(`
@@ -125,14 +143,16 @@ function configure(database) {
       const migrationRevision = Math.max(1, Number(database.prepare(
         "SELECT value FROM journal_store_meta WHERE key = 'revision'",
       ).get()?.value) || 0);
-      database.prepare("UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
+      journalRecordStatement(database, "UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
       database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'revision'")
         .run(String(migrationRevision));
     }
-    database.exec(`
+    journalRecordStatement(database, `
       UPDATE journal_records
       SET observed_at_ms = completed_at_ms
-      WHERE observed_at_ms IS NULL;
+      WHERE observed_at_ms IS NULL
+    `).run();
+    database.exec(`
       CREATE INDEX IF NOT EXISTS journal_records_observed_idx
         ON journal_records(observed_at_ms, provider, thread_id, turn_id);
       CREATE INDEX IF NOT EXISTS journal_records_changed_idx
@@ -485,7 +505,7 @@ function writeProjection(database, payload, {
 }
 
 function insertRecordStatement(database) {
-  return database.prepare(`
+  return journalRecordStatement(database, `
     INSERT INTO journal_records
       (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, observed_at_ms,
        changed_revision, record_json)
@@ -758,21 +778,34 @@ export class JournalDatabase {
       const readRecord = database.prepare(`SELECT record_json FROM journal_records
         WHERE provider = ? AND thread_id = ? AND turn_id = ?`);
       let accountingRecordsRead = 0;
-      // Scan identities/revisions only. A cold worker reads each source once;
-      // later calls read changed payloads. The identity set observes deletions
+      let accountingPointReads = 0;
+      const accountingBulkRead = this.#projectionAccounting.size === 0;
+      // A cold worker reads each source once; later calls scan identities and
+      // revisions, reading only changed payloads. The identity set observes deletions
       // even if another projector already cleared the durable dirty dates.
+      // Cold startup needs every accounting record. One sequential payload scan
+      // avoids an identity scan plus one point query per retained turn. Warm
+      // calls still read payloads only for changed identities.
       for (const row of database.prepare(`SELECT provider, thread_id, turn_id, changed_revision
-        FROM journal_records INDEXED BY journal_records_changed_idx
+          ${accountingBulkRead ? ", record_json" : ""}
+        FROM journal_records ${accountingBulkRead ? "" : "INDEXED BY journal_records_changed_idx"}
         ORDER BY provider, thread_id, turn_id`).iterate()) {
         const key = ledgerKey({ provider: row.provider, threadId: row.thread_id, turnId: row.turn_id });
         retained.add(key);
         let cached = this.#projectionAccounting.get(key);
         if (!cached || cached.revision !== row.changed_revision) {
           const parsed = {};
-          insert({ ...row, ...readRecord.get(row.provider, row.thread_id, row.turn_id) }, parsed);
+          const sourceRow = accountingBulkRead ? row : {
+            ...row, ...readRecord.get(row.provider, row.thread_id, row.turn_id),
+          };
+          if (!accountingBulkRead) accountingPointReads += 1;
+          insert(sourceRow, parsed);
           cached = { revision: row.changed_revision, record: parsed[key] ? accountingProjector(parsed[key]) : null };
           this.#projectionAccounting.set(key, cached);
           accountingRecordsRead += 1;
+          // On a cold full rebuild this is also the exact requested source
+          // payload. Do not fetch and parse it a second time below.
+          if (full && accountingBulkRead && parsed[key]) turns[key] = parsed[key];
         }
         if (cached.record) accounting[key] = cached.record;
       }
@@ -790,9 +823,9 @@ export class JournalDatabase {
         if (source?.openDate) dirtyDates.add(source.openDate);
         if (openDate) dirtyDates.add(openDate);
       }
-      if (full) {
+      if (full && !accountingBulkRead) {
         for (const row of database.prepare("SELECT * FROM journal_records ORDER BY provider, thread_id, turn_id").iterate()) insert(row, turns);
-      } else {
+      } else if (!full) {
         const readDay = database.prepare(`SELECT * FROM journal_records
           WHERE completed_at_ms >= ? AND completed_at_ms < ? ORDER BY provider, thread_id, turn_id`);
         for (const date of dirtyDates) {
@@ -801,7 +834,8 @@ export class JournalDatabase {
         }
       }
       database.exec("COMMIT");
-      return { revision, dirtyDates: [...dirtyDates], turns, accounting, accountingRecordsRead, source, current, full, openDate };
+      return { revision, dirtyDates: [...dirtyDates], turns, accounting, accountingRecordsRead,
+        accountingPointReads, accountingBulkRead, source, current, full, openDate };
     } catch (error) {
       database.exec("ROLLBACK");
       throw error;
@@ -1012,34 +1046,63 @@ export class JournalDatabase {
     return value ? JSON.parse(value) : null;
   }
 
-  async upsertRecords(records, { expectedRevision = null } = {}) {
-    const values = Array.isArray(records)
-      ? records.map((record) => ["", record])
-      : Object.entries(records ?? {});
-    const rows = values.map(([key, record]) => recordRow(record, key)).filter(Boolean);
-    if (!rows.length) return { upserted: 0, revision: await this.currentRevision() };
-    const database = await this.#open();
-    database.exec("BEGIN IMMEDIATE");
-    let revision;
+  async upsertRecords(records, { expectedRevision = null, recordMutationTiming = null } = {}) {
+    const timing = { operation: "journal-record-upsert", rows: 0, rowPreparationMs: 0, beginMs: 0,
+      transactionMs: 0, lockAcquiredAtMs: null, lockReleasedAtMs: null, outcome: "preparation-refused" };
+    const preparationStarted = performance.now();
+    let transactionStarted = null;
     try {
-      const currentRevision = revisionOf(database);
-      if (expectedRevision !== null && currentRevision !== Number(expectedRevision)) {
-        const error = new Error("Journal records changed before the metadata update");
-        error.code = "JOURNAL_REVISION_CONFLICT";
-        throw error;
+      const values = Array.isArray(records)
+        ? records.map((record) => ["", record])
+        : Object.entries(records ?? {});
+      const rows = values.map(([key, record]) => recordRow(record, key)).filter(Boolean);
+      timing.rows = rows.length;
+      timing.rowPreparationMs = performance.now() - preparationStarted;
+      if (!rows.length) {
+        timing.outcome = "unchanged";
+        return { upserted: 0, revision: await this.currentRevision() };
       }
-      const nextRevision = currentRevision + 1;
-      const insert = insertRecordStatement(database);
-      for (const row of rows) insertRow(insert, row, nextRevision);
-      revision = advanceRevision(database);
-      database.exec("COMMIT");
-    } catch (error) {
-      database.exec("ROLLBACK");
-      throw error;
+      const database = await this.#open();
+      timing.outcome = "begin-refused";
+      const beginStarted = performance.now();
+      try { database.exec("BEGIN IMMEDIATE"); }
+      finally { timing.beginMs = performance.now() - beginStarted; }
+      transactionStarted = performance.now();
+      timing.lockAcquiredAtMs = Date.now();
+      let revision;
+      try {
+        const currentRevision = revisionOf(database);
+        if (expectedRevision !== null && currentRevision !== Number(expectedRevision)) {
+          const error = new Error("Journal records changed before the metadata update");
+          error.code = "JOURNAL_REVISION_CONFLICT";
+          throw error;
+        }
+        const nextRevision = currentRevision + 1;
+        const insert = insertRecordStatement(database);
+        for (const row of rows) insertRow(insert, row, nextRevision);
+        revision = advanceRevision(database);
+        database.exec("COMMIT");
+        timing.lockReleasedAtMs = Date.now();
+        timing.outcome = "committed";
+      } catch (error) {
+        timing.outcome = "rollback-refused";
+        database.exec("ROLLBACK");
+        timing.lockReleasedAtMs = Date.now();
+        timing.outcome = "rolled-back";
+        throw error;
+      } finally {
+        timing.transactionMs = performance.now() - transactionStarted;
+        transactionStarted = null;
+      }
+      const result = { upserted: rows.length, revision };
+      this.#changed({ type: "ledger", ...result });
+      return result;
+    } finally {
+      if (typeof recordMutationTiming === "function") {
+        try { recordMutationTiming({ ...timing, finishedAtMs: Date.now() }); }
+        catch { /* Measurement failure cannot change SQL results or errors. */ }
+      }
     }
-    const result = { upserted: rows.length, revision };
-    this.#changed({ type: "ledger", ...result });
-    return result;
   }
 
   async deleteRecords(identities) {

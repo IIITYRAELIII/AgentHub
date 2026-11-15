@@ -7,6 +7,9 @@ function serviceFixture({ allowed = false, android = false, snapshot = null, cur
   const snapshots = [];
   const reads = [];
   const service = new DesktopReadModelService({
+    resolveReadTask: ({ provider, threadId }) => snapshot?.tasks?.find((task) => (
+      task.provider === provider && task.threadId === threadId
+    )),
     snapshot: ({ projectTask = (task) => task, ...params }) => {
       snapshots.push(params);
       return snapshot?.tasks ? { ...snapshot, tasks: snapshot.tasks.map(projectTask) } : snapshot ?? params;

@@ -56,11 +56,23 @@ See the [operator guide](AgentHub/README.md) and
 
 ## Update and rollback
 
-Ready-package updates must use the existing runtime installation owner in an
-agreed stopped-writer window. They preserve private configuration and data and
-retain the prior package for rollback. A rollback changes executable release
-selection; it does not undo database migrations or restore user data. Keep a
-verified offline backup when a release's migration contract requires it.
+Use the target release's checksum-verified versioned `install_release.py` with
+`--prepare-update`, an exact stable `--release`, one original `--operation-id`,
+the installed private runtime root and a separate private scratch directory.
+Run it from a same-user interactive terminal outside Hub's process Job; no
+Utilities, Git, npm or source build is required. Public 2.0.4 needs one explicit
+manual stop of the reported old cohort only after arming; a capable 2.1 runtime
+uses its authenticated graceful handoff. Both verify stopped writers, take a
+consistent backup, invoke the unchanged installer and require exact replacement
+readiness. See the [update commands and limits](AgentHub/distribution/INSTALL.md).
+
+After interruption, `--update-status` reads that same original; UNKNOWN never
+authorizes a second launch, new ID or automatic rollback. Retain receipts,
+scratch and backup. Ordinary install/rollback without `--prepare-update` remains
+stopped-only and never starts Hub. Updates preserve private configuration/data
+and retain the prior package; code-only rollback does not undo migrations,
+restore data or settle UNKNOWN. Controlled tests are not actual public-update
+acceptance.
 
 The journal sync endpoint is a private `usageSyncServerUrl` setting, editable on
 the Server page. Save it and use the ordinary restart flow to apply it. A blank

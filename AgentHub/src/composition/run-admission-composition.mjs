@@ -2,6 +2,7 @@ import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effect
 import {
   deferredInputMatchesRun,
   pendingInputKeyboard,
+  streamMessageDelivery,
 } from "../domain/deferred-input.mjs";
 import { DeferredInputController } from "../application/deferred-input-controller.mjs";
 import { activeTurnNotSteerable } from "../application/run-coordinator.mjs";
@@ -9,6 +10,8 @@ import { prependStreamHandoff } from "../domain/stream-handoff.mjs";
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { markProviderTurnAccepted } from "../domain/task-runs.mjs";
 import { messageCommandMatchesRun } from "../domain/message-command-expiry.mjs";
+import { verifiedLegacyInterstreamSteer } from "../domain/interstream-message.mjs";
+import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
 
 function explicitSkillCandidatesFromInput(input) {
   const text = typeof input === "string"
@@ -74,6 +77,7 @@ export function createRunAdmissionComposition({
   logger = console,
   commandTrace = null,
   runtimeStateStore = null,
+  workspaceCatalogStore = null,
 }) {
   const removeRuntimeFile = createRuntimeFileRemoval(config);
   if (typeof stageLaunchAdmission !== "function") {
@@ -252,25 +256,60 @@ export function createRunAdmissionComposition({
       modelId: item.modelId,
       reasoningId: item.reasoningId,
       collaborationMode: item.collaborationMode,
+      ...(streamMessageDelivery(item) ? item.deliveryTarget : {}),
       steerTargetRunId: item.steerTargetRunId,
       steerTargetTurnId: item.steerTargetTurnId,
       ...(item.messageOrigin ? { messageOrigin: item.messageOrigin } : {}),
     };
   }
 
+  function settledDeferredInput(item) {
+    const record = runtimeStateStore?.messageCommand(item.clientUserMessageId);
+    if (record?.state === "cancelled") return { cancelled: true };
+    for (const receipt of [record?.result, record?.receipt?.result]) {
+      if ((receipt?.providerAccepted === true || receipt?.steered === true) && receipt?.turnId) return receipt;
+    }
+    if (["completed", "failed"].includes(record?.state)) return { cancelled: true };
+    return null;
+  }
+  runCoordinator.settledDeferredInput = settledDeferredInput;
+  runCoordinator.validateDeferredTarget = (item) => {
+    if (!workspaceCatalogStore || !streamMessageDelivery(item)) return;
+    const target = deferredTarget(item);
+    const current = workspaceCatalogStore.activeThread(item.streamId);
+    if (!workspaceCatalogStore.stream(item.streamId) || !current
+      || current.threadId !== target.threadId || current.provider !== target.provider
+      || current.streamId !== item.streamId) {
+      throw Object.assign(new Error("Stream delivery binding changed before provider dispatch"), {
+        code: "ERR_STREAM_BINDING_CHANGED", deliveryOutcome: "not-sent",
+      });
+    }
+  };
+
+  function currentStreamTarget(item) {
+    if (!workspaceCatalogStore) return item;
+    const stream = workspaceCatalogStore.stream(item.streamId);
+    const thread = workspaceCatalogStore.activeThread(item.streamId);
+    if (!stream || !thread || thread.streamId !== item.streamId) return null;
+    return { ...item, provider: thread.provider, threadId: thread.threadId,
+      projectRoot: thread.projectRoot };
+  }
+
   const deferredInputController = new DeferredInputController({
     pendingInputs,
     queuedInputs,
+    currentStreamTarget,
+    recoverStreamMessageMode: (item) => {
+      const requestId = String(item.messageOrigin?.requestId ?? "").trim();
+      if (!requestId || item.clientUserMessageId !== `mcp:${requestId}`) return null;
+      return verifiedLegacyInterstreamSteer(item, workspaceCatalogStore?.mcpOperation?.(requestId)) ? "steer" : null;
+    },
     findStarted: async (item) => {
-      const run = runCoordinator.activeRun({
-        provider: item.provider,
-        projectRoot: item.projectRoot,
-        threadId: item.threadId,
-      });
+      const run = runCoordinator.activeRun(deferredTarget(item));
       if (deferredInputMatchesRun(item, run)) return run;
       if (!item.dispatchingAt || !item.clientUserMessageId) return null;
       const exactTurn = await agentProviders.call(
-        item.provider,
+        deferredTarget(item).provider,
         "findTurnByClientMessage",
         deferredTarget(item),
         item.clientUserMessageId,
@@ -303,9 +342,12 @@ export function createRunAdmissionComposition({
       return adopted;
     },
     findSteered: async (item) => {
-      if (!item.dispatchingAt || !item.clientUserMessageId) return null;
+      const settled = settledDeferredInput(item);
+      if (settled) return settled;
+      if ((!item.dispatchingAt && item.lastErrorCode !== "ERR_PROVIDER_STEER_UNCONFIRMED")
+        || !item.clientUserMessageId) return null;
       const exactTurn = await agentProviders.call(
-        item.provider,
+        deferredTarget(item).provider,
         "findTurnByClientMessage",
         deferredTarget(item),
         item.clientUserMessageId,
@@ -320,14 +362,21 @@ export function createRunAdmissionComposition({
         accepted: true,
         steered: true,
         runId: run?.id ?? null,
-        threadId: item.threadId,
+        threadId: deferredTarget(item).threadId,
         turnId,
         clientUserMessageId: item.clientUserMessageId,
       };
     },
-    isSteerDispatchBlocked: (item) => Boolean(
-      runCoordinator.admissionBarrier(deferredTarget(item)),
-    ),
+    isSteerDispatchBlocked: (item) => {
+      const target = deferredTarget(item);
+      const run = runCoordinator.activeRun(target);
+      // Provider-internal compaction owns this existing turn, not a new launch.
+      // Explicit Hub maintenance and actual runtime stopping still fence it.
+      return runCoordinator.admissionBarrier(target, {
+        exactManagedSteer: streamMessageDelivery(item) && Boolean(run?.turnId)
+          && run.executionOwner === TASK_EXECUTION_OWNERS.HUB,
+      });
+    },
     steer: async (item) => {
       const target = deferredTarget(item);
       const existingRun = runCoordinator.activeRun(target);
@@ -340,21 +389,32 @@ export function createRunAdmissionComposition({
           input: item.input,
           target,
           clientUserMessageId: item.clientUserMessageId,
+          deferredInput: item,
         });
       } catch (error) {
-        if (activeTurnNotSteerable(error)) return null;
+        if (activeTurnNotSteerable(error) || error?.code === "ERR_STREAM_BINDING_CHANGED") return null;
         throw error;
       }
     },
     isBlocked: async (item) => {
       const target = deferredTarget(item);
       const occupancy = await runCoordinator.deferredOccupancy(target);
-      return Boolean(runCoordinator.admissionBarrier(target)
-        || occupancy.occupied
-        || await runConflictPolicy.check(target));
+      const barrier = runCoordinator.admissionBarrier(target);
+      if (barrier) { item.waitReason = barrier; return true; }
+      if (occupancy.occupied) {
+        item.waitReason = occupancy.waitReason ?? "provider-temporarily-unavailable";
+        return true;
+      }
+      if (await runConflictPolicy.check(target)) { item.waitReason = "repository-conflict"; return true; }
+      delete item.waitReason;
+      return false;
     },
     occupancy: (item) => runCoordinator.deferredOccupancy(deferredTarget(item)),
-    laneKey: (item) => runCoordinator.taskLane(deferredTarget(item)),
+    laneKey: (item) => runCoordinator.taskLane(
+      streamMessageDelivery(item) && !item.dispatchingAt
+        && item.lastErrorCode !== "ERR_PROVIDER_STEER_UNCONFIRMED"
+        ? currentStreamTarget(item) ?? deferredTarget(item) : deferredTarget(item),
+    ),
     // The queued item remains durable while RunCoordinator creates and persists
     // the exact managed run before invoking the provider launch operation.
     start: (item) => runCoordinator.startDeferred(item),

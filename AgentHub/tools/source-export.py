@@ -14,6 +14,8 @@ import subprocess
 from pathlib import Path, PurePosixPath
 
 
+WINDOWS_GIT_ARGS = json.loads((Path(__file__).resolve().parents[1] / "src/infrastructure/filesystem/git-invocation-policy.json").read_text(encoding="utf-8"))["win32"] if os.name == "nt" else []
+
 PREFIXES = ("AgentHub/", "TelegramIntegration/")
 EXCLUDED_PARTS = {"Bugs", "WIP", "node_modules", "__pycache__"}
 EXCLUDED_ROOT_PARTS = {"data", "releases", "runtime", "models"}
@@ -31,7 +33,7 @@ COMPILED = {key: re.compile(value, re.I) for key, value in PATTERNS.items()}
 
 
 def git(root: Path, *args: str, data: bytes | None = None) -> bytes:
-    return subprocess.run(["git", "--no-optional-locks", "--no-replace-objects", "-C", str(root), *args],
+    return subprocess.run(["git", *WINDOWS_GIT_ARGS, "--no-optional-locks", "--no-replace-objects", "-C", str(root), *args],
                           input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, env=git_environment()).stdout
 
 
@@ -84,7 +86,7 @@ def projected_path(raw: bytes) -> bytes | None:
 
 class Objects:
     def __init__(self, root: Path):
-        self.process = subprocess.Popen(["git", "--no-replace-objects", "-C", str(root), "cat-file", "--batch"],
+        self.process = subprocess.Popen(["git", *WINDOWS_GIT_ARGS, "--no-replace-objects", "-C", str(root), "cat-file", "--batch"],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=git_environment())
 
     def get(self, oid: bytes) -> tuple[bytes, bytes]:
@@ -120,7 +122,7 @@ def export_commits(source: Path, pin: str):
         raise ValueError("An exact SHA-1 commit is required")
     if git(source, "rev-parse", f"{pin}^{{commit}}").strip().decode() != pin:
         raise ValueError("Source pin mismatch")
-    process = subprocess.Popen(["git", "--no-replace-objects", "-C", str(source), "fast-export", "--no-data",
+    process = subprocess.Popen(["git", *WINDOWS_GIT_ARGS, "--no-replace-objects", "-C", str(source), "fast-export", "--no-data",
                                 "--full-tree", "--show-original-ids", "--use-done-feature", pin, "--",
                                 ":(top,literal)AgentHub", ":(top,literal)TelegramIntegration"],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=git_environment())
@@ -261,7 +263,7 @@ def extract(source: Path, plan_file: Path, decisions_file: Path, destination: Pa
     emitted = 0
     blob_mark = 1_000_000_000
     with errors.open("wb") as diagnostics:
-        importer = subprocess.Popen(["git", "-C", str(destination), "fast-import", "--quiet", "--done",
+        importer = subprocess.Popen(["git", *WINDOWS_GIT_ARGS, "-C", str(destination), "fast-import", "--quiet", "--done",
                                      "--export-marks="+str(marks)], stdin=subprocess.PIPE, stderr=diagnostics, env=git_environment())
         try:
             out = importer.stdin

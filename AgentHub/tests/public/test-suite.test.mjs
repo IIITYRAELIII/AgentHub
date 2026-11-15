@@ -355,7 +355,7 @@ test("each test process receives a disposable environment root", async () => {
         assert.equal(env.LOCALAPPDATA, env.TEMP);
         assert.equal(env.TEMP, env.TMP);
         for (const name of ["APPDATA", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"]) assert.equal(env[name], env.TEMP);
-        assert.equal(Object.hasOwn(env, "USERPROFILE"), false, "Windows OS identity stays intact for native browser KnownFolders");
+        assert.equal(env.USERPROFILE, process.env.USERPROFILE, "Windows OS identity stays intact for native browser KnownFolders");
         assert.ok(path.basename(env.LOCALAPPDATA).length <= 10);
         await access(env.LOCALAPPDATA);
         roots.push(env.LOCALAPPDATA);

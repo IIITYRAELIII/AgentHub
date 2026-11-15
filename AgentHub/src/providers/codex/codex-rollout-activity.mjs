@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { open, stat } from "node:fs/promises";
+import { normalizedResponseAnnotationItemId } from "../../domain/response-annotation-source.mjs";
 import {
   codexSubagentNotificationDetails,
   displayUserPrompt,
@@ -782,6 +783,7 @@ export function codexTraceEntry(entry, sequence = 0) {
   if (!reasoning && !activity) return null;
   return reasoning ? {
     id: `${payload.type === "message" ? "commentary" : "reasoning"}:${boundedTraceId(payload.id ?? sequence)}`,
+    ...(normalizedResponseAnnotationItemId(payload.id) ? { sourceItemId: normalizedResponseAnnotationItemId(payload.id) } : {}),
     reasoning, activities: [],
   } : { id: `activity:${activity.id}`, reasoning: "", activities: [activity] };
 }
@@ -812,9 +814,13 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
     metadata.activityGroupSequenceByTurnId.set(turnId, sequence + 1);
     const id = projected.id;
     const current = index.byId.get(id);
-    if (current) mutableGroup(current).reasoning = reasoning;
+    if (current) {
+      const group = mutableGroup(current);
+      group.reasoning = reasoning;
+      if (projected.sourceItemId) group.sourceItemId = projected.sourceItemId;
+    }
     else {
-      const group = { id, reasoning, activities: [] };
+      const group = { id, reasoning, activities: [], ...(projected.sourceItemId ? { sourceItemId: projected.sourceItemId } : {}) };
       groups.push(group);
       index.byId.set(id, group);
     }

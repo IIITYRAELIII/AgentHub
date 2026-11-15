@@ -1,3 +1,4 @@
+import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
 import { Worker } from "node:worker_threads";
 
 const workerUrl = new URL("./codex-rollout-activity-worker.mjs", import.meta.url);
@@ -25,6 +26,7 @@ function failWorker(activeWorker, error) {
 function ensureWorker() {
   if (worker) return worker;
   const activeWorker = new Worker(workerUrl);
+  observeRuntimeWorkerMemory("rollout", activeWorker);
   activeWorker.unref();
   activeWorker.on("message", (message) => {
     const requestId = Number(message?.requestId);

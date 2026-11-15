@@ -40,8 +40,20 @@ const localWorkspaceFilesAvailable = window.AgentHubResourceInteractions.localWo
 });
 function remoteWorkspaceFileBridgeAvailable() {
   return !vscode
-    && !localWorkspaceFilesAvailable
     && window.AgentHubBrowserDevice?.isPaired?.() === true;
+}
+
+async function hasLocalWorkspaceFileAccess() {
+  await localSessionReady;
+  if (vscode) return true;
+  if (!localWorkspaceFilesAvailable) return false;
+  // Loopback is a location, not proof of the browser's authorization. The
+  // existing session owner checks the protected cookie, including after reload.
+  // Its expected 401 is not expiry of the separate trusted-device session.
+  const response = await hubFetch("/api/local-session", { method: "HEAD", cache: "no-store" }, false);
+  if (response.status === 204) return true;
+  if ([401, 403, 404].includes(response.status)) return false;
+  throw new Error(`Не удалось проверить локальный доступ: HTTP ${response.status}`);
 }
 
 async function requestWorkspaceFileTransfer(localPath) {
@@ -128,6 +140,7 @@ let selectionTail = Promise.resolve();
 let initialRouteOpening = true;
 const historyRefreshAtByTask = new Map();
 let visibleStreamTaskIds = new Set();
+let retainedHistoryTaskIds = null;
 let boardTaskViewsSource = null;
 let boardTaskViewsCache = [];
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
@@ -153,6 +166,9 @@ const CONNECTION_LATENCY_PROBE_INTERVAL_MS = 5_000;
 const historyByTask = new Map();
 const historyWindowByTask = new Map();
 const historyPageByTask = new Map();
+// Reuse the existing four-column working-set size, without copying windows or
+// making it a limit on conversations. Explicit close still evicts its page.
+const RECENT_HISTORY_PAGE_COUNT = 4;
 const focusedHistoryWindowByTask = new Map();
 const historyCatchUpDeadlines = new Map();
 const historyCatchUpTurnIds = new Map();
@@ -448,6 +464,13 @@ function readSelectedTaskId() {
 
 function rememberSelectedTaskId(id) {
   selectedTaskId = String(id ?? "").trim();
+  const page = historyPageByTask.get(selectedTaskId);
+  if (page && sameIdentity(page.identity, taskIdentity(selectedTaskId))) {
+    page.reusable = true;
+    historyPageByTask.delete(selectedTaskId);
+    historyPageByTask.set(selectedTaskId, page);
+  }
+  releaseClosedTaskHistories();
   try {
     if (selectedTaskId) localStorage.setItem(selectedTaskKey, selectedTaskId);
     else localStorage.removeItem(selectedTaskKey);
@@ -888,6 +911,8 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
       uploadState: message.uploadState,
       admissionRetryAvailable: message.deliveryState === "unconfirmed" && Boolean(message.retryRequest),
       remoteCommandId: message.remoteCommandId,
+      cancellationAvailable: message.projectionAuthority === "canonical" && message.projectionState === "queued"
+        && message.providerAccepted !== true && Boolean(message.itemId),
       optimistic: !serverClientIds.has(message.clientUserMessageId),
     }));
 }
@@ -1034,6 +1059,11 @@ function applyMessageReceipts(snapshot) {
     }
     if (receipt?.cancelled === true) {
       outgoingMessages(stableTaskId).delete(clientUserMessageId);
+      commandTrace.record("ui-snapshot", "canonical-cancellation-applied", 0, clientUserMessageId, {
+        streamId, commandState: receipt.commandState, completedAt: receipt.completedAt,
+      });
+      window.requestAnimationFrame(() => commandTrace.record("ui-render", "canonical-cancellation-painted", 0,
+        clientUserMessageId, { streamId, retained: outgoingMessages(stableTaskId).has(clientUserMessageId) }));
       continue;
     }
     const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState, projection) : null;
@@ -1742,7 +1772,7 @@ async function prepareSnapshotTransport() {
 }
 
 async function httpControl(action, params = {}) {
-  if (action === "snapshot") return readSnapshot(params);
+  if (action === "snapshot" && !params.messageReceiptIds?.length) return readSnapshot(params);
   await localSessionReady;
   const commandId = crypto.randomUUID();
   const payload = await retryConnectionFailure(async () => {
@@ -1825,22 +1855,99 @@ commandTrace.bindReporter(async (batch) => {
   if (!response.ok) throw new Error("Client trace batch rejected");
 });
 
+async function waitTaskOperationResult(admission, params) {
+  let receipt = admission;
+  const original = admission.taskOperation;
+  while (!receipt.taskOperation.terminal && receipt.taskOperation.status !== "unknown"
+      && receipt.taskOperation.cancellation?.phase !== "stopped") {
+    try {
+      const value = await control("board-task-read", { id: original.taskId ?? params.id,
+        operationRequestId: original.requestId, argumentsHash: original.argumentsHash,
+        clientTraceId: original.requestId });
+      receipt = value.operation;
+      if (!receipt?.taskOperation || receipt.taskOperation.requestId !== original.requestId
+          || receipt.taskOperation.argumentsHash !== original.argumentsHash) throw new Error("Ответ относится к другой операции задачи");
+      if (receipt.taskOperation.terminal || receipt.taskOperation.status === "unknown"
+          || receipt.taskOperation.cancellation?.phase === "stopped") break;
+      if (!receipt.taskOperation.active) throw new Error(`Операция ${original.requestId} сохранена; требуется проверка её исходного исполнения`);
+    } catch (error) {
+      if (!isConnectionFailure(error) && !looksLikeConnectionFailure(error)) throw error;
+      // Read retries keep the exact admitted operation. They never repeat its
+      // mutation or impose a total deadline on valid long-running Git work.
+    }
+    await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
+  }
+  const operation = receipt.taskOperation;
+  commandTrace.record("ui-control", "task-operation-result", operation.elapsedMs, original.requestId,
+    { action: original.toolName, render: operation.status });
+  if (operation.status !== "succeeded") throw Object.assign(new Error(
+    operation.cancellation?.phase === "stopped" ? "Операция прервана. Незавершённая работа сохранена."
+      : operation.error || `Операция ${original.requestId} требует восстановления исходного результата`), { taskOperation: operation });
+  return { ...await control("snapshot"), lifecycleResult: receipt.result };
+}
+
 async function control(action, params = {}) {
+  if (action === "snapshot") {
+    // Resolve the exact unresolved projections even after their receipt ages
+    // out of the recent window. The canonical ledger owns their outcome.
+    params = { ...params, messageReceiptIds: [...new Set([
+      ...(params.messageReceiptIds ?? []),
+      ...[...outgoingByTask.values()].flatMap(messages => [...messages.values()]
+        .filter(message => message.providerAccepted !== true
+          && !["completed", "failed", "cancelled"].includes(message.projectionState))
+        .map(message => message.clientUserMessageId).filter(Boolean)),
+    ])] };
+  }
   const snapshotBaseline = currentSnapshotBaseline();
   const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
+  const taskOperationId = ["board-task-create", "board-task-update", "board-task-status", "board-task-complete", "board-task-remove"].includes(action)
+    ? params.operationId || commandTrace.newId() : null;
   const started = performance.now();
-  const tracedParams = { ...params, clientTraceId: commandId, clientTiming: params.clientTiming ?? {
+  const tracedParams = { ...params, ...(taskOperationId ? { operationId: taskOperationId } : {}), clientTraceId: commandId, clientTiming: params.clientTiming ?? {
     submittedAtMs: Date.now(), submittedMonotonicMs: started,
     controlStartedAtMs: Date.now(), controlStartedMonotonicMs: started,
     surface: clientTraceSurface(),
   } };
   return commandTrace.measure("ui-control", action, async () => {
+    let transportAcknowledged = false;
     try {
-      const result = await controlTransport(action, tracedParams);
+      let result;
+      try { result = await controlTransport(action, tracedParams); }
+      catch (error) {
+        if (!taskOperationId || (!isConnectionFailure(error) && !looksLikeConnectionFailure(error))) throw error;
+        // The first admission reply may be lost. The client already chose the
+        // original identity; read it without guessing its hash or replaying work.
+        let read;
+        for (;;) {
+          try {
+            read = await control("board-task-read", { id: params.id, operationRequestId: taskOperationId,
+              clientTraceId: taskOperationId });
+            break;
+          } catch (readError) {
+            if (!isConnectionFailure(readError) && !looksLikeConnectionFailure(readError)) throw readError;
+            await new Promise(resolve => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
+          }
+        }
+        if (read.operation?.lookup?.status === "not_found") {
+          throw new Error(`Квитанция операции ${taskOperationId} не найдена. Её исход не подтверждён; запрос не повторён.`);
+        }
+        if (read.operation?.taskOperation?.requestId !== taskOperationId) throw error;
+        result = read.operation;
+      }
+      if (result?.admission?.status === "not_admitted") {
+        throw Object.assign(new Error(`Не удалось принять запрос: хранилище занято. Проверь исходную операцию ${result.admission.requestId} перед повтором.`),
+          { admission: result.admission });
+      }
       reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
+      transportAcknowledged = true;
+      if (result?.taskOperation) {
+        commandTrace.record("ui-control", "task-operation-admitted", performance.now() - started,
+          result.taskOperation.requestId, { action, render: result.taskOperation.status });
+        result = await waitTaskOperationResult(result, params);
+      }
       return bindSnapshotBaseline(commandTrace.associate(result, commandId), snapshotBaseline);
     } catch (error) {
-      reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
+      if (!transportAcknowledged) reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
       throw error;
     }
   }, commandId);
@@ -3053,6 +3160,31 @@ function traceHistoryCard(id, history, { liveBefore, cleared, commandId }) {
   }));
 }
 
+function firstCurrentLatestHistory(result, id) {
+  const history = result?.history;
+  if (!history || result.focusedTurn || history.notModified === true
+    || history.transportTruncated === true || historyPageByTask.has(id)
+    || historyWindowByTask.get(id)?.length || focusedHistoryWindowByTask.has(id)) return false;
+  // Only the global snapshot generation may have advanced. A response from a
+  // different runtime, Thread or explicit history window remains superseded.
+  const baseline = responseSnapshotBaselines.get(result);
+  const separator = typeof baseline === "string" ? baseline.indexOf("\0") : -1;
+  const serverKey = snapshotServerKey(observedServerIdentity);
+  if (!serverKey || separator < 0 || baseline.slice(separator + 1) !== serverKey) return false;
+  const current = representativeSnapshotTasks(lastSnapshot?.tasks).find((task) => (
+    taskId(task.provider, task.threadId, task.streamId) === id
+  ));
+  if (!history.streamId || !sameIdentity(current, history)) return false;
+  const { start, end, total } = history;
+  if (![start, end, total].every(Number.isSafeInteger) || start < 0 || start >= end
+    || end !== total || !Array.isArray(history.items) || history.items.length !== end - start) return false;
+  return displayedFinalAcknowledgement({
+    messages: historyMessages(history).filter((message) => message.kind !== "subagent"),
+    final: current?.latestFinal,
+    selectTask: true, taskId: id,
+  });
+}
+
 function applyOpened(result, {
   preserveScroll = false,
   skipSnapshot = false,
@@ -3067,7 +3199,17 @@ function applyOpened(result, {
     return;
   }
   const id = taskId(history.provider, history.threadId, history.streamId);
-  if (!result?.focusedTurn && snapshotResponseIsStale(result)) {
+  const staleSnapshot = !result?.focusedTurn && snapshotResponseIsStale(result);
+  const firstCurrentPage = staleSnapshot && selectTask && !exactNavigation
+    && firstCurrentLatestHistory(result, id);
+  if (staleSnapshot) {
+    const commandId = commandTrace.objectId(result);
+    if (commandId) commandTrace.record("ui-control", "history-page-decision", 0, commandId, {
+      trigger: "first-open", render: firstCurrentPage ? "current" : "stale",
+      count: Array.isArray(history.items) ? history.items.length : 0,
+    });
+  }
+  if (staleSnapshot && !firstCurrentPage) {
     // The embedded history belongs to the same old open-task response as its
     // snapshot. Keep any newer final already rendered while finishing the
     // user's navigation, then load this Thread from its current authority.
@@ -3083,6 +3225,11 @@ function applyOpened(result, {
     if (!skipSnapshot) void refresh();
     return;
   }
+  // History and its optional global snapshot have separate authority. Retain
+  // the newer snapshot, but display the exact still-current first local page
+  // without awaiting another provider/history refresh. Read ACK remains owned
+  // by the existing rendered-final/after-paint path below.
+  if (firstCurrentPage) skipSnapshot = true;
   if (history.notModified === true) {
     const page = historyPageByTask.get(id);
     if (page) page.version = history.version;
@@ -3090,12 +3237,13 @@ function applyOpened(result, {
   }
   const retainsPinnedFocus = Boolean(result.focusedTurn && exactNavigation?.pinId);
   const newest = historyMessages(history, retainsPinnedFocus ? null : result.focusedTurn);
-  const previousPage = historyPageByTask.get(id);
+  const existingPage = historyPageByTask.get(id);
+  const previousPage = existingPage && sameIdentity(existingPage.identity, history) ? existingPage : null;
   const preserveOlder = !result.focusedTurn
     && previousPage
     && Number(previousPage.start) < Number(history.start);
   if (retainsPinnedFocus) setFocusedHistoryWindow(id, result, exactNavigation);
-  const previousWindow = historyWindowByTask.get(id);
+  const previousWindow = previousPage ? historyWindowByTask.get(id) : null;
   setHistoryWindow(id, retainsPinnedFocus && previousWindow
     ? previousWindow
     : preserveOlder
@@ -3106,6 +3254,7 @@ function applyOpened(result, {
   if (!retainsPinnedFocus || !previousPage) {
     historyPageByTask.set(id, {
       identity: stableIdentity(history),
+      reusable: previousPage?.reusable === true && sameIdentity(previousPage.identity, history),
       start: preserveOlder ? previousPage.start : history.start,
       end: history.end,
       total: history.total,
@@ -3386,15 +3535,66 @@ agentHub.on("task:select", ({ id }) => {
   }
   pendingSelectionId = id;
   rememberSelectedTaskId(id);
+  const page = historyPageByTask.get(id);
+  const retained = page && sameIdentity(page.identity, identity)
+    && historyWindowByTask.has(id) && !focusedHistoryWindowByTask.has(id);
+  const traceId = commandTrace.newId();
+  const started = performance.now();
   selectionTail = runNavigation(
     identity,
     async () => {
-      const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
-      if (opened?.history) verifiedTaskHistory(opened.history, identity);
-      return opened;
+      if (retained) {
+        replaceRoute(`#/chat/stream/${encodeURIComponent(id)}`);
+        agentHub.selectTask(id);
+        syncHistoryPagination(id);
+        renderTaskMessages(id, { preserveScroll: true });
+        const generation = navigationIntents.capture();
+        commandTrace.afterPaint("ui-render", "history-page-paint", started, traceId,
+          { ...identity, clientAssetRevision: "hub414.history.1", trigger: "retained-page",
+            count: historyWindowByTask.get(id)?.length ?? 0 }, null,
+          () => navigationIntents.current(generation) && selectedTaskId === id
+            && sameIdentity(taskIdentity(id), identity) && historyPageByTask.get(id) === page
+            && !document.hidden && document.documentElement.dataset.view === "chat");
+        // Selection keeps its ordered mutation; the canonical, versioned
+        // history refresh is independent of that mutation and the first paint.
+        void enqueueTaskHistoryLoad(id, identity, { preserveScroll: true, traceId });
+        const snapshot = await control("select-task", taskOpenParams(identity, { clientTraceId: traceId }));
+        return { retainedHistory: true, snapshot };
+      }
+      const generation = navigationIntents.capture();
+      // A cold local page can paint and acknowledge its exact final while the
+      // independently ordered selection is still waiting for persistence.
+      const [selection, history] = await Promise.allSettled([
+        control("select-task", taskOpenParams(identity, { clientTraceId: traceId, deferSnapshot: true })),
+        control("task-history", { ...identity, limit: 20, clientTraceId: traceId }).then((history) => {
+          verifiedTaskHistory(history, identity);
+          if (navigationIntents.current(generation) && sameIdentity(taskIdentity(id), identity)) {
+            const opened = bindSnapshotBaseline(commandTrace.associate({ history, snapshot: null }, traceId),
+              responseSnapshotBaselines.get(history));
+            applyOpened(opened, { skipSnapshot: true });
+            replaceRoute(`#/chat/stream/${encodeURIComponent(id)}`);
+            const paintedPage = historyPageByTask.get(id);
+            commandTrace.afterPaint("ui-render", "history-page-paint", started, traceId,
+              { ...identity, clientAssetRevision: "hub427.history.1", trigger: "cold-page",
+                count: historyWindowByTask.get(id)?.length ?? 0 }, null,
+              () => navigationIntents.current(generation) && selectedTaskId === id
+                && historyPageByTask.get(id) === paintedPage && paintedPage?.version === history.version
+                && !document.hidden && document.documentElement.dataset.view === "chat");
+          }
+          return history;
+        }),
+      ]);
+      if (history.status === "rejected") throw history.reason;
+      if (selection.status === "rejected") throw selection.reason;
+      return { retainedHistory: true, openedEarly: true, history: history.value, snapshot: selection.value };
     },
     (result) => {
-      applyOpened(result);
+      if (result.retainedHistory) {
+        if (result.snapshot?.snapshotDeferred === true) void refresh();
+        else applySnapshot(result.snapshot);
+        if (result.openedEarly) agentHub.selectTask(id);
+      }
+      else applyOpened(result);
       pendingSelectionId = "";
       const route = window.AgentHubNavigationTabs.resolvedChatRoute(result, identity);
       if (route.hash) replaceRoute(route.hash);
@@ -3428,6 +3628,7 @@ function enqueueTaskHistoryLoad(id, identity, {
   refreshSource = false,
   preserveScroll = true,
   onlyWhenSelected = false,
+  traceId = commandTrace.newId(),
 } = {}) {
   let state = historyLoadStates.get(id);
   if (!state) {
@@ -3437,7 +3638,7 @@ function enqueueTaskHistoryLoad(id, identity, {
   state.pending = mergeHistoryLoadRequest(state.pending, {
     identity: stableIdentity(identity),
     generation: historyRequestGenerationByTask.get(id) ?? 0,
-    traceId: commandTrace.newId(),
+    traceId,
     queuedAt: performance.now(),
     refreshSource,
     preserveScroll,
@@ -3483,7 +3684,11 @@ function enqueueTaskHistoryLoad(id, identity, {
             count: settled.value?.items?.length ?? 0 });
         if (settled.status === "rejected" || !current) continue;
         const history = verifiedTaskHistory(settled.value, pending.identity);
-        if (!sameIdentity(taskIdentity(id), history)) continue;
+        const sameBinding = sameIdentity(taskIdentity(id), history);
+        commandTrace.record("ui-control", "history-binding-decision", 0, pending.traceId,
+          { ...stableIdentity(history), clientAssetRevision: "hub333.history.1",
+            decision: sameBinding ? "current" : "changed", count: history.items?.length ?? 0 });
+        if (!sameBinding) continue;
         if (pending.onlyWhenSelected && selectedTaskId !== id) continue;
         if (history?.notModified === true) {
           const page = historyPageByTask.get(id);
@@ -3517,12 +3722,38 @@ function enqueueTaskHistoryLoad(id, identity, {
   return state.running;
 }
 
-async function loadVisibleTaskHistories(taskIds) {
+function releaseClosedTaskHistories() {
+  if (!retainedHistoryTaskIds) return;
+  const recent = new Set([...historyPageByTask]
+    .filter(([id, page]) => page.reusable && sameIdentity(page.identity, taskIdentity(id)))
+    .slice(-RECENT_HISTORY_PAGE_COUNT).map(([id]) => id));
+  for (const id of historyWindowByTask.keys()) {
+    if (id === selectedTaskId || retainedHistoryTaskIds.has(id) || recent.has(id)) continue;
+    if (!agentHub.releaseTaskHistory(id)) continue;
+    // Canonical pages are disposable. Durable history, receipt/read cursors,
+    // outgoing sends and active-turn ownership remain with their existing owners.
+    historyRequestGenerationByTask.set(id, (historyRequestGenerationByTask.get(id) ?? 0) + 1);
+    const load = historyLoadStates.get(id);
+    if (load) load.pending = null;
+    historyByTask.delete(id);
+    historyWindowByTask.delete(id);
+    historyPageByTask.delete(id);
+    focusedHistoryWindowByTask.delete(id);
+    historyRefreshAtByTask.delete(id);
+  }
+}
+
+async function loadVisibleTaskHistories(taskIds, retainedTaskIds = retainedHistoryTaskIds) {
   const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
     .map((id) => String(id ?? "").trim())
     .filter(Boolean))];
   visibleStreamTaskIds = new Set(ids);
+  retainedHistoryTaskIds = retainedTaskIds == null ? null : new Set(retainedTaskIds);
+  releaseClosedTaskHistories();
   if (initialRouteOpening) return;
+  // Layout is published before its synchronous task:select intent. Let that
+  // handler own the cold open instead of starting a duplicate history read.
+  await Promise.resolve();
   await Promise.all(ids.map(async (id) => {
     // История выбранного Thread уже загружается open-task. Остальные колонки
     // подгружаются только после того, как пользователь открыл их Stream.
@@ -3533,7 +3764,14 @@ async function loadVisibleTaskHistories(taskIds) {
   }));
 }
 
-agentHub.on("workspace:visible-streams", ({ taskIds }) => void loadVisibleTaskHistories(taskIds));
+agentHub.on("workspace:visible-streams", ({ taskIds, retainedTaskIds }) =>
+  void loadVisibleTaskHistories(taskIds, retainedTaskIds));
+
+agentHub.on("history:close", ({ id }) => {
+  const page = historyPageByTask.get(id);
+  if (page) page.reusable = false;
+  releaseClosedTaskHistories();
+});
 
 agentHub.on("devices:refresh", () => void runAction(async () => {
   agentHub.setTrustedDevices({ loading: true });
@@ -3662,8 +3900,14 @@ function sendUserMessage(request, frozenParams = null) {
   const visibleAttachments = [...requestAttachments, ...requestTaskReferences];
   const queuesOptimistically = request.followUpMode === "queue"
     || request.deferWhileRunning === true;
-  const steersOptimistically = request.followUpMode === "steer" && !queuesOptimistically;
-  const usesQueueOptimistically = optimisticSubmissionUsesQueue(request);
+  const snapshotTask = representativeSnapshotTasks(lastSnapshot?.tasks).find((task) => (
+    taskId(task.provider, task.threadId, task.streamId) === request.taskId
+  ));
+  const steersOptimistically = request.followUpMode === "steer" && !queuesOptimistically
+    && snapshotTask?.running === true;
+  const usesQueueOptimistically = optimisticSubmissionUsesQueue(request, {
+    knownIdle: snapshotTask?.running === false && snapshotTask?.canStop !== true,
+  });
   const clientProjectionIntent = usesQueueOptimistically ? "queue" : "conversation";
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
@@ -3898,7 +4142,6 @@ function sendUserMessage(request, frozenParams = null) {
         if (route.hash) replaceRoute(route.hash);
         agentHub.showSelectedTask();
       }
-      renderTaskMessages(request.taskId);
       renderTaskQueue(request.taskId, result?.snapshot ?? lastSnapshot);
       renderTaskMessages(request.taskId);
     },
@@ -4173,6 +4416,24 @@ document.addEventListener("agenthub:board-action", (event) => {
       result => window.AgentHubTaskBoard.showDetails({ ...detail, result }),
       error => window.AgentHubTaskBoard.showDetails({ ...detail, error: String(error?.message ?? error) }),
     );
+    return;
+  }
+  if (detail.type === "operation-read") {
+    void control("board-task-read", { id: detail.id }).then(result =>
+      window.AgentHubTaskBoard.showOperations({ id: detail.id, result }),
+      error => agentHub.toast(String(error?.message ?? error)));
+    return;
+  }
+  if (detail.type === "operation-cancel") {
+    // Stop must reach the backend while the original board command is waiting.
+    const { type, ...params } = detail;
+    void control("board-task-operation-cancel", params).then(result => {
+      window.AgentHubTaskBoard.showOperations({ id: detail.id, result });
+      agentHub.toast(result.cancellation?.phase === "stopped"
+        ? "Операция прервана. Незавершённая работа сохранена."
+        : result.cancellation?.phase === "already_terminal" ? "Операция уже завершена."
+          : "Остановка запрошена; прежние эффекты пока неизвестны.");
+    }, error => agentHub.toast(String(error?.message ?? error)));
     return;
   }
   if (detail.type === "diff") {
@@ -4589,9 +4850,12 @@ agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async (
   applySnapshot(await control("snapshot"));
 }));
 agentHub.on("queue:remove", ({ id }) => runAction(async () => {
-  const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id);
-  const result = await control("deferred-input", { id, action: "cancel" });
+  const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id)
+    ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()])
+      .find(item => item.itemId === id || item.id === id);
   const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
+  const result = await control("deferred-input", { id: deferred?.itemId ?? deferred?.id ?? id, action: "cancel",
+    ...(clientUserMessageId ? { clientUserMessageId } : {}) });
   if (clientUserMessageId) {
     const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
     outgoingMessages(deferredTaskId).delete(clientUserMessageId);
@@ -4657,16 +4921,6 @@ agentHub.on("queue:steer", ({ id, taskId: taskIdValue }) => runAction(() => runQ
     throw error;
   }
 })));
-agentHub.on("queue:new", ({ id, taskId: taskIdValue }) => runAction(() => runQueueAction(
-  id,
-  taskIdValue,
-  async () => {
-    const result = await control("deferred-input", { id, action: "new" });
-    if (result?.snapshot) applySnapshot(result.snapshot);
-    agentHub.toast(result?.message ?? "Сообщение отправлено в новую задачу");
-    return result;
-  },
-)));
 async function composerAttachmentFromQueue(attachment) {
   const { blob, name, type } = await attachmentBlob(attachment);
   return {
@@ -5047,7 +5301,7 @@ async function saveLinkResource(resource) {
     return;
   }
   if (String(resource?.localPath ?? "").trim()) {
-    if (!localWorkspaceFilesAvailable) {
+    if (!await hasLocalWorkspaceFileAccess()) {
       if (!remoteWorkspaceFileBridgeAvailable()) {
         throw new Error("Чтобы скачать файл с компьютера Agent Hub, сначала сопряги это устройство");
       }
@@ -5145,9 +5399,12 @@ agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
   const localPath = String(resource?.localPath ?? "").trim();
   if (!localPath) throw new Error("Локальный путь не указан");
   if (vscode) await bridgeCall("copy-link-object", { href: localPath });
-  else if (remoteWorkspaceFileBridgeAvailable()) await launchWorkspaceFileBridge("copy", localPath);
-  else if (!localWorkspaceFilesAvailable) {
-    throw new Error("Для удалённого браузера сопряги устройство и установи Windows File Bridge");
+  else if (!await hasLocalWorkspaceFileAccess()) {
+    if (!remoteWorkspaceFileBridgeAvailable()) {
+      throw new Error("Для удалённого браузера сопряги устройство и установи Windows File Bridge");
+    }
+    await launchWorkspaceFileBridge("copy", localPath);
+    return;
   }
   else {
     const response = await hubFetch("/api/workspace-file/copy", {
@@ -5160,7 +5417,7 @@ agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
       throw new Error(String(payload.error ?? `Не удалось скопировать файл: HTTP ${response.status}`));
     }
   }
-  if (!remoteWorkspaceFileBridgeAvailable()) agentHub.toast("Файл скопирован в буфер обмена");
+  agentHub.toast("Файл скопирован в буфер обмена");
 }));
 
 window.AgentHubFileTransferOwner?.configure(async (action, body) => {
@@ -5231,6 +5488,13 @@ agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Автозапуск Agent Hub обновлён");
 }));
+function applyProviderLoginReply(result) {
+  if (!Array.isArray(result?.accounts)) return;
+  const server = { ...(lastSnapshot?.server ?? {}), accounts: result.accounts };
+  if (lastSnapshot) lastSnapshot = { ...lastSnapshot, server };
+  agentHub.setServerStatus(server);
+}
+
 /* Страница входа провайдера открывается во внешнем браузере Hub-машины: туда
    же возвращается OAuth callback. */
 async function openProviderLoginPage(authUrl) {
@@ -5242,10 +5506,8 @@ async function openProviderLoginPage(authUrl) {
 agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
   const result = await control("start-provider-login", { provider });
   const login = result?.login;
-  /* Сначала снапшот с новой попыткой, затем её локальная привязка: иначе
-     перерисовка по прежнему снапшоту сбросила бы ссылку и поле кода. */
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
+  /* Сначала состояние новой попытки, затем её локальная привязка. */
+  applyProviderLoginReply(result);
   agentHub.setProviderLoginUrl?.(provider, { attemptId: login?.attemptId ?? null, authUrl: login?.authUrl ?? null });
   /* Claude Code сам открывает браузер со своим callback; его печатная ссылка —
      ручной путь с кодом, поэтому она открывается только кнопкой. */
@@ -5254,15 +5516,13 @@ agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
 }));
 agentHub.on("server:provider-login-code", ({ provider, attemptId, code }) => runAction(async () => {
   const result = await control("submit-provider-login-code", { provider, attemptId, code });
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
+  applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Код передан Claude Code");
 }));
 agentHub.on("server:provider-login-open", ({ authUrl }) => runAction(() => openProviderLoginPage(authUrl)));
 agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async () => {
   const result = await control("cancel-provider-login", { provider });
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
+  applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Вход отменён");
 }));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {

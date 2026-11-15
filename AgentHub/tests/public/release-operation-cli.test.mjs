@@ -55,6 +55,26 @@ function fixture() {
   };
 }
 
+test("manual public version is operator input and changes only the new release identity", async () => {
+  const f = fixture();
+  const args = ["--stream", "stream-1", "--thread", "thread-1"];
+  await runReleaseOperationCli(args, f.options);
+  const automatic = f.calls[0].params;
+  assert.equal(Object.hasOwn(automatic, "releaseVersion"), false);
+  const ids = new Set([automatic.requestId]);
+  for (const version of ["2.0.9", "2.7.9", "3.7.9"]) {
+    f.calls.length = 0;
+    await runReleaseOperationCli([...args, "--version", version], f.options);
+    assert.equal(f.calls[0].params.releaseVersion, version);
+    ids.add(f.calls[0].params.requestId);
+  }
+  assert.equal(ids.size, 4);
+  f.calls.length = 0;
+  await assert.rejects(runReleaseOperationCli(["--resume", "--operation", "operation-1", "--version", "3.7.9"], f.options), /original version/u);
+  await assert.rejects(runReleaseOperationCli([...args, "--version", "3.7"], f.options), /version/iu);
+  assert.equal(f.calls.length, 0);
+});
+
 test("publish:changed delegates one deterministic full release to ReleaseOperation", async () => {
   const f = fixture();
   const first = await runReleaseOperationCli([
@@ -133,9 +153,10 @@ test("public CLI admits repository-scale release metadata through the command ow
   let admitted = null;
   const commands = new ReleaseOperationCommandService({
     releaseOperations: {
-      start: (input) => {
+      start: ({ resolveAuthorization, ...input }) => {
         admitted = createReleaseOperation({
           ...input,
+          authorization: resolveAuthorization(null),
           operationId: "operation-large-metadata",
           runnerVersion: "test-runner",
           createdAt: "2026-09-23T00:00:00.000Z",
@@ -154,6 +175,8 @@ test("public CLI admits repository-scale release metadata through the command ow
     },
     taskBoard: {
       task: (taskId) => ({ id: taskId, workspaceId: f.manifest.workspaceId }),
+      releaseTasks: () => f.manifest.tasks.map(({ taskId }) => ({ id: taskId,
+        status: "open", workflowStatus: "awaiting_implementation" })),
     },
   });
   const control = async (action, params) => {
@@ -171,6 +194,7 @@ test("public CLI admits repository-scale release metadata through the command ow
       : JSON.stringify(file.endsWith("checkpoint.json") ? f.checkpoint : f.manifest),
   });
   assert.equal(admitted.authorization.releaseMetadata.byteLength, releaseNotes.length);
+  assert.deepEqual(admitted.authorization.taskIds, ["task-a", "task-b"]);
   assert.equal(Buffer.byteLength(JSON.stringify(admitted.authorization), "utf8") < 1024 * 1024, true);
   assert.equal(admitted.streamId, "stream-1");
   assert.equal(admitted.threadId, "thread-1");

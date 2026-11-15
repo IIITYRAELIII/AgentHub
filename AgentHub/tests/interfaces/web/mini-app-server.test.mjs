@@ -1383,7 +1383,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.ok((await taiga.arrayBuffer()).byteLength > 100_000);
     assert.ok((await pulsar.arrayBuffer()).byteLength > 100_000);
     const page = await (await fetch(address.url)).text();
-    assert.match(page, /data-theme="orbit"/u);
     assert.match(page, /<option value="taiga">Rain<\/option>/u);
     assert.match(page, /data-panel-open="settings"/u);
     assert.match(page, /data-view-button="statistics"/u);
@@ -1449,7 +1448,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /data-action="annotate-selection"/u);
     assert.doesNotMatch(page, /data-action="annotate"/u);
     const script = await (await fetch(`${address.url}app.js`)).text();
-    assert.match(script, /agent-hub-theme/u);
+    assert.match(page, /src="\/theme-preference\.js"/u);
     assert.match(script, /function readThemeCatalog/u);
     assert.match(script, /themeCatalog\.map\(\(theme\) => \[theme\.id, theme\.color\]\)/u);
     assert.match(
@@ -1728,7 +1727,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "snapshot",
-        params: { refresh: true },
+        params: { refresh: true, messageReceiptIds: ["original-message-receipt"] },
         commandId: "local-command-1",
       }),
     });
@@ -1751,7 +1750,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
     ], [
       {
         action: "snapshot",
-        params: { refresh: true },
+        params: { refresh: true, messageReceiptIds: ["original-message-receipt"] },
         context: { source: "local-mini-app", commandId: "local-command-1" },
       },
       {
@@ -2689,6 +2688,42 @@ test("trusted device authenticates with the HttpOnly session cookie", async () =
   }
 });
 
+test("hub410 protected local proof wins over device credentials without remote elevation", async () => {
+  const secret = "l".repeat(43), device = "d".repeat(43), calls = [], sources = [];
+  const router = createDesktopApplicationRouter({
+    handlers: new Proxy({}, { get: (_target, name) => async () => { calls.push(name); return { accepted: true }; } }),
+    commands: { dispatch: async () => assert.fail("login is not a Task mutation"), settingTarget: () => ({}) },
+  });
+  const server = new MiniAppServer({ host: "127.0.0.1", port: 0, journalDatabase: memoryJournal(), localAccessSecret: secret,
+    deviceStore: { resolveSession: async token => { if (token !== device) throw new Error("invalid synthetic device"); return { id: "owner", deviceId: "device" }; } },
+    controlHandler: async request => { sources.push(request.context.source); return router.handleDesktopControl(request); },
+  });
+  try {
+    const { url } = await server.start();
+    const session = await fetch(`${url}api/local-session`, { method: "POST", headers: { Authorization: `local ${secret}`, "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(session.status, 200);
+    const cookie = session.headers.get("set-cookie").split(";", 1)[0];
+    const actions = ["start-provider-login", "submit-provider-login-code", "cancel-provider-login"];
+    const send = (action, headers) => fetch(`${url}api/control`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ action, params: { provider: "claude", attemptId: "1", code: "synthetic#state" } }) });
+    for (const action of actions) {
+      for (const headers of [
+        { Cookie: `${cookie}; agent_hub_device=${device}` },
+        { Cookie: cookie, Authorization: `device ${device}` },
+        { Cookie: `agent_hub_device=${device}`, Authorization: `webview ${createLocalWebviewSession(secret).token}`, Origin: "vscode-webview://synthetic-webview" },
+      ]) assert.equal((await send(action, headers)).status, 200, action);
+      for (const headers of [
+        { Cookie: `agent_hub_device=${device}` },
+        { Cookie: `${cookie}; agent_hub_device=${device}`, "CF-Connecting-IP": "203.0.113.10" },
+        { Cookie: cookie, Authorization: `device ${device}`, "X-Forwarded-For": "203.0.113.10" },
+      ]) assert.equal((await send(action, headers)).status, 400, "device authority cannot start local sign-in");
+      assert.equal((await send(action, { Cookie: "agent_hub_local=invalid" })).status, 401);
+      assert.equal((await send(action, { Authorization: "webview invalid" })).status, 401);
+    }
+    assert.equal(calls.length, 9);
+    assert.ok(sources.includes("local-mini-app") && sources.includes("local-vscode-webview") && sources.includes("trusted-device"));
+  } finally { await server.close(); }
+});
+
 test("trusted device cookie authenticates on protected loopback Web", async () => {
   let receivedContext = null;
   const server = new MiniAppServer({
@@ -2777,6 +2812,39 @@ test("a deployment without Telegram never serves the Telegram runtime", async ()
   }
 });
 
+
+test("compaction estimate paint batch uses the authenticated existing trace owner", async () => {
+  const spans = []; const secret = "c".repeat(43);
+  const server = new MiniAppServer({ host: "127.0.0.1", port: 0,
+    journalDatabase: memoryJournal(), localAccessSecret: secret,
+    recordCommandTrace: span => spans.push(span) });
+  try {
+    const { url } = await server.start();
+    const post = (cookie, events) => fetch(`${url}api/command-trace/client-events`, { method: "POST",
+      headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
+      body: JSON.stringify({ events }) });
+    const now = Date.now();
+    const event = { commandId: "original-compaction", stage: "context-estimate-paint", outcome: "succeeded",
+      observedAtMs: now, monotonicDurationMs: 16,
+      metadata: { action: "compaction", threadId: "exact-thread", turnId: "exact-turn", text: "PRIVATE" } };
+    assert.equal((await post(null, [event])).status, 401);
+    const auth = await fetch(`${url}api/local-session`, { method: "POST",
+      headers: { Authorization: `local ${secret}`, "Content-Type": "application/json" }, body: "{}" });
+    const cookie = auth.headers.get("set-cookie").split(";", 1)[0];
+    const response = await post(cookie, [event, { ...event, commandId: "neighbour", stage: "ui-render" }]);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, accepted: 2 });
+    assert.equal(spans.length, 2);
+    assert.equal(spans[0].stage, event.stage);
+    assert.equal(spans[0].commandId, event.commandId);
+    assert.deepEqual(spans[0].metadata, { action: "compaction", threadId: "exact-thread", turnId: "exact-turn" });
+    for (const changed of [{ stage: "context-estimate-paint-unknown" }, { outcome: "unknown" },
+      { observedAtMs: now + 120_000 }, { monotonicDurationMs: -1 }]) {
+      assert.equal((await post(cookie, [{ ...event, ...changed }])).status, 400);
+    }
+    assert.equal(spans.length, 2);
+  } finally { await server.close(); }
+});
 
 test("client performance batch uses authenticated bounded common trace ingestion", async () => {
   const spans = []; const secret = "t".repeat(43);

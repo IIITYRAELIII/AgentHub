@@ -16,6 +16,11 @@ internal static class AcceptanceEnvironmentProbe
             {
                 Type host = typeof(AgentHub.RuntimeHost.Program);
                 BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
+                if (args[1] == "package-job-name")
+                {
+                    Console.WriteLine(host.GetMethod("PackageCohortJobName", flags).Invoke(null, new object[] { args[0], 123 }));
+                    return 0;
+                }
                 if (args[1] == "close")
                 {
                     host.GetMethod("CloseReleaseAcceptance", flags).Invoke(null, new object[] { args[0] });
@@ -42,6 +47,7 @@ internal static class AcceptanceEnvironmentProbe
         start.EnvironmentVariables["CODEX_EXECUTABLE"] = "unsafe-override";
         start.EnvironmentVariables["SENTRY_DSN"] = "synthetic-dsn";
         start.EnvironmentVariables["NODE_OPTIONS"] = "--require=unsafe.js";
+        start.EnvironmentVariables["AGENT_HUB_RESTART_OPERATION_ID"] = "owned-isolated-restart";
         start.EnvironmentVariables["AGENT_HUB_RECORDING_PROVIDER_ROOT"] = "unsafe-recording-root";
         start.EnvironmentVariables["PATH"] = "unsafe-inherited-tool-directory";
         start.EnvironmentVariables["USERNAME"] = "synthetic-wrong-owner";
@@ -72,6 +78,8 @@ internal static class AcceptanceEnvironmentProbe
         result["executableOverridePresent"] = start.EnvironmentVariables["CODEX_EXECUTABLE"] != null;
         result["sentryPresent"] = start.EnvironmentVariables["SENTRY_DSN"] != null;
         result["nodeOptionsPresent"] = start.EnvironmentVariables["NODE_OPTIONS"] != null;
+        result["nodeOptions"] = start.EnvironmentVariables["NODE_OPTIONS"];
+        result["restartOperationId"] = start.EnvironmentVariables["AGENT_HUB_RESTART_OPERATION_ID"];
         result["home"] = start.EnvironmentVariables["USERPROFILE"];
         result["codexHome"] = start.EnvironmentVariables["CODEX_HOME"];
         result["profile"] = start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR_PROFILE"];

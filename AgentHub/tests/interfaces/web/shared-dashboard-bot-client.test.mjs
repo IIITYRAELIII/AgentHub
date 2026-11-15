@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,8 @@ import {
   signSharedDashboardBotRequest,
 } from "../../../src/interfaces/web/shared-dashboard-bot-client.mjs";
 import { REMOTE_CONTROL_WAKE_PROTOCOL } from "../../../src/interfaces/web/remote-control-wake-channel.mjs";
+import { CommandTraceService } from "../../../src/application/command-trace-service.mjs";
+import { CommandTraceWorkerStore } from "../../../src/infrastructure/persistence/command-trace-worker-store.mjs";
 
 function attachmentChunkTransport(body, {
   contentType = "application/octet-stream",
@@ -129,6 +131,137 @@ test("shared Dashboard bot signs requests, dispatches a Task, and reports its re
     ok: true,
     result: { taskId: "task-1" },
   });
+});
+
+test("relay retry retains verified siblings and skips their chunk bodies for the same command", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub330-retry-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "secret");
+  await writeFile(secretFile, "s".repeat(64));
+  const ids = ["018f6c86-3f34-7a31-8f27-16f5b96cca01", "018f6c86-3f34-7a31-8f27-16f5b96cca02", "018f6c86-3f34-7a31-8f27-16f5b96cca03"];
+  const command = { id: "018f6c86-3f34-7a31-8f27-16f5b96ccb01", userId: "42", action: "board-task-ingest", params: { text: "private synthetic payload", sourceKey: "shared-dashboard:330", attachments: ids.map(id => `remote-attachment:${id}`) } };
+  const bodies = ids.map((_, index) => Buffer.alloc(1024, index + 1));
+  const transports = ids.map((id, i) => attachmentChunkTransport(bodies[i], { id, name: `part-${i}.bin` }));
+  const chunks = [0, 0, 0], results = [], handled = [], traces = [];
+  let attempt = 0;
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com", hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccc01", secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    recordCommandTrace: span => { traces.push(span); return true; },
+    fetchImpl: async (url, init) => {
+      const payload = JSON.parse(init.body);
+      if (url.endsWith("/api/dashboard-bot/pull")) { attempt++; return Response.json({ commands: [command] }); }
+      if (url.endsWith("/api/dashboard-bot/result")) { results.push(payload); return Response.json({ ok: true }); }
+      assert.equal(payload.commandId, command.id);
+      const i = ids.indexOf(payload.id); assert.notEqual(i, -1);
+      if (payload.mode === "chunk") {
+        chunks[i]++;
+        if (i === 2 && attempt === 1) throw Object.assign(new Error("synthetic network loss"), { code: "ECONNRESET" });
+      }
+      return transports[i](payload);
+    },
+    handler: async request => {
+      handled.push(request.context.commandId);
+      assert.deepEqual(await Promise.all(request.params.attachments.map(file => readFile(file))), bodies);
+      return { taskId: "same-original-task" };
+    },
+  });
+  await assert.rejects(client.poll(), /retried/);
+  assert.deepEqual(results, []); assert.deepEqual(handled, []);
+  assert.equal((await readdir(path.join(directory, "attachments"))).length, 2, "a retryable sibling failure must not erase finalized files");
+  assert.equal(await client.poll(), 1);
+  assert.deepEqual(chunks, [1, 1, 2], "only the failed attachment body is downloaded again");
+  assert.deepEqual(handled, [command.id]); assert.equal(results.length, 1); assert.equal(results[0].id, command.id);
+  assert.ok(traces.some(span => span.commandId === command.id && span.stage === "dashboard-attachment-preparation" && span.outcome === "failed"));
+  assert.ok(traces.some(span => span.commandId === command.id && span.stage === "dashboard-result" && span.outcome === "succeeded"));
+  assert.equal(JSON.stringify(traces).includes(command.params.text), false);
+  assert.equal(JSON.stringify(traces).includes(directory), false);
+  assert.equal(JSON.stringify(traces).includes("part-0.bin"), false);
+  const originalId = command.id;
+  command.id = "018f6c86-3f34-7a31-8f27-16f5b96ccb02";
+  command.params.sourceKey = "shared-dashboard:332";
+  assert.equal(await client.poll(), 1);
+  assert.deepEqual(chunks, [2, 2, 3], "another command cannot borrow the first command's finalized paths");
+  assert.deepEqual(handled, [originalId, command.id]);
+  await client.close();
+});
+
+test("relay retry rejects changed finalized bytes without overwriting or re-downloading them", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub330-conflict-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "secret"); await writeFile(secretFile, "s".repeat(64));
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cca11", second = "018f6c86-3f34-7a31-8f27-16f5b96cca12";
+  const command = { id: "018f6c86-3f34-7a31-8f27-16f5b96ccb11", userId: "42", action: "board-task-ingest", params: { text: "synthetic", sourceKey: "shared-dashboard:331", attachments: [id, second].map(x => `remote-attachment:${x}`) } };
+  const transport = attachmentChunkTransport(Buffer.from("verified"), { id });
+  const outcomes = []; let chunks = 0, handlers = 0;
+  const client = new SharedDashboardBotClient({ publicUrl: "https://hub.example.com", hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccc11", secretFile, attachmentDirectory: path.join(directory, "attachments"),
+    recordCommandTrace: () => { throw new Error("trace sink unavailable"); },
+    fetchImpl: async (url, init) => {
+      const p = JSON.parse(init.body);
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/result")) { outcomes.push(p); return Response.json({ ok: true }); }
+      if (p.id === second) throw Object.assign(new Error("retryable"), { code: "ECONNRESET" });
+      if (p.mode === "chunk") chunks++;
+      return transport(p);
+    }, handler: async () => { handlers++; },
+  });
+  let firstError;
+  try { await client.poll(); } catch (error) { firstError = error; }
+  assert.ok(firstError, JSON.stringify(outcomes)); assert.match(firstError.message, /retried/);
+  const files = await readdir(path.join(directory, "attachments")); assert.equal(files.length, 1);
+  const file = path.join(directory, "attachments", files[0]); await writeFile(file, "corrupt!");
+  assert.equal(await client.poll(), 1);
+  assert.equal(chunks, 1); assert.equal(handlers, 0); assert.equal(outcomes.length, 1); assert.equal(outcomes[0].ok, false);
+  assert.match(outcomes[0].error, /Local attachment id conflict/);
+  assert.equal(await readFile(file, "utf8"), "corrupt!");
+  await client.close();
+});
+
+test("relay original stages persist through the existing trace worker without payload or outcome coupling", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub330-trace-"));
+  const store = new CommandTraceWorkerStore({ databaseFile: path.join(directory, "trace.sqlite") });
+  context.after(async () => { await store.close(); await rm(directory, { recursive: true, force: true }); });
+  await store.initialize();
+  const trace = new CommandTraceService({ store, metadata: { releaseId: "synthetic-installed-release" } });
+  const secretFile = path.join(directory, "secret"); await writeFile(secretFile, "s".repeat(64));
+  const command = { id: "018f6c86-3f34-7a31-8f27-16f5b96ccb21", userId: "42", action: "board-task-ingest", params: { text: "private unlogged content", sourceKey: "shared-dashboard:333" } };
+  const replies = []; let attempts = 0;
+  const client = new SharedDashboardBotClient({ publicUrl: "https://hub.example.com", hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccc21", secretFile,
+    recordCommandTrace: span => trace.recordBestEffort(span),
+    fetchImpl: async (url, init) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      replies.push(JSON.parse(init.body)); return Response.json({ ok: true });
+    }, handler: async () => {
+      if (++attempts === 1) throw Object.assign(new Error("synthetic network outage"), { code: "ECONNRESET" });
+      return { taskId: "persisted-task" };
+    },
+  });
+  await assert.rejects(client.poll(), /retried/);
+  assert.equal(await client.poll(), 1); await client.close();
+  await store.close();
+  const reopened = new CommandTraceWorkerStore({ databaseFile: path.join(directory, "trace.sqlite") });
+  let spans;
+  try { await reopened.initialize(); spans = await reopened.readCommandTimeline(command.id); }
+  finally { await reopened.close(); }
+  for (const stage of ["dashboard-attachment-preparation", "dashboard-intake", "dashboard-result"]) {
+    const pair = spans.filter(span => span.stage === stage);
+    const starts = pair.filter(span => span.outcome === "started");
+    assert.equal(starts.length, stage === "dashboard-result" ? 1 : 2);
+    assert.equal(pair.length, starts.length * 2);
+    for (const started of starts) {
+      const terminal = pair.find(span => span.spanId === started.metadata.operationSpanId);
+      assert.ok(["succeeded", "failed"].includes(terminal.outcome));
+      assert.equal(started.metadata.operationSpanId, terminal.metadata.operationSpanId);
+      assert.ok(terminal.monotonicDurationMs >= 0);
+      assert.ok(terminal.observedAtMs >= started.observedAtMs);
+      assert.equal(terminal.metadata.releaseId, "synthetic-installed-release");
+    }
+  }
+  const failure = spans.find(span => span.stage === "dashboard-intake" && span.outcome === "failed");
+  assert.equal(failure.metadata.retryable, true); assert.equal(failure.metadata.causeCode, "ECONNRESET");
+  assert.equal(replies.length, 1); assert.equal(replies[0].id, command.id);
+  assert.equal(JSON.stringify(spans).includes(command.params.text), false);
+  assert.equal(JSON.stringify(spans).includes(secretFile), false);
 });
 
 test("shared Dashboard bot request signature is stable for an explicit timestamp", () => {
@@ -1012,7 +1145,13 @@ for (const phase of ["headers", "body"]) {
           assert.equal(diagnostic.headersMs, null);
           assert.equal(diagnostic.bodyMs, null);
         }
-        for (const privateValue of [secret, publicUrl, attachmentId, command.id, command.userId, command.params.text, "private-file.bin", "private-file-bytes"]) {
+        assert.equal(diagnostic.commandId, command.id);
+        assert.equal(diagnostic.attachmentId, attachmentId);
+        assert.deepEqual(Object.keys(diagnostic).sort(), [
+          "commandId", "attachmentId", "mode", "page", "index", "phase", "headersMs", "bodyMs",
+          "status", "bytes", "activeAtStart", "elapsedMs", "activeAtFailure", "causeCode",
+        ].sort());
+        for (const privateValue of [secret, publicUrl, command.userId, command.params.text, "private-file.bin", "private-file-bytes"]) {
           assert.equal(error.message.includes(privateValue), false);
         }
         return true;

@@ -89,3 +89,33 @@ test("plain directory ABA preserves original and foreign replacement at actual G
   assert.equal(error, null, error?.stack);
   await gitAt(source, ["bundle", "verify", path.join(root, "source.bundle")]);
 });
+
+test("incremental bundle requires complete receiver history and preserves failed original output", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-incremental-bundle-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source"); await mkdir(source);
+  await gitAt(source, ["init", "-b", "main"]);
+  await writeFile(path.join(source, "base.txt"), "base\n"); await gitAt(source, ["add", "."]);
+  await gitAt(source, ["-c", "user.name=Test", "-c", "user.email=test@invalid", "commit", "-m", "base"]);
+  const base = await gitAt(source, ["rev-parse", "HEAD"]);
+  await writeFile(path.join(source, "after.txt"), "after\n"); await gitAt(source, ["add", "."]);
+  await gitAt(source, ["-c", "user.name=Test", "-c", "user.email=test@invalid", "commit", "-m", "after"]);
+  const commit = await gitAt(source, ["rev-parse", "HEAD"]);
+  const bundle = path.join(root, "delta.bundle");
+  await assert.rejects(createSelectedGitBundle({ root, sourceRoot: source, bundle, inputs: [commit],
+    prerequisites: [base], gitAt }), /verified receiver/u);
+  await assert.rejects(lstat(bundle), { code: "ENOENT" });
+  await assert.rejects(createSelectedGitBundle({ root, sourceRoot: source, bundle, inputs: [commit],
+    prerequisites: [base], verifyPrerequisites: async () => { throw new Error("missing receiver object"); }, gitAt }), /missing receiver/u);
+  await assert.rejects(lstat(bundle), { code: "ENOENT" });
+  let checks = 0;
+  await assert.rejects(createSelectedGitBundle({ root, sourceRoot: source, bundle, inputs: [commit],
+    prerequisites: [base], verifyPrerequisites: async () => { if (++checks === 2) throw new Error("receiver changed"); }, gitAt }), /receiver changed/u);
+  const retained = await readFile(bundle);
+  await assert.rejects(createSelectedGitBundle({ root, sourceRoot: source, bundle, inputs: [commit],
+    prerequisites: [base], verifyPrerequisites: async () => {}, gitAt }), /original owner's recovery/u);
+  assert.deepEqual(await readFile(bundle), retained);
+  const empty = path.join(root, "empty"); await mkdir(empty); await gitAt(empty, ["init", "-b", "main"]);
+  await assert.rejects(gitAt(empty, ["bundle", "verify", bundle]), /prerequisite|commit|history/iu);
+  await gitAt(source, ["bundle", "verify", bundle]);
+});

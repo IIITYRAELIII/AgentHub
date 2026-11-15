@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { mcpArgumentsHash } from "./mcp-arguments-hash.mjs";
 
 const OPEN_TAG = "<agent-hub-stream-message>";
 const CLOSE_TAG = "</agent-hub-stream-message>";
@@ -295,4 +296,28 @@ export function consistentInterstreamRecordIdentity({
 
 export function interstreamDisplayText(value, identity = {}) {
   return trustedInterstreamMessageDetails(value, identity)?.text ?? String(value ?? "");
+}
+
+// Recover a lost legacy idle-intake mode only from the original immutable MCP
+// receipt. Matching text alone, absence and successful Hub admission prove no mode.
+export function verifiedLegacyInterstreamSteer(item, operation) {
+  const origin = normalizeInterstreamOrigin(item?.messageOrigin);
+  const delivery = operation?.result?.delivery;
+  if (!origin || operation?.status !== "succeeded" || operation.toolName !== "hub_stream_message_send"
+    || operation.requestId !== origin.requestId || operation.workspaceId !== origin.workspaceId
+    || operation.streamId !== origin.streamId || operation.provider !== origin.provider
+    || operation.threadId !== origin.sourceThreadId
+    || item.clientUserMessageId !== `mcp:${origin.requestId}`
+    || delivery?.id !== item.id || delivery.clientUserMessageId !== item.clientUserMessageId
+    || operation.result?.target?.streamId !== item.streamId || delivery.streamId !== item.streamId
+    || delivery.providerAccepted === true || delivery.runId || delivery.turnId
+    || delivery.queued !== true) return false;
+  const details = trustedInterstreamMessageDetails(item.input, {
+    origin: { origin, argumentsHash: operation.argumentsHash,
+      contentHash: operation.interstreamContentHash, toolName: operation.toolName },
+    clientUserMessageId: item.clientUserMessageId, audited: true,
+  });
+  return Boolean(details && mcpArgumentsHash({ confirm_send: true,
+    request_id: origin.requestId, stream_id: item.streamId, text: details.text,
+    mode: "steer" }) === operation.argumentsHash);
 }

@@ -172,6 +172,7 @@ test("issued rules require selected composition and retained absorption sources"
   assert.match(workspace, /A new result must pass Test and acceptance again/u);
   assert.match(workspace, /successful canonical composition of the surviving result with the selected release Tasks/u);
   assert.match(workspace, /Preserve original cards, history, branches and worktrees until verified publication/u);
+  assert.ok(workspace.includes("Do not leave absorption partially completed or the source Task in an undefined state. If completion is blocked, record the exact remaining step and blocker; do not report absorption as complete or continue new work in the source Task."));
   assert.match(manager, /immediately after each selected-result, absorption or release-membership change/u);
   assert.match(manager, /A changed main or approved base requires renewed base verification/u);
   assert.ok(workspace.endsWith("Authored suffix"));

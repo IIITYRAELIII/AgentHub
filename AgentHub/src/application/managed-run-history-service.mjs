@@ -1,3 +1,4 @@
+import { codexAssistantResponseProjection } from "../domain/codex-response-annotation.mjs";
 import { receiptUserDisplay } from "../domain/user-message-display.mjs";
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { providerTurnTelemetrySnapshot } from "../domain/task-runs.mjs";
@@ -58,16 +59,17 @@ export class ManagedRunHistoryService {
         status,
         completedAtMs: active ? null : activityAtMs,
       });
+      const projection = codexAssistantResponseProjection(answer || run.responseText, run.responseAnnotationReferences);
       const history = this.taskSyncStore.history(run);
       this.mergeActiveHistory(history, {
         active: true,
         turnId,
         prompt: run.promptPreview,
-        answer: run.responseText,
+        answer: projection.text,
         clientUserMessageId: run.clientUserMessageId,
         userMessages: run.userMessages,
         responseItemId: run.responseItemId,
-        responseAnnotationReferences: run.responseAnnotationReferences,
+        responseAnnotationReferences: projection.responseAnnotationReferences,
         activities: run.activities,
         activityGroups: run.activityGroups,
         startedAt: run.startedAt,
@@ -90,7 +92,7 @@ export class ManagedRunHistoryService {
         current.active = active;
         current.completed = !active;
         current.status = status;
-        current.answer = String(answer || run.responseText || "").trim();
+        current.answer = projection.text.trim();
         current.activities = Array.isArray(run.activities)
           ? run.activities.map((item) => ({ ...item }))
           : [];
@@ -108,11 +110,8 @@ export class ManagedRunHistoryService {
           ));
           if (existing) {
             existing.text = current.answer || existing.text || "Изображение";
-            if (Array.isArray(run.responseAnnotationReferences)
-              && run.responseAnnotationReferences.length) {
-              existing.responseAnnotationReferences = structuredClone(
-                run.responseAnnotationReferences,
-              );
+            if (projection.responseAnnotationReferences.length) {
+              existing.responseAnnotationReferences = projection.responseAnnotationReferences;
             }
             existing.time = current.completedAt ?? existing.time;
             if (responseAttachments.length) existing.attachments = responseAttachments;
@@ -121,9 +120,8 @@ export class ManagedRunHistoryService {
               itemId,
               role: "agent",
               text: current.answer || "Изображение",
-              ...(Array.isArray(run.responseAnnotationReferences)
-                && run.responseAnnotationReferences.length
-                ? { responseAnnotationReferences: structuredClone(run.responseAnnotationReferences) }
+              ...(projection.responseAnnotationReferences.length
+                ? { responseAnnotationReferences: projection.responseAnnotationReferences }
                 : {}),
               ...(responseAttachments.length ? { attachments: responseAttachments } : {}),
               ...(current.completedAt ? { time: current.completedAt } : {}),
@@ -137,7 +135,7 @@ export class ManagedRunHistoryService {
         turnId: active ? turnId : null,
         activityAtMs,
         stage: run.progressStage,
-        answer: String(answer || run.responseText || "").trim(),
+        answer: projection.text.trim(),
         executionOwner: active ? this.hubExecutionOwner : null,
         ...(resolvedTerminalRevision ? { terminalRevision: resolvedTerminalRevision } : {}),
       });

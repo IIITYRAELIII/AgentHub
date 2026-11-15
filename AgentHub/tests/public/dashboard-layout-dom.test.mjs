@@ -165,6 +165,40 @@ test("Task card opens exact journal links and fences on-demand Git previews", { 
   }
 });
 
+test("deferred Task presentation cannot overwrite its description before an exact addressed read", { timeout: 20_000 }, async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await openFixture(page);
+    const full = task("1", { description: "Complete retained description", detailsRevision: "revision-1" });
+    const { description, ...summary } = full;
+    await page.evaluate(({ summary, workspaces }) => {
+      document.documentElement.dataset.view = "dashboard";
+      window.AgentHubTaskBoard.setSnapshot({ tasks: [{ ...summary,
+        detailsDeferred: true, presentationDeferred: true }], workspaces });
+    }, { summary, workspaces });
+    await page.locator('[data-board-task-id="1"]').first().click();
+    await page.locator("[data-task-card-edit-toggle]").click();
+    const editor = page.locator("[data-task-card-description]");
+    assert.equal(await editor.isDisabled(), true);
+    await page.locator("[data-task-card-editor]").evaluate(form => form.requestSubmit());
+    assert.equal(await page.evaluate(() => window.__boardActions.filter(action => action.type === "update").length), 0);
+    await page.evaluate(full => {
+      const read = window.__boardActions.find(action => action.type === "read");
+      window.AgentHubTaskBoard.showDetails({ ...read, result: { task: full } });
+    }, full);
+    assert.equal(await editor.isDisabled(), false);
+    assert.equal(await editor.inputValue(), full.description);
+    await editor.fill("User edited complete description");
+    await page.locator("[data-task-card-editor]").evaluate(form => form.requestSubmit());
+    assert.equal(await page.evaluate(() => window.__boardActions.find(action => action.type === "update").description),
+      "User edited complete description");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("Task description editor submits text beyond the former character limit", { timeout: 20_000 }, async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);

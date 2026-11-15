@@ -3,6 +3,8 @@ import { lstat, mkdir, open, opendir, realpath, rename, rm } from "node:fs/promi
 import path from "node:path";
 import process from "node:process";
 
+import { reuseTaskDependencyInputs, retainSharedTaskDependencies } from "./task-dependency-inputs.mjs";
+
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 
 const MARKER_NAME = ".agent-hub-task-dependencies.json";
@@ -703,6 +705,16 @@ async function installedLockHash(packageRoot, limits, fileSystem) {
   return createHash("sha256").update(content).digest("hex");
 }
 
+async function hasProjectNpmConfiguration(packageRoot, projectRoot) {
+  // Config bytes may contain credentials. Presence alone keeps the existing
+  // source-local npm cwd; never copy/read project config into shared inputs.
+  for (let cursor = packageRoot; pathInside(projectRoot, cursor); cursor = path.dirname(cursor)) {
+    if (await optionalLstat(path.join(cursor, ".npmrc"))) return true;
+    if (cursor === projectRoot || cursor === path.dirname(cursor)) break;
+  }
+  return false;
+}
+
 async function prepareNpmProject({
   projectRoot,
   resolvedProjectRoot,
@@ -712,6 +724,7 @@ async function prepareNpmProject({
   fileSystem,
   lease,
   verify,
+  sharedDependencies = null,
 }) {
   await assertLeaseOwned(lease);
   const packageRoot = path.dirname(lockfile);
@@ -765,7 +778,36 @@ async function prepareNpmProject({
     .update(JSON.stringify([...expectedPackages]))
     .digest("hex");
   const relativeProject = path.relative(projectRoot, packageRoot).split(path.sep).join("/") || ".";
-  const nodeModulesExists = await assertLocalNodeModules(packageRoot, resolvedPackageRoot);
+  const manifestContent = await readBoundedFile(path.join(packageRoot, "package.json"), {
+    maxBytes: MAX_PACKAGE_METADATA_BYTES, label: "Task package manifest", fileSystem, expectedEntry: packageEntry,
+  });
+  const manifest = JSON.parse(manifestContent.toString("utf8"));
+  const reusable = !["preinstall", "install", "postinstall", "prepublish", "preprepare", "prepare", "postprepare"]
+    .some(key => manifest.scripts?.[key])
+    && !await hasProjectNpmConfiguration(packageRoot, projectRoot)
+    && !manifest.workspaces && [...expectedPackages.values()].every(value => !value.link
+      && !/^(?:file:|link:|workspace:)/u.test(String(value.resolved ?? "")));
+  let nodeModulesExists = await assertLocalNodeModules(packageRoot, resolvedPackageRoot);
+  const existingShared = await readMarker(packageRoot, MARKER_NAME, { fileSystem });
+  if (existingShared?.sharedStorage && !reusable) {
+    await assertLeaseOwned(lease);
+    await retainSharedTaskDependencies(packageRoot, existingShared);
+    nodeModulesExists = false;
+    await assertLeaseOwned(lease);
+  }
+  if (sharedDependencies && reusable && (!nodeModulesExists
+      || existingShared?.sharedStorage)) {
+    const result = await reuseTaskDependencyInputs({ packageRoot, fingerprint, manifestContent, lockfileContent,
+      withOwner: sharedDependencies, lease, limits,
+      assertSourceContext: async () => {
+        if (await hasProjectNpmConfiguration(packageRoot, projectRoot)) throw new Error("Task npm configuration changed during shared input preparation");
+      },
+      prepare: (root, sharedLease) => prepareNpmProject({ projectRoot: root, resolvedProjectRoot: root,
+        lockfile: path.join(root, "package-lock.json"), runNpm, limits, fileSystem, lease: sharedLease, verify: true }) });
+    const validated = await prepareNpmProject({ projectRoot, resolvedProjectRoot, lockfile,
+      runNpm: null, limits, fileSystem, lease, verify: true });
+    return { ...validated, ...result };
+  }
   let successMarker = null;
   let failureMarker = null;
   let validation = invalidInstalledState();
@@ -872,6 +914,7 @@ export async function prepareTaskWorktreeDependencies({
   lease = null,
   fileSystem: fileSystemOverrides = {},
   verify = true,
+  sharedDependencies = null,
 } = {}) {
   if (lockPath && lease) {
     throw new Error("Task dependency caller must combine its owner with the dependency lock lease");
@@ -900,6 +943,7 @@ export async function prepareTaskWorktreeDependencies({
         fileSystem,
         lease: activeLease,
         verify,
+        sharedDependencies,
       }));
       await assertLeaseOwned(activeLease);
     }

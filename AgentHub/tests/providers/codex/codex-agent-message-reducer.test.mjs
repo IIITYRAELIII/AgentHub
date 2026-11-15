@@ -155,7 +155,7 @@ test("Codex live response turns a split response annotation marker into a citati
   });
   assert.equal(run.responseText, "Цитата 1\nИсправлено");
   assert.equal(run.responseItems[0].text, "Цитата 1\nИсправлено");
-  assert.deepEqual(run.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(run.responseAnnotationReferences, [{ index: 1, position: { start: 0, end: 8 } }]);
 });
 
 test("Codex response deduplicates repeated annotation markers at the provider boundary", () => {
@@ -173,7 +173,7 @@ test("Codex response deduplicates repeated annotation markers at the provider bo
     },
   });
   assert.equal(run.responseText, "Цитата 1\nПервая часть\nВторая часть");
-  assert.deepEqual(run.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(run.responseAnnotationReferences, [{ index: 1, position: { start: 0, end: 8 } }]);
 });
 
 test("Codex response rejects unsafe and out-of-contract annotation indices", () => {

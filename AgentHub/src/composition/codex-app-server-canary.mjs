@@ -165,7 +165,7 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
     const safeToolItems = new Map();
     const safeToolNonce = `HUB_CANARY_TOOL_${randomBytes(12).toString("hex")}`;
     const safeToolShell = process.platform === "win32" ? trustedWindowsPowerShellPath(environment) : null;
-    const programFiles = path.win32.normalize(String(environment.ProgramFiles ?? ""));
+    const programFiles = path.win32.normalize(String(environment.ProgramFiles ?? environment.PROGRAMFILES ?? ""));
     const safeToolPwsh = /^[a-z]:\\Program Files$/iu.test(programFiles)
       ? path.win32.join(programFiles, "PowerShell", "7", "pwsh.exe") : null;
     let safeToolOpen = false, approvedToolItem = null;

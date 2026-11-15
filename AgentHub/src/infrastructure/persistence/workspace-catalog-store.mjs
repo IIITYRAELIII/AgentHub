@@ -1,8 +1,10 @@
+import { assertNoPendingTaskInterruption } from "./task-operation-interruption-fence.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
+import { McpAdmissionContentionError } from "../../domain/mcp-admission-contention.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { readClaimCustodyFence, readClaimCustodySuccessor, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
   claimCustodyNamespaces, claimCustodyTaskSnapshot, assertNoPendingClaimCustodyWriters } from "./claim-custody-fence.mjs";
@@ -44,6 +46,30 @@ const INTERSTREAM_MESSAGE_TOOLS = new Set([
   "hub_task_start",
   "hub_task_reassign",
 ]);
+
+function migrateAuthenticatedUserOperations(database) {
+  const columns = database.prepare("PRAGMA table_info(hub_mcp_operations)").all();
+  if (columns.some(row => row.name === "stream_id" && row.notnull)) {
+    const definition = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='hub_mcp_operations'").get().sql;
+    const objects = database.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='hub_mcp_operations' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+    const names = columns.map(row => '"' + row.name.replaceAll('"', '""') + '"').join(",");
+    database.exec("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE");
+    try {
+      database.exec(`CREATE TEMP TABLE hub_mcp_identity_migration AS SELECT * FROM hub_mcp_operations;
+        DROP TABLE hub_mcp_operations;`);
+      database.exec(definition.replace(/(workspace_id|stream_id|provider|provider_thread_id) TEXT NOT NULL/g, "$1 TEXT"));
+      database.exec(`INSERT INTO hub_mcp_operations (${names}) SELECT ${names} FROM hub_mcp_identity_migration;
+        DROP TABLE hub_mcp_identity_migration;`);
+      for (const object of objects) database.exec(object.sql);
+      if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("MCP user identity migration foreign key check failed");
+      database.exec("COMMIT");
+    } catch (error) { database.exec("ROLLBACK"); throw error; }
+    finally { database.exec("PRAGMA foreign_keys=ON"); }
+  }
+  if (!columns.some(row => row.name === "actor_kind")) {
+    database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN actor_kind TEXT NOT NULL DEFAULT 'provider'");
+  }
+}
 
 function configure(database) {
   database.exec(`
@@ -114,10 +140,11 @@ function configure(database) {
       ON hub_threads(stream_id, position);
     CREATE TABLE IF NOT EXISTS hub_mcp_operations (
       request_id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      stream_id TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      provider_thread_id TEXT NOT NULL,
+      workspace_id TEXT,
+      stream_id TEXT,
+      provider TEXT,
+      provider_thread_id TEXT,
+      actor_kind TEXT NOT NULL DEFAULT 'provider',
       tool_name TEXT NOT NULL,
       arguments_hash TEXT NOT NULL,
       interstream_content_hash TEXT NOT NULL DEFAULT '',
@@ -188,6 +215,67 @@ function configure(database) {
       ON hub_workspaces(purge_after_ms)
       WHERE archived_at_ms IS NOT NULL;
   `);
+  migrateAuthenticatedUserOperations(database);
+  const executionColumns = database.prepare("PRAGMA table_info(hub_mcp_operations)").all();
+  if (!executionColumns.some(column => column.name === "task_execution_json")) {
+    database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN task_execution_json TEXT");
+  }
+  database.exec("BEGIN IMMEDIATE");
+  try {
+  for (const event of ["INSERT", "UPDATE"]) database.exec(`
+    DROP TRIGGER IF EXISTS hub_mcp_actor_${event.toLowerCase()};
+    CREATE TRIGGER hub_mcp_actor_${event.toLowerCase()}
+    BEFORE ${event} ON hub_mcp_operations
+    WHEN NOT (
+      (NEW.actor_kind='provider' AND NEW.workspace_id IS NOT NULL
+        AND NEW.stream_id IS NOT NULL AND NEW.provider IS NOT NULL AND NEW.provider_thread_id IS NOT NULL)
+      OR (NEW.actor_kind='authenticated-user' AND NEW.stream_id IS NULL
+        AND NEW.provider IS NULL AND NEW.provider_thread_id IS NULL
+        AND NEW.tool_name IN ('hub_task_status_update','hub_task_create','hub_task_update','hub_task_complete','hub_task_delete')
+        AND json_extract(NEW.task_execution_json, '$.protocol') IS 'task-operation-interruption-v1'
+        AND (NEW.tool_name='hub_task_create' OR json_extract(NEW.task_execution_json, '$.taskId') IS NOT NULL)
+        AND json_extract(NEW.task_execution_json, '$.taskWorkspaceId') IS NEW.workspace_id))
+    BEGIN SELECT RAISE(ABORT, 'MCP operation actor identity is invalid'); END;`);
+  database.exec(`CREATE TRIGGER IF NOT EXISTS hub_user_operation_identity
+    BEFORE UPDATE ON hub_mcp_operations
+    WHEN OLD.actor_kind='authenticated-user' AND (
+      NEW.request_id IS NOT OLD.request_id OR NEW.workspace_id IS NOT OLD.workspace_id
+      OR NEW.actor_kind IS NOT OLD.actor_kind OR NEW.stream_id IS NOT OLD.stream_id
+      OR NEW.provider IS NOT OLD.provider OR NEW.provider_thread_id IS NOT OLD.provider_thread_id
+      OR NEW.tool_name IS NOT OLD.tool_name OR NEW.arguments_hash IS NOT OLD.arguments_hash
+      OR json_extract(NEW.task_execution_json,'$.taskId') IS NOT json_extract(OLD.task_execution_json,'$.taskId')
+      OR json_extract(NEW.task_execution_json,'$.arguments') IS NOT json_extract(OLD.task_execution_json,'$.arguments'))
+    BEGIN SELECT RAISE(ABORT, 'Authenticated-user operation identity is immutable'); END;`);
+  database.exec("COMMIT");
+  } catch (error) { database.exec("ROLLBACK"); throw error; }
+  database.exec(`CREATE INDEX IF NOT EXISTS hub_task_execution_task_idx
+    ON hub_mcp_operations(json_extract(task_execution_json, '$.taskId'))`);
+  database.exec(`CREATE TRIGGER IF NOT EXISTS hub_interrupted_operation_history
+    BEFORE UPDATE ON hub_mcp_operations
+    WHEN json_extract(OLD.task_execution_json, '$.cancellation') IS NOT NULL AND (
+      NEW.request_id IS NOT OLD.request_id OR NEW.workspace_id IS NOT OLD.workspace_id
+      OR NEW.stream_id IS NOT OLD.stream_id OR NEW.provider IS NOT OLD.provider
+      OR NEW.provider_thread_id IS NOT OLD.provider_thread_id OR NEW.tool_name IS NOT OLD.tool_name
+      OR NEW.arguments_hash IS NOT OLD.arguments_hash
+      OR ((NEW.status IS NOT OLD.status OR NEW.receipt_state IS NOT OLD.receipt_state)
+        AND NOT (OLD.receipt_state IN ('pending', 'reconciling')
+          AND json_extract(OLD.task_execution_json, '$.cancellation.phase')='requested'
+          AND json_extract(NEW.task_execution_json, '$.cancellation.phase')='stopped'
+          AND NEW.status='failed' AND NEW.receipt_state='failed'))
+      OR NEW.result_json IS NOT OLD.result_json
+      OR NEW.error_text IS NOT OLD.error_text OR NEW.created_at_ms IS NOT OLD.created_at_ms
+      OR NEW.completed_at_ms IS NOT OLD.completed_at_ms
+      OR json_extract(NEW.task_execution_json, '$.cancellation') IS NULL)
+    BEGIN SELECT RAISE(ABORT, 'Interrupted operation history is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_interrupted_operation_delete
+    BEFORE DELETE ON hub_mcp_operations
+    WHEN json_extract(OLD.task_execution_json, '$.cancellation') IS NOT NULL
+    BEGIN SELECT RAISE(ABORT, 'Interrupted operation history is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_interrupted_operation_replace
+    BEFORE INSERT ON hub_mcp_operations
+    WHEN EXISTS (SELECT 1 FROM hub_mcp_operations WHERE request_id=NEW.request_id
+      AND json_extract(task_execution_json, '$.cancellation') IS NOT NULL)
+    BEGIN SELECT RAISE(ABORT, 'Interrupted operation cannot be replaced'); END;`);
   const streamColumns = database.prepare("PRAGMA table_info(hub_streams)").all();
   const operationColumns = database.prepare("PRAGMA table_info(hub_mcp_operations)").all();
   if (!operationColumns.some((column) => column.name === "claim_custody_json")) {
@@ -318,6 +406,30 @@ function threadFromRow(row) {
   };
 }
 
+const THREAD_RESOLUTION_COLUMNS = `t.*, s.ordinal AS resolved_ordinal, s.name AS resolved_stream_name,
+  w.id AS resolved_workspace_id, w.name AS resolved_workspace_name,
+  w.kind AS resolved_workspace_kind,
+  CASE WHEN s.name IS NOT NULL AND trim(s.name) <> '' THEN 0 ELSE EXISTS (
+    SELECT 1 FROM hub_streams live
+    WHERE live.workspace_id = s.workspace_id AND live.archived_at_ms IS NULL
+    LIMIT 1 OFFSET 1
+  ) END AS multiple_live_streams`;
+
+function resolvedThreadFromRow(row) {
+  if (!row) return null;
+  const thread = threadFromRow(row);
+  const ordinal = Number(row.resolved_ordinal) || 1;
+  const name = row.resolved_stream_name ? String(row.resolved_stream_name) : null;
+  return {
+    workspaceId: String(row.resolved_workspace_id),
+    workspaceName: String(row.resolved_workspace_name),
+    workspaceKind: String(row.resolved_workspace_kind),
+    streamId: thread.streamId, streamOrdinal: ordinal, streamName: name,
+    streamDisplayName: streamDisplayName({ name, ordinal, streamCount: row.multiple_live_streams ? 2 : 1 }),
+    threadPosition: thread.position, thread,
+  };
+}
+
 function sourceName(value) {
   const source = String(value ?? "discovered").trim().toLowerCase();
   if (!SOURCES.has(source)) throw new Error(`invalid thread binding source: ${value}`);
@@ -384,10 +496,11 @@ function mcpOperationFromRow(row) {
   try { result = row.result_json == null ? null : JSON.parse(String(row.result_json)); } catch { result = null; }
   return {
     requestId: String(row.request_id),
-    workspaceId: String(row.workspace_id),
-    streamId: String(row.stream_id),
-    provider: String(row.provider),
-    threadId: String(row.provider_thread_id),
+    workspaceId: row.workspace_id == null ? null : String(row.workspace_id),
+    streamId: row.stream_id == null ? null : String(row.stream_id),
+    provider: row.provider == null ? null : String(row.provider),
+    threadId: row.provider_thread_id == null ? null : String(row.provider_thread_id),
+    ...(row.actor_kind === "authenticated-user" ? { actorKind: row.actor_kind } : {}),
     toolName: String(row.tool_name),
     argumentsHash: String(row.arguments_hash),
     interstreamContentHash: String(row.interstream_content_hash ?? ""),
@@ -398,6 +511,7 @@ function mcpOperationFromRow(row) {
     error: String(row.error_text ?? ""),
     createdAtMs: Number(row.created_at_ms) || 0,
     completedAtMs: row.completed_at_ms == null ? null : Number(row.completed_at_ms),
+    ...(row.task_execution_json == null ? {} : { taskExecution: JSON.parse(row.task_execution_json) }),
     ...(row.claim_custody_json == null ? {} : { claimCustody: JSON.parse(row.claim_custody_json) }),
     ...(row.preparation_state_json == null ? {} : { preparationState: JSON.parse(row.preparation_state_json) }),
   };
@@ -876,16 +990,30 @@ export class WorkspaceCatalogStore {
 
   beginMcpOperation({
     requestId, workspaceId, streamId, provider, threadId, toolName, argumentsHash,
+    taskExecution = null, actorKind = "provider",
   } = {}) {
     const id = safeIdentifier(requestId, "MCP request id");
-    const workspace = safeIdentifier(workspaceId, "workspace id");
-    const stream = safeIdentifier(streamId, "stream id");
-    const normalizedProvider = safeIdentifier(provider, "provider");
-    const normalizedThreadId = safeIdentifier(threadId, "thread id");
+    const user = actorKind === "authenticated-user";
+    const workspace = user && workspaceId == null ? null : safeIdentifier(workspaceId, "workspace id");
+    if (!["provider", "authenticated-user"].includes(actorKind)
+        || (user && (streamId != null || provider != null || threadId != null
+          || !["hub_task_status_update", "hub_task_create", "hub_task_update", "hub_task_complete", "hub_task_delete"].includes(toolName) || taskExecution?.protocol !== "task-operation-interruption-v1"
+          || taskExecution.taskWorkspaceId !== workspace))) throw new Error("Invalid authenticated-user operation identity");
+    const stream = user ? null : safeIdentifier(streamId, "stream id");
+    const normalizedProvider = user ? null : safeIdentifier(provider, "provider");
+    const normalizedThreadId = user ? null : safeIdentifier(threadId, "thread id");
     const tool = safeIdentifier(toolName, "MCP tool name");
     const hash = safeIdentifier(argumentsHash, "MCP arguments hash");
-    this.#database.exec("BEGIN IMMEDIATE");
+    try { this.#database.exec("BEGIN IMMEDIATE"); }
+    catch (error) {
+      if (!sqliteContention(error)) throw error;
+      throw new McpAdmissionContentionError({ requestId: id, workspaceId: workspace, streamId: stream,
+        provider: normalizedProvider, threadId: normalizedThreadId, toolName: tool, argumentsHash: hash, actorKind }, error);
+    }
     try {
+    if (taskExecution && ["hub_task_claim", "hub_task_status_update"].includes(tool)) {
+      assertNoPendingTaskInterruption(this.#database, taskExecution.taskId);
+    }
     const successor = readClaimCustodySuccessor(this.#database, id);
     if (successor && (successor.phase !== "fenced" || tool !== "hub_task_claim"
         || successor.workspaceId !== workspace || successor.original.streamId !== stream
@@ -896,10 +1024,11 @@ export class WorkspaceCatalogStore {
     const inserted = this.#database.prepare(`
       INSERT OR IGNORE INTO hub_mcp_operations (
         request_id, workspace_id, stream_id, provider, provider_thread_id,
-        tool_name, arguments_hash, status, receipt_state, created_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?)
+        tool_name, arguments_hash, status, receipt_state, created_at_ms, task_execution_json, actor_kind
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?)
     `).run(
       id, workspace, stream, normalizedProvider, normalizedThreadId, tool, hash, this.#nowMs(),
+      taskExecution == null ? null : JSON.stringify(taskExecution), actorKind,
     );
     const existing = mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
@@ -910,7 +1039,8 @@ export class WorkspaceCatalogStore {
         && existing.provider === normalizedProvider
         && existing.threadId === normalizedThreadId
         && existing.toolName === tool
-        && existing.argumentsHash === hash;
+        && existing.argumentsHash === hash
+        && (existing.actorKind ?? "provider") === actorKind;
       if (!matches) throw new Error("MCP request_id was already used for another operation");
       const replayed = !Number(inserted.changes);
       this.#database.exec("COMMIT");
@@ -932,7 +1062,10 @@ export class WorkspaceCatalogStore {
   }
 
   runMutation(operation, options = {}) {
-    return this.#mutations.run(operation, options);
+    return this.#mutations.run(operation, { ...options,
+      ...(options.method === "beginMcpOperation"
+        ? { onTiming: options.args?.[0]?.recordAdmissionTiming } : {}),
+    });
   }
 
   mutationDiagnostics() {
@@ -1090,7 +1223,7 @@ export class WorkspaceCatalogStore {
     });
   }
 
-  recordClaimAdmissionRefusal({ receipt, task, claimArguments, busyReason, lockAdmission = null } = {}) {
+  recordClaimAdmissionRefusal({ receipt, task, claimArguments, busyReason, lockAdmission = null, sourceAdmission = null } = {}) {
     if (this.claimCustodyForOriginal(receipt?.requestId)) throw new TaskClaimContinuationWithdrawnError();
     if (receipt?.replayed !== false || receipt.status !== "pending" || receipt.operationStatus !== "pending") {
       throw new Error("Claim refusal requires a fresh MCP intake");
@@ -1110,7 +1243,8 @@ export class WorkspaceCatalogStore {
       }
       const evidence = {
         version: 1,
-        ...(lockAdmission ? { kind: "task-claim-lock-admission-v1", code: "TASK_CLAIM_LOCK_ADMISSION_TIMEOUT", lockAdmission }
+        ...(sourceAdmission ? { kind: "task-claim-source-admission-v1", code: "TASK_CLAIM_SOURCE_ADMISSION_FAILED", sourceAdmission }
+          : lockAdmission ? { kind: "task-claim-lock-admission-v1", code: "TASK_CLAIM_LOCK_ADMISSION_TIMEOUT", lockAdmission }
           : { kind: "task-claim-executor-busy-v1", code: "TASK_CLAIM_EXECUTOR_BUSY", busyReason }),
         taskId: task.id, taskRevision: task.revision, ownerStreamId: task.streamId, claimArguments,
         ...Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName",
@@ -1208,6 +1342,32 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
+  recordMcpOperationCompletionFailure(requestId, { identity, ownerId, diagnostic } = {}) {
+    return this.#transaction(() => {
+      const row = this.mcpOperation(requestId);
+      if (!row || Object.entries(identity ?? {}).length !== 8 || identity.actorKind !== (row.actorKind ?? "provider")
+          || !["workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash", "createdAtMs"]
+            .every(key => identity[key] === row[key])) throw new Error("Completion diagnostic receipt identity differs");
+      if (["succeeded", "failed"].includes(row.status) || row.taskExecution?.cancellation) return row;
+      if (this.claimCustodyForOriginal(requestId) || row.taskExecution?.protocol !== "task-operation-interruption-v1"
+          || !ownerId || row.taskExecution.ownerId !== ownerId) throw new Error("Completion diagnostic execution owner differs");
+      if (diagnostic?.version !== 1 || diagnostic.kind !== "mcp-completion-failure-v1"
+          || diagnostic.effects !== "retained_unknown" || typeof diagnostic.effectCompleted !== "boolean"
+          || ![diagnostic.originalError, diagnostic.persistenceError].every(error => error
+            && typeof error.name === "string" && error.name.length <= 100
+            && (error.code === null || /^[A-Z0-9_]{1,64}$/u.test(error.code))
+            && typeof error.message === "string" && error.message.length <= 4000)
+          || Buffer.byteLength(JSON.stringify(diagnostic), "utf8") > 32_768) throw new Error("Invalid bounded completion diagnostic");
+      if (row.taskExecution.completionFailure) return row;
+      const completionFailure = { ...diagnostic, ownerId, argumentsHash: row.argumentsHash, observedAtMs: this.#nowMs() };
+      const changed = this.#database.prepare(`UPDATE hub_mcp_operations SET task_execution_json=?
+        WHERE request_id=? AND task_execution_json=? AND receipt_state IN ('pending','reconciling','unknown')`)
+        .run(JSON.stringify({ ...row.taskExecution, completionFailure }), requestId, JSON.stringify(row.taskExecution));
+      if (Number(changed.changes) !== 1) throw new Error("Completion diagnostic owner CAS changed");
+      return this.mcpOperation(requestId);
+    });
+  }
+
   completeUnknownMcpOperation(requestId, {
     workspaceId, toolName, result, reconciliation,
   } = {}) {
@@ -1248,7 +1408,7 @@ export class WorkspaceCatalogStore {
   }
 
   failUnknownMcpOperation(requestId, {
-    workspaceId, toolName, error, reconciliation,
+    workspaceId, toolName, error, reconciliation, beforeSettle = null,
   } = {}) {
     const id = safeIdentifier(requestId, "MCP request id");
     if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
@@ -1267,6 +1427,10 @@ export class WorkspaceCatalogStore {
         || operation.receiptState !== "unknown"
       ) {
         throw new Error("Unknown MCP operation identity or receipt state does not match");
+      }
+      if (beforeSettle) {
+        const checked = beforeSettle(operation);
+        if (checked?.then) throw new TypeError("Receipt settlement validation must be synchronous");
       }
       const errorText = String(error?.message ?? error ?? "authoritative reconciliation failed").slice(0, 2_000);
       const resultJson = compactMcpOperationResult(
@@ -1407,6 +1571,61 @@ export class WorkspaceCatalogStore {
       if (Number(updated.changes) !== 1) throw new Error("Original preparation failure owner CAS changed");
       return this.mcpOperation(id);
     });
+  }
+
+  bindTaskOperationExecution(requestId, binding) {
+    assertNoPendingTaskInterruption(this.#database, binding.taskId);
+    const row = this.mcpOperation(requestId);
+    if (!row || row.taskExecution?.cancellation) throw new Error("Task operation execution is interrupted");
+    if (row.taskExecution && JSON.stringify(row.taskExecution) !== JSON.stringify(binding)) {
+      throw new Error("Task operation already belongs to another execution owner");
+    }
+    this.#database.prepare("UPDATE hub_mcp_operations SET task_execution_json=? WHERE request_id=? AND task_execution_json IS NULL")
+      .run(JSON.stringify(binding), requestId);
+    return this.mcpOperation(requestId).taskExecution;
+  }
+
+  requestTaskOperationInterruption(requestId, input) {
+    return this.#transaction(() => {
+      const row = this.mcpOperation(requestId);
+      const task = this.#database.prepare("SELECT row_revision, workspace_id FROM hub_board_tasks WHERE id=?").get(input.taskId);
+      if (!row || row.argumentsHash !== input.expectedArgumentsHash || !task
+        || task.workspace_id !== input.targetWorkspaceId || Number(task.row_revision) !== input.expectedTaskRevision) {
+        throw new Error("Task operation interruption CAS changed");
+      }
+      if (row.taskExecution?.cancellation) return row.taskExecution.cancellation;
+      if (["succeeded", "failed"].includes(row.status)) throw new Error("Task operation completed before cancellation");
+      const cancellation = { phase: "requested", requestId, taskId: input.taskId, targetWorkspaceId: input.targetWorkspaceId,
+        requestedAtMs: input.requestedAtMs, cancellationRequestId: input.cancellationRequestId, actor: input.actor, cohort: input.cohort,
+        effects: "retained_unknown", original: row };
+      const state = { ...(row.taskExecution ?? { version: 1, taskId: input.taskId, arguments: input.arguments }), cancellation };
+      this.#database.prepare("UPDATE hub_mcp_operations SET task_execution_json=? WHERE request_id=?")
+        .run(JSON.stringify(state), requestId);
+      return cancellation;
+    });
+  }
+
+  finishTaskOperationInterruption(requestId, retirement) {
+    return this.#transaction(() => {
+      const row = this.mcpOperation(requestId);
+      const state = row?.taskExecution;
+      if (!state?.cancellation) throw new Error("Task cancellation is not requested");
+      if (state.cancellation.phase === "stopped") return state.cancellation;
+      const cancellation = { ...state.cancellation, phase: "stopped", stoppedAtMs: this.#nowMs(), retirement };
+      this.#database.prepare(`UPDATE hub_mcp_operations SET task_execution_json=?,
+        status=CASE WHEN receipt_state IN ('pending', 'reconciling') THEN 'failed' ELSE status END,
+        receipt_state=CASE WHEN receipt_state IN ('pending', 'reconciling') THEN 'failed' ELSE receipt_state END
+        WHERE request_id=?`).run(JSON.stringify({ ...state, cancellation }), requestId);
+      return cancellation;
+    });
+  }
+
+  taskOperationExecutions(taskId) {
+    return this.#database.prepare(`SELECT * FROM hub_mcp_operations
+      WHERE json_extract(task_execution_json, '$.taskId')=?
+      AND (receipt_state NOT IN ('succeeded', 'failed')
+        OR json_extract(task_execution_json, '$.cancellation') IS NOT NULL) ORDER BY created_at_ms`)
+      .all(taskId).map(mcpOperationFromRow);
   }
 
   mcpOperation(requestId) {
@@ -1970,34 +2189,35 @@ export class WorkspaceCatalogStore {
     // This point read is used for every distinct journal Thread. Display needs
     // only zero/one versus multiple live Streams, never their complete count.
     const row = this.#database.prepare(`
-      SELECT t.*, s.ordinal AS resolved_ordinal, s.name AS resolved_stream_name,
-        w.id AS resolved_workspace_id, w.name AS resolved_workspace_name,
-        w.kind AS resolved_workspace_kind,
-        CASE WHEN s.name IS NOT NULL AND trim(s.name) <> '' THEN 0 ELSE EXISTS (
-          SELECT 1 FROM hub_streams live
-          WHERE live.workspace_id = s.workspace_id AND live.archived_at_ms IS NULL
-          LIMIT 1 OFFSET 1
-        ) END AS multiple_live_streams
+      SELECT ${THREAD_RESOLUTION_COLUMNS}
       FROM hub_threads t
       JOIN hub_streams s ON s.id = t.stream_id
       JOIN hub_workspaces w ON w.id = s.workspace_id
       WHERE t.provider = ? AND t.provider_thread_id = ?
     `).get(identity.provider, identity.threadId);
-    if (!row) return null;
-    const thread = threadFromRow(row);
-    const ordinal = Number(row.resolved_ordinal) || 1;
-    const name = row.resolved_stream_name ? String(row.resolved_stream_name) : null;
-    return {
-      workspaceId: String(row.resolved_workspace_id),
-      workspaceName: String(row.resolved_workspace_name),
-      workspaceKind: String(row.resolved_workspace_kind),
-      streamId: thread.streamId,
-      streamOrdinal: ordinal,
-      streamName: name,
-      streamDisplayName: streamDisplayName({ name, ordinal, streamCount: row.multiple_live_streams ? 2 : 1 }),
-      threadPosition: thread.position,
-      thread,
-    };
+    return resolvedThreadFromRow(row);
+  }
+
+  // A worker already asks for at most 128 exact references per callback. Read
+  // each such group in one fresh statement, without retaining binding authority
+  // between calls or enumerating unrelated Workspace/Thread history.
+  resolveThreads(values) {
+    if (!Array.isArray(values)) throw new TypeError("Thread references must be an array");
+    const identities = values.map(normalizedThreadIdentity);
+    const resolved = identities.map(() => null);
+    for (let offset = 0; offset < identities.length; offset += 128) {
+      const batch = identities.slice(offset, offset + 128);
+      const rows = this.#database.prepare(`
+        WITH requested(slot, provider, thread_id) AS (VALUES ${batch.map(() => "(?, ?, ?)").join(",")})
+        SELECT requested.slot AS resolution_slot, ${THREAD_RESOLUTION_COLUMNS}
+        FROM requested
+        JOIN hub_threads t ON t.provider = requested.provider AND t.provider_thread_id = requested.thread_id
+        JOIN hub_streams s ON s.id = t.stream_id
+        JOIN hub_workspaces w ON w.id = s.workspace_id
+      `).all(...batch.flatMap((identity, index) => [offset + index, identity.provider, identity.threadId]));
+      for (const row of rows) resolved[row.resolution_slot] = resolvedThreadFromRow(row);
+    }
+    return resolved;
   }
 
   assignUnknownThread(value, { source = "discovered", streamName = null } = {}) {

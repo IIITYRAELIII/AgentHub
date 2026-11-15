@@ -3,6 +3,16 @@ import { StorageRetentionService } from "../application/storage-retention-servic
 import { withInterprocessLocks } from "../infrastructure/process/interprocess-lock.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { RuntimeReleaseRetention } from "../infrastructure/filesystem/runtime-release-retention.mjs";
+import { RuntimeUpdateBackupRetention } from "../infrastructure/persistence/runtime-update-backup-retention.mjs";
+import { withSealedRuntimeExecutor } from "../infrastructure/filesystem/sealed-runtime-executor.mjs";
+
+// Foreground finite series and background passes use the SAME real lease.
+// Passing its token to runApproved must not shorten the native producer lifetime
+// to the nested per-unit installation lease. No child survives this callback.
+export function withStorageRetentionLease(dataDir, operation) {
+  return withInterprocessLocks([path.join(dataDir, "storage-retention")],
+    lease => withSealedRuntimeExecutor(() => operation(lease)), { timeoutMs: 250 });
+}
 
 export function storageRetentionEnabled({ environment = process.env, recording = false } = {}) {
   return Boolean(environment.AGENT_HUB_RELEASE_ID) && environment.AGENT_HUB_TEST_CONTOUR !== "1" && !recording;
@@ -12,14 +22,18 @@ export function createStorageRetentionComposition({ config, store, taskBoard, ta
   timers, readReady, readBusy, isStopping, health, environment = process.env } = {}) {
   if (!storageRetentionEnabled({ environment, recording: Boolean(config.testContourRecording) })) return null;
   const service = new StorageRetentionService({ store, timers, isStopping,
-    owners: [taskGitWorkspaces.storageRetentionOwner({ taskBoard, isStopping: () => isStopping() || readBusy() }),
-      new RuntimeReleaseRetention({ runtimeRoot: defaultRuntimeRoot({ environment }), isStopping: () => isStopping() || readBusy() }),
+    owners: [new RuntimeUpdateBackupRetention({ runtimeRoot: environment.AGENT_HUB_RUNTIME_ROOT ?? defaultRuntimeRoot({ environment }), store,
+      isStopping: () => isStopping() || readBusy() }),
+      taskGitWorkspaces.storageRetentionOwner({ taskBoard, readGeneration: (id, generation) => releaseOperations.retentionGeneration(id, generation),
+        isStopping: () => isStopping() || readBusy() }),
+      new RuntimeReleaseRetention({ runtimeRoot: defaultRuntimeRoot({ environment }), pythonExe: config.pythonExe,
+        isStopping: () => isStopping() || readBusy() }),
       releaseGitWorkspaces.storageRetentionOwner({
         readGeneration: (id, generation) => releaseOperations.retentionGeneration(id, generation),
         isStopping: () => isStopping() || readBusy(),
       })],
     readContext: () => ({ ready: readReady(), busy: readBusy(), releaseId: environment.AGENT_HUB_RELEASE_ID, isolated: false }),
-    withLease: fn => withInterprocessLocks([path.join(config.dataDir, "storage-retention")], fn, { timeoutMs: 250 }),
+    withLease: fn => withStorageRetentionLease(config.dataDir, fn),
   });
   // Health reads only cached bounded status, never the maintenance DB or files.
   health.setDiagnosticSource("storageRetention", () => service.status());

@@ -270,6 +270,7 @@ export async function createProviderApplicationComposition({
       });
     },
     prepareRunAdmission: (target) => claudeRunAdmission.prepare(target),
+    wakeDeferredInputs: (...args) => api.wakeDeferredInputs(...args),
     revokeRunAdmission: (run) => claudeRunAdmission.revoke(run),
     turnEndNotifications,
     runJournal,

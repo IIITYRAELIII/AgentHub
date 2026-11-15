@@ -1,3 +1,4 @@
+import { codexAssistantResponseProjection } from "../../domain/codex-response-annotation.mjs";
 import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -197,7 +198,8 @@ export function parseClaudeTranscript(text) {
   const failed = assistantEntries.some((entry) => entry?.isApiErrorMessage === true);
   const completed = failed
     || assistantEntries.some((entry) => entry.message?.stop_reason === "end_turn");
-  const answer = answerParts.join("\n\n").trim();
+  const projection = codexAssistantResponseProjection(answerParts.join("\n\n").trim());
+  const answer = projection.text;
   const reasoning = thinkingParts.at(-1)?.slice(-1500) ?? "";
   const transcriptTitle = claudeTranscriptTitle(entries);
   const cwdValues = entries.map((entry) => entry?.cwd).filter(Boolean);
@@ -212,6 +214,7 @@ export function parseClaudeTranscript(text) {
         : "Claude выполняет поток…";
   return {
     answer,
+    ...(projection.responseAnnotationReferences.length ? { responseAnnotationReferences: projection.responseAnnotationReferences } : {}),
     reasoning,
     completed,
     active: promptIndex >= 0 && !completed,

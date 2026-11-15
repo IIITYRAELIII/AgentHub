@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { readFileSync, renameSync, writeFileSync, unlinkSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile, lstat, realpath, readdir } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
@@ -280,4 +283,150 @@ test("native runtime cohort observes the whole inherited job and refuses missing
     assert.equal(path.dirname(root), fixtureParent);
     await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
   }
+});
+
+async function heldPrimaryFixture(t) {
+  const parent = path.resolve("WIP", "native-custody-held-lock-tests");
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(path.join(parent, "held-"));
+  const env = { ...process.env, TEMP: root, TMP: root };
+  const source = path.join(root, "FixtureHost.cs"), executable = path.join(root, "AgentHub.RuntimeHost.exe");
+  let host, completion, nodePid;
+  t.after(async () => {
+    await writeFile(path.join(root, "release-node"), "");
+    await writeFile(path.join(root, "release-host"), "");
+    if (completion) assert.equal((await completion).code, 0);
+    if (nodePid) await eventually(() => {
+      try { process.kill(nodePid, 0); return false; }
+      catch (error) { if (error.code === "ESRCH") return true; throw error; }
+    }, "owned held-lock node joined", 45_000);
+    assert.equal(path.dirname(root), parent);
+    assert.equal(await realpath(root), root);
+    async function noAliases(directory) {
+      for (const name of await readdir(directory)) {
+        const file = path.join(directory, name), info = await lstat(file);
+        assert.equal(info.isSymbolicLink(), false, file);
+        if (info.isDirectory()) await noAliases(file);
+      }
+    }
+    await noAliases(root);
+    await rm(root, { recursive: true, force: true });
+  });
+  await writeFile(source, hostSource);
+  const compiler = path.join(process.env.WINDIR ?? "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+  const compiled = await captureProcess(compiler, ["/nologo", "/target:exe", `/out:${executable}`, source], { env, cwd: root });
+  assert.equal(compiled.code, 0, compiled.stdout + compiled.stderr);
+  const guardModule = new URL("../../../src/infrastructure/process/instance-lock.mjs", import.meta.url).href;
+  await writeFile(path.join(root, "node.mjs"), `import {SingleInstanceGuard} from ${JSON.stringify(guardModule)};
+import {writeFile,access} from 'node:fs/promises';import path from 'node:path';import {setTimeout as delay} from 'node:timers/promises';
+const root=process.argv[2],guard=new SingleInstanceGuard({dataDir:root});
+await guard.acquire();await guard.markReady();await writeFile(path.join(root,'fixture-ready'),'ready');
+try {const end=Date.now()+40000;while(Date.now()<end&&!await access(path.join(root,'release-node')).then(()=>true,()=>false))await delay(15);}
+finally {await guard.release();}
+`);
+  host = spawn(executable, [process.execPath, root, "normal"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env, cwd: root });
+  let diagnostic = "";host.stdout.on("data", b => diagnostic += b);host.stderr.on("data", b => diagnostic += b);
+  completion = new Promise(resolve => host.once("exit", code => resolve({ code, diagnostic })));
+  await eventually(() => exists(path.join(root, "fixture-ready")), "actual SingleInstanceGuard holds its primary lock");
+  const lock = JSON.parse(await readFile(path.join(root, "bot.lock"), "utf8"));nodePid = lock.pid;
+  const port = createClaimCustodyRuntime({ dataDir: root }), original = { createdAtMs: Date.now() };
+  const pins = await port.capture({ original });
+  return { root, lock, port, original, pins, completion };
+}
+
+async function heldCollector(f, name, mutate = null) {
+  const outputDir = path.join(f.root, "WIP", name), manifest = path.join(outputDir, "witness.json");
+  const oldSpawn = childProcess.spawn;
+  if (mutate) {
+    childProcess.spawn = (executable, args, options) => {
+      if (options?.env?.AGENT_HUB_CUSTODY_QUERY
+          && JSON.parse(options.env.AGENT_HUB_CUSTODY_QUERY).manifest === manifest) {
+        // Exact real JS-snapshot/native-open gap; then run the actual unmodified
+        // collector, payload, native job owner and pipe. No proof is mocked.
+        try { mutate(); } finally { childProcess.spawn = oldSpawn; syncBuiltinESMExports(); }
+      }
+      return oldSpawn(executable, args, options);
+    };
+    syncBuiltinESMExports();
+  }
+  let settled;
+  const done = launchClaimCustodyNativeWitness({ dataDir: f.root, outputDir,
+    hostPid: f.pins.host.pid, hostBirth: f.pins.host.birthFileTime,
+    nodePid: f.pins.node.pid, nodeBirth: f.pins.node.birthFileTime, originalMs: f.original.createdAtMs })
+    .then(value => (settled = { value }), error => (settled = { error }));
+  let binding;
+  const ready = async () => {
+    let bytes;
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      if (settled) throw settled.error ?? new Error("collector ended before witness readiness");
+      const raw = await readFile(manifest).catch(() => null);
+      if (raw) { JSON.parse(raw.toString("utf8"));bytes = raw;break; }
+      await delay(30);
+    }
+    assert.ok(bytes, "held-lock witness manifest became ready");
+    binding = { sourcePath: manifest, rawSha256: createHash("sha256").update(bytes).digest("hex") };
+    return binding;
+  };
+  const close = async () => {
+    childProcess.spawn = oldSpawn;syncBuiltinESMExports();
+    if (binding) await closeClaimCustodyNativeWitness({ dataDir: f.root, witness: binding });
+    const result = await done;
+    return result;
+  };
+  return { ready, close, manifest };
+}
+
+test("held Windows primary lock permits the real witness and retains exact native retirement", { skip: process.platform !== "win32", timeout: 90_000 }, async t => {
+  const f = await heldPrimaryFixture(t), before = await readFile(path.join(f.root, "bot.lock"));
+  const collector = await heldCollector(f, "held-primary");
+  try {
+    let binding;await assert.doesNotReject(async () => { binding = await collector.ready(); });
+    assert.deepEqual(await readFile(path.join(f.root, "bot.lock")), before);
+    const captured = await f.port.capture({ original: f.original, witness: binding });
+    assert.equal(captured.kind, "windows-runtime-exact-handle-witness-v1");
+    await assert.rejects(f.port.assertRetired(captured), /still has live owners/);
+    await writeFile(path.join(f.root, "release-node"), "");
+    await writeFile(path.join(f.root, "release-host"), "");
+    assert.equal((await f.completion).code, 0);
+    const proof = await eventually(() => f.port.assertRetired(captured), "held-lock fixture exact job retired");
+    assert.equal(proof.retired, true);assert.equal(proof.kind, "native-exact-job-handle-zero-v1");
+  } finally {
+    const result = await collector.close();
+    if (result.error) t.diagnostic(result.error.message);
+  }
+});
+
+test("native witness lock proof refuses changed bytes, same-byte replacement, reparse and oversized input", { skip: process.platform !== "win32", timeout: 90_000 }, async t => {
+  const f = await heldPrimaryFixture(t), file = path.join(f.root, "bot.lock"), original = readFileSync(file);
+  const target = path.join(f.root, "junction-target");await mkdir(target);
+  const modes = ["changed-bytes", "same-byte-replacement", "reparse", "oversized"];
+  for (const mode of modes) await t.test(mode, async () => {
+    const backup = path.join(f.root, "original-" + mode);
+    let moved = false;
+    const collector = await heldCollector(f, mode, () => {
+      if (mode === "changed-bytes") {
+        const value = JSON.parse(original.toString("utf8"));
+        value.instanceToken = value.instanceToken.slice(0, -1) + (value.instanceToken.endsWith("0") ? "1" : "0");
+        writeFileSync(file, JSON.stringify(value) + "\n");
+      } else if (mode === "oversized") writeFileSync(file, Buffer.alloc(16 * 1024 + 1, 120));
+      else {
+        renameSync(file, backup);moved = true;
+        if (mode === "reparse") symlinkSync(target, file, "junction");
+        else writeFileSync(file, original);
+      }
+    });
+    try {
+      await assert.rejects(collector.ready(), error => error.code === "TASK_CLAIM_CUSTODY_REJECTED"
+        && /primary-lock-(?:identity-drift|hash-drift|budget|not-regular|open)/u.test(error.message));
+      assert.equal(await exists(collector.manifest), false);
+      process.kill(f.lock.pid, 0);
+    } finally {
+      const result = await collector.close();
+      assert.ok(result.error, "collector joined its native refusal");
+      if (moved) { unlinkSync(file);renameSync(backup, file); }
+      else writeFileSync(file, original);
+    }
+    assert.deepEqual(await readFile(file), original);
+  });
 });

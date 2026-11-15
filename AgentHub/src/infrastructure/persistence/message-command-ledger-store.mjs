@@ -2,6 +2,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { taskOccupancyIdentity } from "../../domain/task-runs.mjs";
 import { MESSAGE_COMMAND_LIFETIME_MS } from "../../domain/message-command-expiry.mjs";
+import { streamMessageDelivery } from "../../domain/deferred-input.mjs";
 
 const BUSY_TIMEOUT_MS = 0;
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
@@ -493,9 +494,9 @@ function terminalRetryTombstone(record) {
     if (typeof source[key] === "boolean") result[key] = source[key];
   }
   for (const [key, limit] of [
-    ["provider", 40], ["threadId", 500], ["turnId", 500], ["runId", 500],
+    ["provider", 40], ["threadId", 500], ["streamId", 500], ["turnId", 500], ["runId", 500],
     ["id", 500], ["status", 100], ["error", 2_000], ["message", 2_000],
-    ["reason", 100], ["providerEffectOutcome", 100], ["expiredAt", 100],
+    ["reason", 100], ["providerEffectOutcome", 100], ["cancellationScope", 100], ["expiredAt", 100],
   ]) {
     const value = String(source[key] ?? "").trim();
     if (value) result[key] = value.slice(0, limit);
@@ -841,6 +842,7 @@ export class MessageCommandLedgerStore {
   transition({
     clientUserMessageId,
     expectedStates = ACTIVE_STATES,
+    expectedRevision = null,
     state,
     result = null,
     authoritativeTerminal = false,
@@ -853,6 +855,9 @@ export class MessageCommandLedgerStore {
     }
     const current = this.get(id);
     if (!current) return { changed: false, idempotent: false, conflict: false, record: null };
+    if (expectedRevision != null && current.revision !== expectedRevision) {
+      return { changed: false, idempotent: false, conflict: true, record: current };
+    }
     const incomingTerminalRevision = Number(result?.terminalRevision) || 0;
     const currentTerminalRevision = Number(current.result?.terminalRevision) || 0;
     const authoritativeUpdate = authoritativeTerminal === true
@@ -901,6 +906,52 @@ export class MessageCommandLedgerStore {
     }
     if (terminal) this.#archiveTerminalPayloads();
     return { changed: true, idempotent: false, conflict: false, record: this.get(id) };
+  }
+
+  get revision() {
+    const row = this.#database.prepare(`
+      SELECT data_version, total_changes() AS local_changes FROM pragma_data_version
+    `).get();
+    return `${row.data_version}:${row.local_changes}`;
+  }
+
+  deferredInputForCancellation({ id, clientUserMessageId = "" }) {
+    const commandId = String(clientUserMessageId).trim();
+    const records = commandId ? [this.get(commandId)].filter(Boolean) : this.#database.prepare(`
+      SELECT * FROM message_commands
+      WHERE state IN ('accepted', 'queued', 'attention-required')
+        AND CASE WHEN json_valid(item_json) THEN json_extract(item_json, '$.id') END = ?
+      LIMIT 2
+    `).all(String(id)).map(recordFromRow);
+    if (records.length !== 1) return null;
+    const record = records[0];
+    const itemId = record.item?.id ?? record.result?.id ?? record.receipt?.result?.id;
+    if (itemId !== id) return null;
+    return record.item ?? { id: itemId, clientUserMessageId: record.clientUserMessageId };
+  }
+
+  cancelQueuedInput(item) {
+    const record = this.get(item?.clientUserMessageId);
+    if (!record) return { owned: false }; // Existing raw legacy snapshot owner.
+    const storedId = record.item?.id ?? record.result?.id ?? record.receipt?.result?.id;
+    const refuse = () => {
+      throw Object.assign(new Error("Сообщение уже отправляется; отмена не подтверждена"), {
+        code: "ERR_DEFERRED_CANCEL_UNCONFIRMED",
+      });
+    };
+    if (storedId !== item.id) return refuse();
+    if (record.state === "cancelled") return { owned: true, duplicate: true, record };
+    if (!["accepted", "queued", "attention-required"].includes(record.state)
+      || [record.result, record.receipt?.result].some(result => result?.providerAccepted === true || result?.steered === true)) return refuse();
+    const outcome = this.transition({
+      clientUserMessageId: record.clientUserMessageId, expectedStates: [record.state],
+      expectedRevision: record.revision, state: "cancelled",
+      result: { ...record.result, id: item.id, clientUserMessageId: record.clientUserMessageId,
+        cancelled: true, deferred: false, queued: false, dispatching: false,
+        cancellationScope: "future-hub-dispatch", providerEffectOutcome: "unknown" },
+    });
+    if (outcome.conflict || (!outcome.changed && !outcome.idempotent)) return refuse();
+    return { owned: true, record: outcome.record };
   }
 
   expire({ isProtected, onExpired = () => {} } = {}) {
@@ -959,7 +1010,27 @@ export class MessageCommandLedgerStore {
     }
     const current = this.get(id);
     if (!current) return { changed: false, idempotent: false, conflict: false, record: null };
-    if (current.occupancyBinding === "exact") {
+    const expected = String(expectedOccupancyKey ?? "").trim();
+    const retarget = current.occupancyBinding === "exact" && current.occupancyKey !== next.key;
+    if (retarget) {
+      const item = current.item;
+      const accepted = [current.result, current.receipt?.result].some((result) => (
+        result?.providerAccepted === true || result?.steered === true
+      ));
+      const uncertain = /UNCONFIRMED/i.test(String(item?.lastErrorCode ?? ""))
+        || /unconfirmed/.test(String(item?.waitReason ?? ""));
+      const allowed = streamMessageDelivery(item) && streamMessageDelivery(target)
+        && ["queued", "attention-required", "dispatching"].includes(current.state)
+        && !accepted && !uncertain && item.manualPaused !== true && target.manualPaused !== true
+        && item.streamId === target.streamId && item.id === target.id
+        && item.clientUserMessageId === id && target.clientUserMessageId === id
+        && expected === current.occupancyKey
+        && taskOccupancyIdentity(item.deliveryTarget)?.key === next.key
+        && (current.state !== "dispatching" || (item.dispatchingAt
+          && item.dispatchingAt === target.dispatchingAt));
+      if (!allowed) return { changed: false, idempotent: false, conflict: true, record: current };
+    }
+    if (current.occupancyBinding === "exact" && !retarget) {
       return {
         changed: false,
         idempotent: current.occupancyKey === next.key,
@@ -967,7 +1038,6 @@ export class MessageCommandLedgerStore {
         record: current,
       };
     }
-    const expected = String(expectedOccupancyKey ?? "").trim();
     if (expected && current.occupancyKey && expected !== current.occupancyKey) {
       return { changed: false, idempotent: false, conflict: true, record: current };
     }
@@ -989,7 +1059,9 @@ export class MessageCommandLedgerStore {
       SET occupancy_key = ?, occupancy_binding = 'exact', item_json = ?,
           queue_order = ?, updated_at_ms = ?, revision = revision + 1
       WHERE client_user_message_id = ? AND revision = ?
-        AND state = ? AND (occupancy_binding IS NULL OR occupancy_binding = 'provisional')
+        AND state = ? AND ${retarget
+          ? "occupancy_binding = 'exact' AND occupancy_key = ?"
+          : "(occupancy_binding IS NULL OR occupancy_binding = 'provisional')"}
     `).run(
       next.key,
       JSON.stringify(nextItem),
@@ -998,6 +1070,7 @@ export class MessageCommandLedgerStore {
       id,
       current.revision,
       current.state,
+      ...(retarget ? [current.occupancyKey] : []),
     );
     if (update.changes === 0) {
       const record = this.get(id);

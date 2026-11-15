@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CodexCompletionService } from "../../../src/providers/provider-completion-services.mjs";
@@ -9,6 +9,12 @@ import { ManagedRunLifecycleService } from "../../../src/application/managed-run
 import { TerminalTurnCommitService } from "../../../src/application/terminal-turn-commit-service.mjs";
 import { ProviderTurnTerminalStore } from "../../../src/infrastructure/persistence/provider-turn-terminal-store.mjs";
 import { TaskRunRegistry } from "../../../src/domain/task-runs.mjs";
+import { CodexRecoveryService } from "../../../src/providers/provider-recovery-services.mjs";
+import { DeferredInputStore } from "../../../src/application/deferred-input-store.mjs";
+import { DeferredInputController } from "../../../src/application/deferred-input-controller.mjs";
+import { RuntimeStateStore, readRuntimeState } from "../../../src/infrastructure/persistence/runtime-state-store.mjs";
+import { CommandTraceService } from "../../../src/application/command-trace-service.mjs";
+import { CommandTraceWorkerStore } from "../../../src/infrastructure/persistence/command-trace-worker-store.mjs";
 
 function gate() {
   let release;
@@ -16,7 +22,7 @@ function gate() {
   return { promise, release };
 }
 
-async function fixture(t, beforeTerminalWrite = async () => {}) {
+async function fixture(t, beforeTerminalWrite = async () => {}, { afterCompletion = async () => {}, commandTrace = null } = {}) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub-cancel-settlement-"));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   const commits = new TerminalTurnCommitService({ store: new ProviderTurnTerminalStore({ dataDir }) });
@@ -34,7 +40,10 @@ async function fixture(t, beforeTerminalWrite = async () => {}) {
     clearApprovals: noop, pauseObservation: noop, pauseClaude: noop, stopTyping: noop,
     prepareAdmission: async () => null, revokeAdmission: noop,
     beforeCompletion: async () => {}, completionAborted: async () => {},
-    afterCompletion: async run => { events.push({ kind: "wake", terminal: await commits.get(run) }); },
+    afterCompletion: async run => {
+      events.push({ kind: "wake", terminal: await commits.get(run) });
+      await afterCompletion(run);
+    },
   });
   const run = await lifecycle.adopt("original accepted input", {
     provider: "codex", threadId: "thread-original", clientUserMessageId: "message-original",
@@ -58,6 +67,7 @@ async function fixture(t, beforeTerminalWrite = async () => {}) {
     temporaryFiles: new Map(), speechButtons: new Map(), removeFile: async () => {},
   });
   const cancellation = new ProviderCancellationService({
+    commandTrace,
     interruptCodex: async () => { throw new Error("no active turn"); },
     runForTask: current, completeRun: value => lifecycle.complete(value),
     readCodexSnapshot: async () => ({ turnId: run.turnId, completed: false,
@@ -82,6 +92,92 @@ test("Stop retry cannot release an actual finishing completion after its write f
   assert.equal(f.run.admissionReleased === true, false);
   assert.equal(f.events.length, 0);
   assert.equal(f.attempts(), 1);
+});
+
+test("accepted orphan recovery commits SQLite before one same-ID queued input with attachments can start", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-orphan-queue-"));
+  const runtime = new RuntimeStateStore({ dataDir: directory });
+  const tracesFile = path.join(directory, "traces.sqlite");
+  let traceStore = new CommandTraceWorkerStore({ databaseFile: tracesFile });
+  await traceStore.initialize();
+  let controller;
+  t.after(async () => {
+    controller?.stop();
+    await traceStore.close();
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const commandTrace = new CommandTraceService({ store: traceStore });
+  const attachment = path.join(directory, "original-image.png");
+  await writeFile(attachment, Buffer.from([137, 80, 78, 71, 7, 3]));
+  const original = { id: "queued-original", clientUserMessageId: "queued-client-original", provider: "codex",
+    threadId: "thread-original", streamId: "stream-original", projectRoot: "D:/fixture",
+    input: [{ type: "text", text: "original annotated input" }],
+    temporaryFiles: [attachment], persistentFiles: true, annotations: [{ quote: "source", annotation: "original" }],
+    conflictKind: "message-intake", waitReason: "managed-run-activity-unknown", createdAt: new Date().toISOString() };
+  // Reopen the ordinary state store before recovering; no recreated message ID.
+  await runtime.save({ activeRuns: [], queuedInputs: [original] });
+  const deferred = new DeferredInputStore();
+  for (const item of (await readRuntimeState(directory)).queuedInputs) deferred.put(item, "queued");
+  const entered = gate(), held = gate(), started = [];
+  const f = await fixture(t, async () => { entered.release(); await held.promise; }, {
+    commandTrace,
+    afterCompletion: async () => {
+      assert.equal((await f.commits.get(f.run)).status, "aborted");
+      await controller.process(original.id);
+    },
+  });
+  f.run.executionOwner = "hub";
+  f.run.providerStart = { state: "observed", turnId: f.run.turnId };
+  controller = new DeferredInputController({
+    pendingInputs: deferred.pending, queuedInputs: deferred.queued,
+    isBlocked: async () => Boolean(f.current()),
+    start: async item => { started.push(structuredClone(item)); return { id: "next-run", turnId: "next-turn" }; },
+    persist: () => runtime.save({ queuedInputs: [...deferred.queued.values()] }),
+    updateMessage: async () => {}, pendingKeyboard: () => null, notifyReturned: async () => {},
+    setTimeoutImpl: () => 1, clearTimeoutImpl() {}, commandTrace,
+  });
+  const recovery = new CodexRecoveryService({
+    transportRunning: () => true, readTaskSnapshot: async () => ({ turnId: f.run.turnId,
+      completed: false, active: false, activityUnknown: true, answer: "retained partial answer" }),
+    startTransport: async () => {}, initialize: async () => {}, isCodex: () => true,
+    finishInterrupted: async () => assert.fail("No direct release"),
+    readThread: async (_id, { applySnapshot }) => applySnapshot({ thread: { status: { type: "idle" },
+      turns: [{ id: f.run.turnId, status: "inProgress", items: [] }] } }),
+    recoverInactiveRun: value => f.cancellation.recoverCodex(value),
+    autoApprove: () => false, restartRequested: () => false, finishProgress: async () => {},
+    completeRun: async () => assert.fail("No direct release"), recoveredAnswer: () => "",
+    setProgressStage() {}, launchTurn: async () => assert.fail("No prompt replay"), reindexRun() {},
+    scheduleObservedRun() {}, startTyping() {}, saveState: async () => {}, telegram: async () => {},
+    consumeTracker: () => null, finalizeDelivery: async () => assert.fail("Canonical terminal owner only"),
+    turnTokenUsage: new Map(),
+  });
+  const recovering = recovery.recover(f.run);
+  await entered.promise;
+  try {
+    await controller.process(original.id);
+    assert.equal(started.length, 0);
+    assert.equal(await f.commits.get(f.run), null);
+  } finally { held.release(); await recovering; }
+  await Promise.all([recovery.recover(f.run), controller.process(original.id), controller.process(original.id)]);
+  assert.equal(started.length, 1);
+  assert.equal(started[0].id, original.id);
+  assert.equal(started[0].clientUserMessageId, original.clientUserMessageId);
+  assert.deepEqual(started[0].input, original.input);
+  assert.deepEqual(started[0].annotations, original.annotations);
+  assert.deepEqual(started[0].temporaryFiles, [attachment]);
+  assert.deepEqual(await readFile(attachment), Buffer.from([137, 80, 78, 71, 7, 3]));
+  assert.equal((await readRuntimeState(directory)).queuedInputs.length, 0);
+  assert.equal(f.attempts(), 1);
+  await traceStore.close();
+  traceStore = new CommandTraceWorkerStore({ databaseFile: tracesFile });
+  await traceStore.initialize();
+  const spans = await traceStore.readCommandTimeline(f.run.clientUserMessageId);
+  for (const stage of ["recovery-activity-before", "recovery-interrupt", "recovery-activity-after"]) {
+    assert.deepEqual(spans.filter(s => s.stage === stage).map(s => s.outcome),
+      ["started", stage === "recovery-interrupt" ? "failed" : "succeeded"]);
+  }
+  assert.doesNotMatch(JSON.stringify(spans), /original annotated input|original-image|retained partial answer/);
 });
 
 test("Stop during actual recovery persistence leaves the lane until the SQLite terminal commits", async t => {

@@ -1632,7 +1632,7 @@ test("rollout history projects readable Codex citations and structured annotatio
 
   assert.equal(activity.latestMessages[turnId], "Цитата 1\nГотово");
   assert.equal(activity.finalMessages[turnId], "Цитата 1\nГотово");
-  assert.deepEqual(activity.responseAnnotationReferences[turnId], [{ index: 1 }]);
+  assert.deepEqual(activity.responseAnnotationReferences[turnId], [{ index: 1, position: { start: 0, end: 8 } }]);
   assert.deepEqual(activity.userMessages[turnId][0].responseAnnotations, [
     { text: "Фрагмент", annotation: "Почему?" },
   ]);

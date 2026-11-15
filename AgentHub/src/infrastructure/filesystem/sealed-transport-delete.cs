@@ -17,7 +17,7 @@ public static class AgentHubSealedTransportDelete {
     public uint IndexHigh; public uint IndexLow;
   }
   [StructLayout(LayoutKind.Sequential)]
-  private struct Disposition { public byte Delete; }
+  private struct Disposition { public uint Flags; }
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
   private static extern SafeFileHandle CreateFileW(string p, uint a, uint s, IntPtr security, uint c, uint f, IntPtr template);
   [DllImport("kernel32.dll", SetLastError=true)]
@@ -79,8 +79,11 @@ public static class AgentHubSealedTransportDelete {
         using (SHA256 sha = SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
         if (hash != expectedHash) throw new IOException("transport-hash-changed");
         Check(h, volume, index, size);
-        Disposition d = new Disposition { Delete = 1 };
-        if (!SetFileInformationByHandle(h, 4, ref d, 1)) throw new IOException("transport-delete-refused:" + Marshal.GetLastWin32Error());
+        // The SAME verified handle owns disposition, including a read-only Git
+        // pack. No pathname attribute change or legacy fallback can touch a
+        // replacement. All identity/hash/stream/link/open guards above still apply.
+        Disposition d = new Disposition { Flags = 0x13 }; // DELETE|POSIX|IGNORE_READONLY
+        if (!SetFileInformationByHandle(h, 21, ref d, 4)) throw new IOException("transport-delete-refused:" + Marshal.GetLastWin32Error());
       }
     }
     } finally { for (int i = parents.Count - 1; i >= 0; i--) parents[i].Dispose(); }

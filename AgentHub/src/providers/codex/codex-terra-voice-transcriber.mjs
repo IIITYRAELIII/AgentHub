@@ -131,7 +131,7 @@ export class CodexTerraVoiceTranscriber {
   }
 
   async #transcribe(filePath) {
-    const local = await this.runProcess(this.pythonExe, [this.transcribeScript, path.resolve(filePath)], {
+    const local = await this.runProcess(this.pythonExe, ["-B", this.transcribeScript, path.resolve(filePath)], {
       cwd: this.projectRoot,
       timeoutMs: 5 * 60_000,
       maxOutputBytes: 128 * 1024,

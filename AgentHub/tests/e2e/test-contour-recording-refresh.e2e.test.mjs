@@ -1,3 +1,5 @@
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
@@ -105,6 +107,38 @@ test("canonical adoption then recording refresh replace two release identities a
   const marker = await json(paths.markerFile);
   let generation = 0;
   const states = [];
+  // PID liveness alone cannot identify a terminated child after PID reuse.
+  // Observe exact spawned child handles; retain all existing liveness assertions.
+  const children = [], originalSpawn = childProcess.spawn, originalKill = process.kill, liveness = new Map();
+  childProcess.spawn = function (...args) {
+    const child = Reflect.apply(originalSpawn, childProcess, args);
+    const rootIndex = Array.isArray(args[1]) ? args[1].indexOf("--root") : -1;
+    const observation = { pid: child.pid, executable: path.basename(String(args[0])),
+      ownedManager: rootIndex >= 0 && args[1][rootIndex + 1] === f.root, exit: null, closed: false };
+    children.push(observation);
+    child.once("exit", (code, signal) => { observation.exit = { code, signal }; });
+    child.once("close", () => { observation.closed = true; });
+    return child;
+  };
+  process.kill = function (pid, signal) {
+    let observation;
+    try {
+      const result = Reflect.apply(originalKill, process, arguments);
+      observation = { alive: true }; return result;
+    } catch (error) {
+      observation = { alive: error.code === "EPERM", code: error.code }; throw error;
+    } finally {
+      if (signal === 0 && states.some(state => state.managerPid === pid || state.runtimePid === pid)) {
+        liveness.set(pid, { pid, queries: (liveness.get(pid)?.queries ?? 0) + 1, ...observation });
+      }
+    }
+  };
+  syncBuiltinESMExports();
+  let primaryError = null;
+  const identities = () => states.map(state => ({ releaseId: state.releaseId, operationId: state.operationId,
+    managerPid: state.managerPid, runtimePid: state.runtimePid,
+    managerAlive: processIsAlive(state.managerPid), runtimeAlive: processIsAlive(state.runtimePid) }));
+
   const assertOwners = async () => {
     const state = await readRuntimeState(paths.dataDir);
     const queued = state.queuedInputs.find((item) => item.clientUserMessageId === messageId);
@@ -179,11 +213,32 @@ test("canonical adoption then recording refresh replace two release identities a
     assert.equal((await json(path.join(f.root, "test-contour-adoption.json"))).phase, "committed");
     assert.deepEqual(await Promise.all(["journal.sqlite", "runtime.sqlite", "message-command-ledger.sqlite"].map((name) => hash(path.join(f.prepared.root, "data", name)))), originalPreparedHashes);
     await assert.rejects(readFile(paths.fakeCodexStateFile), { code: "ENOENT" });
+  } catch (error) {
+    primaryError = error; throw error;
   } finally {
-    await stopTestContour({ root: f.root });
-    for (const state of states) {
-      assert.equal(processIsAlive(state.runtimePid), false);
-      assert.equal(processIsAlive(state.managerPid), false);
+    const beforeStop = identities();
+    let afterStop = null, stopped = null;
+    try {
+      const result = await stopTestContour({ root: f.root });
+      stopped = { stopped: result.stopped, reason: result.reason, recoveredFromLock: result.recoveredFromLock,
+        runtimePid: result.runtimePid, state: result.state ? {
+          releaseId: result.state.releaseId, operationId: result.state.operationId,
+          managerPid: result.state.managerPid, runtimePid: result.state.runtimePid,
+        } : null };
+      afterStop = identities();
+      for (const state of states) {
+        assert.equal(processIsAlive(state.runtimePid), false);
+        assert.equal(processIsAlive(state.managerPid), false);
+      }
+    } catch (cleanupError) {
+      if (primaryError) throw new AggregateError([primaryError, cleanupError], "Recording refresh and cleanup both failed");
+      throw cleanupError;
+    } finally {
+      childProcess.spawn = originalSpawn;
+      process.kill = originalKill;
+      syncBuiltinESMExports();
+      t.diagnostic(JSON.stringify({ stage: "recording-refresh-cleanup", primaryFailure: Boolean(primaryError),
+        beforeStop, afterStop, stopped, children, lastLiveness: [...liveness.values()] }));
     }
   }
 });

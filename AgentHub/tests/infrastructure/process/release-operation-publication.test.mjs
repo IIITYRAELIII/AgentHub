@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { readReleaseToolPackage } from "../../../src/infrastructure/process/release-tool-package.mjs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -127,6 +128,7 @@ test("stable publication runner preserves the initiating Stream and Thread for s
 test("stable runner refuses publication when the exact generation lacks the required contour", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-runner-process-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const operationId = "fefefefe-fefe-4efe-8efe-fefefefefefe";
   const remote = path.join(root, "origin.git");
   const primary = path.join(root, "primary");
   const taskRoot = path.join(root, "task");
@@ -166,7 +168,7 @@ test("stable runner refuses publication when the exact generation lacks the requ
   await writeFile(path.join(prepared.releaseRoot, "CHANGELOG.md"), changelogContent);
   await git(prepared.releaseRoot, "add", "CHANGELOG.md");
   const candidate = await generationWorkspaces.prepareGeneration({
-    operationId: "operation-process",
+    operationId,
     generation: 1,
     planRevision: "plan-process",
     projectRoot: primary,
@@ -177,7 +179,7 @@ test("stable runner refuses publication when the exact generation lacks the requ
   });
   const dataDir = path.join(root, "operation-data");
   await mkdir(dataDir, { recursive: true });
-  const store = new ReleaseOperationStore({ dataDir, idFactory: () => "operation-process" });
+  const store = new ReleaseOperationStore({ dataDir, idFactory: () => operationId });
   const target = { targetId: "production", kind: "agent-hub-publication", repositoryRoot: primary };
   const operation = store.create({
     requestId: "runner-process-request",
@@ -217,8 +219,14 @@ test("stable runner refuses publication when the exact generation lacks the requ
     environment: { ...process.env, LOCALAPPDATA: path.join(root, "local-app-data") },
     runnerFile: path.resolve("release-operation-publication-runner.mjs"),
   });
-  await assert.rejects(publication.publish({ operation, generation, target }), {
+  await assert.rejects(publication.publish({ operation, generation, target }).catch(async error => {
+    const log = path.join(dataDir, "release-operation-executions",
+      identity(`${operationId}:${generation.generation}:${target.targetId}`), "stderr.log");
+    t.diagnostic((await readFile(log, "utf8").catch(() => "runner stderr unavailable")).slice(-6000));
+    throw error;
+  }), {
     code: "RELEASE_VALIDATION_FAILED",
+    failedStep: "Проверка release candidate в изолированном контуре",
   });
   assert.equal(await git(remote, "rev-parse", "refs/heads/main"), baseCommit);
   const effect = await publication.readback({ operation, generation, target });
@@ -229,6 +237,8 @@ test("stable runner refuses publication when the exact generation lacks the requ
 });
 
 test("publication launches the stable owner runner and reads its exact generation effect", async (t) => {
+  const tool = await readReleaseToolPackage();
+  const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-publication-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const candidateRoot = path.join(root, "candidate");
@@ -270,6 +280,7 @@ test("publication launches the stable owner runner and reads its exact generatio
           targetId: target.targetId,
           candidate: generation.identitySha256,
           status: "applied",
+          tool: toolIdentity,
           revision: "published-commit",
         })}\n`, "utf8");
         child.emit("exit", 0);
@@ -289,6 +300,30 @@ test("publication launches the stable owner runner and reads its exact generatio
   assert.equal(spawnCalls[0].options.env.AGENT_HUB_RESTART_OPERATION_ID, undefined);
   assert.equal(spawnCalls[0].options.env.AGENT_HUB_RESTART_LAUNCHER_PID, undefined);
   assert.equal(spawnCalls[0].options.env.SYNTHETIC_KEEP, "retained");
+  assert.equal(spawnCalls[0].options.env.AGENT_HUB_RELEASE_TOOLS_ROOT, tool.root);
+  assert.equal(spawnCalls[0].options.env.AGENT_HUB_RELEASE_TOOLS_SHA256, tool.sha256);
+  const runnerFileState = path.join(executionRoot, "runner.json");
+  const runner = JSON.parse(await readFile(runnerFileState, "utf8"));
+  assert.deepEqual(runner.tool, toolIdentity);
+  const resultFile = path.join(executionRoot, "result.json");
+  const originalResult = await readFile(resultFile, "utf8");
+  await writeFile(resultFile, JSON.stringify({ ...JSON.parse(originalResult), tool: { ...toolIdentity, sha256: "0".repeat(64) } }));
+  assert.equal((await publication.readback({ operation, generation, target })).status, "unknown");
+  await writeFile(resultFile, JSON.stringify({ ...JSON.parse(originalResult), status: "not_applied" }));
+  const retainedRunner = await readFile(runnerFileState);
+  const other = new ReleaseOperationPublication({ dataDir: path.join(root, "data"), runtimeRoot: path.join(root, "runtime"),
+    readToolPackage: async () => ({ ...tool, sha256: "0".repeat(64) }),
+    readPublicationStateImpl: async () => null, gitRemoteHeadImpl: async () => "base-commit",
+    processAliveImpl: () => false, publicationRunStoreFactory: () => ({ read: async () => null }),
+    spawnImpl: () => assert.fail("a changed tool must not replay an original"),
+  });
+  await assert.rejects(other.publish({ operation, generation, target }), /recorded tool executor/);
+  assert.deepEqual(await readFile(runnerFileState), retainedRunner);
+  const legacy = { ...runner }; delete legacy.tool;
+  await writeFile(runnerFileState, JSON.stringify(legacy));
+  const retainedLegacy = await readFile(runnerFileState);
+  await assert.rejects(publication.publish({ operation, generation, target }), /recorded tool executor/);
+  assert.deepEqual(await readFile(runnerFileState), retainedLegacy); assert.equal(spawnCalls.length, 1);
 });
 
 test("publication readback stays unknown while the exact runner is alive", async (t) => {
@@ -463,16 +498,17 @@ test("publication forwards its stable dependency root to frozen Worker builds", 
     const observation = path.join(directory, "observed.json");
     const runnerFile = path.join(ownerRoot, "release-operation-publication-runner.mjs");
     await writeFile(runnerFile, `
-      import { writeFile } from 'node:fs/promises';
+      import { readFile, writeFile } from 'node:fs/promises';
       import path from 'node:path';
       import { resolveWrangler, runWrangler } from ${JSON.stringify(resolver)};
+      const originalRunner = JSON.parse(await readFile(path.join(process.env.AGENT_HUB_RELEASE_EXECUTION_ROOT, 'runner.json'), 'utf8'));
       const entry = resolveWrangler({ root: process.cwd() });
       await runWrangler(['--version'], { root: process.cwd() });
       await writeFile(${JSON.stringify(observation)}, JSON.stringify({ entry, dependencyRoot: process.env.AGENT_HUB_DEPENDENCY_ROOT, cwd: process.cwd() }));
       await writeFile(path.join(process.env.AGENT_HUB_RELEASE_EXECUTION_ROOT, 'result.json'), JSON.stringify({
         operationId: process.env.AGENT_HUB_RELEASE_OPERATION_ID, generation: Number(process.env.AGENT_HUB_RELEASE_GENERATION),
         targetId: process.env.AGENT_HUB_RELEASE_TARGET_ID, candidate: process.env.AGENT_HUB_RELEASE_CANDIDATE_IDENTITY,
-        status: 'applied', revision: ${JSON.stringify(generation.candidates[0].commit)},
+        status: 'applied', revision: ${JSON.stringify(generation.candidates[0].commit)}, tool: originalRunner.tool,
       }));
     `);
     const publication = new ReleaseOperationPublication({

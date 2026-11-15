@@ -191,6 +191,7 @@ export function createInteractionShellPhase({
       runtimeStateStore,
       taskBoard: infrastructure.taskBoard,
       taskLifecycle: infrastructure.taskLifecycle,
+      hubMcpService: infrastructure.hubMcpService,
       taskGitWorkspaces: infrastructure.taskGitWorkspaces,
       taskVoiceTranscriber: infrastructure.taskVoiceTranscriber,
       attachmentDirectory: infrastructure.attachmentDirectory,
@@ -336,6 +337,7 @@ export function createInteractionShellPhase({
     },
     admission: {
       config,
+      workspaceCatalogStore: infrastructure.workspaceCatalogStore,
       runtimeStateStore: infrastructure.runtimeStateStore,
       samePath,
       sendRpc: api.sendRpc,

@@ -1,21 +1,23 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   explainTestInputFingerprint,
   fingerprintTestInputs,
+  testAllocationParent,
 } from "./src/infrastructure/persistence/test-input-fingerprint.mjs";
 
 import {
   runCheckpointedTestFiles,
+  planCheckpointedTestFiles,
   testFileCheckpointStore,
 } from "./src/infrastructure/persistence/test-file-checkpoint.mjs";
 import { clearInheritedPublicationOwnership } from "./src/infrastructure/process/publication-lock.mjs";
 import { testResourceAdmission } from "./src/infrastructure/process/test-resource-admission.mjs";
 import { prepareTaskWorktreeDependencies } from "./src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { runTaskGitCommand } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
+import { readPublicationTestSelection } from "./src/infrastructure/filesystem/publication-test-selection.mjs";
 
 const ROOT = import.meta.dirname;
 const RUNNER_INPUTS = [
@@ -26,6 +28,7 @@ const RUNNER_INPUTS = [
   "src/domain/test-selection.mjs",
   "src/domain/test-suite-groups.mjs",
   "src/infrastructure/filesystem/release-test-inventory.mjs",
+  "src/infrastructure/filesystem/publication-test-selection.mjs",
 ].map((file) => path.join(ROOT, file));
 const TEST_RUNNER_FILE = fileURLToPath(import.meta.url);
 // WIP не содержит поставляемого кода. Без этого исключения случайный
@@ -84,6 +87,18 @@ export async function testFingerprint(file, { cwd = ROOT, root = cwd, declaratio
   return fingerprintTestInputs(file, { cwd, root, declaration, runnerFile: TEST_RUNNER_FILE, runnerInputs: RUNNER_INPUTS, ...options });
 }
 
+export function isolatedTestEnvironment(environment, childRoot, platform = process.platform) {
+  // Windows environment keys are case-insensitive. Use the same effective map
+  // for execution and input proof, including caller profile overrides.
+  const result = Object.fromEntries(Object.entries(environment).map(([key, value]) =>
+    [platform === "win32" ? key.toUpperCase() : key, value]));
+  clearInheritedPublicationOwnership(result);
+  for (const key of ["LOCALAPPDATA", "APPDATA", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TEMP", "TMP", "TMPDIR"]) {
+    result[key] = childRoot;
+  }
+  return result;
+}
+
 export async function runWindowsTestFile(file, {
   cwd = ROOT,
   isolation = true,
@@ -112,7 +127,7 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
   // transient failure; retries require a new explicit run and reuse successes.
   // Keep the disposable owner short: deep Git refs in Windows fixtures still
   // have to fit below MAX_PATH when they create repositories under os.tmpdir().
-  const childRoot = await mkdtemp(path.join(os.tmpdir(), "ah-"));
+  const childRoot = await mkdtemp(path.join(testAllocationParent(), "ah-"));
   let executionFailed = false;
   let executionError;
   let cleanupError;
@@ -130,21 +145,8 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
           childIdentity = facts;
         } catch { /* Optional child observations cannot change execution. */ }
       },
-      env: {
-        ...env,
-        LOCALAPPDATA: childRoot,
-        APPDATA: childRoot,
-        // USERPROFILE is Windows OS identity, not fixture state. Replacing it
-        // breaks Edge's KnownFolder resolution even with a private browser
-        // profile. HOME/application state and explicit fixture dirs are private.
-        HOME: childRoot,
-        XDG_CONFIG_HOME: childRoot,
-        XDG_STATE_HOME: childRoot,
-        XDG_CACHE_HOME: childRoot,
-        TEMP: childRoot,
-        TMP: childRoot,
-        TMPDIR: childRoot,
-      },
+      // USERPROFILE remains the real OS identity (including Edge KnownFolder).
+      env: isolatedTestEnvironment({ ...process.env, ...env }, childRoot),
     });
   } catch (error) {
     executionFailed = true;
@@ -185,7 +187,7 @@ async function testManifest() {
   return manifest;
 }
 
-async function declaredFingerprint(file, cwd, manifest) {
+async function declaredFingerprint(file, cwd, manifest, env) {
   const key = path.relative(ROOT, path.resolve(cwd, file)).split(path.sep).join("/");
   const declaration = manifest.version === 2 ? manifest.files[key] ?? null : null;
   let browserFile = "";
@@ -199,6 +201,7 @@ async function declaredFingerprint(file, cwd, manifest) {
   }
   return explainTestInputFingerprint(file, {
     cwd, root: ROOT, declaration, browserFile, runnerFile: TEST_RUNNER_FILE, runnerInputs: RUNNER_INPUTS,
+    environment: isolatedTestEnvironment({ ...process.env, ...env }, "<owned-per-child-temp>"),
   });
 }
 
@@ -324,7 +327,7 @@ export async function runTestSuite(mode, {
         fingerprint: (key) => {
           const entry = entries.get(key);
           return !checkpointIdentity || entry.suite === "installer" ? null
-            : declaredFingerprint(entry.file, entry.cwd, manifest);
+            : declaredFingerprint(entry.file, entry.cwd, manifest, entry.env);
         },
         concurrency: testConcurrency,
         admission,
@@ -377,7 +380,7 @@ export async function runSelectedTests(selection, {
       execution: id => testExecutionPolicy(manifest.files[id]),
       fingerprint: id => {
         const entry = entries.get(id);
-        return !checkpointIdentity || ["syntax", "installer"].includes(entry.suite) ? null : declaredFingerprint(entry.file, entry.cwd, manifest);
+        return !checkpointIdentity || ["syntax", "installer"].includes(entry.suite) ? null : declaredFingerprint(entry.file, entry.cwd, manifest, entry.env);
       },
       run: id => {
         const entry = entries.get(id);
@@ -396,13 +399,42 @@ export async function runSelectedTests(selection, {
   }
 }
 
+export async function planTestRetry(selection, {
+  checkpointIdentity = String(process.env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID ?? "").trim(),
+  checkpoint = checkpointIdentity ? testFileCheckpointStore() : null,
+  inventory = null, fingerprint = null,
+} = {}) {
+  const available = inventory ?? await discoverReleaseTestInventory(ROOT);
+  const scope = resolveTestSelection(selection, available);
+  const selected = available.filter(entry => scope.selectedIds.includes(entry.id));
+  const entries = new Map(selected.map(entry => [entry.id, entry]));
+  const manifest = await testManifest();
+  const decisions = await planCheckpointedTestFiles(selected.map(entry => entry.id), {
+    identity: checkpointIdentity, checkpoint, suiteForFile: id => entries.get(id).suite,
+    fingerprint: fingerprint ?? (id => {
+      const entry = entries.get(id);
+      return ["syntax", "installer", "release-check"].includes(entry.suite) ? null
+        : declaredFingerprint(entry.file, path.join(ROOT, entry.directory ?? ""), manifest, entry.env);
+    }),
+  });
+  return { scope, ...decisions,
+    selection: { mode: "include", ids: [...decisions.selectedFiles].sort() },
+    status: "proposal-only" };
+}
+
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
   const mode = String(process.argv[2] ?? "unit").trim().toLowerCase();
-  if (mode.startsWith("--plan-tests=")) console.log(JSON.stringify(resolveTestSelection(JSON.parse(process.argv[2].slice(13)), await discoverReleaseTestInventory(ROOT)), null, 2));
+  if (mode.startsWith("--plan-retry=")) console.log(JSON.stringify(await planTestRetry(JSON.parse(process.argv[2].slice(13))), null, 2));
+  else if (mode.startsWith("--plan-tests=")) console.log(JSON.stringify(resolveTestSelection(JSON.parse(process.argv[2].slice(13)), await discoverReleaseTestInventory(ROOT)), null, 2));
   else if (mode === "--list-tests") console.log(JSON.stringify(await discoverReleaseTestInventory(ROOT), null, 2));
   else {
+    const args = process.argv.slice(3);
+    const fileSelection = args.some(arg => arg.startsWith("--selection-file=") || arg.startsWith("--selection-sha256="));
+    if (fileSelection && mode !== "selected") throw new Error("Selected-test file requires selected mode");
     const selectionArgument = process.argv.slice(2).find(arg => arg.startsWith("--selection="));
-    await runTestSuite(selectionArgument ? "selected" : mode, { selection: selectionArgument ? JSON.parse(selectionArgument.slice(12)) : null });
+    const selection = fileSelection ? await readPublicationTestSelection(args, { sourceRoot: ROOT })
+      : selectionArgument ? JSON.parse(selectionArgument.slice(12)) : null;
+    await runTestSuite(selection ? "selected" : mode, { selection });
   }
 }

@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "./preparation-git-isolation.mjs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
@@ -32,7 +33,7 @@ function prefixGitDiffMarkerPaths(diff, prefix) {
 
 function runGit(args, { cwd, env = {}, timeoutMs = 20_000, maxOutputBytes = 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
-    const child = spawn("git", args, {
+    const child = spawn("git", ownedGitArguments(args), {
       cwd,
       env: { ...process.env, ...env },
       windowsHide: true,

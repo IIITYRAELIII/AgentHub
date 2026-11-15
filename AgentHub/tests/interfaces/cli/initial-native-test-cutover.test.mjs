@@ -119,14 +119,99 @@ async function fixture(t, { releaseManager = false } = {}) {
 test("ordinary preparation continuation CLI retains original identity and rejects mixed cutover authority", () => {
   const argv = ["--resume-preparation", "--provider", "codex", "--thread", "thread",
     "--stream", "stream", "--request", "original", "--expected-arguments-hash", "a".repeat(64),
-    "--expected-preparation-revision", "4", "--native-resolution-review-file", "reviewed.json"];
+    "--expected-preparation-revision", "4"];
   const parsed = parseTaskAwaitCutoverArguments(argv);
   assert.equal(parsed.requestId, "original");
   assert.equal(parsed.expectedPreparationRevision, 4);
   assert.equal(parsed.resumePreparation, true);
-  assert.equal(parsed.nativeResolutionReviewFile, path.resolve("reviewed.json"));
   assert.throws(() => parseTaskAwaitCutoverArguments([...argv, "--confirm-cutover"]), /cannot change selection/u);
   assert.throws(() => parseTaskAwaitCutoverArguments([...argv, "--task", "foreign"]), /cannot change selection/u);
+});
+
+test("source release CLI retains real SQLite persistence retry and flushes its original trace", async t => {
+  const f = await fixture(t, { releaseManager: true });
+  const task = await f.create("persistence-release");
+  await mkdir(path.join(task.root, "AgentHub"));
+  await writeFile(path.join(task.root, "AgentHub/package.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12" }));
+  await writeFile(path.join(task.root, "AgentHub/package-lock.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12", packages: { "": { name: "agent-hub", version: "2026.10.12" } } }));
+  await commit(task.root, "fixture release metadata");
+  await f.status(task, "testing", "persist-test");
+  await f.status(task, "awaiting_implementation", "persist-await");
+  const prior = { LOCALAPPDATA: process.env.LOCALAPPDATA, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
+  process.env.LOCALAPPDATA = path.join(f.root, "state"); process.env.XDG_STATE_HOME = process.env.LOCALAPPDATA;
+  t.after(() => { for (const [key, value] of Object.entries(prior)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  } });
+  await mkdir(path.join(process.env.LOCALAPPDATA, "AgentHub"), { recursive: true });
+  await writeFile(path.join(process.env.LOCALAPPDATA, "AgentHub/publication-state.json"), JSON.stringify(f.publication));
+  let blocker, unlock, runtime, operationId, validations = 0, publications = 0, closed = false, settled = false, entered;
+  const held = new Promise(resolve => { entered = resolve; });
+  const dataDir = path.dirname(f.databaseFile);
+  const open = async options => {
+    runtime = await openReleaseRuntime({ ...options,
+      createServices: args => {
+        const store = new ReleaseOperationStore({ dataDir: args.dataDir });
+        const mutate = store.runOperationMutation.bind(store);
+        store.runOperationMutation = (id, callback, metadata) => mutate(id, callback, { ...metadata, timeoutMs: 30 });
+        const value = createReleaseOperationServices({ ...args, store, observeOperation: () => {},
+          publication: { publish: async () => { publications++; return { status: "applied" }; },
+            readback: async () => ({ status: "not_applied" }) },
+          finalization: { finalize: async () => ({ status: "fixture-terminal" }) } });
+        value.operations.retryDelayMs = 1000;
+        return value;
+      },
+      openTaskRuntime: async () => {
+        const value = await openTaskAwaitCutoverRuntime({ config: { dataDir, taskBoard: { autoPlaceConfidence: 0.8 } } });
+        value.service.releasePreflight.validateOperationGeneration = async ({ generation }) => {
+          validations++;
+          assert.equal(generation.generation, 1);
+          for (const candidate of generation.candidates) {
+            assert.equal(await git(candidate.releaseRoot, "rev-parse", "HEAD"), candidate.commit);
+          }
+          blocker = new DatabaseSync(path.join(dataDir, "runtime.sqlite"));
+          blocker.exec("BEGIN IMMEDIATE");
+          unlock = setTimeout(() => blocker.exec("ROLLBACK"), 180);
+          entered();
+          return { status: "ready" };
+        };
+        return value;
+      } });
+    const close = runtime.close;
+    runtime.close = async () => {
+      assert.equal(runtime.operations.get(operationId).operation.state, "done");
+      closed = true; await close();
+    };
+    return runtime;
+  };
+  const requestFile = path.join(f.root, "persistence-request.json");
+  await writeFile(requestFile, JSON.stringify({ request_id: "one-source-cli-persistence-original", task_ids: [task.id],
+    validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture", repositoryRoot: f.primary,
+      approvedLocalMainCommit: f.main, approvedOriginMainCommit: f.main }] }));
+  const pending = executeRelease({ action: "run", requestFile, provider: "codex", threadId: "fixture-thread", streamId: f.streamId },
+    { openRuntime: open, onAccepted: value => { operationId = value.operationId; } })
+    .then(value => { settled = true; return value; });
+  try {
+    await Promise.race([held, pending.then(value => { throw new Error("CLI returned before validation barrier: " + value.operation.state); })]);
+    await new Promise(resolve => setTimeout(resolve, 90));
+    assert.equal(settled, false); assert.equal(closed, false); assert.equal(publications, 0);
+    const result = await pending;
+    assert.equal(result.operation.state, "done");
+    assert.equal(result.operation.requestId, "one-source-cli-persistence-original");
+    assert.equal(result.generations.length, 1);
+    assert.equal(validations, 1); assert.equal(publications, 1); assert.equal(closed, true);
+    const traces = new DatabaseSync(path.join(dataDir, "command-traces.sqlite"), { readOnly: true });
+    try {
+      const rows = traces.prepare("SELECT metadata_json FROM command_trace_spans WHERE command_id=? AND stage='release-persistence'").all(operationId);
+      const diagnostics = rows.map(row => JSON.parse(row.metadata_json));
+      assert.ok(diagnostics.some(value => value.method === "finish-step" && value.step === "validate"
+        && value.sqlitePrimaryCode === 5 && value.phase === "begin"));
+      assert.equal(JSON.stringify(diagnostics).includes(f.root), false);
+    } finally { traces.close(); }
+    assert.equal(await git(f.primary, "rev-parse", "main"), f.main);
+  } finally {
+    clearTimeout(unlock); try { blocker?.exec("ROLLBACK"); } catch {} blocker?.close();
+    await pending.catch(() => {});
+  }
 });
 
 test("source release CLI uses shared default owners for run, refusal, terminal recovery and readonly retry", { timeout: 240000 }, async t => {
@@ -183,11 +268,6 @@ test("source release CLI uses shared default owners for run, refusal, terminal r
         if (loseReply) throw new Error("controlled durable reply lost");
       } });
   };
-  await assert.rejects(command("run", { request_id: "invalid-native-release",
-    task_ids: [task.id], validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture",
-      repositoryRoot: f.primary, nativeResolutionReview: [] }] }), /Invalid exact native resolution bundle/u);
-  assert.equal(f.catalog.mcpOperation("invalid-native-release").status, "failed");
-  assert.deepEqual(store.active(), []);
   const runInput = { request_id: "one-normal-release",
     task_ids: [task.id], validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture",
       repositoryRoot: f.primary, approvedLocalMainCommit: main, approvedOriginMainCommit: main }] };
@@ -195,14 +275,32 @@ test("source release CLI uses shared default owners for run, refusal, terminal r
   const refused = await command("get", { operation_id: accepted.at(-1).operationId });
   const operationId = refused.operation.operationId;
   assert.equal(refused.operation.state, "waiting");
-  assert.equal(refused.operation.waitReason.code, "preparation_refused");
+  assert.equal(refused.operation.waitReason.code, "prepared_candidate_stale");
+  assert.equal(refused.operation.lastError.code, "RELEASE_MAIN_APPROVAL_STALE");
   assert.equal(store.latestStep(operationId, 1, "compose").status, "failed");
   assert.equal(await git(f.primary, "rev-parse", "dev"), oldDev);
   assert.equal(publishes, 0);
+  const stalePrepared = await f.releaseGit.frozenCandidate(f.primary);
   await git(f.primary, "push", "origin", "main");
+  const stillStale = await command("continue", { request_id: "same-normal-release-origin-ready", operation_id: operationId });
+  assert.equal(stillStale.operation.state, "waiting", JSON.stringify(stillStale.operation.lastError));
+  assert.equal(stillStale.operation.waitReason.code, "prepared_candidate_stale");
+  assert.equal(stillStale.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+  assert.deepEqual(await f.releaseGit.frozenCandidate(f.primary), stalePrepared);
+  assert.equal(publishes, 0); assert.equal(validations, 0);
+  assert.equal(await git(f.primary, "rev-parse", "dev"), oldDev);
+  // Preparation owns accepted-main integration and the new prepared composition.
+  await f.taskGit.prepareDev(f.primary, { synchronizeAcceptedMain: true });
+  await f.preflight.withAwaitTransition(f.workspaceId, () => f.preflight.prepareAwaitSet({ workspaceId: f.workspaceId,
+    reviewedMainApprovals: { approvedLocalMainCommit: main, approvedOriginMainCommit: main } }));
+  const prepared = await f.releaseGit.frozenCandidate(f.primary);
+  assert.equal(prepared.baseCommit, main);
+  assert.equal(prepared.checkpointPhase, "prepared");
   const done = await command("continue", { request_id: "same-normal-release-continue", operation_id: operationId });
   assert.equal(done.operation.state, "done", JSON.stringify(done.operation.lastError));
   assert.equal(done.generations.length, 1);
+  assert.equal(done.generations[0].candidates[0].manifest.preparedCandidate.commit, prepared.preReleaseHead);
+  assert.equal(done.generations[0].candidates[0].manifest.preparedCandidate.tree, prepared.tree);
   assert.equal(publishes, 1); assert.equal(validations, 1);
   assert.equal(await git(f.primary, "rev-parse", "HEAD"), main);
   assert.equal(await git(f.primary, "status", "--porcelain=v1"), "");
@@ -268,87 +366,25 @@ test("source release CLI rejects malformed business input before opening the mut
   assert.throws(() => parseReleaseArguments(["continue", "--provider", "codex", "--provider", "codex"]), /Invalid release/u);
 });
 
-test("source acceptance carries all reviewed prefixes through public Await and immutable SQLite retry", { timeout: 240000 }, async t => {
+test("source acceptance needs no native approval envelope and reopens its original SQLite result", async t => {
   const f = await fixture(t, { releaseManager: true });
-  const a = await f.create("bundle-a"), b = await f.create("bundle-b");
-  await f.status(a, "testing", "bundle-test-a");
-  await f.status(a, "awaiting_implementation", "bundle-await-a");
-  await f.status(b, "testing", "bundle-test-b");
-  const before = structuredClone(f.board.task(b.id));
-  const plan = await f.preflight.releasePlanner.plan(f.workspaceId, { acceptingTask: { id: b.id, revision: before.revision } });
-  const frozen = plan.ready.map(entry => ({ taskId: entry.taskId, taskRevision: entry.taskRevision,
-    taskNumber: entry.taskNumber ?? null, projectRoot: entry.projectRoot, branch: entry.branch,
-    resultCommit: entry.resultCommit })).sort((left, right) => left.taskId.localeCompare(right.taskId));
-  const evidence = await f.taskGit.releaseIntegrationEvidence({ projectRoot: f.primary, tasks: frozen });
-  const identity = { policy: "main-selected-git-merge-v1", workspaceId: f.workspaceId,
-    planRevision: plan.revision, baseCommit: f.main, tasks: evidence.tasks };
-  const proof = path.join(f.root, "reviewed-proof");
-  await git(f.root, "clone", "--no-local", f.primary, proof);
-  await git(proof, "checkout", "--detach", f.main);
-  const reviews = [], bindings = new Map();
-  let prefix = f.main;
-  for (const [index, task] of evidence.tasks.entries()) {
-    await git(proof, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid",
-      "merge", "--no-ff", "--no-edit", task.resultCommit);
-    await writeFile(path.join(proof, "owner-compat.txt"), `reviewed prefix ${index}\n`);
-    await git(proof, "add", "owner-compat.txt");
-    await git(proof, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "--amend", "--no-edit");
-    const commit = await git(proof, "rev-parse", "HEAD"), tree = await git(proof, "rev-parse", "HEAD^{tree}");
-    const automaticTree = (await git(proof, "merge-tree", "--write-tree", prefix, task.resultCommit)).split(/\r?\n/u)[0];
-    const diff = (await exec("git", ["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree],
-      { cwd: proof, windowsHide: true, encoding: "buffer" })).stdout;
-    const binding = { identityHash: taskGitIdentityHash(identity), parents: [prefix, task.resultCommit],
-      commit, tree, automaticTree, diffSha256: createHash("sha256").update(diff).digest("hex") };
-    const requestId = `verified-prefix-${index}`;
-    bindings.set(requestId, binding);
-    reviews.push({ requestId, text: `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>` });
-    prefix = commit;
-  }
-  assert.equal(reviews.length, 2);
-  const bundlePath = path.join(f.root, "reviewed-prefixes.bundle");
-  await git(proof, "update-ref", "refs/heads/reviewed", prefix);
-  await git(proof, "bundle", "create", bundlePath, "refs/heads/reviewed");
-  const native_resolution_review = { bundlePath,
-    bundleSha256: createHash("sha256").update(await readFile(bundlePath)).digest("hex"), reviews };
-  const verified = new Set();
-  // Existing authenticated-review port is controlled; all Git, lifecycle, MCP
-  // receipt, candidate promotion and SQLite persistence below are real owners.
-  f.releaseGit.verifyNativeResolutionReview = async (review, binding, actualIdentity) => {
-    assert.deepEqual(binding, bindings.get(review.requestId));
-    assert.deepEqual(actualIdentity, identity); verified.add(review.requestId);
-  };
-  const requestFile = path.join(f.root, "accept-request.json");
-  const request = { request_id: "one-bundle-await", task_id: b.id, status: "awaiting_implementation",
-    expected_task_revision: before.revision, expected_workflow_status: "testing", native_resolution_review };
-  const open = () => openReleaseRuntime({ openTaskRuntime: f.open });
-  const invoke = async (body, openRuntime = open) => {
-    await writeFile(requestFile, JSON.stringify(body));
-    return executeRelease(parseReleaseArguments(["accept", "--provider", "codex", "--thread", "fixture-thread",
-      "--stream", f.streamId, "--request-file", requestFile]), { openRuntime });
-  };
-  for (const [suffix, patch] of [["array", { native_resolution_review: [] }],
-    ["cas", { expected_task_revision: null }], ["test", { status: "testing" }]]) {
-    await assert.rejects(invoke({ ...request, ...patch, request_id: `invalid-${suffix}` }));
-    assert.deepEqual(f.board.task(b.id), before);
-  }
-  await assert.rejects(invoke({ ...request, request_id: "tampered-bundle-await",
-    native_resolution_review: { ...native_resolution_review, bundleSha256: "0".repeat(64) } }), /digest changed/u);
-  assert.deepEqual(f.board.task(b.id), before);
-  const accepted = await invoke(request);
+  const task = await f.create("ordinary-source");
+  await f.status(task, "testing", "ordinary-source-test");
+  const before = structuredClone(f.board.task(task.id));
+  const requestFile = path.join(f.root, "ordinary-accept.json");
+  const request = { request_id: "ordinary-source-await", task_id: task.id, status: "awaiting_implementation",
+    expected_task_revision: before.revision, expected_workflow_status: "testing" };
+  await writeFile(requestFile, JSON.stringify(request));
+  const invoke = openRuntime => executeRelease(parseReleaseArguments(["accept", "--provider", "codex", "--thread", "fixture-thread",
+    "--stream", f.streamId, "--request-file", requestFile]), { openRuntime });
+  const accepted = await invoke(() => openReleaseRuntime({ openTaskRuntime: f.open }));
   assert.equal(accepted.workflowStatus, "awaiting_implementation");
-  assert.equal(accepted.revision, before.revision + 1);
-  assert.deepEqual([...verified].sort(), [...bindings.keys()].sort());
   const candidate = (await f.releaseGit.initialNativeTestCandidate(f.primary)).candidate;
-  assert.equal(candidate.preReleaseHead, prefix);
-  assert.equal((await readFile(path.join(candidate.releaseRoot, "owner-compat.txt"), "utf8")).replace(/\r\n/gu, "\n"), "reviewed prefix 1\n");
   const reflog = await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
-  const reopenDefault = () => openReleaseRuntime({ openTaskRuntime: () => openTaskAwaitCutoverRuntime({
+  assert.deepEqual(wire(await invoke(() => openReleaseRuntime({ openTaskRuntime: () => openTaskAwaitCutoverRuntime({
     config: { dataDir: path.dirname(f.databaseFile), taskBoard: { autoPlaceConfidence: 0.8 } },
-  }) });
-  assert.deepEqual(wire(await invoke(request, reopenDefault)), wire(accepted));
+  }) }))), wire(accepted));
   assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
-  assert.equal(await git(f.primary, "rev-parse", "main"), f.main);
-  assert.equal(f.catalog.mcpOperation(request.request_id).status, "succeeded");
 });
 
 test("source acceptance retains Task-woken owner lifetime through success and lost public replies", async t => {

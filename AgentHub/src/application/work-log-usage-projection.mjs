@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { durationStartForRecord } from "../domain/turn-duration-recovery.mjs";
 import path from "node:path";
 
 import {
@@ -332,6 +333,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         toolMetricsKnown: sourceVersion >= 8 && record?.toolMetricsKnown === true,
         limitSamples: mergeUsageLimitSamples(record?.limitSamples),
         startedAt: String(record?.startedAt ?? ""),
+        ...(record?.durationRecovery ? { durationRecovery: structuredClone(record.durationRecovery) } : {}),
         completedAt: String(record?.completedAt ?? ""),
         observedAt: String(record?.observedAt ?? ""),
         status,
@@ -1502,7 +1504,7 @@ function durationSeconds(startedValue, completedValue) {
 
 function recordsDurationSeconds(records) {
   return records.reduce(
-    (total, record) => total + (durationSeconds(record?.startedAt, record?.completedAt) ?? 0),
+    (total, record) => total + (durationSeconds(durationStartForRecord(record), record?.completedAt) ?? 0),
     0,
   );
 }
@@ -1595,7 +1597,7 @@ function formatTurnEntry(
       ? " · запрос >272K не подтверждён" : "";
   const recordTotal = breakdown.total;
   const displayedTotal = Number.isFinite(treeCredits) ? Math.max(0, treeCredits) : recordTotal;
-  const elapsedSeconds = durationSeconds(record?.startedAt, record?.completedAt);
+  const elapsedSeconds = durationSeconds(durationStartForRecord(record), record?.completedAt);
   const creditsKnown = recordCreditsKnown(record, breakdown);
   const ownCredits = record?.usageReported === false && recordTotal <= 0
     ? "нет данных"
@@ -1626,7 +1628,7 @@ function formatTurnEntry(
   const metaDetails = [
     `<div data-work-log-turn-facts>${pricing}`
       + `<div data-work-log-turn-context><strong>Длит.:</strong> ${
-        formatDuration(record?.startedAt, record?.completedAt)
+        formatDuration(durationStartForRecord(record), record?.completedAt)
       }</div>`
       + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quotaQualifier}${longContextQualifier}${quota.apiEstimateCredits > 0 ? ` · API-основа: ${formatCredits(quota.apiEstimateCredits)}; опора GPT-6 Sol ≈ ${PROVISIONAL_QU_PER_API_CREDIT} QU/cr` : ""}</div>`
       + (descendantCount > 0
@@ -3284,7 +3286,7 @@ function normalizedTurnTimeMode(value) {
 
 function turnUsageTimeMs(record, mode) {
   const completedMs = Date.parse(record?.completedAt ?? "");
-  const startedMs = Date.parse(record?.startedAt ?? "");
+  const startedMs = Date.parse(durationStartForRecord(record) ?? "");
   if (!Number.isFinite(completedMs)) return Number.NaN;
   if (mode === "start" && Number.isFinite(startedMs)) return Math.min(startedMs, completedMs);
   if (mode === "middle" && Number.isFinite(startedMs)) {
@@ -3476,7 +3478,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
         quotaUncalibrated: quota.uncalibrated,
         tokenCredits: Math.max(0, Number(breakdown.total - breakdown.estimate) || 0),
         priced,
-        durationSeconds: durationSeconds(record?.startedAt, record?.completedAt),
+        durationSeconds: durationSeconds(durationStartForRecord(record), record?.completedAt),
         source,
         deviceId: source === "local"
           ? normalizedLocalDeviceId || "local"
@@ -3541,9 +3543,11 @@ export function buildWorkLogUsageHistory(turns = {}, {
   let otherDeviceDurationSeconds = 0;
   const deviceTotals = new Map();
   let untimedCreditCount = 0;
+  let unknownDurationCount = 0;
   let unpricedCount = 0;
   for (const record of records) {
     if (record.pointMs < rawFromMs) continue;
+    if (record.durationSeconds === null) unknownDurationCount += 1;
     const bucket = dayBuckets
       ? localDayStart(record.pointMs)
       : groupedCalendarDays
@@ -3716,6 +3720,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
       || left.deviceId.localeCompare(right.deviceId)
     )),
     untimedCreditCount,
+    unknownDurationCount,
     // Compatibility aliases used by the selectable hourly-rate basis.
     timedCredits: totalTimedCredits,
     taskDurationSeconds: totalDurationSeconds,

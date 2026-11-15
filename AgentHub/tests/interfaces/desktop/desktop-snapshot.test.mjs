@@ -12,6 +12,128 @@ import { TaskBoardService } from "../../../src/application/task-board-service.mj
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { RuntimeStateStore } from "../../../src/infrastructure/persistence/runtime-state-store.mjs";
+import { MessageCommandLedgerStore } from "../../../src/infrastructure/persistence/message-command-ledger-store.mjs";
+
+import { DesktopControlServer, callDesktopControl } from "../../../src/infrastructure/process/desktop-control.mjs";
+
+test("Desktop snapshot transports deferred Task presentation within the existing response bound", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-snapshot-presentation-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const catalog = new WorkspaceCatalogStore({ databaseFile });
+  await catalog.load();
+  const store = new TaskBoardStore({ databaseFile });
+  const board = new TaskBoardService({ store, workspaceCatalog: catalog });
+  const workspace = catalog.createWorkspace({ name: "Snapshot presentation" });
+  const details = "retained presentation ".repeat(20_000);
+  const created = [];
+  for (let index = 0; index < 4; index += 1) {
+    created.push(await board.create({
+      text: `Snapshot card ${index}\n\n${details}`, source: "test", bucket: "workspace", workspaceId: workspace.id,
+    }));
+  }
+  const setup = fixture({ board, revision: () => `snapshot:${board.snapshotRevision}` });
+  const server = new DesktopControlServer({
+    runtimeRoot: directory,
+    protectSecret: async () => {},
+    handler: ({ action, params }) => action === "snapshot"
+      ? setup.desktopSnapshot(params) : { task: board.card(params.id) },
+  });
+  t.after(async () => {
+    await server.close();
+    store.close();
+    catalog.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await server.start();
+  const snapshot = await callDesktopControl("snapshot", { compactSnapshot: true, snapshotProtocol: 4 }, {
+    runtimeRoot: directory,
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(snapshot), "utf8") < 4 * 1024 * 1024);
+  const legacySnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot: directory });
+  assert.ok(Buffer.byteLength(JSON.stringify(legacySnapshot), "utf8") < 4 * 1024 * 1024);
+  assert.ok(legacySnapshot.boardTasks.every(task => task.presentationDeferred === true));
+  const summaries = snapshot.collectionDeltas.boardTasks.reset;
+  assert.deepEqual(summaries.map(task => task.id), created.map(task => task.id));
+  for (const task of summaries) {
+    assert.equal(task.presentationDeferred, true);
+    assert.equal(task.detailsDeferred, true);
+    assert.equal(task.text, task.title);
+    assert.equal(Object.hasOwn(task, "rawText"), false);
+    assert.equal(Object.hasOwn(task, "correctedText"), false);
+    assert.equal(Object.hasOwn(task, "description"), false);
+  }
+  const addressed = summaries[0];
+  const read = await callDesktopControl("task-read", { id: addressed.id }, { runtimeRoot: directory });
+  assert.ok(read.task.description === created[0].description);
+  assert.equal(read.task.detailsRevision, addressed.detailsRevision);
+  assert.equal(read.task.rawText, created[0].rawText);
+  assert.ok(board.snapshot()[0].description === created[0].description);
+  const oldRevision = addressed.detailsRevision;
+  await board.update({ id: addressed.id, title: addressed.title, description: "changed exact presentation" });
+  const changed = await setup.desktopSnapshot({ compactSnapshot: true, snapshotProtocol: 4,
+    boardTasksVersion: snapshot.collectionDeltas.boardTasks.version });
+  const updated = changed.collectionDeltas.boardTasks.upserts.find(task => task.id === addressed.id);
+  assert.notEqual(updated.detailsRevision, oldRevision);
+  assert.equal(board.card(addressed.id).description, "changed exact presentation");
+});
+
+async function cancelledReceiptFixture(t, later = 0) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub422-aged-receipt-"));
+  const store = new RuntimeStateStore({ dataDir: directory });
+  let external;
+  t.after(async () => { external?.close(); await store.close(); await rm(directory, { recursive: true, force: true }); });
+  const item = { id: "old-release-event", clientUserMessageId: "release:original:1441:operation.resumed",
+    provider: "codex", threadId: "thread-1", streamId: "stream-1", projectRoot: "D:/work",
+    input: "synthetic queued event", temporaryFiles: [], createdAt: new Date().toISOString() };
+  const registry = new MessageReceiptRegistry();
+  registry.reserve(item, "original-receipt-fingerprint", { id: item.id, streamId: item.streamId,
+    accepted: true, queued: true, deferred: true, providerAccepted: false });
+  await store.saveDeferredIntake({ item, destination: "queued", receipt: registry.get(item) });
+  for (let i = 0; i < later; i++) registry.reserve({ ...item, clientUserMessageId: `later-${i}` },
+    `later-fingerprint-${i}`, { id: `later-item-${i}`, accepted: true });
+  const setup = fixture({ revisionFn: () => String(store.messageCommandRevision ?? 0),
+    receiptForCommand: id => store.projectMessageReceipt({ clientUserMessageId: id }),
+    recentReceipts: () => registry.snapshot().slice(-100).map(receipt => store.projectMessageReceipt(receipt)) });
+  setup.state.receipts = registry.snapshot().slice(-100).map(receipt => store.projectMessageReceipt(receipt));
+  external = new MessageCommandLedgerStore({ dataDir: directory });
+  return { ...setup, store, item, registry, cancel: () => external.cancelQueuedInput(item) };
+}
+
+test("snapshot rechecks an addressed queued receipt beyond 100 later receipts and preserves its canonical cancellation", async t => {
+  const f = await cancelledReceiptFixture(t, 120);
+  const before = await f.desktopSnapshot({ messageReceiptIds: [f.item.clientUserMessageId] });
+  assert.equal(before.messageReceipts.find(item => item.clientUserMessageId === f.item.clientUserMessageId)?.queued, true);
+  assert.equal((await f.desktopSnapshot({ knownVersion: before.version, messageReceiptIds: [f.item.clientUserMessageId] })).notModified, true);
+  f.cancel();
+  const after = await f.desktopSnapshot({ knownVersion: before.version, messageReceiptIds: [f.item.clientUserMessageId] });
+  assert.notEqual(after.notModified, true);
+  const cancelled = after.messageReceipts.find(item => item.clientUserMessageId === f.item.clientUserMessageId);
+  assert.equal(cancelled.cancelled, true); assert.equal(cancelled.queued, false);
+  assert.equal(cancelled.clientUserMessageId, f.item.clientUserMessageId);
+});
+
+test("external canonical cancellation invalidates the live snapshot cache without a facade-local revision bump", async t => {
+  const f = await cancelledReceiptFixture(t);
+  const before = await f.desktopSnapshot();
+  const revision = f.store.messageCommandRevision;
+  f.cancel();
+  const after = await f.desktopSnapshot({ knownVersion: before.version });
+  assert.notEqual(f.store.messageCommandRevision, revision);
+  assert.notEqual(after.notModified, true);
+  // The production recent-receipts port reprojects cached receipts canonically.
+  f.state.receipts = f.registry.snapshot().map(item => f.store.projectMessageReceipt(item));
+  const fresh = await f.desktopSnapshot({ refresh: true });
+  assert.equal(fresh.messageReceipts[0].cancelled, true);
+});
+
+test("changing addressed receipt identities cannot reuse a different snapshot request cache", async t => {
+  const f = await cancelledReceiptFixture(t, 120);
+  const before = await f.desktopSnapshot();
+  const after = await f.desktopSnapshot({ knownVersion: before.version, messageReceiptIds: [f.item.clientUserMessageId] });
+  assert.notEqual(after.notModified, true);
+  assert.ok(after.messageReceipts.some(item => item.clientUserMessageId === f.item.clientUserMessageId));
+});
 
 test("exact receipt display follows queued and active messages without changing wire input", async () => {
   const receipts = new MessageReceiptRegistry();
@@ -46,6 +168,25 @@ import { mergeTaskCatalog } from "../../../src/application/task-catalog-projecti
 import { messageWithTaskReferences, taskReferenceDescriptor } from "../../../src/domain/task-board-task.mjs";
 import { createInterstreamMessage, interstreamOriginAuthor } from "../../../src/domain/interstream-message.mjs";
 import { restoreDeferredInput } from "../../../src/domain/deferred-input.mjs";
+import { ClaudeEventService } from "../../../src/providers/claude/claude-event-service.mjs";
+import { RunProgressPresentation } from "../../../src/application/run-progress-presentation.mjs";
+
+test("generic annotation live Claude deltas remain raw while desktop and progress project both aliases",()=>{
+  const setup=fixture(); const run=setup.run; run.provider='claude'; run.responseText='';
+  const names=['isSelectedRun','reindexRun','setSelectedThread','runTitle','bindRunMessage','retargetClientSelection','saveState','noteActivity','scheduleProgress','appendReasoning','setStage','appendActivity','invalidateCatalog','trackContextUsage'];
+  const service=new ClaudeEventService(Object.fromEntries(names.map(name=>[name,()=>false])));
+  const progress=new RunProgressPresentation({telegramLimit:10000,formatProgressHeartbeat:()=>'',claudeModelLabels:{},codexReasoningLabels:{},currentClaudeModel:()=>'',currentClaudeReasoning:()=>'',taskExecutionOwners:{HUB:'hub'},taskExecutionRuntimeLabel:()=>'',formatProgressHeading:()=>'',taskTitle:()=>'',showProject:()=>false});
+  run.userMessages[0].text='User :agent-annotation{index="1"}';
+  service.handle(run,{event:{type:'stream_event',event:{type:'content_block_delta'}},textDelta:':agent-annotation{index="'});
+  assert.equal(run.responseText,':agent-annotation{index="');
+  assert.equal(setup.desktopRunSnapshot(run).response,'');
+  assert.doesNotMatch(progress.render(run),/:agent/u);
+  service.handle(run,{event:{type:'stream_event',event:{type:'content_block_delta'}},textDelta:'1"} Answer :codex-annotation{index="1"} continued'});
+  const snapshot=setup.desktopRunSnapshot(run);
+  assert.match(snapshot.response,/Цитата 1/u); assert.deepEqual(snapshot.responseAnnotationReferences,[{index:1,position:{start:0,end:8}}]);
+  assert.equal(snapshot.userMessages[0].text,'User :agent-annotation{index="1"}');
+  assert.ok(run.responseText.startsWith(':agent-annotation')); assert.doesNotMatch(progress.render(run),/:agent|:codex/u);
+});
 import {
   createMaintenanceOperation,
   MAINTENANCE_OPERATION_KINDS,
@@ -278,7 +419,8 @@ function fixture(overrides = {}) {
       inputPreview: (input) => String(input),
     },
     receipts: {
-      recent: () => state.receipts,
+      recent: () => overrides.recentReceipts?.() ?? state.receipts,
+      forCommand: overrides.receiptForCommand,
       forMessage: overrides.receiptForMessage ?? (() => null),
       forTurn: overrides.receiptsForTurn ?? (() => []),
     },
@@ -304,10 +446,10 @@ function fixture(overrides = {}) {
       }),
     },
     server: {
-      snapshot: async ({ activeCount, restart }) => ({
+      snapshot: overrides.serverSnapshot ?? (async ({ activeCount, restart }) => ({
         process: { status: "running", activeCount },
         restart,
-      }),
+      })),
     },
     revision: overrides.revision
       ?? (() => (overrides.revisionFn ? overrides.revisionFn() : state.revision)),
@@ -319,6 +461,99 @@ function fixture(overrides = {}) {
   }, state);
   return { ...factory, state, selected, run, entry };
 }
+
+test("composed exact read ACK does not await unrelated snapshot projections", async () => {
+  let cursor = null;
+  const reads = [];
+  const setup = fixture({
+    serverSnapshot: () => { throw new Error("unrelated server projection must not run for ACK"); },
+    createFactory: (snapshot, state) => createDesktopReadComposition({
+      snapshot,
+      history: {},
+      readModel: {
+        readStateStore: {
+          get: () => cursor,
+          markRead: (value) => {
+            reads.push(value);
+            cursor = { answerAtMs: Date.parse(value.answerAt), answerTurnId: value.answerTurnId,
+              answerRevision: value.answerRevision };
+            return cursor;
+          },
+        },
+        trustedDeviceUserId: (context) => context?.userId ?? "owner",
+        hasAllowedUsers: () => true,
+        lastTaskMessage: (task) => task?.provider === "codex" && task?.threadId === "thread-1"
+          ? state.lastMessage : null,
+      },
+    }),
+  });
+  setup.state.lastMessage.terminalRevision = 2;
+  const final = { provider: "codex", threadId: "thread-1", turnId: "turn-previous", revision: 2 };
+  const result = await setup.markDesktopTaskRead({ final, streamId: "stream-1", accountId: "forged" });
+  assert.equal(result.marked, true);
+  assert.equal(reads[0].accountId, "owner");
+  assert.equal(setup.state.snapshotBuilds, 0);
+  assert.equal((await setup.markDesktopTaskRead({ final: { ...final, revision: 1 } })).reason, "stale-final");
+  for (const params of [
+    { final: { ...final, provider: "claude" } },
+    { final: { ...final, threadId: "foreign" } },
+    { final, streamId: "foreign" },
+  ]) assert.equal((await setup.markDesktopTaskRead(params)).marked, false);
+  assert.equal(reads.length, 1);
+  // Preserve the existing selected-Thread fallback when catalog discovery has
+  // not retained it yet. This reads its exact saved final, never another head.
+  setup.state.entries = [];
+  assert.equal((await setup.markDesktopTaskRead({ final })).marked, true);
+  setup.selected.threadId = "different";
+  assert.equal((await setup.markDesktopTaskRead({ final })).marked, false);
+});
+
+test("selected transient exact Stream from canonical snapshot advances the durable read cursor", async () => {
+  const { TaskReadStateStore } = await import("../../../src/infrastructure/persistence/task-read-state-store.mjs");
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub-read-transient-"));
+  const store = new TaskReadStateStore({ dataDir });
+  await store.initialize();
+  try {
+    const workspace = { id: "workspace-1", name: "First", kind: "user", streams: [{
+      id: "stream-1", name: "Selected", threads: [{ provider: "codex", threadId: "thread-1", position: 1 }],
+    }] };
+    const setup = fixture({
+      entries: [], run: null, workspaces: [workspace],
+      createFactory: (snapshot, state) => createDesktopReadComposition({
+        snapshot, history: {}, readModel: {
+          readStateStore: store,
+          trustedDeviceUserId: () => "owner", hasAllowedUsers: () => true,
+          lastTaskMessage: (task) => task?.provider === "codex" && task?.threadId === "thread-1"
+            ? state.lastMessage : null,
+        },
+      }),
+    });
+    setup.state.lastMessage.terminalRevision = 2;
+    assert.equal(setup.selected.streamId, undefined);
+    const view = await setup.desktopSnapshot();
+    const displayed = view.tasks.find(task => task.provider === "codex" && task.threadId === "thread-1");
+    assert.equal(displayed.streamId, "stream-1");
+    assert.equal(displayed.unread, true);
+    const builds = setup.state.snapshotBuilds;
+    const boardBuilds = setup.state.boardSnapshotBuilds;
+    assert.equal((await setup.markDesktopTaskRead({ final: displayed.latestFinal, streamId: "foreign" })).marked, false);
+    const result = await setup.markDesktopTaskRead({ final: displayed.latestFinal, streamId: displayed.streamId });
+    assert.equal(result.marked, true);
+    assert.equal(store.get({ accountId: "owner", provider: "codex", threadId: "thread-1" }).answerRevision, 2);
+    assert.equal(setup.state.snapshotBuilds, builds);
+    assert.equal(setup.state.boardSnapshotBuilds, boardBuilds);
+    assert.equal((await setup.desktopSnapshot()).tasks[0].unread, false);
+    // A newer unseen final cannot inherit a guessed binding when two Streams
+    // contain the selected Thread. The existing unique-binding owner refuses it.
+    setup.state.lastMessage.terminalRevision = 3;
+    workspace.streams.push({ id: "stream-2", threads: [{ provider: "codex", threadId: "thread-1" }] });
+    const current = { ...displayed.latestFinal, revision: 3 };
+    assert.equal((await setup.markDesktopTaskRead({ final: current, streamId: "stream-1" })).marked, false);
+    assert.equal(store.get({ accountId: "owner", provider: "codex", threadId: "thread-1" }).answerRevision, 2);
+    workspace.streams.pop();
+    assert.equal((await setup.markDesktopTaskRead({ final: current, streamId: "stream-1" })).marked, true);
+  } finally { await store.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
 
 test("composed protocol 4 snapshots carry exact read identity before delta versioning", async () => {
   const reads = [];
@@ -2026,6 +2261,7 @@ test("TaskBoard cache observes same-owner and external SQLite mutations", async 
     threadId: "journal-thread", turnId: "journal-turn", operationId: "journal-claim",
   });
   const claimed = await setup.desktopSnapshot(requestFor(external));
+  const beforeDetails = claimed.collectionDeltas.boardTasks.upserts.find((item) => item.id === localTask.id).detailsRevision;
   await journal.upsertRecords([{
     provider: "codex", threadId: "journal-thread", taskThreadId: "journal-thread",
     turnId: "journal-turn", projectRoot: directory, title: "Journal completed",
@@ -2033,8 +2269,15 @@ test("TaskBoard cache observes same-owner and external SQLite mutations", async 
   }]);
   const completed = await setup.desktopSnapshot(requestFor(claimed));
   const projected = completed.collectionDeltas.boardTasks.upserts.find((item) => item.id === localTask.id);
-  assert.equal(projected.workLog[0].summary, "Journal completed");
-  assert.equal(projected.workLog[0].turnId, "journal-turn");
+  assert.ok(projected, "the journal-only change must upsert its addressed summary");
+  assert.notEqual(projected.detailsRevision, beforeDetails);
+  assert.equal(projected.detailsDeferred, true);
+  assert.equal(Object.hasOwn(projected, "workLog"), false);
+  const details = await ownerBoard.card(localTask.id);
+  assert.equal(details.detailsRevision, projected.detailsRevision);
+  assert.equal(details.workLog[0].summary, "Journal completed");
+  assert.equal(details.workLog[0].turnId, "journal-turn");
+  assert.equal(JSON.stringify(details).includes("private body"), false);
   assert.equal(JSON.stringify(projected).includes("private body"), false);
   assert.equal((await setup.desktopSnapshot(requestFor(completed))).notModified, true);
   await journal.close();

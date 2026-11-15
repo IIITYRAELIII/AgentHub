@@ -2,8 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { publishChanged } from "./publish-changed.mjs";
-import { runStep } from "./publish-all.mjs";
+import { createExternalPublicationTools } from "./src/composition/release-tooling-composition.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { installPreparedRuntime, prepareRuntime, verifyInstalledRuntime } from "./src/runtime/runtime-manager.mjs";
 import { createFrozenReleasePublication } from "./src/infrastructure/process/frozen-release-publication.mjs";
@@ -13,7 +12,9 @@ import { publicationRunStore } from "./src/infrastructure/persistence/publicatio
 import { ReleaseOperationStore } from "./src/infrastructure/persistence/release-operation-store.mjs";
 import { artifactVersionIdentity } from "./src/domain/agent-hub-version.mjs";
 import { releaseApprovedTargets } from "./src/domain/release-operation.mjs";
-import { createGitHubDistributionSteps } from "./src/infrastructure/process/github-release-publication.mjs";
+import { createGitHubDistributionSteps, githubReleaseTransport } from "./src/infrastructure/process/github-release-publication.mjs";
+import { readReleaseToolPackage } from "./src/infrastructure/process/release-tool-package.mjs";
+import { createPublicRuntimeInstaller, publicRuntimeInstallerBinding, readPublishedRuntimePackage } from "./src/infrastructure/process/public-runtime-installer.mjs";
 
 function requiredEnvironment(name) {
   const value = String(process.env[name] ?? "").trim();
@@ -76,6 +77,7 @@ export function distributionArtifactAdapter(artifacts, distribution) {
 }
 
 async function run() {
+  const { publishChanged, runStep } = await createExternalPublicationTools({ sourceRoot: process.cwd() });
   const dataDir = requiredEnvironment("AGENT_HUB_DATA_DIR");
   const operationId = requiredEnvironment("AGENT_HUB_RELEASE_OPERATION_ID");
   const generationNumber = Number(requiredEnvironment("AGENT_HUB_RELEASE_GENERATION"));
@@ -85,6 +87,8 @@ async function run() {
   const candidateIdentity = requiredEnvironment("AGENT_HUB_RELEASE_CANDIDATE_IDENTITY");
   const runtimeRoot = path.resolve(process.env.AGENT_HUB_RUNTIME_ROOT || defaultRuntimeRoot());
   const repositoryRoot = path.resolve(process.cwd(), "..");
+  const tool = await readReleaseToolPackage();
+  const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
   await writeFile(path.join(executionRoot, "runner.json"), `${JSON.stringify({
     schemaVersion: 1,
     pid: process.pid,
@@ -93,6 +97,7 @@ async function run() {
     generation: generationNumber,
     targetId,
     candidate: candidateIdentity,
+    tool: toolIdentity,
     startedAt,
   }, null, 2)}\n`, "utf8");
   const store = new ReleaseOperationStore({ dataDir });
@@ -119,12 +124,23 @@ async function run() {
   const journal = publicationRunStore({ runtimeRoot: executionRoot });
   const checkpoint = publicationCheckpointStore(path.join(executionRoot, "publication-checkpoint.json"));
   const runtimePublication = releaseOperationRuntimePublicationInput({ operation, generation, candidate });
+  const target = releaseApprovedTargets(operation).find(item => item.targetId === targetId);
+  const publicInstaller = publicRuntimeInstallerBinding({ operation, generation, target })
+    ? createPublicRuntimeInstaller({ operation, generation, target, runtimeRoot, journal, tool: toolIdentity,
+      readPublishedInput: async () => {
+        await tool.assertUnchanged();
+        return readPublishedRuntimePackage({ operation, generation, target, dataDir,
+          tool: toolIdentity, prepared: await artifacts.preparedRuntimeReceipt((await journal.read()).identity),
+          api: githubReleaseTransport() });
+      },
+    }) : null;
   const artifacts = createPublicationArtifactSteps({
     sourceRoot: process.cwd(), runtimeRoot, journal, run: runStep,
     prepareRuntimeImpl: prepareRuntime,
     installRuntimeImpl: installPreparedRuntime,
     verifyRuntimeImpl: verifyInstalledRuntime,
     runtimePublication,
+    ...(publicInstaller ? { publicRuntimeInstaller: publicInstaller } : {}),
   });
   const artifactAdapter = deploymentProfile === "github-release"
     ? distributionArtifactAdapter(artifacts, createGitHubDistributionSteps({
@@ -145,6 +161,8 @@ async function run() {
     repositoryRoot,
     deploymentProfile,
   });
+  const consumer = publicInstaller ? (result.status === "awaiting_public_installer"
+    ? await publicInstaller.dispatch() : await publicInstaller.readback()) : null;
   const publication = await journal.read();
   const effect = {
     schemaVersion: 1,
@@ -153,16 +171,18 @@ async function run() {
     generation: generationNumber,
     targetId,
     candidate: generation.identitySha256,
+    tool: toolIdentity,
     ...(generation.testPlans ? { testPlans: generation.testPlans } : {}),
     revision: candidate.commit,
     publicationStatus: result.status,
     publicationRunId: publication?.runId ?? null,
+    ...(publicInstaller ? { publicRuntimeInstaller: consumer } : {}),
     ...(deploymentProfile === "github-release" ? { deploymentProfile,
       distribution: publication?.progress?.githubDistribution?.result ?? null } : {}),
     completedAt: new Date().toISOString(),
   };
   await writeFile(path.join(executionRoot, "result.json"), `${JSON.stringify(effect, null, 2)}\n`, "utf8");
-  if (effect.status !== "applied") throw new Error(`publication stopped in ${result.status}`);
+  if (effect.status !== "applied" && result.status !== "awaiting_public_installer") throw new Error(`publication stopped in ${result.status}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

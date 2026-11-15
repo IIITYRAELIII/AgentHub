@@ -567,7 +567,7 @@ export function canonicalizeProjectRoots(value, projects) {
   return rewrite(value);
 }
 
-function loadProjects(raw, defaultRoot) {
+export function loadProjects(raw, defaultRoot) {
   if (raw.projects == null) {
     return [{ name: path.basename(defaultRoot) || defaultRoot, path: defaultRoot }];
   }
@@ -596,6 +596,13 @@ function loadProjects(raw, defaultRoot) {
     throw new Error("projectRoot must match one of the paths in projects");
   }
   return projects;
+}
+
+export function initialRuntimeProjectConfiguration(template, projectRoot) {
+  if (typeof projectRoot !== "string" || !projectRoot.trim()) throw new Error("First installation requires the selected project root");
+  const root = path.resolve(projectRoot);
+  const projects = loadProjects({ projects: [{ name: path.basename(root) || root, path: root }] }, root);
+  return { ...structuredClone(template), projectRoot: root, projects };
 }
 
 function loadCodexModels(raw) {

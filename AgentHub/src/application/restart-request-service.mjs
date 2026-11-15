@@ -6,6 +6,8 @@ import {
   restartRequestProjection,
   RUNTIME_RESTART_SCOPE,
 } from "../domain/maintenance-operation.mjs";
+import { preparePackageRestart, packageRestartInput, packageResumeInput, packageHandoffBinding, assertOldPackageCurrent } from "../runtime/runtime-package-handoff.mjs";
+import { packageBindingDigest } from "../infrastructure/filesystem/runtime-package-target.mjs";
 
 function normalizedTarget(value) {
   const streamId = String(value?.streamId ?? "").trim();
@@ -17,6 +19,7 @@ function normalizedTarget(value) {
 }
 
 export class RestartRequestService {
+  #performing = new Set();
   constructor({
     operationStore,
     currentTarget,
@@ -31,10 +34,12 @@ export class RestartRequestService {
     announceDesktop,
     sendTelegram,
     performRestart,
+    controllerIsPerforming = () => false,
     isStopping = () => false,
     scheduleRestart = (callback) => setTimeout(callback, 0).unref(),
     nowIso = () => new Date().toISOString(),
     logger = console,
+    preparePackage = (input) => preparePackageRestart(input, { dataDir: operationStore.dataDir }),
   }) {
     if (!operationStore) throw new TypeError("operationStore is required");
     if (typeof currentTarget !== "function") throw new TypeError("currentTarget is required");
@@ -52,10 +57,12 @@ export class RestartRequestService {
       announceDesktop,
       sendTelegram,
       performRestart,
+      controllerIsPerforming,
       isStopping,
       scheduleRestart,
       nowIso,
       logger,
+      preparePackage,
     });
   }
 
@@ -142,6 +149,13 @@ export class RestartRequestService {
   }
 
   async #perform(operationId) {
+    if (this.#performing.has(operationId)) return { status: "performing", operationId };
+    this.#performing.add(operationId);
+    try { return await this.#performAttempt(operationId); }
+    finally { this.#performing.delete(operationId); }
+  }
+
+  async #performAttempt(operationId) {
     let result;
     try {
       result = await this.performRestart();
@@ -158,7 +172,9 @@ export class RestartRequestService {
         metadata: { failurePhase: result.phase ?? null },
       });
       if (operation) this.#project(operation);
-      await this.saveState();
+      // Package closure may already have finalized every runtime writer. Only
+      // the short-lived maintenance-operation owner can persist reconciliation.
+      if (!operation?.metadata?.packageHandoff) await this.saveState();
     } else if (["aborted", "recovered"].includes(String(result?.status ?? ""))
       && typeof result.restartStateSettled !== "boolean") {
       await this.fail(operationId, result?.error);
@@ -207,17 +223,38 @@ export class RestartRequestService {
       if (expected && expected !== process.env.AGENT_HUB_RELEASE_ID) {
         throw new Error("Replacement release does not match the persisted restart intent");
       }
-      return this.operationStore.settle(operationId, { succeeded: true, phase: "completed" });
+      // Startup's existing recoverInterrupted legitimately replaces the active
+      // phase with reconciling. The durable exact recovery intent, not that
+      // transient phase, determines the update's failed result.
+      const recovery = current.metadata?.packageCurrentRecovery;
+      const restored = recovery !== undefined;
+      if (restored && (recovery?.schema !== 1 || recovery.releaseId !== expected
+        || recovery.releaseId !== current.metadata.packageHandoff?.binding?.old?.releaseId
+        || recovery.bindingSha256 !== current.metadata.packageHandoff?.sha256
+        || ![1, 2].includes(recovery.installerExitCode) || !current.metadata.packageLaunchAdmission)) {
+        throw new Error("Previous current recovery completion has no exact launch authority");
+      }
+      return this.operationStore.settle(operationId, { succeeded: !restored, phase: restored ? "failed" : "completed",
+        ...(restored ? { metadata: { packageCurrentRecoveryReady: true } } : {}) });
     }, operationId);
   }
 
-  async fail(operationId = this.getRequest()?.operationId, error = null) {
+  async fail(operationId = this.getRequest()?.operationId, error = null, evidence = {}) {
     if (!operationId) return null;
-    const operation = await mutateRestartOperation(this.operationStore, () => this.operationStore.settle(operationId, {
+    const operation = await mutateRestartOperation(this.operationStore, () => {
+      const current = this.operationStore.get(operationId);
+      const proof = evidence?.packagePreStopFailure;
+      if (proof && (proof.schema !== 1 || proof.phase !== "package-backup-preflight"
+        || proof.bindingSha256 !== current?.metadata?.packageHandoff?.sha256
+        || proof.attempt !== (current?.metadata?.packageAttempt ?? 1))) {
+        throw new Error("Package pre-stop failure evidence changed");
+      }
+      return this.operationStore.settle(operationId, {
       succeeded: false,
       phase: "failed",
-      metadata: { error: String(error?.message ?? error ?? "").slice(0, 1_000) || null },
-    }), operationId);
+      metadata: { error: String(error?.message ?? error ?? "").slice(0, 1_000) || null,
+        ...(proof ? { packagePreStopFailure: proof } : {}) },
+    }); }, operationId);
     this.setRequest(null);
     await this.saveState();
     return operation;
@@ -267,6 +304,79 @@ export class RestartRequestService {
         ? "Перезапуск ожидает завершения потоков"
         : "Agent Hub Server перезапускается",
     };
+  }
+
+  async fromPackage(input) {
+    input = packageRestartInput(input);
+    const operationId = String(input?.operationId ?? "");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(operationId)) {
+      throw new Error("Package restart requires its original operationId");
+    }
+    const inputSha256 = packageBindingDigest(input);
+    const previous = this.operationStore.get(operationId);
+    if (previous) {
+      if (previous.metadata?.packageInputSha256 !== inputSha256) throw new Error("Package restart input changed");
+      return { accepted: false, operationId, status: previous.status, phase: previous.phase };
+    }
+    if (this.isStopping()) throw new Error("Runtime is already stopping");
+    const packageHandoff = await this.preparePackage(input);
+    const blockingCount = this.blockingWorkCount();
+    const notification = this.#notification({ messageId: null, minimumUpdateOffset: this.updateOffset(),
+      notifyTelegram: false, blockingCount });
+    const operation = await mutateRestartOperation(this.operationStore, () => {
+      const replay = this.operationStore.get(operationId);
+      if (replay) {
+        if (replay.metadata?.packageInputSha256 !== inputSha256) throw new Error("Package restart input changed");
+        return replay;
+      }
+      if (this.getRequest() || this.isStopping() || this.operationStore.activeFor({
+        kind: MAINTENANCE_OPERATION_KINDS.RESTART, ...RUNTIME_RESTART_SCOPE,
+      })) throw new Error("Another original restart already owns this runtime");
+      return this.operationStore.create({ operationId, kind: MAINTENANCE_OPERATION_KINDS.RESTART,
+        ...RUNTIME_RESTART_SCOPE, status: blockingCount ? "blocked" : "requested",
+        phase: blockingCount ? "waiting-for-work" : "requested",
+        blockers: blockingCount ? ["active-work"] : [],
+        metadata: { ...notification, packageHandoff, packageInputSha256: inputSha256 },
+      });
+    }, operationId);
+    this.#project(operation);
+    await this.saveState();
+    if (!blockingCount) this.#schedule(operation);
+    return { accepted: true, waiting: blockingCount > 0, operationId };
+  }
+
+  async resumePackage(value) {
+    const request = packageResumeInput(value), input = request.input;
+    const operationId = input.operationId, requestSha256 = packageBindingDigest(request);
+    const previous = this.operationStore.get(operationId);
+    if (!previous || previous.metadata?.packageInputSha256 !== packageBindingDigest(input)) {
+      throw new Error("Package restart input changed or original is missing");
+    }
+    if (previous.metadata?.packageRecovery?.requestSha256 === requestSha256) {
+      return { accepted: false, operationId, status: previous.status, phase: previous.phase, effectsReplayed: false };
+    }
+    if (this.#performing.has(operationId) || this.controllerIsPerforming() || this.isStopping()) throw new Error("Original package attempt has not drained");
+    this.operationStore.assertPackageContinuation(previous, request);
+    const packageHandoff = await this.preparePackage(input);
+    const binding = packageHandoffBinding({ operationId, kind: "restart", metadata: { packageHandoff } });
+    for (const [key, expected] of Object.entries(request.expectedCurrent)) {
+      if (binding.old[key] !== expected) throw new Error("Package continuation current identity changed");
+    }
+    await assertOldPackageCurrent(binding, { requireInstance: true });
+    const blockingCount = this.blockingWorkCount();
+    const notification = this.#notification({ messageId: null, minimumUpdateOffset: this.updateOffset(),
+      notifyTelegram: false, blockingCount });
+    const resumed = await mutateRestartOperation(this.operationStore, () => {
+      if (this.#performing.has(operationId) || this.controllerIsPerforming() || this.isStopping()) throw new Error("Original package attempt has not drained");
+      return this.operationStore.continuePackage(operationId, { ...request, requestSha256,
+        packageHandoff, notification });
+    }, operationId);
+    if (!resumed.applied) return { accepted: false, operationId,
+      status: resumed.operation.status, phase: resumed.operation.phase, effectsReplayed: false };
+    this.#project(resumed.operation);
+    await this.saveState();
+    if (!blockingCount) this.#schedule(resumed.operation);
+    return { accepted: true, operationId, attempt: resumed.operation.metadata.packageAttempt, waiting: blockingCount > 0 };
   }
 
   async fromTelegram() {

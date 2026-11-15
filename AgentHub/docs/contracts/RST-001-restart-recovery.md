@@ -1,5 +1,131 @@
 # RST-001 — Restart and maintenance recovery
 
+## Public update initiated by an active Hub agent
+
+A capable runtime admits one exact package maintenance original before stopping.
+Its public installer acknowledgement identifies `yield_current_turn`. The active
+agent finishes its existing response and turn so the restart owner can drain work.
+Readback of the same known pending original carries that handoff after a lost
+reply. UNKNOWN and terminal outcomes never grant another install or stop.
+The existing native continuation must survive retirement of the initiating
+Node/provider Job, then prove that entire old cohort closed before backup,
+installation and one replacement launch. The same original's settlement, exact
+Ready and retained conversation/configuration/data establish completion. The
+protocol-v1 legacy manual bootstrap keeps its external-operator boundary.
+
+## Explicit package next attempt (ADR-HUB-398)
+
+### External package scratch and closed acceptance disposition (ADR-HUB-422)
+
+New package handoff preparation creates its owned scratch alongside the verified
+external public installer. Ambient TEMP does not choose a backup destination.
+The binding retains the scratch directory's physical identity. Preparation and
+the actual pre-stopping preflight prove an external physical parent and absent
+backup destination. Replaced, linked, internal or occupied destinations refuse
+before stopping. The stopped backup repeats these guards and keeps exclusive
+creation, complete durable scope, SQLite reservations and integrity checks.
+
+A closed isolated acceptance original has one explicit maintenance-owner
+disposition for the exact pre-backup internal-destination refusal. Fresh original
+revision, complete binding and row digest, closed acceptance marker/fence,
+physical runtime/data custody, unchanged old pointer/full payload/stable Host,
+retained selected data and exact public assets must agree. Eligibility requires
+the typed owner proof or the narrowly pinned protocol-v1 revision7 owners in
+ADR-HUB-422. Generic UNKNOWN or historical error text cannot authorize it.
+
+The SAME original stores the entire prior UNKNOWN row and one durable disposition
+intent before native admission. The native owner retains the existing root gate,
+and the existing physical installation lease excludes concurrent pointer writers
+through fresh current/data checks and the canonical disposition write. It
+requires all recorded old/native/launcher processes closed (a reused live PID
+refuses), and verifies any surviving original Job is empty. An unavailable Job
+query refuses. Its fresh handshake is repeated immediately before settlement.
+The closed fence remains in place. Only this qualified original becomes FAILED
+with `retained-stopped-current`, retaining its graceful retirement, native attempt,
+backup refusal, input and history. This disposition invokes neither installation
+nor launch and grants no generic NO_EFFECT, reset, automatic retry or reopen.
+An admitted or lost reply is read on the same request. A mismatch leaves UNKNOWN
+and its original history intact. Normal future automatic updates require a new
+isolated acceptance with the corrected mechanism, independently of this closed
+case. Remove the pinned legacy route after the addressed originals are settled.
+
+Package preparation and the actual controller preflight apply the existing
+installer version/build eligibility to the inspected, digest-bound public
+manifest and exact current manifest before stopping. The installer keeps its
+own stopped checks; early acceptance does not permit a downgrade or cutover.
+
+After a positively joined nonzero installer exit, the same native owner may
+restore only the unchanged admitted current: physical roots, current pointer,
+manifest bytes, complete payload, stable Host and native retirement must still
+verify. It persists one recovery launch intent and uses the existing one-use
+Host admission and exact original/release/PID Ready proof. The update settles
+FAILED, retaining installer error, backup, native and attempt history even when
+the previous runtime is Ready again. No install or launch is replayed. Signal,
+timeout, lost reply, changed/partial current or unknown ownership remains
+reconciling; this is not permission to roll back or reset an original.
+
+A definitively failed package original remains readback-only under ordinary
+intake/bootstrap and generic terminal transitions. Only an explicit existing
+maintenance-owner `resume-package` may admit its next attempt: exact immutable
+business input, failed revision/binding, fresh current release/PID/pointer/
+manifest/instance, identical public assets/selection and physical roots are
+required. Positive controller-owned pre-stopping backup-preflight failure
+evidence, or the bounded protocol-v1 revision proof below, is required;
+historical error text or absent effects is insufficient.
+UNKNOWN, prior native/backup/launch admission, an undrained old invocation,
+stopping and a competing active restart refuse. No old receipt is rewritten.
+
+Every prior failed attempt/result/binding is retained in the same original's
+history. A fresh attempt still uses ordinary work waiting, stopping, native
+retirement, strict stopped backup, installer and one-launch/Ready guards.
+The retained exact continuation request is idempotent before preparation and
+after process reopen; a lost response never grants a second install/spawn.
+Changed input/CAS/current/assets/ownership refuses. No new update identity,
+terminal reset, effect replay, separate ledger or inferred pre-stop authority.
+
+Protocol-v1 compatibility admits only a first untyped failed terminal at revision
+2, with schema1 exact package binding and no earlier attempt/recovery/history or
+native/bootstrap/backup/launch admission. Creation is revision1; every native
+package dispatch first awaits a committed nonterminal package intent, and a later
+failure consumes another revision. This positive topology cannot describe a
+failed revision2 after such dispatch. It establishes eligibility before package
+intent, never retroactive global NO_EFFECT or a fabricated typed pre-stop proof.
+Unknown schema, later revisions or partial/UNKNOWN outcomes retain readback-only
+history. The complete old row and its binding are copied unchanged to attempt
+history; new recovery metadata records the distinct compatibility authority.
+Remove this compatibility route once untyped first-attempt records have received
+their addressed disposition. It has no automatic scheduling or adoption path.
+
+All production entry points, including direct Telegram polling, consult the
+actual controller's in-flight join before continuation preparation and again
+at the existing mutation/CAS boundary. Recovery must finish before that join
+clears. Readback of an already admitted identical request stays idempotent.
+
+An isolated whole-update check uses actual application and native owners with
+separate data, secrets, IPC, ports, current/releases and owned processes. A
+hash-bound root-contained acceptance import may control only external peers
+and deterministic I/O scheduling. Ordinary production and recording startup
+do not inherit that import or ambient NODE_OPTIONS. Local transport and fake
+external providers do not establish public TLS or account acceptance.
+
+After acquiring the existing instance owner, the same MiniAppServer may bind its
+configured listener before infrastructure integrity completes. That starting
+listener opens no journal and exposes only existing static startup assets,
+health and local session handshake; data, events and business intake refuse.
+Its exact host/port and existing auth remain fixed. Configuration after safety
+does not activate intake: the existing ordinary web start owns activation after
+application ports bind. Startup failure drains both listeners before releasing
+instance ownership; an unjoined close refuses that release. Serving this shell
+is neither business availability nor Ready.
+
+Startup's existing SQLite recovery coordinator retains both admission locks and
+the detached DB/WAL copy until its full inspection worker has replied and exited
+and inspection cleanup has completed. Worker transport, I/O or cleanup failure
+cannot certify health or publish Ready. Mapped live SHM is neither copied nor
+modified; corruption, quarantine, intent rollback and replacement keep the same
+owner. No saved healthy flag, size/mtime/TTL shortcut or new recovery ledger is
+introduced. See ADR-HUB-297-startup-inspection-phases.
+
 Installed sync-endpoint migration (ADR-0329) belongs to the existing runtime
 installation owner before stable-file/pointer publication. It does not launch
 or restart Hub, enroll a device or write journal/credential/cursor files. A
@@ -16,15 +142,54 @@ cleanup owners. Active user work defers admission. Storage maintenance reuses th
 existing maintenance-operation store in its own runtime scope; it is neither a
 user turn, a dispatch reservation nor a restart UI marker.
 
-Bounded owner discovery and previews precede durable artifact admission. A lost
-reply remains with the SAME original child and is reconciled, never replayed as a
+Bounded owner discovery and previews precede durable artifact admission. An
+eligible preview whose pass budget is spent may persist on the SAME canonical
+unadmitted child and bounded parent pending list. It is reusable only for the
+same runtime release, exact candidate and approved binding. It never replaces
+the artifact owner's fresh prune validation or grants authority after the
+cooperative admission budget. Restart recovers that child through the existing
+store; release drift requires a new preview on that SAME unadmitted identity.
+An admitted or uncertain effect still follows original-owner reconciliation.
+A lost reply remains with the SAME original child and is reconciled, never replayed as a
 new delete. Unknown resources do not starve every other owner. Shutdown stops new
 admission and drains the actual effect before closing stores or releasing the
 instance lock; a timeout does not prove the child stopped. Policy v1 owns
 redundant completed/published native merge transports. Policy v2 adds only
 explicitly retired runtime bodies with exact current-pointer custody, fresh
 current/rollback/running/prepared/source pins and original child identity. The
-reviewed owner-list append preserves v1 pending intents. Partial batches remain
+public source-free manifest is a valid installed pin only when its complete raw
+manifest hash and physical release-root binding match the installer's existing
+current/rollback custody. Explicit invalid sourceRoot values, changed bindings
+and unselected/prepared source-free bodies remain unknown and block retirement.
+No whole-body rehash is added before each batch; installed custody, bounded
+manifest reads and the existing native per-batch content guards remain owners.
+An active lease may reuse its verified runtime native producer between batches,
+without retaining target handles or target verification. Each reply identifies
+one invocation; it is not a maintenance original, retry or replacement ID.
+Missing/invalid replies remain unknown and join the real child before rejection.
+A failed binding cannot restart within that scope, including after another
+resource runs. Other independently admitted resources retain their existing
+guards. Shutdown closes the bounded producer lifetime before releasing the
+owning lease; no process timeout or abort abandons native work. See
+ADR-HUB-385-runtime-native-executor.
+The same finite producer scope covers native-capture retirement without caching
+target handles or checks. A failed capture binding cannot restart inside that
+scope; producer failure drains/joins before rejection. The existing maintenance
+original preserves its batch sequence/latest bounded timing summary, while the
+existing rotating Task timing recorder flushes failure and final producer-join
+observations under that original. Process reopen creates no retry authority;
+original-owner reconciliation and full fresh leased archive proof still apply.
+See ADR-HUB-385-native-capture-executor.
+See ADR-HUB-363-source-free-runtime-pins. The same owner also permits only
+the exact compile-proven historical Whisper cache described
+by REL-001/ADR-HUB-385-generated-runtime-cache. It retires before its manifest
+source in the SAME original batch. The existing pruning record retains exact
+pre-unlink directory custody to reconcile cache/directory reply loss; it grants
+no name-based empty-directory waiver or separate ledger.
+The manifest, pointer custody, UNKNOWN interpretation and native batch bounds
+remain unchanged. Unknown or foreign generated data still refuses.
+The reviewed owner-list append
+preserves v1 pending intents. Partial batches remain
 attached to the same admitted child; unknown outcomes are not replayed as new
 deletion. An older or unknown registry/version defers without clearing state.
 Policy v3 appends only redundant release-generation bundle transports after the
@@ -39,12 +204,38 @@ Other persistent artifacts
 remain under their existing cleanup contracts and are preserved until those
 owners supply their own verified eligibility/effect adapters.
 
+ADR-HUB-385 extends the existing native-merge-transport owner with a distinct
+native-capture-retirement-v1 :repository resource. Its legacy bundle IDs and
+pending originals retain their meaning. The new resource archives every local
+Git object and raw non-object file in the owned immutable object store before
+admitting handle-bound repository retirement. Exact terminal Task/MCP evidence,
+publication, source/alternate pins and original native composition verification
+remain required. Archive intent and pruning intent precede their effects; partial
+or lost replies retain the SAME child. Historical readers consume its verified
+archive, while live integration refuses to reconstruct a retired capture. New
+native provisioning shares only immutable object files with independent metadata;
+existing release holders remain standalone. No new database, maintenance registry,
+Task closure, UNKNOWN settlement or generic directory scavenger is introduced.
+
+An allocation evidence read may open the existing maintenance store read-only,
+without schema initialization, migration or a writer reservation. It verifies
+the original admitted partial retirement, but cannot settle, replay or continue
+it. Its existing resource owner and scheduler retain all effect authority; see
+ADR-HUB-363-partial-retirement-allocation and REL-001.
+
 Catalog reads during startup must not indirectly launch optional historical
 pricing backfill. Its existing post-readiness coordinator remains the owner;
 mandatory terminal projection recovery and its durable ACK fences still finish
 before readiness, with the existing replacement deadline unchanged.
 
 ## Identity and owner
+
+Provider sign-in admission pauses with reversible timer cutover and resumes with
+the restored runtime. Pending attempts retain their identity and local state
+through an early failed restart. Before provider transport closes, the existing
+sign-in owner joins cancellation of its own attempts and CLI; it never stops
+provider turns. Permanent disposal belongs to finalization and cannot be undone
+by timer recovery. Requests queued across the pause cannot start after resume.
 
 At actual cutover the existing transfer service fences new background preparation
 and GC, stops its timer and drains already admitted filesystem work before the
@@ -88,6 +279,37 @@ provider/process completion owner may commit the exact terminal outcome.
 The narrowly scoped ADR-0125 recovery interruption uses that same cancellation
 and terminal owner after fresh provider/native inactivity and exact interrupt
 rejection; a startup/read exception or idle status alone still cannot release.
+ADR-HUB-392 extends its eligibility to an exact retained `inProgress` original
+only when its accepted/observed provider-start and positive Hub ownership agree.
+Ordinary UNKNOWN observation retries that owner's prechecks without a new timer;
+live/unknown evidence does not permanently suppress a later authoritative check.
+An accepted or uncertain interrupt is not repeated, and no ACK releases admission.
+A live external/current turn in the same Thread still blocks recovery.
+For a canonically accepted exact Hub-owned original, recovery reads fresh Thread
+metadata and its exact rollout snapshot without requiring paginated full history.
+An exact UNKNOWN snapshot grants eligibility only; missing/foreign snapshots,
+live/unknown provider or native activity still cannot settle or release the run.
+The existing tracer records the original recovery read start/outcome without payload.
+
+After a trusted later system boot, the existing canonical managed lifecycle has
+a separate local-only disposition (ADR-HUB-392). Only an exact Hub-owned accepted
+original restored from the canonical runtime snapshot, with unchanged run/command/
+Thread/turn and consistent admission/request/acceptance provenance before that
+boot, is eligible. Legacy providerStart without process birth is not repaired
+from a TaskGit guard, numeric PID, time proximity or Thread projection: missing
+canonical provenance refuses retirement. Canonical requested/accepted-start times
+must precede boot independently of display/history `startedAt`; an old display
+date cannot retire postboot ownership. The existing Win32 boot identity owner
+supplies the boot witness; current PID reuse supplies no authority.
+The existing lifecycle store persists exact local retirement before admission is
+released. No provider terminal, command settlement, history rewrite or provider
+interrupt follows. Retained original input and exact turn lookup survive reopen,
+including loss of the following runtime snapshot save. A changed registry/identity,
+same boot, unavailable proof or failed disposition write retains ownership.
+The same recovery entrypoint invokes it; there is no second reconciler or timer.
+Queue wake rechecks fresh external/current authority and cannot send concurrently
+to a live newer desktop writer. Payload-free proof/persistence trace spans reuse
+the original command identity and existing durable trace owner.
 
 ## Invariants
 
@@ -97,6 +319,11 @@ rejection; a startup/read exception or idle status alone still cannot release.
   required companion refuses preparation before current-pointer publication;
   older sources without the owning module do not require it. This does not grant
   authority to rewrite an already installed immutable runtime manifest.
+  The sealed native capture module likewise requires its exact declared C#
+  companion in normal preparation, source selection and import-closure checks.
+  Its producer hashes it into the immutable manifest; missing companion refuses
+  before dependency work. Unrelated C# sources remain excluded. A rejected old
+  artifact stays immutable; the corrected producer creates a new target.
 
 - Native candidate membership and immutable module reads include the same six
   declared release-progress viewer assets as runtime preparation. Their shared
@@ -135,11 +362,15 @@ rejection; a startup/read exception or idle status alone still cannot release.
   Terminal reconciliation accounts their usage without emitting a user response
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
-- Ordinary and new-turn admission is blocked by an exact active Stream context-maintenance
-  operation. An explicit steer targeting an exact active managed turn may be
-  admitted during provider-internal compaction, but its provider dispatch waits
-  durably for that compaction to settle. Hub-owned compaction and rotation
-  reservations remain admission barriers.
+- Admission that would launch a new turn is blocked by an exact active Stream
+  context-maintenance operation. An ordinary Stream-addressed steer with an
+  exact active Hub-owned turn may be admitted and dispatched during that turn's
+  provider-internal compaction, without waiting for compaction to settle.
+  Its expected-turn guard and unknown-acceptance readback remain unchanged.
+  Hub-managed compaction and rotation reservations and actual runtime stopping
+  remain admission barriers. Idle, missing/unbound or foreign turn identity,
+  explicit after-turn queue and direct exact-target service operations do not
+  gain this ordinary-steer exception (MSG-001, ADR-0136).
 - A restart requested with no selected Stream and Thread is persisted under the
   explicit runtime scope; a target naming only one of them is rejected.
 - Restart waits for durable finals, command receipts, delivery outbox and
@@ -148,10 +379,24 @@ rejection; a startup/read exception or idle status alone still cannot release.
   or pause. User Stop/pause retains its authority (ADR-0127).
 - One durable restart launches one owned RuntimeHost tree. Windows restart never
   submits an escaping WMI start, retries an ownership timeout or adds a fallback
-  launch. The controlled path uses a direct detached host and retains exact
-  cleanup ownership until lock/ready proof. Cold `--spawn-independent` uses
-  synchronous native process creation with explicit job breakaway; denied
-  breakaway fails visibly, with no WMI fallback or delayed launch. Cold start
+  launch. The controlled Windows path uses the existing Host's pipe-connected
+  `--spawn-replacement` entry. It creates one suspended child through the same
+  verified external desktop parent, proves that child outside inherited Jobs,
+  and assigns a fresh per-Host Job before resuming. An existing same-name Job
+  refuses without changing that Job. The launcher retains the exact child and
+  Job handles until the original caller proves operation/release/instance Ready
+  and the native owner confirms that Ready Node belongs to the new Job. The
+  caller joins the launcher's commit before returning, leaving no relay in the
+  old cohort. Abort/EOF cleans only that exact new Job and confirms zero before
+  recovery; missing replies or unjoined cleanup remain unknown, without retry.
+  No live old writer is subtracted from historical Job retirement.
+  Cold `--spawn-independent` uses
+  synchronous native process creation with the pinned actual desktop shell as
+  explicit parent. A suspended child must be outside every Job, have that exact
+  parent and the same effective security context before Resume. Missing or
+  changed shell/token/job proof fails visibly, with no flags-only or WMI fallback
+  or delayed launch. This observation does not prohibit later foreign Job
+  assignment. Cold start
   cannot carry a managed restart operation identity.
   The expected release is persisted before launch; exact operation/release/PID/
   instance evidence fences readiness. The old owner recovers only after confirmed
@@ -201,7 +446,9 @@ rejection; a startup/read exception or idle status alone still cannot release.
 - An exact Codex turn whose rollout has only `task_started` remains unknown
   across reconnect and restart, even after the promptless grace period or an
   App Server `interrupted` projection. The original run and queue lane remain
-  owned; no terminal, interruption or new provider effect is fabricated.
+  owned unless the separately proven local-only reboot disposition above releases
+  old Hub admission. UNKNOWN provider outcome remains; no terminal, interruption
+  or new provider effect is fabricated.
 - Before provider discovery finishes, the initial catalog resolves retained
   Threads against existing visible Workspace/Stream bindings read-only. It does
   not expose an unbound historical Thread as a synthetic Stream. Discovery
@@ -220,6 +467,11 @@ rejection; a startup/read exception or idle status alone still cannot release.
   same-runtime periodic recovery claims pending rows only and cannot steal an
   active projection. The projection drain has no provider, command or Telegram
   side effects and is disposed with the runtime timers.
+  ADR-HUB-409 reduces repeated accounting payload reads and resolves existing
+  bounded Workspace reference groups through fresh catalog reads. A journal
+  revision changed during callbacks is refused before facts/rendering; final
+  transaction CAS, exact outbox readbacks/ACK fences, startup drain order and
+  the replacement readiness deadline remain unchanged.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.
   A disconnected health request alone never asserts a restart. While waiting
@@ -362,3 +614,174 @@ so main readiness or Worker availability never becomes full gateway readiness.
 Gateway health recovery does not replay Worker startup or settle that promise.
 Shutdown/generation changes fence late publication and menu callbacks. No new
 retry loop, gateway writer, process authority or restart is introduced.
+
+## Fixed Windows lock-publication capability
+
+Event-loop quiescence (`beforeExit`) is not terminal process shutdown. A source
+consumer remains usable when a caller schedules more work after idle. Explicit
+shutdown still permanently fences that instance and joins admitted native work;
+it never resurrects a closed consumer or retries publication. Actual process
+exit may synchronously retire only an idle exact-identity owned bootstrap body.
+An active unresolved call or changed/replaced root retains its bootstrap body.
+Unknown canonical lock effects remain with the existing interprocess owner;
+bootstrap cleanup never removes those ready/canonical lock bytes or grants retry.
+The exit hook performs no asynchronous launch, global scavenging or foreign cleanup.
+
+The existing RuntimeHost has one fixed directory-publication mode. Its paths are
+stdin data and its no-replace operation cannot enter Hub startup, lifetime logs,
+restart, acceptance, provider or publication workflows. Source execution prepares
+its hash-bound native consumer through the existing builder before lock admission,
+without requiring that lock or an already installed Host. The same four declared
+Host source inputs are retained by the ordinary runtime producer and source
+membership selector. Prepared consumers verify their complete manifest, own Host
+and source/binary hashes; missing or changed inputs refuse without compilation
+or installed-launcher fallback. Source bootstrap coalesces only within its
+process. Normal shutdown fences calls, joins native work and retires only its
+exact owned temporary body; forced termination may retain an orphan, with no
+global cache or scavenger. This capability does not itself recover an unknown
+lock or start any runtime.
+
+## Exact public-package restart (ADR-HUB-376)
+
+### Update backup retention (ADR-HUB-383)
+
+The existing after-ready StorageRetentionService automatically converges to at
+most five confirmed update backups across their original scratch roots. Discovery
+uses bounded read-only pages of canonical restart originals, never a disk scan.
+Only exact packageHandoff binding and packageBackup inventory authorize a copy;
+update originals themselves remain immutable. Failed, active, UNKNOWN, missing,
+changed, linked or otherwise unproven copies retain their recovery evidence.
+Protected copies consume the five slots; if they prevent convergence, cached
+health reports the actual known count, protected/unverified count and limitMet=false.
+Unregistered legacy/offline directories are outside this inventory and never adopted.
+
+New successful backup checkpoints also bind generated copied-database WAL/SHM
+files for retention; this is not raw copying of the source WAL. Historical
+inventories acquire no new files or digest. Whole file/hash and directory equality
+is required before admission, including rejection of extra empty directories.
+Only the admitted backup tree may be traversed. Runtime data, WIP, packages,
+source checkouts and sibling scratch files are never cleanup candidates.
+
+Policy v4 adds the update-backup owner first while preserving the exact prior
+v1/v2/v3 owner identities and pending children. Existing readiness, busy, stopping,
+lease, timer and cooperative batch limits remain. One canonical retention child
+stores proof, cursor and per-entry intent before each native handle-bound delete.
+Ancestor identities are checked separately from that final-entry primitive.
+Unknown deletion is never repeated: same-child absence readback under unchanged
+parents may advance; an existing/replaced entry remains UNKNOWN. Partial batches
+continue only their not-yet-admitted entries. Errors never imply a successful cap,
+and neither ancestry checks nor hashing claim an atomic filesystem snapshot.
+
+
+`restart-package` is an authenticated local action on the existing restart
+request service and maintenance-operation original. Exact tag, canonical
+publisher asset URLs/digests/lengths, whole runtime manifest, source/version,
+physical runtime/data roots and current old instance are captured before actual
+stopping. A pending request keeps ordinary work/admission running. Only the
+existing synchronous stopping fence admits the capable-runtime cutover.
+
+DesktopControl passes the exact package business input to that owner: original
+`operationId`, `tag`, `archive`, `descriptor` and `installer`. The router does not
+inject response-budget or snapshot fields into this action. It does not strip
+caller-supplied extra fields either: the same strict package-input owner rejects
+every unknown key. Authentication, local privilege, command fingerprint/replay,
+package preparation, persistence-before-scheduling and active-work/stopping
+fences retain their existing owners. Other actions keep their response policies.
+The package command fingerprint includes every supplied field; the ordinary
+tracing-field exemption cannot turn a changed package request into cached success.
+A historical failed or UNKNOWN receipt is not retried or rewritten by this
+correction; retained originals still require supported canonical disposition.
+See ADR-HUB-396-desktop-package-input.
+
+Package-only closure drains and closes normally preserved resources and
+finalizes all writer stores BEFORE instance release. A native continuation
+holds original process/Job handles and the root gate; old lock release alone is
+never retirement. After original exits, owned Process references are disposed
+before observing same-Job ActiveProcesses zero. Every backup/install/launch
+boundary obtains a fresh reply from that holding native parent. Unknown,
+foreign or changed evidence refuses without killing or replaying work.
+
+Recipient transport recovery (ADR-HUB-387) is strictly before lifecycle dispatch.
+A new exact physical/original/public-asset-bound preparation may continue only
+on explicit repetition, with fresh authoritative canonical-row absence and no
+saved request/dispatch intent. Partial historical/unbound transport is never
+adopted. An exclusive flushed dispatch fence precedes the native subprocess;
+absent SQL after that fence is UNKNOWN, not permission to spawn again. Preparation
+is not a second restart ledger and does not relax modern lost-response refusal,
+legacy manual stop, original Job proof or any stopped-data/launch boundary.
+
+Backup uses the single `runtime-durable-state-v1` scope policy (ADR-HUB-380):
+config and all top-level regular data files, plus recursive durable outboxes,
+background jobs, failed updates, Claude run state, locks, diff indexes and custody
+metadata. Custody epoch intent/snapshot must be regular nonlinked files, never
+same-named directories; they and other scalar metadata are copied.
+`repository` and `retained-wip` remain in place. Every direct ordinary directory
+outside that durable scope is explicitly recorded as retained, not backed up,
+with its physical identity. Known Git/WIP/dependency/payload trees are not traversed;
+unclassified directories are labelled `unclassified-not-backed-up`, never claimed
+as a complete backup. The unchanged installer does not modify those data trees.
+Selected links/special entries and linked retained roots refuse; links inside
+untraversed retained bodies neither grant authority nor enter the snapshot.
+Read-only support inspection precedes modern/legacy admission and is repeated
+before the modern synchronous stopping fence; work admission is rechecked after
+that inspection. A fresh stopped inventory supplies backup, never the old preflight.
+Live support inspection may exclude only exact ephemeral directories observed
+from this process's existing interprocess lock producer. Physical identity and
+confirmed same-producer publication/removal, not a filename or generic ENOENT,
+authorize exclusion. Replaced, foreign/unobserved and durable entries still refuse
+drift. This read-only call-scoped observation does not acquire a lock or mutate
+state. Stopped inventory never consumes it and retains strict equality. See
+ADR-HUB-398-live-backup-lock-observation. Ordinary intake/bootstrap keeps terminal
+failed originals readback-only. Only the explicit next-attempt boundary above
+can admit a fresh attempt; historical failed rows remain unchanged in history.
+An awaited producer transition requires a fresh path read before excluding
+confirmed absence; a replacement cannot inherit its predecessor's removal proof.
+Observation promise rejection stays joined to the existing release error owner;
+an I/O failure is neither confirmed removal nor an uncaught bookkeeping failure.
+SQLite headers discover databases throughout the selected scope regardless of
+filename suffix. All discovered writer reservations are held together through
+SQLite backup/integrity and regular-file before/after hashes. WAL/SHM companions
+are omitted only with their discovered database; orphan companions refuse.
+Ephemeral bot.lock is not copied. Original config, auth, cursors and UNKNOWN outcomes remain in place;
+backup never restores or replays them. The stopped-only installer retains its
+own guards. A durable one-use launch intent binds the replacement Host, original,
+release, instance and control readiness. Ambiguous install/start is reconciling,
+not permission for another launch or automatic rollback. A cold launch cannot
+consume an unresolved original; read-only `--check` cannot consume its admission.
+An exclusive backup destination outside the runtime may be on another Windows
+volume; normal TEMP and runtime roots need not share a drive. Same-root and child
+destinations still refuse, and existing output is never overwritten.
+
+The incoming public package provides the legacy entry when installed public
+2.0.4 lacks this protocol. The user explicitly finishes work and manually stops
+the reported exact old cohort AFTER arming from outside its Job. This is a
+one-time manual maintenance window, not an old graceful port or an automatic
+forced kill. Old admission cannot be fenced by new source: no new work/starts
+may be introduced during that window. Manual termination may be crash-consistent;
+the native old-Job zero proof and existing foreign process/SQLite checks are
+still required. A lost modern request never falls back to legacy stop. Remove
+this compatibility branch when non-protocol public versions cease to be
+supported update sources. Runtime-root/data layout and an interactive same-user
+security context are explicit v1 bounds; other layouts/authority refuse.
+
+## Retained source after completed generation retirement (ADR-HUB-385)
+
+A runtime/prepared source remains pinned by its declared and physical path and
+by every actual Git/commondir/recursive alternate object store. If the generation
+owner has removed its live identity and Git metadata but left source files,
+absence of Git alone is not custody proof. Only the exact existing generation
+archive, stable plain identity/checkpoint/raw manifest, deterministic original
+generation/repository paths and the SAME canonical completed-generation reader
+may establish that this remainder has no Git object-store borrower. Its exact
+completed candidate must match the runtime publicationRevision and sourceRoot.
+This proof keeps the whole source remainder, WIP, prepared body and original
+archive; it authorizes no source deletion or UNKNOWN settlement.
+
+Missing/changed/nonterminal/foreign/superseded proof, redirected paths and ambient
+Git history/storage inputs refuse. A restored Git marker/alternate borrower or
+late ambient input invalidates the proof at the fresh boundary. Reads retain
+the existing installation custody and exact per-generation lease with bounded
+250ms admission; there is no global reservation, new ledger, cap or deadline.
+The existing canonical readGeneration port passes through the same native owner
+registry. No public tool argument, release receipt, publication identity or
+runtime manifest is rewritten. See ADR-HUB-385-retired-generation-source-custody.

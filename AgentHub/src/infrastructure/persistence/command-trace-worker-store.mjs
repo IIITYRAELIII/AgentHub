@@ -1,3 +1,4 @@
+import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
 import { Worker } from "node:worker_threads";
 
 const DEFAULT_MAX_PENDING_WRITES = 2_048;
@@ -180,6 +181,7 @@ export class CommandTraceWorkerStore {
       this.#scheduleRestart();
       return;
     }
+    observeRuntimeWorkerMemory("commandTrace", worker);
     this.#worker = worker;
     worker.on("message", (message) => this.#onMessage(message));
     worker.on("error", (error) => this.#report(`Command trace worker error: ${error.message}`));

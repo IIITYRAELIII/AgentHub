@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { createManagedTaskRun, taskRunKey } from "../domain/task-runs.mjs";
+import { createManagedTaskRun, taskRunKey, localExecutionIdentity } from "../domain/task-runs.mjs";
 import { TASK_EXECUTION_OWNERS, taskExecutionRuntimeLabel } from "../domain/task-execution-owner.mjs";
 import {
   interstreamDisplayText,
@@ -8,7 +8,7 @@ import {
   normalizeInterstreamClientUserMessageId,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
-import { providerRunTerminalIdentity } from "../domain/provider-run-terminal.mjs";
+import { providerRunTerminalIdentity, providerRunTerminalStatusSupported } from "../domain/provider-run-terminal.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -50,6 +50,19 @@ function tracedAdmissionEnqueue(commandTrace, { commandId, transport, stage }, o
   }
 }
 
+function localRetirementSpan(d, run, stage) {
+  let span;
+  try {
+    span = d.commandTrace?.startBestEffortSpan?.({
+      commandId: run.clientUserMessageId, stage, transport: "lifecycle", recordStarted: true,
+      metadata: { runId: run.id, threadId: run.threadId, turnId: run.turnId },
+    });
+  } catch { /* Diagnostics cannot change lifecycle authority. */ }
+  return outcome => {
+    try { span?.finish({ outcome }); } catch { /* Best effort. */ }
+  };
+}
+
 export function runInputPreview(input) {
   const text = typeof input === "string"
     ? input
@@ -59,6 +72,8 @@ export function runInputPreview(input) {
 
 export class ManagedRunLifecycleService {
   #d;
+  #localRetirements = new WeakMap();
+  #bootIdentity;
 
   constructor(dependencies = {}) {
     for (const name of [
@@ -70,6 +85,9 @@ export class ManagedRunLifecycleService {
     ]) requiredFunction(dependencies[name], name);
     if (dependencies.recordProviderTerminal != null) {
       requiredFunction(dependencies.recordProviderTerminal, "recordProviderTerminal");
+    }
+    if (dependencies.readProviderTerminal != null) {
+      requiredFunction(dependencies.readProviderTerminal, "readProviderTerminal");
     }
     if (!dependencies.taskRuns?.add || !dependencies.taskRuns?.remove) {
       throw new TypeError("taskRuns registry is required");
@@ -235,19 +253,82 @@ export class ManagedRunLifecycleService {
     return this.releaseAdmission(run);
   }
 
+  async retireLocalExecutionAfterReboot(run) {
+    const d = this.#d;
+    const provenance = d.taskRuns.restoredLocalExecution?.(run);
+    if (!provenance || !d.localRetirementStore || !d.readSystemBootIdentity) return false;
+    if (run.localAdmissionReleased === true) return true;
+    if (this.#localRetirements.has(run)) return this.#localRetirements.get(run);
+    const expected = JSON.stringify(provenance.identity);
+    const current = () => d.taskRuns.forTask(run) === run
+      && !run.completionPreparing && !run.completionPrepared
+      && JSON.stringify(localExecutionIdentity(run)) === expected;
+    if (!current()) return false;
+    const pending = (async () => {
+      const finishProof = localRetirementSpan(d, run, "local-execution-boot-proof");
+      let boot;
+      try {
+        this.#bootIdentity ??= Promise.resolve().then(() => d.readSystemBootIdentity());
+        boot = await this.#bootIdentity;
+      } catch {
+        this.#bootIdentity = null;
+        finishProof("failed");
+        return false; // Unavailable boot authority never clears a lane.
+      }
+      const bootTime = Date.parse(boot?.bootTime);
+      const restoredAt = Date.parse(provenance.restoredAt);
+      const times = [provenance.identity.startedAt, provenance.identity.requestedAt,
+        provenance.identity.acceptedAt].map(Date.parse);
+      if (boot?.source !== "Win32_OperatingSystem.LastBootUpTime"
+        || !Number.isFinite(bootTime) || bootTime > restoredAt
+        || times.some(time => !Number.isFinite(time) || time >= bootTime)
+        || !current()) { finishProof("refused"); return false; }
+      finishProof("succeeded");
+      const finish = localRetirementSpan(d, run, "local-execution-retirement");
+      try {
+        const disposition = await d.localRetirementStore.recordLocalExecutionRetirement({
+          identity: provenance.identity,
+          proof: { kind: "system-restart-after-local-execution", source: boot.source,
+            bootTime: new Date(bootTime).toISOString(), restoredAt: provenance.restoredAt },
+        });
+        if (!current() || !d.taskRuns.releaseLocalAdmission(run, disposition)) {
+          finish("superseded");
+          return false;
+        }
+        // The disposition is already durable. No provider terminal, command
+        // outcome, accepted payload, raw history or after-turn maintenance changes.
+        d.revokeAdmission(run);
+        d.pauseObservation(run);
+        d.invalidateCatalog();
+        try { await d.saveState(); }
+        finally { await d.afterLocalRetirement?.(run); }
+        finish("succeeded");
+        return true;
+      } catch (error) {
+        finish("failed");
+        throw error;
+      }
+    })();
+    this.#localRetirements.set(run, pending);
+    try { return await pending; }
+    finally { this.#localRetirements.delete(run); }
+  }
+
   async releaseAdmission(run) {
     if (!run || run.admissionReleased === true) return;
     if (run.admissionReleasing) return run.admissionReleasing;
     const d = this.#d;
     d.revokeAdmission(run);
+    const locallyRetired = run.localAdmissionReleased === true;
     run.admissionReleasing = (async () => {
       await this.markCompleted(run);
+      if (run.completionPrepared !== true) return;
       d.taskRuns.remove(run);
       if (!d.taskRuns.size) d.stopTyping();
       try {
         await d.saveState();
       } finally {
-        if (run.afterCompletionApplied !== true) {
+        if (!locallyRetired && run.afterCompletionApplied !== true) {
           run.afterCompletionApplied = true;
           await d.afterCompletion(run);
         }
@@ -266,8 +347,30 @@ export class ManagedRunLifecycleService {
     if (run.completionPreparing) return run.completionPreparing;
     const d = this.#d;
     run.completionPreparing = (async () => {
+      const locallyRetired = run.localAdmissionReleased === true;
       try {
-        await d.beforeCompletion(run);
+        if (locallyRetired) {
+          const identity = { provider: run.provider, threadId: run.threadId, turnId: run.turnId };
+          const runId = run.id;
+          const commandId = run.clientUserMessageId;
+          const finish = localRetirementSpan(d, run, "local-retired-terminal-read");
+          let terminal;
+          try { terminal = await d.readProviderTerminal?.(identity); }
+          catch (error) { finish("failed"); throw error; }
+          if (run.localAdmissionReleased !== true || run.id !== runId || run.clientUserMessageId !== commandId
+            || Object.keys(identity).some(key => run[key] !== identity[key])
+            || d.taskRuns.forEvent?.({ ...identity }) !== run
+            || Object.keys(identity).some(key => terminal?.[key] !== identity[key])
+            || terminal?.payload?.completion?.runId !== runId
+            || !Number.isSafeInteger(terminal?.terminalRevision) || terminal.terminalRevision < 1
+            || !Number.isFinite(Date.parse(terminal?.committedAt ?? ""))
+            || !providerRunTerminalStatusSupported(terminal?.status)) {
+            finish("refused");
+            return false;
+          }
+          finish("succeeded");
+          run.providerTerminalStatus = terminal.status;
+        } else await d.beforeCompletion(run);
         const terminal = providerRunTerminalIdentity(run);
         if (terminal) await d.recordProviderTerminal?.(terminal);
         d.clearApprovals(run);
@@ -280,7 +383,7 @@ export class ManagedRunLifecycleService {
         await d.saveState();
         run.completionPrepared = true;
       } catch (error) {
-        await d.completionAborted(run);
+        if (!locallyRetired) await d.completionAborted(run);
         throw error;
       }
     })();

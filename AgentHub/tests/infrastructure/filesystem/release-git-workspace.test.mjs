@@ -17,7 +17,15 @@ import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { taskBranchName, taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { createTaskBoardMutationOwner } from "../../../src/application/sqlite-mutation-owner.mjs";
+import { measureTaskOperation, withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
+import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
 import { WorkspaceReleaseService } from "../../../src/application/workspace-release-service.mjs";
+import { ReleaseOperationService } from "../../../src/application/release-operation-service.mjs";
+import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
+import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
+import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
+import { DatabaseSync } from "node:sqlite";
 import {
   PUBLICATION_STAGE_CONTRACT,
   publicationRunPaths,
@@ -135,7 +143,239 @@ async function registeredTaskBranch(setup, context, { taskId, startCommit, baseC
   return { branch, taskRoot };
 }
 
-test("one operation generation isolates source bundles per repository", async (context) => {
+async function publishedServiceFixture(context) {
+  const disposals = [];
+  const f = await fixture({ after: cleanup => disposals.push(cleanup) });
+  const board = new TaskBoardStore({ databaseFile: path.join(f.dataDir, "board.sqlite") });
+  context.after(async () => { board.close(); for (const cleanup of disposals) await cleanup(); });
+  let publication = null;
+  const taskGit = new TaskGitWorkspaceService({ dataDir: f.dataDir, readPublication: async () => publication });
+  const boardService = new TaskBoardService({ store: board, workspaceCatalog: { hierarchy: () => ({ workspaces: [] }) } });
+  const lifecycle = new TaskLifecycleService({ taskBoard: boardService, taskGitWorkspaces: taskGit,
+    workspaceCatalog: { workspace: () => ({ id: "workspace" }), stream: () => ({ id: "stream" }) } });
+  const store = new ReleaseOperationStore({ dataDir: f.dataDir });
+  const calls = [];
+  async function publish(label, { metadataOnly = false, preservePrimaryMain = false } = {}) {
+    const selected = board.create({ text: label, bucket: "workspace", workspaceId: "workspace", taskPrefix: "T" });
+    const source = board.create({ text: `Release ${label}`, bucket: "workspace", workspaceId: "workspace", taskPrefix: "T" });
+    const managed = await taskGit.prepare({ taskId: selected.id, taskNumber: selected.taskNumber, projectRoot: f.primary });
+    if (!metadataOnly) await taskGit.prepare({ taskId: source.id, taskNumber: source.taskNumber, projectRoot: f.primary });
+    await writeFile(path.join(managed.projectRoot, `${label}.txt`), `${label}\n`);
+    const result = await taskGit.snapshotAndMerge({ taskId: selected.id,
+      taskNumber: selected.taskNumber, projectRoot: managed.projectRoot });
+    board.recordTaskGitReference({ taskId: selected.id, projectRoot: f.primary, branch: managed.branch,
+      resultSnapshot: { repoRoot: f.primary, tree: result.snapshot.headCommit } });
+    board.setWorkflowStatus(selected.id, "awaiting_implementation");
+    board.setWorkflowStatus(source.id, "in_progress");
+    let candidate, cleanupError;
+    const scheduled = [];
+    const baseCommit = await git(f.primary, "rev-parse", "main");
+    const preparedInput = { workspaceId: "workspace", planRevision: `plan-${label}`,
+      projectRoot: f.primary, approvedBaseCommit: baseCommit,
+      frozenTasks: [{ taskId: selected.id, taskRevision: board.task(selected.id).revision,
+        baseCommit: managed.baseCommit, resultCommit: result.snapshot.headCommit }] };
+    await f.service.prepareCandidate(preparedInput);
+    const operations = new ReleaseOperationService({ store, runnerVersion: "fixture",
+      processAlive: pid => pid === process.pid, schedule: fn => scheduled.push(fn),
+      compose: async ({ operation, generation }) => {
+        candidate = await f.service.prepareGeneration({ ...preparedInput,
+          operationId: operation.operationId, generation,
+          changelogContent: Buffer.from(`Release ${label}\n`) });
+        return { repositoryBases: [{ repositoryRoot: f.primary, baseCommit }],
+          selectedResults: [{ taskId: selected.id, resultCommit: result.snapshot.headCommit }],
+          candidates: [{ ...candidate, commit: candidate.preReleaseHead }] };
+      },
+      validate: async () => ({ status: "passed" }),
+      publishTarget: async () => {
+        calls.push(label);
+        const revision = await publishCandidate(candidate);
+        await git(f.primary, "fetch", "origin", "main");
+        if (!preservePrimaryMain) await git(f.primary, "merge", "--ff-only", "origin/main");
+        publication = { generation: label, repositories: [{ root: f.primary, revision,
+          planRevision: candidate.planRevision, manifestHash: candidate.manifestHash }] };
+        return { status: "applied", revision };
+      },
+      readTarget: async () => ({ status: "not_applied" }),
+      finalize: async ({ operation, generation }) => {
+        const finalized = board.completeReleaseOperation("workspace", {
+          operationId: operation.operationId, generation: generation.generation,
+          selectedResults: generation.selectedResults, publicationEffects: operation.publicationEffects });
+        await taskGit.synchronizeMainIntoDev({ projectRoot: f.primary, publishedRevision: candidate.preReleaseHead });
+        return finalized;
+      },
+      cleanupGeneration: async () => {
+        try { await f.service.discardGenerationCandidate(candidate); }
+        catch (error) { cleanupError = error; throw error; }
+      },
+    });
+    const ack = operations.start({ requestId: `release-${label}`, workspaceId: "workspace",
+      streamId: "stream", threadId: "thread", authorization: {
+        taskIds: [selected.id], validationMode: "full",
+        approvedTargets: [{ targetId: "publication", kind: "agent-hub-publication", repositoryRoot: f.primary,
+          approvedLocalMainCommit: baseCommit,
+          approvedOriginMainCommit: await git(f.primary, "rev-parse", "refs/remotes/origin/main") }] } });
+    await scheduled.shift()();
+    const terminal = await operations.drain(ack.operationId);
+    if (cleanupError) throw cleanupError;
+    assert.equal(terminal.operation.state, "done", JSON.stringify(terminal.operation.lastError));
+    assert.equal(board.task(selected.id).workflowStatus, "done");
+    board.updateChecklist({ id: source.id, operation: "add",
+      text: `[Selected](agent-hub://task/${selected.id})`, linkedTaskId: selected.id,
+      completed: true, expectedRevision: board.task(source.id).revision, requestId: `checklist-${label}` });
+    board.updateChecklist({ id: source.id, operation: "toggle", itemId: board.task(source.id).checklist[0].id,
+      completed: true, expectedRevision: board.task(source.id).revision, requestId: `checklist-done-${label}` });
+    const archive = path.join(f.dataDir, "release-generation-evidence", path.basename(candidate.generationRoot));
+    await assert.rejects(stat(candidate.generationRoot), { code: "ENOENT" });
+    return { source, selected, candidate, archive, operationId: ack.operationId, terminal };
+  }
+  const preview = source => lifecycle.complete({ taskId: source.id, operationId: `close-${source.id}`,
+    completionMode: "published_release_service" });
+  return { ...f, board, taskGit, lifecycle, store, publish, preview, calls };
+}
+
+test("published service closes from its original frozen generation after normal retention and a later release", async context => {
+  const f = await publishedServiceFixture(context);
+  const old = await f.publish("first");
+  const before = await f.preview(old.source);
+  assert.equal(before.preview.releaseService.manifestHash, old.candidate.manifestHash);
+  assert.equal(before.preview.releaseService.releaseOperation.operationId, old.operationId);
+  const next = await f.publish("second");
+  const after = await f.preview(old.source);
+  assert.equal(after.cleanupToken, before.cleanupToken, "later publication cannot retarget the old service");
+  assert.notEqual(after.preview.releaseService.manifestHash, next.candidate.manifestHash);
+  assert.equal(after.preview.deleting.length, 0);
+  const original = f.store.snapshot(old.operationId);
+  const request = { taskId: old.source.id, operationId: `close-${old.source.id}`,
+    completionMode: "published_release_service", confirmCleanup: true, expectedCleanupToken: after.cleanupToken };
+  assert.equal((await f.lifecycle.complete(request)).status, "done");
+  assert.equal((await f.lifecycle.complete(request)).status, "done");
+  assert.deepEqual(f.store.snapshot(old.operationId), original, "closure cannot replay or mutate release receipts");
+  assert.deepEqual(f.calls, ["first", "second"]);
+  assert.equal((await f.taskGit.describe(old.source.id)).length, 1);
+  assert.notEqual(f.board.task(next.source.id).status, "done", "new service is not implicitly closed");
+});
+
+test("metadata-only published service closes against exact approved lagging main without creating source custody", async context => {
+  const f = await publishedServiceFixture(context);
+  const item = await f.publish("metadata-only", { metadataOnly: true, preservePrimaryMain: true });
+  const refs = await git(f.primary, "show-ref"), index = await git(f.primary, "write-tree");
+  const before = f.store.snapshot(item.operationId), selected = f.board.task(item.selected.id);
+  const taskRoot = path.join(f.taskGit.taskWorktreesRoot, item.source.id);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.baseCommit);
+  assert.deepEqual(await f.taskGit.describe(item.source.id), []);
+  await assert.rejects(stat(taskRoot), { code: "ENOENT" });
+  const preview = await f.preview(item.source);
+  assert.equal(preview.preview.releaseService.releaseOperation.operationId, item.operationId);
+  assert.equal(preview.preview.releaseService.publishedRevision, item.candidate.preReleaseHead);
+  assert.deepEqual(preview.preview.deleting, []);
+  assert.deepEqual(preview.preview.preserving, []);
+  const request = { taskId: item.source.id, operationId: `close-${item.source.id}`,
+    completionMode: "published_release_service", confirmCleanup: true, expectedCleanupToken: preview.cleanupToken };
+  assert.equal((await f.lifecycle.complete(request)).status, "done");
+  assert.equal((await f.lifecycle.complete(request)).status, "done");
+  assert.deepEqual(f.store.snapshot(item.operationId), before);
+  assert.deepEqual(f.board.task(item.selected.id), selected);
+  assert.equal(await git(f.primary, "show-ref"), refs);
+  assert.equal(await git(f.primary, "write-tree"), index);
+  assert.equal(await git(f.primary, "status", "--porcelain=v1", "--untracked-files=all"), "");
+  await assert.rejects(stat(taskRoot), { code: "ENOENT" });
+});
+
+test("metadata-only published service refuses hidden source, foreign results and unapproved publication history", async context => {
+  const f = await publishedServiceFixture(context);
+  const item = await f.publish("metadata-guards", { metadataOnly: true, preservePrimaryMain: true });
+  const source = f.board.task(item.source.id), selected = f.board.task(item.selected.id);
+  const evidence = (sourceValue = source, tasks = [selected]) => f.taskGit.withTaskLock(source.id,
+    lease => f.taskGit.publishedReleaseServiceEvidenceOwned({ source: sourceValue, selectedTasks: tasks, lease }));
+  const preview = await f.preview(source);
+  await assert.rejects(evidence({ ...source, gitReferences: selected.gitReferences }), /must not claim/);
+  await assert.rejects(evidence(source, [{ ...selected, workspaceId: "foreign" }]), /Workspace/);
+  await assert.rejects(evidence(source, [{ ...selected, gitReferences: [...selected.gitReferences,
+    { ...selected.gitReferences[0], projectRoot: path.join(f.root, "foreign") }] }]), /one exact repository/);
+  const taskRoot = path.join(f.taskGit.taskWorktreesRoot, source.id);
+  await mkdir(taskRoot);
+  await writeFile(path.join(taskRoot, "valuable.txt"), "unregistered source must remain\n");
+  await assert.rejects(f.preview(source), /source custody/);
+  assert.equal(await readFile(path.join(taskRoot, "valuable.txt"), "utf8"), "unregistered source must remain\n");
+  await rm(taskRoot, { recursive: true });
+  const branch = taskBranchName(source.id, f.primary, source.taskNumber);
+  await git(f.primary, "update-ref", `refs/heads/${branch}`, f.baseCommit);
+  await assert.rejects(f.preview(source), /source custody/);
+  await git(f.primary, "update-ref", "-d", `refs/heads/${branch}`);
+  const remote = await git(f.primary, "rev-parse", "refs/remotes/origin/main");
+  await git(f.primary, "update-ref", "refs/remotes/origin/main", f.baseCommit);
+  await assert.rejects(f.preview(source), /tracked main/);
+  await git(f.primary, "update-ref", "refs/remotes/origin/main", remote);
+  const wrongMain = await git(f.primary, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit-tree", await git(f.primary, "rev-parse", `${f.baseCommit}^{tree}`), "-p", f.baseCommit, "-m", "unapproved main");
+  await git(f.primary, "update-ref", "refs/heads/main", wrongMain);
+  await assert.rejects(f.preview(source), /local and tracked main/);
+  await git(f.primary, "update-ref", "refs/heads/main", f.baseCommit);
+  const db = new DatabaseSync(path.join(f.dataDir, "runtime.sqlite"));
+  try {
+    db.prepare("UPDATE release_operations SET state='failed' WHERE operation_id=?").run(item.operationId);
+    await assert.rejects(f.preview(source), /completed original/);
+    db.prepare("UPDATE release_operations SET state='done' WHERE operation_id=?").run(item.operationId);
+    const row = db.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND step_id='finalize'").get(item.operationId);
+    const receipt = JSON.parse(row.receipt_json);
+    db.prepare("UPDATE release_step_receipts SET receipt_json=? WHERE operation_id=? AND step_id='finalize'")
+      .run(JSON.stringify({ ...receipt, status: "unknown" }), item.operationId);
+    await assert.rejects(f.preview(source), /completed-generation evidence changed/);
+    db.prepare("UPDATE release_step_receipts SET receipt_json=? WHERE operation_id=? AND step_id='finalize'").run(row.receipt_json, item.operationId);
+  } finally { db.close(); }
+  assert.equal((await f.preview(source)).cleanupToken, preview.cleanupToken);
+  assert.notEqual(f.board.task(source.id).status, "done");
+  assert.equal(f.board.lifecycleOutcome(`close-${source.id}`), null);
+});
+
+test("published service refuses missing or changed retained evidence, receipts, result identity and stale confirmation", async context => {
+  const f = await publishedServiceFixture(context);
+  const item = await f.publish("guarded");
+  const manifestFile = path.join(item.archive, "evidence", `${item.candidate.manifestHash}.json`);
+  const bytes = await readFile(manifestFile);
+  await writeFile(manifestFile, Buffer.concat([bytes, Buffer.from(" ")]));
+  await assert.rejects(f.preview(item.source), /manifest bytes changed/);
+  await rm(manifestFile);
+  await assert.rejects(f.preview(item.source), /manifest evidence is unavailable/);
+  await writeFile(manifestFile, bytes);
+  const db = new DatabaseSync(path.join(f.dataDir, "runtime.sqlite"));
+  try {
+    const row = db.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND step_id='finalize'")
+      .get(item.operationId);
+    const receipt = JSON.parse(row.receipt_json);
+    db.prepare("UPDATE release_step_receipts SET receipt_json=? WHERE operation_id=? AND step_id='finalize'")
+      .run(JSON.stringify({ ...receipt, status: "unknown" }), item.operationId);
+    await assert.rejects(f.preview(item.source), /completed-generation evidence changed/);
+    db.prepare("UPDATE release_step_receipts SET receipt_json=? WHERE operation_id=? AND step_id='finalize'")
+      .run(row.receipt_json, item.operationId);
+  } finally { db.close(); }
+  const preview = await f.preview(item.source);
+  const entry = f.board.task(item.source.id).checklist[0];
+  for (const completed of [false, true]) f.board.updateChecklist({ id: item.source.id, operation: "toggle",
+    itemId: entry.id, completed, expectedRevision: f.board.task(item.source.id).revision,
+    requestId: `revise-${completed}` });
+  await assert.rejects(f.lifecycle.complete({ taskId: item.source.id, operationId: `close-${item.source.id}`,
+    completionMode: "published_release_service", confirmCleanup: true, expectedCleanupToken: preview.cleanupToken }),
+  /confirmation is stale/);
+  const selectedBranch = f.board.task(item.selected.id).gitReferences[0].branch;
+  f.board.recordTaskGitReference({ taskId: item.selected.id, projectRoot: f.primary, branch: selectedBranch,
+    resultSnapshot: { repoRoot: f.primary, tree: f.baseCommit } });
+  await assert.rejects(f.preview(item.source), /manifest evidence is unavailable|does not match exact published Done results/);
+  f.board.recordTaskGitReference({ taskId: item.selected.id, projectRoot: f.primary, branch: selectedBranch,
+    resultSnapshot: { repoRoot: f.primary, tree: item.candidate.frozenTasks[0].resultCommit } });
+  await writeFile(path.join((await f.taskGit.describe(item.source.id))[0].projectRoot, "valuable.txt"), "preserve");
+  await assert.rejects(f.preview(item.source), /clean managed worktree/);
+  await rm(path.join((await f.taskGit.describe(item.source.id))[0].projectRoot, "valuable.txt"));
+  f.board.updateChecklist({ id: item.source.id, operation: "add", text: "unfulfilled live-event proof",
+    completed: false, expectedRevision: f.board.task(item.source.id).revision, requestId: "unfinished-proof" });
+  await assert.rejects(f.lifecycle.complete({ taskId: item.source.id, operationId: `close-${item.source.id}`,
+    completionMode: "published_release_service", confirmCleanup: true, expectedCleanupToken: preview.cleanupToken }),
+  /checklist is incomplete/);
+  assert.notEqual(f.board.task(item.source.id).status, "done");
+  assert.equal(f.board.lifecycleOutcome(`close-${item.source.id}`), null);
+});
+
+test("one operation generation isolates input repositories without duplicate transports", async (context) => {
   const first = await fixture(context);
   const second = await fixture(context);
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "rg-"));
@@ -202,6 +442,83 @@ test("partial generation transport is preserved on failure and is never overwrit
   }
 });
 
+test("first frozen generation recovery preserves its input and the corrected next artifact version", async context => {
+  const f = await fixture(context);
+  const service = new ReleaseGitWorkspaceService({ dataDir: f.dataDir,
+    environment: { ...process.env, LOCALAPPDATA: path.join(f.root, "local"), XDG_STATE_HOME: path.join(f.root, "local") } });
+  const selected = await taskResult(f, context, { branch: "HUB-first-frozen", file: "selected.txt" });
+  const frozenTasks = [{ taskId: "first-frozen", taskRevision: 2, resultCommit: selected }];
+  const input = { projectRoot: f.primary, workspaceId: "workspace", planRevision: "first-frozen-plan",
+    approvedBaseCommit: f.baseCommit, frozenTasks };
+  await service.prepareCandidate(input);
+  const request = { ...input, operationId: "first-frozen-operation", generation: 1,
+    changelogContent: Buffer.from("original notes\n"), releaseVersion: "2.1.5" };
+  const first = await service.prepareGeneration(request);
+  const checkpoint = await readFile(first.checkpointFile);
+  const manifest = await readFile(first.manifestFile);
+  const recovery = { operationId: request.operationId, projectRoot: f.primary, workspaceId: "workspace",
+    taskIds: ["first-frozen"], releaseVersion: "2.1.5", changelogContent: request.changelogContent,
+    approvedLocalMainCommit: f.baseCommit, approvedOriginMainCommit: f.baseCommit };
+  const preview = await service.firstFrozenGeneration({ ...recovery, inspectOnly: true });
+  assert.equal(preview.binding.commit, first.preReleaseHead);
+  await assert.rejects(service.firstFrozenGeneration({ ...recovery, inspectOnly: true,
+    changelogContent: Buffer.from("changed\n") }), /input or payload changed/u);
+  await assert.rejects(service.firstFrozenGeneration({ ...recovery, inspectOnly: true,
+    taskIds: ["foreign-task"] }), /authorization or prepared/u);
+  await assert.rejects(service.firstFrozenGeneration({ ...recovery,
+    expectedBinding: { ...preview.binding, tree: "changed" } }), /changed after recovery admission/u);
+  const recovered = await service.firstFrozenGeneration({ ...recovery, expectedBinding: preview.binding });
+  assert.equal(recovered.candidate.preReleaseHead, first.preReleaseHead);
+  assert.deepEqual(await readFile(first.checkpointFile), checkpoint);
+  assert.deepEqual(await readFile(first.manifestFile), manifest);
+  const correction = await taskResult(f, context, { branch: "HUB-first-correction", file: "correction.txt" });
+  const correctedTasks = [...frozenTasks, { taskId: "first-correction", taskRevision: 2, resultCommit: correction }];
+  await service.prepareCandidate({ ...input, planRevision: "corrected-plan", frozenTasks: correctedTasks });
+  const next = await service.prepareGeneration({ ...request, generation: 2, planRevision: "corrected-plan",
+    frozenTasks: correctedTasks, changelogContent: Buffer.from("original notes\ncorrection\n"),
+    expectedRuntimeVersion: first.manifest.publication.runtimeReleaseVersion });
+  assert.equal(next.manifest.publication.releaseVersion, "2.1.5");
+  assert.equal(next.manifest.publication.runtimeReleaseVersion, first.manifest.publication.runtimeReleaseVersion);
+  assert.equal(await readFile(path.join(next.releaseRoot, "selected.txt"), "utf8"), "feature\n");
+  assert.equal(await readFile(path.join(next.releaseRoot, "correction.txt"), "utf8"), "feature\n");
+  assert.deepEqual(await readFile(first.checkpointFile), checkpoint);
+  assert.deepEqual(await readFile(first.manifestFile), manifest);
+});
+
+test("uncaptured first generation requires physical absence through the owning capture lock", async context => {
+  const f = await fixture(context);
+  const selected = await taskResult(f, context, { branch: "HUB-first-uncaptured", file: "selected.txt" });
+  const input = { projectRoot: f.primary, workspaceId: "workspace", planRevision: "uncaptured-plan",
+    approvedBaseCommit: f.baseCommit, frozenTasks: [{ taskId: "uncaptured-task", taskRevision: 2, resultCommit: selected }] };
+  await f.service.prepareCandidate(input);
+  const inspect = operationId => f.service.firstFrozenGeneration({ operationId, projectRoot: f.primary,
+    inspectOnly: true, allowUncaptured: true });
+  const original = "uncaptured-first-original";
+  const preview = await inspect(original);
+  assert.equal(preview.binding.kind, "uncaptured-first-generation-v1");
+  assert.equal(preview.candidate, null);
+  await assert.rejects(stat(preview.binding.generationRoot), { code: "ENOENT" });
+  const capture = { ...input, operationId: original, generation: 1, freezePublication: false,
+    expectedAbsentGeneration: preview.binding };
+  await assert.rejects(f.service.prepareGeneration({ ...capture,
+    expectedAbsentGeneration: { ...preview.binding, operationId: "foreign" } }), /binding changed/u);
+  await mkdir(preview.binding.generationRoot, { recursive: true });
+  await writeFile(path.join(preview.binding.generationRoot, "partial.keep"), "partial capture");
+  await assert.rejects(inspect(original), /occupied, partial or archived/u);
+  await assert.rejects(f.service.prepareGeneration(capture), /occupied, partial or archived/u);
+  assert.equal(await readFile(path.join(preview.binding.generationRoot, "partial.keep"), "utf8"), "partial capture");
+  const archived = "archived-first-original";
+  const archivedPreview = await inspect(archived);
+  await mkdir(path.join(f.dataDir, "release-generation-evidence", path.basename(archivedPreview.binding.generationRoot)), { recursive: true });
+  await assert.rejects(inspect(archived), /occupied, partial or archived/u);
+  const clean = "clean-first-original";
+  const cleanPreview = await inspect(clean);
+  const candidate = await f.service.prepareGeneration({ ...input, operationId: clean, generation: 1,
+    freezePublication: false, expectedAbsentGeneration: cleanPreview.binding });
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:selected.txt`), "feature");
+  await assert.rejects(inspect(clean), /occupied, partial or archived/u);
+});
+
 test("new permanent release captures keep exact selected history without unrelated refs or object payloads", async context => {
   const f = await fixture(context);
   const selected = await taskResult(f, context, { branch: "HUB-selected-transport", file: "selected.txt" });
@@ -218,15 +535,8 @@ test("new permanent release captures keep exact selected history without unrelat
   const request = { ...input, operationId: "selected-transport-operation", generation: 1,
     changelogContent: Buffer.from("selected release notes\n", "utf8") };
   const generation = await f.service.prepareGeneration(request);
-  const bundle = path.join(generation.generationRoot, "source.bundle"), original = await readFile(bundle);
-  const broad = path.join(f.root, "all-refs-comparison.bundle");
-  await git(f.primary, "bundle", "create", broad, "--all");
-  const broadBytes = (await stat(broad)).size;
-  assert.ok(broadBytes - original.length > 128_000, "unselected random payload is not copied into the new transport");
-  context.diagnostic(`isolated transport bytes: all-refs=${broadBytes}, selected=${original.length}`);
-  const heads = await git(f.primary, "bundle", "list-heads", bundle);
-  assert.match(heads, / refs\/heads\/main(?:\r?\n|$)/u);
-  assert.doesNotMatch(heads, /HUB-unselected-heavy/u);
+  const bundle = path.join(generation.generationRoot, "source.bundle");
+  await assert.rejects(readFile(bundle), { code: "ENOENT" });
   await git(generation.releaseRoot, "cat-file", "-e", `${selected}^{commit}`);
   await assert.rejects(git(generation.releaseRoot, "cat-file", "-e", otherBlob));
   await assert.rejects(git(generation.releaseRoot, "cat-file", "-e", `${other}^{commit}`));
@@ -234,7 +544,7 @@ test("new permanent release captures keep exact selected history without unrelat
   assert.equal(await git(generation.releaseRoot, "rev-parse", "HEAD"), generation.preReleaseHead);
   const repeated = await f.service.prepareGeneration(request);
   assert.equal(repeated.preReleaseHead, generation.preReleaseHead);
-  assert.deepEqual(await readFile(bundle), original, "original generation transport is never rebuilt on retry");
+  await assert.rejects(readFile(bundle), { code: "ENOENT" }, "reopening a generation does not manufacture a transport");
   assert.equal(await git(f.primary, "show-ref"), sourceRefs, "capture does not mutate source refs");
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
 });
@@ -1330,6 +1640,84 @@ test("request-bound prepared checkpoint is not usable after the final primary gu
     () => setup.service.frozenCandidate(setup.primary),
     /release checkpoint is incomplete/u,
   );
+});
+
+test("main review timing preserves post-budget phases, errors and privacy", async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "sensitive-subject.txt"), "synthetic contents\n");
+  const changed = await commit(setup.primary, "synthetic private subject");
+  await git(setup.primary, "push", "origin", "main");
+  const rows = [];
+  const result = await withTaskOperationTiming({ operationId: "main-review-timing-original", record: row => rows.push(row) }, async () => {
+    for (let i = 0; i < 513; i++) await measureTaskOperation("fixture-detail", () => undefined, { detail: true });
+    return setup.service.inspectMainChanges({ projectRoot: setup.primary, publishedRevision: setup.baseCommit });
+  });
+  assert.equal(result.localMain, changed);
+  assert.equal(result.commits[0].subject, "synthetic private subject");
+  assert.equal(result.approvalRequired, true);
+  const phases = ["primary", "lock", "owned", "clone", "workspace-fetch", "origin-fetch", "baseline-check", "ancestry", "revision-list", "disclosures", "final-primary"];
+  for (const phase of phases) {
+    const events = rows.filter(row => row.stage === `release:main-review:${phase}`);
+    assert.deepEqual(events.map(row => row.phase), ["start", "end"]);
+    assert.equal(events[1].outcome, "ok");
+    assert.ok(events[1].durationMs >= 0);
+    assert.ok(events.every(row => row.operationId === "main-review-timing-original"));
+  }
+  assert.equal(rows.find(row => row.stage === "release:main-review:disclosures" && row.phase === "end").commitCount, 1);
+  assert.ok(rows.find(row => row.stage === "trace-summary").suppressedDetailSpans > 0);
+  const serialized = JSON.stringify(rows);
+  for (const secret of [setup.primary, "sensitive-subject.txt", "synthetic private subject", changed]) assert.ok(!serialized.includes(secret));
+  const failures = [];
+  const headBefore = await git(setup.primary, "rev-parse", "HEAD");
+  await assert.rejects(withTaskOperationTiming({ operationId: "main-review-error-original", record: row => failures.push(row) }, async () => {
+    for (let i = 0; i < 513; i++) await measureTaskOperation("fixture-detail", () => undefined, { detail: true });
+    return setup.service.inspectMainChanges({ projectRoot: setup.primary, publishedRevision: "f".repeat(40) });
+  }), error => {
+    assert.match(error.message, /fatal:/u);
+    assert.ok(error.message.includes("f".repeat(40)));
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+  for (const phase of ["baseline-fetch", "owned", "lock"]) {
+    assert.equal(failures.find(row => row.stage === `release:main-review:${phase}` && row.phase === "end").outcome, "error");
+  }
+  assert.equal(await git(setup.primary, "rev-parse", "HEAD"), headBefore);
+});
+
+test("main review timing separates held lock admission from owned work", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const lock = path.join(setup.dataDir, "locks", `release-git-${taskRepositoryKey(setup.primary)}`);
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const observed = Promise.withResolvers();
+  let released = false;
+  let earlyOwned = false;
+  const rows = [];
+  const holder = withInterprocessLocks([lock], async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  let review;
+  try {
+    review = withTaskOperationTiming({ operationId: "main-review-held-original", record: row => {
+      rows.push(row);
+      if (row.stage === "release:main-review:lock" && row.phase === "start") observed.resolve();
+      if (row.stage === "release:main-review:owned" && row.phase === "start" && !released) earlyOwned = true;
+    } }, () => setup.service.inspectMainChanges({ projectRoot: setup.primary, publishedRevision: setup.baseCommit }));
+    await observed.promise;
+    assert.equal(rows.some(row => row.stage === "release:main-review:owned"), false);
+    released = true;
+    release.resolve();
+    const result = await review;
+    assert.equal(result.localMain, setup.baseCommit);
+    assert.equal(earlyOwned, false);
+    const end = phase => rows.find(row => row.stage === `release:main-review:${phase}` && row.phase === "end");
+    assert.ok(end("lock").durationMs >= end("owned").durationMs);
+    assert.equal(end("lock").outcome, "ok");
+  } finally {
+    released = true;
+    release.resolve();
+    await holder;
+    if (review) await review.catch(() => {});
+  }
 });
 
 test("main review discloses every commit since the last successful publication", async (context) => {
@@ -2577,3 +2965,33 @@ for (const scenario of ["changed selection", "changed base", "non-descendant res
     }
   });
 }
+
+test("prepared readback retains integration evidence for exact native validation", async context => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context);
+  const integrations = [{ commit: resultCommit, parent: setup.baseCommit, order: 7 }];
+  const request = { projectRoot: setup.primary, workspaceId: "integration-readback",
+    planRevision: "integration-readback-plan", approvedBaseCommit: setup.baseCommit,
+    baseProvenance: { schemaVersion: 1, kind: "agreed-main-native-git-v1",
+      publishedBaseCommit: setup.baseCommit, agreedMainCommit: setup.baseCommit },
+    frozenTasks: [{ taskId: "integration-readback-task", taskRevision: 3,
+      baseCommit: setup.baseCommit, resultCommit, integrations }] };
+  const candidate = await setup.service.prepareCandidate(request);
+  const checkpoint = await readFile(path.join(path.dirname(candidate.manifestFile), "..", "checkpoint.json"));
+  const manifest = await readFile(candidate.manifestFile);
+  const readback = await setup.service.frozenCandidate(setup.primary);
+  assert.deepEqual(readback.manifest.tasks[0].integrations, integrations);
+  const exact = { ...request, frozenTasks: readback.manifest.tasks };
+  const validated = await setup.service.validateCandidate(exact);
+  assert.equal(validated.status, "validated");
+  assert.equal(validated.tree, readback.tree);
+  for (const field of ["commit", "parent", "order"]) {
+    const tasks = structuredClone(readback.manifest.tasks);
+    tasks[0].integrations[0][field] = field === "order" ? 8 : "f".repeat(40);
+    await assert.rejects(setup.service.validateCandidate({ ...request, frozenTasks: tasks }),
+      { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  }
+  assert.deepEqual(await readFile(candidate.manifestFile), manifest);
+  assert.deepEqual(await readFile(path.join(path.dirname(candidate.manifestFile), "..", "checkpoint.json")), checkpoint);
+  assert.equal((await setup.service.frozenCandidate(setup.primary)).preReleaseHead, candidate.preReleaseHead);
+});

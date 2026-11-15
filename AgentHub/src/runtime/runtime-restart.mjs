@@ -77,6 +77,50 @@ function replacementDetails(replacement) {
   };
 }
 
+function ownedReplacementControl(child, operationId) {
+  let pending = "", bytes = 0, identity = null, terminal = "", failure = null, closed = false;
+  let finish;
+  const completion = new Promise(resolve => { finish = resolve; });
+  child.stdout?.on("data", chunk => {
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > 4096) { failure = new Error("Owned replacement reply exceeded its bound"); return; }
+    pending += chunk.toString("utf8");
+    for (let index; (index = pending.indexOf("\n")) >= 0;) {
+      const line = pending.slice(0, index).trim(); pending = pending.slice(index + 1);
+      if (!identity) {
+        try {
+          const value = JSON.parse(line);
+          if (value.kind !== "agent-hub-owned-replacement-v1" || value.operationId !== operationId
+            || !Number.isSafeInteger(value.hostPid) || value.hostPid <= 0) throw new Error("identity");
+          identity = value;
+        } catch { failure = new Error("Owned replacement native identity was not confirmed"); }
+      } else if (!terminal && ["AGENT_HUB_REPLACEMENT_COMMITTED", "AGENT_HUB_REPLACEMENT_ABORTED"].includes(line)) terminal = line;
+      else failure = new Error("Owned replacement returned an unexpected reply");
+    }
+  });
+  child.stdin?.on("error", error => { failure = error; });
+  child.stdout?.on("error", error => { failure = error; });
+  child.once("error", error => { failure = error; });
+  child.once("close", code => { closed = true; finish(code); });
+  async function settle(command, expected) {
+    let timer;
+    try {
+      child.stdin?.end(command + "\n");
+      const code = await Promise.race([completion, new Promise(resolve => {
+        timer = setTimeout(() => resolve(null), 12000); timer.unref?.();
+      })]);
+      return code === 0 && terminal === expected && !failure;
+    } catch { return false;
+    } finally { clearTimeout(timer); }
+  }
+  return {
+    admitted: () => identity !== null,
+    failure: () => failure ?? (closed ? new Error("Owned replacement launcher closed before handoff") : null),
+    commit: pid => settle(`AGENT_HUB_REPLACEMENT_READY ${pid}`, "AGENT_HUB_REPLACEMENT_COMMITTED"),
+    abort: () => settle("AGENT_HUB_REPLACEMENT_ABORT", "AGENT_HUB_REPLACEMENT_ABORTED"),
+  };
+}
+
 async function terminateReplacement({ replacement, stopTree }) {
   const pids = [replacement?.ownerPid, replacement?.launchedPid]
     .map(processId)
@@ -128,6 +172,12 @@ async function cleanUpReplacement({
 }) {
   if (!replacement) return { confirmed: true, ...replacementDetails(replacement) };
   try {
+    if (replacement.control) {
+      const aborted = await replacement.control.abort();
+      const confirmed = aborted && await releaseReplacementLock({ replacement, lockFile, timeoutMs,
+        readFileImpl, unlinkImpl, delayImpl, isAlive });
+      return { confirmed, ...replacementDetails(replacement) };
+    }
     await terminateReplacement({ replacement, stopTree });
     const released = await releaseReplacementLock({
       replacement,
@@ -162,6 +212,7 @@ export async function waitForReplacementLock({
   expectedOperationId = "",
   failWhenExpectedOwnerExits = false,
   ownerFailure = () => null,
+  ownerIsAdmitted = () => true,
   now = Date.now,
   readFileImpl = readFile,
   isAlive = processIsAlive,
@@ -179,6 +230,7 @@ export async function waitForReplacementLock({
       || lock?.instanceToken === expectedInstanceToken;
     if (
       lock
+      && ownerIsAdmitted()
       && lock.pid !== currentPid
       && expectedProcess
       && expectedInstance
@@ -230,8 +282,10 @@ export async function launchReplacementAndWait({
     try {
       const child = spawnImpl(current.command, current.args, current.options);
       replacement = { child, launchedPid: processId(child?.pid), ownerPid: null, instanceToken: "" };
+      if (current.ownedHostProtocol) replacement.control = ownedReplacementControl(child,
+        current.options?.env?.AGENT_HUB_RESTART_OPERATION_ID);
       child.once?.("error", (error) => { exited = error; });
-      child.once?.("exit", (code) => { exited = new Error(`Owned launcher exited before lock (code ${code})`); });
+      if (!replacement.control) child.once?.("exit", (code) => { exited = new Error(`Owned launcher exited before lock (code ${code})`); });
       if (current.options?.detached) child.unref?.();
     } catch (error) {
       lastError = error;
@@ -242,7 +296,8 @@ export async function launchReplacementAndWait({
       timeoutMs: ownershipTimeoutMs,
       requireReady: false,
       expectedReleaseId, expectedOperationId, now,
-      ownerFailure: () => exited ?? lastError,
+      ownerFailure: () => replacement?.control?.failure() ?? exited ?? lastError,
+      ownerIsAdmitted: () => replacement?.control?.admitted() ?? true,
       readFileImpl,
       delayImpl,
       isAlive,
@@ -259,12 +314,13 @@ export async function launchReplacementAndWait({
         expectedPid: owner.pid,
         expectedReleaseId, expectedOperationId, now,
         expectedInstanceToken: owner.instanceToken,
+        ownerFailure: () => replacement.control?.failure() ?? null,
         failWhenExpectedOwnerExits: true,
         readFileImpl,
         delayImpl,
         isAlive,
       }).catch((error) => {
-        if (error?.code !== REPLACEMENT_EXITED) throw error;
+        if (error?.code !== REPLACEMENT_EXITED && !replacement.control) throw error;
         exited = error;
         return null;
       }));
@@ -283,6 +339,10 @@ export async function launchReplacementAndWait({
           exited?.message ?? `replacement bot ${owner.pid} acquired ${lockFile} but did not become ready`,
           replacementCleanup,
         );
+      }
+      if (replacement.control && !await measure("launcher-handoff", () => replacement.control.commit(owner.pid))) {
+        throw replacementFailure("Owned replacement ready handoff remains unknown",
+          { confirmed: false, ...replacementDetails(replacement) });
       }
       return {
         lock,
@@ -319,7 +379,9 @@ export function botReplacementInvocation({
 } = {}) {
   const launcher = String(environment.AGENT_HUB_LAUNCHER ?? "").trim();
   if (platform === "win32" && launcher) {
-    return directWindowsLauncherInvocation({ environment, launcher });
+    const target = directWindowsLauncherInvocation({ environment, launcher });
+    return { ...target, args: ["--spawn-replacement"], ownedHostProtocol: true,
+      options: { ...target.options, detached: false, stdio: ["pipe", "pipe", "ignore"] } };
   }
   return {
     command: nodeExecutable,

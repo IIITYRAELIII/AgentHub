@@ -62,6 +62,7 @@ test("DashBot Terra stays second in Other and reuses its visible Thread", async 
   assert.equal(await transcriber.transcribe("D:/voice.ogg"), "Исправить фильтр.");
   assert.equal(await transcriber.transcribe("D:/voice-2.ogg"), "Исправить фильтр.");
   assert.equal(calls[0][2].env.WHISPER_MODEL, "large-v3-turbo");
+  assert.deepEqual(calls[0][1], ["-B", "transcribe.py", path.resolve("D:/voice.ogg")]);
   assert.equal(calls[0][2].env.WHISPER_DEVICE, "cuda");
   assert.equal(calls[1][1].includes("gpt-5.6-terra"), true);
   assert.deepEqual(calls[3][1].slice(0, 3), ["exec", "resume", "--ignore-user-config"]);

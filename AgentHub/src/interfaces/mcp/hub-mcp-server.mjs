@@ -240,7 +240,9 @@ export class HubMcpServer {
         rpcRequestId: String(rpcRequestId ?? "") || null,
       });
       try {
-        const structuredContent = await this.service.call(toolName, toolArguments);
+        const structuredContent = this.service.taskOperationCanSubmit?.(toolName)
+          ? await this.service.submitTaskOperation(toolName, toolArguments)
+          : await this.service.call(toolName, toolArguments);
         this.mcpAdmissionCoordinator?.observeOperation("tool-call-completed", {
           serverName: "agent_hub", requestId, toolName, rpcRequestId: String(rpcRequestId ?? "") || null,
         });

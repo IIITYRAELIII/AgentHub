@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import { codexTraceEntry, rolloutObservationGeneration } from "./codex-rollout-activity.mjs";
+import { IgnoredTraceRecord } from "./codex-trace-record.mjs";
 
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
 const PAGE_BYTES = 512 * 1024;
@@ -26,6 +27,7 @@ export async function readCodexTracePage(rolloutPath, request = {}) {
     || (request.generation && request.generation !== generation)) throw new Error("Trace source changed");
   const stream = createReadStream(rolloutPath, { start: 0, end: Math.max(0, size - 1), highWaterMark: 64 * 1024 });
   let pending = Buffer.alloc(0);
+  let ignoredRecord = null;
   let currentTurnId = "";
   let sequence = 0;
   let position = 0;
@@ -42,10 +44,20 @@ export async function readCodexTracePage(rolloutPath, request = {}) {
         const newline = chunk.indexOf(10, cursor);
         const end = newline < 0 ? chunk.length : newline;
         const fragment = chunk.subarray(cursor, end);
-        if (pending.length + fragment.length > MAX_LINE_BYTES) throw new Error("Trace record exceeds read budget");
-        pending = pending.length ? Buffer.concat([pending, fragment]) : Buffer.from(fragment);
+        if (!ignoredRecord && pending.length + fragment.length > MAX_LINE_BYTES) {
+          ignoredRecord = new IgnoredTraceRecord(MAX_LINE_BYTES);
+          ignoredRecord.push(pending);
+          pending = Buffer.alloc(0);
+        }
+        if (ignoredRecord) ignoredRecord.push(fragment);
+        else pending = pending.length ? Buffer.concat([pending, fragment]) : Buffer.from(fragment);
         cursor = newline < 0 ? chunk.length : newline + 1;
         if (newline < 0) continue;
+        if (ignoredRecord) {
+          ignoredRecord.finish();
+          ignoredRecord = null;
+          continue;
+        }
         if (!pending.toString("utf8").trim()) { pending = Buffer.alloc(0); continue; }
         let entry;
         try { entry = JSON.parse(pending.toString("utf8")); }
@@ -75,6 +87,7 @@ export async function readCodexTracePage(rolloutPath, request = {}) {
       }
     }
   } finally { stream.destroy(); }
+  if (ignoredRecord) throw new Error("Trace source contains an incomplete record");
   const sourceHash = hash.digest("hex");
   if (request.sourceHash && request.sourceHash !== sourceHash) throw new Error("Trace source prefix changed");
   const after = await stat(rolloutPath);

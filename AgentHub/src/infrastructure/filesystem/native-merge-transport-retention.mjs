@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { lstat, open, readFile, readdir, realpath, statfs } from "node:fs/promises";
 import path from "node:path";
 import { deleteSealedTransport } from "./sealed-transport-delete.mjs";
+import { bindBundleHeads, readBundleHeads, bundleHeadsAnchored } from "./retained-bundle-heads.mjs";
+import { NativeCaptureRetirement, nativeCaptureCandidate } from "./native-capture-retirement.mjs";
 
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 const absent = error => { if (error?.code === "ENOENT") return null; throw error; };
@@ -45,16 +47,17 @@ async function freeBytes(root) {
   catch { return null; }
 }
 
-// This is the native merge owner's *transport* cleanup. It never retires a
-// repository, Task branch, merge journal, resolution evidence or user files.
-// A completed/published Task and the existing Task Git lease are mandatory.
+// Legacy transport bindings keep their exact bundle-only effect. The distinct
+// :repository resource delegates archive-first retirement under the SAME owner.
+// Task branches/journals/results are never removed by either resource.
 export class NativeMergeTransportRetention {
   id = "native-merge-transport";
 
   constructor({ dataDir, taskBoard, taskGitWorkspaces, gitAt, deleteTransport = deleteSealedTransport,
-    isStopping = () => false, platform = process.platform } = {}) {
+    isStopping = () => false, readGeneration, platform = process.platform } = {}) {
     Object.assign(this, { root: path.join(dataDir, "task-native-merges"), taskBoard, taskGitWorkspaces,
       gitAt, deleteTransport, isStopping, platform });
+    this.captureRetirement = new NativeCaptureRetirement({ dataDir, taskBoard, taskGitWorkspaces, gitAt, isStopping, readGeneration });
   }
 
   async list({ after, limit }) {
@@ -62,8 +65,10 @@ export class NativeMergeTransportRetention {
     if (!root) return { items: [], done: true };
     if (!root.isDirectory() || root.isSymbolicLink()) throw new Error("transport-root-not-plain");
     // Only this owner's flat capture names; no recursive walk or Task/history scan.
-    const names = (await readdir(this.root)).filter(n => /^[a-f0-9]{24}$/u.test(n) && (!after || n > after)).sort();
-    return { items: names.slice(0, limit).map(id => ({ id, cursor: id })), done: names.length <= limit };
+    const names = (await readdir(this.root)).filter(n => /^[a-f0-9]{24}$/u.test(n));
+    const items = names.flatMap(id => [{ id, cursor: id }, nativeCaptureCandidate(id)])
+      .filter(item => !after || item.cursor > after).sort((a, b) => a.cursor.localeCompare(b.cursor));
+    return { items: items.slice(0, limit), done: items.length <= limit };
   }
 
   async #owned(candidate, action) {
@@ -128,8 +133,9 @@ export class NativeMergeTransportRetention {
     if (!owned.file) return retained("transport-absent");
     if (this.platform !== "win32") return retained("sealed-delete-unavailable");
     const heads = String(await owned.git(["bundle", "list-heads", owned.bundle])).split(/\r?\n/u).filter(Boolean);
-    if (!heads.length || heads.length > 4096 || Buffer.byteLength(JSON.stringify(heads)) > 32 * 1024
-        || heads.some(h => !/^[a-f0-9]{40,64} \S+$/u.test(h))) return retained("bundle-head-budget");
+    const headBinding = bindBundleHeads(heads);
+    if (!headBinding) return retained("bundle-head-budget");
+    if (headBinding.headsProof && !await this.#wideAnchored(owned, heads)) return retained("bundle-roots-unanchored");
     await owned.git(["bundle", "verify", owned.bundle]);
     const input = `${heads.map(h => h.split(" ")[0]).join("\n")}\n`;
     const objects = String(await owned.git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input })).split(/\r?\n/u);
@@ -143,20 +149,34 @@ export class NativeMergeTransportRetention {
     const checked = await bundleAt(owned.bundle);
     if (JSON.stringify(checked) !== JSON.stringify(owned.file)) return retained("transport-changed");
     return { status: "eligible", binding: { file: checked, stateHash: owned.stateHash,
-      taskRevision: owned.taskRevision, publication: owned.publication, heads } };
+      taskRevision: owned.taskRevision, publication: owned.publication, ...headBinding } };
   }
 
   async preview({ candidate }) {
+    if (candidate?.kind === "native-capture-retirement-v1") return this.captureRetirement.preview({ candidate });
     try { return await this.#owned(candidate, owned => this.#preview(owned)); }
     catch { return retained("owner-verification-unavailable"); }
   }
 
-  async prune({ candidate, binding }) {
+  async #wideAnchored(owned, heads) {
+    // New wide-list admission cannot depend on ambient/rewritten/borrowed
+    // history. Legacy array bindings retain their original identity and route.
+    if (["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE",
+      "GIT_REPLACE_REF_BASE", "GIT_GRAFT_FILE", "GIT_COMMON_DIR", "GIT_DIR", "GIT_WORK_TREE"].some(key => process.env[key])) return false;
+    const git = (args, options) => owned.git(["--no-lazy-fetch", "--no-replace-objects", ...args], options);
+    if (/^(extensions\.partialclone|remote\..*\.promisor)=/imu.test(await git(["config", "--local", "--list"]))
+        || await lstat(path.join(path.dirname(owned.bundle), "repository", ".git", "info", "grafts")).catch(absent)) return false;
+    return bundleHeadsAnchored(git, heads);
+  }
+
+  async prune({ candidate, binding, operationId }) {
+    if (candidate?.kind === "native-capture-retirement-v1") return this.captureRetirement.prune({ candidate, binding, operationId });
     return this.#owned(candidate, async owned => {
       const current = await this.#preview(owned);
       if (current.status !== "eligible") return current;
       if (JSON.stringify(current.binding) !== JSON.stringify(binding)) return retained("preview-changed");
       await owned.assertCurrent();
+      if (binding.headsProof && !await this.#wideAnchored(owned, readBundleHeads(binding))) return retained("bundle-roots-unanchored");
       const before = await freeBytes(this.root);
       await this.deleteTransport(await realpath(owned.bundle), binding.file);
       const after = await freeBytes(this.root);
@@ -166,7 +186,8 @@ export class NativeMergeTransportRetention {
     });
   }
 
-  async reconcile({ candidate, binding }) {
+  async reconcile({ candidate, binding, operationId }) {
+    if (candidate?.kind === "native-capture-retirement-v1") return this.captureRetirement.reconcile({ candidate, binding, operationId });
     const result = await this.#owned(candidate, async owned => {
       if (owned.stateHash !== binding.stateHash) return { status: "unknown", reason: "original-capture-changed" };
       if (!owned.file) return { status: "already-removed", logicalBytes: 0 };

@@ -191,6 +191,8 @@ export function createProviderOperationComposition({
     finishInterrupted: (...args) => runRecovery().finishInterrupted(...args),
   });
   const codexRecoveryService = new CodexRecoveryService({
+    commandTrace,
+    retireLocalExecutionAfterReboot: (run) => managedRunLifecycle.retireLocalExecutionAfterReboot(run),
     transportRunning: codexTransportRunning,
     readTaskSnapshot: readCodexTaskSnapshot,
     recoverInactiveRun: (run) => providerCancellationService.recoverCodex(run),
@@ -243,6 +245,7 @@ export function createProviderOperationComposition({
     commandTrace,
   });
   const providerCancellationService = new ProviderCancellationService({
+    commandTrace,
     interruptCodex: (run) => codexTurnService.interrupt(run),
     runForTask: (run) => taskRuns.forTask(run),
     readCodexSnapshot: readCodexTaskSnapshot,

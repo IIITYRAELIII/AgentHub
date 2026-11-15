@@ -58,7 +58,7 @@ for (const method of ["deriveInstalledLocalSourceBaselineForSelection", "validat
     await assert.rejects(service[method]({ projectRoot: f.root, planRevision: "fixture", tasks: [],
       publishedRevision: null, provenance: null }), { code: "CONTOUR_EXTERNAL_EFFECT_EXCLUDED" });
     assert.deepEqual(exclusions, [{ skipped: true, status: "excluded", reason: "test-contour-external-effect",
-      kind: "release-git", operation: "assertPrimaryInvariant", targets: [] }]);
+      kind: "release-git", operation: method, targets: [] }]);
     await assert.rejects(readFile(path.join(dataDir, "release-repositories")), { code: "ENOENT" });
     assert.equal(await f.git(["rev-parse", "HEAD"]), f.result);
     assert.equal(await f.git(["status", "--porcelain=v1"]), "");

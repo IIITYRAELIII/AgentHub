@@ -16,6 +16,9 @@ test('real durable ACK keeps both rendered ready markers clear after final time 
     terminalRevision: 1, updatedAt: '2026-10-16T09:10:10.774Z' };
   let sequence = 0;
   const service = new DesktopReadModelService({
+    resolveReadTask: ({ provider, threadId }) => snapshot().tasks.find(task => (
+      task.provider === provider && task.threadId === threadId
+    )),
     readStateStore: store, trustedDeviceUserId: () => 'local',
     lastTaskMessage: task => task.threadId === 'thread-b' ? record : null,
     hasUnread: taskHasUnreadAnswer,

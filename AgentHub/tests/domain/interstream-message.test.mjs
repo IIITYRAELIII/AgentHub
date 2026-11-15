@@ -9,7 +9,9 @@ import {
   interstreamMessageDetails,
   trustedAuditedInterstreamBodyDetails,
   trustedInterstreamMessageDetails,
+  verifiedLegacyInterstreamSteer,
 } from "../../src/domain/interstream-message.mjs";
+import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 
 const origin = {
   kind: "interstream",
@@ -24,6 +26,27 @@ const origin = {
 };
 
 const envelope = createInterstreamMessage({ ...origin, text: "Проверь доставку." });
+
+test("legacy idle steer requires exact original mode, immutable receipt and authenticated body", () => {
+  const item = { id: "item", clientUserMessageId: `mcp:${origin.requestId}`, streamId: "destination",
+    messageOrigin: origin, input: envelope };
+  const args = { confirm_send: true, request_id: origin.requestId, stream_id: item.streamId, text: "Проверь доставку." };
+  const op = { status: "succeeded", toolName: "hub_stream_message_send", requestId: origin.requestId,
+    workspaceId: origin.workspaceId, streamId: origin.streamId, provider: origin.provider, threadId: origin.sourceThreadId,
+    argumentsHash: mcpArgumentsHash({ ...args, mode: "steer" }), interstreamContentHash: interstreamAuditContentHash(envelope),
+    result: { target: { streamId: item.streamId }, delivery: { id: item.id, clientUserMessageId: item.clientUserMessageId,
+      streamId: item.streamId, queued: true, providerAccepted: false } } };
+  assert.equal(verifiedLegacyInterstreamSteer(item, op), true);
+  for (const change of [{ status: "unknown" }, { toolName: "hub_task_start" }, { streamId: "foreign" },
+    { threadId: "foreign" }, { interstreamContentHash: "" }, { argumentsHash: mcpArgumentsHash({ ...args, mode: "queue" }) },
+    { argumentsHash: mcpArgumentsHash(args) }, { requestId: "foreign" }]) {
+    assert.equal(verifiedLegacyInterstreamSteer(item, { ...op, ...change }), false);
+  }
+  assert.equal(verifiedLegacyInterstreamSteer({ ...item, input: envelope + " substituted" }, op), false);
+  assert.equal(verifiedLegacyInterstreamSteer({ ...item, id: "foreign" }, op), false);
+  assert.equal(verifiedLegacyInterstreamSteer(item, { ...op, result: { ...op.result,
+    delivery: { ...op.result.delivery, providerAccepted: true, turnId: "accepted" } } }), false);
+});
 
 test("interstream display text requires exact transport identity", () => {
   assert.equal(interstreamDisplayText(envelope, {

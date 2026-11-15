@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { MAINTENANCE_OPERATION_KINDS } from "../domain/maintenance-operation.mjs";
+import { AsyncSqliteMutationQueue } from "../infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 
 export const STORAGE_RETENTION_VERSION = 1;
-export const STORAGE_RETENTION_POLICY_VERSION = 3;
+export const STORAGE_RETENTION_POLICY_VERSION = 4;
 const KIND = MAINTENANCE_OPERATION_KINDS.STORAGE_RETENTION;
 const ROOT_ID = `storage-retention:v${STORAGE_RETENTION_VERSION}`;
 const SCOPE = Object.freeze({ streamId: "agent-hub-runtime", threadId: "storage-retention" });
@@ -36,6 +37,7 @@ export class StorageRetentionService {
   #stopped = true;
   #closed = false;
   #last = { state: "not-run" };
+  #mutations = new AsyncSqliteMutationQueue();
 
   constructor({ store, owners, readContext, withLease, timers = null,
     isStopping = () => false, now = () => new Date(), clock = () => performance.now(),
@@ -57,7 +59,10 @@ export class StorageRetentionService {
     this.maxUnits = Math.min(3, Math.max(1, Math.trunc(Number(maxUnits) || 3)));
   }
 
-  status() { return structuredClone(this.#last); }
+  status() {
+    return { ...structuredClone(this.#last), owners: Object.fromEntries(this.owners
+      .filter(owner => typeof owner.status === "function").map(owner => [owner.id, owner.status()])) };
+  }
 
   scheduleInitial() {
     this.#stopped = false;
@@ -85,13 +90,51 @@ export class StorageRetentionService {
     return this.#flight;
   }
 
-  #update(operation, patch) {
-    const result = this.store.transition(operation.operationId, patch, { expectedRevision: operation.revision });
+  // An explicit operational consumer may confirm only exact owner previews.
+  // This shares the scheduler's original intents/lease; it neither discovers
+  // additional artifacts nor advances the background discovery cursor.
+  runApproved(previews) {
+    if (!Array.isArray(previews) || !previews.length || previews.length > this.maxUnits) {
+      throw new TypeError("Approved retention requires a bounded nonempty preview list");
+    }
+    const approved = previews.map(value => bounded(value));
+    const identities = new Set();
+    for (const item of approved) {
+      const key = `${item.ownerId}:${item.candidate?.id}`;
+      if (!this.owners.some(owner => owner.id === item.ownerId)
+          || typeof item.candidate?.id !== "string" || !item.candidate.id
+          || typeof item.candidate.cursor !== "string" || !item.binding
+          || identities.has(key)) throw new TypeError("Invalid approved retention binding");
+      identities.add(key);
+    }
+    if (this.#flight) throw new Error("Retention owner is already running");
+    this.#flight = Promise.resolve().then(() => this.withLease(lease => this.#run(lease, approved)))
+      .finally(() => { this.#flight = null; });
+    return this.#flight;
+  }
+
+  // Retry only canonical SQL bookkeeping, never owner preview/effect/reconcile.
+  // A contended create keeps its original identity throughout the bounded wait.
+  #write(lease, operation, requestId) {
+    return this.#mutations.run(async () => {
+      await lease.assertOwned();
+      return operation();
+    }, { requestId });
+  }
+
+  #create(lease, input) {
+    const original = { ...input, operationId: input.operationId ?? randomUUID() };
+    return this.#write(lease, () => this.store.create(original), original.operationId);
+  }
+
+  async #update(operation, patch, lease) {
+    const result = await this.#write(lease, () => this.store.transition(operation.operationId, patch,
+      { expectedRevision: operation.revision }), operation.operationId);
     if (!result.applied) throw new Error("retention-owner-fenced");
     return result.operation;
   }
 
-  async #unit(owner, candidate, context, lease, record = null) {
+  async #unit(owner, candidate, context, lease, record = null, approvedBinding = null) {
     const scope = `${owner.id}:${createHash("sha256").update(candidate.id).digest("hex")}`;
     let child = record ? this.store.get(record.operationId) : this.store.activeFor({ kind: KIND, ...SCOPE, threadId: scope });
     if (record && !child) return { result: { status: "unknown", reason: "original-intent-unavailable" } };
@@ -100,6 +143,9 @@ export class StorageRetentionService {
           || child.metadata?.version !== STORAGE_RETENTION_VERSION) throw new Error("retention-owner-binding");
       if (TERMINAL.has(child.status)) return { child, result: child.metadata.result ?? { status: "unknown" } };
       if (child.metadata.admitted) {
+        if (approvedBinding && JSON.stringify(approvedBinding) !== JSON.stringify(child.metadata.binding)) {
+          return { child, result: { status: "unknown", reason: "approved-original-binding-changed" } };
+        }
         await lease.assertOwned();
         let result;
         try {
@@ -108,17 +154,29 @@ export class StorageRetentionService {
         } catch { result = { status: "unknown", reason: "owner-outcome-unknown" }; }
         return { child, result: bounded(result) };
       }
+      // This is an intake checkpoint, not deletion authority. Every owner's
+      // prune still revalidates its exact binding under its own resource lease.
+      if (child.metadata.previewCompleted === true && child.metadata.previewReleaseId === context.releaseId
+          && JSON.stringify(candidate) === JSON.stringify(child.metadata.candidate)) {
+        if (approvedBinding && JSON.stringify(approvedBinding) !== JSON.stringify(child.metadata.binding)) {
+          return { child, result: { status: "unknown", reason: "approved-original-binding-changed" } };
+        }
+        return { child, prepared: { candidate: child.metadata.candidate, binding: child.metadata.binding, scope } };
+      }
     }
     const preview = await owner.preview({ candidate, context });
     if (preview?.status !== "eligible") return { child, result: { status: "retained", reason: reason(preview?.reason) } };
     const binding = bounded(preview.binding);
+    if (approvedBinding && JSON.stringify(approvedBinding) !== JSON.stringify(binding)) {
+      return { child, result: { status: "retained", reason: "approved-preview-changed" } };
+    }
     if (child && JSON.stringify(binding) !== JSON.stringify(child.metadata.binding)) {
       return { child, result: { status: "retained", reason: "preview-changed" } };
     }
     return { child, prepared: { candidate: bounded(candidate, 4096), binding, scope } };
   }
 
-  async #run(lease) {
+  async #run(lease, approved = null) {
     const started = this.clock();
     let used = 0;
     const context = structuredClone(await this.readContext());
@@ -126,14 +184,18 @@ export class StorageRetentionService {
       return this.#last = { state: "deferred", reason: "runtime-not-ready-or-isolated", retry: Boolean(context?.releaseId && !context?.isolated) };
     }
     await lease.assertOwned();
-    let parent = this.store.get(ROOT_ID) ?? this.store.create({ operationId: ROOT_ID, kind: KIND, ...SCOPE,
+    let parent = this.store.get(ROOT_ID) ?? await this.#create(lease, { operationId: ROOT_ID, kind: KIND, ...SCOPE,
       metadata: { version: STORAGE_RETENTION_VERSION, ownerIds: this.owners.map(o => o.id), pending: [], summary: summary() } });
     const ownerIds = this.owners.map(o => o.id);
     const ownerListChanged = JSON.stringify(parent.metadata.ownerIds) !== JSON.stringify(ownerIds);
-    const knownUpgrade = ['["native-merge-transport"]', '["native-merge-transport","runtime-release"]'].includes(JSON.stringify(parent.metadata.ownerIds))
-      && JSON.stringify(ownerIds) === '["native-merge-transport","runtime-release","release-generation-transport"]';
+    const oldOwners = ["native-merge-transport", "runtime-release", "release-generation-transport"];
+    const prior = parent.metadata.ownerIds;
+    const knownUpgrade = Array.isArray(prior) && prior.length >= 1 && prior.length <= 3
+      && JSON.stringify(prior) === JSON.stringify(oldOwners.slice(0, prior.length))
+      && (JSON.stringify(ownerIds) === JSON.stringify(oldOwners)
+        || JSON.stringify(ownerIds) === JSON.stringify(["runtime-update-backup", ...oldOwners]));
     if (TERMINAL.has(parent.status) || parent.metadata.version !== STORAGE_RETENTION_VERSION
-        || ![undefined, 1, 2, STORAGE_RETENTION_POLICY_VERSION].includes(parent.metadata.policyVersion)
+        || ![undefined, 1, 2, 3, STORAGE_RETENTION_POLICY_VERSION].includes(parent.metadata.policyVersion)
         || (ownerListChanged && !knownUpgrade)) {
       return this.#last = { state: "deferred", reason: "retention-policy-incompatible" };
     }
@@ -141,10 +203,10 @@ export class StorageRetentionService {
     if (knownUpgrade) Object.assign(state, { ownerIds, ownerIndex: 0, cursor: null });
     state.policyVersion = STORAGE_RETENTION_POLICY_VERSION;
     const cycle = `${context.releaseId}:${Math.floor(this.now().getTime() / this.intervalMs)}`;
-    if (state.cycle !== cycle) Object.assign(state, { cycle, ownerIndex: 0, cursor: null, summary: summary() });
+    if (!approved && state.cycle !== cycle) Object.assign(state, { cycle, ownerIndex: 0, cursor: null, summary: summary() });
     const save = async () => {
       await lease.assertOwned();
-      parent = this.#update(parent, { status: running(parent), phase: "background", metadata: bounded(state) });
+      parent = await this.#update(parent, { status: running(parent), phase: "background", metadata: bounded(state) }, lease);
     };
     const account = result => {
       if (result.status === "removed") {
@@ -163,26 +225,38 @@ export class StorageRetentionService {
         state.summary.reasons[key] = (state.summary.reasons[key] ?? 0) + 1;
       }
     };
-    const settle = async (owner, candidate, record = null) => {
+    const settle = async (owner, candidate, record = null, approvedBinding = null) => {
       used += 1;
       const fresh = await this.readContext();
       if (!fresh?.ready || fresh.isolated || fresh.busy || fresh.releaseId !== context.releaseId || (this.#closed || this.isStopping())) return false;
-      let step = await this.#unit(owner, candidate, fresh, lease, record);
+      let step = await this.#unit(owner, candidate, fresh, lease, record, approvedBinding);
       if (step.prepared) {
         const admission = await this.readContext();
         if (!admission?.ready || admission.isolated || admission.busy || admission.releaseId !== context.releaseId
-            || (this.#closed || this.isStopping()) || this.clock() - started >= this.budgetMs) return false;
+            || (this.#closed || this.isStopping())) return false;
         if (state.pending.length >= 8 && !state.pending.some(p => p.operationId === step.child?.operationId)) {
           account({ status: "retained", reason: "pending-owner-budget" }); return true;
         }
-        let child = step.child ?? this.store.create({ kind: KIND, ...SCOPE, threadId: step.prepared.scope,
-          metadata: { version: STORAGE_RETENTION_VERSION, owner: owner.id, ...step.prepared, admitted: false } });
+        let child = step.child ?? await this.#create(lease, { kind: KIND, ...SCOPE, threadId: step.prepared.scope,
+          metadata: { version: STORAGE_RETENTION_VERSION, owner: owner.id, ...step.prepared, admitted: false,
+            previewCompleted: true, previewReleaseId: context.releaseId } });
+        if (!child.metadata.previewCompleted || child.metadata.previewReleaseId !== context.releaseId) {
+          child = await this.#update(child, { status: running(child), phase: "previewed",
+            metadata: { previewCompleted: true, previewReleaseId: context.releaseId } }, lease);
+        }
         if (!state.pending.some(p => p.operationId === child.operationId)) {
           state.pending.push({ operationId: child.operationId, owner: owner.id, candidate: step.prepared.candidate });
           await save(); // The discoverable original intent precedes every effect.
         }
+        // Persist completed work even when preview consumed this pass. No new
+        // artifact effect is admitted after the existing cooperative budget.
+        if (this.clock() - started >= this.budgetMs) return false;
         await lease.assertOwned();
-        child = this.#update(child, { status: running(child), phase: "pruning", metadata: { admitted: true } });
+        child = await this.#update(child, { status: running(child), phase: "pruning", metadata: { admitted: true } }, lease);
+        const effectContext = await this.readContext();
+        if (!effectContext?.ready || effectContext.isolated || effectContext.busy
+            || effectContext.releaseId !== context.releaseId || (this.#closed || this.isStopping())) return false;
+        await lease.assertOwned();
         try {
           step = { child, result: bounded(await owner.prune({ candidate: child.metadata.candidate,
             binding: child.metadata.binding, operationId: child.operationId, context: admission })) };
@@ -193,11 +267,23 @@ export class StorageRetentionService {
       const result = OUTCOMES.has(step.result?.status) ? step.result : { status: "unknown", reason: "owner-outcome-unknown" };
       if (step.child) {
         await lease.assertOwned();
+        // An owner persists per-entry progress on this SAME child before effects.
+        // Refresh its CAS only after checking the immutable admission binding.
+        const latest = this.store.get(step.child.operationId);
+        if (!latest || TERMINAL.has(latest.status) || latest.metadata.owner !== step.child.metadata.owner
+          || latest.metadata.version !== step.child.metadata.version
+          || latest.metadata.admitted !== step.child.metadata.admitted
+          || JSON.stringify(latest.metadata.candidate) !== JSON.stringify(step.child.metadata.candidate)
+          || JSON.stringify(latest.metadata.binding) !== JSON.stringify(step.child.metadata.binding)) {
+          throw new Error("retention-owner-fenced");
+        }
+        step.child = latest;
         if (result.status === "unknown" || result.status === "partial") {
-          if (!TERMINAL.has(step.child.status)) this.#update(step.child, { status: "reconciling",
-            phase: result.status === "partial" ? "partial" : "reconciling", outcome: "unknown", metadata: { lastObservation: bounded(result) } });
+          if (!TERMINAL.has(step.child.status)) await this.#update(step.child, { status: "reconciling",
+            phase: result.status === "partial" ? "partial" : "reconciling", outcome: "unknown", metadata: { lastObservation: bounded(result) } }, lease);
         } else {
-          this.store.settle(step.child.operationId, { succeeded: true, phase: result.status, metadata: { result } });
+          await this.#write(lease, () => this.store.settle(step.child.operationId,
+            { succeeded: true, phase: result.status, metadata: { result } }), step.child.operationId);
           state.pending = state.pending.filter(p => p.operationId !== step.child.operationId);
         }
       }
@@ -205,6 +291,16 @@ export class StorageRetentionService {
       return true;
     };
     await save();
+    if (approved) {
+      for (const item of approved) {
+        if (this.clock() - started >= this.budgetMs || (this.#closed || this.isStopping())) break;
+        const owner = this.owners.find(candidate => candidate.id === item.ownerId);
+        if (!await settle(owner, item.candidate, null, item.binding)) break;
+        await save();
+      }
+      return this.#last = { state: "idle", approved: true, processed: used,
+        pending: state.pending.length, ...state.summary };
+    }
     // One uncertain resource cannot starve all other artifact owners. Its SAME
     // original operation is reconciled; it is never submitted as a fresh effect.
     if (state.pending.length && used < this.maxUnits && !(this.#closed || this.isStopping())) {

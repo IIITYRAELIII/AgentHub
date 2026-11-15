@@ -19,6 +19,13 @@ const lifecycle = context.AgentHubMessageLifecycle;
 const projection = context.AgentHubMessageProjection;
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
+test("current-or-queue routing preserves exact idle optimism without treating unknown as idle", () => {
+  assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "steer" }, { knownIdle: true }), false);
+  assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "steer" }), true);
+  assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "steer" }, { knownIdle: false }), true);
+  assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "queue", deferWhileRunning: true }, { knownIdle: true }), true);
+});
+
 test("immediate durable ACK uses the accepted label while explicit queued intent stays queued", () => {
   const intake = { accepted: true, deferred: true, queued: true,
     reason: "message-intake", clientProjectionIntent: "conversation" };
@@ -233,7 +240,7 @@ test("preparing admission keeps second input queued and provider rejection never
     await page.waitForFunction(() => Boolean(window.__secondPreparingSend));
     const params = await page.evaluate(() => window.__secondPreparingSend.params);
     assert.equal(params.clientProjectionIntent, "queue");
-    assert.equal(params.followUpMode, "queue");
+    assert.equal(params.followUpMode, "steer");
     const failed = structuredClone(initial);
     failed.version = "provider-rejected";
     failed.tasks[0].running = false;
@@ -246,6 +253,33 @@ test("preparing admission keeps second input queued and provider rejection never
     assert.deepEqual(diagnostics, []);
   } finally { await page.close(); await browser.close(); }
 });
+
+for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
+  test(`complete client shows old queued intake as waiting beside an unrelated unknown run (${viewport.width})`, { timeout: 40_000 }, async () => {
+    const browser = await launchBrowser(); const page = await browser.newPage({ viewport });
+    try {
+      const initial = snapshot();
+      initial.deferredInputs = [{ id: "old-item", provider: "codex", threadId: "thread-a", streamId: "stream-a",
+        clientUserMessageId: "old-original", state: "queued", conflictKind: "message-intake",
+        text: "retained original", createdAt: "2026-10-21T09:00:00.000Z", attempts: 0,
+        waitReason: "managed-run-activity-unknown" }];
+      initial.tasks[0] = { ...initial.tasks[0], running: true, run: {
+        id: "another-run", turnId: "another-turn", clientUserMessageId: "another-command",
+        operationKind: "user-turn", projectionState: "active", activityUnknown: true,
+        prompt: "unrelated active command", response: "",
+      } };
+      const diagnostics = await openFixture(page, { fixtureSnapshot: initial });
+      if (viewport.width < 600) await page.locator("[data-mobile-button='chat']").click();
+      assert.equal(new URL(page.url()).hostname, "agent-hub.test");
+      const head = page.locator(".queue-head").filter({ visible: true });
+      assert.equal(await head.count(), 1);
+      assert.match(await head.innerText(), /В очереди: 1/iu);
+      assert.doesNotMatch(await head.innerText(), /Запускается/iu);
+      await screenshot(page, `old-queued-wait-${viewport.width}`);
+      assert.deepEqual(diagnostics, []);
+    } finally { await page.close(); await browser.close(); }
+  });
+}
 
 for (const state of ["completed", "failed", "cancelled"]) {
   test(`exact ${state} original absorbs late no-turn preparation but a new command remains occupied`, { timeout: 40_000 }, async () => {

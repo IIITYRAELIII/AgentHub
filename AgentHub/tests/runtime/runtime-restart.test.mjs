@@ -22,7 +22,8 @@ test("runtime restart follows the external launcher to the newest release", () =
     agentHubRoot: "C:\\Old",
   });
   assert.equal(result.command, path.resolve("C:\\Runtime\\AgentHub.RuntimeHost.exe"));
-  assert.deepEqual(result.args, []);
+  assert.deepEqual(result.args, ["--spawn-replacement"]);
+  assert.equal(result.ownedHostProtocol, true);
   assert.equal(result.options.cwd, path.resolve("C:\\Runtime"));
 });
 

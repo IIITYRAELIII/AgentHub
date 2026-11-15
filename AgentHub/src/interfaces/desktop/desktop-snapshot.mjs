@@ -1,3 +1,4 @@
+import { codexAssistantResponseProjection } from "../../domain/codex-response-annotation.mjs";
 import { receiptUserDisplay, receiptUserOrigin, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import {
@@ -172,7 +173,7 @@ export function createDesktopSnapshotFactory({
     const state = {
       workspaces: board.workspaces?.() ?? catalog.hierarchy?.() ?? [],
       archivedWorkspaces: board.archivedWorkspaces?.() ?? [],
-      boardTasks: board.snapshot?.() ?? [],
+      boardTasks: board.snapshot?.({ compactPresentation: true }) ?? [],
       boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
       sourceVersion: "",
     };
@@ -264,8 +265,12 @@ export function createDesktopSnapshotFactory({
     }
   }
 
-  function desktopMessageReceiptSnapshot() {
-    return (receipts.recent?.() ?? []).slice(-100).flatMap((receipt) => {
+  function desktopMessageReceiptSnapshot(requestedIds) {
+    const addressed = requestedIds.map(id => receipts.forCommand?.(id)).filter(Boolean);
+    const exactReceipts = new Map((receipts.recent?.() ?? []).slice(-100)
+      .map(receipt => [receipt.clientUserMessageId, receipt]));
+    for (const receipt of addressed) exactReceipts.set(receipt.clientUserMessageId, receipt);
+    return [...exactReceipts.values()].flatMap((receipt) => {
       const provider = String(receipt?.provider ?? "").trim();
       const threadId = String(receipt?.threadId ?? "").trim();
       const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
@@ -392,6 +397,9 @@ export function createDesktopSnapshotFactory({
     });
     const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
       .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
+    const responseProjection = codexAssistantResponseProjection(
+      run.responseText, run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences,
+    );
     const compactActivity = (activity) => {
       const cloned = structuredClone(activity);
       if (!compactSnapshot || typeof cloned?.detail !== "string") return cloned;
@@ -545,15 +553,13 @@ export function createDesktopSnapshotFactory({
         }];
       }),
       progress: String(run.progressReasoning ?? ""),
-      response: String(run.responseText ?? ""),
+      response: responseProjection.text,
       responseAttachments: Array.isArray(run.responseAttachments)
         ? run.responseAttachments.map((attachment) => ({ ...attachment }))
         : [],
-      ...((run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences)?.length
+      ...(responseProjection.responseAnnotationReferences.length
         ? {
-          responseAnnotationReferences: structuredClone(
-            run.responseAnnotationReferences ?? responseItem.responseAnnotationReferences,
-          ),
+          responseAnnotationReferences: responseProjection.responseAnnotationReferences,
         }
         : {}),
       ...(responseItem?.phase ? { responsePhase: String(responseItem.phase) } : {}),
@@ -706,6 +712,27 @@ export function createDesktopSnapshotFactory({
     };
   }
 
+  function desktopReadTask({ provider, threadId, streamId } = {}) {
+    const exactProvider = String(provider ?? "").trim().toLowerCase();
+    const exactThread = String(threadId ?? "").trim();
+    const exactStream = String(streamId ?? "").trim();
+    if (!exactProvider || !exactThread) return null;
+    const matches = (entry) => String(entry?.provider ?? "").trim().toLowerCase() === exactProvider
+      && String(entry?.threadId ?? "").trim() === exactThread
+      && (!exactStream || String(entry?.streamId ?? "").trim() === exactStream);
+    const entry = catalog.entries().find(matches);
+    if (entry) return entry;
+    // Full snapshots retain the current selected Thread before catalog discovery
+    // catches up. Preserve that same exact identity without building its UI.
+    const selected = selection.hasThread() ? selection.selectedTurnTarget() : null;
+    if (!selected) return null;
+    const transient = {
+      ...selected,
+      ...workspaceBindingForTask(selected, board.workspaces?.() ?? catalog.hierarchy?.() ?? []),
+    };
+    return matches(transient) ? transient : null;
+  }
+
   async function desktopSnapshot({
     refresh = false,
     accountId = "",
@@ -718,7 +745,13 @@ export function createDesktopSnapshotFactory({
     boardTasksVersion = "",
     messageReceiptsVersion = "",
     messagePinsVersion = "",
+    messageReceiptIds = [],
   } = {}) {
+    if (!Array.isArray(messageReceiptIds) || messageReceiptIds.some(id => typeof id !== "string" || !id.trim())) {
+      throw new TypeError("messageReceiptIds must contain exact command identities");
+    }
+    const requestedReceiptIds = [...new Set(messageReceiptIds)].sort();
+    const receiptRequestKey = JSON.stringify(requestedReceiptIds);
     const snapshotStartedAt = monotonicNow();
     const snapshotTiming = {};
     const finishTiming = (result, cacheHit = false) => ({
@@ -760,6 +793,7 @@ export function createDesktopSnapshotFactory({
       && beforeRevision !== null
       && cached?.version === knownVersion
       && cached.revision === beforeRevision
+      && cached.receiptRequestKey === receiptRequestKey
       && collectionVersionsMatch(cached.collectionVersions)
     ) {
       return finishTiming({ notModified: true, version: knownVersion }, true);
@@ -850,7 +884,10 @@ export function createDesktopSnapshotFactory({
     snapshotTiming.serverStateMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     phaseStartedAt = monotonicNow();
     const { boardTasks, archivedWorkspaces, boardLayout } = boardState;
-    const messageReceipts = desktopMessageReceiptSnapshot();
+    const receiptStartedAt = monotonicNow();
+    const messageReceipts = desktopMessageReceiptSnapshot(requestedReceiptIds);
+    snapshotTiming.messageReceiptProjectionMs = Math.round((monotonicNow() - receiptStartedAt) * 10) / 10;
+    snapshotTiming.addressedMessageReceipts = requestedReceiptIds.length;
     const messagePins = pins.snapshot?.() ?? [];
     const codexModelOptions = current.codexModels.map((model) => ({
       value: model.value, label: model.label,
@@ -1012,7 +1049,7 @@ export function createDesktopSnapshotFactory({
     const afterRevision = await sourceRevision(revisionParams);
     snapshotTiming.revisionAfterMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     if (beforeRevision !== null && beforeRevision === afterRevision) {
-      versionCache.set(cacheKey, { revision: afterRevision, version, collectionVersions });
+      versionCache.set(cacheKey, { revision: afterRevision, version, collectionVersions, receiptRequestKey });
     } else {
       versionCache.delete(cacheKey);
     }
@@ -1034,6 +1071,7 @@ export function createDesktopSnapshotFactory({
     desktopContextSnapshot,
     desktopRunSnapshot,
     desktopTaskSnapshot,
+    desktopReadTask,
     desktopSnapshot,
   };
 }

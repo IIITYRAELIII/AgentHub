@@ -6,6 +6,7 @@ import { ProviderTurnTerminalStore } from "../infrastructure/persistence/provide
 import { ProviderRunTerminalStore } from "../infrastructure/persistence/provider-run-terminal-store.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
+import { readTrustedSystemBootIdentity } from "../infrastructure/process/system-boot-identity.mjs";
 
 function setBoundedMapValue(map, key, value, limit) {
   if (map.has(key)) map.delete(key);
@@ -55,6 +56,8 @@ export function createRunCompletionComposition({
   resolveCodexTerminalAttachments,
   runtimeStateStore,
   commandTrace = null,
+  wakeDeferredInputs = () => {},
+  readSystemBootIdentity = readTrustedSystemBootIdentity,
 }) {
   const runLifecycleTerminals = new ProviderRunTerminalStore({ dataDir: config.dataDir });
   const managedRunLifecycle = new ManagedRunLifecycleService({
@@ -93,6 +96,10 @@ export function createRunCompletionComposition({
     revokeAdmission: revokeRunAdmission,
     commandTrace,
     recordProviderTerminal: (terminal) => runLifecycleTerminals.record(terminal),
+    readProviderTerminal: (identity) => terminalStore.get(identity),
+    localRetirementStore: runLifecycleTerminals,
+    readSystemBootIdentity,
+    afterLocalRetirement: () => wakeDeferredInputs(),
   });
 
   const terminalStore = new ProviderTurnTerminalStore({ dataDir: config.dataDir });

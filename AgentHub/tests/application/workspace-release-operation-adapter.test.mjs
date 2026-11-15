@@ -26,6 +26,83 @@ function fixture(selection) {
   return { adapter, calls };
 }
 
+test("manual public version forwards the original authorization to generation preparation", async () => {
+  const { adapter } = fixture([]);
+  const calls = [];
+  adapter.releasePreflight.prepareOperationGeneration = async input => { calls.push(input); return { releaseCandidates: [], planRevision: "plan" }; };
+  const operation = { operationId: "original", workspaceId: "workspace", selectedResults: [],
+    authorization: { taskIds: ["task-a"], approvedTargets: [], fingerprint: "original", releaseVersion: "3.7.9" } };
+  await adapter.compose({ operation, generation: 1 });
+  assert.equal(calls[0].releaseVersion, "3.7.9");
+  delete operation.authorization.releaseVersion;
+  await adapter.compose({ operation, generation: 2 });
+  assert.equal(Object.hasOwn(calls[1], "releaseVersion"), false);
+});
+
+test("repository approval coalesces only equal authority and preserves distinct repositories", async () => {
+  const { adapter } = fixture([]);
+  const calls = [];
+  adapter.releasePreflight.prepareOperationGeneration = async input => {
+    calls.push(input);
+    return { releaseCandidates: [], planRevision: "plan" };
+  };
+  const target = { repositoryRoot: path.resolve("repo"), approvedLocalMainCommit: "a".repeat(40),
+    approvedOriginMainCommit: "b".repeat(40) };
+  const alias = process.platform === "win32"
+    ? target.repositoryRoot.toUpperCase().replaceAll("\\", "/")
+    : `${target.repositoryRoot}/.`;
+  const operation = { operationId: "original", workspaceId: "workspace", selectedResults: [],
+    authorization: { taskIds: [], fingerprint: "original", approvedTargets: [target,
+      { ...target, repositoryRoot: alias }, { ...target, repositoryRoot: path.resolve("other-repo") }] } };
+  const before = structuredClone(operation);
+  await adapter.compose({ operation, generation: 1 });
+  assert.equal(calls[0].approvedRepositories.length, 2);
+  assert.deepEqual(calls[0].approvedRepositories[0], { projectRoot: target.repositoryRoot,
+    approvedLocalMainCommit: target.approvedLocalMainCommit, approvedOriginMainCommit: target.approvedOriginMainCommit });
+  assert.equal(calls[0].approvedRepositories[1].projectRoot, path.resolve("other-repo"));
+  for (const field of ["approvedLocalMainCommit", "approvedOriginMainCommit"]) {
+    operation.authorization.approvedTargets[1] = { ...target, repositoryRoot: alias, [field]: "c".repeat(40) };
+    await assert.rejects(adapter.compose({ operation, generation: 1 }), /conflicting repository approval/u);
+  }
+  assert.equal(calls.length, 1, "conflicting pins refuse before generation preparation");
+  operation.authorization.approvedTargets = before.authorization.approvedTargets;
+  assert.deepEqual(operation, before);
+});
+
+test("first compose adapter recovers the original before forwarding retained versions to its amendment", async () => {
+  const { adapter } = fixture([]);
+  const calls = [];
+  const binding = { repositoryRoot: "D:/repo", releaseVersion: "2.1.5", runtimeReleaseVersion: "2.1.5+build.29901174" };
+  const candidate = { repositoryRoot: "D:/repo", baseCommit: "base", preReleaseHead: "frozen", tree: "tree",
+    manifestHash: "manifest", frozenTasks: [{ taskId: "old-task", resultCommit: "old-result", taskRevision: 3 }] };
+  adapter.releasePreflight.firstOperationGeneration = async input => {
+    calls.push(input);
+    if (!input.inspectOnly) await input.validateBeforeCommit();
+    return { planRevision: "original-plan", releaseCandidates: input.inspectOnly ? [{ binding, candidate }] : [candidate] };
+  };
+  const operation = { operationId: "same-original", workspaceId: "workspace", selectedResults: [],
+    authorization: { taskIds: ["old-task"], approvedTargets: [{ repositoryRoot: "D:/repo",
+      approvedLocalMainCommit: "main", approvedOriginMainCommit: "origin" }], fingerprint: "original", releaseVersion: "2.1.5" } };
+  assert.deepEqual(await adapter.inspectFirstCompose({ operation, generation: 1 }), [binding]);
+  let ownerChecks = 0;
+  const composed = await adapter.recoverFirstCompose({ operation, generation: 1, recovery: { candidates: [binding] },
+    validateBeforeCommit: async () => { ownerChecks++; } });
+  assert.equal(ownerChecks, 1);
+  assert.equal(composed.candidates[0].commit, "frozen");
+  assert.deepEqual(composed.selectedResults.map(item => item.taskId), ["old-task"]);
+  assert.deepEqual(calls[1].expectedBindings, [binding]);
+  assert.deepEqual(calls[1].taskIds, ["old-task"]);
+  operation.firstComposeRecovery = { candidates: [binding] };
+  operation.testSelectionAmendments = [{ taskIds: ["old-task", "fix-task"], taskScope: "all_await" }];
+  adapter.releasePreflight.prepareOperationGeneration = async input => {
+    calls.push(input); return { releaseCandidates: [], planRevision: "next-plan" };
+  };
+  await adapter.compose({ operation, generation: 2 });
+  assert.deepEqual(calls[2].frozenVersions, [binding]);
+  assert.equal(Object.hasOwn(calls[2], "taskIds"), false);
+  assert.deepEqual(operation.authorization.taskIds, ["old-task"]);
+});
+
 test("publication reservation uses the Workspace Await boundary for the exact generation", async () => {
   const selectedResults = [
     { taskId: "task-b", resultCommit: "result-b", acceptanceRevision: 3 },

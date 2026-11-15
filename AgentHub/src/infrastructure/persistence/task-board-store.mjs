@@ -1,3 +1,4 @@
+import { assertNoPendingTaskInterruption } from "./task-operation-interruption-fence.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -7,6 +8,7 @@ import { readClaimCustodyFence, configureClaimCustodyBindingFences, configureCla
 import { claimCustodyState, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { nativeTestMetadataDrift } from "../../domain/native-test-terminal-recovery.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { configureTaskTurnProjection } from "./task-turn-projection.mjs";
 
 import {
@@ -1688,21 +1690,25 @@ export class TaskBoardStore {
 
   updateChecklist({
     id, operation, itemId = null, text = null, completed = null,
-    beforeItemId = null, linkedTaskId = null, expectedRevision, requestId, taskPrefix = "",
+    beforeItemId = null, linkedTaskId = null, releaseReference = null, validateReleaseReference = null,
+    expectedRevision, requestId, taskPrefix = "",
   } = {}) {
     const payload = {
       taskId: String(id ?? "").trim(), operation, itemId, text, completed,
-      beforeItemId, linkedTaskId, expectedRevision, requestId: String(requestId ?? "").trim(),
+      beforeItemId, linkedTaskId, releaseReference, expectedRevision, requestId: String(requestId ?? "").trim(),
     };
-    const outcome = this.#withChecklistWrite((database) => mutateTaskChecklist(database, payload, {
-      now: this.now,
-      idFactory: this.idFactory,
-      createExtractedTask: (target, extracted) => createExtractedChecklistTask(target, {
-        ...extracted,
-        taskPrefix,
+    const outcome = this.#withChecklistWrite((database) => {
+      validateReleaseReference?.();
+      return mutateTaskChecklist(database, payload, {
+        now: this.now,
         idFactory: this.idFactory,
-      }),
-    }));
+        createExtractedTask: (target, extracted) => createExtractedChecklistTask(target, {
+          ...extracted,
+          taskPrefix,
+          idFactory: this.idFactory,
+        }),
+      });
+    });
     return this.checklistRequestResult(payload, outcome);
   }
 
@@ -1740,6 +1746,7 @@ export class TaskBoardStore {
         completed: payload.completed,
         beforeItemId: payload.beforeItemId,
         linkedTaskId: payload.linkedTaskId,
+        releaseReference: payload.releaseReference,
         expectedRevision: payload.expectedRevision,
         requestId: payload.requestId,
       });
@@ -2282,6 +2289,8 @@ export class TaskBoardStore {
 
   runMutation(operation, options = {}) {
     const authorities = captureClaimCustodySqlAuthorities(this.#database, options.method, options.args ?? []);
+    const timedMethod = ["beginLifecycleTransition", "failLifecycleTransition", "commitWorkflowTransition"].includes(options.method)
+      ? options.method : null;
     return this.#mutations.run(() => {
       this.#custodyWriteAuthorities = authorities;
       try {
@@ -2289,7 +2298,8 @@ export class TaskBoardStore {
         if (result?.then) throw new TypeError("Task SQL mutation must remain synchronous");
         return result;
       } finally { this.#custodyWriteAuthorities = []; }
-    }, options);
+    }, { ...options, ...(timedMethod ? { recordMutationTiming: measurement =>
+      recordTaskOperationTiming("sqlite-mutation", { store: "task-board", method: timedMethod, ...measurement }) } : {}) });
   }
 
   mutationDiagnostics() {
@@ -2466,6 +2476,7 @@ export class TaskBoardStore {
       if (validateClaimAdmission != null) {
         if (typeof validateClaimAdmission !== "function" || validateClaimAdmission()?.then) throw new TypeError("Claim admission validator must be synchronous");
       }
+      assertNoPendingTaskInterruption(database, taskId);
       const current = this.#taskRow(database, taskId);
       if (current.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
       if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
@@ -2477,8 +2488,8 @@ export class TaskBoardStore {
       const claimReceiptTable = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_mcp_operations'").get();
       if (claimReceiptTable && database.prepare(`
         SELECT 1 FROM hub_mcp_operations WHERE request_id = ?
-          AND (json_extract(result_json, '$.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1')
-            OR json_extract(result_json, '$.operatorReconciliation.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1'))
+          AND (json_extract(result_json, '$.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1', 'task-claim-source-admission-v1')
+            OR json_extract(result_json, '$.operatorReconciliation.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1', 'task-claim-source-admission-v1'))
       `).get(String(operationId))) throw new Error("Task claim was durably refused before admission");
       if (readClaimCustodyFence(database, "original", operationId)) throw new TaskClaimContinuationWithdrawnError();
       const reservation = readClaimCustodyFence(database, "task", taskId);
@@ -2624,6 +2635,7 @@ export class TaskBoardStore {
       database.exec("BEGIN IMMEDIATE");
       try {
         const taskId = String(id);
+        assertNoPendingTaskInterruption(database, taskId);
         const current = this.#taskRow(database, taskId);
         if (expectedRevision != null && Number(current.row_revision) !== Number(expectedRevision)) {
           throw new Error("Task revision changed during workflow transition");
@@ -2848,6 +2860,7 @@ export class TaskBoardStore {
         if (database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(operation)) {
           throw new Error("Task lifecycle operation already has a terminal outcome");
         }
+        assertNoPendingTaskInterruption(database, taskId);
         const current = this.#taskRow(database, taskId);
         const revision = Number(expectedRevision);
         if (!Number.isInteger(revision) || revision !== Number(current.row_revision)) {
@@ -3120,6 +3133,20 @@ export class TaskBoardStore {
     });
   }
 
+  committedNativeTestForDev({ workspaceId, devCommit } = {}) {
+    return this.#withDatabase(database => {
+      const rows = database.prepare(`SELECT operation_id FROM hub_task_lifecycle_outcomes
+        WHERE kind = 'workflow'
+          AND json_extract(result_json, '$.task.workspaceId') = ?
+          AND json_extract(result_json, '$.task.workflowStatus') = 'testing'
+          AND json_extract(result_json, '$.evidence.outcome') = 'integrated'
+          AND json_extract(result_json, '$.evidence.devHeadCommit') = ?
+        ORDER BY completed_at_ms DESC, operation_id LIMIT 2`).all(workspaceId, devCommit);
+      if (rows.length !== 1) throw new Error("Native dev successor requires one exact committed Test outcome");
+      return this.lifecycleOutcome(rows[0].operation_id);
+    });
+  }
+
   recordWorkflowAdmissionRefusal({ taskId, receipt, projectRoot, targetWorkflowStatus,
     expectedRevision = null, expectedWorkflowStatus = null } = {}) {
     if (receipt?.replayed !== false || receipt.status !== "pending"
@@ -3229,6 +3256,7 @@ export class TaskBoardStore {
           WHERE operation_id = ? AND kind = 'workflow' AND phase = 'pending_git'
         `).get(operation);
         if (!transition) throw new Error("Task workflow transition is not pending");
+        assertNoPendingTaskInterruption(database, transition.task_id);
         const current = this.#taskRow(database, transition.task_id);
         const expectedRevision = metadataRecovery?.expectedCurrentRevision ?? transition.expected_task_revision;
         if (metadataRecovery) {
@@ -3544,7 +3572,29 @@ export class TaskBoardStore {
     });
   }
 
-  finalizeCleanupTransition(operationId, { deleteTask = false, receiptEvidence = null } = {}) {
+  resumeConfirmedDeleteTransition(operationId, { taskId, expectedRevision, originalRevision, evidence }) {
+    return this.#withDatabase(database => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const row = database.prepare("SELECT * FROM hub_task_lifecycle_transitions WHERE operation_id = ?").get(operationId);
+        const current = this.#taskRow(database, taskId);
+        if (!row || row.task_id !== taskId || row.kind !== "delete" || !["failed", "cleanup"].includes(row.phase)
+            || Number(row.expected_task_revision) !== originalRevision || Number(current.row_revision) !== expectedRevision
+            || expectedRevision !== originalRevision) throw Error("Original Delete transition/CAS changed");
+        const previous = JSON.parse(row.evidence_json ?? "{}");
+        if (previous.cleanupForward && JSON.stringify(previous.cleanupForward.authority) !== JSON.stringify(evidence.authority)) {
+          throw Error("Original Delete forward evidence changed");
+        }
+        const forward = previous.cleanupForward ?? { authority: evidence.authority,
+          originalFailure: { phase: row.phase, error: row.error_text, updatedAtMs: row.updated_at_ms } };
+        database.prepare("UPDATE hub_task_lifecycle_transitions SET phase = 'cleanup', evidence_json = ?, updated_at_ms = ? WHERE operation_id = ?")
+          .run(JSON.stringify({ ...previous, cleanupForward: forward }), this.now(), operationId);
+        database.exec("COMMIT");
+      } catch (error) { database.exec("ROLLBACK"); throw error; }
+    });
+  }
+
+  finalizeCleanupTransition(operationId, { deleteTask = false, receiptEvidence = null, preserveCompletedTask = false } = {}) {
     const operation = String(operationId ?? "").trim();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
@@ -3569,7 +3619,7 @@ export class TaskBoardStore {
           database.prepare("DELETE FROM hub_board_tasks WHERE id = ? AND row_revision = ?")
             .run(transition.task_id, transition.expected_task_revision);
         } else {
-          const changed = database.prepare(`
+          const changed = preserveCompletedTask && current.status === "done" ? { changes: 1 } : database.prepare(`
             UPDATE hub_board_tasks SET status = 'done', completed_at_ms = ?, updated_at_ms = ?
             WHERE id = ? AND row_revision = ?
           `).run(this.now(), this.now(), transition.task_id, transition.expected_task_revision);

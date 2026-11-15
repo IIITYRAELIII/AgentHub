@@ -7,10 +7,12 @@ import {
 } from "../domain/canonical-user-messages.mjs";
 import {
   createObservedTaskRun,
+  applyObservedResponseAnnotationReferences,
   shouldDeliverObservedCompletion,
   updateObservedResponse,
 } from "../domain/task-runs.mjs";
 import {
+  normalizeTaskExecutionOwner,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
 } from "../domain/task-execution-owner.mjs";
@@ -279,6 +281,7 @@ export class TaskObservationService {
     const previousStage = run.progressStage;
     const responseChanged = updateObservedResponse(run, snapshot?.answer);
     this.providers.call(run.provider, "applyObservedSnapshot", run, snapshot);
+    applyObservedResponseAnnotationReferences(run, snapshot);
     if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt);
     if (Array.isArray(snapshot?.userMessages)) {
       const currentUserMessages = run.userMessages;
@@ -366,6 +369,12 @@ export class TaskObservationService {
       : `Активность ${providerName} неизвестна: новых событий нет.`;
     this.update(run, { ...snapshot, stage });
     if (run.provider === "codex") {
+      if (run.observer !== true
+        && normalizeTaskExecutionOwner(run.executionOwner) === TASK_EXECUTION_OWNERS.HUB) {
+        // Reuse the existing observation cadence and canonical recovery owner.
+        // Unknown snapshots themselves never release a lane or send a prompt.
+        await this.runCoordinator.recoverProviderRun(run, { reconcileOnly: true });
+      }
       return { retained: true };
     }
     await this.finishProgress(run, stage);
@@ -397,6 +406,7 @@ export class TaskObservationService {
       run.progressStage = String(snapshot.stage ?? run.progressStage);
       this.scheduleProgressUpdate(run);
     }
+    applyObservedResponseAnnotationReferences(run, snapshot);
     this.syncTaskRun(run, {
       active: true,
       stage: snapshot.stage,

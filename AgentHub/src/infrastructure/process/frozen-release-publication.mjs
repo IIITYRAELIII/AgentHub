@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "../filesystem/preparation-git-isolation.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -20,7 +21,7 @@ const samePath = (a, b) => process.platform === "win32"
   : canonicalPath(a) === canonicalPath(b);
 
 async function git(args, { cwd }) {
-  const { stdout } = await execute("git", args, {
+  const { stdout } = await execute("git", ownedGitArguments(args), {
     cwd, encoding: "utf8", windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
   });
   return stdout.trim();

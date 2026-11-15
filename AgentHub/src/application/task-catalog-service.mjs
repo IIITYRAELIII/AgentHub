@@ -45,6 +45,8 @@ export class TaskCatalogService {
       .then(() => this.build())
       .then((next) => {
         if (!Array.isArray(next)) throw new TypeError("task catalog builder must return an array");
+        // An invalidated build cannot overwrite a newer acknowledged local change.
+        if (buildInvalidationRevision !== this.#invalidationRevision) return this.#entries;
         // Preserve the array identity used by already constructed controllers.
         this.#entries.splice(0, this.#entries.length, ...next);
         this.#builtInvalidationRevision = buildInvalidationRevision;

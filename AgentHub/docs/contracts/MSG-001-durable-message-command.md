@@ -146,11 +146,14 @@ Same-ID retries retain that outcome, including compact tombstones; later exact
 provider terminal evidence may still reconcile it through the existing owner.
 History and attachment files are not deleted by this expiry operation. See ADR-0071.
 
-A provider rejection received before provider acceptance moves that command to
+A provider rejection received before provider acceptance normally moves that command to
 `attention-required` and releases its FIFO lane only after the rejection is
 durable. A launch with an unknown outcome keeps the lane until exact
 reconciliation or an explicit user decision; it never authorizes automatic
 resubmission or a later same-lane provider effect.
+The exception is a definite stale/not-steerable target refusal for an ordinary
+Stream message: it rejects only that attempt, not the Stream-addressed command.
+The same durable command returns to current-or-queue routing (ADR-0136).
 
 Hub acceptance and provider acceptance are distinct boundaries. A submission
 made from an exact idle client snapshot may have one optimistic conversation
@@ -171,8 +174,15 @@ request fingerprint and cannot change on retry.
 
 Before provider Thread binding, a queued command occupies a provisional lane
 scoped by `streamId`. Once `streamId`, `provider` and `threadId` are known, the
-same command is atomically rekeyed once to that exact lane. Different Threads in
-one Stream are independent lanes; FIFO is preserved inside each exact lane.
+same command is atomically rekeyed to that exact lane. Ordinary Stream-message
+intent may move that binding before confirmed delivery only through the existing
+ledger rekey: same item/client/Stream, persisted captured next target, prior-key,
+state and revision guards, with no accepted/unknown/terminal outcome or manual
+pause. Both serialized start and steer bind before their provider effect and
+recheck settlement, current catalog and pause after awaits. The original intake
+receipt, fingerprint and FIFO order remain unchanged. Legacy exact-target
+commands retain their one-time binding. Different Threads in one Stream are
+independent lanes; FIFO is preserved inside each exact lane.
 
 One queue-to-run orchestrator derives occupancy from exact nonterminal managed
 runs and authoritative provider activity. Completed, failed or cancelled runs do
@@ -181,10 +191,34 @@ persisted wait reason is not authority: it is recalculated from current exact
 occupancy and self-heals after restart without manual interaction. When terminal
 admission is released, every queued lane head
 preempts polling backoff and is scheduled immediately because repository
-occupancy can couple otherwise independent lanes. A steer whose exact run or
-turn is no longer active becomes attention-required with that identity intact;
-it cannot enter the later-turn FIFO unless the user explicitly chooses the
-ordinary queue action.
+occupancy can couple otherwise independent lanes. An ordinary message explicitly
+submitted with `followUpMode=steer` addresses its Stream, not a permanently pinned
+Run/Turn. Before an attempt, a suitable
+current active turn receives it; otherwise it follows normal FIFO launch.
+Definite non-delivery on an ended target re-resolves that same Stream without a
+manual retry/after-turn decision. Ordinary composer Enter, send button, quote and
+quick-send default to queue, as the user reaffirmed on 2026-10-31; a separate
+steer action or saved shortcut chooses current-or-queue delivery. Queue actions
+remain after-turn intake when active and launch normally when idle. Direct
+exact-target service operations retain their original guards.
+
+Provider-internal compaction in an existing exact Hub-owned active turn is not
+an idle-launch reservation. Ordinary steer may reach that same turn without
+waiting for internal compaction to finish. The original expected-turn guard and
+unknown-acceptance readback still apply. Explicit Hub-managed maintenance,
+runtime stopping, missing active turn identity and foreign writer ownership do
+not gain that exception. Both intake and deferred dispatch preserve the existing
+separate managed-maintenance capability through their composition ports.
+Existing per-command diagnostics record scheduled/fired wake times, monotonic
+timer lateness and the early steer barrier outcome/reason, separating waiting
+for a callback from guard evaluation without recording message payloads.
+
+Legacy queued MCP idle intake may restore a lost steer mode only from its exact
+original succeeded operation: stable caller origin, request/item/client/target,
+authenticated content hash and complete canonical arguments hash proving explicit
+`mode=steer`. Explicit queue, omitted mode and missing/foreign/unknown evidence
+retain their prior routing. This is an existing-controller state migration, never
+an MCP replay or revival of a held stale service instruction (ADR-0136).
 
 An attention-required lane head created by `task-running` or
 `activity-unknown` is rechecked against current exact occupancy. Once the
@@ -199,8 +233,12 @@ effect.
 An exact Codex `task_started` without a terminal remains uncertain too, even
 when an idle/interrupt projection or elapsed grace hides it from the active
 display. The original managed run continues to own admission until exact
-terminal evidence or the current recovery interruption proven by TURN-001 and
-ADR-0125. That canonical terminal wakes the same queued command, with no resend
+terminal evidence, the current recovery interruption proven by TURN-001 and
+ADR-0125, or the local-only reboot disposition in ADR-HUB-392. The latter keeps
+the exact provider outcome UNKNOWN and accepted input unchanged; it releases only
+the proven old Hub execution after durable lifecycle recording. New input still
+passes fresh external/current activity checks. No PID, elapsed-time or idle
+projection alone proves old local execution loss. A canonical terminal wakes the same queued command, with no resend
 or identity replacement. A separate maintenance barrier is shown in the queue as
 the concrete `context-maintenance` wait reason. When a deferred command starts,
 its receipt clears the stale wait
@@ -241,6 +279,24 @@ eligibility has been claimed. A transient persistence failure rolls an
 attention-required transition back to the same pending object; timer-owned
 processing records a payload-free error and retries that exact owner with
 bounded backoff instead of leaking an unhandled rejection.
+An explicit cancel of an already read item must persist its exact command's
+future-Hub-dispatch fence before receipt projection or attachment cleanup.
+The existing command ledger compares deferred identity, active state and revision;
+dispatching/unknown provider acceptance, changed identity or a failed write refuses
+and retains the item. Local retirement alone never grants cancellation authority.
+After the actual controller releases processing, normal cancellation may commit
+`cancelled` with `cancellationScope=future-hub-dispatch` and past
+`providerEffectOutcome=unknown`; it does not claim a past provider no-effect.
+Cold reopen cannot resurrect that canonical command. Legacy items without a
+command row retain the existing snapshot persistence owner until ledger migration
+owns them; a canonical refusal never falls back to deleting a snapshot projection.
+An absent RAM projection does not retire a canonical queued command. The public
+cancel action resolves its exact deferred ID and, when supplied, its original
+client message ID through the same ledger. Ambiguous legacy IDs refuse. The same
+state, provider-acceptance and revision guards apply before any projection or
+attachment cleanup. An already cancelled exact command returns its durable
+outcome without repeating cleanup. Terminal compaction retains the identity and
+future-dispatch cancellation boundary. See ADR-HUB-422-addressed-queue-receipts.
 Persisted queue errors contain only an allowlisted code and bounded generic
 message. Dependency output, command lines, session identifiers, payload and
 stack text never enter deferred diagnostics or client state.
@@ -249,6 +305,20 @@ An explicitly user-paused command remains durable but does not own the runnable
 lane head. Later accepted commands in that exact lane may dispatch in their
 relative FIFO order. Provider-occupancy pauses remain transient lane heads and
 are rechecked until the exact writer clears.
+
+Positive normalized `executionOwner=hub` evidence (including the existing
+legacy owner alias) identifies a Hub-owned run even during observed recovery;
+registration or `observer` alone does not prove ownership. Registered external
+owners keep external wait semantics; missing/unrecognized ownership or unknown
+external activity remains unavailable rather than acquiring managed authority.
+An exact Hub-managed active run reports `task-running`, or
+`managed-run-activity-unknown` when its activity is uncertain, rather than
+claiming an external writer. Ordinary queue input stays runnable waiting for
+that run's canonical terminal. The existing controller reclassifies a legacy
+automatic `provider-thread-active` pause only after observing that managed run,
+persists the same command as queued and retains normal wake/backoff. Explicit
+manual pause, actual external ownership and unknown provider acceptance retain
+their separate fences; an unsuccessful save restores the prior automatic wait.
 
 The queue action `Изменить` is an ownership transfer, not an in-place text
 rewrite. The server first durably reserves the exact non-dispatching item and
@@ -271,31 +341,36 @@ For a nonterminal Hub-owned managed run, its exact registered `run.turnId` is
 the primary steer identity. A lagging or temporarily incomplete Thread
 projection must not suppress the `turn/steer` attempt. Thread projection is
 consulted only when no exact managed identity exists or when the provider
-rejects that identity as stale. A real provider rejection moves the durable
-command to visible attention-required state without changing its exact steer
-identity.
+rejects that identity as stale. For an ordinary Stream message, that rejection
+returns the same command to current-or-queue delivery without changing its ID,
+origin, payload, attachments or order.
 
 Provider `turn/steer` is the authority for whether one exact nonterminal managed
 turn remains steerable. Local response projection, including an observed Codex
 `agentMessage` with `phase="final_answer"`, does not veto admission or dispatch:
 the same provider turn may still accept steering after that marker. Admission
 first persists one durable `message-steer` item under its original
-`clientUserMessageId`, exact run ID and exact turn ID, then dispatch attempts the
-provider RPC once. Provider-internal compaction of that same ordinary turn does
-not downgrade admission to generic later-turn intake: the exact steer remains
-durable until the compaction barrier clears, then dispatches against its original
-run and turn. A Hub-owned compaction, rotation or restart reservation remains an
-admission barrier: the exact steer identity remains durable while its dispatcher
-waits. Exact run/turn movement before dispatch and a definite provider
-stale/not-steerable rejection have no provider effect, so the same durable item
-becomes visible attention-required state with its command, origin, attachments
-and exact steer identity intact. The lane is released, but the item cannot start
-a later turn automatically. An explicit `retry` keeps the exact steer identity;
-only the explicit ordinary queue action authorizes conversion to later-turn
-intake. Timeout or an unknown provider outcome enters bounded receipt/provider
-reconciliation, keeps the lane fail-closed and is never blindly replayed. Local
-text, phase, elapsed time and rendered state are observations, never steer
-authority.
+`clientUserMessageId`. The current catalog binding and managed Run/Turn select
+one attempt; its bounded `deliveryTarget` and expected Turn are durable before
+provider RPC. The intake/receipt identity remains separate from that attempt.
+Provider-internal compaction preserves the command and, if that ordinary turn
+remains active, delivery resumes to it after the barrier. Hub-owned maintenance
+and actual stopping retain their admission fences. If the old turn ends before
+delivery, a new active turn of that same Stream may receive the command; without
+one, normal queued launch applies. A definite rejected still-active target is
+not repeatedly steered: the ordinary occupancy wake/backoff waits for a changed
+target or idle launch. No spin or new retry owner is introduced.
+
+Unknown provider acceptance keeps the exact attempted provider/Thread binding
+and reconciles it before any new effect. A failed read or elapsed bound cannot
+prove non-delivery. Canonical accepted/cancelled receipts win even after fallback
+was queued; serialized dispatch and queued admission recheck them before the
+provider effect. Startup/wake may restore old known-not-delivered human entries
+to this route, preserving ID, attachments and order. Explicit pause, cancellation
+and expiry remain authoritative. Legacy held service instructions are not
+automatically revived. Their exact accepted receipts may retire ghosts. See
+ADR-0136 for the bounded migration and its removal condition. Local text, phase,
+elapsed time and rendered state remain observations, never delivery authority.
 
 For an inter-Stream command, the envelope `requestId` deterministically restores
 the `mcp:<requestId>` command alias when a provider rollout omits
@@ -345,6 +420,13 @@ work-log storage retain the raw root prompt and its separately bounded
 ## Remote attachment transport
 
 The shared Dashboard bot's queue notice confirms remote queue admission only.
+The existing paired Hub service signature also permits bounded read-only
+`POST /api/dashboard-bot/inspect`: one exact UUID, or pages of twenty retained
+records filtered by a creation interval of at most twenty-four hours. It exposes
+only original command/bundle/item/attachment identities, scalar state/times and
+receipt-delivery state. It never claims, cleans up, migrates registration,
+renews a lease/expiry, publishes a result or sends a notification. Missing state,
+unavailable inspection and a delivery timeout are distinct observations.
 Its accepted/failed notice follows the local Hub's durable command result. The
 same remote control command owns the pending Telegram receipt and its delivery
 state; an indexed alarm only addresses that record. Committing a terminal result
@@ -375,6 +457,16 @@ the local file visible to the command handler.
 Transport timeout or an incomplete chunk leaves the durable command available
 for a later poll with the same command and attachment identities. The client
 does not create an immediate retry loop to make a stalled body appear reliable.
+Known allowlisted transport codes in an existing error cause remain retryable
+without relying on English error text. A sibling's failure cannot delete
+already finalized command-owned files, including files whose intake result
+reply was lost. A later same-ID poll first revalidates the complete remote
+manifest, then verifies the existing local file's exact size, final SHA-256 and
+image type before skipping its chunk bodies. A different command never borrows
+those paths; mismatched local bytes fail closed without overwrite. This reuses
+the existing final file and its attachment/history lifetime, not a second cache
+or a new expiry owner. Private partial cleanup and canonical intake idempotency
+remain unchanged. See ADR-HUB330-relay-finalized-retry.
 
 A rejected Dashboard poll cannot leave its command workers running into the
 next attempt. The first failure stops assignment in both text and attachment

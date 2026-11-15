@@ -446,26 +446,59 @@ export class ProviderCancellationService {
     const identity = { threadId: run.threadId, turnId: run.turnId };
     const current = () => this.#d.runForTask(run) === run
       && run.threadId === identity.threadId && run.turnId === identity.turnId;
+    let attempted = false;
     const pending = (async () => {
       if (run.observer || !identity.turnId || !current()) return false;
       try {
-        const activity = await this.#d.taskExternalActivity(run, { forceFresh: true });
+        const activity = await this.#recoveryStep(run, "recovery-activity-before",
+          () => this.#d.taskExternalActivity(run, { forceFresh: true }));
         if (activity.state !== "inactive" || !current()) return false;
         try {
-          await this.#d.interruptCodex(run);
+          attempted = true;
+          await this.#recoveryStep(run, "recovery-interrupt", () => this.#d.interruptCodex(run));
           // An accepted interrupt still needs its exact terminal event.
           return false;
         } catch (error) {
           if (!activeTurnMissing(error) || !current()) return false;
+          // A definite rejection is a non-effect. A later observation may retry
+          // the unchanged original if its snapshot/persistence is unavailable.
+          attempted = false;
         }
         return await this.#reconcileInactiveCodexRun(run, { identity });
       } catch (error) {
         this.#d.logError?.(`Cannot recover inactive Codex task ${identity.threadId}:`, error.message);
         return false;
       }
-    })();
+    })().finally(() => {
+      // UNKNOWN/live prechecks must not cache a settled false forever. Retain
+      // an accepted/ambiguous interrupt fence: ACK is not terminal, and polling
+      // cannot repeat that external effect.
+      if (!attempted && this.#recoveryAttempts.get(run) === pending) this.#recoveryAttempts.delete(run);
+    });
     this.#recoveryAttempts.set(run, pending);
     return pending;
+  }
+
+  async #recoveryStep(run, stage, operation) {
+    let span;
+    try {
+      span = this.#d.commandTrace?.startBestEffortSpan?.({
+        commandId: String(run.clientUserMessageId ?? ""), stage,
+        transport: "codex-app-server", recordStarted: true,
+        metadata: { provider: "codex", runId: run.id, threadId: run.threadId, turnId: run.turnId },
+      });
+    } catch { /* Diagnostics never grant or revoke recovery authority. */ }
+    const finish = (outcome, state) => {
+      try { span?.finish({ outcome, metadata: state ? { state } : {} }); } catch { /* Best effort. */ }
+    };
+    try {
+      const result = await operation();
+      finish("succeeded", ["active", "inactive", "unknown"].includes(result?.state) ? result.state : null);
+      return result;
+    } catch (error) {
+      finish("failed");
+      throw error;
+    }
   }
 
   async cancelClaude(run) {
@@ -523,7 +556,8 @@ export class ProviderCancellationService {
       if (!current()) return !identity;
       if (snapshot && snapshot.turnId === run.turnId) {
         if (identity) {
-          const activity = await d.taskExternalActivity(run, { forceFresh: true });
+          const activity = await this.#recoveryStep(run, "recovery-activity-after",
+            () => d.taskExternalActivity(run, { forceFresh: true }));
           if (activity.state !== "inactive" || !current()) return false;
         }
         const terminal = {

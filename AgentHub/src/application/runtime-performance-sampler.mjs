@@ -1,3 +1,4 @@
+import { scheduleRuntimeWorkerMemory, RUNTIME_WORKER_MEMORY_OWNERS, RUNTIME_WORKER_MEMORY_METRICS } from "./runtime-worker-memory.mjs";
 import { createRuntimeCpuSample } from "./runtime-cpu-sample.mjs";
 
 // Publish existing health counters into the common trace owner; no second
@@ -26,7 +27,21 @@ export function createRuntimePerformanceSampler({ trace, readHealth, instanceId,
       trace.recordBestEffort({ commandId: `runtime:${instanceId}`, stage: "runtime-health",
         transport: "runtime", outcome: "succeeded", metadata: { metrics, sampleIntervalMs: intervalMs } });
       void cpuSample.start(diagnostics.process)?.catch?.(() => {});
+      // Reuse the existing sampler/trace stage; no timer or new profiler.
+      // Separate bounded frames preserve the original 64-metric frame intact.
+      for (const owner of RUNTIME_WORKER_MEMORY_OWNERS) {
+        const view = diagnostics.workerMemory?.[owner];
+        if (!view) continue;
+        const workerMetrics = {};
+        for (const key of RUNTIME_WORKER_MEMORY_METRICS) {
+          const value = view[key];
+          if (typeof value === "number" && Number.isFinite(value)) workerMetrics[`workers.${owner}.${key}`] = value;
+        }
+        trace.recordBestEffort({ commandId: `runtime:${instanceId}`, stage: "runtime-health",
+          transport: "runtime", outcome: "succeeded", metadata: { metrics: workerMetrics, sampleIntervalMs: intervalMs } });
+      }
     } catch { /* Diagnostics cannot fail application work. */ }
+    finally { void scheduleRuntimeWorkerMemory()?.catch(() => {}); }
   }
   return { start() { if (!timer) { timer = setIntervalImpl(sample, intervalMs); timer.unref?.(); } },
     stop() { if (timer) clearIntervalImpl(timer); timer = null; return cpuSample.stop(); }, sample };

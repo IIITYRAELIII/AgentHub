@@ -1,3 +1,4 @@
+import { ownedGitArguments } from "../filesystem/preparation-git-isolation.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
@@ -30,7 +31,7 @@ async function json(file) {
 }
 
 async function gitTree(repositoryRoot, commit) {
-  const { stdout } = await execute("git", ["rev-parse", `${commit}^{tree}`], {
+  const { stdout } = await execute("git", ownedGitArguments(["rev-parse", `${commit}^{tree}`]), {
     cwd: repositoryRoot,
     encoding: "utf8",
     windowsHide: true,

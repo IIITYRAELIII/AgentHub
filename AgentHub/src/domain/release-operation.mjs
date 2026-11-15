@@ -2,7 +2,8 @@ import { normalizeTestSelection, verifyTestPlan } from "./test-selection.mjs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { selectedCompositionFields } from "./task-selected-composition.mjs";
-import { normalizedNativeResolution } from "./native-resolution-input.mjs";
+import { semanticVersion } from "./agent-hub-version.mjs";
+import { normalizedRuntimeInstallation, PUBLIC_RUNTIME_INSTALLATION } from "./public-runtime-installation.mjs";
 
 
 export const RELEASE_OPERATION_STATES = Object.freeze({
@@ -78,6 +79,11 @@ function normalizedTargets(value) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       throw new TypeError("approved target must be an object");
     }
+    const retainedReview = entry.nativeResolutionReview;
+    if (retainedReview != null && (typeof retainedReview !== "object"
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(retainedReview)))) {
+      throw new TypeError("Invalid exact native resolution bundle");
+    }
     return {
       targetId: requiredText(entry.targetId ?? entry.id, "approved target id"),
       kind: requiredText(entry.kind, "approved target kind"),
@@ -87,8 +93,10 @@ function normalizedTargets(value) {
         ? { approvedLocalMainCommit: optionalText(entry.approvedLocalMainCommit) } : {}),
       ...(optionalText(entry.approvedOriginMainCommit)
         ? { approvedOriginMainCommit: optionalText(entry.approvedOriginMainCommit) } : {}),
+      // Preserve immutable historical authorization bytes, without treating
+      // their obsolete native-review field as an execution capability.
       ...(entry.nativeResolutionReview != null
-        ? { nativeResolutionReview: normalizedNativeResolution(entry.nativeResolutionReview) } : {}),
+        ? { nativeResolutionReview: structuredClone(entry.nativeResolutionReview) } : {}),
     };
   }).sort((left, right) => left.targetId.localeCompare(right.targetId));
   if (!targets.length) throw new TypeError("approvedTargets requires at least one target");
@@ -96,6 +104,12 @@ function normalizedTargets(value) {
     throw new TypeError("approved target ids must be unique");
   }
   return targets;
+}
+
+export function normalizeReleaseVersion(value) {
+  const version = semanticVersion(value);
+  if (version.prerelease.length || version.metadata) throw new TypeError("Release version must be a complete X.Y.Z public version");
+  return value;
 }
 
 export function normalizedReleaseMetadata(value) {
@@ -114,13 +128,29 @@ export function normalizedReleaseMetadata(value) {
   return { sourcePath, byteLength, rawSha256, canonicalSha256 };
 }
 
+export function normalizeReleaseTaskScope(value) {
+  if (value !== "all_await") throw new TypeError("taskScope must be all_await");
+  return value;
+}
+
+export function effectiveReleaseTaskScope(operation) {
+  for (const amendment of [...(operation.testSelectionAmendments ?? [])].reverse()) {
+    if (amendment.taskScope != null) return amendment.taskScope;
+  }
+  return operation.authorization.taskScope ?? null;
+}
+
 function normalizedAuthorization(value = {}) {
+  const approvedTargets = normalizedTargets(value.approvedTargets);
   const authorization = {
     taskIds: uniqueTextList(value.taskIds, "authorization taskIds"),
-    approvedTargets: normalizedTargets(value.approvedTargets),
+    ...(value.taskScope == null ? {} : { taskScope: normalizeReleaseTaskScope(value.taskScope) }),
+    approvedTargets,
     validationMode: requiredText(value.validationMode, "validationMode"),
     ...(value.testSelection != null ? { testSelection: normalizeTestSelection(value.testSelection) } : {}),
     ...(value.releaseMetadata ? { releaseMetadata: normalizedReleaseMetadata(value.releaseMetadata) } : {}),
+    ...(value.releaseVersion !== undefined ? { releaseVersion: normalizeReleaseVersion(value.releaseVersion) } : {}),
+    ...normalizedRuntimeInstallation(value.runtimeInstallation, approvedTargets),
   };
   return { ...authorization, fingerprint: releaseIdentitySha256(authorization) };
 }
@@ -224,6 +254,123 @@ export function failedComposeRecoveryEligible(operation) {
     && operation.currentGeneration > 0 && operation.lastError?.step === "compose";
 }
 
+export function failedFirstComposeRecovery({ operation, receipts = [], generations = [] }) {
+  if (operation?.state !== "failed" || operation.owner != null || operation.currentGeneration !== 0
+      || operation.lastError?.step !== "compose" || operation.selectedResults.length
+      || Object.keys(operation.publicationEffects).length || generations.length || !receipts.length) return null;
+  const inputSha256 = releaseIdentitySha256(releaseCompositionInput(operation));
+  const ordered = [...receipts].sort((left, right) => left.attempt - right.attempt);
+  if (ordered.some((receipt, index) => receipt.operationId !== operation.operationId
+      || receipt.stepId !== "compose" || receipt.generation !== 1 || receipt.attempt !== index + 1
+      || receipt.status !== "failed" || receipt.effect != null || !receipt.error
+      || receipt.inputSha256 !== inputSha256 || releaseIdentitySha256(receipt.input) !== inputSha256)
+      || ordered.at(-1).error !== operation.lastError.message) return null;
+  return { generation: 1, attempt: ordered.at(-1).attempt, inputSha256,
+    receiptSha256: releaseIdentitySha256(ordered.at(-1)) };
+}
+
+function normalizedFirstComposeRecovery(value, operation) {
+  const { identitySha256, ...contents } = value;
+  if (identitySha256 !== releaseIdentitySha256(contents) || !contents.requestId
+      || contents.operationId !== operation.operationId || contents.priorGeneration !== 0
+      || !Number.isSafeInteger(contents.priorRevision) || contents.priorRevision < 1
+      || contents.authorizationFingerprint !== operation.authorization.fingerprint
+      || contents.inputSha256 !== releaseIdentitySha256(contents.input)
+      || contents.input?.priorGeneration !== 0
+      || releaseIdentitySha256(contents.input?.authorization) !== releaseIdentitySha256(operation.authorization)
+      || !/^[a-f0-9]{64}$/u.test(contents.receiptSha256 ?? "")
+      || !Number.isSafeInteger(contents.attempt) || contents.attempt < 1
+      || !Array.isArray(contents.candidates) || !contents.candidates.length) {
+    throw new Error("First compose recovery does not bind its original frozen input");
+  }
+  return structuredClone(value);
+}
+
+// Reserve a fresh generation only from positive terminal compose receipts. The
+// amendment captures this proof; old partial directories and receipts stay put.
+export function failedCompositionRecovery({ operation, receipts = [], generations = [] }) {
+  if (!operation || operation.owner != null || !["failed", "waiting"].includes(operation.state)
+      || operation.currentGeneration < 1 || operation.lastError?.step !== "compose") return null;
+  const tail = receipts.filter(item => item.stepId === "compose" && item.generation > operation.currentGeneration)
+    .sort((a, b) => a.generation - b.generation || a.attempt - b.attempt);
+  if (!tail.length || tail.at(-1).error !== operation.lastError.message) return null;
+  const numbers = [...new Set(tail.map(item => item.generation))];
+  if (numbers.some((number, index) => number !== operation.currentGeneration + index + 1)
+      || generations.some(item => item.generation > operation.currentGeneration)) return null;
+  if (tail.some(item => item.operationId !== operation.operationId || item.status !== "failed"
+      || !Number.isSafeInteger(item.attempt) || item.attempt < 1 || !item.error
+      || item.effect != null && item.effect.status !== "not_applied"
+      || item.input?.priorGeneration !== operation.currentGeneration
+      || releaseIdentitySha256(item.input?.authorization) !== releaseIdentitySha256(operation.authorization)
+      || releaseIdentitySha256(item.input) !== item.inputSha256)) return null;
+  return { priorGeneration: operation.currentGeneration, nextGeneration: numbers.at(-1) + 1,
+    receipts: tail.map(item => ({ generation: item.generation, attempt: item.attempt,
+      receiptSha256: releaseIdentitySha256(item) })) };
+}
+
+export function releaseCompositionInput(operation) {
+  return {
+    authorization: operation.authorization,
+    ...(operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
+    priorGeneration: operation.currentGeneration,
+    ...(effectiveTestSelection(operation) ? { testSelection: effectiveTestSelection(operation), amendment: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
+    ...(operation.reviewedMain ? { reviewedMain: operation.reviewedMain.identitySha256 } : {}),
+  };
+}
+
+// A failed later freeze must not strand the SAME already prepared allocation.
+// Only the exact original generation and unchanged effective inputs qualify.
+export function retainedGenerationRecovery({ operation, receipts = [], generations = [] }) {
+  const failed = failedCompositionRecovery({ operation, receipts, generations });
+  if (!failed || operation.state !== "failed"
+      || operation.lastError?.message !== "Original frozen runtime version is no longer available"
+      || effectiveReleaseTaskScope(operation) !== "all_await"
+      || releaseIdentitySha256(effectiveTestSelection(operation)) !== releaseIdentitySha256({ mode: "none", ids: [] })) return null;
+  const generation = generations.find(item => item.generation === operation.currentGeneration);
+  if (!generation || generation.operationId !== operation.operationId) return null;
+  const { identitySha256, ...contents } = generation;
+  if (releaseIdentitySha256(contents) !== identitySha256
+      || releaseIdentitySha256(generation.selectedResults) !== releaseIdentitySha256(operation.selectedResults)
+      || releaseIdentitySha256(generation.authorizedTaskIds ?? null) !== releaseIdentitySha256(effectiveReleaseTaskIds(operation))) return null;
+  const amendmentIndex = operation.testSelectionAmendments?.findIndex(item => item.identitySha256 === generation.testSelectionAmendmentId) ?? -1;
+  if (amendmentIndex < 0) return null;
+  if (!generation.testPlans?.length || generation.testPlans.some(item => item.plan.selection.mode !== "none")
+      || generation.candidates.some(candidate => candidate.manifest?.publication?.releaseVersion !== operation.authorization.releaseVersion
+        || candidate.manifest.publication.changelogContentHash !== effectiveReleaseMetadata(operation)?.rawSha256)) return null;
+  const frozenInput = { ...operation, testSelectionAmendments: operation.testSelectionAmendments.slice(0, amendmentIndex + 1) };
+  if (releaseIdentitySha256(effectiveReleaseMetadata(frozenInput)) !== releaseIdentitySha256(effectiveReleaseMetadata(operation))
+      || releaseIdentitySha256(effectiveTestSelection(frozenInput)) !== releaseIdentitySha256(effectiveTestSelection(operation))
+      || releaseIdentitySha256(effectiveReleaseTaskIds(frozenInput)) !== releaseIdentitySha256(effectiveReleaseTaskIds(operation))) return null;
+  const latest = step => receipts.filter(item => item.generation === generation.generation && item.stepId === step)
+    .sort((a, b) => a.attempt - b.attempt).at(-1);
+  if (latest("compose")?.status !== "applied" || latest("compose").effect?.identitySha256 !== identitySha256
+      || releaseIdentitySha256(latest("compose").input?.authorization ?? null) !== releaseIdentitySha256(operation.authorization)
+      || latest("compose").input?.amendment !== generation.testSelectionAmendmentId
+      || latest("compose").input?.priorGeneration !== generation.supersedesGeneration
+      || latest("validate")?.status !== "applied" || latest("validate").input?.candidate !== identitySha256
+      || releaseApprovedTargets(operation).some(target => {
+        const receipt = latest(`publish:${target.targetId}`);
+        return receipt?.status !== "failed" || receipt.effect?.status !== "not_applied"
+          || receipt.input?.candidate !== identitySha256 || releaseIdentitySha256(receipt.input?.target ?? null) !== releaseIdentitySha256(target);
+      })) return null;
+  return { generation: generation.generation, candidate: identitySha256, failedComposition: failed,
+    receiptsSha256: releaseIdentitySha256(receipts), inputSha256: releaseIdentitySha256(releaseCompositionInput(operation)) };
+}
+
+function normalizedRetainedGenerationRecovery(value, operation) {
+  const { identitySha256, ...contents } = value ?? {};
+  if (!contents.requestId || contents.operationId !== operation.operationId
+      || contents.authorizationFingerprint !== operation.authorization.fingerprint
+      || !Number.isSafeInteger(contents.priorRevision) || contents.priorRevision < 1
+      || contents.generation !== operation.currentGeneration
+      || !contents.boundary || !Array.isArray(contents.evidence)
+      || !Array.isArray(contents.readbacks) || contents.readbacks.length !== releaseApprovedTargets(operation).length
+      || releaseApprovedTargets(operation).some(target => contents.readbacks.filter(item => item.targetId === target.targetId
+        && item.generation === contents.generation && item.evidence?.status === "not_applied").length !== 1)
+      || releaseIdentitySha256(contents) !== identitySha256) throw new Error("Invalid retained generation recovery");
+  return structuredClone(value);
+}
+
 function normalizedReviewedMain(value, operation) {
   if (value == null) return null;
   const { identitySha256, ...contents } = value;
@@ -247,12 +394,16 @@ function normalizedReviewedMain(value, operation) {
 }
 
 export function releaseApprovedTargets(operation) {
-  return operation.authorization.approvedTargets.map(target => {
+  const targets = operation.authorization.approvedTargets.map(target => {
     const approval = operation.reviewedMain?.approvedRepositories.find(entry =>
       repositoryKey(entry.projectRoot) === repositoryKey(target.repositoryRoot));
     return approval ? { ...target, approvedLocalMainCommit: approval.approvedLocalMainCommit,
       approvedOriginMainCommit: approval.approvedOriginMainCommit } : target;
   });
+  return operation.authorization.runtimeInstallation === PUBLIC_RUNTIME_INSTALLATION
+    ? [...targets.filter(target => target.environment === "github-release"),
+      ...targets.filter(target => target.environment !== "github-release")]
+    : targets;
 }
 
 export function createReleaseOperation({
@@ -279,6 +430,8 @@ export function createReleaseOperation({
   migration = null,
   reviewedMain = null,
   testSelectionAmendments = [],
+  firstComposeRecovery = null,
+  retainedGenerationRecoveries = [],
 } = {}) {
   const normalizedState = requiredText(state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(normalizedState)) {
@@ -315,6 +468,8 @@ export function createReleaseOperation({
   };
   if (testSelectionAmendments.length) operation.testSelectionAmendments = testSelectionAmendments.map(item => normalizeTestSelectionAmendment(item, operation));
   if (reviewedMain != null) operation.reviewedMain = normalizedReviewedMain(reviewedMain, operation);
+  if (firstComposeRecovery != null) operation.firstComposeRecovery = normalizedFirstComposeRecovery(firstComposeRecovery, operation);
+  if (retainedGenerationRecoveries.length) operation.retainedGenerationRecoveries = retainedGenerationRecoveries.map(item => normalizedRetainedGenerationRecovery(item, { ...operation, currentGeneration: item.generation }));
   if (releaseOperationIsTerminal(operation)) operation.completedAt = operation.updatedAt;
   return operation;
 }
@@ -323,6 +478,7 @@ export function restoreReleaseOperation(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   try {
     const operation = createReleaseOperation(value);
+    if (value.authorization?.fingerprint !== operation.authorization.fingerprint) return null;
     const revision = Number(value.revision);
     if (!Number.isSafeInteger(revision) || revision < 1) return null;
     operation.revision = revision;
@@ -340,11 +496,28 @@ export function transitionReleaseOperation(current, patch = {}, {
   updatedAt = new Date().toISOString(),
   reviewedMainRecovery = null,
   testSelectionAmendment = null,
+  firstComposeRecovery = null,
+  retainedRecovery = null,
 } = {}) {
   const operation = restoreReleaseOperation(current);
   if (!operation) throw new TypeError("valid current release operation is required");
   if (expectedRevision !== operation.revision) return { operation, applied: false, reason: "stale-revision" };
   const recovery = reviewedMainRecovery == null ? null : normalizedReviewedMain(reviewedMainRecovery, operation);
+  const firstRecovery = firstComposeRecovery == null ? null : normalizedFirstComposeRecovery(firstComposeRecovery, operation);
+  const retained = retainedRecovery == null ? null : normalizedRetainedGenerationRecovery(retainedRecovery, operation);
+  if (retained && (operation.state !== "failed" || operation.owner != null || operation.lastError?.step !== "compose"
+      || retained.priorRevision !== operation.revision || patch.state !== "publish"
+      || patch.currentGeneration !== undefined || patch.selectedResults !== undefined
+      || releaseIdentitySha256(retained.priorFailure) !== releaseIdentitySha256({ completedAt: operation.completedAt, error: operation.lastError }))) {
+    throw new Error("Retained generation recovery changed its failed boundary");
+  }
+  if (firstRecovery && (operation.state !== "failed" || operation.owner != null || operation.currentGeneration !== 0
+      || operation.lastError?.step !== "compose" || patch.state !== "compose"
+      || firstRecovery.priorRevision !== operation.revision
+      || firstRecovery.inputSha256 !== releaseIdentitySha256(releaseCompositionInput(operation))
+      || releaseIdentitySha256(firstRecovery.priorFailure) !== releaseIdentitySha256({ completedAt: operation.completedAt, error: operation.lastError }))) {
+    throw new Error("First compose recovery changed its original failed boundary");
+  }
   if (recovery && (!failedComposeRecoveryEligible(operation) || recovery.priorRevision !== operation.revision
       || recovery.priorGeneration !== operation.currentGeneration
       || releaseIdentitySha256(recovery.priorFailure) !== releaseIdentitySha256({ completedAt: operation.completedAt, error: operation.lastError })
@@ -356,7 +529,9 @@ export function transitionReleaseOperation(current, patch = {}, {
       || releaseIdentitySha256(amendment.priorWaitReason) !== releaseIdentitySha256(operation.waitReason)
       || amendment.priorResumeState !== operation.resumeState || releaseIdentitySha256(amendment.priorFailure) !== releaseIdentitySha256({ state: operation.state, completedAt: operation.completedAt, error: operation.lastError }))) throw new Error("Test selection amendment changed its original boundary");
   if (patch.testSelectionAmendments !== undefined) throw new Error("testSelectionAmendments requires its amendment boundary");
-  if (releaseOperationIsTerminal(operation) && !recovery && !amendment) return { operation, applied: false, reason: "terminal" };
+  if (patch.firstComposeRecovery !== undefined) throw new Error("firstComposeRecovery requires its recovery boundary");
+  if (patch.retainedGenerationRecoveries !== undefined) throw new Error("retainedGenerationRecoveries requires its recovery boundary");
+  if (releaseOperationIsTerminal(operation) && !recovery && !amendment && !firstRecovery && !retained) return { operation, applied: false, reason: "terminal" };
   if (patch.reviewedMain !== undefined) throw new Error("reviewedMain requires its recovery boundary");
   for (const name of ["operationId", "requestId", "workspaceId", "streamId", "threadId", "authorization", "runnerVersion"]) {
     if (patch[name] !== undefined && releaseIdentitySha256(patch[name]) !== releaseIdentitySha256(operation[name])) {
@@ -365,7 +540,7 @@ export function transitionReleaseOperation(current, patch = {}, {
   }
   const state = requiredText(patch.state ?? operation.state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(state)) throw new TypeError(`unsupported release operation state: ${state}`);
-  if (state !== operation.state && !recovery && !amendment && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
+  if (state !== operation.state && !recovery && !amendment && !firstRecovery && !retained && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
     return { operation, applied: false, reason: "invalid-transition" };
   }
   const next = {
@@ -386,6 +561,8 @@ export function transitionReleaseOperation(current, patch = {}, {
     revision: operation.revision + 1,
     updatedAt: timestamp(updatedAt),
     ...(recovery ? { reviewedMain: recovery, completedAt: null } : {}),
+    ...(firstRecovery ? { firstComposeRecovery: firstRecovery, completedAt: null } : {}),
+    ...(retained ? { retainedGenerationRecoveries: [...(operation.retainedGenerationRecoveries ?? []), retained], completedAt: null } : {}),
     ...(amendment ? { testSelectionAmendments: [...(operation.testSelectionAmendments ?? []), amendment], completedAt: null } : {}),
   };
   if (state !== RELEASE_OPERATION_STATES.WAITING) {
@@ -406,6 +583,30 @@ function normalizedRepositoryBase(value) {
     repositoryRoot: requiredText(value?.repositoryRoot, "repository base root"),
     baseCommit: requiredText(value?.baseCommit, "repository base commit"),
   };
+}
+
+// The release owner and retrospective readers share the same completed-generation
+// proof. This is read-only evidence, never permission to replay publication.
+export function completedReleaseGenerationEvidence({ operation, generation, validation, finalization } = {}) {
+  const number = generation?.generation;
+  if (operation?.state !== "done" || !operation.completedAt || operation.currentGeneration !== number
+      || generation?.operationId !== operation.operationId || generation.candidates?.length > 32) return null;
+  const { identitySha256, ...contents } = generation;
+  if (releaseIdentitySha256(contents) !== identitySha256) return null;
+  const effects = operation.publicationEffects;
+  if (effects?.generation !== number || effects.publishStarted?.candidate !== identitySha256
+      || !operation.authorization.approvedTargets.every(target =>
+        ["applied", "already_applied"].includes(effects.targets?.[target.targetId]?.status))) return null;
+  for (const receipt of [validation, finalization]) {
+    if (receipt?.status !== "applied" || receipt.operationId !== operation.operationId || receipt.generation !== number
+        || receipt.input?.candidate !== identitySha256 || releaseIdentitySha256(receipt.input) !== receipt.inputSha256) return null;
+  }
+  if (releaseIdentitySha256(finalization.input.effects) !== releaseIdentitySha256(effects)
+      || releaseIdentitySha256(finalization.input.selectedResults) !== releaseIdentitySha256(generation.selectedResults)) return null;
+  return { operationId: operation.operationId, generation: number, operationRevision: operation.revision,
+    completedAt: operation.completedAt, identitySha256,
+    candidates: generation.candidates.map(({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash }) =>
+      ({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash })) };
 }
 
 function normalizedCandidate(value) {
@@ -478,6 +679,7 @@ export function normalizeTestSelectionAmendment(value, operation) {
       || !Number.isSafeInteger(contents.priorGeneration) || contents.priorGeneration < 1
       || contents.authorizationFingerprint !== operation.authorization.fingerprint
       || releaseIdentitySha256(contents) !== identitySha256
+      || contents.taskScope != null && normalizeReleaseTaskScope(contents.taskScope) !== contents.taskScope
       || contents.selection != null && releaseIdentitySha256(normalizeTestSelection(contents.selection)) !== releaseIdentitySha256(contents.selection)
       || releaseIdentitySha256(normalizeReleaseTaskIds(contents.taskIds)) !== releaseIdentitySha256(contents.taskIds)
       || contents.taskSelection != null && JSON.stringify([...new Set(contents.taskSelection.map(item => item.taskId))].sort()) !== JSON.stringify(contents.taskIds)
@@ -510,6 +712,11 @@ export function normalizeReleaseTaskIds(value) {
 }
 
 export function effectiveReleaseTaskIds(operation) {
+  const amendment = operation.testSelectionAmendments?.at(-1);
+  if (effectiveReleaseTaskScope(operation) === "all_await" && operation.selectedResults?.length
+      && (!amendment || operation.currentGeneration > amendment.priorGeneration)) {
+    return [...new Set(operation.selectedResults.map(item => item.taskId))].sort();
+  }
   return operation.testSelectionAmendments?.at(-1)?.taskIds ?? operation.authorization.taskIds;
 }
 
@@ -528,9 +735,10 @@ function releaseTaskIdsAtBoundary(operation, revision, generation) {
 function validAmendmentRequest(contents) {
   const args = contents.requestArguments;
   return args && typeof args === "object" && !Array.isArray(args)
-    && Object.keys(args).every(key => ["expectedRevision", "expectedGeneration", "testSelection", "taskIds", "releaseMetadata"].includes(key))
+    && Object.keys(args).every(key => ["expectedRevision", "expectedGeneration", "testSelection", "taskIds", "taskScope", "releaseMetadata"].includes(key))
     && args.expectedRevision === contents.priorRevision && args.expectedGeneration === contents.priorGeneration
     && (args.testSelection === undefined || releaseIdentitySha256(normalizeTestSelection(args.testSelection)) === releaseIdentitySha256(contents.selection))
+    && (args.taskScope === undefined || normalizeReleaseTaskScope(args.taskScope) === contents.taskScope)
     && (args.taskIds === undefined || releaseIdentitySha256(normalizeReleaseTaskIds(args.taskIds)) === releaseIdentitySha256(contents.taskIds))
     && (args.releaseMetadata === undefined || releaseIdentitySha256(normalizedReleaseMetadata(args.releaseMetadata)) === releaseIdentitySha256(contents.releaseMetadata));
 }

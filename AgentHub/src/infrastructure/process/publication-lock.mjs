@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
+import { statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,6 +10,23 @@ import { withInterprocessLocks } from "./interprocess-lock.mjs";
 export const PUBLICATION_SESSION_ENV = "AGENT_HUB_PUBLICATION_SESSION";
 export const PUBLICATION_STAGE_DELEGATION_ENV = "AGENT_HUB_PUBLICATION_STAGE_DELEGATION";
 const publicationSessionStorage = new AsyncLocalStorage();
+
+function physicalLockIdentity(lockPath) {
+  try {
+    const info = statSync(lockPath, { bigint: true });
+    return info.isDirectory() && info.ino > 0n ? `${info.dev}:${info.ino}:${info.birthtimeNs}` : null;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function activeLeaseOwns(lease, lockTarget) {
+  if (lease?.active !== true) return false;
+  if (lease.lockTarget === path.resolve(lockTarget)) return true;
+  return lease.physicalIdentity != null
+    && physicalLockIdentity(`${path.resolve(lockTarget)}.lock`) === lease.physicalIdentity;
+}
 
 export function publicationLockTarget(environment = process.env) {
   const root = environment.LOCALAPPDATA
@@ -82,7 +100,11 @@ async function assertDelegatedPublicationStage(environment, lockTarget) {
   }
   if (path.resolve(String(delegation.lockTarget ?? "")) !== expectedTarget
       || path.resolve(String(delegation.lockPath ?? "")) !== expectedLockPath) {
-    throw new Error("publication stage delegation targets a different publication lock");
+    const physical = physicalLockIdentity(expectedLockPath);
+    if (!physical || physicalLockIdentity(`${path.resolve(String(delegation.lockTarget ?? ""))}.lock`) !== physical
+        || physicalLockIdentity(path.resolve(String(delegation.lockPath ?? ""))) !== physical) {
+      throw new Error("publication stage delegation targets a different publication lock");
+    }
   }
   if (String(environment[PUBLICATION_SESSION_ENV] ?? "") !== String(delegation.session ?? "")) {
     throw new Error("publication stage delegation session does not match the inherited environment");
@@ -115,7 +137,7 @@ export function publicationLockOwned({
   lockTarget = publicationLockTarget(environment),
 } = {}) {
   const activeLease = publicationSessionStorage.getStore();
-  return activeLease?.active === true && activeLease.lockTarget === path.resolve(lockTarget);
+  return activeLeaseOwns(activeLease, lockTarget);
 }
 
 export async function withPublicationLock(operation, {
@@ -127,7 +149,7 @@ export async function withPublicationLock(operation, {
 } = {}) {
   const resolvedLockTarget = path.resolve(lockTarget);
   const activeLease = publicationSessionStorage.getStore();
-  if (activeLease?.active === true && activeLease.lockTarget === resolvedLockTarget) return operation();
+  if (activeLeaseOwns(activeLease, resolvedLockTarget)) return operation();
   if (await assertDelegatedPublicationStage(environment, lockTarget)) {
     const result = await operation();
     await assertDelegatedPublicationStage(environment, lockTarget);
@@ -144,6 +166,7 @@ export async function withPublicationLock(operation, {
       active: true,
       session,
       lockTarget: resolvedLockTarget,
+      physicalIdentity: delegation ? physicalLockIdentity(`${resolvedLockTarget}.lock`) : null,
     };
     try {
       return await publicationSessionStorage.run(lease, operation);

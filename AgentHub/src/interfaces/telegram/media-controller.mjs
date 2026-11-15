@@ -305,7 +305,7 @@ export class MediaController {
     return runBoundedProcess({
       spawnProcess: spawn,
       command: this.config.pythonExe,
-      args: [this.transcribeScript, audioPath],
+      args: ["-B", this.transcribeScript, audioPath],
       options: {
         cwd: this.activeProjectRoot(),
         windowsHide: true,

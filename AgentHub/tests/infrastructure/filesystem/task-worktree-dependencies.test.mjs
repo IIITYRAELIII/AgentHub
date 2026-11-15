@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   mkdir,
+  lstat,
   mkdtemp,
   open as fsOpen,
   readFile,
@@ -956,4 +957,53 @@ test("dependency preparation rejects a node_modules link before invoking npm", a
     runNpm: async () => { invoked = true; },
   }), /must use a local directory/u);
   assert.equal(invoked, false);
+});
+
+
+test("compatible Task dependency inputs install once and own local cache without package copies", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-shared-deps-"));
+  context.after(() => rmTree(parent));
+  const roots = [path.join(parent, "a"), path.join(parent, "b")];
+  for (const root of roots) await writeNpmProject(root, { dependencies: { tiny: "1.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "1.0.0", resolved: "https://registry.example.invalid/tiny.tgz", integrity: "sha512-fixture" } } });
+  let installs = 0;
+  const lease = { assertOwned: async () => {} };
+  const sharedDependencies = (key, operation) => operation({ root: path.join(parent, "inputs", key), lease });
+  const runNpm = async (_args, { cwd }) => {
+    installs++; await materializeLockedState(cwd);
+    await writeFile(path.join(cwd, "node_modules/tiny/payload.bin"), Buffer.alloc(64 * 1024, 42));
+  };
+  const prepare = root => prepareTaskWorktreeDependencies({ projectRoot: root,
+    lockfiles: [path.join(root, "package-lock.json")], lease, runNpm, sharedDependencies });
+  const first = await prepare(roots[0]);
+  const second = await prepare(roots[1]);
+  assert.equal(installs, 1);
+  assert.equal(first[0].copiedPackageBytes, 0); assert.equal(second[0].copiedPackageBytes, 0);
+  assert.equal(second[0].linkedBytes >= 64 * 1024, true);
+  const af = path.join(roots[0], "node_modules/tiny/payload.bin"), bf = path.join(roots[1], "node_modules/tiny/payload.bin");
+  assert.equal((await lstat(af)).ino, (await lstat(bf)).ino);
+  assert.equal((await lstat(af)).nlink, 3);
+  for (const root of roots) await mkdir(path.join(root, "node_modules/.cache"));
+  await writeFile(path.join(roots[0], "node_modules/.cache/unique"), "keep unique work");
+  assert.equal(await readFile(path.join(roots[0], "node_modules/.cache/unique"), "utf8"), "keep unique work");
+  await assert.rejects(readFile(path.join(roots[1], "node_modules/.cache/unique")), { code: "ENOENT" });
+  await prepare(roots[0]); assert.equal(installs, 1);
+  // A changed manifest is a different input, not npm ci through shared aliases.
+  const manifest = path.join(roots[0], "package.json");
+  await writeFile(manifest, (await readFile(manifest, "utf8")) + "\n");
+  await prepare(roots[0]); assert.equal(installs, 2);
+  const oldKey = first[0].fingerprint;
+  assert.equal(await readFile(path.join(roots[0], ".agent-hub-dependency-retained", oldKey, ".cache/unique"), "utf8"), "keep unique work");
+  assert.equal(await readFile(bf).then(b => b.length), 64 * 1024);
+  // Unfinished shared install remains its original; no silent reinstall.
+  await writeFile(path.join(roots[1], "package.json"), (await readFile(path.join(roots[1], "package.json"), "utf8")) + "  ");
+  let failedInstalls = 0;
+  const failed = () => prepareTaskWorktreeDependencies({ projectRoot: roots[1],
+    lockfiles: [path.join(roots[1], "package-lock.json")], lease, sharedDependencies,
+    runNpm: async () => { failedInstalls++; throw new Error("original install failure"); } });
+  await assert.rejects(failed(), /original install failure/u);
+  await assert.rejects(failed(), /Unfinished dependency input/u);
+  assert.equal(failedInstalls, 1);
+  context.diagnostic(JSON.stringify({ tasks: 2, packagePayloadB: 65536,
+    compatibleInstalls: 1, copiedPackageBytes: 0, sharedPayloadLinks: 3, changedInputInstalls: 1 }));
 });

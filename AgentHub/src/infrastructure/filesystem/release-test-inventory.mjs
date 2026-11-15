@@ -3,7 +3,9 @@ import path from "node:path";
 import { E2E_FILES, VSCODE_FILES, VISUAL_FILES, PROFILE_FILES } from "../../domain/test-suite-groups.mjs";
 import { resolveTestSelection } from "../../domain/test-selection.mjs";
 
-export const RELEASE_CHECK_IDS = ["check:release-candidate", "check:contour", "check:worker"];
+// Publication executes in frozen/main. The rolling dev contour is a separate
+// preview, not a second check of that immutable release source.
+export const RELEASE_CHECK_IDS = ["check:release-candidate", "check:worker"];
 
 export async function discoverReleaseTestInventory(root) {
   const entries = new Map();

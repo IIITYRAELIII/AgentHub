@@ -225,10 +225,10 @@
   const TASK_STATUS_PRESENTATION = Object.freeze({
     en: Object.freeze({
       new: Object.freeze({ short: "New", full: "New" }),
-      in_progress: Object.freeze({ short: "InProg", full: "In progress" }),
+      in_progress: Object.freeze({ short: "Progress", full: "In progress" }),
       blocked: Object.freeze({ short: "Blocked", full: "Blocked" }),
-      testing: Object.freeze({ short: "Test", full: "Testing" }),
-      awaiting_implementation: Object.freeze({ short: "Await", full: "Awaiting implementation" }),
+      testing: Object.freeze({ short: "Testing", full: "Testing" }),
+      awaiting_implementation: Object.freeze({ short: "Awaiting", full: "Awaiting implementation" }),
       done: Object.freeze({ short: "Done", full: "Done" }),
     }),
     ru: Object.freeze({
@@ -1678,11 +1678,14 @@
 
   function renderTaskCardSaving(taskId) {
     const saving = state.savingTaskId === taskId;
+    const task = state.tasks.find(item => item.id === taskId);
+    const presentationPending = task?.presentationDeferred
+      && !(openTaskDetails.get(taskId)?.revision === task.detailsRevision && openTaskDetails.get(taskId)?.task);
     const savingStatus = state.savingStatusTaskId === taskId;
     const attaching = state.attachingTaskId === taskId;
     const savingChecklist = state.pendingChecklistActions.has(taskId);
-    if (taskCardTitle) taskCardTitle.disabled = saving;
-    if (taskCardDescription) taskCardDescription.disabled = saving;
+    if (taskCardTitle) taskCardTitle.disabled = saving || presentationPending;
+    if (taskCardDescription) taskCardDescription.disabled = saving || presentationPending;
     if (taskCardStatus) taskCardStatus.disabled = savingStatus;
     if (taskChecklistAddInput) taskChecklistAddInput.disabled = savingChecklist;
     if (taskChecklistAddButton) {
@@ -1690,7 +1693,7 @@
       taskChecklistAddButton.setAttribute("aria-busy", String(savingChecklist));
     }
     if (taskCardSaveButton) {
-      taskCardSaveButton.disabled = saving;
+      taskCardSaveButton.disabled = saving || presentationPending;
       taskCardSaveButton.setAttribute("aria-busy", String(saving));
       taskCardSaveButton.textContent = saving ? "Сохраняю…" : "Сохранить изменения";
     }
@@ -1826,7 +1829,27 @@
         : [node("p", { class: "task-card-detail-empty",
           text: task.detailsDeferred ? (detail?.error || "Загружаю историю задачи…") : "Пока нет записей о выполненной работе." })]));
     }
-    const actions = [];
+    const actions = [node("button", { type: "button", class: "board-task-quiet",
+      text: "Операции задачи", onclick: () => emit("operation-read", { id: task.id }) })];
+    for (const operation of detail?.taskOperations ?? []) {
+      const stopped = operation.cancellation?.phase === "stopped";
+      const label = operation.toolName === "hub_task_claim" ? "Подготовка задачи"
+        : operation.toolName === "hub_task_status_update"
+          ? `Переход в ${taskWorkflowPresentation({ workflowStatus: operation.targetStatus }, state.statusLanguage).full}`
+          : ({ hub_task_create: "Создание задачи", hub_task_update: "Изменение задачи",
+            hub_task_complete: "Закрытие задачи", hub_task_delete: "Удаление задачи" })[operation.toolName] ?? "Операция задачи";
+      const phase = operation.cancellation ? "остановка запрошена"
+        : operation.status === "unknown" ? "результат неизвестен" : "выполняется или ожидает";
+      actions.push(node("span", { role: "status", text: stopped
+        ? "Операция прервана. Уже выполненные действия сохранены."
+        : `${label}: ${phase}` }));
+      if (!stopped && operation.canCancel !== false) actions.push(node("button", { type: "button", class: "board-task-quiet",
+        text: operation.cancellation ? "Проверить остановку" : "Прервать операцию",
+        onclick: () => emit("operation-cancel", { id: task.id,
+          operationRequestId: operation.requestId, argumentsHash: operation.argumentsHash,
+          expectedRevision: task.revision, requestId: crypto.randomUUID(), confirmCancel: true }),
+      }));
+    }
     if (task.status !== "done" && taskWorkflowStatus(task) !== "done" && task.bucket === "workspace") {
       actions.push(node("button", {
         type: "button",
@@ -2706,6 +2729,8 @@
   taskCardEditor?.addEventListener("submit", (event) => {
     event.preventDefault();
     const task = state.tasks.find((item) => item.id === state.openTaskId);
+    if (task?.presentationDeferred
+      && !(openTaskDetails.get(task.id)?.revision === task.detailsRevision && openTaskDetails.get(task.id)?.task)) return;
     const title = taskCardTitle.value.trim();
     if (!task || !title) {
       taskCardTitle.reportValidity?.();
@@ -2748,6 +2773,16 @@
   });
 
   window.AgentHubTaskBoard = Object.freeze({
+    showOperations({ id, result }) {
+      if (state.openTaskId !== id || result?.task?.id !== id) return;
+      const task = state.tasks.find(item => item.id === id);
+      const prior = openTaskDetails.get(id);
+      if (task && result.task.revision === task.revision) {
+        openTaskDetails.set(id, { ...(prior ?? {}), revision: task.detailsRevision,
+          task: result.task, taskOperations: result.taskOperations ?? [] });
+        renderOpenTaskCard();
+      }
+    },
     showDetails({ id, revision, opening, result, error }) {
       const pending = pendingTaskDetails.get(id);
       if (!pending || pending.revision !== revision || pending.opening !== opening) return;
@@ -2757,7 +2792,7 @@
       if (error) {
         openTaskDetails.set(id, { revision, error });
       } else if (result?.task?.id === id && result.task.detailsRevision === revision) {
-        openTaskDetails.set(id, { revision, task: result.task });
+        openTaskDetails.set(id, { revision, task: result.task, taskOperations: result.taskOperations ?? [] });
       } else {
         // A newer server result waits for the normal canonical board snapshot.
         // Do not overwrite newer metadata, edits or another opening with it.

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 import zipfile
 
-from build_package import build_package
+from release_tool_test_support import build_package
 from install_release import extract_verified, file_hash, safe_name, validate_source_url
 
 

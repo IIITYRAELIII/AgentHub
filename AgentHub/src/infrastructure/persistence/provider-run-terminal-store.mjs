@@ -1,4 +1,5 @@
 import { providerRunTerminalStatusSupported } from "../../domain/provider-run-terminal.mjs";
+import { validLocalExecutionRetirement } from "../../domain/task-runs.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
 
@@ -18,6 +19,12 @@ function identity(value) {
 
 function configure(database) {
   database.exec(`
+    CREATE TABLE IF NOT EXISTS provider_run_local_retirements (
+      run_id TEXT PRIMARY KEY NOT NULL,
+      identity_json TEXT NOT NULL,
+      proof_json TEXT NOT NULL,
+      committed_at TEXT NOT NULL
+    ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS provider_run_terminals (
       provider TEXT NOT NULL,
       thread_id TEXT NOT NULL,
@@ -94,6 +101,49 @@ export class ProviderRunTerminalStore {
       timeoutMs: this.#mutationTimeoutMs,
       requestId: `${key.provider}\0${key.threadId}\0${key.turnId}`,
     });
+  }
+
+  // Administrative local ownership, deliberately separate from provider terminals
+  // in the same canonical lifecycle store and mutation owner.
+  recordLocalExecutionRetirement({ identity: key, proof }) {
+    if (!validLocalExecutionRetirement({ identity: key, proof })) {
+      throw new Error("exact local execution retirement identity and boot proof required");
+    }
+    const identityJson = JSON.stringify(key);
+    const proofJson = JSON.stringify(proof);
+    return this.#mutations.run(() => {
+      const database = this.#database();
+      try {
+        database.prepare(`
+          INSERT INTO provider_run_local_retirements
+          (run_id, identity_json, proof_json, committed_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT(run_id) DO NOTHING
+        `).run(key.runId, identityJson, proofJson, new Date().toISOString());
+        return this.#localRetirement(database, key);
+      } finally { database.close(); }
+    }, { timeoutMs: this.#mutationTimeoutMs, requestId: "local-retirement:" + key.runId });
+  }
+
+  #localRetirement(database, key) {
+    const row = database.prepare(`
+      SELECT identity_json, proof_json, committed_at FROM provider_run_local_retirements
+      WHERE run_id = ?
+    `).get(key.runId);
+    if (!row) return null;
+    if (row.identity_json !== JSON.stringify(key)) {
+      throw new Error("local execution retirement identity changed");
+    }
+    const record = { identity: JSON.parse(row.identity_json), proof: JSON.parse(row.proof_json),
+      committedAt: row.committed_at };
+    if (!validLocalExecutionRetirement(record)) throw new Error("invalid local execution retirement proof");
+    return record;
+  }
+
+  getLocalExecutionRetirement(key) {
+    if (!key?.runId) return null;
+    const database = this.#database();
+    try { return this.#localRetirement(database, key); }
+    finally { database.close(); }
   }
 
   correctFromExactTerminal(value, { priorStatus, priorCommittedAt } = {}) {

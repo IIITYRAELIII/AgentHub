@@ -1,4 +1,4 @@
-import { readFile, mkdir, cp, rename, rm, lstat } from "node:fs/promises";
+import { readFile, mkdir, cp, rename, rm, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -7,14 +7,17 @@ import { verifyRuntimeManifest } from "./runtime/src/infrastructure/filesystem/r
 import { protectRuntimeDirectory, protectRuntimeConfig } from "./runtime/src/infrastructure/filesystem/runtime-security.mjs";
 import { withPublicationLock } from "./runtime/src/infrastructure/process/publication-lock.mjs";
 import { assertAgentHubUpgrade } from "./runtime/src/domain/agent-hub-version.mjs";
+import { runtimeManifestMatchesPackage } from "./runtime/src/domain/runtime-package-identity.mjs";
+import { initialRuntimeProjectConfiguration } from "./runtime/src/infrastructure/filesystem/config.mjs";
 
 // Packaged entry: it delegates pointer/stable-launcher/rollback to the existing
 // runtime owner. It never builds, starts, stops or restarts a process.
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 if (process.platform !== "win32" || process.arch !== "x64") throw new Error("This ready package supports Windows x64 only");
-const [command, root] = process.argv.slice(2);
-if (!["install", "rollback"].includes(command) || !root || process.argv.length !== 4) {
-  throw new Error("Usage: node install-prepared.mjs install|rollback <explicit-runtime-root>");
+const [command, root, projectOption, projectRoot] = process.argv.slice(2);
+if (!["install", "rollback"].includes(command) || !root
+  || !(process.argv.length === 4 || process.argv.length === 6 && command === "install" && projectOption === "--project-root" && projectRoot)) {
+  throw new Error("Usage: node install-prepared.mjs install|rollback <explicit-runtime-root> [--project-root <selected-project>]");
 }
 const runtimeRoot = path.resolve(root);
 if (runtimeRoot === path.parse(runtimeRoot).root
@@ -70,7 +73,9 @@ await withPublicationLock(async () => {
       await requireRegularAncestors(currentRoot);
       await verifyRuntimeManifest(currentRoot, pointer.current);
       const currentBytes = await readFile(path.join(currentRoot, "runtime-manifest.json"));
-      assertAgentHubUpgrade(JSON.parse(currentBytes), candidateManifest, { sameArtifact: currentBytes.equals(candidateBytes) });
+      assertAgentHubUpgrade(JSON.parse(currentBytes), candidateManifest, {
+        sameArtifact: runtimeManifestMatchesPackage(currentBytes, candidateBytes),
+      });
     };
     await requireUpgrade();
     const exists = await lstat(releaseRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
@@ -87,7 +92,7 @@ await withPublicationLock(async () => {
     } else {
       const [actual, expected] = await Promise.all([readFile(path.join(releaseRoot, "runtime-manifest.json")),
         readFile(path.join(source, "runtime-manifest.json"))]);
-      if (!actual.equals(expected)) throw new Error("Release ID already exists with different bytes");
+      if (!runtimeManifestMatchesPackage(actual, expected)) throw new Error("Release ID already exists with different bytes");
       await verifyRuntimeManifest(releaseRoot, releaseId);
     }
   }
@@ -97,7 +102,11 @@ await withPublicationLock(async () => {
   if (configInfo && (!configInfo.isFile() || configInfo.isSymbolicLink())) throw new Error("Unsafe private config");
   if (!configInfo) {
     if (command === "rollback") throw new Error("Rollback requires the existing private configuration");
-    await cp(path.join(packageRoot, "config.example.json"), config, { errorOnExist: true, force: false });
+    if (projectRoot) {
+      const template = JSON.parse(await readFile(path.join(packageRoot, "config.example.json"), "utf8"));
+      const selected = initialRuntimeProjectConfiguration(template, projectRoot);
+      await writeFile(config, `${JSON.stringify(selected, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    } else await cp(path.join(packageRoot, "config.example.json"), config, { errorOnExist: true, force: false });
     await protectRuntimeConfig(config);
   }
   const installed = await installPreparedRuntime({ runtimeRoot, releaseRoot, releaseId,

@@ -86,7 +86,7 @@ test("Dashboard presents every workflow status in the selected language", async 
 
   assert.deepEqual(
     statuses.map((workflowStatus) => view.taskWorkflowPresentation({ workflowStatus }, "en").short),
-    ["New", "InProg", "Blocked", "Test", "Await", "Done"],
+    ["New", "Progress", "Blocked", "Testing", "Awaiting", "Done"],
   );
   assert.deepEqual(
     statuses.map((workflowStatus) => view.taskWorkflowPresentation({ workflowStatus }, "ru").short),

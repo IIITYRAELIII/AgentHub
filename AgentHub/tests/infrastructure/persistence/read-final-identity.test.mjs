@@ -49,6 +49,7 @@ test('production read service agrees with durable exact receipt after changed co
   let record = { provider: base.provider, threadId: base.threadId, turnId: base.answerTurnId,
     terminalRevision: 1, updatedAt: base.answerAt };
   const service = new DesktopReadModelService({
+    resolveReadTask: () => ({ provider: base.provider, threadId: base.threadId, streamId: 'stream-b' }),
     snapshot: ({ projectTask = x => x } = {}) => ({ tasks: [projectTask({ provider: base.provider,
       threadId: base.threadId, streamId: 'stream-b' })] }),
     readStateStore: store, trustedDeviceUserId: () => 'local',

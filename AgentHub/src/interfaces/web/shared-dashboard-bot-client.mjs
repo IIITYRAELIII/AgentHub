@@ -53,6 +53,7 @@ function retryableCommandError(error) {
   const name = String(error?.name ?? "");
   const message = String(error?.message ?? error ?? "");
   return error?.retryable === true
+    || attachmentErrorCode(error) !== null
     || status >= 500
     || ["AbortError", "TimeoutError"].includes(name)
     || /(?:aborted|timeout|timed out|fetch failed|network|socket|econn|etimedout)/iu.test(message);
@@ -107,6 +108,7 @@ export class SharedDashboardBotClient {
   #handler;
   #fetch;
   #logger;
+  #recordCommandTrace;
   #retryMs;
   #backoff;
   #attachmentTimeoutMs;
@@ -133,6 +135,7 @@ export class SharedDashboardBotClient {
     wakeFallbackSeconds = REMOTE_CONTROL_WAKE_FALLBACK_MS / 1_000,
     webSocketFactory = (url) => new globalThis.WebSocket(url),
     logger = console,
+    recordCommandTrace = null,
     random = Math.random,
   } = {}) {
     this.#publicUrl = String(publicUrl ?? "").replace(/\/+$/u, "");
@@ -143,6 +146,7 @@ export class SharedDashboardBotClient {
     this.#handler = handler;
     this.#fetch = fetchImpl;
     this.#logger = logger;
+    this.#recordCommandTrace = recordCommandTrace;
     this.#retryMs = Math.max(1_000, Number(retrySeconds) * 1_000 || DEFAULT_RETRY_MS);
     this.#backoff = new BoundedPollingBackoff({
       baseMs: this.#retryMs,
@@ -173,6 +177,26 @@ export class SharedDashboardBotClient {
       throw new Error("Shared Dashboard bot secret must contain 32-256 characters");
     }
     return secret;
+  }
+
+  #recordTrace(span) {
+    if (!COMMAND_ID_PATTERN.test(String(span.commandId ?? "")) || typeof this.#recordCommandTrace !== "function") return;
+    try { Promise.resolve(this.#recordCommandTrace(span)).catch(() => {}); } catch {}
+  }
+
+  async #measure(command, stage, metadata, operation) {
+    const startedAtMs = Date.now(), started = performance.now(), spanId = randomUUID();
+    const common = { commandId: command.id, stage, transport: "shared-dashboard-bot" };
+    this.#recordTrace({ ...common, outcome: "started", observedAtMs: startedAtMs, metadata: { ...metadata, operationSpanId: spanId, startedAtMs } });
+    let outcome = "succeeded", failure = {};
+    try { return await operation(); }
+    catch (error) {
+      outcome = "failed";
+      failure = { retryable: retryableCommandError(error), causeCode: attachmentErrorCode(error) };
+      throw error;
+    } finally {
+      this.#recordTrace({ ...common, spanId, outcome, observedAtMs: Date.now(), monotonicDurationMs: Math.max(0, performance.now() - started), metadata: { ...metadata, ...failure, operationSpanId: spanId, startedAtMs } });
+    }
   }
 
   async createPairing() {
@@ -269,6 +293,8 @@ export class SharedDashboardBotClient {
   async #attachmentResponse(payload, consume) {
     const started = performance.now();
     const diagnostic = {
+      ...(COMMAND_ID_PATTERN.test(String(payload.commandId ?? "")) ? { commandId: payload.commandId } : {}),
+      ...(COMMAND_ID_PATTERN.test(String(payload.id ?? "")) ? { attachmentId: payload.id } : {}),
       mode: payload.mode === "chunk" ? "chunk" : "manifest",
       page: Number.isSafeInteger(payload.page) ? payload.page : null,
       index: Number.isSafeInteger(payload.index) ? payload.index : null,
@@ -289,7 +315,13 @@ export class SharedDashboardBotClient {
         error.status = response.status;
         throw error;
       }
-      return await consume(response);
+      const value = await consume(response);
+      // One manifest page and the first chunk sample per attachment; the outer
+      // download span covers all chunks without a span per ordinary chunk.
+      if (payload.mode === "manifest" || payload.index === 0) {
+        this.#recordTrace({ commandId: payload.commandId, stage: "dashboard-attachment-transport", transport: "shared-dashboard-bot", outcome: "succeeded", observedAtMs: Date.now(), monotonicDurationMs: Math.max(0, performance.now() - started), metadata: diagnostic });
+      }
+      return value;
     } catch (error) {
       if (!retryableCommandError(error)) throw error;
       const details = {
@@ -298,6 +330,7 @@ export class SharedDashboardBotClient {
         activeAtFailure: this.#activeAttachmentRequests,
         causeCode: attachmentErrorCode(error),
       };
+      this.#recordTrace({ commandId: payload.commandId, stage: "dashboard-attachment-transport", transport: "shared-dashboard-bot", outcome: "failed", observedAtMs: Date.now(), monotonicDurationMs: Math.max(0, performance.now() - started), metadata: details });
       // Only bounded transport metadata reaches the poll log; dependency messages
       // may contain signed URLs or request data. Preserve the original cause.
       const wrapped = new Error(`Shared Dashboard bot attachment transport failed: ${JSON.stringify(details)}`, { cause: error });
@@ -313,7 +346,11 @@ export class SharedDashboardBotClient {
     }
   }
 
-  async #storeDownloadedAttachment({ body, command, contentType, expectedHash, id, originalName }) {
+  async #storeDownloadedAttachment(input) {
+    return this.#measure(input.command, "dashboard-attachment-persist", { attachmentId: input.id, bytes: input.body.length }, () => this.#storeDownloadedAttachmentOnce(input));
+  }
+
+  async #storeDownloadedAttachmentOnce({ body, command, contentType, expectedHash, id, originalName }) {
     if (
       body.length < 1
       || body.length > MAX_ATTACHMENT_BYTES
@@ -512,9 +549,22 @@ export class SharedDashboardBotClient {
     ))) {
       throw new Error("Shared Dashboard bot returned unordered attachment chunks");
     }
+    const contentType = attachmentContentType(first.name, first.contentType);
+    const target = path.join(this.#attachmentDirectory, createAttachmentStorageName(first.name, `${command.id}-${id}`));
+    const completed = await this.#measure(command, "dashboard-attachment-local-read", { attachmentId: id, bytes: first.size }, async () => {
+      let existing;
+      try { existing = await readFile(target); }
+      catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+      if (existing.length !== first.size
+        || createHash("sha256").update(existing).digest("hex") !== first.hash
+        || (attachmentIsImage(contentType) && !imageMatchesContentType(existing, contentType))) {
+        throw new Error("Local attachment id conflict");
+      }
+      return true;
+    });
+    if (completed) return target;
     const chunks = await this.#downloadAttachmentChunks({ command, descriptors, id, manifest: first });
     const body = Buffer.concat(chunks, first.size);
-    const contentType = attachmentContentType(first.name, first.contentType);
     return this.#storeDownloadedAttachment({
       body,
       command,
@@ -568,7 +618,7 @@ export class SharedDashboardBotClient {
 
   async #downloadRemoteAttachment(reference, command) {
     try {
-      return await this.#downloadRemoteAttachmentOnce(reference, command);
+      return await this.#measure(command, "dashboard-attachment-download", { attachmentId: String(reference).slice(REMOTE_ATTACHMENT_PREFIX.length).toLowerCase() }, () => this.#downloadRemoteAttachmentOnce(reference, command));
     } catch (error) {
       if (!retryableCommandError(error)) throw error;
       throw persistentRetryableError(error, "Shared Dashboard bot attachment download is incomplete; command will be retried");
@@ -586,7 +636,9 @@ export class SharedDashboardBotClient {
       .map((result) => result.value);
     const failed = downloads.find((result) => result.status === "rejected");
     if (failed) {
-      await Promise.all(attachments.map((file) => unlink(file).catch(() => {})));
+      // Finalized command-owned files are verified again against the same remote
+      // manifest on retry. They may already belong to a durable intake whose
+      // result reply was lost. Sibling failure cannot own their deletion.
       throw failed.reason;
     }
     return { ...command, params: { ...command.params, attachments } };
@@ -596,8 +648,9 @@ export class SharedDashboardBotClient {
     let command;
     let outcome;
     try {
-      command = await this.#prepareCommand(this.#validateCommand(rawCommand));
-      const result = await this.#handler({
+      command = this.#validateCommand(rawCommand);
+      command = await this.#measure(command, "dashboard-attachment-preparation", { attachmentCount: command.params.attachments?.length ?? 0 }, () => this.#prepareCommand(command));
+      const result = await this.#measure(command, "dashboard-intake", {}, () => this.#handler({
         action: command.action,
         params: command.params,
         context: {
@@ -606,7 +659,7 @@ export class SharedDashboardBotClient {
           commandId: command.id,
           clientId: `shared-dashboard-bot:${command.userId}`,
         },
-      });
+      }));
       outcome = { id: command.id, userId: command.userId, ok: true, result: result ?? null };
     } catch (error) {
       if (retryableCommandError(error)) {
@@ -625,7 +678,7 @@ export class SharedDashboardBotClient {
         error: String(error?.message ?? error ?? "Shared Dashboard bot command failed").slice(0, 4_096),
       };
     }
-    await this.#signedRequest("/api/dashboard-bot/result", outcome);
+    await this.#measure(outcome, "dashboard-result", {}, () => this.#signedRequest("/api/dashboard-bot/result", outcome));
     return { handled: 1, retryError: null };
   }
 

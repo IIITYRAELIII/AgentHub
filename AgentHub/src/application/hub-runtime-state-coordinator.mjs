@@ -274,7 +274,10 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
       : [];
   for (const savedRun of savedRuns) {
     const run = restoreTaskRun(savedRun, chatId);
-    if (run) taskRuns.add(run);
+    if (run) {
+      if (taskRuns.addRestored) taskRuns.addRestored(run, savedRun);
+      else taskRuns.add(run);
+    }
   }
 
   return {
@@ -302,7 +305,8 @@ export function createHubRuntimeSnapshot(context) {
     ...context.taskMetadata.snapshot(),
     ...context.preferences.snapshot(),
     updateOffset: context.updateOffset,
-    activeRuns: context.taskRuns.values().map(context.serializableTaskRun),
+    activeRuns: (context.taskRuns.retainedValues?.() ?? context.taskRuns.values())
+      .map(context.serializableTaskRun),
     dismissedExternalTasks: context.dismissedExternalTasks.values(),
     cancelledManagedClaudeTasks: [...context.cancelledManagedClaudeTasks.entries()],
     pendingInputs: [...context.pendingInputs.values()],

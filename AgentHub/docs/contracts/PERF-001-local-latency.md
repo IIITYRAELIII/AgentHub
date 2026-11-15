@@ -1,5 +1,45 @@
 # PERF-001 — Local command latency
 
+Journal title writes distinguish row preparation, BEGIN acquisition and the
+actual SQL transaction from local queue wait and contention retries. Existing
+usage-worker spans retain fixed numeric first/last transaction UTC intervals,
+counts and process/worker identity on success and failure. Lifecycle BEGIN,
+failure and commit mutations retain their original Task timing identity with
+fixed store/method/error-code classes and local queue measurements. Diagnostics
+contain no record content, SQL values or paths and do not change retry bounds,
+transaction/CAS behavior or errors. These observations are not a latency fix or
+proof that an overlapping historical request held a particular SQLite lock.
+
+Workflow enum validation records a bounded original-ID input phase before the
+lifecycle owner. Deterministic historical malformed-original reconciliation
+separates validation, execution-retirement checks and receipt settlement through
+the existing CommandTrace sink. Only fixed phase/outcome/scalar metadata is
+recorded; arguments, status text and native witness contents are excluded.
+Admission/reply and Git/lease timings retain their existing owners. Nested work
+is not additive wall time and a validation fix is not a database speedup claim.
+
+Startup terminal projection (ADR-HUB-409) uses one cold accounting payload scan,
+reuses those parsed objects for a cold full rebuild and retains warm changed-row
+reads. Existing groups of 128 exact Workspace references use fresh bounded
+catalog statements, not one statement per Thread or a binding cache. Known stale
+journal input refuses before facts/rendering; final CAS still owns commit.
+Original-command worker traces retain numeric read/batch/revision measurements,
+including completed phases on callback failure. Synthetic work counts and local
+timings are not production speedup or a changed readiness/ACK contract.
+
+The startup shell can listen after instance ownership while SQLite integrity is
+pending, using the existing MiniAppServer and browser health polling. The same
+server's later activation keeps its address and auth. Time to listener, first
+HTTP response and actual startup-screen display are distinct from completed
+integrity, business availability and Ready; none substitutes for another.
+
+Startup SQLite inspection keeps its full detached DB/WAL integrity check while
+executing synchronous inspection outside the caller event loop. Existing
+original-startup phases distinguish DB/WAL copy bytes, query round trip, worker
+open/check/close and cleanup. These bounded numeric phases contain no paths or
+content; logging failure cannot alter recovery. Full required work still gates
+readiness, and event-loop isolation alone does not prove earlier web availability.
+
 ## SQLite capture deadline coverage
 
 The process-owned capture deadline begins before child launch and includes
@@ -24,12 +64,21 @@ This is not a claim that any historical BITS/Edge holder has been identified.
 
 Policy v1 admits at most three artifact units per pass and checks a cooperative
 20-second budget between units, with bounded metadata/head lists/file size and
-persisted discovery progress. It does not abandon an in-flight destructive child
+persisted discovery progress. It does not discard a completed eligible preview merely because admission's pass budget
+expired. The existing canonical child may retain that preview as unadmitted
+intake progress for the next bounded pass; the artifact owner still performs
+fresh exact validation before its effect. No deadline is increased or bypassed.
+It does not abandon an in-flight destructive child
 or claim that hashing a large admitted transport has a hard 20-second deadline.
 Owner discovery reads a flat artifact directory; no per-turn recursive scan of
 archives, history or user work is introduced. Runtime health exposes cached
 status only. Filesystem free-space observations remain distinct from logical
 byte counts and can include concurrent allocations. See ADR-0126.
+
+Wide transport-head proofs retain the complete list within the same 32 KiB
+encoded metadata budget, with at most 4096 roots and a 4 MiB decompression
+ceiling. They do not widen discovery, artifact-size, pass-unit or cooperative
+time budgets, and do not promise a hard deadline for an already admitted hash.
 
 Policy v2 runtime-body batches remove at most 64 files/256 MiB and check a
 cooperative ten-second deletion budget after bounded metadata preflight. Asset
@@ -38,6 +87,44 @@ there is no repeated whole-body hash before every batch. The original partial
 operation remains pending between batches, and shutdown drains its actual child.
 The shared installation lease is scoped to the physical runtime root, outside
 ordinary provider/message admission. Install no longer sweeps prepared bodies.
+
+The existing physical installation and storage-maintenance lease callbacks may
+share a producer across normal foreground runApproved passes only when the
+finite outer series acquires `withStorageRetentionLease` from the composition;
+the SAME real token is delegated to each pass and each installation guard stays
+fresh. Old external direct-lock callers do not gain reuse implicitly. Separate
+background lease admissions close their producer independently. Those callbacks
+reuse one verified native runtime producer for consecutive batches of the same
+target/binding (ADR-HUB-385-runtime-native-executor). C# source bytes are bound at
+first native use and rechecked before each request; target metadata, content, ADS,
+reparse/link, original admission and lease checks are never cached. The unchanged
+C# method returns only after disposing that invocation's native handles, with a
+fresh 64-file/256-MiB/ten-second batch. A different resource joins the prior
+producer before starting another; a failed binding cannot restart in that scope.
+Scope exit drains and joins the producer before releasing its real lease. There
+is no disk assembly cache, new admission lane or daemon outside that lifetime.
+Producer-start and bounded-fixture timings establish only the measured native
+subpath; unchanged source/owner checks and production elapsed time stay separate.
+
+The same finite scope also serves sealed native captures. Runtime and capture
+protocols bind their own exact source bytes; switching resource or protocol joins
+the prior producer, with at most one live child. Capture continuation retains
+one complete fresh archive proof inside its existing archive lease. A persisted
+descriptor does not require an additional unleased proof before that fence.
+Initial archival, all-object/tag/raw preservation and original graph checks stay
+unchanged. No target verification, remaining-tree walk or native limit is cached.
+
+Capture diagnostics use the existing Task-operation timing recorder and SAME
+maintenance original, candidate hash and durable batch sequence. They distinguish
+owned setup/current/source checks, archive-lease wait/full read, producer startup
+and compilation, request round trip, native plan/prevalidation/hash-unlink/directory
+cleanup, and final joined child lifetime. Numeric counts/durations and source
+digests contain no paths, file/message contents or argv. The original retains a
+bounded latest-batch summary across reopen; the existing rotating timing log
+retains failure and producer-join events. A diagnostic failure never replaces an
+effect error or changes authority. Nested durations are inclusive, not additive;
+reduced starts/proof counts alone do not establish a production wall-time gain.
+See ADR-HUB-385-native-capture-executor.
 
 Repeated journal projection may reuse a verified rendering only within the
 existing usage worker lifetime. Its bounded scalar receipt is not source
@@ -64,6 +151,14 @@ result alone never establishes unchanged projection inputs.
 
 ## Bounded Codex trace and fact projections
 
+The browser's canonical history cache follows the existing open-column layout,
+not every Stream visited during the document lifetime. Closing/replacing a
+column releases its loaded history, focused page, pagination and app message
+projection; the selected/visible column remains protected during transitions.
+Still-open columns keep their pages. Reopening uses the ordinary history owner.
+This bounds retention by opened content without a timer, arbitrary LRU size,
+background source read, truncation or a new durable state owner (ADR-HUB-343).
+
 Codex rollout preview retains at most 256 groups, 128 activities per group,
 1,024 activities per turn and one million reasoning characters in aggregate;
 an individual retained reasoning block is never cut. Earlier omitted groups or
@@ -74,13 +169,28 @@ Desktop paged history clones only each selected cached turn.
 
 Explicit “All stages” reads use the existing history owner and rollout worker,
 without provider calls, history writes or automatic polling. They stream a fixed
-source prefix in 64 KiB chunks, cap a record at 4 MiB and return at most 50 groups
-and 512 KiB per page. An oversized block fails visibly, without truncation.
+source prefix in 64 KiB chunks and retain at most 4 MiB for a raw record or its
+internal projected JSON representation. Raw records over 4 MiB are admitted only
+when complete structural and escape validation positively identifies a top-level
+`compacted` record or `response_item` with `payload.type=message` and
+`payload.role=user`. Their large string values may be omitted only from that
+bounded internal representation; it supplies no trace content, lifecycle state
+or source identity. The original bytes still enter the full raw-prefix hash.
+Oversized agent, lifecycle, unknown or unclassifiable records remain errors;
+invalid JSON, invalid escapes, incomplete records and a projected representation
+over 4 MiB also fail closed. This scoped exception does not raise the record
+budget for agent evidence or change automatic preview reads
+(ADR-HUB-237-exact-trace-record-bounds).
+Pages return at most 50 groups and 512 KiB. An oversized block fails visibly,
+without truncation. Exact provider/Thread/turn/item and duplicate-source checks
+remain mandatory.
 Canonical source generation, prefix byte length and SHA-256 bind subsequent
 pages; append does not shift that snapshot, and changed prefixes fail closed.
 The browser retains only the displayed page. This is an explicit detail-read
 exception to the automatic 16 MiB tail policy: each page scans its fixed prefix,
 so time is proportional to source size, not promised constant time (ADR-0077).
+The 4 MiB bound describes retained record representations, not total process
+heap or RSS; input chunks, ordinary parsed records and the bounded page coexist.
 
 The usage worker's disposable fact cache holds at most 32 MiB of serialized
 facts. SQLite insert/update/delete triggers on all three fact tables maintain
@@ -90,6 +200,23 @@ Oversized projections use uncached reads. Pricing, attribution, projection CAS,
 terminal/outbox durability and full scalar aggregation retain their owners.
 
 ## Trace contract
+
+Task MCP receipt admission emits one bounded SQLite summary per invocation on
+the existing original command-ID trace. It separates queue wait, total execution,
+synchronous persistence-attempt duration, contention sleep and attempt count;
+these are elapsed intervals, not CPU attribution or competing-writer identity.
+The existing admitted/result spans and the explicit pre-BEGIN refusal reply
+retain the same command identity. Arguments, context tokens, message/file bodies
+and SQL text are excluded. Timing callbacks cannot alter queue ordering, SQL
+outcomes or the unchanged contention bound. Historical generic errors without
+these fields do not establish the missing writer/statement attribution.
+
+The existing client `context-estimate-paint` stage uses the authenticated common
+trace batch owner, retaining its original compaction ID, Thread/turn identity,
+paired start/completion and monotonic paint duration. Its presence must not
+reject neighbouring valid measurements. The explicit stage allowlist, outcomes,
+identity/time limits, metadata filtering, 32-event and 32-KiB bounds remain in
+force; telemetry grants no command, provider or lifecycle authority.
 
 Task-card Git previews run only on explicit request and retain at most 64 KiB of
 diff text per response, with visible truncation. Board snapshots never run Git
@@ -140,6 +267,21 @@ fence; eligibility and the pre-dispatch durable save have separate spans.
 These elapsed spans do not classify filesystem or callback wait as CPU work.
 
 ## Unified performance evidence
+
+Shared Dashboard relay intake forwards the existing `recordCommandTrace`
+callback. Original command UUIDs join attachment preparation/download,
+manifest/first-chunk transport samples, local finalized-file verification and
+publication, local intake and remote result confirmation. Started/terminal pairs
+share an operation span ID, UTC start and monotonic duration. Transport samples
+separate headers/body and retain bounded counts, HTTP status and allowlisted
+cause codes; ordinary successful chunks do not each create a trace span.
+Raw text, sender identity, filenames/paths, URLs, file bytes and credentials are
+excluded. Throwing, rejected or unavailable telemetry cannot change delivery.
+The existing trace worker persists failures as well as success; retention and
+overflow remain owned by that worker. A successful remote result span is not
+proof that Telegram displayed a notification. Inspector transition timestamps
+and local spans do not retroactively establish unrecorded historical queue/I/O
+durations or exclusive network latency. Missing original IDs remain unknown.
 
 Explicitly traced snapshot GETs carry their existing client trace ID to the
 HTTP owner; diagnostic health/static probes may supply the same bounded
@@ -243,6 +385,17 @@ monotonic durations and original UTC endpoints are captured before the work and
 submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.
 A process failure before trace initialization cannot leave these records; the
 startup error log remains the evidence for that boundary.
+The same startup span may record content-free SQLite recovery phases before the
+trace worker exists: database-lock admission, recovery-lock acquisition, marker
+and intent reads, rollback/resume, database inspection/quarantine and lock release.
+Admission ends at protected callback entry; protected recovery duration is not
+labelled lock wait. Only fixed phase/outcome and elapsed/UTC scalars are retained,
+without database paths, owner tokens or SQL content. Successful phase observations
+flush through the same trace worker; failure before that worker remains in the
+ordinary startup log. Diagnostic failure cannot change recovery or admission.
+Missing terminal phases and a passing private restart do not establish a
+historical holder or resolve the original stalled startup.
+
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
 startup, on writes and at most once per minute while idle. Limit maintenance
@@ -359,6 +512,20 @@ stable content-free reason (`absent`, `fingerprint changed`, or the exact
 uncacheable policy reason); they never print environment values or fabricate
 reusable evidence. See ADR-0346. Existing frozen/admitted generations retain
 their original runner; this policy applies only to subsequent compositions.
+
+Targeted retry uses the same checkpoint eligibility for its read-only plan and
+execution. Retained failures survive runs of another subset. Only that file's
+successful execution/cleanup clears its failure. The effective isolated child
+environment binds profile overrides and real OS identity; overwritten private
+home/state/temp inputs use one stable ownership token for proof. Other environment,
+toolchain, transitive sources, declared assets and browser inputs remain bound.
+Unknown inputs stay unknown and rerun; arbitrary import-capture text is not logged.
+See ADR-HUB-374. No historical digest is upgraded into new-policy evidence.
+
+The temporary allocator consumes its parent before child environment projection.
+That shared input retains its absolute/resolved location and device/inode in the
+proof; directory modification times and random child suffixes do not invalidate
+reuse. Unavailable allocator identity remains unknown, not an execution ban.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
@@ -690,6 +857,20 @@ so a busy transition does not serialize unrelated Thread processing.
 
 ## Navigation responsiveness
 
+Retained chat selection paints its canonical window before the ordered
+selection response or conditional background history response. The existing
+history-page-paint and control measurements share that selection's client trace
+identity and fixed loaded-asset marker. The read ACK retains its own original
+identity and existing paint/receipt/marker-clear spans; exact final identity
+correlates it with displayed history without turning a click into read evidence.
+An unchanged repeated selection uses the existing select-task mutation plus
+known-version task-history read instead of another full open-task history page.
+Layout notification yields to the synchronous selection intent before starting
+optional column hydration, avoiding a second cold read of the selected page.
+These spans and gated browser measurements distinguish removed I/O dependencies
+from actual production server/SQLite latency; they do not establish a universal
+latency percentage or a deployed improvement before installation and observation.
+
 Leaving Chat for Dashboard must not expand the hidden conversation's DOM. A
 zero-sized history viewport is not underfilled; automatic paging rechecks the
 currently visible owner before each page and resumes when Chat becomes visible.
@@ -726,3 +907,177 @@ resource-accounting owner or starting a child. `none` has no dependency/accounti
 work. Selected files retain current isolation, shared-resource admission and the
 40% cooperative CPU/RAM policy. Selection is not cacheability and not a resource
 waiver. Inventory listing/plan resolution is read-only; it runs no test.
+
+## Long Task work versus transport waiting
+
+Task admission and result spans use the original operation ID in the existing
+CommandTrace sink. They contain only tool/phase/live-worker scalars, never
+arguments, content, tokens or paths. Client admission and final-result projection
+join that original. Existing TaskGit traces retain queue/lease, composition,
+Git/I/O and persistence timings; do not count nested spans as additional wall
+time. Fast receipt delivery does not claim that composition became faster.
+Transport deadlines remain distinct from real operation outcomes. Only read
+reconnection uses the existing transport cadence; valid work receives no new
+total deadline, arbitrary size cap or global execution lane.
+
+## Error-only release persistence diagnostics (HUB-368)
+
+The existing CommandTrace sink records a release-persistence span only after a
+persistence attempt encounters an error, including a later successful retry. It
+uses the original operation ID and bounded method/transaction-phase/native-code,
+owner-epoch, generation, step, attempt, queue-wait and elapsed metadata. SQL values,
+arguments, error messages, raw paths and content are excluded. Original effect
+and receipt-settlement error codes remain distinguishable. The normal source
+release CLI flushes its existing trace worker before closing the local runtime.
+These observations identify the failing persistence boundary; a controlled writer
+fixture does not establish which process held a historical production lock.
+
+
+## Task preparation timing after detailed retention (HUB-372)
+
+The existing original-operation timing summary retains fixed-class call/error
+counts, suppressed counts, inclusive elapsed sum and maximum even after its
+unchanged 512-detail-span budget. Fixed Git verb classes and named preparation
+owner phases contain no arguments, paths, owner tokens or message/file content.
+Nested inclusive aggregates are not additive wall time, CPU or disk attribution.
+Base/integration evidence, history authority/history checks, cutover and final
+promotion authority retain their existing callbacks and fresh guard order.
+Ordinary candidate-lock admission reports elapsed to protected callback entry;
+the protected body is not reported as queue wait. The same batch/log owner flushes
+the summary on normal success or thrown failure. Process death before summary is
+still incomplete evidence, not a reconstructed aggregate or completed operation.
+Diagnostic sink failure cannot change outcomes. These measurements do not remove
+proofs, cache authority, optimize Await or establish production speedup. The next
+otherwise-required lifecycle check must execute the reviewed instrumented owner;
+merely storing this code in a Task result does not instrument an older runtime.
+
+## Repeated runtime directory protection (HUB-376)
+
+Update-backup retention (HUB-383) uses the existing deferred after-ready scheduler,
+with cached health only, bounded original-discovery pages and bounded per-entry
+deletion batches. Its scheduler binding contains original/digest/cursor references;
+the same canonical child stores the larger owner proof. Backup content is verified
+at preview/admission, not rehashed before every deleted entry. A large copy may
+require multiple cooperative batches; observed pending excess is not a claim that
+five copies already remain. No production speed or disk saving is inferred from
+private fixture timings, and no periodic whole-disk scan is introduced.
+
+
+The existing directory-security owner may avoid a repeated icacls invocation
+only after fresh exact root DACL and physical identity proof. The requested
+account resolves to the same SID used by the existing grant arguments; exact
+protected/canonical Allow FullControl OI/CI with unrestricted propagation for
+that account, SYSTEM and Administrators is required, with no extra, inherited
+or deny ACE. Unknown/changed proof takes the original apply/error path. This is
+not a saved stamp, recursive descendant audit or a change to config-file ACL.
+Normal newly created files/directories must still inherit the intended grants.
+
+Package shutdown retains existing original-ID restart phase spans; package
+preparation, backup, installer and readiness are real independent work, not
+queue/lock wait merely because they take time. Private fixture wall time and
+saved ACL calls do not establish production speedup or fixed downtime. Unobserved
+cross-process stages remain unmeasured; no inferred CPU/disk attribution.
+
+Package backup support inspection uses the same shallow/declared durable scope
+as the stopped snapshot (ADR-HUB-380). It reads selected file headers and directory
+identities without hydrating retained Git/WIP/dependency/payload trees, opening
+SQLite or acquiring writer reservations on the live runtime. The existing
+original-ID `package-backup-preflight` restart span measures that work. It is not
+queue wait or proof of snapshot completion; actual backup and ready remain distinct.
+
+## Worker memory observations
+
+The composition root forwards its existing commandTraceService to the client
+runtime. Journal preparation's existing started/terminal pair therefore reaches
+the same bounded best-effort worker/SQLite sink, under the original publication
+command and operation span with instance/release identity. Diagnostic failure or
+backpressure cannot change preparation, upload or retry results. Existing gzip
+encoding counts the actual buffers already produced: encodedInputBytes,
+encodingBufferCount and maxEncodingBufferBytes are fixed numeric terminal
+measurements, not another serialization, retained payload or process-memory
+bound. Failed preparation leaves unavailable input volume unknown. Missing older
+spans do not prove no operation and cannot be retrospectively reconstructed.
+
+Journal publication retains its canonical JSON serialization and complete gzip
+payload, but feeds UTF8 encoding blocks into gzip with stream backpressure rather
+than allocating another full uncompressed UTF8 Buffer. Block boundaries preserve
+surrogate pairs. This is an internal encoding granularity, not a history/content
+limit. Compression level, exact compressed bytes and sync ID, chunk protocol,
+read-snapshot generation, worker ownership and failure-before-publication remain
+unchanged. Full JSON strings, SQLite materialization and compressed output still
+consume memory; eliminating this copy is not an exclusive process-RSS bound or a
+claim that all retained-memory causes have been fixed.
+
+Usage-sync snapshot export removes message bodies, prompts, diffs and auxiliary
+file/tool lists from its SQLite record projection before materializing journal
+rows in JavaScript. These fields are not inputs to the canonical usage-fact
+projector. Full journal reads and stored records retain their original content;
+all usage fields, cursor selection, ordering and legacy handling are unchanged.
+This avoids copying unused content, not a new history limit or cache policy.
+
+The existing usage snapshot result and original worker-request trace report
+selectedJournalRecords and materializedRecordJsonBytes from the already returned
+SQLite JSON strings, before parsing. Invalid selected JSON still contributes to
+input volume; these counts are not output fact count or retained heap. A non-text
+legacy value leaves byte volume unknown. journalSelectionMode is numeric:0 full
+(including revision0),1 positive revision cursor,2 legacy observed-time cursor,
+3 no journal table. The existing revision-backed query takes precedence over
+the legacy timestamp argument. No raw cursor/identity/content is logged, no
+additional query/export/stringification is performed, and metrics do not change
+selection, fact normalization, original errors or operation identity. Existing
+health exposes only the latest bounded snapshot scalars through the same owner.
+
+The existing health sampler may read getHeapStatistics from already-owned Node
+workers, without spawning/refing/stopping them or posting business requests.
+Seven fixed owner classes retain weak references to at most 16 diagnostic
+records each; additional active workers remain explicitly unobserved. This is
+an observation bound, not worker admission or a limit on history/work. Exit
+removes the exact observation. Samples carry numeric thread/generation and
+request/completion times; missing/failed values are unknown, not zero. At most
+one observation per tracked worker is pending, with no added timer or wait on
+the business path. Automatic ticks join only observations started by that
+tick; an already pending observation retains no additional completion chain.
+Other workers can still be observed while one request stays pending. An
+explicit awaited sample may join existing pending observations. Native
+sampling failure cannot change an owner's result.
+
+Existing runtime-health trace frames retain the original metric selection and
+cap; separate small frames persist each worker owner's numeric summary through
+the same trace. Heap/physical/external values belong to worker isolates, may be
+stale and overlap native allocator accounting; they are not per-worker RSS.
+Summed latest samples are not a simultaneous exclusive decomposition of process
+RSS. Payload, paths, arbitrary names, stacks and provider data are not sampled.
+These observations do not authorize GC, heap dumps, inspector operations, cache
+clearing, retries, provider calls, restarts or a claim that a memory cause is fixed.
+
+## Input-scoped native production (HUB-411)
+
+New prefix transport excludes only verified receiver-owned history; new object
+consumers do not propagate disjoint archived objects. Pack selection reads index
+membership rather than decompressing unrelated payload. Fixture created/allocated
+bytes are reported separately from production disk reclamation or latency.
+No arbitrary product cap, new scan, dependency copy or skipped authority follows.
+See ADR-HUB-411-input-scoped-native-production.
+
+HUB-411 extends input-scoped production to the actual fresh Await caller, new
+generation clones, invocation validation and compatible Task dependencies. Record
+created logical bytes separately from physical allocations deduplicated by file
+identity; hardlinked byte counts are not new disk allocations. A disposable fixture
+measures these producer effects, not reclaimed production GB or provider latency.
+Existing repository/pool and exact dependency-key locks serialize only their own
+resources; an unknown process tree retains its original lifetime fence.
+
+## Cold history selection dependency
+
+The existing `history-page-paint` measurement joins cold selection intent,
+canonical history and a confirmed paint opportunity under the selection trace ID.
+Report selection-response waiting separately from SQLite lock waiting. A held
+selection reply in an isolated fixture establishes the dependency cost, while
+actual database contention needs its own writer/queue evidence.
+
+Measure the full latest request/final DOM and exact read-clear receipt with the
+ordinary and heavy canonical pages. Record request/body sizes, renderer task and
+script work, heap/long tasks and separately qualified test-process CPU/I/O counts.
+Fixture delays and renderer counters have their own attribution. Natural loaded
+runtime observations and source/fixture AFTER are distinct acceptance evidence.
+The existing bounded recorder owns these measurements. See ADR-HUB-427.

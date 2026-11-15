@@ -1,3 +1,4 @@
+import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
 import { Worker } from "node:worker_threads";
 
 const workerUrl = new URL("./claude-transcript-worker.mjs", import.meta.url);
@@ -7,6 +8,7 @@ let workerQueue = Promise.resolve();
 function runWorker(payload) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerUrl, { workerData: payload });
+    observeRuntimeWorkerMemory("claudeTranscript", worker);
     let settled = false;
     const settle = (callback, value) => {
       if (settled) return;

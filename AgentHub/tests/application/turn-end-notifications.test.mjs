@@ -421,6 +421,6 @@ test("Codex completion preserves a readable citation reference across durable re
 
   const restored = new TurnEndNotificationRegistry(registry.snapshot()).get(completion());
   assert.equal(restored.finalAnswer, "Цитата 1\nПричина найдена");
-  assert.deepEqual(restored.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(restored.responseAnnotationReferences, [{ index: 1, position: { start: 0, end: 8 } }]);
   assert.deepEqual(restored.prompts, [annotationPrompt, userLiteral]);
 });

@@ -13,10 +13,15 @@ already accepted queued input. The ordinary Stop owner could reconcile it.
 Startup may request a **new recovery interruption**, never infer a historical
 successful completion. This applies only to a managed run with a retained exact
 turn and client command identity, a fresh idle provider Thread and that exact
-turn marked interrupted/aborted. It executes outside the Thread read lane.
+turn marked interrupted/aborted. ADR-HUB-392 additionally permits an exact
+`inProgress` turn with retained accepted/observed provider-start and positive Hub
+ownership. It executes outside the Thread read lane.
 
-The existing cancellation owner performs at most one attempt per run per
-runtime. It requires fresh provider activity and uncached successful native
+The existing cancellation owner coalesces concurrent attempts per run. An
+accepted or ambiguous interrupt remains fenced for that run in the runtime;
+inconclusive/live prechecks and definite no-active rejection are not an
+accepted effect and may be rechecked by ordinary observation (ADR-HUB-392).
+It requires fresh provider activity and uncached successful native
 process absence, then addresses `turn/interrupt` to the original Thread/turn.
 An accepted interrupt waits for the normal exact terminal. Only a definite
 no-active-turn rejection permits reconciliation; transport errors, missing

@@ -19,10 +19,35 @@ import {
   rollbackRuntime,
   runtimeStatus,
 } from "../../runtime-manager.mjs";
+import { isRuntimeSourceFile, verifyRuntimeImportClosure } from "../../src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { captureRuntimeReleaseBinding } from "../../src/infrastructure/filesystem/runtime-installation-custody.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
+
+test("prepared runtime ships the shared Git policy and refuses a missing policy before dependency work", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const module = "src/infrastructure/filesystem/preparation-git-isolation.mjs";
+  const asset = "src/infrastructure/filesystem/git-invocation-policy.json";
+  await mkdir(path.dirname(path.join(sourceRoot, module)), { recursive: true });
+  for (const file of [module, asset]) await cp(path.join(ROOT, file), path.join(sourceRoot, file));
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "git-policy-companion" });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  const entry = manifest.files.find(value => value.path.replaceAll("\\", "/") === asset);
+  assert.ok(entry);
+  const bytes = await readFile(path.join(sourceRoot, asset));
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, asset)), bytes);
+  assert.equal(entry.sha256, createHash("sha256").update(bytes).digest("hex"));
+  const consumer = await import(pathToFileURL(path.join(prepared.releaseRoot, module)).href);
+  assert.deepEqual(consumer.ownedGitArguments(["status"], { platform: "win32" }), ["-c", "core.longpaths=true", "status"]);
+  await rm(path.join(sourceRoot, asset));
+  let dependencyCalls = 0;
+  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "missing-git-policy",
+    installProductionDependencies: async () => { dependencyCalls += 1; } }), /Runtime module asset is missing/u);
+  assert.equal(dependencyCalls, 0);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), { code: "ENOENT" });
+});
 
 test("prepared runtime retains the Codex custody companion and refuses its absence", async t => {
   const { sourceRoot, runtimeRoot } = await fixture();
@@ -735,7 +760,7 @@ test("deployRuntime restores a missing RuntimeHost without changing user data", 
   const configFile = path.join(runtimeRoot, "config.json");
   const journalFile = path.join(runtimeRoot, "data", "journal.sqlite");
   await mkdir(path.dirname(journalFile), { recursive: true });
-  await writeFile(configFile, '{"provider":"codex","customSetting":true}\n');
+  await writeFile(configFile, '{"provider":"codex","customSetting":true,"usageSyncServerUrl":""}\n');
   await writeFile(journalFile, "retained journal bytes");
   const configBefore = await readFile(configFile);
   const journalBefore = await readFile(journalFile);
@@ -948,4 +973,42 @@ test("runtime config and data are external, activation is explicit and rollback 
     current: "release-1",
     previous: "release-2",
   });
+});
+
+test("prepared native capture owner ships its exact CSharp companion and refuses missing source before dependencies", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const module = "src/infrastructure/filesystem/sealed-native-capture.mjs";
+  const asset = "src/infrastructure/filesystem/sealed-native-capture.cs";
+  const boot = "src/infrastructure/process/system-boot-identity.mjs";
+  for (const name of [module, asset, boot]) {
+    await mkdir(path.dirname(path.join(sourceRoot, name)), { recursive: true });
+    await cp(path.join(ROOT, name), path.join(sourceRoot, name));
+  }
+  const unrelated = "src/infrastructure/filesystem/unrelated-capture.cs";
+  await writeFile(path.join(sourceRoot, unrelated), "foreign unselected CSharp source");
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "native-capture-companion" });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  const entry = manifest.files.find(f => f.path.replaceAll("\\", "/") === asset);
+  assert.ok(entry, "native capture companion must be part of the immutable manifest");
+  assert.equal(isRuntimeSourceFile(asset), true);
+  assert.equal(isRuntimeSourceFile(unrelated), false);
+  await assert.rejects(verifyRuntimeImportClosure(prepared.releaseRoot, manifest.files.filter(f => f.path !== asset)), /sealed-native-capture\.cs/u);
+  await verifyRuntimeImportClosure(prepared.releaseRoot, manifest.files);
+  const raw = await readFile(path.join(sourceRoot, asset));
+  assert.equal(entry.sha256, createHash("sha256").update(raw).digest("hex"));
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, asset)), raw);
+  assert.equal(manifest.files.some(f => f.path === unrelated), false);
+  await assert.rejects(readFile(path.join(prepared.releaseRoot, unrelated)), { code: "ENOENT" });
+  if (process.platform === "win32") {
+    const consumer = await import(pathToFileURL(path.join(prepared.releaseRoot, module)).href);
+    const measured = await consumer.measureNativeCaptureAllocation([sourceRoot]);
+    assert.ok(measured.files > 0); assert.ok(measured.uniqueAllocatedBytes > 0);
+  }
+  await unlink(path.join(sourceRoot, asset));
+  let dependencyCalls = 0;
+  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "missing-native-capture-companion",
+    installProductionDependencies: async () => { dependencyCalls++; } }), /Runtime module asset is missing: src\/infrastructure\/filesystem\/sealed-native-capture\.cs/u);
+  assert.equal(dependencyCalls, 0);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), { code: "ENOENT" });
 });

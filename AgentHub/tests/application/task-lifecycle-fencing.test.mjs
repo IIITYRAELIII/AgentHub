@@ -654,7 +654,7 @@ test("published release service closure binds the selected Done set and preserve
       linkedTaskId: selectedId }],
   };
   const selected = { id: selectedId, revision: 3, status: "done", workflowStatus: "done",
-    workspaceId: source.workspaceId, gitReferences: [{ projectRoot: "D:/project", resultCommit: "a".repeat(40) }] };
+    workspaceId: source.workspaceId, gitReferences: [{ projectRoot: "D:/project", branch: "HUB-415", resultCommit: "a".repeat(40) }] };
   let generation = "generation-1";
   let transition = null;
   let outcome = null;
@@ -699,6 +699,10 @@ test("published release service closure binds the selected Done set and preserve
   await assert.rejects(service.complete({ ...request, confirmCleanup: true,
     expectedCleanupToken: preview.cleanupToken }), /confirmation is stale/u);
   assert.equal(source.status, "started");
+  source.checklist[0].releaseReference = { taskRevision: "2",
+    gitReferences: [{ ...selected.gitReferences[0], resultCommit: "f".repeat(40) }] };
+  await assert.rejects(service.complete(request), /reference result changed/u);
+  source.checklist[0].releaseReference.gitReferences = selected.gitReferences;
   const refreshed = await service.complete(request);
   const completed = await service.complete({ ...request, confirmCleanup: true,
     expectedCleanupToken: refreshed.cleanupToken });

@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
-import { createCandidateGeneration } from "../../src/domain/release-operation.mjs";
+import { createCandidateGeneration, failedFirstComposeRecovery } from "../../src/domain/release-operation.mjs";
+import { resolveTestSelection } from "../../src/domain/test-selection.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
+import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
 
 const taskIds = ["task-a", "task-b"];
 const targets = [
@@ -63,6 +67,96 @@ function start(service, requestId = "request-1") {
     authorization: { taskIds, approvedTargets: targets, validationMode: "full" },
   });
 }
+
+test("published dev sync refuses every amendment family before owner acquisition", async t => {
+  const f = await fixture(t, { schedule: () => assert.fail("no scheduling") });
+  const created = f.store.create({ requestId: "exclusive-sync", workspaceId: "workspace-1", streamId: "stream-1",
+    threadId: "thread-1", runnerVersion: "test", authorization: { taskIds, approvedTargets: targets, validationMode: "full" } });
+  const operationId = created.operation.operationId;
+  const before = f.store.get(operationId);
+  f.service.synchronizePublishedDevEffect = () => assert.fail("no effects");
+  for (const extra of [{ reviewedMain: {} }, { testSelection: {} }, { taskIds: [] },
+    { taskScope: "all_await" }, { releaseMetadata: {} }]) {
+    await assert.rejects(f.service.continue(operationId, { requestId: "refused-sync", publishedDevSync: {}, ...extra }), /exclusive/u);
+    assert.deepEqual(f.store.get(operationId), before);
+  }
+});
+
+test("published dev sync reopens only an expired positively dead original owner", async t => {
+  let clock = Date.UTC(2026, 9, 30), effects = 0, liveness = "actual", livenessChecks = 0;
+  const now = () => new Date(clock).toISOString();
+  const scheduled = [];
+  const f = await fixture(t, { now, schedule: callback => scheduled.push(callback), retryDelayMs: 3_600_000,
+    finalize: async () => { throw Object.assign(new Error("native recovery pending"), { code: "RELEASE_EXTERNAL_CONDITION" }); } });
+  const ack = start(f.service, "original-published-reopen");
+  scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  const original = f.store.snapshot(ack.operationId);
+  assert.equal(original.operation.state, "waiting");
+  assert.equal(original.operation.resumeState, "finalize");
+  assert.equal(original.operation.owner, null);
+  const childSource = `const { ReleaseOperationStore } = await import(process.argv[1]);
+    const store = new ReleaseOperationStore({ dataDir: process.argv[2], now: () => process.argv[3] });
+    const result = store.acquire(process.argv[4], 'exited-published-sync', { leaseMs: 1000, processId: process.pid });
+    if (!result.acquired) throw new Error(result.reason);
+    console.log(JSON.stringify(result.operation.owner));`;
+  const child = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", childSource,
+    new URL("../../src/infrastructure/persistence/release-operation-store.mjs", import.meta.url).href,
+    f.root, now(), ack.operationId], { windowsHide: true });
+  assert.equal(child.stderr, "");
+  const priorOwner = JSON.parse(child.stdout);
+  assert.equal(processIsAlive(priorOwner.processId), false, "execFile joined the actual exited lease owner");
+  const store = new ReleaseOperationStore({ dataDir: f.root, now });
+  const service = new ReleaseOperationService({ store, now, ownerId: "reopened-published-sync", processId: process.pid,
+    processAlive: pid => { livenessChecks++; assert.equal(pid, priorOwner.processId);
+      return liveness === "actual" ? processIsAlive(pid) : liveness; },
+    schedule: () => assert.fail("addressed recovery cannot schedule the pipeline"),
+    compose: () => assert.fail("no composition"), validate: () => assert.fail("no validation"),
+    publishTarget: () => assert.fail("no publication"), readTarget: () => assert.fail("no target effect read"),
+    finalize: () => assert.fail("no Task finalization"),
+    synchronizePublishedDev: async ({ validate, operation, generation: captured }) => {
+      await validate();
+      effects++;
+      const owned = store.get(ack.operationId).owner;
+      assert.ok(owned.epoch > priorOwner.epoch);
+      assert.equal(owned.processId, process.pid);
+      assert.equal(store.heartbeat(ack.operationId, priorOwner.ownerId, { epoch: priorOwner.epoch }).applied, false);
+      store.release(ack.operationId, priorOwner);
+      assert.deepEqual(store.get(ack.operationId).owner, owned, "old epoch cannot release the new owner");
+      assert.deepEqual(operation.publicationEffects, original.operation.publicationEffects);
+      assert.deepEqual(captured, original.generations[0]);
+      return { status: "synchronized", integrated: true };
+    } });
+  const request = () => ({ requestId: "same-original-native-readback", expectedRevision: store.get(ack.operationId).revision,
+    expectedGeneration: 1, publishedDevSync: { projectRoot: "D:/repo", expectedDevCommit: "a".repeat(40) } });
+  const refusedWithoutEffects = async () => {
+    const before = store.snapshot(ack.operationId);
+    await assert.rejects(service.continue(ack.operationId, request()), /owner|CAS/u);
+    assert.deepEqual(store.snapshot(ack.operationId), before);
+    assert.equal(effects, 0);
+  };
+  await refusedWithoutEffects(); // Actual dead PID still has an unexpired lease.
+  clock += 1001;
+  liveness = true;
+  await refusedWithoutEffects(); // A live owner cannot be taken over just because its lease expired.
+  liveness = null;
+  await refusedWithoutEffects(); // An unknown liveness result is not positive death evidence.
+  liveness = "actual";
+  const input = request();
+  assert.equal((await service.continue(ack.operationId, input)).devSynchronization.integrated, true);
+  assert.equal(effects, 1);
+  assert.ok(livenessChecks > 0);
+  await assert.rejects(service.continue(ack.operationId, input), /CAS/u);
+  assert.equal(effects, 1, "a stale original CAS cannot repeat the native effect");
+  const complete = store.snapshot(ack.operationId);
+  assert.equal(complete.operation.owner, null);
+  assert.equal(complete.operation.state, "waiting");
+  assert.equal(complete.operation.resumeState, "finalize");
+  assert.deepEqual(complete.generations, original.generations);
+  assert.deepEqual(complete.operation.publicationEffects, original.operation.publicationEffects);
+  assert.deepEqual(complete.steps, original.steps);
+  assert.equal(scheduled.length, 0);
+});
 
 async function waitUntil(predicate, { timeoutMs = 2_000 } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -212,13 +306,14 @@ test("startup recovery leaves a reviewed external native owner and its receipts 
   rawAfterDb.close();
 });
 
-test("stale prepared candidate waits for normal preparation on the original operation", async t => {
+for (const refusalCode of ["RELEASE_PREPARED_CANDIDATE_STALE", "RELEASE_MAIN_APPROVAL_STALE"]) {
+test(`stale prepared candidate waits for normal preparation on the original operation: ${refusalCode}`, async t => {
   let prepared = false;
   const attempts = [];
   const f = await fixture(t, {
     compose: async input => {
       attempts.push(input.generation);
-      if (!prepared) throw Object.assign(new Error("prepared selection is stale"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+      if (!prepared) throw Object.assign(new Error("prepared selection is stale"), { code: refusalCode });
       return generation();
     },
     validate: async () => { throw Object.assign(new Error("fixture stops before publication"), { code: "RELEASE_VALIDATION_FAILED" }); },
@@ -229,6 +324,7 @@ test("stale prepared candidate waits for normal preparation on the original oper
   assert.equal(refused.operation.state, "waiting");
   assert.equal(refused.operation.waitReason.code, "prepared_candidate_stale");
   assert.equal(refused.operation.resumeState, "compose");
+  assert.equal(refused.operation.lastError.code, refusalCode);
   assert.equal(refused.generations.length, 0);
   prepared = true;
   f.service.continue(ack.operationId);
@@ -240,6 +336,121 @@ test("stale prepared candidate waits for normal preparation on the original oper
   assert.equal(resumed.operation.currentGeneration, 1);
   assert.deepEqual(attempts, [1, 1]);
   assert.equal(start(f.service).operationId, ack.operationId);
+});
+}
+
+test("first frozen compose recovery keeps failed attempt and amends the same release", async t => {
+  const selected = [...taskIds, "task-c"].map(taskId => ({ taskId, resultCommit: `${taskId}-r1`,
+    tree: `${taskId}-tree`, acceptanceRevision: 2 }));
+  let composeCalls = 0, inspections = 0, recoveries = 0, validations = 0;
+  const frozenBinding = { repositoryRoot: "D:/repo", commit: "frozen-one", manifestHash: "frozen-manifest",
+    releaseVersion: "2.1.5", runtimeReleaseVersion: "2.1.5+build.29901174" };
+  const f = await fixture(t, {
+    compose: async input => {
+      composeCalls += 1;
+      if (input.generation === 1) throw new Error("frozen readback failed");
+      assert.deepEqual(input.operation.firstComposeRecovery.candidates, [frozenBinding]);
+      return generation(selected);
+    },
+    inspectFirstCompose: async () => { inspections += 1; return [frozenBinding]; },
+    recoverFirstCompose: async ({ generation: number, validateBeforeCommit }) => {
+      recoveries += 1;
+      assert.equal(number, 1);
+      await validateBeforeCommit();
+      return generation();
+    },
+    reservePublication: ({ generation: value, reserve, recompose }) => value.generation === 1 ? recompose() : reserve(),
+    validate: async () => { validations += 1; return { status: "passed" }; },
+    withTaskSelection: ({ commit }) => commit(selected, async () => {}),
+    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({
+      repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection, ["tests/affected.test.mjs"]),
+    })),
+  });
+  const ack = start(f.service, "first-frozen-original");
+  const failed = await f.service.drain(ack.operationId);
+  assert.equal(failed.operation.state, "failed");
+  assert.equal(failed.operation.currentGeneration, 0);
+  const firstReceipt = structuredClone(failed.receipts[0]);
+  const stale = await f.service.continue(ack.operationId, { requestId: "stale", expectedRevision: 1, expectedGeneration: 0 });
+  assert.equal(stale.accepted, false);
+  assert.equal(inspections, 0);
+  const admitted = await f.service.continue(ack.operationId, { requestId: "recover-frozen-first",
+    expectedRevision: failed.operation.revision, expectedGeneration: 0 });
+  assert.equal(admitted.accepted, true);
+  const recovered = await f.service.drain(ack.operationId);
+  assert.equal(recovered.operation.state, "waiting");
+  assert.equal(recovered.operation.waitReason.code, "release_inputs_changed");
+  assert.equal(recovered.operation.currentGeneration, 1);
+  assert.deepEqual(recovered.receipts.find(item => item.stepId === "compose" && item.attempt === 1), firstReceipt);
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").attempt, 2);
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "applied");
+  assert.equal(validations, 0);
+  assert.deepEqual([composeCalls, inspections, recoveries], [1, 1, 1]);
+  const unamended = await f.service.continue(ack.operationId, { requestId: "no-implicit-first-amendment" });
+  assert.equal(unamended.accepted, false);
+  assert.equal(unamended.reason, "test-selection-required");
+  assert.equal(f.store.get(ack.operationId).currentGeneration, 1);
+  const frozenGeneration = structuredClone(recovered.generations[0]);
+  const amendment = await f.service.continue(ack.operationId, { requestId: "include-correction",
+    expectedRevision: recovered.operation.revision, expectedGeneration: 1,
+    taskIds: selected.map(item => item.taskId), testSelection: { mode: "all", ids: [] } });
+  assert.equal(amendment.accepted, true);
+  const done = await f.service.drain(ack.operationId);
+  assert.equal(done.operation.state, "done", JSON.stringify(done.operation.lastError));
+  assert.equal(done.operation.currentGeneration, 2);
+  assert.deepEqual(done.generations[0], frozenGeneration);
+  assert.equal(done.operation.authorization.fingerprint, failed.operation.authorization.fingerprint);
+  assert.deepEqual(done.receipts.find(item => item.generation === 1 && item.attempt === 1 && item.stepId === "compose"), firstReceipt);
+});
+
+test("first compose admission reconciliation refuses captured custody without changing ordinary frozen recovery", async t => {
+  const f = await fixture(t, {
+    compose: async () => { throw new Error("first frozen readback failed"); },
+    inspectFirstCompose: async () => [{ repositoryRoot: "D:/repo", commit: "already-captured" }],
+    recoverFirstCompose: () => assert.fail("UNKNOWN admission cannot authorize captured recovery"),
+  });
+  const ack = start(f.service, "captured-admission-original");
+  const before = await f.service.drain(ack.operationId);
+  await assert.rejects(f.service.reconcileFirstComposeContinuation(ack.operationId, {
+    requestId: "captured-admission-unknown", expectedRevision: before.operation.revision, expectedGeneration: 0,
+  }), /positively uncaptured custody/u);
+  assert.deepEqual(f.store.snapshot(ack.operationId), before);
+});
+
+test("first frozen compose recovery refuses unknown and changed receipt inputs", async t => {
+  let f;
+  f = await fixture(t, {
+    compose: async () => { throw new Error("frozen readback failed"); },
+    inspectFirstCompose: async () => {
+      const db = new DatabaseSync(path.join(f.root, "runtime.sqlite"));
+      try {
+        const receipt = f.store.latestStep("operation-1", 1, "compose");
+        receipt.status = "unknown";
+        db.prepare("UPDATE release_step_receipts SET status='unknown', receipt_json=? WHERE operation_id=? AND generation=1 AND step_id='compose'")
+          .run(JSON.stringify(receipt), "operation-1");
+      } finally { db.close(); }
+      return [{ repositoryRoot: "D:/repo" }];
+    },
+    recoverFirstCompose: () => assert.fail("no recovery effect"),
+  });
+  const ack = start(f.service, "first-frozen-refusals");
+  const failed = await f.service.drain(ack.operationId);
+  assert.ok(failedFirstComposeRecovery(failed));
+  for (const change of [
+    value => { value.receipts[0].status = "unknown"; },
+    value => { value.receipts[0].input.priorGeneration = 2; },
+    value => { value.receipts[0].effect = { status: "partial" }; },
+    value => { value.receipts.push({ ...value.receipts[0], stepId: "publish:git" }); },
+    value => { value.generations.push({ generation: 1 }); },
+  ]) {
+    const invalid = structuredClone(failed);
+    change(invalid);
+    assert.equal(failedFirstComposeRecovery(invalid), null);
+  }
+  await assert.rejects(f.service.continue(ack.operationId, { requestId: "changed-during-inspection",
+    expectedRevision: failed.operation.revision, expectedGeneration: 0 }), /failed receipt changed/u);
+  assert.equal(f.store.get(ack.operationId).state, "failed");
+  assert.equal(f.store.snapshot(ack.operationId).generations.length, 0);
 });
 
 test("definite preparation refusal continues the same release without replaying completed steps", async t => {
@@ -298,7 +509,7 @@ test("lost generation persistence reply reads exact SQLite result without anothe
   assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "applied");
 });
 
-test("validation failure waits for a correction and continues as generation two", async (t) => {
+test("validation failure retains its original until the corrected result has an explicit test amendment", async (t) => {
   let validation = 0;
   let resultVersion = 1;
   const cleaned = [];
@@ -312,6 +523,9 @@ test("validation failure waits for a correction and continues as generation two"
       if (validation === 1) throw new Error("contract failed");
       return { status: "passed" };
     },
+    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({
+      repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection, ["tests/failed.test.mjs"]),
+    })),
   });
   const ack = start(f.service);
   let snapshot = await f.service.drain(ack.operationId);
@@ -319,13 +533,116 @@ test("validation failure waits for a correction and continues as generation two"
   assert.equal(snapshot.operation.waitReason.code, "validation_failed");
   assert.equal(snapshot.operation.currentGeneration, 1);
   resultVersion = 2;
-  assert.deepEqual(f.service.wakeForTask("task-a"), [ack.operationId]);
+  assert.deepEqual(f.service.wakeForTask("task-a"), []);
+  const original = f.store.get(ack.operationId);
+  assert.equal((await f.service.continue(ack.operationId, {
+    requestId: "corrected-test-scope", expectedRevision: original.revision, expectedGeneration: 1,
+    testSelection: { mode: "include", ids: ["tests/failed.test.mjs"] },
+  })).accepted, true);
   snapshot = await f.service.drain(ack.operationId);
   assert.equal(snapshot.operation.state, "done");
   assert.equal(snapshot.operation.currentGeneration, 2);
   assert.equal(snapshot.generations[0].selectedResults[0].resultCommit, "task-a-r1");
   assert.equal(snapshot.generations[1].selectedResults[0].resultCommit, "task-a-r2");
   assert.deepEqual(cleaned, [1, 2]);
+});
+
+for (const failureStage of ["validate", "publish"]) {
+  test(`failed ${failureStage} validation is not retried by Task acceptance or ordinary continue`, async t => {
+    const scheduled = [], attempts = [];
+    let version = 1;
+    const fail = async ({ generation: value }) => {
+      attempts.push(value.generation);
+      throw Object.assign(new Error("one selected file failed; fifteen checkpoints passed"), { code: "RELEASE_VALIDATION_FAILED" });
+    };
+    const f = await fixture(t, {
+      schedule: callback => scheduled.push(callback),
+      compose: async () => generation(taskIds.map(taskId => ({
+        taskId, resultCommit: `${taskId}-r${version}`, acceptanceRevision: version,
+      }))),
+      [failureStage === "validate" ? "validate" : "publishTarget"]: fail,
+    });
+    const checkpoint = path.join(f.root, "original-file-checkpoints.json");
+    const green = Array.from({ length: 15 }, (_, index) => ({ id: `green-${index}`, status: "passed", input: `original-input-${index}` }));
+    await writeFile(checkpoint, JSON.stringify([...green, { id: "failed", status: "failed", input: "original-failed-input" }]), { flag: "wx" });
+    const ack = start(f.service);
+    await scheduled.shift()();
+    await f.service.drain(ack.operationId);
+    const before = f.store.snapshot(ack.operationId), bytes = await readFile(checkpoint);
+    assert.equal(before.operation.waitReason.code, "validation_failed");
+    assert.equal(Boolean(before.operation.publicationEffects.publishStarted), failureStage === "publish");
+    for (const [taskId, changed] of [["task-a", false], ["task-b", false], ["new-unrelated-task", false], ["task-a", true]]) {
+      if (changed) version = 2;
+      f.service.prepareForTaskAcceptance(taskId);
+      f.service.wakeForTask(taskId);
+      // Run an unwanted admitted callback too: the parent really attempts G2.
+      while (scheduled.length) await scheduled.shift()();
+      await f.service.drain(ack.operationId);
+      assert.deepEqual(attempts, [1], "acceptance cannot infer failed or affected test inputs");
+      assert.deepEqual(f.store.snapshot(ack.operationId), before);
+      assert.deepEqual(await readFile(checkpoint), bytes);
+    }
+    const resumed = f.service.continue(ack.operationId);
+    assert.equal(resumed.accepted, false);
+    assert.equal(resumed.reason, "test-selection-required");
+    assert.deepEqual(f.store.snapshot(ack.operationId), before);
+    assert.equal(scheduled.length, 0);
+  });
+}
+
+test("failed publisher resumes only the explicit failed and affected files with corrected selection and metadata", async t => {
+  const scheduled = [], runs = [];
+  const inventory = [...Array.from({ length: 15 }, (_, index) => `tests/green-${index}.test.mjs`), "tests/failed.test.mjs"];
+  const selected = ["tests/failed.test.mjs", "tests/green-14.test.mjs"];
+  const notes = { sourcePath: "whole-current-notes.md", byteLength: 42, rawSha256: "a".repeat(64), canonicalSha256: "b".repeat(64) };
+  let corrected = false;
+  const f = await fixture(t, {
+    schedule: callback => scheduled.push(callback),
+    compose: async () => generation(taskIds.map(taskId => ({
+      taskId, resultCommit: `${taskId}-r${corrected ? 2 : 1}`, acceptanceRevision: corrected ? 3 : 2,
+    }))),
+    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({
+      repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection, inventory),
+    })),
+    publishTarget: async ({ operation, generation: value }) => {
+      const ids = value.testPlans[0].plan.selectedIds;
+      runs.push({ generation: value.generation, ids, metadata: operation.testSelectionAmendments?.at(-1)?.releaseMetadata });
+      const checkpoints = ids.map(id => ({ id, status: !corrected && id === "tests/failed.test.mjs" ? "failed" : "passed", input: `${id}-g${value.generation}` }));
+      await writeFile(path.join(f.root, `file-checkpoints-g${value.generation}.json`), JSON.stringify(checkpoints), { flag: "wx" });
+      if (!corrected) throw Object.assign(new Error("original selected validation failed"), { code: "RELEASE_VALIDATION_FAILED" });
+      return { status: "applied", revision: "corrected-publication" };
+    },
+  });
+  const ack = f.service.start({ requestId: "original-selected", workspaceId: "workspace-1", streamId: "stream-1", threadId: "thread-1",
+    authorization: { taskIds, approvedTargets: [targets[0]], validationMode: "full", testSelection: { mode: "include", ids: inventory } } });
+  await scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  const before = f.store.snapshot(ack.operationId), checkpoint = await readFile(path.join(f.root, "file-checkpoints-g1.json"));
+  assert.equal(JSON.parse(checkpoint).filter(item => item.status === "passed").length, 15);
+  corrected = true;
+  assert.deepEqual(f.service.wakeForTask("task-a"), []);
+  assert.deepEqual(f.store.snapshot(ack.operationId), before);
+  const options = { requestId: "original-failed-and-affected", expectedRevision: before.operation.revision, expectedGeneration: 1,
+    testSelection: { mode: "include", ids: selected }, releaseMetadata: notes };
+  const amended = await f.service.continue(ack.operationId, options);
+  assert.equal(amended.accepted, true);
+  assert.deepEqual(amended.amendment.priorWaitReason, before.operation.waitReason);
+  assert.deepEqual(amended.amendment.priorPublicationEffects, before.operation.publicationEffects);
+  assert.deepEqual(amended.amendment.readbacks.map(item => item.evidence.status), ["not_applied"]);
+  await scheduled.shift()();
+  const after = await f.service.drain(ack.operationId);
+  assert.equal(after.operation.state, "done");
+  assert.equal(after.operation.currentGeneration, 2);
+  assert.deepEqual(runs.map(item => item.ids), [[...inventory].sort(), [...selected].sort()]);
+  assert.deepEqual(runs[1].metadata, notes);
+  assert.deepEqual(after.generations[1].selectedResults.map(item => item.resultCommit), ["task-a-r2", "task-b-r2"]);
+  assert.deepEqual(after.generations[0], before.generations[0]);
+  assert.deepEqual(after.receipts.filter(item => item.generation === 1), before.receipts);
+  assert.deepEqual(await readFile(path.join(f.root, "file-checkpoints-g1.json")), checkpoint);
+  assert.deepEqual(after.operation.authorization, before.operation.authorization);
+  assert.equal((await f.service.continue(ack.operationId, options)).duplicate, true);
+  assert.equal(scheduled.length, 0);
+  assert.equal(runs.length, 2);
 });
 
 test("lineage mismatch creates one automatic correction request and waits on the same operation", async (t) => {

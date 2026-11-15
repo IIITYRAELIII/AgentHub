@@ -185,6 +185,9 @@ export class DesktopTaskService {
     if (params[SELECTION_WITHOUT_SNAPSHOT] === true) {
       return { selectionChanged: activation.changed };
     }
+    if (params.deferSnapshot === true) {
+      return { selectionChanged: activation.changed, snapshotDeferred: true };
+    }
     return {
       ...await this.snapshot(params, context),
       selectionChanged: activation.changed,

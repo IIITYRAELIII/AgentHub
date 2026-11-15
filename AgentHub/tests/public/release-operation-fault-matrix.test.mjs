@@ -192,6 +192,10 @@ async function operationHarness(t, { validationFailures = 0, publicationFailure 
       return { status: "completed" };
     },
   });
+  const taskRows = ["task-a", "task-b"].map(id => ({ id, workspaceId: "workspace",
+    streamId: "release-manager", status: "started", workflowStatus: "awaiting_implementation" }));
+  taskRows.push({ id: "task-c", workspaceId: "workspace", streamId: "release-manager",
+    status: "started", workflowStatus: "testing" });
   const commands = new ReleaseOperationCommandService({
     releaseOperations: service,
     workspaceCatalog: {
@@ -203,7 +207,8 @@ async function operationHarness(t, { validationFailures = 0, publicationFailure 
       activeThread: () => ({ threadId: "thread" }),
     },
     taskBoard: {
-      task: (taskId) => ({ id: taskId, workspaceId: "workspace", streamId: "release-manager" }),
+      task: taskId => taskRows.find(task => task.id === taskId),
+      releaseTasks: workspaceId => workspaceId === "workspace" ? taskRows : [],
     },
   });
   return {
@@ -323,7 +328,7 @@ test("public release operation fault and migration matrix", async (t) => {
     assert.equal(snapshot.generations[1].selectedResults[0].resultCommit, harness.repository.resultR2);
   });
 
-  await t.test("3 unrelated acceptance is excluded and a newer Task state is not overwritten", async (scenario) => {
+  await t.test("3 unaccepted Test work is excluded and a newer Task state is not overwritten", async (scenario) => {
     const harness = await operationHarness(scenario);
     const ack = start(harness);
     const snapshot = await harness.service.drain(ack.operationId);

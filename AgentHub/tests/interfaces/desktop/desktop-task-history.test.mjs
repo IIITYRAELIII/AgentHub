@@ -1649,6 +1649,12 @@ test("desktop Stream history resolves a stale request and preserves mixed-provid
     catalog: {
       entries: () => [{
         streamId: "stream-1",
+        provider: "codex",
+        projectRoot: "D:/work",
+        threadId: "thread-old",
+        title: "Retained old Thread",
+      }, {
+        streamId: "stream-1",
         provider: "claude",
         projectRoot: "D:/work",
         threadId: "thread-new",
@@ -1698,6 +1704,36 @@ test("desktop Stream history resolves a stale request and preserves mixed-provid
     { id: "turn-thread-old", provider: "codex", threadId: "thread-old" },
     { id: "turn-thread-new", provider: "claude", threadId: "thread-new" },
   ]);
+});
+
+test("Stream history head selection refuses missing lineage and preserves exact Thread reads", async () => {
+  const old = { streamId: "lineage", provider: "codex", threadId: "old", position: 1 };
+  const current = { ...old, threadId: "current", position: 2 };
+  let entries = [old, current];
+  let threads = [old, current];
+  let reads = 0;
+  const history = createDesktopTaskHistoryFactory({
+    selection: { activeProvider: () => "codex", threadId: () => "old", chatId: () => null },
+    catalog: { entries: () => entries, threadsForStream: () => threads },
+    historyReader: { read: async () => { reads += 1; return { history: [] }; } },
+    runs: { forTask: () => null },
+    historyMerger: { mergeActive: () => {}, mergeCompleted: () => {} },
+    responseBudget: { fit: value => value },
+  });
+  const request = { streamId: "lineage", provider: "codex", threadId: "old", includeActive: false };
+  assert.equal((await history(request)).threadId, "current");
+  entries = [current, old];
+  assert.equal((await history(request)).threadId, "current", "catalog ordering is not head authority");
+  assert.equal((await history({ provider: "codex", threadId: "old", includeActive: false })).threadId, "old");
+  threads = [old, { ...current, detachedAtMs: 1 }];
+  assert.equal((await history(request)).threadId, "old", "detached later Thread is not the current head");
+  const readCount = reads;
+  for (const absent of [[], [{ ...old, detachedAtMs: 1 }], [current]]) {
+    threads = absent;
+    entries = [old];
+    await assert.rejects(history(request), /Поток не найден в локальном каталоге/u);
+    assert.equal(reads, readCount, "missing current authority cannot read an old page as its substitute");
+  }
 });
 
 test("desktop task history returns a compact marker for an unchanged completed page", async () => {
@@ -2066,6 +2102,16 @@ test("desktop task history exposes structured response annotations", async () =>
     source: ANNOTATION_SOURCE,
   }]);
   assert.deepEqual(result.items[0].messages[1].responseAnnotationReferences, [{ index: 1 }]);
+});
+
+test("desktop task history retains positioned references and explicit legacy absence", async () => {
+  for(const references of [[{index:2,position:{start:5,end:13}},{index:1,position:{start:28,end:36}}],[{index:1}]]) {
+    const { desktopTaskHistory,state }=fixture({run:null});
+    state.history[3].messages[1].text='Git\n\nЦитата 2\n\nDependencies\nЦитата 1';
+    state.history[3].messages[1].responseAnnotationReferences=references;
+    const result=await desktopTaskHistory({limit:1});
+    assert.deepEqual(result.items[0].messages[1].responseAnnotationReferences,references);
+  }
 });
 
 test("desktop task history preserves pagination, field limits and response budget", async () => {
@@ -2794,4 +2840,31 @@ test("desktop task history rejects invalid and missing tasks", async () => {
     desktopTaskHistory({ provider: "codex", threadId: "missing" }),
     /Поток не найден/,
   );
+});
+
+test("history API extracts retained raw quotes without receipts and keeps explicit annotation authority", async () => {
+  const annotations = [{ text: "Изменения карточки отменены", annotation: "чё?", source: ANNOTATION_SOURCE }];
+  const raw = `<response-annotations>${JSON.stringify(annotations)}</response-annotations>\n## My request:\n`;
+  const explicit = [{ text: "Explicit quote", annotation: "Explicit comment", source: ANNOTATION_SOURCE }];
+  const setup = fixture({ run: null, receipts: { forMessage: () => null, forTurn: () => null }, history: [{
+    id: "raw-quote-turn", completed: true, active: false, status: "completed", messages: [
+      { role: "user", itemId: "raw-quote", clientUserMessageId: "raw-client", text: raw },
+      { role: "user", itemId: "explicit-quote", clientUserMessageId: "explicit-client", text: raw,
+        responseAnnotations: explicit, responseAnnotationRequest: "" },
+      { role: "user", itemId: "plain", clientUserMessageId: "plain-client", text: "чё?" },
+      { role: "user", itemId: "malformed", clientUserMessageId: "malformed-client",
+        text: '<response-annotations>{broken</response-annotations>\n## My request:\nЗапрос' },
+    ],
+  }] });
+  const { items } = await setup.desktopTaskHistory({ provider: "codex", threadId: "thread-1", includeActive: false });
+  const users = items[0].messages;
+  assert.deepEqual(users[0].responseAnnotations, annotations);
+  assert.equal(users[0].text, "чё?");
+  assert.equal(users[0].responseAnnotationRequest, "");
+  assert.deepEqual(users[1].responseAnnotations, explicit);
+  assert.equal(users[1].responseAnnotationRequest, "");
+  assert.equal(users[2].responseAnnotations, undefined);
+  assert.equal(users[3].responseAnnotations, undefined);
+  assert.equal(users[3].text, "Запрос");
+  assert.equal(setup.state.history[0].messages[0].text, raw);
 });

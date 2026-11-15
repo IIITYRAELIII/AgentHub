@@ -20,6 +20,85 @@ function accept(store, sequence) {
   return { ...command, accepted: store.accept({ ...command, destination: "queued" }) };
 }
 
+test("addressed cancellation preserves foreign, accepted and unknown guards through terminal retention", async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub422-cancel-retention-"));
+  const store = new MessageCommandLedgerStore({ dataDir, terminalHotLimit: 0, terminalArchiveLimit: 0 });
+  t.after(async () => { store.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const original = accept(store, "original");
+  assert.equal(store.deferredInputForCancellation({ id: original.item.id }).clientUserMessageId,
+    original.item.clientUserMessageId);
+  assert.equal(store.deferredInputForCancellation({ id: "foreign", clientUserMessageId: original.item.clientUserMessageId }), null);
+  assert.equal(store.deferredInputForCancellation({ id: original.item.id, clientUserMessageId: "foreign" }), null);
+  store.cancelQueuedInput(original.item);
+  assert.equal(store.get(original.item.clientUserMessageId).item, null);
+  const compacted = store.projectReceipt({ clientUserMessageId: original.item.clientUserMessageId });
+  assert.equal(compacted.result.cancelled, true);
+  assert.equal(compacted.result.queued, false);
+  const exact = store.deferredInputForCancellation({ id: original.item.id, clientUserMessageId: original.item.clientUserMessageId });
+  assert.equal(store.cancelQueuedInput(exact).duplicate, true);
+  assert.equal(store.accept({ ...original, destination: "queued" }).retryResult.cancelled, true);
+  const sameItemA = messageCommandFixture({ clientUserMessageId: "ambiguous-a", itemId: "shared-item-id" });
+  const sameItemB = messageCommandFixture({ clientUserMessageId: "ambiguous-b", itemId: "shared-item-id" });
+  store.accept({ ...sameItemA, destination: "queued" });
+  store.accept({ ...sameItemB, destination: "queued" });
+  assert.equal(store.deferredInputForCancellation({ id: "shared-item-id" }), null);
+  assert.equal(store.deferredInputForCancellation({ id: "shared-item-id", clientUserMessageId: "ambiguous-a" })
+    .clientUserMessageId, "ambiguous-a");
+  for (const state of ["dispatching", "started", "unknown"]) {
+    const command = accept(store, state);
+    store.transition({ clientUserMessageId: command.item.clientUserMessageId, expectedStates: ["queued"], state });
+    assert.throws(() => store.cancelQueuedInput(command.item), { code: "ERR_DEFERRED_CANCEL_UNCONFIRMED" });
+    assert.equal(store.get(command.item.clientUserMessageId).state, state);
+  }
+  const accepted = messageCommandFixture({ clientUserMessageId: "provider-accepted", itemId: "provider-item",
+    receipt: { result: { providerAccepted: true } } });
+  store.accept({ ...accepted, destination: "queued" });
+  assert.throws(() => store.cancelQueuedInput(accepted.item), { code: "ERR_DEFERRED_CANCEL_UNCONFIRMED" });
+});
+
+test("only a persisted undelivered same-Stream intent may move an exact occupancy binding", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-stream-rekey-"));
+  const store = new MessageCommandLedgerStore({ dataDir });
+  t.after(async () => { store.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const destination = { streamId: "stream", provider: "codex", threadId: "thread-B" };
+  const cases = ["queued", "dispatching", "legacy", "foreign-stream", "foreign-item", "foreign-client",
+    "wrong-expected", "uncaptured", "paused", "unknown", "unconfirmed", "accepted", "terminal", "wrong-attempt"];
+  for (const scenario of cases) {
+    const command = messageCommandFixture({ clientUserMessageId: scenario, itemId: `item-${scenario}`,
+      item: { streamId: "stream", threadId: "thread-A", followUpMode: "steer", deliveryTarget: destination,
+        ...(["dispatching", "wrong-attempt"].includes(scenario) ? { dispatchingAt: "attempt-1" } : {}),
+        ...(scenario === "legacy" ? { followUpMode: undefined } : {}),
+        ...(scenario === "uncaptured" ? { deliveryTarget: undefined } : {}),
+        ...(scenario === "paused" ? { manualPaused: true } : {}),
+        ...(scenario === "unconfirmed" ? { lastErrorCode: "ERR_PROVIDER_STEER_UNCONFIRMED" } : {}),
+      },
+      ...(scenario === "accepted" ? { receipt: { result: { providerAccepted: true, turnId: "old-turn" } } } : {}),
+    });
+    const original = store.accept({ ...command, destination: "queued" }).record;
+    let before = original;
+    if (["dispatching", "wrong-attempt", "unknown", "terminal"].includes(scenario)) {
+      const state = scenario === "terminal" ? "cancelled" : scenario === "unknown" ? "unknown" : "dispatching";
+      before = store.transition({ clientUserMessageId: scenario, expectedStates: ["queued"], state }).record;
+    }
+    const target = { ...before.item, ...destination,
+      ...(scenario === "foreign-stream" ? { streamId: "another" } : {}),
+      ...(scenario === "foreign-item" ? { id: "another" } : {}),
+      ...(scenario === "foreign-client" ? { clientUserMessageId: "another" } : {}),
+      ...(scenario === "wrong-attempt" ? { dispatchingAt: "attempt-2" } : {}),
+    };
+    const result = store.rekeyOccupancy({ clientUserMessageId: scenario, target,
+      expectedOccupancyKey: scenario === "wrong-expected" ? "another" : before.occupancyKey });
+    const allowed = ["queued", "dispatching"].includes(scenario);
+    assert.equal(result.changed, allowed, scenario); assert.equal(result.conflict, !allowed, scenario);
+    assert.deepEqual(result.record.receipt, before.receipt, scenario);
+    assert.equal(result.record.queueOrder, before.queueOrder, scenario);
+    assert.equal(result.record.acceptedAtMs, before.acceptedAtMs, scenario);
+    assert.equal(result.record.fingerprint, before.fingerprint, scenario);
+    assert.equal(result.record.revision, before.revision + Number(allowed), scenario);
+    assert.equal(result.record.item.threadId, allowed ? "thread-B" : "thread-A", scenario);
+  }
+});
+
 test("A10 crash boundary restores durable queue over an older runtime snapshot", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-a10-"));
   let store = new MessageCommandLedgerStore({ dataDir });

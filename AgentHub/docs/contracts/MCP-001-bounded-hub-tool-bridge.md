@@ -1,17 +1,258 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Interrupted first-compose continuation admission
+
+An exact ordinary `hub_release_continue` with generation-zero and revision CAS
+may reconcile its retained pending/UNKNOWN receipt through the existing failed
+first-compose owner. Original actor, tool, arguments hash and RM authority still
+match. The owner repeats definite failed-receipt/input/CAS and complete prepared
+authority plus physical uncaptured-custody checks under the Workspace Await lease.
+Only its durable same-request recovery admission can complete the outer receipt.
+A lost acknowledgement reads that exact stored recovery binding without another
+capture. The completed receipt retains the prior receipt diagnostic and identity.
+Foreign, partial, changed, occupied or unproven input stays UNKNOWN. Amendments,
+later generations and unrelated UNKNOWN commands retain their existing refusal.
+See ADR-HUB-422-uncaptured-first-compose.
+
+## Bounded Task intake before a durable receipt
+
+Task submission retains the existing catalog queue and its unchanged contention
+bound. Only an actual SQLite contention failure at `beginMcpOperation`'s initial
+`BEGIN IMMEDIATE`, before this invocation enters its transaction, can produce a
+typed `admission.status=not_admitted` response. It has `taskOperation=null`,
+`result=null`, `scope=this_invocation`, `canonicalOutcome=null` and exact
+request/tool/arguments/caller identity. The authenticated submission owner first
+checks for an existing receipt; that receipt and its ordinary authority/hash
+checks always take precedence. Transaction-body, commit, reply or business
+failures cannot receive this classification. This response is not a persisted
+FAILED/UNKNOWN/NO_EFFECT receipt and grants no historical no-effect or replay
+authority. No delayed automatic admission is scheduled after refusal.
+
+An authenticated exact receipt point-read with no row returns
+`lookup.status=not_found`, `taskOperation=null`, `canonicalOutcome=null`. This is
+only a current lookup observation, not proof of historical non-admission, empty
+effects or permission to replay. Existing rows retain all actor/Task/hash guards,
+including UNKNOWN and cancellation state. SQLite read failures still propagate.
+The existing in-transaction declared-successor namespace and interruption guards
+are never bypassed by an early successful admission path. Explicit later intake
+keeps the same original request and immutable arguments and rechecks current
+Task CAS; no second ledger, timeout increase, reconciliation route or retry
+identity is introduced. Desktop/UI callers distinguish these results from a
+completed Task and never resubmit mutations merely because readback is missing.
+See ADR-HUB-407.
+
+## Workflow enum validation and original settlement
+
+The MCP status owner validates the workflow enum synchronously before calling
+the lifecycle owner. Its private input error terminalizes the existing admitted
+receipt as failed; identical replay returns that failure without dispatch.
+A downstream error with similar text/name remains potentially partial/unknown.
+
+The existing RM reconciliation owner has a finite protocol-v1 compatibility
+boundary for an ordinary malformed status original: exactly request/Task/status
+and both original CAS fields, with an invalid nonempty enum and no special
+cutover, selected, squash or review arguments. The stored execution binding and
+arguments hash, original actor, configured root and unchanged Task CAS must all
+match. Missing transition/outcome rows are necessary but never sufficient.
+Under existing Task/repository/Await leases the owner also requires no process
+guard and either a joined local execution or the existing trusted exact native
+retirement witness for a previous runtime. It never stops a worker itself.
+
+The existing receipt failure transaction rechecks exact identity, Task CAS and
+lifecycle absence before settlement. This records workflow_input_validation,
+preserves original arguments/execution binding and previous diagnostic, and
+creates no lifecycle outcome, cancellation, global NO_EFFECT proof or replay
+permission. Changed/missing/foreign/undrained evidence stays unknown. Receipt
+persistence failure stays ambiguous. Remove this historical branch only after
+all addressed protocol-v1 malformed originals are terminal and migrated.
+The existing local operation-reconcile CLI accepts --reconcile-arguments for
+the same authenticated RM tool; it grants no separate writer authority.
+See ADR-HUB-408-malformed-workflow-status.md.
+
+The existing retained native witness may read a primary lock while the instance
+keeps its write handle. This observer has read access only and permits existing
+read/write/delete sharing; it does not unlock or replace the owner's file. The
+bounded complete hash and stable volume/file/creation/size/write identity must
+match the original snapshot, with same-handle and fresh named-path checks and
+no reparse following. Drift, oversized or nonregular input refuses before the
+witness manifest is published; every read handle closes. Existing exact native
+Host/Node/job continuity, current-user pipe, nonce and source hash checks remain.
+
+`hub_stream_message_send` with ordinary `mode=steer` addresses the destination
+Stream. The common durable message owner resolves its current active managed
+turn or retains that same command in the normal queue. A definitively ended
+attempt does not require a manual retry/after-turn decision. Unknown provider
+acceptance still reconciles the original attempt before any resend; accepted
+messages are never repeated. Explicit `mode=queue`, immutable request/origin/body
+binding and direct exact-target service guards retain their contracts. See
+MSG-001 and ADR-0136. This changes routing policy, not MCP mutation ownership.
+
+## Explicit Task operation interruption
+
+`hub_task_operation_cancel` is an explicit audited mutation of future execution,
+not reconciliation of past effects. Exact original ID/hash/Task arguments and
+current Task CAS are required. The original Stream, a genuine RM, or the
+authenticated desktop user uses the same existing receipt owner. Caller scope
+and target Task scope remain distinct. Cancellation commands retain their own
+receipt; current original execution disposition is read independently.
+
+An exact repeated UNKNOWN `hub_task_operation_cancel` may re-enter only its
+existing interruption owner through normal public admission when that same
+service has no active worker for the cancel ID. Workspace/Stream/provider/audit
+Thread/actor kind, tool and canonical argument hash must still match the original
+cancel receipt. The owner rechecks original Task identity/CAS, execution fence,
+retirement evidence and recovery lease before any effect. A live same-ID worker
+is only read; all other UNKNOWN submissions remain read-only. This continues the
+cancel command, never the interrupted claim/Test/Await. Requested is not stopped;
+past effects and the interrupted UNKNOWN remain retained. No new ID, direct
+internal invocation or timeout-derived no-effect authority is introduced.
+
+The existing MCP ledger retains the exact original receipt snapshot, result,
+error and timestamps with separate requested/stopped execution metadata.
+UNKNOWN stays UNKNOWN; a known pending execution becomes failed execution only
+after stopped, with prior effects still unknown. Requested is not stopped. A new
+worker must join and release its exact child/lease before stopped is sealed;
+late queued callbacks cannot write. A legacy UNKNOWN requires positive retirement
+of its whole prior runtime cohort through the existing native witness owner.
+PID absence, error text and elapsed time do not suffice. No original claim/Git
+replay, dirty-source removal or NO_EFFECT inference is authorized.
+
+For an exact UNKNOWN/STOPPED workflow with a failed lifecycle transition, the
+existing RM reconciliation owner reports a read-only stopped disposition under
+the existing Task/repository/Await leases and process guard. It rechecks original
+arguments/CAS/root, the whole retained receipt snapshot and bound stopped
+retirement metadata. The original receipt, error, result, timestamps and stop
+history remain immutable; failed lifecycle does not make its effects known.
+The separate reconciliation command can succeed with outcome stopped and
+effects retained_unknown. A later explicit workflow uses normal fresh guards;
+neither this response nor replay executes the stopped original again.
+
+The existing operation-reconcile CLI exposes the same cancel command via
+`--cancel-arguments <json>` with local provider/thread/Stream identity. A first
+request waiting for legacy retirement is not silently restarted or published.
+See [Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
+
+## Manual public release version (ADR-HUB-371)
+
+`hub_release_run` optionally accepts `release_version`, a complete stable public
+`X.Y.Z` string. The same durable authorization stores it as `releaseVersion` and
+includes it in its existing fingerprint; changing it under the same request ID
+refuses. Omission adds no field and preserves legacy authorization fingerprints
+and automatic patch selection. The existing RM authorization remains required.
+Continuation/readback use the original operation and its frozen version; this
+field is not an amendment or a way to re-version admitted generations.
+
+The existing source `release.mjs run` accepts this business argument in its
+`--request-file` JSON. The operator `publish:changed -- --version X.Y.Z` forwards
+the same intent through its existing Desktop release command. Neither entry
+writes package metadata directly or creates another publisher.
+
+## Historical direct publication cleanup
+
+Release Manager-only `hub_task_complete completion_mode=published_delivery`
+uses the existing cleanup preview/confirm. Its `published_delivery` binds the
+original runtime journal SHA-256, prepared artifact SHA-256, source base/result
+and immediate publication parent. The owner verifies terminal published Task
+membership, artifact identity and the exact Git change projection before
+classifying clean managed artifacts as published. It creates no Task/Test ref.
+The preview token binds Task revision, original evidence and the deletion plan.
+Confirmation removes only those clean managed artifacts through the existing
+Git cleanup owner and archives the card without changing workflow status.
+
+Optional `publicationJournalPath` addresses a retained original journal after
+the current pointer has advanced; its raw hash, original runtimeRoot, artifact,
+Task membership and terminal identity are still checked, without path search or
+fallback. `publicationBaseCommit` may be the original run's exact `from` for a
+combined delivery. The owner proves that complete first-parent chain to the
+original terminal and every own Task change's unique ordered before/from and
+after/terminal context, path and mode. Added/deleted, binary, non-UTF8 or
+unterminated-file content needs whole before/after identity. Other tasks' edits
+outside those contexts remain. Arbitrary intermediate ranges or partial Task
+survival refuse. The previous exact-last-port input retains its behavior.
+Unique snippets alone cannot prove an original removal/replacement. For the
+combined route, every complete own edit must map inside one actual zero-context
+Git edit of the original from-to-terminal delta, including its removed and added
+line ranges. Retained context lines must map unchanged to their exact after
+positions. This is read-only; source objects, refs and index remain unchanged.
+
+Partial deletion retains its exact admitted lifecycle intent. Existing RM
+`hub_task_operation_reconcile`, addressed to the original Complete request,
+may finish its remaining pinned cleanup or settle its canonical outcome.
+It cannot retrofit an unsealed historical UNKNOWN, replace the source pin,
+discard ignored/dirty data or infer publication from a generic failure.
+Ordinary completion and the existing preserve-only absorption modes retain
+their previous contracts. See ADR-HUB-369-direct-published-cleanup.
+
+For an explicitly completed non-product operation, RM may select
+`completion_mode=operational` without a delivery envelope. This attests the
+operational outcome, not product publication. The same owner proves no result,
+adoption or squash evidence, HEAD exactly equal to the immutable Task base,
+and that base in durable published/tracked history. Existing ignored-data
+retirement and clean-source requirements still apply. The same preview,
+confirmed deletion and original cleanup reconciliation apply; no Test or
+workflow Done is manufactured for an operational card.
+An already closed release service may reference its canonical closure via
+`completed_operation_request_id` when its historical repository is absent from
+today's publication. The owner binds that exact Task's existing release-service
+outcome, preserved source HEAD and published revision; it does not reconstruct
+or insert a publication. The archived card and completion time stay unchanged.
+
+For an already admitted failed/partial Delete, the existing RM reconciliation
+accepts `cleanup_preview_request_id` and optional `cleanup_preserved_files`.
+The original successful preview must have the same actor/Task and reproduce
+the confirmed original's complete arguments hash. The existing Delete
+transition, prior/current Task revision, workflow, executor and results must
+match. Ignored artifacts must be retired first. Every remaining dirty or
+untracked file needs an exact hash-verified existing retained copy outside the
+deleted sources. This includes index-vs-HEAD bytes and every distinct unpublished
+working version; multiple entries for one path must have distinct SHA-256 hashes.
+A working copy does not prove preservation of different staged bytes. Both
+checks run before admission and immediately before removal. Changed source,
+retained bytes, Task or preview refuses.
+The same original transition records its prior failure and forward evidence
+before native cleanup. Partial deletion and lost replies retain that identity;
+terminal readback settles only that original. No no-effect claim, new Delete
+ID, raw receipt replacement or transfer of a separate claim's UNKNOWN occurs.
+
+## Original published dev synchronization
+
+`hub_release_continue` optionally carries exclusive `published_dev_sync` with
+`projectRoot` and `expectedDevCommit`, without a native approval input.
+Positive `expected_revision`/`expected_generation` and original `request_id` are
+required. Existing genuine RM/Workspace authorization and canonical MCP receipt
+apply; it cannot be combined with selection, notes or reviewed-main amendments.
+The release owner acquires its existing original lease and permits only an
+applied generation waiting at finalize. It returns isolated conflict
+evidence or exact dev effect; it neither schedules nor drains the pipeline.
+Unknown delivery retains the original native journal; a fresh addressed recovery
+with current operation CAS reads that effect, while the old ambiguous MCP receipt
+stays immutable. A completed same-request replay returns its original receipt.
+No Task is reopened and publication/Task-finalization effects are not repeated.
+
 ## Normal release continuation (ADR-0132)
 
-`hub_release_run` keeps preparation inside the existing durable release owner.
-Approved repositories may include an exact authenticated native resolution input
-(`nativeResolutionReview`), either a single review or a digest-bound bundle with
-multiple reviews. This is part of immutable operation authorization; it is not
-a force flag or caller-declared conflict allowlist.
+`hub_release_run` authorizes and captures the whole existing prepared PreRelease
+(every current accepted Await Task), without calling ordinary Await preparation
+or the native Task sequencer. `task_ids` is optional expected-whole membership;
+a subset or Test-only inclusion refuses. New immutable authorization includes
+`taskScope=all_await`. Current generations bind actual complete membership,
+then native/history/content/import-closure/base/authority guards and the existing
+freeze owner materialize exact prepared bytes plus version/consolidated notes.
+Missing/stale preparation waits on the same original for normal Test/Await;
+release does not rebuild it. Publication already admitted remains immutable.
+
+Legacy authorization and receipts are not reinterpreted. Optional explicit
+`hub_release_continue task_scope=all_await` activates this scope through the
+existing amendment/not-applied/revision/generation owner. Omission retains the
+previous scope; original replay retains exact explicit/omitted arguments.
+`task_ids`, when supplied, asserts the entire current set. No new tool, approval
+gate, cache, writer or timeout is introduced. See REL-001 and
+ADR-HUB-364-whole-prepared-release.
+Native Git continuation does not expose an approval-envelope input. The
+Auto-review setting governs agent instructions, not a machine permission gate.
 
 `hub_release_prepare_resume` may continue an already established isolated forward
-segment using its saved original envelope/custody and exact revision. Optional
-`native_resolution_review` changes only that forward segment's review input.
-The owner regenerates the exact isolation plan under existing leases, validates
+segment using its saved original envelope/custody and exact revision. The owner regenerates the exact isolation plan under existing leases, validates
 the stored proof and reads actual Git before effects. An untransferred legacy
 UNKNOWN, missing isolation or changed proof still refuses. Terminal repetition
 is read-only. The existing local consumer supports `--resume-preparation`; no
@@ -83,7 +324,7 @@ it does not falsify old receipts or claim the main logical release complete.
 ## Preparation-only release admission
 
 The repository envelope also admits the bounded optional localSourceBaseline
-and nativeResolutionReview fields specified by REL-001/ADR-0115. They remain
+fields specified by REL-001/ADR-0115. They remain
 inside the same genuine RM authority, exact original argument hash, complete
 selected-row CAS, source closure, existing candidate rollback and terminal
 receipt. No new public command, approval flag, status writer or retry route is
@@ -180,18 +421,17 @@ that same operation. It never silently rebuilds the candidate or changes the
 immutable authorization. See REL-001 for metadata and original capture fences.
 
 
-RM Test/Await with exact Task/workflow CAS may include `native_resolution_review`
-for necessary compatibility changes beyond Git conflict paths. The exact review
-and original review request ID are canonically bound by the same status receipt.
-Await also accepts the existing digest-bound bundle of multiple exact reviews;
-Test retains the single-review input. Closed record validation, genuine RM/CAS,
-every authenticated review and the native sequencer's full Git checks still apply.
-The ordinary source release consumer's `accept` action forwards these same public
-Await business arguments. It adds no Task/status authority or alternate writer.
-The native owner recomputes the full Git merge diff and accepts only the exact
-independent authenticated inter-Stream ACCEPT binding. Reconciliation includes
-the original argument unchanged; it cannot substitute a newer verdict. This does
-not restore selected materialization or waive membership/current-source guards.
+Test/Await, release authorization and preparation continuation do not require
+or expose native_resolution_review/nativeResolutionReview approval inputs.
+The ordinary source release consumer forwards the same business Task/CAS
+arguments, without a native review token. Git ownership, current selection,
+ordered parents/tree/index, history, source and CAS checks remain mandatory.
+Historical reconciliation may reproduce an old original's review argument solely
+to match its immutable argument hash; it grants no approval or new effect.
+Historical preparation metadata likewise remains inert. No review receipt,
+sender/receiver, content hash or ACCEPT envelope authorizes Git continuation.
+See ADR-HUB-416. Auto-review enabled still instructs the agent to obtain review;
+disabled leaves no separate mandatory machine confirmation.
 
 ## Failed validation receipt reconciliation
 
@@ -400,6 +640,18 @@ and argument identity and observed Task CAS, then becomes terminal `failed` with
 work, failures after callback entry, forged typed errors and legacy error text
 do not acquire this proof. No shorter timeout, retry or lock removal is added.
 
+A fresh claim refused during read-only source identity discovery may likewise
+seal `task-claim-source-admission-v1`, with `TASK_CLAIM_SOURCE_ADMISSION_FAILED`.
+The live Task Git owner binds the selected project locator and exact invocation
+before any repository preparation callback, dependency work or Task assignment;
+the Task lease and existing catalog CAS must still hold. The original locator,
+even when it is not a Git repository, owns subsequent sealed-refusal readback.
+Correcting routing does not retry that refused ID: a separately requested new
+ordinary claim may proceed, preserving existing managed dirty bytes. Generic
+fatal text, forged typed errors, lost ownership, post-prepare failures and old
+unsealed originals remain insufficient. Existing UNKNOWN/forward-custody rules
+are unchanged. See ADR-HUB-367-source-discovery-refusal.
+
 The existing RM `hub_task_operation_reconcile` can read or settle this sealed
 claim refusal using the original operation ID and exact recorded repository
 locator, without workflow/Git recovery or new assignment. Active original workers,
@@ -417,7 +669,12 @@ permission is introduced. See ADR-0124.
 
 An ordinary original native Test whose merge is already exactly applied may
 finish after a metadata-only Task revision advance. Its original argument hash
-must contain no explicit CAS, cutover, absorption or review family. Recovery
+must match its original explicit CAS and optional authenticated single native
+review exactly; cutover, absorption and initial-source families stay excluded.
+The original revision identifies admission, never the current metadata revision.
+Review custody must belong to the original RM actor; the existing native
+composition verifier repeats receipt authentication and full Git binding checks.
+Recovery
 compares the unchanged Task/Workspace/executor/status/workflow/result state,
 the original native intent, ordered merge parents, source and dev trees and
 clean indexes under their existing leases. A retained process guard refuses.
@@ -426,7 +683,12 @@ and CASes the current row revision, preserving current metadata. It commits the
 original outcome/references/status and settles the same receipt; it never
 prepares, snapshots or merges again. Concurrent metadata edits fail the CAS;
 other state or Git drift remains unknown. An already settled matching original
-is a read-only result. See [ADR-0113](../decisions/ADR-0113-native-test-metadata-terminal.md).
+is a read-only result. Only title/description presentation fields may differ;
+other semantic state and unknown evidence refuse. A later dev head is preserved
+only through a chain of committed canonical Test outcomes, matching successful
+original receipts and exact native intents/compositions. Ancestry alone is not
+acceptance; this proof grants no release selection or new Git effects. See [ADR-0113](../decisions/ADR-0113-native-test-metadata-terminal.md)
+and [ADR-HUB-389](../decisions/ADR-HUB-389-reviewed-native-terminal.md).
 
 The local Await cutover uses the same canonical `hub_task_status_update` receipt.
 When its projector source is a separate Task, the receipt includes that source
@@ -453,7 +715,11 @@ state, revision}` before long work. Same-ID replay with identical authorization
 returns the same operation; changed identity fails closed. `hub_release_get`
 returns the operation, immutable generations, receipts and target effects without
 writing. `hub_release_continue` only wakes the same waiting operation; automatic
-Task acceptance and durable retry timers normally perform that wakeup.
+Task acceptance and durable retry timers normally perform that wakeup. A
+`validation_failed` wait is the ADR-HUB-391 exception: Task acceptance and
+unamended continue preserve it without scheduling. The existing RM amendment
+below supplies the exact retry scope/current metadata under its original guards;
+this is not another user approval or public method.
 
 The former public `hub_release_preflight`, `hub_release_preflight_reconcile` and
 `hub_release_complete` writers are removed at cutover rather than retained as a
@@ -509,6 +775,15 @@ Bounded contention retry surrounds the real transaction, preserves the original
 identity and yields to HTTP, SSE and timers instead of increasing `busy_timeout`.
 The owners expose explicit read, short-mutation and internally managed-effect
 allowlists only; an unclassified raw member is not bound into application code.
+The existing checklist `link` operation additionally accepts `release_reference`
+with the exact accepted Task revision and full canonical Git references
+(ADR-HUB-415). This is a Release Manager-only reference in the same release-enabled
+Workspace, rechecked inside the queued Task transaction. It preserves the unique
+decomposition owner and all archived rows. The existing request hash includes
+this binding only when supplied; old receipt identities remain unchanged.
+No alternate CLI, historical UNKNOWN replay, publication or absorption credit is
+introduced. Desktop checklist mutations cannot author or change this RM relation.
+
 Checklist event delivery is an internally managed effect (ADR-0029): its
 single-flight durable outbox drain invokes delivery outside SQL retry and queues
 only quarantine/acknowledgment writes with the original event ID. A busy
@@ -596,6 +871,10 @@ rejection leaves the durable prepare
 blocked for explicit cancellation and is not silently converted to success.
 
 ## Queue diagnostics
+
+Empty diagnostic attempt timestamps fall back to the original intake createdAt;
+they cannot hide the age of a queued command. A queued wait and its guard reason
+are not an in-flight attempt or provider acceptance.
 
 ## Exact squash transfer
 
@@ -873,3 +1152,136 @@ or adding it on replay cannot retarget an existing amendment. Composition verifi
 the full effective artifact bytes before preparing the next generation. Initial
 authorization and old generations remain immutable. See REL-001 and
 ADR-HUB-351-release-metadata-amendment.
+
+## Pending stop and authenticated Desktop admission (HUB-368 R1/R2)
+
+A requested stop excludes new ordinary claim/workflow admission for that Task
+until confirmed stopped. The same indexed durable disposition is checked in
+receipt admission, before execution/next effects, and inside final Task SQL
+transactions. Cancellation continuation and other Tasks remain independently
+operable. A late assignment/finalization cannot overtake the requested stop.
+
+An authenticated Desktop workflow has actorKind=authenticated-user in the same
+MCP operation ledger, including an unassigned Workspace or Backlog Task. Its
+Stream/provider/Thread are null, not an invented provider turn or new Stream.
+Provider admissions retain their exact required caller identity. Existing rows,
+indexes, triggers, custody and receipt evidence survive the atomic nullable-user
+identity migration unchanged; no historical operation is reclassified or replayed.
+The existing Desktop controller and cancellation owner read and stop this exact
+operation before the next ordinary action, without changing Task assignment.
+
+## Task admission and original result readback
+
+A local live invocation is reported as active, an explicit UNKNOWN receipt as
+unknown, and a nonterminal receipt without observed local execution as unresolved.
+Receipt presence and a missing worker never prove queue membership or completion;
+the submission result trace must not label every nonterminal response queued.
+This observation does not replace the canonical receipt status or effect authority.
+
+If writing a failure/UNKNOWN receipt fails, the completion owner preserves both
+bounded errors as diagnostic metadata in the existing execution binding, under
+the exact receipt/actor/hash/current-owner CAS. No new ledger or work queue is
+created. STOPPED history and terminal winners cannot be changed. This finite
+diagnostic write neither reruns effects nor certifies NO_EFFECT. Reopen and exact
+same-ID submission return the retained diagnostics without another worker.
+Original-ID trace spans contain only error codes/hashes and persistence outcome,
+never arbitrary error text. If diagnostic persistence also fails, those existing
+best-effort trace records are the fallback observation; an unavailable trace or
+diagnostic write cannot be represented as durable success. Historical pending
+claims without positive execution/preparation/custody evidence remain unresolved.
+
+The same diagnostic preserves a failure of lifecycle failure persistence inside
+the admitted operation, even if the outer UNKNOWN receipt is written successfully.
+The original operation error and that inner persistence exception retain their
+identities through the existing exception chain. If outer persistence also fails,
+it does not replace the first failure pair. Lease loss still prevents lifecycle
+writes; these diagnostics confer no terminal outcome or replay authority.
+
+A failed lifecycle BEGIN also retains its original exception if a follow-up
+Task read is unavailable. Completion classification reads use the same bounded
+failure diagnostic as completion writes: a second failed read preserves both
+errors without inventing a lifecycle row, terminal receipt or NO_EFFECT result.
+Same-original reopen remains read-only. An explicit supported cancellation may
+fence an aware execution with no lifecycle row under its existing recovery lease
+and process guard; only its positive STOPPED result establishes that disposition.
+
+Public MCP Task mutations return a `taskOperation` admission/readback envelope
+from the existing MCP ledger once the same worker is registered. Admission is
+not successful business completion. `hub_task_operation_get` reads that exact
+original ID, canonical argument hash, actual live-worker observation, lifecycle
+phase, cancellation, error and terminal result. Same original caller or genuine
+RM authority is required; supplied original arguments/hash must match. Reading
+never resumes or settles an operation. Same-ID mutation submissions read the
+existing receipt without starting another worker; changed arguments refuse.
+The sole UNKNOWN-cancel continuation exception above uses the existing canonical
+interruption owner and its unchanged guards, not general mutation replay.
+
+Long valid work has no transport-derived terminal deadline. A disconnected
+caller reads the original ID instead of submitting another mutation. A real
+UNKNOWN stays UNKNOWN; absence of a worker in the reader process is not proof of
+failure or retirement. Existing internal/ordinary CLI consumers may still await
+the same worker's terminal Promise. The existing reconciliation CLI exposes
+`--read-arguments` with ordinary local provider/thread/Stream authentication.
+No alternate writer, work queue, cancellation policy or recovery authority is
+introduced. See ADR-HUB-368.
+
+Authenticated Desktop create/update/workflow/Complete/Delete use the same
+ledger and real user identity, including null provider/Stream/Thread. Preview
+and confirmation retain their distinct original commands and exact token. The
+original identity and tool cannot be rewritten. A durable outer control receipt
+may acknowledge this admission envelope; only the inner canonical Task receipt
+establishes business completion. Existing domain, source, actor, CAS, Task/repo
+lease, cleanup and publication guards remain mandatory.
+
+## Existing release CLI persistence lifetime (HUB-368)
+
+The source release CLI and Hub share the same durable release service/store.
+Owned SQLite contention does not turn an admitted original into a completed
+command or close its runtime before its retained persistence continuation. The
+CLI still returns at a legitimate external waiting boundary and never waits for
+a foreign owner's lease. Public arguments, authorization, original request IDs
+and generation/recovery policy are unchanged.
+
+The committed custody readback path retains its original request/hash and execution
+metadata across service reopen. It uses the same canonical binding and custody
+proof, never new prepare/assignment or an execution owner transfer. Missing or
+changed committed proof refuses. Shared execution context is a port capability
+observed by both application and process/SQL adapters, with one async-local
+instance; application code does not import a process implementation.
+
+When the same original is waiting with `release_inputs_changed` after an
+explicit amendment, ordinary unamended continue remains readback-only with
+`test-selection-required`. The existing amendment must explicitly supply whole
+`task_ids`, `test_selection` and, when prior effective notes exist,
+`release_metadata`; otherwise it returns `release-inputs-required`. Exact captured
+request replay is resolved first and never resumes the stale-input wait. This
+adds no tool, approval, ledger or automatic coverage policy; all existing idle,
+original readback, membership/source and CAS guards still apply.
+
+## External release client (ADR-HUB-419)
+
+The independent release CLI calls the existing HTTP MCP service; it does not
+open stores or create another lifecycle owner. `hub_release_get` retains its
+operation-ID read and additionally accepts an exclusive original run/continue
+request ID plus exact original business arguments. Workspace/caller authority
+and the stored command argument hash must agree. Lookup uses the original
+release store's existing unique Workspace/request index, creates no operation,
+and leaves its MCP status/error/receipts unchanged even if release state is
+already readable. A missing original row grants no no-effect or replay credit.
+
+A coherent Hub source API host retains addressed local worker lifetime after
+HTTP acknowledgement. Its local join validates the original receipt and awaits
+only the already existing promise; it does not invoke a mutation or settle it.
+Worker/persistence/readback exceptions remain observable before stores close.
+Credentials remain separate from business JSON and exported tool/package data.
+
+## First frozen compose continuation (HUB-424)
+
+The existing release continue arguments and original actor/authorization/CAS
+remain authoritative. A positively proven failed FIRST compose at generation
+zero may admit recovery of its already frozen local generation one through the
+same durable owner. Its failed receipt stays unchanged; a new attempt is appended.
+No client repair parameters, new API, release original or UNKNOWN conversion are
+introduced. Changed accepted membership waits for the existing explicit amendment
+before validation/publication of the corrected next generation. See REL-001 and
+ADR-HUB-424-first-freeze-recovery.

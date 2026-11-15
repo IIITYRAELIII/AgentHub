@@ -1,3 +1,5 @@
+import { normalizedTaskGitReferences } from "./task-git-reference.mjs";
+
 export const TASK_CHECKLIST_OPERATIONS = Object.freeze([
   "add", "edit", "remove", "toggle", "move", "link", "unlink", "extract",
 ]);
@@ -20,4 +22,20 @@ export function normalizedTaskChecklistOperation(value) {
     throw new Error("Неизвестная операция чек-листа");
   }
   return operation;
+}
+
+export function normalizedReleaseReference(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).length !== 2
+      || !/^[1-9]\d*$/u.test(String(value.taskRevision ?? ""))
+      || !Array.isArray(value.gitReferences) || !value.gitReferences.length
+      || value.gitReferences.some(ref => !ref || Object.keys(ref).sort().join(",") !== "branch,projectRoot,resultCommit"
+        || typeof ref.projectRoot !== "string" || !ref.projectRoot.trim()
+        || typeof ref.branch !== "string" || !ref.branch.trim()
+        || typeof ref.resultCommit !== "string" || !ref.resultCommit.trim())) {
+    throw new Error("Release reference requires exact Task revision and complete Git references");
+  }
+  const gitReferences = normalizedTaskGitReferences(value.gitReferences);
+  if (gitReferences.length !== value.gitReferences.length) throw new Error("Duplicate release reference repository");
+  return { taskRevision: String(value.taskRevision), gitReferences };
 }

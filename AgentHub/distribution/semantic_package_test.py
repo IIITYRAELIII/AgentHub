@@ -9,7 +9,8 @@ import zipfile
 from unittest.mock import patch
 import install_release as installer
 import unittest
-import build_release_test as _base
+import release_tool_test_support
+import test_build_release as _base
 from install_release import semantic_fields, valid_artifact_version, extract_verified
 
 

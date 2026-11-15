@@ -163,8 +163,18 @@
       && JSON.stringify(await hashesFor(record.blob)) === JSON.stringify(manifest.chunkHashes));
   }
 
-  async function storeFile(record) {
-    const deadline = Date.now() + STORAGE_TIMEOUT_MS;
+  async function verifyStoredFile(record, stored) {
+    await measurePreparation("attachment-storage-verify", async () => {
+      if (!await verifiedRecord(stored, descriptor(record))
+        || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)
+        || (stored.uploadAttemptId ?? stored.uploadId) !== (record.uploadAttemptId ?? record.uploadId)
+        || (stored.uploadAttemptedAt ?? null) !== (record.uploadAttemptedAt ?? null)) {
+        throw storageError("verification");
+      }
+    }, record.uploadId);
+  }
+
+  async function storeFile(record, deadline = Date.now() + STORAGE_TIMEOUT_MS) {
     const db = await measurePreparation("attachment-storage-open", () => openDatabase(), record.uploadId);
     await measurePreparation("attachment-storage-write", () => storageTransaction(db, "readwrite", (store, _setResult, abort) => {
       const cursor = store.openCursor();
@@ -189,17 +199,57 @@
       cursor.onerror = () => abort(cursor.error ?? storageError("failed"));
     }, deadline), record.uploadId);
     const stored = await measurePreparation("attachment-storage-read", () => readStoredRecord(db, record.blobId, deadline), record.uploadId);
-    await measurePreparation("attachment-storage-verify", async () => {
-      if (!await verifiedRecord(stored, descriptor(record))
-        || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)
-        || (stored.uploadAttemptId ?? stored.uploadId) !== (record.uploadAttemptId ?? record.uploadId)
-        || (stored.uploadAttemptedAt ?? null) !== (record.uploadAttemptedAt ?? null)) {
-        throw storageError("verification");
-      }
-    }, record.uploadId);
+    await verifyStoredFile(record, stored);
     // The committed read has already finished inside its storage deadline.
     // Hashing the returned Blob may be delayed by a suspended/busy page; elapsed
     // wall time cannot invalidate the now verified durable bytes.
+  }
+
+  function sameAttempt(left, right) {
+    return Boolean(left.uploadStarted) === Boolean(right.uploadStarted)
+      && (left.uploadAttemptId ?? left.uploadId) === (right.uploadAttemptId ?? right.uploadId)
+      && (left.uploadAttemptedAt ?? null) === (right.uploadAttemptedAt ?? null);
+  }
+
+  async function storeUploadAttempt(record, attempt) {
+    const deadline = Date.now() + STORAGE_TIMEOUT_MS;
+    const db = await measurePreparation("attachment-storage-open", () => openDatabase(), record.uploadId);
+    const desired = { ...record, ...attempt };
+    const result = await measurePreparation("attachment-storage-write", () => storageTransaction(db, "readwrite", (store, setResult, abort) => {
+      const request = store.get(record.blobId);
+      request.onerror = () => abort(request.error ?? storageError("failed"));
+      request.onsuccess = () => {
+        try {
+          const stored = request.result;
+          if (!stored) { setResult({ missing: true }); return; }
+          if (JSON.stringify(descriptor(stored)) !== JSON.stringify(descriptor(record))
+            || stored.storedAt !== record.storedAt
+            || !sameAttempt(stored, record) && !sameAttempt(stored, desired)) {
+            abort(storageError("verification")); return;
+          }
+          if (sameAttempt(stored, desired)) {
+            // A previous write may have committed before its readback timed out.
+            // Verify that original result, without rewriting the Blob or deadline.
+            setResult({ stored }); return;
+          }
+          // This is a same-key, same-Blob metadata replacement, not new archive
+          // admission. Do not scan/deserialize every unrelated retained Blob.
+          store.put({ ...stored, ...attempt });
+          setResult({ written: true });
+        } catch (error) { abort(error); }
+      };
+    }, deadline), record.uploadId);
+    if (result.missing) {
+      // If normal retention removed the record, this is new Blob admission:
+      // preserve the existing quota/retention/readback owner and original budget.
+      return storeFile({ ...record, ...attempt, dataUrl: undefined, durable: undefined,
+        storageFailure: undefined, pendingUploadAttempt: undefined, uploadAttemptWrite: undefined }, deadline);
+    }
+    const stored = result.written
+      ? await measurePreparation("attachment-storage-read", () => readStoredRecord(db, record.blobId, deadline), record.uploadId)
+      : result.stored;
+    // Keep full byte/hash verification, not only the saved timestamp/UUID.
+    await verifyStoredFile(desired, stored);
   }
 
   function remember(record, durable, storageFailure = null) {
@@ -273,13 +323,15 @@
         return;
       }
       try {
-        await storeFile({ ...record, ...attempt, dataUrl: undefined, durable: undefined,
-          storageFailure: undefined, pendingUploadAttempt: undefined, uploadAttemptWrite: undefined });
+        await storeUploadAttempt(record, attempt);
       } catch (error) {
         record.durable = false;
         record.uploadAttemptPersistenceFailed = true;
         record.storageFailure = storageFailureFrom(error);
-        throw error; // No begin may leave without its durable original-attempt deadline.
+        // Native IndexedDB AbortError/QuotaExceededError are storage failures,
+        // not transport or user-cancellation outcomes. Retain their cause.
+        throw error?.attachmentStorageCode ? error : storageError(record.storageFailure.code, error);
+        // No begin may leave without its durable original-attempt deadline.
       }
       record.durable = true;
       delete record.uploadAttemptPersistenceFailed;

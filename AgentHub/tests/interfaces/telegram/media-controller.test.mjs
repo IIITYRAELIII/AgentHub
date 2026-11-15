@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -32,6 +33,17 @@ function controller(dataDir, overrides = {}, dependencies = {}) {
 test("Whisper script resolves from the packaged Agent Hub root", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "media-controller-whisper-"));
   assert.equal(controller(dataDir).transcribeScript, path.join(dataDir, "transcribe.py"));
+});
+
+test("Telegram transcription does not generate bytecode in its immutable body", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "media-no-bytecode-"));
+  t.after(() => rm(directory, { recursive: true }));
+  const python = (await promisify(execFile)("python", ["-I", "-S", "-B", "-c", "import sys; print(sys.executable)"])).stdout.trim();
+  await writeFile(path.join(directory, "whisper_runtime.py"), "VALUE = 'local fixture transcript'\n");
+  await writeFile(path.join(directory, "transcribe.py"), "from whisper_runtime import VALUE\nprint(VALUE)\n");
+  const result = await controller(directory, { pythonExe: python }).runTranscription(path.join(directory, "unused.ogg"));
+  assert.equal(result.trim(), "local fixture transcript");
+  await assert.rejects(lstat(path.join(directory, "__pycache__")), { code: "ENOENT" });
 });
 
 test("speech text store persists and reloads buttons", async () => {

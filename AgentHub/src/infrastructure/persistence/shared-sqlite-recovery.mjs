@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import * as fsPromises from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -6,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { processIsAlive } from "../process/process-liveness.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import { inspectSqliteFileInWorker, inspectSqliteFileSync } from "./shared-sqlite-inspection.mjs";
 
 export const SQLITE_RECOVERY_RESTART_REQUIRED = "SQLITE_RECOVERY_RESTART_REQUIRED";
 
@@ -119,13 +121,15 @@ export class SharedSqliteRecoveryCoordinator {
   #instanceId;
   #withDatabaseLock;
   #captureException;
+  #inspectFile;
 
   constructor({
     databaseFile,
     instanceId = randomUUID(),
     fileSystem = fsPromises,
     writeJson = writeAtomicJson,
-    databaseFactory = (file, options) => new DatabaseSync(file, options),
+    databaseFactory = null,
+    inspectFile = null,
     now = () => new Date(),
     idFactory = randomUUID,
     isAlive = processIsAlive,
@@ -140,7 +144,11 @@ export class SharedSqliteRecoveryCoordinator {
     this.#markerFile = `${this.#databaseFile}.recovery-marker.json`;
     this.#fileSystem = fileSystem;
     this.#writeJson = writeJson;
-    this.#databaseFactory = databaseFactory;
+    this.#databaseFactory = databaseFactory ?? ((file, options) => new DatabaseSync(file, options));
+    // Explicit factories are retained for existing isolated fault fixtures.
+    // The production default checks only the detached copy in a joined worker.
+    this.#inspectFile = inspectFile ?? (databaseFactory
+      ? (file) => inspectSqliteFileSync(file, { databaseFactory }) : inspectSqliteFileInWorker);
     this.#now = now;
     this.#idFactory = idFactory;
     this.#isAlive = isAlive;
@@ -214,39 +222,35 @@ export class SharedSqliteRecoveryCoordinator {
     }
   }
 
-  async #inspectDatabase() {
+  async #inspectDatabase(measure) {
     const inspectionDirectory = `${this.#databaseFile}.recovery-inspection-${this.#pid}-${this.#idFactory()}`;
     const inspectionFile = path.join(inspectionDirectory, path.basename(this.#databaseFile));
-    let database;
     try {
-      await this.#fileSystem.mkdir(inspectionDirectory, { recursive: false });
+      await measure("inspection-directory", () => this.#fileSystem.mkdir(inspectionDirectory, { recursive: false }));
       // The old runtime can still map its SHM until replacement readiness.
       // Copy durable DB/WAL under the existing database lock; SQLite rebuilds
       // the transient WAL index in this fresh, writable inspection directory.
       // Never copy or modify the live SHM (Windows can reject copying it EBUSY).
-      for (const source of [this.#databaseFile, `${this.#databaseFile}-wal`]) {
-        if (await optionalStat(source, this.#fileSystem)) {
-          await this.#fileSystem.copyFile(source, path.join(inspectionDirectory, path.basename(source)));
+      for (const [source, phase] of [[this.#databaseFile, "copy-database"], [`${this.#databaseFile}-wal`, "copy-wal"]]) {
+        const info = await optionalStat(source, this.#fileSystem);
+        if (info) {
+          await measure(phase, () => this.#fileSystem.copyFile(source,
+            path.join(inspectionDirectory, path.basename(source))), { bytes: info.size });
         }
       }
-      database = this.#databaseFactory(inspectionFile, { readOnly: true });
-      const rows = database.prepare("PRAGMA quick_check").all();
-      const failures = rows.flatMap((row) => Object.values(row)).filter((value) => String(value) !== "ok");
-      if (failures.length) {
-        return { healthy: false, error: new Error(`SQLite quick_check failed: ${failures.join("; ")}`) };
-      }
-      return { healthy: true };
+      const inspected = await measure("inspection-query", () => this.#inspectFile(inspectionFile),
+        (result) => result.measurements);
+      return inspected.healthy ? { healthy: true } : { healthy: false, error: new Error(inspected.corruption) };
     } catch (error) {
       if (recoverableDatabaseError(error)) return { healthy: false, error };
       throw error;
     } finally {
-      database?.close();
-      await this.#fileSystem.rm(inspectionDirectory, {
+      await measure("inspection-cleanup", () => this.#fileSystem.rm(inspectionDirectory, {
         recursive: true,
         force: true,
         maxRetries: 10,
         retryDelay: 50,
-      });
+      }));
     }
   }
 
@@ -342,7 +346,7 @@ export class SharedSqliteRecoveryCoordinator {
     }
   }
 
-  async #resume(marker) {
+  async #resume(marker, measure) {
     const validatedMarker = validateMarker(marker, this.#databaseFile);
     if (validatedMarker.instanceId === this.#instanceId) {
       throw recoveryError(
@@ -360,7 +364,7 @@ export class SharedSqliteRecoveryCoordinator {
     }
     const existing = await optionalStat(this.#databaseFile, this.#fileSystem);
     if (existing) {
-      const inspection = await this.#inspectDatabase();
+      const inspection = await this.#inspectDatabase(measure);
       if (!inspection.healthy) {
         throw recoveryError("SQLITE_RECOVERY_REPLACEMENT_INVALID", "SQLite replacement is corrupt", {
           cause: inspection.error,
@@ -399,25 +403,51 @@ export class SharedSqliteRecoveryCoordinator {
     };
   }
 
-  async prepare() {
+  async prepare({ recordPhase = null } = {}) {
+    const emit = (phase, outcome, started, details = null, value = null) => {
+      try {
+        const measured = typeof details === "function" ? details(value) : details;
+        const observed = recordPhase?.({ phase, outcome, durationMs: Math.max(0, performance.now() - started),
+          ...measured });
+        observed?.catch?.(() => {});
+      } catch {}
+    };
+    const measure = async (phase, operation, details = null) => {
+      const started = performance.now();
+      emit(phase, "started", started, typeof details === "function" ? null : details);
+      try {
+        const value = await operation();
+        emit(phase, "succeeded", started, details, value);
+        return value;
+      } catch (error) {
+        emit(phase, "failed", started, { errorCode: error?.code });
+        throw error;
+      }
+    };
+    const admissionStarted = performance.now();
+    let admitted = false;
+    emit("database-lock", "started", admissionStarted);
     try {
       return await this.#withDatabaseLock(async () => {
-        const lock = await this.#acquireLock();
+        admitted = true;
+        emit("database-lock", "succeeded", admissionStarted);
+        const lock = await measure("recovery-lock-acquire", () => this.#acquireLock());
         try {
-          const marker = await optionalJson(this.#markerFile, this.#fileSystem);
-          if (marker) return await this.#resume(marker);
-          const intent = await optionalJson(this.#intentFile, this.#fileSystem);
-          if (intent) await this.#rollbackIntent(intent);
-          const databaseInfo = await optionalStat(this.#databaseFile, this.#fileSystem);
+          const marker = await measure("marker-read", () => optionalJson(this.#markerFile, this.#fileSystem));
+          if (marker) return await measure("resume", () => this.#resume(marker, measure));
+          const intent = await measure("intent-read", () => optionalJson(this.#intentFile, this.#fileSystem));
+          if (intent) await measure("intent-rollback", () => this.#rollbackIntent(intent));
+          const databaseInfo = await measure("database-stat", () => optionalStat(this.#databaseFile, this.#fileSystem));
           if (!databaseInfo) return { degraded: false };
-          const inspection = await this.#inspectDatabase();
+          const inspection = await measure("database-check", () => this.#inspectDatabase(measure));
           if (inspection.healthy) return { degraded: false };
-          return await this.#quarantine(inspection.error);
+          return await measure("quarantine", () => this.#quarantine(inspection.error));
         } finally {
-          await this.#releaseLock(lock);
+          await measure("recovery-lock-release", () => this.#releaseLock(lock));
         }
       });
     } catch (error) {
+      if (!admitted) emit("database-lock", "failed", admissionStarted, { errorCode: error?.code });
       this.#capture(error, "prepare");
       throw error;
     }

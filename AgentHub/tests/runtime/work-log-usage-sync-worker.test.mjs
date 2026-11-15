@@ -21,6 +21,88 @@ import {
   WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
 } from "../../src/application/work-log-usage-projection.mjs";
 
+test("usage input metrics persist on the existing original worker span and latest health result", async () => {
+  const { createCommandTraceComposition } = await import("../../src/composition/command-trace-composition.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-input-trace-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const traceFile = path.join(root, "trace.sqlite");
+  const trace = createCommandTraceComposition({ databaseFile: traceFile, instanceId: "metrics-fixture",
+    releaseId: "metrics-fixture", logger: { warn() {} } });
+  const journal = new JournalDatabase(databaseFile);
+  const worker = new WorkLogUsageSyncWorkerStore({ databaseFile, deviceId: "device-local" });
+  const commands = [];
+  await trace.initialize();
+  worker.setTraceService({ startBestEffortSpan(input) {
+    commands.push(input.commandId);
+    return trace.service.startBestEffortSpan(input);
+  } });
+  try {
+  let full, empty;
+  try {
+    const original = { provider: "codex", threadId: "PRIVATE-THREAD", turnId: "turn", projectRoot: root,
+      completedAt: "2026-11-03T09:00:00.000Z", body: "PRIVATE-BODY", prompt: "PRIVATE-PROMPT", estimatedCredits: 2 };
+    const saved = await journal.upsertRecords([original]);
+    full = await worker.usageSyncSnapshot();
+    assert.equal(full.selectedJournalRecords, 1);
+    assert.ok(full.materializedRecordJsonBytes > 0);
+    assert.equal(full.journalSelectionMode, 0);
+    empty = await worker.usageSyncSnapshot({ afterJournalRevision: saved.revision });
+    assert.equal(empty.selectedJournalRecords, 0);
+    assert.equal(empty.materializedRecordJsonBytes, 0);
+    assert.equal(empty.journalSelectionMode, 1);
+    assert.deepEqual(Object.fromEntries(["selectedJournalRecords", "materializedRecordJsonBytes", "journalSelectionMode"]
+      .map(key => [key, worker.diagnostics().lastSnapshot[key]])), {
+      selectedJournalRecords: 0, materializedRecordJsonBytes: 0, journalSelectionMode: 1 });
+    assert.equal((await journal.loadLedger()).turns["codex\0PRIVATE-THREAD\0turn"].body, original.body);
+  } finally {
+    await worker.close(); await journal.close(); await trace.store.close();
+  }
+    const database = new DatabaseSync(traceFile, { readOnly: true });
+    try {
+      for (const [index, value] of [full, empty].entries()) {
+        const rows = database.prepare("SELECT outcome,metadata_json FROM command_trace_spans WHERE command_id=? ORDER BY sequence").all(commands[index]);
+        assert.deepEqual(rows.map(row => row.outcome), ["started", "succeeded"]);
+        const [start, end] = rows.map(row => JSON.parse(row.metadata_json));
+        assert.equal(start.operationSpanId, end.operationSpanId);
+        for (const key of ["selectedJournalRecords", "materializedRecordJsonBytes", "journalSelectionMode"]) assert.equal(end[key], value[key]);
+        assert.doesNotMatch(JSON.stringify(rows), /PRIVATE|afterJournalRevision|afterObservedAt/);
+      }
+      assert.notEqual(commands[0], commands[1]);
+    } finally { database.close(); }
+  } finally { await removeRoot(root); }
+});
+
+test("usage input metric sink errors preserve worker success and original failure with unknown bytes omitted", async () => {
+  const failure = { message: "original worker failure", code: "ORIGINAL_READ_FAILURE" };
+  const replies = [{ events: [], durationMs: 1, selectedJournalRecords: 2, materializedRecordJsonBytes: null,
+    journalSelectionMode: 2, privateCursor: "PRIVATE" }, { error: failure }];
+  class ReplyWorker extends EventEmitter {
+    postMessage(message) {
+      const next = message.type === "close" ? {} : replies.shift();
+      queueMicrotask(() => this.emit("message", { id: message.id, ...(next.error ? next : { value: next }) }));
+    }
+    async terminate() { this.emit("exit", 0); }
+  }
+  const finishes = [];
+  const worker = new WorkLogUsageSyncWorkerStore({ databaseFile: "unused.sqlite", WorkerImpl: ReplyWorker });
+  worker.setTraceService({ startBestEffortSpan: () => ({ finish(span) {
+    finishes.push(span); throw new Error("diagnostic sink failure");
+  } }) });
+  try {
+    const value = await worker.usageSyncSnapshot();
+    assert.equal(value.materializedRecordJsonBytes, null);
+    assert.equal(Object.hasOwn(finishes[0].metadata, "materializedRecordJsonBytes"), false);
+    assert.equal(Object.hasOwn(worker.diagnostics().lastSnapshot, "materializedRecordJsonBytes"), false);
+    assert.equal(finishes[0].metadata.selectedJournalRecords, 2);
+    assert.equal(finishes[0].metadata.journalSelectionMode, 2);
+    assert.doesNotMatch(JSON.stringify(finishes), /PRIVATE|privateCursor/);
+    await assert.rejects(worker.usageSyncSnapshot(), error => error.code === failure.code && error.message === failure.message);
+    assert.equal(finishes[1].outcome, "failed");
+    assert.equal(Object.hasOwn(finishes[1].metadata, "selectedJournalRecords"), false);
+    assert.equal(worker.diagnostics().lastSnapshot.selectedJournalRecords, 2, "failed request does not replace last successful result");
+  } finally { await worker.close(); }
+});
+
 async function removeRoot(root) {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -445,7 +527,9 @@ test("journal worker projects canonical valid records while preserving excluded 
     const options = { projectRoots: [root], defaultProjectRoot: root, now: Date.parse("2026-09-08T12:00:00Z") };
     const canary = await worker.projectJournal({ ...options, expectedRevision: -1 });
     assert.equal(canary.conflict, true);
-    assert.equal(canary.invalidRecordCount, 2);
+    assert.equal(canary.renderSkipped, true);
+    assert.equal(canary.factsSourceRead, false);
+    assert.equal(canary.invalidRecordCount, undefined, "a refused stale snapshot is not a completed normalization audit");
     assert.equal((await journal.payload()).html, "Original index");
     const result = await worker.projectJournal(options);
     assert.equal(result.projected, true);

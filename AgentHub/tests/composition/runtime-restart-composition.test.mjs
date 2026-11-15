@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +9,141 @@ import { createRuntimeRestartComposition } from "../../src/composition/runtime-r
 import { restartRequestProjection, restartUiProjection } from "../../src/domain/maintenance-operation.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { TaskDiffStore } from "../../src/infrastructure/persistence/task-diff-store.mjs";
+import { createCommandTraceComposition } from "../../src/composition/command-trace-composition.mjs";
+import { createRuntimeRestartWiring } from "../../src/composition/runtime-restart-wiring-composition.mjs";
+import { CommandTraceWorkerStore } from "../../src/infrastructure/persistence/command-trace-worker-store.mjs";
+import { ProviderLoginService } from "../../src/application/provider-login-service.mjs";
+import { EventEmitter } from "node:events";
+import { packageBindingDigest, packageDigest, packageDirectory, packageFile } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
+
+test("restart composition records the original through its trace service and closes the composition worker", async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "hub398-restart-trace-")));
+  const databaseFile = path.join(root, "data", "traces.sqlite");
+  const noop = async () => {};
+  let reopened;
+  let closed = false;
+  const trace = createCommandTraceComposition({ databaseFile });
+  try {
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "config.json"), "{}");
+    await trace.initialize();
+    const operationId = "exact-package-original";
+    const dataDir = path.join(root, "data");
+    const oldManifest = {
+      releaseId: "trace-old", version: "2.0.4", publicVersion: "2.0.4",
+      versionScheme: "semver-build-v1", releaseVersion: "2.0.4+build.17", buildNumber: 17,
+    };
+    const nextManifest = {
+      ...oldManifest, releaseId: "trace-new", version: "2.0.5", publicVersion: "2.0.5",
+      releaseVersion: "2.0.5+build.18", buildNumber: 18, publicationRevision: "a".repeat(40),
+    };
+    const pointerRaw = JSON.stringify({ current: oldManifest.releaseId });
+    const oldRaw = JSON.stringify(oldManifest);
+    await mkdir(path.join(root, "releases", oldManifest.releaseId), { recursive: true });
+    await writeFile(path.join(root, "current.json"), pointerRaw);
+    await writeFile(path.join(root, "releases", oldManifest.releaseId, "runtime-manifest.json"), oldRaw);
+    const inputs = {};
+    for (const [key, contents] of Object.entries({
+      archive: "fixture-archive", descriptor: "{}", installer: "fixture-installer",
+      runtimeManifest: JSON.stringify(nextManifest),
+    })) {
+      const file = path.join(root, `package-${key}`);
+      await writeFile(file, contents);
+      inputs[key] = await packageFile(file);
+    }
+    const binding = {
+      operationId, runtimeRoot: root, dataDir,
+      roots: { runtime: await packageDirectory(root), data: await packageDirectory(dataDir) },
+      old: { releaseId: oldManifest.releaseId,
+        currentSha256: packageDigest(pointerRaw), manifestSha256: packageDigest(oldRaw) },
+      target: { releaseId: nextManifest.releaseId, version: nextManifest.releaseVersion,
+        sourceCommit: nextManifest.publicationRevision, ...inputs },
+    };
+    const store = new MaintenanceOperationStore({ dataDir });
+    const request = store.create({ operationId, kind: "restart",
+      streamId: "agent-hub-runtime", threadId: "agent-hub-runtime",
+      status: "running", phase: "running",
+      metadata: { packageHandoff: { schema: 1, binding, sha256: packageBindingDigest(binding) } },
+    });
+    let blocked = true;
+    const wiring = createRuntimeRestartWiring({
+      taskRuns: { values: () => [] }, agentProviders: {},
+      runCoordinator: { hasPendingAdmission: () => blocked },
+      backgroundJobs: { activeSize: 0 }, streamMaintenance: { activeCount: () => 0 },
+      getRestartRequest: () => request, isStopping: () => false,
+      restartRequestService: { canPerform: () => true },
+      runtimeRestart: {
+        getRestartRequest: () => request, updateOffset: () => 0,
+        isStopping: () => false, beginStopping: () => false,
+        setWaiting: noop, setStopping: noop, updateRestartMessage: noop, saveState: noop,
+        stopRuntimeTimers: noop, stopCodexAppServerTree: noop,
+        maintenanceOperations: store,
+        commandTrace: { ...trace, close: async () => { await trace.close(); closed = true; } },
+        workLogUsageStore: { close: noop }, rateLimitHistoryStore: { close: noop },
+        taskSyncStore: { close: noop }, workspaceCatalogStore: { close: noop },
+        taskReadStateStore: { close: noop }, runtimeStateStore: { close: noop },
+      },
+    });
+    assert.equal(wiring.restartBlockingWorkCount(), 1);
+    blocked = false;
+    assert.equal(wiring.restartBlockingWorkCount(), 0);
+    assert.equal((await wiring.performRestart()).status, "ignored");
+    assert.equal((await wiring.runtimeResources.finalize()).ok, true);
+    assert.equal(closed, true);
+    assert.equal(trace.store.stats().workerRunning, false);
+    reopened = new CommandTraceWorkerStore({ databaseFile });
+    const spans = await reopened.readCommandTimeline(request.operationId);
+    assert.deepEqual(spans.filter(span => span.stage === "restart-readiness").map(span => span.outcome), ["waiting", "ready"]);
+    assert.deepEqual(spans.filter(span => span.stage === "restart-package-backup-preflight").map(span => span.outcome), ["started", "succeeded"]);
+    assert.ok(spans.find(span => span.stage === "restart-package-backup-preflight" && span.outcome === "succeeded").monotonicDurationMs >= 0);
+  } finally {
+    await trace.close(); await reopened?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hub410 actual restart resources join own sign-in cleanup before closing provider transport", async () => {
+  let releaseCancel, cancelStarted;
+  const pendingCancel = new Promise(resolve => { releaseCancel = resolve; });
+  const cancelEntered = new Promise(resolve => { cancelStarted = resolve; });
+  const events = [], worker = new EventEmitter(); worker.pid = 4242;
+  worker.stdout = new EventEmitter(); worker.stderr = new EventEmitter(); worker.kill = () => events.push("own-login-kill");
+  const providerLogin = new ProviderLoginService({
+    sendRpc: async (method, params) => {
+      if (method === "account/login/start") return { loginId: "synthetic-login", authUrl: "https://auth.example/test" };
+      if (method === "account/login/cancel") { events.push(`cancel:${params.loginId}`); cancelStarted(); await pendingCancel; }
+      return {};
+    },
+    resolveClaudeInvocation: () => ({ command: "unused-cli" }), spawnProcess: () => worker,
+    stopProcessTree: async pid => { events.push(`stop:${pid}`); return true; },
+    readClaudeLoggedIn: async () => true, claudeUrlWaitMs: 0,
+    timers: { setTimeout: () => null, clearTimeout() {} }, logger: { error() {} },
+  });
+  const noop = async () => {}, store = { close: noop };
+  const { runtimeResources } = createRuntimeRestartComposition({
+    getRestartRequest: () => null, updateOffset: () => 0, hasBlockingWork: () => false,
+    setWaiting: noop, updateRestartMessage: noop, saveState: noop, beginStopping: () => true, stopRuntimeTimers: () => {},
+    providerLogin, stopCodexAppServerTree: async () => events.push("codex-transport-closed"),
+    miniAppLifecycle: { closeSharedDashboardBot: noop, closePublisher: noop, closeDirectGateway: noop, closeQuickTunnel: noop, closePublicServer: noop, closeLocalServer: noop },
+    desktopControlServer: () => store, desktopAttachments: store, runtimeCommandServer: store, hubMcpServer: store,
+    workLogUsageStore: store, rateLimitHistoryStore: store, providerTurnTelemetryStore: store, fileTransferService: store,
+    taskSyncStore: store, messagePins: store, workspaceCatalogStore: store, taskReadStateStore: store, commandTrace: store, runtimeStateStore: store,
+  });
+  try {
+    await providerLogin.start("codex"); await providerLogin.start("claude");
+    const closing = runtimeResources.close({ reason: "restart" });
+    await cancelEntered;
+    assert.equal(events.includes("codex-transport-closed"), false, "transport cannot close before its sign-in cancellation joins");
+    releaseCancel(); assert.equal((await closing).ok, true);
+    assert.deepEqual(providerLogin.snapshot().map(entry => entry.status), ["cancelled", "cancelled"]);
+    assert.ok(events.includes("stop:4242")); assert.equal(events.includes("stop:777"), false);
+    assert.ok(events.indexOf("cancel:synthetic-login") < events.indexOf("codex-transport-closed"));
+    providerLogin.resume(); assert.equal((await providerLogin.start("codex")).status, "pending");
+    await providerLogin.close();
+    assert.equal((await runtimeResources.finalize()).ok, true);
+    providerLogin.resume(); await assert.rejects(providerLogin.start("codex"), /останавливается/u);
+  } finally { releaseCancel(); providerLogin.dispose(); }
+});
 
 test("the existing restart drain persists the latest remembered diff before replacement", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(),"hub315-drain-"));

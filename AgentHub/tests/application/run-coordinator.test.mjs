@@ -278,7 +278,7 @@ test("RunCoordinator preserves an explicit queue request behind the active turn"
   ]);
 });
 
-test("RunCoordinator keeps durable intake automatic while terminal delivery is finishing", async () => {
+test("RunCoordinator keeps ordinary Stream input provider-authoritative while terminal delivery is finishing", async () => {
   const active = {
     id: "run-finishing",
     provider: "codex",
@@ -303,10 +303,10 @@ test("RunCoordinator keeps durable intake automatic while terminal delivery is f
   });
 
   assert.equal(result.accepted, true);
-  assert.equal(result.queued, true);
-  assert.equal(result.reason, "message-intake");
+  assert.equal(result.steerPending, true);
+  assert.equal(result.providerAccepted, false);
   assert.equal(f.calls.find(([name]) => name === "defer")[3].destination, "queued");
-  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-steer");
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
     { id: "queued-finishing" }, 0,
   ]);
