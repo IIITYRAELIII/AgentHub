@@ -4,6 +4,8 @@ import { access, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { claimCustodyFixture } from "../fixtures/claim-custody-public-fixture.mjs";
+import { createManagedTaskRun, TaskRunRegistry } from "../../src/domain/task-runs.mjs";
+import { HubMcpServer } from "../../src/interfaces/mcp/hub-mcp-server.mjs";
 
 async function fixture(t) {
   const f = await claimCustodyFixture(t, { emptyWip: true });
@@ -119,3 +121,144 @@ for (const boundary of ["before-stage", "after-stage", "before-successor"]) {
     assert.equal(f.prepares(), 0);
   });
 }
+
+async function ownClaimantFixture(t) {
+  const f = await fixture(t);
+  await f.tasks.claim({ id: f.prior.id, workspaceId: f.prior.workspaceId,
+    streamId: f.successor.id, provider: "codex", threadId: `${f.successor.id}-thread`,
+    turnId: "previous-claimant-turn", operationId: "prior-own-assignment", gitBaseline: f.source.gitBaseline });
+  const prior = f.tasks.task(f.prior.id);
+  f.prepare.claim_custody.expected_task_revision = prior.revision;
+  f.prepare.claim_custody.expected_owner_stream_id = f.successor.id;
+  f.hub.setActiveRuns(() => []);
+  const plan = await f.hub.call("hub_task_operation_reconcile", f.prepare);
+  await f.hub.call("hub_task_operation_reconcile", f.fence(plan));
+  const current = createManagedTaskRun({ workspaceId: prior.workspaceId, streamId: f.successor.id,
+    provider: "codex", threadId: `${f.successor.id}-thread`, turnId: "current-claimant-turn",
+    projectRoot: f.source.projectRoot, status: "running" });
+  return { ...f, prior, current };
+}
+
+test("same-owner custody resumes the SAME unknown successor through MCP with a full current run", { timeout: 60000 }, async t => {
+  const f = await ownClaimantFixture(t);
+  const server = new HubMcpServer({ service: f.hub, secret: "fixture-server", logger: { log() {}, error() {} } });
+  await server.start();
+  t.after(() => server.close());
+  let rpcId = 0;
+  const claim = async () => {
+    const response = await fetch(server.url, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "tools/call",
+        params: { name: "hub_task_claim", arguments: f.consume } }) });
+    assert.equal(response.status, 200);
+    return (await response.json()).result;
+  };
+  const absent = await claim();
+  assert.equal(absent.isError, true);
+  assert.match(absent.content[0].text, /no exact active run/);
+  const unknown = f.catalog.mcpOperation(f.consume.request_id);
+  assert.equal(unknown.status, "unknown");
+  assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
+  const runs = new TaskRunRegistry([f.current]);
+  f.hub.setActiveRuns(() => runs.values());
+  const reply = await claim();
+  assert.equal(reply.isError, false);
+  const result = reply.structuredContent;
+  assert.equal(result.claimedTurnId, f.current.turnId);
+  assert.equal(result.streamId, f.current.streamId);
+  assert.equal(result.revision, f.prior.revision + 1);
+  assert.equal(result.claimCustody.dependencyPreparation, "not-replayed");
+  const completed = f.catalog.mcpOperation(f.consume.request_id);
+  assert.equal(completed.requestId, unknown.requestId);
+  assert.equal(completed.argumentsHash, unknown.argumentsHash);
+  assert.equal(completed.createdAtMs, unknown.createdAtMs);
+  assert.equal(completed.status, "succeeded");
+  assert.equal(f.prepares(), 0);
+  assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
+  const reopened = await f.open();
+  const hub = f.service(reopened);
+  hub.setActiveRuns(() => runs.values());
+  const { operatorReconciliation, ...readback } = await hub.call("hub_task_claim", f.consume);
+  assert.deepEqual(operatorReconciliation, { kind: "forward-claim-binding-reuse-v1", fenceRequestId: "custody-fence" });
+  assert.deepEqual(readback, result);
+  assert.equal(reopened.tasks.task(f.prior.id).revision, result.revision);
+  assert.deepEqual(reopened.catalog.mcpOperation(f.original.requestId), f.original);
+});
+
+test("same-owner custody refuses incomplete, foreign, ambiguous, second and queued work", { timeout: 60000 }, async t => {
+  const f = await ownClaimantFixture(t);
+  for (const change of [{ id: "" }, { workspaceId: "foreign" }, { streamId: "foreign" },
+    { provider: "claude" }, { threadId: "old-thread" }, { turnId: "" }, { observer: true }]) {
+    const invalid = { ...f.current, ...change };
+    f.hub.setActiveRuns(() => [invalid]);
+    await assert.rejects(f.hub.call("hub_task_claim", f.consume), /complete exact run identity|no exact active run/);
+    assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
+  }
+  for (const other of [{ ...f.current, id: "ambiguous", turnId: "second-turn" },
+    { ...f.current, id: "foreign-run", provider: "claude", threadId: "other-thread", turnId: "other-turn" }]) {
+    f.hub.setActiveRuns(() => [f.current, other]);
+    await assert.rejects(f.hub.call("hub_task_claim", f.consume), /ambiguous active runs|Previous executor became active/);
+    assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
+  }
+  f.hub.setActiveRuns(() => [f.current]);
+  for (const input of [{ streamId: f.successor.id }, { provider: "codex", threadId: f.current.threadId }]) {
+    f.hub.setDeferredInputs(() => [input]);
+    await assert.rejects(f.hub.call("hub_task_claim", f.consume), /Previous executor became active/);
+    assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
+  }
+  f.hub.setDeferredInputs(() => []);
+  const result = await f.hub.call("hub_task_claim", f.consume);
+  assert.equal(result.revision, f.prior.revision + 1);
+  assert.equal(result.claimedTurnId, f.current.turnId);
+  assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
+});
+
+for (const change of ["replacement", "same-object-turn", "queued"]) {
+  test(`same-owner custody rechecks ${change} at the SQL assignment boundary`, { timeout: 60000 }, async t => {
+    const f = await ownClaimantFixture(t);
+    let current = f.current;
+    f.hub.setActiveRuns(() => [current]);
+    const claim = f.tasks.claim.bind(f.tasks);
+    let once = true;
+    f.tasks.claim = args => {
+      if (once && args.forwardCustodyRequestId) {
+        once = false;
+        if (change === "replacement") current = { ...current, id: "new-run", turnId: "new-turn" };
+        else if (change === "same-object-turn") current.turnId = "new-turn";
+        else f.hub.setDeferredInputs(() => [{ streamId: current.streamId }]);
+      }
+      return claim(args);
+    };
+    await assert.rejects(f.hub.call("hub_task_claim", f.consume), /claimant run changed|Previous executor became active/);
+    assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
+    assert.equal(f.tasks.claimBindingForOperation(f.consume.request_id), null);
+    f.hub.setDeferredInputs(() => []);
+    const result = await f.hub.call("hub_task_claim", f.consume);
+    assert.equal(result.claimedTurnId, current.turnId);
+    assert.equal(result.revision, f.prior.revision + 1);
+    assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
+    assert.equal(f.prepares(), 0);
+  });
+}
+
+test("same-owner custody recovers the committed binding after event loss without another revision", { timeout: 60000 }, async t => {
+  const f = await ownClaimantFixture(t);
+  f.hub.setActiveRuns(() => [f.current]);
+  const event = f.tasks.recordEvent;
+  f.tasks.recordEvent = async () => { throw Error("lost custody assignment event"); };
+  await assert.rejects(f.hub.call("hub_task_claim", f.consume), /lost custody assignment event/);
+  const assigned = f.tasks.task(f.prior.id);
+  assert.equal(assigned.revision, f.prior.revision + 1);
+  const bound = f.tasks.claimBindingForOperation(f.consume.request_id);
+  assert.equal(bound.turnId, f.current.turnId);
+  f.tasks.recordEvent = event;
+  const reopened = await f.open();
+  const hub = f.service(reopened);
+  const next = { ...f.current, id: "reopened-run", turnId: "reopened-turn" };
+  hub.setActiveRuns(() => [next]);
+  const result = await hub.call("hub_task_claim", f.consume);
+  assert.equal(result.claimedTurnId, bound.turnId);
+  assert.equal(result.revision, assigned.revision);
+  assert.deepEqual(reopened.tasks.claimBindingForOperation(f.consume.request_id), bound);
+  assert.deepEqual(reopened.catalog.mcpOperation(f.original.requestId), f.original);
+  assert.equal(f.prepares(), 0);
+});

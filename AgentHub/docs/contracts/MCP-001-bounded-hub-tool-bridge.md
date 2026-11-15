@@ -799,6 +799,18 @@ replayed, and its response says so. Late originals are fenced before any binding
 or baseline update, including receipt writes; exact post-commit retry reuses the
 same binding and assignment. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).
 
+If the pinned current executor is already the successor Stream, only the exact
+current claimant run is excluded from that busy check. Its nonempty run ID,
+Workspace, Stream, provider, Thread and turn must match the genuine active run;
+object and identity are rechecked before the SQL assignment commit. Other runs,
+ambiguous/old runs and queued inputs remain blocking, including in that Stream.
+The first fenced binding advances the Task revision once even when its assigned
+Stream is unchanged; exact committed readback does not advance it again.
+The active-run authority comes from the running Hub's RunCoordinator through
+its existing MCP composition. A source release runtime/caller token alone has
+no active-run authority. Correct owners must be delivered to that runtime before
+the genuine actor resumes the same addressed UNKNOWN successor through live MCP.
+
 An independently authorized unassigned original may explicitly pin
 `expected_owner_stream_id=null` only with `isolated-source-v1`. Missing/empty
 owner pins remain invalid. The Task must remain open/new without accepted Git

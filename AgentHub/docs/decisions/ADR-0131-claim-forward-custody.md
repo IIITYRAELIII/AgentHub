@@ -227,3 +227,26 @@ resolved by explicit forward dispositions or authoritative original outcomes.
 Future typed sealed refusals keep their existing NO_EFFECT mechanism. Delivery,
 actual original readback and managed takeover remain separate required evidence;
 source approval alone is not operational completion.
+
+### Exact claimant of an already assigned Stream
+
+The actual Vega successor first used the source release runtime, whose default
+MCP service has no RunCoordinator binding. Its authenticated context therefore
+did not supply an active run; that addressed UNKNOWN is retained. The existing
+live MCP composition is the authority route after ordinary delivery of the
+reviewed owners, not a snapshot, injected active-run list or another claim API.
+
+A disposable public regression with full run identity also exposed a separate
+busy-guard defect: the current claimant itself blocked takeover when the Task
+was already assigned to the same Stream. The existing busy check now excludes
+only that exact current run after full Workspace/Stream/provider/Thread/turn/run
+identity validation. The same object and identity are rechecked at assignment
+commit; another run, ambiguous identity, turn replacement or queued input still
+refuses. Same-ID UNKNOWN continuation and post-commit reopen use the existing
+receipt and binding owners. The canonical claim transaction advances the Task
+revision once for its first fenced binding even if the Stream is unchanged;
+this retains the existing exact revision check after a lost assignment reply.
+No second binding or revision is created by committed readback. Ordinary claims
+retain their existing revision semantics. Filesystem absence, namespace, SQL and historical
+original fences are unchanged. Actual delivery and genuine successor outcome
+remain separate from the disposable regression.

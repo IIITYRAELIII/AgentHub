@@ -2535,12 +2535,15 @@ export class TaskBoardStore {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(taskId, ...identity, kind, baselineJson, timestamp);
       assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, String(workspaceId));
+      // A new fenced binding advances CAS even for the same assigned Stream.
+      // The ordinary revision trigger skips an explicitly advanced revision.
       database.prepare(`
         UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = CASE WHEN workflow_status IN ('testing', 'awaiting_implementation', 'blocked') THEN workflow_status ELSE 'in_progress' END,
           workspace_id = ?, stream_id = ?, placement_source = 'manual',
-          started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?
+          started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?,
+          row_revision = row_revision + ?
         WHERE id = ?
-      `).run(String(workspaceId), String(streamId), timestamp, timestamp, taskId);
+      `).run(String(workspaceId), String(streamId), timestamp, timestamp, forwardCustodyRequestId ? 1 : 0, taskId);
       const result = this.#taskWithRelease(
         database,
         database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId),
