@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -29,7 +29,7 @@ async function commit(root, name, body = name) {
 
 // The composition ports here are the real owners, including native history,
 // immutable object materialization, isolated candidate verification and readback.
-async function fixture(t, { omit = null, foreignSide = false } = {}) {
+async function fixture(t, { omit = null, foreignSide = false, preparedPrefix = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-ordinary-absorption-"));
   const primary = path.join(root, "primary"), origin = path.join(root, "origin.git"), dataDir = path.join(root, "data");
   await mkdir(primary);
@@ -79,6 +79,46 @@ async function fixture(t, { omit = null, foreignSide = false } = {}) {
     hub.setActiveRuns(() => []);
     return { ...task, root: claimed.gitWorkspace.projectRoot };
   };
+  const resolve = async (repository, body) => commit(repository, "shared.txt", body);
+  const testWithResolution = async (task, request, body) => {
+    try { return await status(task, "testing", request); }
+    catch (error) {
+      assert.equal(error.code, "TASK_INTEGRATION_CONFLICT");
+      await resolve(error.details.nativeConflictRoot, body);
+      return status(task, "testing", `${request}-resolved`);
+    }
+  };
+  let prefix = null;
+  if (preparedPrefix) {
+    const a = await create("PrefixA"), b = await create("PrefixB");
+    await commit(a.root, "shared.txt", "A");
+    await commit(b.root, "shared.txt", "B");
+    await status(a, "testing", "prefix-test-a");
+    await testWithResolution(b, "prefix-test-b", "A\nB");
+    await status(a, "awaiting_implementation", "prefix-await-a");
+    let issued;
+    await assert.rejects(status(b, "awaiting_implementation", "prefix-await-b-conflict"), error => {
+      assert.equal(error.code, "TASK_AWAIT_INTEGRATION_FAILED");
+      issued = /Resolve the native Git merge for Task .+ in (.+)$/u.exec(error.message)?.[1];
+      assert.ok(issued, error.message); return true;
+    });
+    const resolution = await resolve(issued, "A\nB");
+    await status(b, "awaiting_implementation", "prefix-await-b-resolved");
+    const prepared = await releaseGit.frozenCandidate(primary);
+    assert.equal(prepared.preReleaseHead, resolution);
+    const journalFile = path.join(path.dirname(issued), "merge.json");
+    const journal = JSON.parse(await readFile(journalFile, "utf8"));
+    // Controlled historical fixture metadata: the canonical prepared manifest,
+    // real Git resolution and complete old journal stay authoritative. Exercise
+    // both the existing pre-upgrade seed and cross-implementation conflict hint.
+    if (preparedPrefix === "legacy") delete journal.reuseContext;
+    else if (preparedPrefix === "different") journal.reuseContext.implementation = "0".repeat(64);
+    await writeFile(journalFile, JSON.stringify(journal));
+    const actualCheckpoint = path.join(path.dirname(prepared.releaseRoot), "checkpoint.json");
+    prefix = { a, b, prepared, resolution, journalFile, checkpointFile: actualCheckpoint,
+      checkpoint: await readFile(actualCheckpoint), manifest: await readFile(prepared.manifestFile),
+      journal: await readFile(journalFile) };
+  }
   const source = await create("Source"), target = await create("Survivor");
   await board.updateChecklist({ id: target.id, operation: "add", text: "Finish source transfer", expectedRevision: board.task(target.id).revision, requestId: "transfer-add" });
   const item = board.task(target.id).checklist[0];
@@ -90,6 +130,7 @@ async function fixture(t, { omit = null, foreignSide = false } = {}) {
   const returnResult = await status(source, "in_progress", "source-return");
   assert.equal(returnResult.acceptedResultPreserved, true);
   await commit(target.root, "survivor.txt");
+  if (prefix) await commit(target.root, "shared.txt", "Survivor");
   await git(target.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "merge", "--no-ff", "--no-edit", sourceCommit);
   if (omit) { await git(target.root, "rm", omit); await git(target.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", "lost source content"); }
   if (foreignSide) {
@@ -99,7 +140,8 @@ async function fixture(t, { omit = null, foreignSide = false } = {}) {
     await status(foreign, "in_progress", "foreign-return");
     await git(target.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "merge", "--no-ff", "--no-edit", foreignCommit);
   }
-  await status(target, "testing", "survivor-test");
+  if (prefix) await testWithResolution(target, "survivor-test", "A\nB\nSurvivor");
+  else await status(target, "testing", "survivor-test");
   const args = { request_id: "retained-ordinary-preview", task_id: source.id, absorbed_into_task_id: target.id };
   await catalog.beginMcpOperation({ requestId: args.request_id, toolName: "hub_task_complete", workspaceId: workspace.id,
     streamId: stream.id, provider: "codex", threadId: "ordinary-actor", argumentsHash: mcpArgumentsHash(args),
@@ -114,7 +156,7 @@ async function fixture(t, { omit = null, foreignSide = false } = {}) {
       task_id: source.id, expected_arguments_hash: mcpArgumentsHash(args) })).result;
   };
   return { root, primary, base, source, target, workspace, board, catalog, rawCatalog, rawStore,
-    planner, preflight, releaseGit, taskGit, call, status, preview, old, args };
+    planner, preflight, releaseGit, taskGit, call, status, preview, old, args, prefix, resolve };
 }
 
 test("PUBLIC SAME UNKNOWN ordinary return/merge/Test uses real composer, then confirm and later Await readback", async t => {
@@ -203,3 +245,62 @@ test("real ordinary composer rechecks late canonical return authority at SAME re
   assert.deepEqual(f.catalog.mcpOperation(f.args.request_id), f.old);
   assert.deepEqual(f.board.task(f.source.id), before);
 });
+
+async function retainedProspectiveConflict(f) {
+  let issued;
+  await assert.rejects(f.preview(), error => {
+    assert.equal(error.code, "TASK_ABSORPTION_COMPOSITION_FAILED");
+    assert.equal(error.cause.code, "RELEASE_NATIVE_MERGE_CONFLICT");
+    issued = error.cause.conflictRoot;
+    assert.ok(issued); return true;
+  });
+  assert.equal((await stat(issued)).isDirectory(), true, "an issued native conflict must remain resolvable after finally");
+  const journalFile = path.join(path.dirname(issued), "merge.json");
+  const journal = JSON.parse(await readFile(journalFile, "utf8"));
+  assert.equal(journal.identity.tasks[journal.next].taskId, f.target.id,
+    `accepted prefix is reused before the NEW conflict: ${JSON.stringify({ old: JSON.parse(f.prefix.journal.toString()).identity,
+      current: journal.identity, next: journal.next })}`);
+  assert.equal(journal.next, 2);
+  assert.equal(journal.merges[1].resolved, true);
+  assert.equal(await git(issued, "show", `${journal.head}:shared.txt`), "A\nB");
+  assert.deepEqual(f.catalog.mcpOperation(f.args.request_id), f.old);
+  assert.deepEqual(await readFile(f.prefix.checkpointFile), f.prefix.checkpoint);
+  assert.deepEqual(await readFile(f.prefix.prepared.manifestFile), f.prefix.manifest);
+  assert.deepEqual(await readFile(f.prefix.journalFile), f.prefix.journal);
+  assert.equal(await git(f.prefix.prepared.releaseRoot, "rev-parse", "HEAD"), f.prefix.prepared.preReleaseHead);
+  return { issued, journalFile, journal };
+}
+
+async function retainedProspectiveContinuation(t, preparedPrefix) {
+  const f = await fixture(t, { preparedPrefix });
+  const before = f.board.task(f.source.id), target = f.board.task(f.target.id);
+  const { issued, journal } = await retainedProspectiveConflict(f);
+  if (preparedPrefix === "legacy") {
+    assert.equal(journal.head, f.prefix.resolution, "the exact canonical prepared seed was verified and reused");
+  } else {
+    assert.notEqual(journal.head, f.prefix.resolution, "a different implementation offers exact-stage hints, not a prefix stamp");
+  }
+  const resolution = await f.resolve(issued, "A\nB\nSurvivor");
+  const preview = await f.preview();
+  assert.match(preview.cleanupToken, /^[a-f0-9]{64}$/u);
+  assert.deepEqual(preview.previewRecovery.previousReceipt, f.old);
+  assert.deepEqual(f.board.task(f.source.id), before);
+  assert.deepEqual(f.board.task(f.target.id), target);
+  assert.deepEqual(await readFile(f.prefix.checkpointFile), f.prefix.checkpoint);
+  assert.deepEqual(await readFile(f.prefix.journalFile), f.prefix.journal);
+  const closed = await f.call("hub_task_complete", { ...f.args, request_id: "separate-retained-confirm",
+    confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken });
+  assert.equal(closed.status, "done");
+  await f.status(f.target, "awaiting_implementation", "retained-survivor-await");
+  const prepared = await f.releaseGit.frozenCandidate(f.primary);
+  assert.equal(prepared.preReleaseHead, resolution, "normal acceptance consumes the exact resolved native capture");
+  assert.equal(await git(prepared.releaseRoot, "show", "HEAD:shared.txt"), "A\nB\nSurvivor");
+  const plan = await readCandidatePublicationReleasePlan(f.workspace.id, { load: async () => ({ dataDir: path.join(f.root, "data") }) });
+  assert.deepEqual(new Set(plan.ready.map(task => task.taskId)), new Set([f.prefix.a.id, f.prefix.b.id, f.target.id]));
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
+}
+
+test("retained prospective PUBLIC SAME UNKNOWN reuses canonical legacy prefix and resumes a NEW real conflict",
+  t => retainedProspectiveContinuation(t, "legacy"));
+test("retained prospective PUBLIC SAME UNKNOWN revalidates different-implementation stages before a NEW conflict",
+  t => retainedProspectiveContinuation(t, "different"));

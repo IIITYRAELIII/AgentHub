@@ -94,3 +94,23 @@ Foreign side, missing earlier/new work, newer source and late canonical authorit
 mutation are negative cases. Earlier partial composer-port tests retain their
 limited attribution; neither they nor this owner correction change the separate
 multiple-base ordinary Test policy or settle its UNKNOWN original.
+
+An invocation-only data directory previously hid canonical accepted native
+resolutions, then removed the checkout named by a new conflict. Fresh validation
+now routes only native captures to the existing repository owner's layout. Its
+existing release-Git lock is acquired inside ordinary preparation, preserving
+repository-owner/lock ordering. The canonical prepared checkpoint/manifest reader
+supplies the existing legacy-prefix binding; ordinary implementation/context and
+exact-stage verification still decide reuse. The isolated clone, checkpoint and
+promotion stay invocation-local and are cleaned normally. Issued native conflicts
+remain in their existing journal namespace after the finite invocation releases
+its leases. Normal resolution commits and the same preview continue there; later
+ordinary acceptance verifies the same capture. No extra resolver, registry, copy,
+native policy exception or reconstruction of a deleted live checkout is added.
+
+A shorter current-context capture must not suppress lookup of the separately
+bound canonical legacy prefix. The existing reader may offer that prefix beside
+current candidates, then the sequencer verifies every exact step and selects its
+longest verified prefix. Historical journal bytes and their implementation stamp
+remain unchanged. Different implementation hints still require current exact
+conflict stages and clean-context verification rather than prefix adoption.

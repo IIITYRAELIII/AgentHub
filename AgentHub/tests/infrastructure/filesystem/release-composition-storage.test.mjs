@@ -60,6 +60,13 @@ async function snapshot(directory) {
   await visit(directory);
   return files;
 }
+function assertOnlyNewNativeCaptures(before, after, repositoryKey) {
+  for (const [file, bytes] of Object.entries(before)) assert.equal(after[file], bytes, `preserved ${file}`);
+  const prefix = path.join(repositoryKey, "native-merges") + path.sep;
+  for (const file of Object.keys(after).filter(file => !(file in before))) {
+    assert.ok(file.startsWith(prefix), `unexpected non-native output ${file}`);
+  }
+}
 
 test("composition scratch follows native object storage independently of system TEMP", async t => {
   // On a C: TEMP / D: checkout this exercises the actual EXDEV topology. On a
@@ -103,13 +110,13 @@ test("composition scratch follows native object storage independently of system 
     assert.equal(proof.tree, await git(f.primary, "rev-parse", `${f.left}^{tree}`));
     assert.ok(checks > 0);
     assert.deepEqual(await scratch(), []);
-    assert.deepEqual(await snapshot(candidateRoot), before);
+    assertOnlyNewNativeCaptures(before, await snapshot(candidateRoot), taskRepositoryKey(f.primary));
     await assert.rejects(f.service.validateCandidate({ ...f.request, validateBeforeCommit: async () => {
       await validateBeforeCommit();
       throw new Error("fresh authority revoked");
     } }), /fresh authority revoked/u);
     assert.deepEqual(await scratch(), []);
-    assert.deepEqual(await snapshot(candidateRoot), before);
+    assertOnlyNewNativeCaptures(before, await snapshot(candidateRoot), taskRepositoryKey(f.primary));
     assert.equal(await git(f.primary, "show-ref"), refs);
     assert.equal(await git(f.primary, "status", "--porcelain"), "");
   }

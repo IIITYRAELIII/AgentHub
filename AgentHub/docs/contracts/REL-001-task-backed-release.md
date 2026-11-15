@@ -1824,6 +1824,18 @@ and separate confirmation use the same authority identity, independent of their
 different command IDs. No new Test, return, handoff, writer or migration is
 inferred; the independent ordinary Test multiple-base policy is unchanged.
 
+Prospective validation keeps its invocation clone, checkpoint and promotion
+isolated, while its native captures remain in the existing repository owner's
+native-merges namespace under the same release-Git lease. The unchanged native
+sequencer verifies accepted prefix or exact-stage conflict reuse against the
+canonical prepared binding; no historical journal is enriched. A new conflict's
+issued checkout and journal survive invocation cleanup for ordinary resolution
+and exact-selection continuation. The lease is released on refusal, not held
+while awaiting resolution. Subsequent ordinary acceptance consumes the same
+verified capture. Changed selection/base/authority and foreign resolutions retain
+the native refusals. Successful and failed invocation scratch cleanup preserves
+the canonical prepared clone, checkpoint, manifests, primary and old receipts.
+
 An already-published zero-own-delta duplicate uses the same lifecycle owner but
 requires the explicit `absorption_mode=published_duplicate` Release Manager
 request. It does not relax ordinary absorption's open/tested-survivor guard.

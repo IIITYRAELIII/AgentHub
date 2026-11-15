@@ -763,6 +763,7 @@ export class ReleaseGitWorkspaceService {
   #recoveryPhase;
   #validationBundle = null;
   #validationReferenceRoot = null;
+  #validationNativeOwner = null;
   #isolationContext = null;
   #readPreparationAuthority;
   #readPreparationOriginal;
@@ -1102,6 +1103,10 @@ export class ReleaseGitWorkspaceService {
       });
       isolated.#publicationDataDir = this.#publicationDataDir;
       isolated.#repositoryOwner = this.#repositoryOwner;
+      // The invocation clone/checkpoint is disposable. Native captures belong
+      // to the existing repository owner: its accepted prefix stays visible and
+      // a newly issued conflict remains resolvable after invocation cleanup.
+      isolated.#validationNativeOwner = this;
       const candidate = await isolated.prepareCandidate({
         planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, baseProvenance,
         validateBeforeCommit,
@@ -2174,7 +2179,11 @@ export class ReleaseGitWorkspaceService {
     assertReleaseBaseProvenance({ publishedBaseCommit: published, baseCommit, provenance });
     const tasks = normalizedFrozenTasks(frozenTasks);
     const layout = this.#layout(initial.root);
-    const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
+    const nativeOwner = this.#validationNativeOwner ?? this;
+    const nativeLayout = nativeOwner.#layout(initial.root);
+    // Keep the normal repository-owner -> release-Git lock order. Validation
+    // uses the SAME canonical lock, not an outer lock around prepareCandidate.
+    const lock = path.join(nativeOwner.dataDir, "locks", `release-git-${layout.repositoryKey}`);
     const preparationLockStarted = performance.now();
     return withInterprocessLocks([lock], async () => {
       recordTaskOperationTiming("preparation:candidate-lock-wait", {
@@ -2209,6 +2218,7 @@ export class ReleaseGitWorkspaceService {
       if (this.#isolationContext) await this.#assertIsolationClone(clone, this.#isolationContext);
       const git = (args, options = {}) => runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: null });
       const checkpoint = await readJson(clone.checkpointFile);
+      const nativeCheckpoint = nativeOwner === this ? checkpoint : await readJson(nativeLayout.checkpointFile);
       if (forwardPreparation) {
         if (!preparationGuard || !preflightRequestId || typeof commitPrepared !== "function"
             || typeof forwardPreparation.observeEffects !== "function") throw new Error("Forward preparation owning boundaries are incomplete");
@@ -2380,11 +2390,11 @@ export class ReleaseGitWorkspaceService {
       if (historyAuthority?.publishedMetadata) historyRequest.expectedPublishedMetadata = historyAuthority.publishedMetadata;
       await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
-      const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
+      const mergeRoot = path.join(nativeLayout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
       const readLegacyReuseBinding = async () => measureTaskOperation("native:legacy-prepared-verify", async () => {
-        if (checkpoint?.phase !== "prepared" || checkpoint.baseCommit !== baseCommit
-            || stableManifest(checkpoint.baseProvenance ?? null) !== stableManifest(provenance ?? null)) return null;
-        const retained = await this.frozenCandidate(initial.root);
+        if (nativeCheckpoint?.phase !== "prepared" || nativeCheckpoint.baseCommit !== baseCommit
+            || stableManifest(nativeCheckpoint.baseProvenance ?? null) !== stableManifest(provenance ?? null)) return null;
+        const retained = await nativeOwner.frozenCandidate(initial.root);
         const manifestBytes = await readFile(retained.manifestFile);
         if (sha256(manifestBytes) !== retained.manifestHash) throw new Error("Retained native manifest changed");
         const old = JSON.parse(manifestBytes);
@@ -2393,7 +2403,7 @@ export class ReleaseGitWorkspaceService {
             || stableManifest(old.baseProvenance ?? null) !== stableManifest(provenance ?? null)) return null;
         const oldTasks = normalizedFrozenTasks(old.tasks);
         const oldIdentity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: retained.planRevision, baseCommit, tasks: oldTasks };
-        const oldRoot = path.join(layout.root, "native-merges", sha256(stableManifest(oldIdentity)).slice(0, 24));
+        const oldRoot = path.join(nativeLayout.root, "native-merges", sha256(stableManifest(oldIdentity)).slice(0, 24));
         const stateFile = path.join(oldRoot, "merge.json");
         const stateInfo = await lstat(stateFile).catch(error => { if (error.code === "ENOENT") return null; throw error; });
         if (!stateInfo?.isFile() || stateInfo.isSymbolicLink()) return null;
@@ -2403,9 +2413,9 @@ export class ReleaseGitWorkspaceService {
         const oldAuthority = await this.#nativeHistoryAuthority({ projectRoot: initial.root, provenance,
           planRevision: retained.planRevision, tasks: oldTasks });
         if (taskGitIdentityHash(oldAuthority) !== taskGitIdentityHash(historyAuthority)) return null;
-        const checkpointBytes = await readFile(clone.checkpointFile);
+        const checkpointBytes = await readFile(nativeLayout.checkpointFile);
         if (sha256(await readFile(retained.manifestFile)) !== retained.manifestHash
-            || stableManifest(JSON.parse(checkpointBytes)) !== stableManifest(checkpoint)) {
+            || stableManifest(JSON.parse(checkpointBytes)) !== stableManifest(nativeCheckpoint)) {
           throw new Error("Retained prepared prefix custody changed");
         }
         return { root: oldRoot, identityHash: taskGitIdentityHash(oldIdentity), head: retained.preReleaseHead,
@@ -2413,7 +2423,7 @@ export class ReleaseGitWorkspaceService {
           verifyInRepository: retainedGit => assertNativePreparedComposition({ git: retainedGit, baseCommit,
             tasks: oldTasks, merges: old.merges, head: retained.preReleaseHead, tree: retained.tree,
             identity: oldIdentity, historyAuthority: oldAuthority }),
-          unchanged: async () => sha256(await readFile(clone.checkpointFile)) === sha256(checkpointBytes)
+          unchanged: async () => sha256(await readFile(nativeLayout.checkpointFile)) === sha256(checkpointBytes)
             && sha256(await readFile(retained.manifestFile)) === retained.manifestHash };
       });
       const composition = await mergeSelectedResults({
@@ -2421,7 +2431,7 @@ export class ReleaseGitWorkspaceService {
         reuseContext: { repositoryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
           baseProvenance: provenance ?? null, historyAuthority: historyAuthority ?? null },
         readLegacyReuseBinding,
-        deliveredHead: checkpoint?.preReleaseHead ?? null,
+        deliveredHead: nativeCheckpoint?.preReleaseHead ?? null,
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
         readJson, writeJson: writeJsonAtomic,
         provisionNativeObjects: input => preparationObjectStore().provision({ ...input,
