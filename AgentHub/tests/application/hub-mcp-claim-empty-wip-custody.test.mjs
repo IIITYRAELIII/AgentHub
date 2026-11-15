@@ -34,7 +34,8 @@ test("public empty-WIP managed custody preserves UNKNOWN and partial aliases for
   await f.hub.call("hub_task_operation_reconcile", f.fence(plan));
   assert.throws(() => late.run(f.prior.id), /namespace authority/);
   assert.throws(() => settle.run(f.original.requestId), /Custody identity/);
-  await assert.rejects(f.hub.call("hub_task_claim", { ...f.consume, context_token: f.managerToken }), /another operation/);
+  await assert.rejects(f.hub.call("hub_task_claim", { ...f.consume, context_token: f.managerToken }), /Successor claim differs|another operation/);
+  assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
   const result = await f.hub.call("hub_task_claim", f.consume);
   assert.equal(result.streamId, f.successor.id);
   assert.equal(result.revision, f.prior.revision + 1);
