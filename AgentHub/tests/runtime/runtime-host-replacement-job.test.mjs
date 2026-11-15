@@ -21,7 +21,7 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
   await execute(runtimeHostCompilerCandidates()[0], ['/nologo', '/target:exe', `/out:${driver}`,
     '/reference:System.dll', '/reference:System.Web.Extensions.dll',
     path.join(source, 'tests/fixtures/runtime-host-replacement-job.cs')], { windowsHide: true });
-  for (const mode of ['ready', 'extra', 'not-ready', 'foreign-ready', 'lost-reply']) await t.test(mode, async () => {
+  for (const mode of ['ready', 'extra', 'not-ready', 'foreign-ready', 'lost-reply', 'entry-inherited', 'entry-foreign', 'entry-forged-job']) await t.test(mode, async () => {
     const run = path.join(root, mode); await mkdir(run);
     // Actual compiled Host location owns its runtime root. Each mode is joined
     // before the next pointer change; no live Hub or provider is started.
@@ -74,10 +74,28 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
           fs.writeFileSync(root+'/result.json',JSON.stringify({ready:result.lock.ready,launches}));
         }catch(error){fs.writeFileSync(root+'/result.json',JSON.stringify({error:error.message,cleanup:error.replacementCleanup,launches}));}
       }`);
-    const result = await execute(driver, [run, process.execPath, submit, mode], { windowsHide: true, timeout: 45000 });
+    const launcherLog = path.join(root, 'launcher-error.log');
+    const priorFailure = await readFile(launcherLog, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+    const result = await execute(driver, [run, process.execPath, submit, mode], { windowsHide: true, timeout: 45000,
+      ...(mode.startsWith('entry-') ? { env: { ...process.env, AGENT_HUB_RESTART_OPERATION_ID: operation,
+        AGENT_HUB_PACKAGE_REPLACEMENT_OUTSIDE_JOBS: '1' } } : {}),
+    });
     assert.equal(result.stderr, '');
-    const proof = JSON.parse(result.stdout), outcome = JSON.parse(await readFile(path.join(run, 'result.json'), 'utf8'));
-    t.diagnostic(JSON.stringify({ mode, ...proof, outcome }));
+    const proof = JSON.parse(result.stdout);
+    const nodeIdentity = await readFile(path.join(run, 'actual-node.json'), 'utf8').then(JSON.parse,
+      error => { if (error.code === 'ENOENT') return null; throw error; });
+    const failure = (await readFile(launcherLog, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; })).slice(priorFailure.length);
+    if (mode.startsWith('entry-')) {
+      assert.ok(proof.targetPid > 0);
+      assert.equal(proof.targetExitCode, 1);
+      assert.equal(nodeIdentity, null, 'foreign/inherited/forged Job never reaches Node');
+      assert.match(failure, /Replacement Host (must enter outside|is not in its exact new owned Job|owned launcher identity changed)/);
+      t.diagnostic(JSON.stringify({ mode, ...proof, failure }));
+      return;
+    }
+    const outcome = JSON.parse(await readFile(path.join(run, 'result.json'), 'utf8'));
+    t.diagnostic(JSON.stringify({ mode, ...proof, outcome, nodeIdentityCreated: Boolean(nodeIdentity), launcherFailure: failure.slice(-4096) }));
+    assert.ok(nodeIdentity?.pid > 0 && nodeIdentity?.hostPid > 0, 'every Ready/cleanup/lost-reply oracle reaches the actual replacement Node');
     assert.equal(outcome.launches, 1, 'transport uncertainty never admits another launcher');
     if (mode === 'ready') {
       assert.equal(outcome.ready, true);

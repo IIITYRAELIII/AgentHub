@@ -1,5 +1,17 @@
 # RST-001 — Restart and maintenance recovery
 
+## New owned replacement Job (ADR-HUB-450)
+
+The native launcher still proves the suspended replacement is outside every
+inherited Job before assigning its fresh per-Host Job. The resumed Host admits
+that Job only through the same launcher's one-use local entry connection: native
+pipe peer PIDs, pinned live launcher image/security identity, original operation,
+exact child PID and actual Job membership must agree. A matching Job name or
+an environment flag alone grants no admission. Foreign/inherited/unknown entry
+refuses before Node. This proof does not forbid later foreign reassignment.
+Existing Ready/commit/abort, whole old-Job refusal, lost-reply UNKNOWN and joined
+cleanup remain unchanged; no second launcher or new execution deadline follows.
+
 ## Public update initiated by an active Hub agent
 
 A capable runtime admits one exact package maintenance original before stopping.

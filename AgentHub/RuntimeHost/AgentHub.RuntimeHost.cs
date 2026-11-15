@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.IO.Pipes;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -45,6 +46,11 @@ namespace AgentHub.RuntimeHost
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool inJob);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint pid);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint pid);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool CreateProcess(string application, StringBuilder commandLine,
@@ -509,6 +515,9 @@ namespace AgentHub.RuntimeHost
                     return StartOwnedReplacement(runtimeRoot);
                 }
 
+                if (args.Length == 4 && args[0] == "--replacement-owned-entry")
+                    return Run(runtimeRoot, false, args);
+
                 bool checkOnly = args.Length == 1 && args[0] == "--check";
                 if (args.Length > 0 && !checkOnly)
                 {
@@ -531,8 +540,21 @@ namespace AgentHub.RuntimeHost
             }
         }
 
-        private static int Run(string runtimeRoot, bool checkOnly)
+        private static int Run(string runtimeRoot, bool checkOnly, string[] ownedEntry = null)
         {
+            bool inheritedAtEntry;
+            if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inheritedAtEntry))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            bool outsideInheritedJobs = !inheritedAtEntry;
+            if (ownedEntry != null)
+            {
+                VerifyOwnedReplacementEntry(ownedEntry);
+                outsideInheritedJobs = true; // The retained creator proved this before assigning its fresh Job.
+                WriteLifetime(runtimeRoot, "replacement-entry-verified", 0, null, inheritedAtEntry);
+            }
+            else if (!checkOnly && !String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID"))
+                && inheritedAtEntry) throw new InvalidOperationException("Replacement Host must enter outside every inherited Job");
+            Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_REPLACEMENT_OUTSIDE_JOBS", outsideInheritedJobs ? "1" : "0");
             Mutex packageGate = EnterPackageGate(runtimeRoot);
             Mutex acceptanceGate = EnterAcceptanceGate(runtimeRoot);
             IntPtr runtimeJob = IntPtr.Zero;
@@ -969,6 +991,59 @@ namespace AgentHub.RuntimeHost
         // The old owner retains this pipe-connected launcher until its existing
         // exact ready proof commits, or until native cleanup has proved zero.
         // Only the newly created suspended child is assigned to this fresh Job.
+        private static string ReplacementEntryPipeName(int launcher, string nonce)
+        {
+            return "IIITYRAELIII.AgentHub.Replacement." + launcher.ToString(CultureInfo.InvariantCulture) + "." + nonce;
+        }
+
+        private static void VerifyOwnedReplacementEntry(string[] args)
+        {
+            int launcher;
+            Guid operation, nonce;
+            string original = Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID");
+            if (!Int32.TryParse(args[1], out launcher) || launcher <= 0
+                || !Guid.TryParse(args[2], out operation) || args[2] != original
+                || !Guid.TryParseExact(args[3], "N", out nonce))
+                throw new InvalidOperationException("Replacement Host has invalid owned entry identity");
+            IntPtr owner = OpenProcess(0x00100000 | 0x1000, false, (uint)launcher);
+            IntPtr job = OpenJobObject(4, false, "Local\\IIITYRAELIII.AgentHub." + Process.GetCurrentProcess().Id);
+            try
+            {
+                bool member;
+                if (job == IntPtr.Zero || !IsProcessInJob(GetCurrentProcess(), job, out member) || !member)
+                    throw new InvalidOperationException("Replacement Host is not in its exact new owned Job");
+                StringBuilder image = new StringBuilder(32768); uint length = (uint)image.Capacity;
+                if (owner == IntPtr.Zero || WaitForSingleObject(owner, 0) != 258
+                    || !QueryFullProcessImageName(owner, 0, image, ref length)
+                    || !String.Equals(Path.GetFullPath(image.ToString()), Path.GetFullPath(Assembly.GetExecutingAssembly().Location), StringComparison.OrdinalIgnoreCase)
+                    || ProcessSecurityContext(owner) != ProcessSecurityContext(GetCurrentProcess()))
+                    throw new InvalidOperationException("Replacement Host owned launcher identity changed");
+                // The server exists before CreateProcess. Never wait for an absent/forged issuer.
+                using (var pipe = new NamedPipeClientStream(".", ReplacementEntryPipeName(launcher, args[3]), PipeDirection.InOut))
+                {
+                    pipe.Connect(0);
+                    uint server;
+                    if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out server)
+                        || server != (uint)launcher || WaitForSingleObject(owner, 0) != 258)
+                        throw new InvalidOperationException("Replacement Host has a foreign owned entry issuer");
+                    using (var reader = new StreamReader(pipe, new UTF8Encoding(false)))
+                    {
+                        StringBuilder proof = new StringBuilder();
+                        for (int value; proof.Length <= 128 && (value = reader.Read()) >= 0 && value != '\n'; ) proof.Append((char)value);
+                        string expected = "AGENT_HUB_REPLACEMENT_OWNED " + original + " " + Process.GetCurrentProcess().Id;
+                        if (proof.Length > 128 || proof.ToString().TrimEnd('\r') != expected
+                            || !IsProcessInJob(GetCurrentProcess(), job, out member) || !member)
+                            throw new InvalidOperationException("Replacement Host owned entry proof changed");
+                    }
+                }
+            }
+            finally
+            {
+                if (job != IntPtr.Zero) CloseHandle(job);
+                if (owner != IntPtr.Zero) CloseHandle(owner);
+            }
+        }
+
         private static int StartOwnedReplacement(string runtimeRoot)
         {
             string operation = Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID");
@@ -980,8 +1055,14 @@ namespace AgentHub.RuntimeHost
             bool committed = false;
             try
             {
+                int launcher = Process.GetCurrentProcess().Id;
+                string nonce = Guid.NewGuid().ToString("N");
                 uint parentPid;
-                child = CreateIndependentProcessCore(Assembly.GetExecutingAssembly().Location, "", runtimeRoot,
+                using (var entry = new NamedPipeServerStream(ReplacementEntryPipeName(launcher, nonce),
+                    PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
+                {
+                string entryArguments = " --replacement-owned-entry " + launcher + " " + operation + " " + nonce;
+                child = CreateIndependentProcessCore(Assembly.GetExecutingAssembly().Location, entryArguments, runtimeRoot,
                     out parentPid, delegate(ProcessInformation suspended) {
                         IntPtr created = CreateJobObject(IntPtr.Zero, "Local\\IIITYRAELIII.AgentHub." + suspended.ProcessId);
                         int error = Marshal.GetLastWin32Error();
@@ -995,6 +1076,25 @@ namespace AgentHub.RuntimeHost
                         if (!AssignProcessToJobObject(job, suspended.Process))
                             throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot own suspended replacement Job");
                     });
+                IAsyncResult connection = entry.BeginWaitForConnection(null, null);
+                using (WaitHandle connected = connection.AsyncWaitHandle)
+                {
+                    while (!connected.WaitOne(20))
+                        if (WaitForSingleObject(child.Process, 0) != 258)
+                            throw new InvalidOperationException("Replacement Host exited before owned entry proof");
+                    entry.EndWaitForConnection(connection);
+                }
+                uint peer; bool childMember;
+                if (!GetNamedPipeClientProcessId(entry.SafePipeHandle.DangerousGetHandle(), out peer)
+                    || peer != child.ProcessId || WaitForSingleObject(child.Process, 0) != 258
+                    || !IsProcessInJob(child.Process, job, out childMember) || !childMember)
+                    throw new InvalidOperationException("Replacement entry is not the exact newly created Host");
+                using (var writer = new StreamWriter(entry, new UTF8Encoding(false)))
+                {
+                    writer.WriteLine("AGENT_HUB_REPLACEMENT_OWNED " + operation + " " + child.ProcessId);
+                    writer.Flush();
+                }
+                }
                 bool inherited;
                 if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inherited)) inherited = true;
                 WriteLifetime(runtimeRoot, "replacement-created", (int)child.ProcessId, null, inherited, parentPid, true);

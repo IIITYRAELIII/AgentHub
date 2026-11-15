@@ -24,6 +24,7 @@ internal static class ReplacementJobProbe
     [DllImport("kernel32.dll")] private static extern bool TerminateJobObject(IntPtr j,uint code);
     [DllImport("kernel32.dll")] private static extern uint ResumeThread(IntPtr t);
     [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(IntPtr p,uint ms);
+    [DllImport("kernel32.dll")] private static extern bool GetExitCodeProcess(IntPtr p,out uint code);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr h);
     private static string Quote(string s) { return "\""+s.Replace("\"","\\\"")+"\""; }
     private static void Check(bool v,string m) { if(!v)throw new Exception(m+":"+Marshal.GetLastWin32Error()); }
@@ -34,6 +35,24 @@ internal static class ReplacementJobProbe
         try
         {
             Startup si=new Startup();si.Size=(uint)Marshal.SizeOf(typeof(Startup));
+            if(args[3].StartsWith("entry-",StringComparison.Ordinal)) {
+                string executable=Path.Combine(Path.GetDirectoryName(root),"AgentHub.RuntimeHost.exe");
+                string command=Quote(executable);
+                if(args[3]!="entry-inherited")command+=" --replacement-owned-entry "+Process.GetCurrentProcess().Id+" "+
+                    Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID")+" "+Guid.NewGuid().ToString("N");
+                Check(CreateProcess(executable,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,false,
+                    4|0x08000000,IntPtr.Zero,Path.GetDirectoryName(root),ref si,out submit),"create addressed Host");
+                if(args[3]=="entry-forged-job") {
+                    CloseHandle(job);job=CreateJobObject(IntPtr.Zero,"Local\\IIITYRAELIII.AgentHub."+submit.Pid);
+                    Check(job!=IntPtr.Zero,"forge disposable same-name Job");
+                }
+                Check(AssignProcessToJobObject(job,submit.Process)&&ResumeThread(submit.Thread)==1,"owned negative Job");
+                Check(WaitForSingleObject(submit.Process,25000)==0,"negative Host terminal");
+                uint targetExitCode;
+                Check(GetExitCodeProcess(submit.Process,out targetExitCode),"retained exact Host exit code");
+                Console.WriteLine(new JavaScriptSerializer().Serialize(new {targetPid=submit.Pid,targetExitCode=targetExitCode}));
+                return 0;
+            }
             Check(CreateProcess(args[1],new StringBuilder(Quote(args[1])+" "+Quote(args[2])+" "+Quote(args[3])),
                 IntPtr.Zero,IntPtr.Zero,false,4|0x08000000,IntPtr.Zero,root,ref si,out submit),"create submitter");
             Check(AssignProcessToJobObject(job,submit.Process)&&ResumeThread(submit.Thread)==1,"owned old Job");
