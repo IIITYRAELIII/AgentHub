@@ -8,11 +8,13 @@ using System.IO;
 using System.IO.Pipes;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("Agent Hub Server")]
@@ -1182,7 +1184,8 @@ namespace AgentHub.RuntimeHost
 
         private static void WriteLifetime(string runtimeRoot, string stage, int childPid, int? exitCode, bool inJob,
             uint? externalParentPid = null, bool? childInJobBeforeResume = null,
-            double? elapsedMs = null, string workKind = null, string outcome = null)
+            double? elapsedMs = null, string workKind = null, string outcome = null,
+            Dictionary<string, int> counts = null)
         {
             try
             {
@@ -1198,6 +1201,7 @@ namespace AgentHub.RuntimeHost
                 if (elapsedMs.HasValue) record["elapsedMs"] = elapsedMs.Value;
                 if (workKind != null) record["workKind"] = workKind;
                 if (outcome != null) record["outcome"] = outcome;
+                if (counts != null) record["counts"] = counts;
                 Guid operation;
                 string original = Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID");
                 if (Guid.TryParse(original, out operation)) record["operationId"] = original;
@@ -1564,17 +1568,25 @@ namespace AgentHub.RuntimeHost
             }
 
             string releasePrefix = releaseRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            int count = 0;
-            Stopwatch fileStage = new Stopwatch();
-            ManifestHashTiming hashTiming = traceRoot == null ? null : new ManifestHashTiming();
+            List<object> members = new List<object>();
+            foreach (object value in files) members.Add(value);
+            if (members.Count == 0) throw new InvalidOperationException("Agent Hub runtime manifest is empty");
+            ManifestHashTiming hashTiming = new ManifestHashTiming();
             double pathMilliseconds = 0, hashMilliseconds = 0;
             bool verified = false;
             try
             {
-            foreach (object value in files)
+            ValidateManifestMembers(members.Count, delegate(int index)
             {
-                fileStage.Restart();
-                Dictionary<string, object> item = value as Dictionary<string, object>;
+                Stopwatch fileStage = Stopwatch.StartNew();
+                ManifestHashTiming memberTiming = new ManifestHashTiming();
+                double memberPathMilliseconds = 0, memberHashMilliseconds = 0;
+                bool completed = false;
+                lock (hashTiming) { hashTiming.Started++; hashTiming.Active++;
+                    hashTiming.MaxActive = Math.Max(hashTiming.MaxActive, hashTiming.Active); }
+                try
+                {
+                Dictionary<string, object> item = members[index] as Dictionary<string, object>;
                 if (item == null)
                 {
                     throw new InvalidOperationException("Agent Hub runtime manifest entry is invalid");
@@ -1595,20 +1607,30 @@ namespace AgentHub.RuntimeHost
                     throw new InvalidOperationException("Agent Hub runtime size mismatch: " + relative);
                 }
                 string expectedHash = RequiredString(item, "sha256").ToLowerInvariant();
-                pathMilliseconds += fileStage.Elapsed.TotalMilliseconds;
+                memberPathMilliseconds = fileStage.Elapsed.TotalMilliseconds;
                 fileStage.Restart();
-                string actualHash = ComputeSha256(target, hashTiming);
-                hashMilliseconds += fileStage.Elapsed.TotalMilliseconds;
+                string actualHash;
+                try { actualHash = ComputeSha256(target, memberTiming, hashTiming); }
+                finally { memberHashMilliseconds = fileStage.Elapsed.TotalMilliseconds; }
                 if (!String.Equals(expectedHash, actualHash, StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException("Agent Hub runtime hash mismatch: " + relative);
                 }
-                count += 1;
-            }
-            if (count == 0)
-            {
-                throw new InvalidOperationException("Agent Hub runtime manifest is empty");
-            }
+                completed = true;
+                }
+                finally
+                {
+                    lock (hashTiming)
+                    {
+                        pathMilliseconds += memberPathMilliseconds;
+                        hashMilliseconds += memberHashMilliseconds;
+                        hashTiming.OpenMilliseconds += memberTiming.OpenMilliseconds;
+                        hashTiming.ReadDigestMilliseconds += memberTiming.ReadDigestMilliseconds;
+                        hashTiming.Active--;
+                        if (completed) hashTiming.Completed++;
+                    }
+                }
+            });
             verified = true;
             }
             finally
@@ -1625,8 +1647,42 @@ namespace AgentHub.RuntimeHost
                         hashTiming.OpenMilliseconds, "io", verified ? "succeeded" : "incomplete");
                     WriteLifetime(traceRoot, "manifest-read-digest", 0, null, inJob, null, null,
                         hashTiming.ReadDigestMilliseconds, "io", verified ? "succeeded" : "incomplete");
+                    WriteLifetime(traceRoot, "manifest-io-concurrency", 0, null, inJob, null, null,
+                        null, "io", verified ? "succeeded" : "incomplete", new Dictionary<string, int> {
+                            { "members", members.Count }, { "started", hashTiming.Started },
+                            { "completed", hashTiming.Completed }, { "active", hashTiming.Active },
+                            { "maxValidations", hashTiming.MaxActive }, { "maxOpenCalls", hashTiming.MaxOpening },
+                            { "maxOpenStreams", hashTiming.MaxStreams }, { "openStreams", hashTiming.Streams }
+                        });
                 }
             }
+        }
+
+        private static void ValidateManifestMembers(int count, Action<int> validate)
+        {
+            object admission = new object();
+            int next = 0, firstFailure = count;
+            Exception[] failures = new Exception[count];
+            Action worker = delegate {
+                for (;;)
+                {
+                    int index;
+                    lock (admission)
+                    {
+                        if (next >= count || next > firstFailure) return;
+                        index = next++;
+                    }
+                    try { validate(index); }
+                    catch (Exception error)
+                    {
+                        lock (admission) { failures[index] = error; firstFailure = Math.Min(firstFailure, index); }
+                    }
+                }
+            };
+            // This call joins both workers even when a validation fails. No Node
+            // launch or exception escapes while another member owns a file handle.
+            Parallel.Invoke(new ParallelOptions { MaxDegreeOfParallelism = 2 }, worker, worker);
+            if (firstFailure < count) ExceptionDispatchInfo.Capture(failures[firstFailure]).Throw();
         }
 
         private static void ValidateRelativePath(string relative)
@@ -1701,14 +1757,29 @@ namespace AgentHub.RuntimeHost
         private sealed class ManifestHashTiming
         {
             internal double OpenMilliseconds, ReadDigestMilliseconds;
+            internal int Started, Completed, Active, MaxActive, Opening, MaxOpening, Streams, MaxStreams;
         }
 
-        private static string ComputeSha256(string path, ManifestHashTiming timing = null)
+        private static string ComputeSha256(string path, ManifestHashTiming timing = null, ManifestHashTiming concurrency = null)
         {
             Stopwatch phase = timing == null ? null : Stopwatch.StartNew();
-            using (FileStream stream = File.OpenRead(path))
+            FileStream stream = null;
+            if (concurrency != null) lock (concurrency) { concurrency.Opening++;
+                concurrency.MaxOpening = Math.Max(concurrency.MaxOpening, concurrency.Opening); }
+            try
             {
-            if (phase != null) { timing.OpenMilliseconds += phase.Elapsed.TotalMilliseconds; phase.Restart(); }
+                try { stream = File.OpenRead(path); }
+                finally
+                {
+                    if (phase != null) { timing.OpenMilliseconds += phase.Elapsed.TotalMilliseconds; phase.Restart(); }
+                    if (concurrency != null) lock (concurrency) {
+                        concurrency.Opening--;
+                        if (stream != null) { concurrency.Streams++;
+                            concurrency.MaxStreams = Math.Max(concurrency.MaxStreams, concurrency.Streams); }
+                    }
+                }
+            using (stream)
+            {
             try
             {
             using (SHA256 hash = SHA256.Create())
@@ -1724,6 +1795,8 @@ namespace AgentHub.RuntimeHost
             }
             finally { if (phase != null) timing.ReadDigestMilliseconds += phase.Elapsed.TotalMilliseconds; }
             }
+            }
+            finally { if (stream != null && concurrency != null) lock (concurrency) { concurrency.Streams--; } }
         }
 
         private static string FindNodeExecutable()

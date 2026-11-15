@@ -12,6 +12,15 @@ refuses before Node. This proof does not forbid later foreign reassignment.
 Existing Ready/commit/abort, whole old-Job refusal, lost-reply UNKNOWN and joined
 cleanup remain unchanged; no second launcher or new execution deadline follows.
 
+The same Host validates at most two manifest members concurrently. Each member
+still receives fresh path, reparse-point, size and complete-byte hash checks.
+Success requires every member; a refusal joins all started validations and
+closes their handles before returning the original first-in-manifest error.
+No Node starts before this join. Later members are not admitted beyond a known
+failed prefix. This is local startup I/O overlap, not cached verification or a
+new global worker policy. Numeric counts distinguish actual open/stream overlap;
+summed member durations can overlap and are not additional wall-clock time.
+
 ## Public update initiated by an active Hub agent
 
 A capable runtime admits one exact package maintenance original before stopping.

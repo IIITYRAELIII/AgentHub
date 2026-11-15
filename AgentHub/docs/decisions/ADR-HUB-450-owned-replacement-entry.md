@@ -49,3 +49,19 @@ generation. A real native cohort regression covers this ordering; unowned and
 closed-cohort controls still refuse before Node. Hashing observations separately
 report file opening and stream read/digest work, without filenames, content or
 an inferred CPU/disk explanation. Full byte verification remains mandatory.
+
+Measurements localized the long native interval to sequential file opening,
+not hash computation or mutex waiting. The existing verifier can overlap at
+most two members within the same Host. A local admission cursor stops beyond
+the known failed prefix, both started validations are joined, and the exception
+with the lowest original manifest index is rethrown with its identity and stack.
+Each validation independently repeats the existing path, reparse, size and full
+hash checks. No Node or caller-visible failure precedes handle disposal. There
+is no persisted verification stamp, separate process owner or configurable pool.
+
+The existing lifetime trace records successful/started members and actual
+maximum concurrent validations, file-open calls and open streams. Member timing
+sums overlap; compare the enclosing wall time, not their sum. Warm/cold path and
+other machine work qualify comparisons. Coordination regressions retain a real
+late file handle after an early failure, prove join and deterministic lower-index
+failure, and verify every successful member with an actual maximum of two reads.
