@@ -150,19 +150,29 @@ test("same-owner custody resumes the SAME unknown successor through MCP with a f
       body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "tools/call",
         params: { name: "hub_task_claim", arguments: f.consume } }) });
     assert.equal(response.status, 200);
-    return (await response.json()).result;
+    const rpc = await response.json();
+    assert.equal(rpc.error, undefined);
+    const receipt = rpc.result.structuredContent?.taskOperation;
+    if (receipt) {
+      // Current MCP acknowledges before execution; the source-baseline server
+      // replies after it. Join the exact fixture-owned worker before readback.
+      assert.equal(receipt.requestId, f.consume.request_id);
+      assert.equal(typeof f.hub.joinSubmittedTaskOperation, "function");
+      try { await f.hub.joinSubmittedTaskOperation(f.consume); } catch {}
+    }
+    return f.catalog.mcpOperation(f.consume.request_id);
   };
   const absent = await claim();
-  assert.equal(absent.isError, true);
-  assert.match(absent.content[0].text, /no exact active run/);
+  assert.equal(absent.status, "unknown");
+  assert.match(absent.error, /no exact active run/);
   const unknown = f.catalog.mcpOperation(f.consume.request_id);
   assert.equal(unknown.status, "unknown");
   assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
   const runs = new TaskRunRegistry([f.current]);
   f.hub.setActiveRuns(() => runs.values());
   const reply = await claim();
-  assert.equal(reply.isError, false);
-  const result = reply.structuredContent;
+  assert.equal(reply.status, "succeeded");
+  const result = reply.result;
   assert.equal(result.claimedTurnId, f.current.turnId);
   assert.equal(result.streamId, f.current.streamId);
   assert.equal(result.revision, f.prior.revision + 1);
@@ -177,9 +187,8 @@ test("same-owner custody resumes the SAME unknown successor through MCP with a f
   const reopened = await f.open();
   const hub = f.service(reopened);
   hub.setActiveRuns(() => runs.values());
-  const { operatorReconciliation, ...readback } = await hub.call("hub_task_claim", f.consume);
-  assert.deepEqual(operatorReconciliation, { kind: "forward-claim-binding-reuse-v1", fenceRequestId: "custody-fence" });
-  assert.deepEqual(readback, result);
+  assert.deepEqual(result.operatorReconciliation, { kind: "forward-claim-binding-reuse-v1", fenceRequestId: "custody-fence" });
+  assert.deepEqual(await hub.call("hub_task_claim", f.consume), result);
   assert.equal(reopened.tasks.task(f.prior.id).revision, result.revision);
   assert.deepEqual(reopened.catalog.mcpOperation(f.original.requestId), f.original);
 });
