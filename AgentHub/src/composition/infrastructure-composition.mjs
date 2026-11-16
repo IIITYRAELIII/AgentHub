@@ -515,7 +515,7 @@ export async function createHubInfrastructure({
   for (const repository of taskGitReconciliation.repositories.filter((item) => item.status === "blocked")) {
     console.warn(`Task Git repository requires manual reconciliation: ${repository.reason}`);
   }
-  const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
+  const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces, measureOperation: measureTaskOperation });
   const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
     measureOperation: measureTaskOperation,
     releasePlanner: taskReleasePlanner,

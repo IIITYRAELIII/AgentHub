@@ -589,6 +589,10 @@ function fixture({
   };
   const service = new WorkspaceReleasePreflightService({
     releasePlanner: {
+      async planAcceptance(workspaceId, { acceptingTask, ...options }) {
+        return { baseline: await this.plan(workspaceId, options),
+          prospective: await this.plan(workspaceId, { ...options, acceptingTask }) };
+      },
       plan: async (workspaceId) => {
         calls.push(["plan", workspaceId]);
         return plan;

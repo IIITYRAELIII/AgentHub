@@ -10,6 +10,7 @@ const AGGREGATE_STAGES = new Set(["git-child", "owned-command", "lease-assert", 
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
   "release:integration-evidence", "native:history-authority", "native:task-histories",
   "native:cutover", "native:promotion-authority", "lock-native-bootstrap", "lock-native-publish",
+  "release:planner:canonical-read", "release:planner:selected-authority", "release:planner:git-evidence", "release:planner:projection",
   "release:planner", "release:publication", "release:main-validation", "release:primary-validation", "release:validate-prepared", "release:prepared-source", "release:promotion-validate", "release:promotion-checkout", "release:freeze-admission", "release:freeze-owned", "release:freeze-candidate", "release:freeze-base", "release:freeze-installed-baseline", "release:freeze-callback", "release:freeze-callback-baseline"]);
 const AGGREGATE_COMMANDS = new Set(["rev-parse", "status", "log", "show", "diff", "merge-base", "merge",
   "worktree", "sparse-checkout", "config", "symbolic-ref", "update-ref", "for-each-ref", "cat-file",

@@ -1,5 +1,16 @@
 # REL-001 — Task-backed Workspace release
 
+## Fresh acceptance plan pairs (ADR-HUB-461)
+
+Each existing Await acceptance validation boundary resolves the current and
+prospective selection from one invocation-local union of canonical selected
+authority and live Git evidence. Pure projection retains both original plans
+and revisions. Canonical Task and selected/closure authority are reread after
+Git work; changed release identity refuses. All native promotion boundaries,
+final Task CAS, content/history, source/base/publication, lease and rollback
+guards remain fresh. No evidence crosses boundaries or retries. Existing timing
+separates canonical reads, selected authority, Git evidence and pure projection.
+
 ## Exact retained insertion (ADR-HUB-460)
 
 The existing literal replay proof may also verify one pure insertion independently

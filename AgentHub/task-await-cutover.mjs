@@ -269,7 +269,7 @@ export async function openTaskAwaitCutoverRuntime({
     ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir,
       readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
       readPreparationOriginal: id => workspaceCatalogStore.mcpOperation(id) });
-  const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
+  const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces, measureOperation: measureTaskOperation });
   const releasePreflight = suppliedReleasePreflight ?? new WorkspaceReleasePreflightService({
     measureOperation: measureTaskOperation,
     releasePlanner,
