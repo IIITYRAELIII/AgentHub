@@ -135,8 +135,6 @@ async function fixture(t, { conflicting = false } = {}) {
     publishTarget: never, readTarget: async () => ({ status: "not_applied", fixture: true }), finalize: never,
     reservePublication: input => adapter.reservePublication(input), withTaskSelection: input => adapter.withTaskSelection(input),
     inspectFirstCompose: input => adapter.inspectFirstCompose(input), recoverFirstCompose: input => adapter.recoverFirstCompose(input),
-    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot,
-      plan: resolveTestSelection(selection, []) })),
   });
   const mcp = new HubMcpService({ workspaceCatalog: catalog, taskBoard: board, releasePreflight: preflight,
     releaseOperations: operations, workLog: { threadTurns: () => [] }, attachmentDirectory: path.join(root, "attachments"),
@@ -179,6 +177,10 @@ async function fixture(t, { conflicting = false } = {}) {
 
 test("generation-zero amendment captures real current whole prepared16 notes through public external022 without remerge", async t => {
   const f = await fixture(t);
+  // This synthetic Git repository has no application test-suite entrypoint.
+  // Its explicit none plan is a validation port; real capture/HTTP/SQL stay real.
+  f.operations.resolveTestPlans = async (candidates, selection) => candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot,
+    plan: resolveTestSelection(selection, []) }));
   for (let i = 2; i < 13; i++) await f.add(`Old${i}`);
   const oldPrepared = await f.prepare();
   const sha = bytes => createHash('sha256').update(bytes).digest('hex');
