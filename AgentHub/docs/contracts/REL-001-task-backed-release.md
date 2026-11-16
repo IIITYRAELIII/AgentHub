@@ -4196,13 +4196,16 @@ existing replay policy. See ADR-HUB-400-published-test-content-boundary.
 The same native Test content owner also certifies an absent entry when its
 independently recomputed automatic merge and the candidate both omit it, and
 the selected source entry is exactly mode/type/OID equal to the original sealed
-publication. That publication must be one of the actual parent merge bases and
-descend from the agreed Task base under the same identity checks. With multiple
+publication. That publication must be one of the actual parent merge bases, or
+an ancestor of every freshly recomputed common base, and descend from the agreed
+Task base under the same identity checks. The latter case supplies only the same
+whole-entry automatic-absence proof. With multiple
 bases the replay lower boundary remains unchanged; no virtual-base or whole-Task
 credit is introduced. Missing publication, changed source entries, and already
 contained results get no new absence credit. Exact automatic outside paths,
 ordered parents, resolution bindings and selected clean-context checks still
-run before content certification. See ADR-HUB-452-automatic-deletion-content.
+run before content certification. See ADR-HUB-452-automatic-deletion-content
+and ADR-HUB-457-common-publication-absence.
 
 ## Retained source after completed generation retirement (ADR-HUB-385)
 
