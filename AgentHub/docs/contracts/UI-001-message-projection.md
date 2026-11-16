@@ -401,6 +401,38 @@ In-flight pages for a closed column are superseded through the existing request
 generation fence. Pending sends, drafts, queue/live authority and exact read
 receipts are independent and are not evicted with history (ADR-HUB-343).
 
+Known phased Codex rollout items retain their native item identity and phase
+through observation and active-history projection. Commentary remains in its
+trace group, while an explicit streaming final keeps its own answer body and
+citations, including when its text equals an earlier commentary item. The
+existing item reducer preserves a later streamed item during an older rollout
+observation. Unphased legacy recovery and exact terminal status/content retain
+their existing owners.
+
+That read captures the reducer's process-local mutation revision before yielding.
+Native start, delta, completion, hydration and accepted observation advance it.
+An intervening mutation retains the current item body and citations, including
+for the same item ID. A fresh observation may apply an authoritative shorter
+body. Its canonical text and complete annotation metadata cross the reducer
+together, with the bounded raw provider text retained for subsequent deltas.
+The shared observation annotation-copy owner retains that native projection.
+Its legacy metadata-only, empty-answer and different-turn behavior remains
+available through the same constructor and publication entry points.
+This ephemeral revision is separate from durable terminal revision authority.
+Native updates that precede the read also retain ownership of their item. The
+rollout reader carries the record position in its existing append-validated
+cache generation. An unchanged record or unrelated file growth cannot replace
+that native body. A later record for the item in the same append generation can
+apply a shorter update. Rewrites, cache loss and missing ordering retain native
+ownership until ordering is available through the canonical native item path.
+The selected native item also owns selection against a different incoming ID.
+An unseen observation needs the same later-record proof to displace it. A
+proven later record may select a different item with equal text or refresh an
+earlier retained item. Array insertion order alone supplies no such proof.
+Source completeness accompanies a shortened live preview. A complete native
+item retains its full body when the bounded observation covers a suffix, while
+preview-owned items continue to refresh within the existing preview bound.
+
 Hidden or zero-sized chat panes do not automatically expand cached history or
 request older pages. Queued frame and scroll callbacks recheck current visibility;
 returning to a visible short chat resumes viewport filling, and explicit older-page

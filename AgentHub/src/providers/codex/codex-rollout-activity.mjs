@@ -1,5 +1,5 @@
 import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { open, stat } from "node:fs/promises";
@@ -23,6 +23,7 @@ import {
 } from "../../domain/codex-response-annotation.mjs";
 import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
 import { codexParentThreadId } from "./codex-subagent-accounting.mjs";
+import { codexRolloutLatestAnswer } from "./codex-turn-answers.mjs";
 import {
   pinCodexRolloutActivityCacheInWorker,
   readCodexRolloutActivityInWorker,
@@ -367,10 +368,31 @@ function bindCompletedCodexUserProjection(metadata, entry, completedUserMessage)
   return sourceOccurrenceId;
 }
 
-function rememberCodexTurnMessage(metadata, turnId, message) {
+function rememberCodexTurnMessage(metadata, turnId, message, item = null, rolloutRecord = null) {
   const projection = codexAssistantResponseProjection(message);
   const value = projection.text.trim();
   if (!turnId || !value) return;
+  if (item) {
+    const phase = String(item.phase ?? "").trim();
+    if (phase) {
+      const rawText = String(message);
+      const rawProviderText = rawText.slice(-CODEX_AGENT_MESSAGE_CHARS);
+      const nativeProjection = codexAssistantResponseProjection(rawProviderText);
+      metadata.latestAgentMessages.set(turnId, {
+        id: String(item.id ?? ""), type: "agentMessage", phase,
+        rawProviderText, text: nativeProjection.text,
+        textComplete: rawText.length <= CODEX_AGENT_MESSAGE_CHARS,
+        ...(rolloutRecord ? { rolloutRecord } : {}),
+        ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
+        ...(nativeProjection.responseAnnotationReferences.length
+          ? { responseAnnotationReferences: structuredClone(nativeProjection.responseAnnotationReferences) }
+          : {}),
+      });
+      while (metadata.latestAgentMessages.size > 8) {
+        metadata.latestAgentMessages.delete(metadata.latestAgentMessages.keys().next().value);
+      }
+    } else metadata.latestAgentMessages.delete(turnId);
+  }
   if (projection.responseAnnotationReferences.length) {
     metadata.responseAnnotationReferences.set(
       turnId,
@@ -998,6 +1020,7 @@ function observeCodexEntry(
   metadata,
   entry,
   sourceOccurrenceId = "",
+  rolloutRecord = null,
 ) {
   if (entry?.type === "session_meta") {
     metadata.parentThreadId = codexParentThreadId(entry.payload);
@@ -1062,7 +1085,7 @@ function observeCodexEntry(
     // response_item duplicates the neighbouring unscoped agent_message, but it
     // carries the real turn_id. It is therefore the authoritative source when
     // VS Code has concurrent turns in one thread.
-    rememberCodexTurnMessage(metadata, turnId, responseItemMessage);
+    rememberCodexTurnMessage(metadata, turnId, responseItemMessage, entry.payload, rolloutRecord);
   }
   observeCodexGeneratedImageEntry(metadata, entry);
   if (turnId) rememberPendingViewImageCall(metadata, turnId, entry);
@@ -1269,6 +1292,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     model: "",
     reasoningEffort: "",
     latestMessages: new Map(),
+    latestAgentMessages: new Map(),
     finalMessages: new Map(),
     terminalStatusesByTurnId: new Map(),
     responseAnnotationReferences: new Map(),
@@ -1306,6 +1330,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
             occurrence.fingerprint,
             occurrence.occurrenceIndex,
           ),
+          { generation: sourceGeneration, unit: "record", position: index },
         );
       } catch {
         metadata.pendingUserResponseProjection = null;
@@ -1326,6 +1351,8 @@ export function parseCodexRolloutActivity(text, options = {}) {
     latestTurnId: metadata.latestTurnId || null,
     ...(metadata.parentThreadId ? { parentThreadId: metadata.parentThreadId } : {}),
     latestMessages: Object.fromEntries(metadata.latestMessages),
+    ...(metadata.latestAgentMessages.size
+      ? { latestAgentMessages: Object.fromEntries(metadata.latestAgentMessages) } : {}),
     finalMessages: Object.fromEntries(metadata.finalMessages),
     terminalStatusesByTurnId: Object.fromEntries(metadata.terminalStatusesByTurnId),
     ...(metadata.responseAnnotationReferences.size
@@ -1476,6 +1503,8 @@ export async function readCodexRolloutActivityOnCurrentThread(
       reasoningEffort: cached?.reasoningEffort || null,
       latestTurnId: cached?.latestTurnId || null,
       latestMessages: Object.fromEntries(cached?.latestMessages ?? []),
+      ...(cached?.latestAgentMessages?.length
+        ? { latestAgentMessages: Object.fromEntries(cached.latestAgentMessages) } : {}),
       finalMessages: Object.fromEntries(cached?.finalMessages ?? []),
       terminalStatusesByTurnId: Object.fromEntries(cached?.terminalStatusesByTurnId ?? []),
       ...((cached?.responseAnnotationReferences ?? []).length
@@ -1521,6 +1550,8 @@ export async function readCodexRolloutActivityOnCurrentThread(
       reasoningEffort: cached.reasoningEffort || null,
       latestTurnId: cached.latestTurnId || null,
       latestMessages: Object.fromEntries(cached.latestMessages ?? []),
+      ...(cached.latestAgentMessages?.length
+        ? { latestAgentMessages: Object.fromEntries(cached.latestAgentMessages) } : {}),
       finalMessages: Object.fromEntries(cached.finalMessages ?? []),
       terminalStatusesByTurnId: Object.fromEntries(cached.terminalStatusesByTurnId ?? []),
       ...((cached.responseAnnotationReferences ?? []).length
@@ -1550,6 +1581,8 @@ export async function readCodexRolloutActivityOnCurrentThread(
       && identityCached.sourceObservationGeneration === sourceObservationGeneration,
   );
   const appendOnly = Boolean(cached && sourceExtendsCached && cachedExactTerminalKnown);
+  const agentMessageGeneration = appendOnly && cached.agentMessageGeneration
+    ? cached.agentMessageGeneration : randomUUID();
   const generatedImageCacheReusable = Boolean(
     identityCached
       && info.size === identityCached.size
@@ -1571,6 +1604,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     model: appendOnly ? String(cached.model ?? "") : "",
     reasoningEffort: appendOnly ? String(cached.reasoningEffort ?? "") : "",
     latestMessages: new Map(appendOnly ? cached.latestMessages ?? [] : []),
+    latestAgentMessages: new Map(appendOnly ? cached.latestAgentMessages ?? [] : []),
     finalMessages: new Map(appendOnly ? cached.finalMessages ?? [] : []),
     requestedTerminalTurnId,
     terminalStatusesByTurnId: new Map(appendOnly ? cached.terminalStatusesByTurnId ?? [] : []),
@@ -1710,6 +1744,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
           metadata,
           entry,
           sourceOccurrenceIdForEntry(entry, lineOffset),
+          { generation: agentMessageGeneration, unit: "byte", position: lineOffset },
         );
       } else {
         if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
@@ -1797,6 +1832,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
           metadata,
           entry,
           sourceOccurrenceIdForEntry(entry, pendingStartOffset),
+          { generation: agentMessageGeneration, unit: "byte", position: pendingStartOffset },
         );
       } else {
         if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
@@ -1827,6 +1863,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   cacheActivity(normalized, {
     size: info.size,
     mtimeMs: info.mtimeMs,
+    agentMessageGeneration,
     activeTurnIds: [...activeTurnIds],
     lastSeenAtByTurnId: [...lastSeenAtByTurnId],
     startedAtMsByTurnId: [...metadata.startedAtMsByTurnId],
@@ -1838,6 +1875,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     model: metadata.model,
     reasoningEffort: metadata.reasoningEffort,
     latestMessages: [...metadata.latestMessages],
+    latestAgentMessages: [...metadata.latestAgentMessages],
     finalMessages: [...metadata.finalMessages],
     terminalStatusesByTurnId: [...metadata.terminalStatusesByTurnId],
     scannedTerminalTurnIds: [...new Set([
@@ -1882,6 +1920,8 @@ export async function readCodexRolloutActivityOnCurrentThread(
     latestTurnId: metadata.latestTurnId || null,
     ...(metadata.parentThreadId ? { parentThreadId: metadata.parentThreadId } : {}),
     latestMessages: Object.fromEntries(metadata.latestMessages),
+    ...(metadata.latestAgentMessages.size
+      ? { latestAgentMessages: Object.fromEntries(metadata.latestAgentMessages) } : {}),
     finalMessages: Object.fromEntries(metadata.finalMessages),
     terminalStatusesByTurnId: Object.fromEntries(metadata.terminalStatusesByTurnId),
     ...(metadata.responseAnnotationReferences.size
@@ -2060,7 +2100,7 @@ export function codexRolloutTurnState(
     : Boolean(activeTurnId) || Boolean(threadActive);
   const terminalStatus = String(activity.terminalStatusesByTurnId?.[turnId] ?? "").trim();
   const latestAnswer = turnId
-    ? String(activity.latestMessages?.[turnId] ?? "").trim()
+    ? codexRolloutLatestAnswer(activity, turnId)
     : String(activity.unscopedLatestMessage ?? "").trim();
   const finalAnswer = turnId
     ? String(activity.finalMessages?.[turnId] ?? "").trim()
@@ -2085,6 +2125,8 @@ export function codexRolloutTurnState(
         ?? "incremental"
       : "incremental",
     latestAnswer,
+    ...(activity.latestAgentMessages?.[turnId]
+      ? { responseItem: structuredClone(activity.latestAgentMessages[turnId]) } : {}),
     finalAnswer,
     ...(responseAnnotationReferences.length ? { responseAnnotationReferences } : {}),
     userMessages,
