@@ -3420,7 +3420,7 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
       page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
       await openStreamTabsDomFixture(page);
       await installFixture(page);
-      if (surface.startsWith("mobile")) await page.locator('[data-mobile-button="chat"]').click();
+      if (surface.startsWith("mobile")) await page.locator('[data-mobile-dialogs-tab="chat"]').click();
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const tab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-one"]');
         await tab.dblclick();

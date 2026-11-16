@@ -220,7 +220,7 @@ function retainReadMarker(map, key, value) {
   map.delete(key);
   map.set(key, value);
 }
-const { isUserRunningProjection, projectCanonicalMessages, projectionState: canonicalProjectionState } = window.AgentHubMessageProjection;
+const { isUserRunningProjection, projectCanonicalMessages, prependOlderHistory, projectionState: canonicalProjectionState } = window.AgentHubMessageProjection;
 const {
   activeRunSubmissionTiming,
   activeRunMessageReceipts,
@@ -956,7 +956,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
   const deferredOrigin = confirmedCardOrigin(deferred.origin, projection.clientUserMessageId);
   const existing = messages.get(projection.clientUserMessageId);
   if (existing) {
-    Object.assign(existing, {
+    const patch = {
       projectionAuthority: "canonical",
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
@@ -971,7 +971,14 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
         ? { submittedAt: projection.submittedAt }
         : {}),
       ...(!existing.time && projection.submittedAt ? { time: projection.submittedAt } : {}),
-    });
+    };
+    const changed = Object.entries(patch).some(([key, value]) => (
+      value && typeof value === "object"
+        ? JSON.stringify(existing[key]) !== JSON.stringify(value)
+        : existing[key] !== value
+    ));
+    Object.assign(existing, patch);
+    if (changed) renderTaskMessages(stableTaskId, { preserveScroll: true });
   } else {
     rememberOutgoing(stableTaskId, {
       id: `local:${projection.clientUserMessageId}`,
@@ -998,6 +1005,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       attachments,
       ...deliveryPatch(projection.deliveryState, projection),
     });
+    renderTaskMessages(stableTaskId, { preserveScroll: true });
   }
   return true;
 }
@@ -1899,7 +1907,7 @@ async function control(action, params = {}) {
     ])] };
   }
   const snapshotBaseline = currentSnapshotBaseline();
-  const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
+  const commandId = params.clientTraceId || params.clientUserMessageId || commandTrace.currentId() || commandTrace.newId();
   const taskOperationId = ["board-task-create", "board-task-update", "board-task-status", "board-task-complete", "board-task-remove"].includes(action)
     ? params.operationId || commandTrace.newId() : null;
   const started = performance.now();
@@ -2279,18 +2287,7 @@ function observeContextCompactions(tasks) {
     const previousStatus = previous.status;
     const status = String(compaction.status ?? "");
     const measurementStatus = String(compaction.measurementStatus ?? "");
-    if (status === "completed" && compaction.rotationStatus === "failed" && task.streamId) {
-      const rotationId = `maintenance:rotation:${task.streamId}:${task.provider}:${task.threadId}:${compactionId}`;
-      const detail = String(compaction.rotationMessage ?? "Новый Thread не подтвердил готовность");
-      if (rememberMaintenanceEvent(stableTaskId, {
-        id: rotationId, itemId: rotationId, provider: task.provider, threadId: task.threadId,
-        streamId: task.streamId, sourceThreadId: task.threadId,
-        maintenanceType: "rotation", maintenanceStatus: "failed",
-        maintenanceLabel: "Ротация не завершена", maintenanceDetail: detail,
-        text: `Ротация не завершена. Исходный Thread сохранён. ${detail}`,
-        time: compaction.completedAt ?? null,
-      })) changed.add(stableTaskId);
-    }
+    const rotationFailed = status === "completed" && compaction.rotationStatus === "failed" && task.streamId;
     const beforePercent = contextPercent(compaction.beforePercent)
       ?? previous.beforePercent
       ?? contextPercent(existingEvent?.beforePercent)
@@ -2367,7 +2364,7 @@ function observeContextCompactions(tasks) {
           : beforePercent !== null
             ? `Свёртка завершена; до ${beforePercent}%, оценка после недоступна`
             : "Свёртка завершена; оценка контекста недоступна";
-      if (rememberMaintenanceEvent(stableTaskId, {
+      if (!rotationFailed && rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
         provider: task.provider,
         threadId: task.threadId,
@@ -2382,6 +2379,18 @@ function observeContextCompactions(tasks) {
         afterPercent,
         text,
         time: existingEvent?.time ?? compaction.completedAt ?? new Date().toISOString(),
+      })) changed.add(stableTaskId);
+    }
+    if (rotationFailed) {
+      const rotationId = `maintenance:rotation:${task.streamId}:${task.provider}:${task.threadId}:${compactionId}`;
+      const detail = String(compaction.rotationMessage ?? "Новый Thread не подтвердил готовность");
+      if (rememberMaintenanceEvent(stableTaskId, {
+        id: rotationId, itemId: rotationId, provider: task.provider, threadId: task.threadId,
+        streamId: task.streamId, sourceThreadId: task.threadId,
+        maintenanceType: "rotation", maintenanceStatus: "failed",
+        maintenanceLabel: "Ротация не завершена", maintenanceDetail: detail,
+        text: `Ротация не завершена. Исходный Thread сохранён. ${detail}`,
+        time: compaction.completedAt ?? null,
       })) changed.add(stableTaskId);
     }
     observedContextCompactions.delete(compactionId);
@@ -2835,196 +2844,17 @@ function recordTransientConnectionFailure() {
 }
 
 function historyMessages(history, focusedTurn = null) {
-  const messages = [];
-  const userSubmittedAt = (message, turn, isRoot) => message.submittedAt ?? message.time
-    ?? (isRoot ? turn.submittedAt ?? turn.startedAt : null) ?? null;
-  const normalizedResponseAnnotationReferences = (references) => {
+  return projectHistoryMessages(history, focusedTurn);
+}
+
+const projectHistoryMessages = window.AgentHubMessageLifecycle.createHistoryMessageProjection({
+  historicalMessagesForDisplay, canonicalProjectionState, conversationMessageAuthor,
+  attachmentViews, focusedTurnTaskThreadId, focusedTurnAlreadyVisible,
+  normalizedResponseAnnotationReferences: (references) => {
     const normalize = globalThis.AgentHubMessageView?.normalizedResponseAnnotationReferences;
     return typeof normalize === "function" ? normalize(references) : [];
-  };
-  const historyStart = Number.isSafeInteger(Number(history?.start))
-    ? Number(history.start)
-    : 0;
-  for (const [itemIndex, item] of (history?.items ?? []).entries()) {
-    const itemProvider = String(item?.provider ?? history.provider ?? "");
-    const itemThreadId = String(item?.threadId ?? history.threadId ?? "");
-    const visible = historicalMessagesForDisplay(item);
-    const rootUserIndex = visible.findIndex((message) => message.role === "user");
-    const traceMessageIndex = visible.findLastIndex((message) => (
-      message?.role === "agent" && message?.kind !== "subagent"
-    ));
-    for (const [messageIndex, message] of visible.entries()) messages.push({
-      id: `${itemProvider}:${itemThreadId}:${item.id}:${message.itemId}:${message.role}`,
-      provider: itemProvider,
-      threadId: itemThreadId,
-      turnId: item.id,
-      itemId: String(message.itemId ?? ""),
-      messageKey: String(message.messageKey ?? ""),
-      sourceAlias: String(message.sourceAlias ?? ""),
-      semanticSlot: String(message.semanticSlot ?? ""),
-      pinEligible: message.pinEligible === true,
-      clientUserMessageId: String(message.clientUserMessageId ?? ""),
-      turnUserSlot: String(message.turnUserSlot ?? ""),
-      role: message.role,
-      operationKind: String(item.operationKind ?? "user-turn"),
-      ...(item.operationKindMigrationGuard
-        ? { operationKindMigrationGuard: String(item.operationKindMigrationGuard) }
-        : {}),
-      projectionAuthority: "canonical",
-      projectionState: canonicalProjectionState({
-        status: item.status,
-        terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
-        running: item.active === true,
-        operationKind: "user-turn",
-      }),
-      terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
-      ...(item.completed === true && !Number(item.terminalRevision)
-        ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
-        : {}),
-      ...(message.kind ? { kind: message.kind } : {}),
-      ...(message.origin ? { origin: message.origin } : {}),
-      ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
-      ...(message.model ? { model: message.model } : {}),
-      author: conversationMessageAuthor(message, itemProvider),
-      text: message.text,
-      ...(message.role === "user" ? {
-        responseAnnotations: message.responseAnnotations,
-        responseAnnotationRequest: message.responseAnnotationRequest,
-      } : message.role === "agent" ? {
-        responseAnnotationReferences: normalizedResponseAnnotationReferences(
-          message.responseAnnotationReferences,
-        ),
-      } : {}),
-      activities: messageIndex === traceMessageIndex && Array.isArray(item.activities)
-        ? item.activities
-        : [],
-      activityGroups: messageIndex === traceMessageIndex && Array.isArray(item.activityGroups)
-        ? item.activityGroups
-        : [],
-      ...(message.role === "user" ? {
-        submittedAt: userSubmittedAt(message, item, message.turnUserSlot === "root"
-          || (!message.turnUserSlot && messageIndex === rootUserIndex)),
-        startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? item.startedAt ?? null : null),
-      } : {}),
-      time: message.role === "user"
-        ? userSubmittedAt(message, item, message.turnUserSlot === "root"
-          || (!message.turnUserSlot && messageIndex === rootUserIndex))
-        : message.time ?? item.completedAt ?? null,
-      ...(messageIndex === traceMessageIndex ? {
-        turnStartedAt: item.startedAt ?? null,
-        turnCompletedAt: item.completedAt ?? null,
-      } : {}),
-      historyOrder: (historyStart + itemIndex) * 1_000 + messageIndex,
-      attachments: attachmentViews(message.attachments),
-    });
-  }
-  if (focusedTurn && Array.isArray(focusedTurn.messages)) {
-    const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
-    const focusedTraceItemId = String(focusedTurn.messages.findLast((message) => (
-      message?.role === "agent" && message?.kind !== "subagent"
-    ))?.itemId ?? "");
-    const parentAgentAlreadyVisible = messages.some((message) => (
-      message.provider === focusedTurn.provider
-      && message.threadId === focusedThreadId
-      && message.turnId === focusedTurn.turnId
-      && message.role === "agent"
-      && message.kind !== "subagent"
-    ));
-    for (const [index, message] of focusedTurn.messages.entries()) {
-      const itemId = String(message?.itemId ?? "").trim();
-      if (!itemId || messages.some((candidate) => (
-        candidate.provider === focusedTurn.provider
-        && candidate.threadId === focusedThreadId
-        && candidate.turnId === focusedTurn.turnId
-        && candidate.itemId === itemId
-      )) || (parentAgentAlreadyVisible
-        && message.role === "agent"
-        && message.kind !== "subagent")) continue;
-      messages.push({
-        id: `${focusedTurn.provider}:${focusedThreadId}:${focusedTurn.turnId}:${itemId}:${message.role}`,
-        provider: focusedTurn.provider,
-        threadId: focusedThreadId,
-        turnId: focusedTurn.turnId,
-        itemId,
-        messageKey: String(message.messageKey ?? ""),
-        sourceAlias: String(message.sourceAlias ?? ""),
-        semanticSlot: String(message.semanticSlot ?? ""),
-        pinEligible: message.pinEligible === true,
-        role: message.role,
-        ...(message.kind ? { kind: message.kind } : {}),
-        ...(message.origin ? { origin: message.origin } : {}),
-        ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
-        ...(message.model ? { model: message.model } : {}),
-        author: conversationMessageAuthor(message, focusedTurn.provider),
-        text: message.text,
-        ...(message.role === "agent" ? {
-          responseAnnotationReferences: normalizedResponseAnnotationReferences(
-            message.responseAnnotationReferences,
-          ),
-        } : {}),
-        activities: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activities)
-          ? focusedTurn.activities
-          : [],
-        activityGroups: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activityGroups)
-          ? focusedTurn.activityGroups
-          : [],
-        ...(message.role === "user" ? {
-          submittedAt: userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
-            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user"))),
-          startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? focusedTurn.startedAt ?? null : null),
-        } : {}),
-        time: message.role === "user"
-          ? userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
-            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user")))
-          : message.time ?? focusedTurn.completedAt ?? focusedTurn.startedAt ?? null,
-        ...(itemId === focusedTraceItemId ? {
-          turnStartedAt: focusedTurn.startedAt ?? null,
-          turnCompletedAt: focusedTurn.completedAt ?? null,
-        } : {}),
-        attachments: attachmentViews(message.attachments),
-      });
-    }
-  }
-  if (focusedTurn && !focusedTurnAlreadyVisible(history, messages, focusedTurn)) {
-    const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
-    if (focusedTurn.prompt) messages.push({
-      id: `${focusedTurn.turnId}:prompt`,
-      provider: focusedTurn.provider,
-      threadId: focusedThreadId,
-      turnId: focusedTurn.turnId,
-      itemId: `${focusedTurn.turnId}:focused:user`,
-      role: "user",
-      turnUserSlot: "root",
-      ...(focusedTurn.promptOrigin ? { kind: "interstream", origin: focusedTurn.promptOrigin } : {}),
-      author: focusedTurn.promptAuthor || "Вы",
-      text: focusedTurn.prompt,
-      responseAnnotations: focusedTurn.promptAnnotations,
-      responseAnnotationRequest: focusedTurn.promptRequest,
-      submittedAt: focusedTurn.submittedAt ?? focusedTurn.startedAt,
-      startedAt: focusedTurn.startedAt,
-      time: focusedTurn.submittedAt ?? focusedTurn.startedAt,
-    });
-    messages.push({
-      id: `${focusedTurn.turnId}:answer`,
-      provider: focusedTurn.provider,
-      threadId: focusedThreadId,
-      turnId: focusedTurn.turnId,
-      itemId: `${focusedTurn.turnId}:focused:agent`,
-      role: "agent",
-      author: focusedTurn.provider === "claude" ? "Claude" : "Codex",
-      text: focusedTurn.answer || focusedTurn.title || "Ход завершён",
-      responseAnnotationReferences: normalizedResponseAnnotationReferences(
-        focusedTurn.responseAnnotationReferences,
-      ),
-      activities: Array.isArray(focusedTurn.activities) ? focusedTurn.activities : [],
-      activityGroups: Array.isArray(focusedTurn.activityGroups) ? focusedTurn.activityGroups : [],
-      time: focusedTurn.completedAt,
-      turnStartedAt: focusedTurn.startedAt ?? null,
-      turnCompletedAt: focusedTurn.completedAt ?? null,
-    });
-  }
-  return messages;
-}
+  },
+});
 
 function mergeNewestHistory(previous, newest) {
   const newestById = new Map(newest.map((message) => [message.id, message]));
@@ -3033,17 +2863,6 @@ function mergeNewestHistory(previous, newest) {
     ...previous.map((message) => newestById.get(message.id) ?? message),
     ...newest.filter((message) => !previousIds.has(message.id)),
   ]);
-}
-
-function prependOlderHistory(previous, older) {
-  const seen = new Set(previous.map((message) => message.id));
-  const uniqueOlder = [];
-  for (const message of older) {
-    if (seen.has(message.id)) continue;
-    seen.add(message.id);
-    uniqueOlder.push(message);
-  }
-  return projectCanonicalMessages([...uniqueOlder, ...previous]);
 }
 
 function focusedHistoryMessages(focusedTurn) {
@@ -3277,6 +3096,12 @@ function applyOpened(result, {
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
+  const historyTraceId = commandTrace.objectId(result) || commandTrace.objectId(history);
+  if (historyTraceId) commandTrace.record("ui-render", "history-page-apply",
+    commandTrace.now() - historyProjectionStarted, historyTraceId, {
+      streamId: history.streamId, provider: history.provider, threadId: history.threadId,
+      count: newest.length, clientAssetRevision: "hub436.history.1",
+    });
   traceHistoryCard(id, history, {
     liveBefore,
     cleared: liveCleared,
@@ -4853,7 +4678,10 @@ agentHub.on("queue:remove", ({ id }) => runAction(async () => {
     ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()])
       .find(item => item.itemId === id || item.id === id);
   const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
+  // Keep this intent's diagnostic UUID through transport/ACK, independently
+  // of the addressed message's opaque business idempotency identity.
   const result = await control("deferred-input", { id: deferred?.itemId ?? deferred?.id ?? id, action: "cancel",
+    clientTraceId: commandTrace.currentId(),
     ...(clientUserMessageId ? { clientUserMessageId } : {}) });
   if (clientUserMessageId) {
     const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);

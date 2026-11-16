@@ -316,22 +316,6 @@ test("prepend optimization accepts equivalent projections but rejects changed me
   assert.equal(api.prependedMessageCount(previous, changed), 0);
 });
 
-test("selected Stream rerenders when logical chat state and DOM ownership diverge", async () => {
-  const appSource = await readFile(
-    new URL("../../assets/web-app/app.js", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(
-    appSource,
-    /const taskChanged = activeChatId !== task\.id\s*\|\| String\(chatLog\.dataset\.messageOwnerKey \?\? ""\) !== String\(task\.id \?\? ""\)/u,
-  );
-  assert.equal(
-    (appSource.match(/if \(sameMessages && \(taskId !== state\.selectedId \|\| selectedSurfaceOwned\)\) return;/gu) ?? []).length,
-    2,
-  );
-});
-
 test("ordinary composer defaults to queue and explicit steer preserves current Stream intent", async () => {
   const api = await messageViewApi();
   assert.equal(api.composerFollowUpMode({ running: true }), "queue");

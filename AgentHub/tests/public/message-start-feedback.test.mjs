@@ -218,7 +218,7 @@ for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 
   });
 }
 
-test("preparing admission keeps second input queued and provider rejection never claims running", { timeout: 40_000 }, async () => {
+for (const explicitSteer of [false, true]) test(`preparing admission preserves ${explicitSteer ? "explicit steer" : "default queue"} and provider rejection never claims running`, { timeout: 40_000 }, async () => {
   const browser = await launchBrowser();
   const page = await browser.newPage();
   try {
@@ -236,11 +236,14 @@ test("preparing admission keeps second input queued and provider rejection never
         original(message);
       };
     });
-    await submit(page, { text: "second queued" });
+    if (explicitSteer) {
+      await page.locator("[data-composer-input]").fill("second queued");
+      await page.keyboard.press("Meta+Enter");
+    } else await submit(page, { text: "second queued" });
     await page.waitForFunction(() => Boolean(window.__secondPreparingSend));
     const params = await page.evaluate(() => window.__secondPreparingSend.params);
-    assert.equal(params.clientProjectionIntent, "queue");
-    assert.equal(params.followUpMode, "steer");
+    assert.equal(params.clientProjectionIntent, explicitSteer ? "queue" : "conversation");
+    assert.equal(params.followUpMode, explicitSteer ? "steer" : "queue");
     const failed = structuredClone(initial);
     failed.version = "provider-rejected";
     failed.tasks[0].running = false;
