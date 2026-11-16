@@ -102,7 +102,10 @@
         "src/infrastructure/persistence/task-sync-store.mjs",
         "tests/application/turn-end-delivery-batch.test.mjs",
         "tests/providers/codex/codex-rollout-answer-projection.test.mjs",
-        "tests/providers/codex/codex-observation-freshness.test.mjs"
+        "tests/providers/codex/codex-observation-freshness.test.mjs",
+        "src/domain/agent-runtime-settings.mjs",
+        "src/domain/codex-model-order.mjs",
+        "tests/application/retired-spark-actions.test.mjs"
       ]
     },
     {
@@ -142,7 +145,9 @@
         "tests/interfaces/web/workspace-file-access.test.mjs",
         "tests/providers/codex/codex-rollout-answer-projection.test.mjs",
         "tests/providers/codex/codex-observation-freshness.test.mjs",
-        "tests/public/codex-rollout-live-answer.test.mjs"
+        "tests/public/codex-rollout-live-answer.test.mjs",
+        "tests/application/retired-spark-actions.test.mjs",
+        "src/domain/codex-model-order.mjs"
       ]
     },
     {
@@ -647,7 +652,9 @@
         "tests/interfaces/mcp/external-release-client.test.mjs",
         "tests/public/external-release-tool-package.test.mjs",
         "docs/building.md",
-        "docs/decisions/ADR-HUB-419-independent-release-tools.md"
+        "docs/decisions/ADR-HUB-419-independent-release-tools.md",
+        "src/domain/task-cleanup-confirmation.mjs",
+        "tests/application/hub-mcp-cleanup-confirmation.test.mjs"
       ]
     },
     {
@@ -721,7 +728,9 @@
         "release-api.mjs",
         "src/composition/release-api-runtime.mjs",
         "src/interfaces/mcp/release-api-host.mjs",
-        "tests/interfaces/mcp/external-release-client.test.mjs"
+        "tests/interfaces/mcp/external-release-client.test.mjs",
+        "src/domain/task-cleanup-confirmation.mjs",
+        "tests/application/hub-mcp-cleanup-confirmation.test.mjs"
       ]
     },
     {

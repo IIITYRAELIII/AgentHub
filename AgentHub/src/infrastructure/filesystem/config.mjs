@@ -1,4 +1,5 @@
 import { normalizeUsageSyncServerUrl } from "../../domain/default-usage-sync-server.mjs";
+import { isRetiredCodexModel } from "../../domain/agent-runtime-settings.mjs";
 import { createLegacyTeamUsageAccountPolicy } from "../../domain/team-usage-accounts.mjs";
 import { assertRecordingContourConfiguration } from "./test-contour-recording-environment.mjs";
 import { recordingContourProfile } from "./test-contour-recording-profile.mjs";
@@ -129,7 +130,7 @@ function taskBoardSettings(value) {
     throw new Error("taskBoard.autoPlaceConfidence must be between 0 and 1");
   }
   return {
-    triageEnabled: source.triageEnabled !== false,
+    triageEnabled: source.triageEnabled !== false && !isRetiredCodexModel(source.triageModel ?? "gpt-5.3-codex-spark"),
     triageModel: String(source.triageModel ?? "gpt-5.3-codex-spark").trim()
       || "gpt-5.3-codex-spark",
     autoPlaceConfidence: confidence,
@@ -624,7 +625,6 @@ function loadCodexModels(raw) {
     { value: "gpt-6-luna", label: "GPT-6 Luna" },
     legacyShippedModels[1],
     legacyShippedModels[3],
-    legacyShippedModels[6],
   ];
   const defaultModels = shippedModels;
   const source = raw.codexModels ?? defaultModels;

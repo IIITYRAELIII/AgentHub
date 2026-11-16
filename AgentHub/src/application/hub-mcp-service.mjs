@@ -1,5 +1,6 @@
 import { TaskOperationInterruption, INTERRUPTIBLE_TASK_TOOLS, taskOperationInterrupted } from "./task-operation-interruption.mjs";
 import { createHash, createHmac, timingSafeEqual, randomUUID } from "node:crypto";
+import { TaskCleanupConfirmationRejectedError, cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../domain/task-cleanup-confirmation.mjs";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -1166,6 +1167,7 @@ export class HubMcpService {
   async #submitTaskOperation(context, toolName, args, invoke) {
     const requestId = requiredText(args.request_id, "request id", 200);
     const existing = this.workspaceCatalog.mcpOperation(requestId);
+    let recoveringCleanup = false;
     if (existing) {
       if (existing.workspaceId !== context.workspaceId || existing.streamId !== context.streamId
         || existing.provider !== context.provider || existing.threadId !== context.auditThreadId
@@ -1175,8 +1177,13 @@ export class HubMcpService {
       }
       // Only the canonical interruption owner can continue its exact UNKNOWN
       // cancellation. Other historical operations and any live worker are read-only.
-      if (toolName !== "hub_task_operation_cancel" || existing.status !== "unknown"
-        || this.#pendingMutations.has(requestId) || !this.taskOperationInterruption) {
+      const cleanupRecovery = !this.#pendingMutations.has(requestId)
+        && ((existing.status === "succeeded" && cleanupConfirmationOriginal(existing, false)
+          && existing.result?.receiptCompacted === true && !existing.result.cleanupToken)
+          || (existing.status === "unknown" && cleanupConfirmationOriginal(existing, true)));
+      recoveringCleanup = Boolean(cleanupRecovery);
+      if (!cleanupRecovery && (toolName !== "hub_task_operation_cancel" || existing.status !== "unknown"
+        || this.#pendingMutations.has(requestId) || !this.taskOperationInterruption)) {
         return this.#taskOperationReadback(context, { operation_request_id: requestId, expected_arguments_hash: argumentsHash(args) });
       }
     }
@@ -1198,6 +1205,7 @@ export class HubMcpService {
     // The same #mutate Promise owns all work and persistence. Detaching the
     // transport waiter neither starts another worker nor replays an existing ID.
     const completion = invoke(onAdmission).then(() => record("task-operation-result", read()), error => {
+      if (recoveringCleanup && JSON.stringify(this.workspaceCatalog.mcpOperation(requestId)) === JSON.stringify(existing)) throw error;
       // The durable receipt, including a real UNKNOWN or cancellation, is the
       // result. A pre-admission failure has no receipt and still rejects.
       if (!this.workspaceCatalog.mcpOperation(requestId)) {
@@ -2484,6 +2492,13 @@ export class HubMcpService {
     return cleanupConfirmation(task, action, preview);
   }
 
+  #validateCleanupToken(task, args, action) {
+    if (args.confirm_cleanup === true && !String(args.expected_cleanup_token ?? "").trim()
+        && !this.taskBoard.lifecycleTransition?.(args.request_id) && !this.taskBoard.lifecycleOutcome?.(args.request_id)) {
+      throw new TaskCleanupConfirmationRejectedError(task.id, action);
+    }
+  }
+
   async #completeTask(context, args = {}) {
     const {
     task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
@@ -2495,6 +2510,7 @@ export class HubMcpService {
     completed_operation_request_id: completedOperationRequestId = null,
     } = args;
     const task = this.#task(context, taskId);
+    this.#validateCleanupToken(task, args, "complete");
     const result = await this.taskLifecycle.complete({
       taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
       absorptionMode, completionMode, publishedDelivery, completedOperationRequestId,
@@ -2506,11 +2522,13 @@ export class HubMcpService {
       : compactTask(result);
   }
 
-  async #deleteTask(context, {
+  async #deleteTask(context, args = {}) {
+    const {
     task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
     expected_cleanup_token: expectedCleanupToken = null,
-  } = {}) {
+    } = args;
     const task = this.#task(context, taskId);
+    this.#validateCleanupToken(task, args, "delete");
     const result = await this.taskLifecycle.delete({
       taskId: task.id, operationId, confirmCleanup, expectedCleanupToken,
     });
@@ -3396,13 +3414,53 @@ export class HubMcpService {
       ...(admittedExecution ? { taskExecution: admittedExecution } : {}),
     }); });
     if (started.taskExecution?.cancellation) throw taskOperationInterrupted();
-    if (started.status === "succeeded") return claimCustodyState(started)?.result ?? started.result;
+    if (started.status === "succeeded") {
+      if (cleanupConfirmationOriginal(started, false) && started.result?.receiptCompacted === true
+          && !started.result.cleanupToken && started.result.taskId === args.task_id) {
+        this.#task(context, args.task_id);
+        return this.taskLifecycle.recoverCleanupConfirmation({ taskId: args.task_id, operationId: requestId,
+          action: toolName === "hub_task_complete" ? "complete" : "delete", preview: true,
+          absorbedIntoTaskId: args.absorbed_into_task_id ?? null,
+          readback: async ({ preview, validate }) => {
+            const result = cleanupConfirmationCapsule({ ...preview, previewRecovery: {
+              kind: "fresh-cleanup-preview-from-compacted-original-v1", refreshedAtMs: Date.now(),
+              previousReceipt: { status: started.status, result: started.result, error: started.error,
+                createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs },
+            } });
+            const saved = await this.workspaceCatalog.recoverCompactedCleanupPreview(requestId, {
+              argumentsHash: started.argumentsHash, expectedResult: started.result, result, validate });
+            return saved.result;
+          } });
+      }
+      return claimCustodyState(started)?.result ?? started.result;
+    }
     if (started.status === "failed") {
       const proof = toolName === "hub_task_claim" ? this.#claimAdmissionRefusal(started, args.task_id) : null;
       if (proof) {
         throw claimAdmissionRefusalError(proof);
       }
       throw new Error(started.error || "previous MCP operation failed");
+    }
+    if (started.status === "unknown" && cleanupConfirmationOriginal(started, true)
+        && !this.#pendingMutations.has(requestId)) {
+      this.#task(context, args.task_id);
+      const error = new TaskCleanupConfirmationRejectedError(args.task_id, toolName === "hub_task_complete" ? "complete" : "delete");
+      await this.taskLifecycle.recoverCleanupConfirmation({ taskId: args.task_id, operationId: requestId,
+        readback: async ({ task, validate }) => {
+          const identity = JSON.stringify({ ...started, replayed: undefined });
+          const check = row => {
+            validate();
+            if (JSON.stringify({ ...row, replayed: undefined }) !== identity || !cleanupConfirmationOriginal(row, true)
+                || row.taskExecution.taskWorkspaceId !== task.workspaceId) throw new Error("Missing confirmation original changed");
+          };
+          check(this.workspaceCatalog.mcpOperation(requestId));
+          return this.workspaceCatalog.failUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
+            error, beforeSettle: check, reconciliation: { kind: "cleanup-missing-token-validation-v1",
+              outcome: "failed", taskId: task.id, taskRevision: task.revision, argumentsHash: started.argumentsHash,
+              previousReceipt: { status: started.status, result: started.result, error: started.error,
+                createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs } } });
+        } });
+      throw error;
     }
     const custodyConsume = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id);
     const custodyStage = toolName === "hub_task_operation_reconcile" && Boolean(args.claim_custody);
@@ -3601,6 +3659,10 @@ export class HubMcpService {
           } catch (settlementError) {
             throw settlementError;
           }
+          throw error;
+        }
+        if (error instanceof TaskCleanupConfirmationRejectedError) {
+          await persist(() => this.workspaceCatalog.failMcpOperation(requestId, error, { validation: error.evidence }));
           throw error;
         }
         if (definiteMcpMutationFailure(error)) {

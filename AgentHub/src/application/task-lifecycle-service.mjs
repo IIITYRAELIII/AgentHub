@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { TaskCleanupConfirmationRejectedError } from "../domain/task-cleanup-confirmation.mjs";
 import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelectedAbsorption,
   assertSelectedAbsorptionTasks } from "../domain/task-selected-composition.mjs";
 import { realpathSync } from "node:fs";
@@ -1672,7 +1673,8 @@ export class TaskLifecycleService {
     return confirmation(task, action, preview);
   }
 
-  async #completeAbsorbed({ taskId, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId }) {
+  async #completeAbsorbed({ taskId, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
+    previewReadback = null }) {
     if (taskId === absorbedIntoTaskId) throw new Error("A Task cannot absorb itself");
     requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
     requiredMethod(this.taskGitWorkspaces, "withAbsorptionEvidenceOwned");
@@ -1742,8 +1744,19 @@ export class TaskLifecycleService {
         preview.warning = exactSquash
           ? "Close the squash-absorbed source Task and remove only its exact clean Git artifacts after the survivor is durably published."
           : "Close the source Task as combined. Its branch, worktree and history are preserved; this does not mark it published.";
-        if (confirmCleanup !== true) return preview;
-        if (expectedCleanupToken !== preview.cleanupToken) throw new Error("Combined closure confirmation is stale; read the preview again");
+        if (confirmCleanup !== true) {
+          if (!previewReadback) return preview;
+          const validate = () => {
+            if (this.#task(task.id).revision !== task.revision || this.#task(target.id).revision !== target.revision
+                || this.taskBoard.lifecycleTransition(operationId) || this.taskBoard.lifecycleOutcome(operationId)) {
+              throw new Error("Combined preview original has lifecycle admission or Task drift");
+            }
+          };
+          await this.#assertOwned(ownedLease);
+          validate();
+          return previewReadback({ task, preview, validate });
+        }
+        if (expectedCleanupToken !== preview.cleanupToken) throw new TaskCleanupConfirmationRejectedError(task.id, "complete");
         if (exactSquash && (cleanup.dirty || cleanup.unpublished.length)) {
           throw new Error("Squash-absorbed Task cleanup requires its exact clean source result and published survivor");
         }
@@ -2048,6 +2061,28 @@ export class TaskLifecycleService {
     });
   }
 
+  async recoverCleanupConfirmation({ taskId, operationId, action, preview = false, absorbedIntoTaskId = null, readback }) {
+    if (absorbedIntoTaskId) {
+      if (!preview || action !== "complete") throw new Error("Combined recovery supports only the exact read-only preview");
+      // Acquire Workspace and both Task/repository leases once, in the normal
+      // combined-closure order; never nest that owner inside a source-only lock.
+      return this.#completeAbsorbed({ taskId, operationId, absorbedIntoTaskId,
+        confirmCleanup: false, previewReadback: readback });
+    }
+    return this.#withLock(taskId, async lease => {
+      const task = this.#task(taskId);
+      const validate = () => {
+        if (this.#task(taskId).revision !== task.revision || this.taskBoard.lifecycleTransition(operationId)
+            || this.taskBoard.lifecycleOutcome(operationId)) throw new Error("Cleanup validation original has lifecycle admission or Task drift");
+      };
+      validate();
+      const current = preview ? await this.#cleanupPreview(task, action) : null;
+      await this.#assertOwned(lease);
+      validate();
+      return readback({ task, preview: current, validate });
+    });
+  }
+
   async complete({
     taskId, operationId, confirmCleanup = false, expectedCleanupToken = null,
     absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, originalArguments = null, completedOperationRequestId = null,
@@ -2084,7 +2119,7 @@ export class TaskLifecycleService {
       const preview = await this.#cleanupPreview(task, "complete");
       if (confirmCleanup !== true) return preview;
       if (!resumingCleanup && String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
-        throw new Error("Task cleanup confirmation is stale or missing; read the preview again");
+        throw new TaskCleanupConfirmationRejectedError(task.id, "complete");
       }
       const hasGitArtifacts = preview.preview.workspaces.length > 0 || (task.gitReferences?.length ?? 0) > 0;
       if (hasGitArtifacts && task.workflowStatus !== "done") {
@@ -2161,7 +2196,7 @@ export class TaskLifecycleService {
       const preview = await this.#cleanupPreview(task, "delete");
       if (confirmCleanup !== true) return preview;
       if (!resumingCleanup && String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
-        throw new Error("Task deletion confirmation is stale or missing; read the preview again");
+        throw new TaskCleanupConfirmationRejectedError(task.id, "delete");
       }
       await this.#assertOwned(lease);
       await this.#mutation(() => this.taskBoard.beginLifecycleTransition({

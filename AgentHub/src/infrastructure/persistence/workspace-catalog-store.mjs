@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../../domain/task-cleanup-confirmation.mjs";
 import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
 import { McpAdmissionContentionError } from "../../domain/mcp-admission-contention.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
@@ -520,6 +521,8 @@ function mcpOperationFromRow(row) {
 function compactMcpOperationResult(result, { outcome = "succeeded" } = {}) {
   const serialized = JSON.stringify(result ?? null);
   if (Buffer.byteLength(serialized, "utf8") <= 64 * 1024) return serialized;
+  const confirmation = cleanupConfirmationCapsule(result);
+  if (confirmation) return JSON.stringify(confirmation);
   const taskId = String(result?.task?.id ?? result?.taskId ?? "").trim() || null;
   return JSON.stringify({
     receiptCompacted: true,
@@ -1128,6 +1131,29 @@ export class WorkspaceCatalogStore {
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
+  }
+
+  recoverCompactedCleanupPreview(requestId, { argumentsHash, expectedResult, result, validate } = {}) {
+    return this.#transaction(() => {
+      const row = this.mcpOperation(requestId);
+      if (row?.status === "succeeded" && row.argumentsHash === argumentsHash && cleanupConfirmationOriginal(row, false)
+          && row.result?.previewRecovery?.kind === "fresh-cleanup-preview-from-compacted-original-v1"
+          && JSON.stringify(row.result.previewRecovery.previousReceipt?.result) === JSON.stringify(expectedResult)) return row;
+      if (!row || row.status !== "succeeded" || row.argumentsHash !== argumentsHash
+          || !cleanupConfirmationOriginal(row, false) || row.result?.receiptCompacted !== true
+          || row.result?.cleanupToken || row.result?.taskId !== row.taskExecution.taskId
+          || JSON.stringify(row.result) !== JSON.stringify(expectedResult)
+          || !cleanupConfirmationCapsule(result) || result.task.id !== row.taskExecution.taskId
+          || (result.absorption?.taskId ?? null) !== (row.taskExecution.arguments.absorbed_into_task_id ?? null)) {
+        throw new Error("Compacted cleanup preview original changed");
+      }
+      if (typeof validate !== "function" || validate()?.then) throw new TypeError("Cleanup readback validator must be synchronous");
+      const changed = this.#database.prepare(`UPDATE hub_mcp_operations SET result_json=?
+        WHERE request_id=? AND receipt_state='succeeded' AND arguments_hash=? AND result_json=?`)
+        .run(compactMcpOperationResult(result), requestId, argumentsHash, JSON.stringify(expectedResult));
+      if (Number(changed.changes) !== 1) throw new Error("Compacted cleanup preview CAS changed");
+      return this.mcpOperation(requestId);
+    });
   }
 
   claimCustodyForOriginal(requestId) {

@@ -48,7 +48,7 @@ import {
 
 test("Test Contour uses Fake Codex by default without consuming provider limits", () => {
   assert.equal(TEST_CONTOUR_MODEL, TEST_CONTOUR_FAKE_MODEL);
-  assert.ok(TEST_CONTOUR_MODELS.some((item) => item.value === TEST_CONTOUR_SPARK_MODEL));
+  assert.equal(TEST_CONTOUR_MODELS.some((item) => item.value === TEST_CONTOUR_SPARK_MODEL), false);
 });
 
 test("Test Contour aligns cloned Stream settings with the requested provider model", async () => {

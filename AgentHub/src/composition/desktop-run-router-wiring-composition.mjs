@@ -302,7 +302,6 @@ export function createDesktopRunRouterWiring({
       boardTaskMove: (params) => taskBoardController.move(params),
       boardTaskComplete: (params, context) => taskBoardController.complete(params, { ...context, taskOperationReceipt: true }),
       boardTaskRemove: (params, context) => taskBoardController.remove(params, { ...context, taskOperationReceipt: true }),
-      boardTaskRetryTriage: (params) => taskBoardController.retryTriage(params),
       boardTaskStart: (params, context) => taskBoardController.start(params, context),
       boardColumnMove: (params) => taskBoardController.moveColumn(params),
       boardColumnComment: (params) => taskBoardController.updateColumnComment(params),

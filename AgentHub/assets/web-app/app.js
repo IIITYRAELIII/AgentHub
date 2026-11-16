@@ -5144,7 +5144,6 @@ function attachTaskReferenceToComposer(targetTaskId, reference) {
   saveDraft({ userEdited: true });
   composerInput.focus({ preventScroll: true });
   composer.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  showToast(`Task «${reference.title}» прикреплена к сообщению`);
   return true;
 }
 

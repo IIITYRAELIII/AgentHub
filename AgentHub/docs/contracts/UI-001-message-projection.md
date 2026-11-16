@@ -987,3 +987,11 @@ Canonical history supplies the complete last request and final response. Existin
 history pages, older-page cursors, retained windows and exact navigation provide
 the rest of the conversation. The same rendered-final and durable read-cursor
 owner clears Ready on both tabs and activity cards. See ADR-HUB-427.
+## Task attachment and retired Spark actions (ADR-HUB-434)
+
+Attaching a Dashboard Task keeps the visible composer reference, draft,
+remove/send behavior and error feedback without a redundant success toast.
+New Spark selection and Task retry controls/routing are removed. Historical
+Spark messages, Task records and accounting remain readable; ordinary available
+model actions are preserved. There is no replacement setting or silent model
+substitution. The provider owner also refuses new Spark dispatch.
