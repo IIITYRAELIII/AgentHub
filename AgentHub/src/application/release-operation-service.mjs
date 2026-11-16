@@ -737,7 +737,7 @@ export class ReleaseOperationService {
       const selectedOperation = firstCompose ? { ...current, testSelectionAmendments: [...(current.testSelectionAmendments ?? []),
         { selection, taskIds: selectedTaskIds, taskScope: scope,
           ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }) }] } : current;
-      return this.withTaskSelection({ operation: selectedOperation, firstCompose: Boolean(firstCompose), taskIds: taskIds == null && scope === "all_await" ? null : selectedTaskIds,
+      return this.withTaskSelection({ operation: selectedOperation, requestId, firstCompose: Boolean(firstCompose), taskIds: taskIds == null && scope === "all_await" ? null : selectedTaskIds,
         taskScope: scope, commit });
     }
     return commit();
@@ -1178,7 +1178,7 @@ export class ReleaseOperationService {
         ...(effectiveReleaseTaskScope(operation) === "all_await"
           ? { authorizedTaskIds: composed.authorizedTaskIds }
           : operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
-        ...(effectiveTestSelection(operation) ? { testPlans: await this.resolveTestPlans(composed.candidates, effectiveTestSelection(operation)),
+        ...(effectiveTestSelection(operation) ? { testPlans: await this.resolveTestPlans(composed.candidates, effectiveTestSelection(operation), operation),
           testSelectionAmendmentId: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
         operationId: operation.operationId,
         generation: generationNumber,
