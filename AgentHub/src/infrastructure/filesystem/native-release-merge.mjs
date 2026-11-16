@@ -461,6 +461,14 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
 async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
   const virtualReplay = await publishedVirtualReplay({ git, identity, baseCommit, tasks });
   const publishedBase = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
+  // The existing replay helper validates the original publication identity even
+  // when its unique-base rule supplies no new replay lower boundary.
+  const publication = identity.policy === "native-dev-merge-v1"
+    ? identity.nativeHistoryAuthority?.publishedMetadata : null;
+  const inherited = publication
+    && String(await git(["merge-base", "--all", baseCommit, tasks[0].resultCommit])).split(/\r?\n/u).includes(publication.commit)
+    && await maybe(git, ["merge-base", "--is-ancestor", tasks[0].baseCommit || baseCommit, publication.commit]) !== null
+    ? new Map(await entries(git, ["ls-tree", "-r", "-z", publication.commit])) : new Map();
   const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit
     && Array.isArray(identity.tasks) && taskGitIdentityHash(identity.tasks) === taskGitIdentityHash(tasks);
   const target = new Map(await entries(git, ["ls-tree", "-r", "-z", head]));
@@ -477,6 +485,8 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     const actual = merged ? new Map(await entries(git, ["ls-tree", "-r", "-z",
       (String(await git(["merge-tree", "--write-tree", "--name-only", "-z", prefix, task.resultCommit],
         { acceptableExitCodes: [1] })).split("\0"))[0]])) : new Map();
+    const source = inherited.size
+      ? new Map(await entries(git, ["ls-tree", "-r", "-z", task.resultCommit])) : new Map();
     let replayBase = publishedBase || task.baseCommit || baseCommit;
     // The captured composition already owns its complete baseline tree. If
     // that exact baseline lies inside this selected history, replay only the
@@ -501,6 +511,11 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     for (const file of new Set([...expected.keys(), ...target.keys()])) {
       if (expected.get(file) === target.get(file) || resolvedPaths.has(file)
           || actual.get(file) === target.get(file) && actual.has(file)) continue;
+      // Absence is automatic evidence only for a whole unchanged published
+      // entry. Own earlier/new edits and an already-contained result cannot
+      // acquire deletion credit from an empty or unrelated automatic map.
+      if (merged && !actual.has(file) && !target.has(file)
+          && inherited.has(file) && source.get(file) === inherited.get(file)) continue;
       if ((!conflicts.has(file) || await changesCleanConflictContext(git, replayTree, head, file, replayBefore, task.resultCommit))
           && !await repeatsRetainedContent(git, head, replayTree, file)) missing.push(file);
     }
