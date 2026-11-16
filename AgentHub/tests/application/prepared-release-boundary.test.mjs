@@ -143,6 +143,7 @@ async function fixture(t, { conflicting = false, timing = false } = {}) {
     taskGitWorkspaces: taskGit, releaseGitWorkspaces: releaseGit, store: operationStore,
     taskLifecycle: { setReleaseOperationWake() {}, setReleaseOperationPrepare() {} },
     publication: { publish: never, readback: async () => ({ status: "not_applied", fixture: true }),
+      loadAuthorizationPolicy: async () => () => ({ recipe: undefined }),
       resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot,
         plan: resolveTestSelection(selection, []) })) },
     finalization: { finalize: never }, observeOperation() {},
@@ -179,7 +180,7 @@ async function fixture(t, { conflicting = false, timing = false } = {}) {
     return operations.drain(operationId);
   };
   const runLegacy = async (testSelection = null) => {
-    const ack = operations.start({ requestId: `legacy-public-${++nextRequest}`, workspaceId: workspace.id,
+    const ack = await operations.start({ requestId: `legacy-public-${++nextRequest}`, workspaceId: workspace.id,
       streamId: stream.id, threadId: "prepared-fixture", authorization: { taskIds: [a.id, b.id].sort(), validationMode: "full",
         ...(testSelection ? { testSelection } : {}),
         approvedTargets: [{ targetId: "private-target", kind: "agent-hub-publication", repositoryRoot: primary,
