@@ -1,8 +1,8 @@
 """Thin stdlib bootstrap for a versioned, checksum-pinned ready Hub package.
 
-No Git, npm, build, provider operation or automatic runtime stop. Ordinary
-install/rollback never starts Hub. The explicit package-update mode waits for a
-user-stopped legacy cohort, then delegates backup/install/start to RuntimeHost.
+No Git, npm, build or provider operation. Ordinary install/rollback never starts
+Hub. Explicit package-update delegates original-bound retirement, backup,
+install and readiness to the existing native maintenance owner.
 Copy only this file and its installation guide to Utilities at managed cutover.
 """
 from __future__ import annotations
@@ -366,10 +366,62 @@ def original_status(operation_id: str, original) -> dict:
             and metadata.get("packageInputSha256") and envelope.get("schema") == 1
             and binding.get("operationId") == operation_id
             and hashlib.sha256(json.dumps(binding, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
-            == envelope.get("sha256")):
+            == envelope.get("sha256")
+            and (not metadata.get("packageIncoming") or
+                 (metadata["packageIncoming"].get("native") and metadata["packageIncoming"].get("outsideAllJobs") is True))):
         result["handoff"] = {"action": "yield_current_turn", "reason": "public_package_restart",
                              "operationId": operation_id}
     return result
+
+
+def reconcile_incoming_owner(runtime: Path, original: dict, cache: Path, installer: Path) -> None:
+    """Resume only incoming-owner admission, never old lifecycle dispatch."""
+    if (original.get("status") not in {"requested", "blocked", "running"}
+            or original.get("outcome") is not None
+            or not (original.get("metadata") or {}).get("packageInputSha256")
+            or (original.get("metadata") or {}).get("packageIncoming")):
+        return
+    dispatch = cache/"dispatch-intent.json"
+    if not windows_filesystem_path(dispatch).exists():
+        return
+    request_file, selection_file = cache/"update-request.json", cache/"selection.json"
+    intent = _read_record(dispatch)
+    expected = dict(schema=1, kind="package-bootstrap-dispatch-v1", operationId=original["operationId"],
+                    preparationSha256=file_hash(cache/"preparation.json"),
+                    selectionSha256=file_hash(selection_file), requestSha256=file_hash(request_file))
+    if intent != expected:
+        raise ValueError("Original package dispatch identity changed")
+    request, selected = _read_record(request_file), _read_record(selection_file)
+    if (request.get("operationId") != original["operationId"] or Path(request.get("runtimeRoot", "")).resolve(strict=True) != runtime
+            or Path(request.get("installer", "")).resolve(strict=True) != installer):
+        raise ValueError("Original incoming continuation input changed")
+    assets = {entry["name"]: entry for entry in selected["assets"]}
+    for key, name in [("archive", "AgentHub-win32-x64.zip"), ("descriptor", "AgentHub-win32-x64.zip.json"), ("installer", "install_release.py")]:
+        file = Path(request[key]); _plain_chain(file.parent); _plain(file)
+        if file_hash(file) != assets[name]["digest"].removeprefix("sha256:"):
+            raise ValueError("Original incoming public asset changed")
+    package = Path(request["packageRoot"]); _plain_chain(package)
+    descriptor = _read_record(Path(request["descriptor"]))
+    manifest_file = package/"package-manifest.json"
+    if _plain(manifest_file).st_size > 8*1024**2:
+        raise ValueError("Oversized incoming package inventory")
+    manifest_bytes = windows_filesystem_path(manifest_file).read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest() != descriptor["packageManifestSha256"]:
+        raise ValueError("Original incoming package inventory changed")
+    manifest = json.loads(manifest_bytes)
+    verify_release_descriptor(manifest, package, descriptor)
+    for record in manifest["files"]:
+        file = package.joinpath(*PurePosixPath(safe_name(record["path"])).parts)
+        _plain_chain(file.parent)
+        if _plain(file).st_size != record["bytes"] or file_hash(file) != record["sha256"]:
+            raise ValueError("Original incoming package bytes changed")
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("Node.js with node:sqlite is required")
+    entry = package/"runtime/src/runtime/runtime-package-handoff.mjs"
+    result = subprocess.run([node, str(entry), "bootstrap-reconcile", str(request_file)], check=False)
+    if result.returncode:
+        raise RuntimeError("Incoming owner reconciliation is unknown; retain the original")
 
 
 def update_status(runtime_root: Path, operation_id: str) -> dict:
@@ -513,6 +565,9 @@ def prepare_update(args) -> None:
         if (original is not None or windows_filesystem_path(cache/"dispatch-intent.json").exists()
                 or windows_filesystem_path(cache/"update-request.json").exists()):
             # Neither absent SQL nor a lost subprocess reply can reopen this fence.
+            if original is not None:
+                reconcile_incoming_owner(runtime, original, cache, installer)
+                original = read_update_original(runtime, args.operation_id)
             print(json.dumps(original_status(args.operation_id, original)))
             return
         selected = _transport_selection(args.release, binding["installerSha256"])

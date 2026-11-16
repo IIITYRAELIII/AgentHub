@@ -48,6 +48,7 @@ export function createReleaseOperationServices({
     withRetainedGeneration: input => taskGitWorkspaces.withOperationTrace({
       operationId: input.operation.operationId, generation: input.generation.generation,
     }, () => releasePreflight.measureOperation("release:retained-generation-recovery", () => adapter.withRetainedGeneration(input))),
+    withPublicationRecovery: input => adapter.withPublicationRecovery(input),
     requestCorrection,
     cleanupGeneration: input => adapter.cleanupGeneration(input),
     processAlive: processIsAlive,

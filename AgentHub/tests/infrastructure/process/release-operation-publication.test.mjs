@@ -263,7 +263,8 @@ test("publication launches the stable owner runner and reads its exact generatio
     runtimeRoot: path.join(root, "runtime"),
     runnerFile,
     environment: { AGENT_HUB_RESTART_OPERATION_ID: "completed-parent-restart",
-      AGENT_HUB_RESTART_LAUNCHER_PID: "123", SYNTHETIC_KEEP: "retained" },
+      AGENT_HUB_RESTART_LAUNCHER_PID: "123", SYNTHETIC_KEEP: "retained",
+      AGENT_HUB_RELEASE_TOOLS_ROOT: tool.root, AGENT_HUB_RELEASE_TOOLS_SHA256: tool.sha256 },
     readPublicationStateImpl: async () => null,
     gitRemoteHeadImpl: async () => "base-commit",
     processAliveImpl: () => false,
@@ -305,6 +306,7 @@ test("publication launches the stable owner runner and reads its exact generatio
   const runnerFileState = path.join(executionRoot, "runner.json");
   const runner = JSON.parse(await readFile(runnerFileState, "utf8"));
   assert.deepEqual(runner.tool, toolIdentity);
+  assert.deepEqual(runner.toolPackage, tool.location);
   const resultFile = path.join(executionRoot, "result.json");
   const originalResult = await readFile(resultFile, "utf8");
   await writeFile(resultFile, JSON.stringify({ ...JSON.parse(originalResult), tool: { ...toolIdentity, sha256: "0".repeat(64) } }));
@@ -324,6 +326,25 @@ test("publication launches the stable owner runner and reads its exact generatio
   const retainedLegacy = await readFile(runnerFileState);
   await assert.rejects(publication.publish({ operation, generation, target }), /recorded tool executor/);
   assert.deepEqual(await readFile(runnerFileState), retainedLegacy); assert.equal(spawnCalls.length, 1);
+  await writeFile(runnerFileState, retainedRunner);
+  let resolutions = 0;
+  const replacementOwner = new ReleaseOperationPublication({ dataDir: path.join(root, "data"),
+    runtimeRoot: path.join(root, "runtime"), environment: {
+      AGENT_HUB_RELEASE_TOOLS_ROOT: path.join(root, "foreign-ambient-tool"),
+      AGENT_HUB_RELEASE_TOOLS_SHA256: "0".repeat(64),
+    }, runnerFile, processAliveImpl: () => false, readPublicationStateImpl: async () => null,
+    gitRemoteHeadImpl: async () => "base-commit", publicationRunStoreFactory: () => ({ read: async () => null }),
+    readToolPackage: async input => {
+      resolutions++;
+      assert.equal(input.root, tool.root); assert.equal(input.expectedSha256, tool.sha256);
+      assert.deepEqual(input.expectedLocation, tool.location);
+      return readReleaseToolPackage(input);
+    }, spawnImpl: publication.spawnImpl });
+  assert.equal((await replacementOwner.publish({ operation, generation, target })).status, "applied");
+  assert.ok(resolutions > 0);
+  assert.equal(spawnCalls.length, 2);
+  assert.equal(spawnCalls[1].options.env.AGENT_HUB_RELEASE_TOOLS_ROOT, tool.root);
+  assert.equal(spawnCalls[1].options.env.AGENT_HUB_RELEASE_TOOLS_SHA256, tool.sha256);
 });
 
 test("publication readback stays unknown while the exact runner is alive", async (t) => {

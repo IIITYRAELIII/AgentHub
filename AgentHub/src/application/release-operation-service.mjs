@@ -12,6 +12,7 @@ import {
   failedCompositionRecovery,
   failedFirstComposeRecovery,
   retainedGenerationRecovery,
+  failedPublicationRecovery,
   releaseCompositionInput,
   releaseApprovedTargets,
   effectiveTestSelection,
@@ -207,6 +208,7 @@ export class ReleaseOperationService {
     inspectFirstCompose = null,
     recoverFirstCompose = null,
     withRetainedGeneration = null,
+    withPublicationRecovery = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -261,6 +263,7 @@ export class ReleaseOperationService {
     this.inspectFirstCompose = inspectFirstCompose;
     this.recoverFirstCompose = recoverFirstCompose;
     this.withRetainedGeneration = withRetainedGeneration;
+    this.withPublicationRecovery = withPublicationRecovery;
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization, resolveAuthorization = null } = {}) {
@@ -349,6 +352,13 @@ export class ReleaseOperationService {
     if (current.testSelectionAmendments?.some(item => item.requestId === options.requestId)
         || options.testSelection != null || options.taskIds != null || options.taskScope != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
     if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
+    const previousPublication = current.publicationRecoveries?.find(item => item.requestId === options.requestId);
+    if (previousPublication) {
+      return this.reconcilePublicationContinuation(operationId, options);
+    }
+    if (this.withPublicationRecovery && failedPublicationRecovery(this.store.snapshot(operationId))) {
+      return this.#recoverPublication(operationId, options);
+    }
     const previousRecovery = current.retainedGenerationRecoveries?.find(item => item.requestId === options.requestId);
     if (previousRecovery) {
       if (previousRecovery.priorRevision !== options.expectedRevision || previousRecovery.generation !== options.expectedGeneration) {
@@ -532,6 +542,63 @@ export class ReleaseOperationService {
     } catch {
       console.warn('Release progress monitor unavailable: MONITOR_OBSERVATION_FAILED');
     }
+  }
+
+  async reconcilePublicationContinuation(operationId, { requestId, expectedRevision, expectedGeneration }) {
+    requiredText(operationId, "operationId");
+    requiredText(requestId, "publication recovery requestId");
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1
+      || !Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1) {
+      throw new Error("Publication continuation requires its original revision and generation");
+    }
+    let current = this.store.get(operationId);
+    let recovery = current?.publicationRecoveries?.find(item => item.requestId === requestId);
+    if (!recovery && !current?.publicationRecoveries?.length) {
+      await this.#recoverPublication(operationId, { requestId, expectedRevision, expectedGeneration, uncapturedOnly: true });
+      current = this.store.get(operationId);
+      recovery = current?.publicationRecoveries?.find(item => item.requestId === requestId);
+    }
+    const { identitySha256, ...contents } = recovery ?? {};
+    if (!recovery || recovery.operationId !== operationId || recovery.priorRevision !== expectedRevision
+      || recovery.generation !== expectedGeneration || recovery.authorizationFingerprint !== current.authorization.fingerprint
+      || releaseIdentitySha256(contents) !== identitySha256) throw new Error("No durable publication recovery admission matches this request");
+    if (current.currentGeneration === expectedGeneration && current.state === "publish") {
+      this.#observe(operationId); this.#schedule(operationId);
+    }
+    return { accepted: true, duplicate: true, operationId, recovery: identitySha256 };
+  }
+
+  async #recoverPublication(operationId, { requestId, expectedRevision, expectedGeneration, uncapturedOnly = false }) {
+    const snapshot = this.store.snapshot(operationId), current = snapshot.operation;
+    if (current.revision !== expectedRevision || current.currentGeneration !== expectedGeneration) {
+      return { accepted: false, reason: "stale-revision", operation: current };
+    }
+    requiredText(requestId, "publication recovery requestId");
+    const boundary = failedPublicationRecovery(snapshot);
+    if (!boundary || this.#running.has(operationId) || this.#scheduled.has(operationId)
+      || typeof this.withPublicationRecovery !== "function"
+      || uncapturedOnly && current.publicationRecoveries?.length) {
+      return { accepted: false, reason: "ineligible", operation: current };
+    }
+    const generation = this.store.generation(operationId, expectedGeneration);
+    return this.withPublicationRecovery({ operation: current, generation, commit: async (evidence, validate) => {
+      if (!evidence || typeof validate !== "function") throw new Error("Publication recovery requires owning evidence");
+      await validate();
+      const contents = { requestId, operationId, priorRevision: expectedRevision, generation: expectedGeneration,
+        authorizationFingerprint: current.authorization.fingerprint, boundary, evidence,
+        ...(uncapturedOnly ? { admission: { kind: "uncaptured-publication-recovery-v1",
+          priorRevision: expectedRevision, generation: expectedGeneration,
+          recoveriesSha256: releaseIdentitySha256(current.publicationRecoveries ?? []) } } : {}) };
+      const recovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+      const result = await this.store.runOperationMutation(operationId, () => this.store.transition(operationId, {
+        state: "publish", currentStep: "publish", lastError: null,
+        nextAction: "resume exact remaining publication checkpoints",
+      }, { expectedRevision, publicationRecovery: recovery, eventKind: "operation.publication-recovery",
+        event: { operationId, recovery } }));
+      if (result.applied) { this.#observe(operationId); this.#schedule(operationId); }
+      return { accepted: result.applied, reason: result.reason, operationId, revision: result.operation.revision,
+        recovery: recovery.identitySha256 };
+    } });
   }
 
   async #recoverRetainedGeneration(operationId, { requestId, expectedRevision, expectedGeneration }) {

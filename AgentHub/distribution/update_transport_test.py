@@ -38,6 +38,11 @@ class PreparationTransportTests(unittest.TestCase):
         projected = installer.original_status("same-original", original)
         self.assertEqual(projected["handoff"], dict(action="yield_current_turn", reason="public_package_restart",
                                                   operationId="same-original"))
+        original["metadata"]["packageIncoming"] = dict(intent={})
+        self.assertNotIn("handoff", installer.original_status("same-original", original))
+        original["metadata"]["packageIncoming"].update(native=dict(hostPid=99), outsideAllJobs=True)
+        self.assertIn("handoff", installer.original_status("same-original", original))
+        del original["metadata"]["packageIncoming"]
         for status, outcome in [("reconciling", "unknown"), ("failed", "failed"), ("succeeded", "succeeded")]:
             self.assertNotIn("handoff", installer.original_status("same-original", dict(original, status=status, outcome=outcome)))
         envelope["sha256"] = "b"*64
@@ -143,6 +148,46 @@ class PreparationTransportTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as output:
             installer.prepare_update(self.args)
         return output.getvalue()
+
+    def admitted_without_incoming(self):
+        self.fail_once = False
+        self.prepare()
+        self.assertEqual(len(self.dispatches), 1)
+        binding = dict(operationId="same-original", runtimeRoot=str(self.runtime))
+        original = dict(operationId="same-original", kind="restart", status="blocked", phase="waiting-for-work", outcome=None,
+                        metadata=dict(packageInputSha256="a"*64, packageHandoff=dict(schema=1, binding=binding,
+                            sha256=sha(json.dumps(binding, separators=(",", ":")).encode("utf-8")))))
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("INSERT INTO maintenance_operations VALUES(?,?)", ("same-original", json.dumps(original)))
+            db.commit()
+        return original
+
+    def test_same_admitted_original_reconciles_only_verified_incoming_owner_after_lost_dispatch_reply(self):
+        original = self.admitted_without_incoming()
+        commands = []
+        def reconcile(command, **kwargs):
+            commands.append(command)
+            self.assertEqual(command[-2], "bootstrap-reconcile")
+            original["metadata"]["packageIncoming"] = dict(native=dict(hostPid=99), outsideAllJobs=True)
+            with closing(sqlite3.connect(self.database)) as db:
+                db.execute("UPDATE maintenance_operations SET operation_json=? WHERE operation_id=?", (json.dumps(original), "same-original"))
+                db.commit()
+            return SimpleNamespace(returncode=0)
+        with patch.object(installer.subprocess, "run", reconcile):
+            self.assertIn("yield_current_turn", self.prepare())
+            self.prepare()
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(len(self.dispatches), 1, "old lifecycle dispatch is never repeated")
+
+    def test_changed_retained_incoming_bytes_refuse_before_owner_reconciliation(self):
+        self.admitted_without_incoming()
+        request = self.dispatches[0]
+        entry = Path(request["packageRoot"])/"runtime/src/runtime/runtime-package-handoff.mjs"
+        entry.write_bytes(b"changed incoming")
+        with patch.object(installer.subprocess, "run", side_effect=AssertionError("no changed executor")):
+            with self.assertRaisesRegex(ValueError, "package bytes changed"):
+                self.prepare()
+        self.assertEqual(len(self.dispatches), 1)
 
     def partial(self):
         with self.assertRaises(TimeoutError):

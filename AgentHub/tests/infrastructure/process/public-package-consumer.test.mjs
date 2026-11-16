@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -14,17 +15,34 @@ import { packageBindingDigest } from "../../../src/infrastructure/filesystem/run
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const writeJson = async (file, value) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, JSON.stringify(value)); };
 
-async function fixture(t) {
+async function fixture(t, { realFrozen = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-public-package-consumer-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const dataDir = path.join(root, "data");
+  const frozenRoot = path.join(root, "frozen");
+  let commit = "a".repeat(40), tree = null;
+  if (realFrozen) {
+    const git = async (...args) => (await promisify(execFile)("git", args,
+      { cwd: frozenRoot, windowsHide: true, encoding: "utf8" })).stdout.trim();
+    await mkdir(path.join(frozenRoot, "AgentHub"), { recursive: true });
+    await git("init", "--initial-branch=main");
+    await writeFile(path.join(frozenRoot, "AgentHub/package.json"), '{"name":"fixture","version":"2.1.6"}\n');
+    await git("add", "-A");
+    await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "tiny frozen source");
+    commit = await git("rev-parse", "HEAD"); tree = await git("rev-parse", "HEAD^{tree}");
+    await writeJson(path.join(frozenRoot, ".git/agent-hub-release-clone.json"), {
+      schemaVersion: 1, kind: "agent-hub-owned-release-clone", primaryRoot: root,
+      primaryGitCommonDir: path.join(root, "primary.git"), releaseRoot: frozenRoot,
+      releaseGitCommonDir: path.join(frozenRoot, ".git"),
+    });
+  }
   const target = { targetId: "production", kind: "agent-hub-publication", environment: "production", repositoryRoot: root };
   const publicTarget = { ...target, targetId: "agent-hub-github-release", environment: "github-release" };
   const operation = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", authorization: {
     runtimeInstallation: "public-package-v1", approvedTargets: [target, publicTarget],
   } };
-  const candidate = { repositoryRoot: root, releaseRoot: path.join(root, "frozen"), commit: "a".repeat(40), manifest: { publication: {
-    head: "a".repeat(40), releaseVersion: "2.1.6", runtimeReleaseVersion: "2.1.6+build.29901175",
+  const candidate = { repositoryRoot: root, releaseRoot: frozenRoot, commit, tree, manifest: { publication: {
+    head: commit, releaseVersion: "2.1.6", runtimeReleaseVersion: "2.1.6+build.29901175",
   } } };
   const generation = { operationId: operation.operationId, generation: 2, identitySha256: "b".repeat(64), candidates: [candidate] };
   const tool = { name: "release-tools", version: "0.1.2", sha256: "c".repeat(64) };
@@ -132,7 +150,7 @@ test("a changed original target journal or PACKAGED input cannot be adopted by t
 });
 
 test("actual publication readback requires same canonical maintenance, installed proof and Ready before remaining stages", async t => {
-  const f = await fixture(t);
+  const f = await fixture(t, { realFrozen: true });
   const { operation, generation, target, dataDir, tool } = f.options;
   const runtimeRoot = path.join(f.root, "runtime");
   await mkdir(path.join(runtimeRoot, "data"), { recursive: true });
@@ -204,6 +222,30 @@ test("actual publication readback requires same canonical maintenance, installed
     publicRuntimeInstaller: complete.publicRuntimeInstaller };
   await writeJson(path.join(localRoot, "result.json"), result);
   assert.deepEqual(await readback(), result);
+  await writeJson(path.join(f.execution, "runner.json"), { candidate: generation.identitySha256, tool, status: "exited", exitCode: 0 });
+  operation.lastError = { step: "publish", message: "External release tool requires AGENT_HUB_RELEASE_TOOLS_ROOT and its SHA256 pin" };
+  let admissions = 0;
+  await publication.withPublicationRecovery({ operation, generation, commit: async (evidence, validate) => {
+    assert.equal(evidence.length, 2); await validate(); admissions++;
+  } });
+  assert.equal(admissions, 1);
+  const runner = path.join(localRoot, "runner.json"), retainedRunner = await readFile(runner);
+  await writeJson(runner, { candidate: generation.identitySha256, tool, status: "launching" });
+  await assert.rejects(publication.withPublicationRecovery({ operation, generation, commit: () => assert.fail("no active-runner admission") }), /positively closed/u);
+  await writeFile(runner, retainedRunner);
+  ready = false;
+  await assert.rejects(publication.withPublicationRecovery({ operation, generation, commit: () => assert.fail("no unready admission") }), error => {
+    assert.equal(error.code, "RELEASE_PUBLIC_INSTALLER_NOT_READY");
+    assert.deepEqual(error.publicationRecoveryProof, { targetId: target.targetId,
+      status: "partial", reason: "public-installer-readiness", installerStatus: null, sourceCommit: null });
+    assert.match(error.message, /public-installer-readiness/u);
+    return true;
+  });
+  ready = true;
+  await publication.withPublicationRecovery({ operation, generation, commit: async (_evidence, validate) => {
+    await validate(); admissions++;
+  } });
+  assert.equal(admissions, 2);
   f.ref.object.sha = "0".repeat(40);
   assert.equal((await readback()).cursor.reason, "public-installer-proof-refused");
   assert.equal((await readback()).status, "unknown");

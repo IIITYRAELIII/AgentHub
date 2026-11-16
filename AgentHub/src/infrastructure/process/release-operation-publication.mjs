@@ -10,14 +10,14 @@ import { readPublicationState } from "../persistence/publication-state.mjs";
 import { publicationRunStore, failedFrozenPublicationEvidence } from "../persistence/publication-run-store.mjs";
 import { PUBLIC_INSTALLER_HANDOFF, readPublicationCheckpoint } from "../persistence/publication-checkpoint.mjs";
 import { PUBLIC_RUNTIME_INSTALLATION } from "../../domain/public-runtime-installation.mjs";
-import { releaseIdentitySha256 } from "../../domain/release-operation.mjs";
+import { releaseApprovedTargets, releaseIdentitySha256 } from "../../domain/release-operation.mjs";
 import { releasePublicationBaseCommit } from "../../domain/release-base-provenance.mjs";
 import { readReleaseToolPackage } from "./release-tool-package.mjs";
 import { readArtifact, createPublicationArtifactSteps } from "./publication-artifacts.mjs";
 import { withPublicationLock } from "./publication-lock.mjs";
 import { artifactVersionIdentity } from "../../domain/agent-hub-version.mjs";
 import { parseGitHubRemote } from "../persistence/github-publication-baseline.mjs";
-import { assertReleaseCloneForPublication } from "../filesystem/release-git-workspace.mjs";
+import { assertReleaseCloneForPublication, assertReleaseCandidateContourSource } from "../filesystem/release-git-workspace.mjs";
 import { measureTaskOperation } from "./task-operation-timing.mjs";
 import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
 import { withRuntimeInstallationLease, readRuntimePointer, captureRuntimeReleaseBinding } from "../filesystem/runtime-installation-custody.mjs";
@@ -209,6 +209,25 @@ export class ReleaseOperationPublication {
     };
   }
 
+  async #originalTool(layout, runner = null) {
+    const prior = runner ?? await readJson(layout.stateFile);
+    const location = prior?.toolPackage;
+    if (location && (location.schema !== 1 || !path.isAbsolute(location.root ?? "")
+        || location.sha256 !== prior.tool?.sha256 || location.name !== prior.tool?.name
+        || location.version !== prior.tool?.version)) throw new Error("Original publication requires its recorded tool executor; location binding changed");
+    // A recorded executor is authority. Ambient configuration cannot replace it
+    // after restart. Historical unbound runners still need an explicit pin.
+    const tool = await this.readToolPackage({
+      root: location?.root ?? this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT ?? null,
+      expectedSha256: location?.sha256 ?? this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 ?? null,
+      expectedLocation: location ?? null,
+    });
+    if (location && releaseIdentitySha256(tool.location) !== releaseIdentitySha256(location)
+        || prior?.tool && releaseIdentitySha256(prior.tool) !== releaseIdentitySha256({ name: tool.name,
+          version: tool.version, sha256: tool.sha256 })) throw new Error("Original publication requires its recorded tool executor");
+    return tool;
+  }
+
   async publish({ operation, generation, target }) {
     if (target.kind !== "agent-hub-publication") {
       const error = new Error(`unsupported release target kind: ${target.kind}`);
@@ -236,8 +255,7 @@ export class ReleaseOperationPublication {
         error.code = "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
         throw error;
       }
-      const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
-        expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
+      const tool = await this.#originalTool(layout);
       if (operation.authorization?.runtimeInstallation === PUBLIC_RUNTIME_INSTALLATION) {
         const capabilities = await tool.module("src/publication-artifacts.mjs");
         if (capabilities.publicInstallerHandoffProtocol !== PUBLIC_INSTALLER_HANDOFF) {
@@ -263,6 +281,7 @@ export class ReleaseOperationPublication {
         targetId: target.targetId,
         candidate: generation.identitySha256,
         tool: toolIdentity,
+        toolPackage: tool.location,
         startedAt,
       };
       let stdout;
@@ -507,6 +526,63 @@ export class ReleaseOperationPublication {
     }, { environment: { ...this.environment }, lockTarget: path.join(layout.root, "publication") });
   }
 
+  async withPublicationRecovery({ operation, generation, commit }) {
+    // Compatibility for the exact pre-resolver failure. Other terminal errors
+    // require their own owning evidence, never a generic terminal retry.
+    if (operation.lastError?.message !== "External release tool requires AGENT_HUB_RELEASE_TOOLS_ROOT and its SHA256 pin") {
+      throw new Error("Publication failure has no executor recovery proof");
+    }
+    const targets = releaseApprovedTargets(operation);
+    if (targets.length !== 2 || targets.filter(target => target.environment === "github-release").length !== 1
+      || targets.filter(target => publicRuntimeInstallerBinding({ operation, generation, target })).length !== 1) {
+      throw new Error("Publication recovery requires its original public and installed targets");
+    }
+    return withRuntimeInstallationLease(this.runtimeRoot, async lease => {
+      const inspect = async () => {
+        await lease.assertOwned();
+        const evidence = [];
+        for (const target of targets) {
+          const candidate = candidateFor(generation, target), layout = this.#layout(operation, generation, target);
+          const frozen = await assertReleaseCandidateContourSource({ sourceRoot: path.join(candidate.releaseRoot, "AgentHub") });
+          const marker = await readJson(frozen.markerFile);
+          const tree = (await promisify(execFile)("git", ownedGitArguments(["rev-parse", "HEAD^{tree}"]),
+            { cwd: candidate.releaseRoot, encoding: "utf8", windowsHide: true })).stdout.trim();
+          if (frozen.headCommit !== candidate.commit || tree !== candidate.tree
+            || typeof marker?.primaryRoot !== "string"
+            || path.resolve(marker.primaryRoot) !== path.resolve(candidate.repositoryRoot)) throw new Error("Publication recovery frozen candidate changed");
+          const runner = await readJson(layout.stateFile);
+          if (!runner || runner.candidate !== generation.identitySha256 || runner.status === "launching"
+            || this.processAlive(runner.pid)) throw new Error("Publication recovery runner is not positively closed");
+          const tool = await this.#originalTool(layout, runner);
+          await tool.assertUnchanged();
+          const readback = await this.readback({ operation, generation, target });
+          if (publicRuntimeInstallerBinding({ operation, generation, target })) {
+            if (!["applied", "partial"].includes(readback.status)
+              || readback.publicRuntimeInstaller?.status !== "ready"
+              || readback.publicRuntimeInstaller.sourceCommit !== candidate.commit) {
+              const proof = { targetId: target.targetId, status: readback.status,
+                reason: readback.cursor?.reason ?? "public-installer-proof-missing",
+                installerStatus: readback.publicRuntimeInstaller?.status ?? null,
+                sourceCommit: readback.publicRuntimeInstaller?.sourceCommit ?? null };
+              throw Object.assign(new Error(`Publication recovery requires the exact successful public installer and Ready (${proof.reason})`),
+                { code: "RELEASE_PUBLIC_INSTALLER_NOT_READY", publicationRecoveryProof: proof });
+            }
+          } else if (readback.status !== "applied") throw new Error("Original public distribution is not applied");
+          evidence.push({ targetId: target.targetId, candidate: candidate.commit, tool: tool.location,
+            markerSha256: releaseIdentitySha256(marker), runnerSha256: releaseIdentitySha256(runner), readback });
+        }
+        await lease.assertOwned();
+        return evidence;
+      };
+      const evidence = await inspect();
+      return commit(evidence, async () => {
+        if (releaseIdentitySha256(await inspect()) !== releaseIdentitySha256(evidence)) {
+          throw new Error("Publication recovery evidence changed before admission");
+        }
+      });
+    });
+  }
+
   async withRetainedGeneration({ operation, generation, commit }) {
     return withRuntimeInstallationLease(this.runtimeRoot, async () => {
       const physicalRoot = await realpath(this.runtimeRoot);
@@ -654,8 +730,7 @@ export class ReleaseOperationPublication {
       if (!runner?.tool || saved.identity?.revision !== candidate.commit) return {
         status: "unknown", cursor: { reason: "public-installer-runner-binding" },
       };
-      const tool = await this.readToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
-        expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
+      const tool = await this.#originalTool(layout, runner);
       const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
       if (releaseIdentitySha256(toolIdentity) !== releaseIdentitySha256(runner.tool)) return {
         status: "unknown", cursor: { reason: "public-installer-tool-changed" },
@@ -668,7 +743,7 @@ export class ReleaseOperationPublication {
         } });
       const consumer = createPublicRuntimeInstaller({ ...this.publicRuntimeInstallerPorts, operation, generation, target, runtimeRoot: this.runtimeRoot,
         journal, tool: toolIdentity, readPublishedInput: async () => {
-          const api = this.distributionApi ?? (await import("./github-release-publication.mjs")).githubReleaseTransport();
+          const api = this.distributionApi ?? (await import("./github-release-publication.mjs")).githubReleaseTransport(undefined, tool);
           return readPublishedRuntimePackage({ operation, generation, target, dataDir: this.dataDir,
             tool: toolIdentity, prepared: await artifacts.preparedRuntimeReceipt(saved.identity),
             api });

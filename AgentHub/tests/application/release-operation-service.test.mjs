@@ -8,10 +8,15 @@ import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
-import { createCandidateGeneration, failedFirstComposeRecovery } from "../../src/domain/release-operation.mjs";
+import { createCandidateGeneration, failedFirstComposeRecovery, failedPublicationRecovery, releaseIdentitySha256 } from "../../src/domain/release-operation.mjs";
 import { resolveTestSelection } from "../../src/domain/test-selection.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
+import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
+import { TaskBoardService } from "../../src/application/task-board-service.mjs";
+import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 
 const taskIds = ["task-a", "task-b"];
 const targets = [
@@ -67,6 +72,189 @@ function start(service, requestId = "request-1") {
     authorization: { taskIds, approvedTargets: targets, validationMode: "full" },
   });
 }
+
+async function partialPublicationFixture(t, overrides = {}) {
+  const scheduled = [];
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback),
+    withPublicationRecovery: async ({ commit }) => commit({ kind: "fixture-positive-installed-owner" }, async () => {}),
+    ...overrides });
+  const created = f.store.create({ requestId: "partial-original", workspaceId: "workspace-1", streamId: "stream-1",
+    threadId: "thread-1", runnerVersion: "test", authorization: { taskIds, approvedTargets: targets, validationMode: "full" },
+    state: "publish", currentGeneration: 1, selectedResults: generation().selectedResults,
+    publicationEffects: { generation: 1, publishStarted: { generation: 1 }, targets: { git: { status: "applied" } } } });
+  const operationId = created.operation.operationId;
+  const candidate = createCandidateGeneration({ ...generation(), operationId, generation: 1,
+    runnerVersion: "test", authorizedTaskIds: taskIds });
+  f.store.putGeneration(candidate);
+  f.store.transition(operationId, { publicationEffects: { generation: 1,
+    publishStarted: { generation: 1, candidate: candidate.identitySha256 }, targets: { git: { status: "applied" } } } });
+  const finish = (stepId, input, status, effect) => {
+    const row = f.store.beginStep({ operationId, generation: 1, stepId, input }).receipt;
+    f.store.finishStep(row, { status, effect });
+  };
+  finish("compose", { authorization: created.operation.authorization }, "applied", { identitySha256: candidate.identitySha256 });
+  finish("validate", { candidate: candidate.identitySha256 }, "applied", { status: "ready" });
+  finish("publish:git", { candidate: candidate.identitySha256, target: targets[0] }, "applied", { status: "applied" });
+  const pending = { candidate: candidate.identitySha256, target: targets[1] };
+  finish("publish:runtime", pending, "failed", { status: "partial" });
+  f.store.beginStep({ operationId, generation: 1, stepId: "publish:runtime", input: pending });
+  f.store.transition(operationId, { state: "failed", lastError: { step: "publish", message: "original executor unavailable" } });
+  return { ...f, scheduled, operationId, candidate };
+}
+
+test("partial publication recovery keeps original generation, applied receipts and lost-ACK admission", async t => {
+  const f = await partialPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  const options = { requestId: "same-partial-recovery", expectedRevision: before.operation.revision, expectedGeneration: 1 };
+  const reply = await f.service.continue(f.operationId, options);
+  assert.equal(reply.accepted, true);
+  const admitted = f.store.snapshot(f.operationId);
+  assert.deepEqual(admitted.generations, before.generations);
+  assert.deepEqual(admitted.receipts, before.receipts);
+  assert.deepEqual(admitted.operation.publicationEffects, before.operation.publicationEffects);
+  assert.deepEqual(admitted.operation.publicationRecoveries[0].boundary.priorFailure,
+    { completedAt: before.operation.completedAt, error: before.operation.lastError });
+  assert.equal((await f.service.continue(f.operationId, options)).duplicate, true);
+  assert.equal(f.scheduled.length, 1);
+  f.service.readTarget = async () => ({ status: "applied", source: "existing-ready-consumer" });
+  f.service.publishTarget = () => assert.fail("no second installer or publication");
+  f.scheduled.shift()(); await f.service.drain(f.operationId);
+  assert.equal(f.store.get(f.operationId).state, "done");
+  assert.equal(f.store.get(f.operationId).currentGeneration, 1);
+  assert.equal(f.store.snapshot(f.operationId).generations.length, 1);
+});
+
+test("partial publication recovery refuses stale, changed receipt and unproved owning outcome", async t => {
+  const f = await partialPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  const options = { requestId: "refused-partial", expectedRevision: before.operation.revision, expectedGeneration: 1 };
+  assert.equal((await f.service.continue(f.operationId, { ...options, expectedRevision: options.expectedRevision - 1 })).reason, "stale-revision");
+  f.service.withPublicationRecovery = async () => { throw new Error("unknown installed outcome"); };
+  await assert.rejects(f.service.continue(f.operationId, options), /unknown installed/u);
+  assert.deepEqual(f.store.snapshot(f.operationId).operation, before.operation);
+  f.service.withPublicationRecovery = async ({ commit }) => commit({ kind: "fixture-positive" }, async () => {
+    const receipt = f.store.latestStep(f.operationId, 1, "publish:runtime");
+    f.store.finishStep(receipt, { status: "unknown", effect: { status: "unknown" } });
+  });
+  await assert.rejects(f.service.continue(f.operationId, options), /capture changed/u);
+  assert.equal(f.store.get(f.operationId).state, "failed");
+  assert.equal(f.scheduled.length, 0);
+});
+
+async function publicPartialPublicationFixture(t, overrides = {}) {
+  const f = await partialPublicationFixture(t, overrides), before = f.store.snapshot(f.operationId);
+  const catalogRoot = await mkdtemp(path.join(os.tmpdir(), "partial-publication-catalog-"));
+  const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(catalogRoot, "catalog.sqlite") });
+  await catalog.load();
+  const boardStore = new TaskBoardStore({ databaseFile: path.join(catalogRoot, "catalog.sqlite") });
+  t.after(async () => { boardStore.close(); catalog.close(); await rm(catalogRoot, { recursive: true, force: true }); });
+  catalog.createWorkspace({ id: "workspace-1", name: "Generic publication workspace" });
+  const releaseManager = catalog.createStream({ workspaceId: "workspace-1", name: "RM", settings: { releaseManager: true } });
+  const other = catalog.createStream({ workspaceId: "workspace-1", name: "other RM", settings: { releaseManager: true } });
+  catalog.bindThread({ provider: "codex", threadId: "rm-thread", streamId: releaseManager.id });
+  catalog.bindThread({ provider: "codex", threadId: "other-thread", streamId: other.id });
+  const hub = new HubMcpService({ workspaceCatalog: catalog,
+    taskBoard: new TaskBoardService({ store: boardStore, workspaceCatalog: catalog }), taskLifecycle: {},
+    workLog: { threadTurns: () => [] }, attachmentDirectory: path.join(f.root, "attachments"), secret: "synthetic-partial-publish",
+    releasePreflight: { preflight: () => assert.fail("no new preparation") },
+    releaseCompleter: { completeRelease: () => assert.fail("no legacy completion") },
+    releaseOperations: f.service, reconcilePendingOnStartup: false });
+  const args = { context_token: hub.contextToken({ provider: "codex", threadId: "rm-thread" }),
+    operation_id: f.operationId, request_id: "same-public-partial", expected_revision: before.operation.revision, expected_generation: 1 };
+  return { ...f, before, catalog, hub, args, releaseManager };
+}
+
+test("public partial publication lost ACK reconciles only its durable SAME admission and actor", async t => {
+  const { before, catalog, hub, args, releaseManager, ...f } = await publicPartialPublicationFixture(t);
+  const complete = catalog.completeMcpOperation.bind(catalog);
+  catalog.completeMcpOperation = () => { throw Error("controlled lost durable reply"); };
+  await assert.rejects(hub.call("hub_release_continue", args), /receipt reconciliation is required/u);
+  assert.equal(catalog.mcpOperation(args.request_id).status, "unknown");
+  const admitted = f.store.get(f.operationId).publicationRecoveries[0];
+  assert.equal(admitted.requestId, args.request_id);
+  catalog.completeMcpOperation = complete;
+  await assert.rejects(hub.call("hub_release_continue", { ...args, expected_revision: 1 }), /another operation/u);
+  await assert.rejects(hub.call("hub_release_continue", { ...args,
+    context_token: hub.contextToken({ provider: "codex", threadId: "other-thread" }) }), /another operation/u);
+  const reconciled = await hub.call("hub_release_continue", args);
+  assert.equal(reconciled.recovery, admitted.identitySha256);
+  assert.equal(reconciled.operatorReconciliation.kind, "failed-publication-admission-readback-v1");
+  assert.equal(catalog.mcpOperation(args.request_id).status, "succeeded");
+  assert.deepEqual(await hub.call("hub_release_continue", args), reconciled);
+  assert.equal(f.scheduled.length, 1);
+  const unknown = { ...args, request_id: "unadmitted-partial" };
+  catalog.beginMcpOperation({ requestId: unknown.request_id, workspaceId: "workspace-1", streamId: releaseManager.id,
+    provider: "codex", threadId: "rm-thread", toolName: "hub_release_continue", argumentsHash: mcpArgumentsHash(unknown) });
+  catalog.markMcpOperationUnknown(unknown.request_id, Error("unknown before owner admission"));
+  await assert.rejects(hub.call("hub_release_continue", unknown), /durable publication recovery admission/u);
+  assert.equal(catalog.mcpOperation(unknown.request_id).status, "unknown");
+  assert.equal(f.store.get(f.operationId).publicationRecoveries.length, 1);
+  assert.deepEqual(f.store.snapshot(f.operationId).receipts, before.receipts);
+});
+
+test("same UNKNOWN publication request waits for owning Ready before one uncaptured recovery admission", async t => {
+  let ready = false, inspections = 0;
+  const { before, catalog, hub, args, ...f } = await publicPartialPublicationFixture(t, {
+    withPublicationRecovery: async ({ commit }) => {
+      inspections++;
+      if (!ready) throw Error("public-installer-readiness");
+      return commit({ kind: "fixture-positive-installed-owner" }, async () => assert.equal(ready, true));
+    },
+  });
+  await assert.rejects(hub.call("hub_release_continue", args), /public-installer-readiness/u);
+  const unknown = catalog.mcpOperation(args.request_id);
+  assert.equal(unknown.status, "unknown");
+  assert.deepEqual(f.store.snapshot(f.operationId), before);
+  await assert.rejects(hub.call("hub_release_continue", args), /public-installer-readiness/u);
+  assert.deepEqual(f.store.snapshot(f.operationId), before);
+  assert.deepEqual(catalog.mcpOperation(args.request_id), unknown);
+  const refused = inspections;
+  await assert.rejects(hub.call("hub_release_continue", { ...args, expected_revision: 1 }), /another operation/u);
+  await assert.rejects(hub.call("hub_release_continue", { ...args,
+    context_token: hub.contextToken({ provider: "codex", threadId: "other-thread" }) }), /another operation/u);
+  await assert.rejects(hub.call("hub_release_continue", { ...args, test_selection: { mode: "none", ids: [] } }), /another operation/u);
+  assert.equal(inspections, refused);
+  ready = true;
+  const complete = catalog.completeUnknownMcpOperation.bind(catalog);
+  catalog.completeUnknownMcpOperation = () => { throw Error("controlled lost recovery admission reply"); };
+  await assert.rejects(hub.call("hub_release_continue", args), /receipt reconciliation is required/u);
+  assert.equal(catalog.mcpOperation(args.request_id).status, "unknown");
+  const admitted = f.store.get(f.operationId).publicationRecoveries;
+  assert.equal(admitted.length, 1);
+  assert.deepEqual(admitted[0].admission, { kind: "uncaptured-publication-recovery-v1",
+    priorRevision: args.expected_revision, generation: 1, recoveriesSha256: releaseIdentitySha256([]) });
+  catalog.completeUnknownMcpOperation = complete;
+  const result = await hub.call("hub_release_continue", args);
+  assert.equal(result.recovery, admitted[0].identitySha256);
+  assert.equal(result.operatorReconciliation.kind, "failed-publication-admission-readback-v1");
+  assert.deepEqual(result.operatorReconciliation.priorReceipt, {
+    status: unknown.status, error: unknown.error, createdAtMs: unknown.createdAtMs, completedAtMs: unknown.completedAtMs });
+  assert.equal(catalog.mcpOperation(args.request_id).argumentsHash, unknown.argumentsHash);
+  assert.equal(catalog.mcpOperation(args.request_id).status, "succeeded");
+  assert.deepEqual(await hub.call("hub_release_continue", args), result);
+  assert.equal(f.store.get(f.operationId).publicationRecoveries.length, 1);
+  assert.deepEqual(f.store.snapshot(f.operationId).generations, before.generations);
+  assert.deepEqual(f.store.snapshot(f.operationId).receipts, before.receipts);
+  assert.deepEqual(f.store.get(f.operationId).publicationEffects, before.operation.publicationEffects);
+  assert.equal(f.scheduled.length, 1);
+});
+
+test("uncaptured publication recovery requires exact canonical absence evidence inside CAS", async t => {
+  const f = await partialPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  const admission = { kind: "uncaptured-publication-recovery-v1", priorRevision: before.operation.revision,
+    generation: 1, recoveriesSha256: releaseIdentitySha256([]) };
+  for (const changed of [{ kind: "foreign" }, { priorRevision: admission.priorRevision - 1 },
+    { generation: 2 }, { recoveriesSha256: "0".repeat(64) }]) {
+    const contents = { requestId: "foreign-admission", operationId: f.operationId,
+      priorRevision: before.operation.revision, generation: 1,
+      authorizationFingerprint: before.operation.authorization.fingerprint,
+      boundary: failedPublicationRecovery(before), evidence: { kind: "fixture-positive-installed-owner" },
+      admission: { ...admission, ...changed } };
+    const recovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+    assert.throws(() => f.store.transition(f.operationId, { state: "publish", lastError: null }, {
+      expectedRevision: before.operation.revision, publicationRecovery: recovery }), /positively uncaptured/u);
+    assert.deepEqual(f.store.snapshot(f.operationId), before);
+  }
+  assert.equal(f.scheduled.length, 0);
+});
 
 test("published dev sync refuses every amendment family before owner acquisition", async t => {
   const f = await fixture(t, { schedule: () => assert.fail("no scheduling") });

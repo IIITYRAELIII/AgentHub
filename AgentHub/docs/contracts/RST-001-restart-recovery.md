@@ -11,7 +11,41 @@ The existing native continuation must survive retirement of the initiating
 Node/provider Job, then prove that entire old cohort closed before backup,
 installation and one replacement launch. The same original's settlement, exact
 Ready and retained conversation/configuration/data establish completion. The
-protocol-v1 legacy manual bootstrap keeps its external-operator boundary.
+non-protocol legacy manual bootstrap keeps its external-operator boundary.
+
+### Bounded owned retirement and incoming continuation (ADR-HUB-429)
+
+Before the initiating turn yields, the incoming verified public package binds
+one independent native continuation to the SAME maintenance original. Its
+manifest, Host, entry, request and original binding are immutable. The old
+protocol1 controller retains ordinary final response/drain and its old native
+attempt. Incoming admission neither replaces that executor nor holds the root
+gate while waiting for it. Kernel handle/birth or positive process absence
+proves old native closure before a separate recovery intent is admitted under
+the existing root gate. The prior row, native attempt and input remain intact.
+Only a positively closed pre-backup attempt qualifies. Installing, launching,
+foreign or unproved effects retain reconciliation and never replay.
+If the ordinary controller settles the same immutable original during incoming
+admission, intake returns that canonical terminal without a yield instruction.
+An unchanged original binding is required before resolving a bridge error this way.
+
+The native owner captures the exact old Host Job and process handles before
+retirement and proves itself outside every Job. After a bounded graceful period
+it may durably authorize forced termination of that exact held Job, then joins
+its writers. A complete Job PID list and signalled process handles establish
+retirement. ActiveProcesses alone and elapsed time do not. Unknown membership
+or foreign/live reused identities refuse. Other installations and processes
+outside that held Job remain outside the termination authority. Historical
+work and UNKNOWN effects are retained across forced closure.
+
+Host manifest verification/admission and Node Ready have separate bounded
+observation phases. Exact Host admission starts the Ready budget. A timeout
+retains UNKNOWN and one launch intent; later startup may settle the SAME
+original. Definitive joined installer failure retains the failed update and
+uses the existing verified previous-current recovery path. It grants no
+second install, data replay or rollback on an ambiguous installer outcome.
+Remove the incoming protocol1 compatibility route when all supported installed
+sources can admit an incoming executor before their ordinary controller arm.
 
 ## Explicit package next attempt (ADR-HUB-398)
 
@@ -696,8 +730,8 @@ See ADR-HUB-396-desktop-package-input.
 Package-only closure drains and closes normally preserved resources and
 finalizes all writer stores BEFORE instance release. A native continuation
 holds original process/Job handles and the root gate; old lock release alone is
-never retirement. After original exits, owned Process references are disposed
-before observing same-Job ActiveProcesses zero. Every backup/install/launch
+never retirement. Complete membership and signalled retained process handles
+prove that no writer remains, independently of ActiveProcesses accounting. Every backup/install/launch
 boundary obtains a fresh reply from that holding native parent. Unknown,
 foreign or changed evidence refuses without killing or replaying work.
 
