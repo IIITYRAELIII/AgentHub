@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1196,7 +1197,7 @@ test("release preflight rejects stale external production validation evidence", 
 });
 
 async function realExternalValidationFixture(t, {
-  afterValidation = null, beforePromotion = null, squash = false, reviewedMain = false,
+  afterValidation = null, beforePromotion = null, squash = false, reviewedMain = false, releaseNotes = false,
 } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-preflight-real-adapter-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -1208,6 +1209,12 @@ async function realExternalValidationFixture(t, {
   await git(primary, "config", "core.autocrlf", "false");
   await mkdir(path.join(primary, "AgentHub"), { recursive: true });
   await writeFile(path.join(primary, "AgentHub", "package.json"), "{}\n", "utf8");
+  if (releaseNotes) {
+    const metadata = { name: "agent-hub", version: "1.0.0" };
+    await writeFile(path.join(primary, "AgentHub/package.json"), JSON.stringify(metadata));
+    await writeFile(path.join(primary, "AgentHub/package-lock.json"), JSON.stringify({ ...metadata, packages: { "": metadata } }));
+    await writeFile(path.join(primary, "CHANGELOG.md"), "# Published history\n\nPrevious release\n");
+  }
   await writeFile(path.join(primary, "app.txt"), "base\n", "utf8");
   const base = await commit(primary, "base");
   await git(primary, "push", "-u", "origin", "main");
@@ -1368,9 +1375,111 @@ async function realExternalValidationFixture(t, {
   } else await service.prepareAwaitSet({ workspaceId: "workspace-1" });
   return {
     root, primary, dataDir, base, reviewedMainCommit, resultCommit, squashTransfer,
-    integrationEvidence, releaseGitWorkspaces, service,
+    integrationEvidence, releaseGitWorkspaces, service, plan,
   };
 }
+
+function preparedNotesAdapter(f) {
+  return new WorkspaceReleaseOperationAdapter({ releasePreflight: f.service,
+    publication: { publish: () => assert.fail("no publication"), readback: () => assert.fail("no publication readback") },
+    finalization: { finalize: () => assert.fail("no finalization") } });
+}
+
+function notesMetadata(sourcePath, bytes) {
+  const digest = value => createHash("sha256").update(value).digest("hex");
+  return { sourcePath, byteLength: bytes.length, rawSha256: digest(bytes),
+    canonicalSha256: digest(bytes.toString("utf8").replace(/\r\n/gu, "\n")) };
+}
+
+async function preparedNotesFixture(t) {
+  const f = await realExternalValidationFixture(t, { releaseNotes: true });
+  const prepared = await f.releaseGitWorkspaces.frozenCandidate(f.primary);
+  const history = await readFile(path.join(prepared.releaseRoot, "CHANGELOG.md"));
+  const notes = Buffer.concat([Buffer.from("# Consolidated selected release\r\n\r\n"), history]);
+  const file = path.join(prepared.releaseRoot, "CHANGELOG.md");
+  await writeFile(file, notes);
+  const operation = { operationId: "prepared-notes-original", workspaceId: "workspace-1", selectedResults: [],
+    authorization: { taskIds: ["task-real"], approvedTargets: [], fingerprint: "original",
+      releaseMetadata: notesMetadata(file, notes) } };
+  return { ...f, prepared, history, notes, file, operation, adapter: preparedNotesAdapter(f) };
+}
+
+test("verified dirty prepared notes traverse the real adapter preflight capture and freeze", async t => {
+  const f = await preparedNotesFixture(t);
+  const checkpoint = await readFile(f.prepared.checkpointFile);
+  const manifest = await readFile(f.prepared.manifestFile);
+  const original = structuredClone(f.operation);
+  const composed = await f.adapter.compose({ operation: f.operation, generation: 1 });
+  assert.equal(composed.candidates.length, 1);
+  const captured = composed.candidates[0];
+  assert.equal(JSON.parse(await readFile(path.join(captured.releaseRoot, "..", "checkpoint.json"), "utf8")).phase, "frozen");
+  assert.equal(await git(captured.releaseRoot, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(captured.manifest.preparedCandidate.commit, f.prepared.preReleaseHead);
+  assert.equal(captured.manifest.preparedCandidate.tree, f.prepared.tree);
+  assert.deepEqual(captured.manifest.tasks, f.prepared.manifest.tasks);
+  assert.deepEqual(await readFile(path.join(captured.releaseRoot, "CHANGELOG.md")), f.notes);
+  assert.ok(f.notes.subarray(-f.history.length).equals(f.history));
+  assert.equal(await git(captured.releaseRoot, "status", "--porcelain=v1"), "");
+  assert.equal(await git(f.prepared.releaseRoot, "rev-parse", "HEAD"), f.prepared.preReleaseHead);
+  assert.deepEqual(await readFile(f.prepared.checkpointFile), checkpoint);
+  assert.deepEqual(await readFile(f.prepared.manifestFile), manifest);
+  assert.deepEqual(await readFile(f.file), f.notes);
+  assert.deepEqual(f.operation, original, "capture cannot replace original authorization or receipt identity");
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
+  assert.equal(await git(f.primary, "status", "--porcelain=v1"), "");
+});
+
+test("prepared notes retain exact metadata source selection and strict default guards", async t => {
+  const f = await preparedNotesFixture(t);
+  const checkpoint = await readFile(f.prepared.checkpointFile);
+  const compose = operation => f.adapter.compose({ operation, generation: 1 });
+  for (const field of ["rawSha256", "canonicalSha256", "byteLength"]) {
+    const changed = structuredClone(f.operation);
+    changed.authorization.releaseMetadata[field] = field === "byteLength" ? f.notes.length + 1 : "0".repeat(64);
+    await assert.rejects(compose(changed), /metadata artifact identity changed/u);
+  }
+  const missing = structuredClone(f.operation);
+  delete missing.authorization.releaseMetadata;
+  await assert.rejects(compose(missing), /exact clean PreRelease/u);
+  await assert.rejects(f.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: f.plan.revision }), /exact clean PreRelease/u);
+  const foreign = path.join(f.root, "foreign-notes.md"), other = Buffer.from("foreign notes\n");
+  await writeFile(foreign, other);
+  const changed = structuredClone(f.operation);
+  changed.authorization.releaseMetadata = notesMetadata(foreign, other);
+  await assert.rejects(compose(changed), /exact clean PreRelease/u);
+  // Valid retained artifact identity cannot authorize different physical source bytes.
+  await writeFile(foreign, f.notes);
+  changed.authorization.releaseMetadata = notesMetadata(foreign, f.notes);
+  await writeFile(f.file, other);
+  await assert.rejects(compose(changed), /exact clean PreRelease/u);
+  await writeFile(f.file, f.notes);
+  const extra = path.join(f.prepared.releaseRoot, "unbound.txt");
+  await writeFile(extra, "unbound\n");
+  await assert.rejects(compose(f.operation), /exact clean PreRelease/u);
+  await rm(extra);
+  await rm(f.file);
+  // Windows junctions exercise the same non-following regular-file boundary
+  // without requiring the machine's optional file-symlink privilege.
+  await symlink(process.platform === "win32" ? f.root : foreign, f.file,
+    process.platform === "win32" ? "junction" : "file");
+  await assert.rejects(compose(changed), /exact clean PreRelease/u);
+  await rm(f.file);
+  await writeFile(f.file, f.notes);
+  await git(f.prepared.releaseRoot, "checkout", "--detach", f.prepared.preReleaseHead);
+  await assert.rejects(compose(f.operation), /exact clean PreRelease/u);
+  await git(f.prepared.releaseRoot, "checkout", "PreRelease");
+  await git(f.prepared.releaseRoot, "update-ref", "refs/heads/PreRelease", f.base);
+  await assert.rejects(compose(f.operation), /prepared head/u);
+  await git(f.prepared.releaseRoot, "update-ref", "refs/heads/PreRelease", f.prepared.preReleaseHead);
+  const task = f.plan.ready[0];
+  f.plan.ready[0] = { ...task, resultCommit: f.base };
+  await assert.rejects(compose(f.operation), /accepted release plan/u);
+  f.plan.ready[0] = task;
+  assert.deepEqual(await readFile(f.prepared.checkpointFile), checkpoint);
+  assert.deepEqual(await readFile(f.file), f.notes);
+  assert.equal(await git(f.prepared.releaseRoot, "rev-parse", "HEAD"), f.prepared.preReleaseHead);
+  assert.equal(await git(f.primary, "status", "--porcelain=v1"), "");
+});
 
 test("explicit reviewed-main prepare and preflight retain upstream content and exact authority", async (t) => {
   const {

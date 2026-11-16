@@ -487,13 +487,13 @@ export class WorkspaceReleasePreflightService {
     }
     const plan = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId, taskIds == null ? {} : { selectedTaskIds: taskIds }));
     for (const repository of readyRepositories(plan.ready)) {
-      if (!await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot, { allowAbsent: true })) {
+      if (!await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot, { allowAbsent: true, changelogContent })) {
         throw Object.assign(new Error("No ready PreRelease exists; complete ordinary Await preparation"),
           { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
       }
     }
     const prepared = await this.#preflightLocked({ workspaceId, expectedPlanRevision: plan.revision,
-      approvedRepositories, verifyOnly: true });
+      approvedRepositories, verifyOnly: true, changelogContent });
     if (prepared.status !== "ready") throw Object.assign(new Error("Prepared PreRelease requires current main approval"),
       { code: "RELEASE_MAIN_APPROVAL_STALE" });
     const publication = taskGitIdentityHash(await this.measureOperation("release:publication", async () => this.readPublicationState()));
@@ -506,7 +506,7 @@ export class WorkspaceReleasePreflightService {
           { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
       }
       for (const repository of prepared.repositories) {
-        const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+        const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot, { changelogContent });
         if (!sameFrozenCandidateIdentity(candidate, repository.frozenCandidate)
             || candidate.checkpointPhase !== "prepared") throw Object.assign(new Error("Prepared PreRelease changed during capture"),
           { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
@@ -1146,6 +1146,7 @@ export class WorkspaceReleasePreflightService {
   async #preflightLocked({
     workspaceId, expectedPlanRevision, conflictsResolved,
     approvedLocalMainCommit, approvedOriginMainCommit, approvedRepositories, requestId, verifyOnly = false,
+    changelogContent = undefined,
   }) {
     const plan = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId));
     const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
@@ -1200,7 +1201,7 @@ export class WorkspaceReleasePreflightService {
     const releaseCandidates = [];
     const repositories = [];
     for (const repository of selectedRepositories) {
-      const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+      const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot, { changelogContent });
       const authority = mainAuthorities.find((entry) => (
         canonicalRoot(entry.repository.projectRoot) === canonicalRoot(repository.projectRoot)
       ));
@@ -1338,7 +1339,7 @@ export class WorkspaceReleasePreflightService {
           || afterPrimary.dirtyFingerprint !== beforePrimary.dirtyFingerprint) {
         throw new Error(`primary Workspace changed during release preflight for ${repository.projectRoot}`);
       }
-      const afterCandidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+      const afterCandidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot, { changelogContent });
       if (!sameFrozenCandidateIdentity(afterCandidate, repository.frozenCandidate)
           || afterCandidate.checkpointPhase !== repository.frozenCandidate.checkpointPhase
           || String(afterCandidate.manifest?.workspaceId ?? "") !== String(workspaceId)) {
