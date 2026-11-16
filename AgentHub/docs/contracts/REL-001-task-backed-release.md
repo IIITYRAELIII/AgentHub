@@ -1,5 +1,14 @@
 # REL-001 — Task-backed Workspace release
 
+## Exact retained insertion (ADR-HUB-460)
+
+The existing literal replay proof may also verify one pure insertion independently
+of Git's ambiguous hunk alignment. For unchanged regular-file mode and nonbinary
+UTF-8 bytes, the exact inserted block must already occur in the candidate and its
+reinsertion must reproduce the entire replay byte for byte. No removal,
+replacement, semantic or cyclic equivalence gains this credit. Native graph,
+selection, identity, replay boundaries and the other content proofs remain intact.
+
 ## Resolved content after later automatic edits (ADR-HUB-456)
 
 An exact captured ordinary native composition may re-prove an earlier owned
