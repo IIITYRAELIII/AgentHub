@@ -8,6 +8,10 @@ import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { promisify } from "node:util";
 import { performance } from "node:perf_hooks";
+import { createHash } from "node:crypto";
+import { HubMcpServer } from "../../src/interfaces/mcp/hub-mcp-server.mjs";
+import { readReleaseToolPackage } from "../../src/infrastructure/process/release-tool-package.mjs";
+import { resolveTestSelection } from "../../src/domain/test-selection.mjs";
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
@@ -18,6 +22,10 @@ import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspac
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { createReleaseOperationServices } from "../../src/composition/release-operation-composition.mjs";
+import { measureTaskOperation } from "../../src/infrastructure/process/task-operation-timing.mjs";
+import { createTaskOperationTimingLogRecorder } from "../../src/infrastructure/persistence/task-operation-timing-log.mjs";
 import * as releaseDomain from "../../src/domain/release-operation.mjs";
 const { createReleaseOperation, restoreReleaseOperation, effectiveReleaseTaskScope } = releaseDomain;
 
@@ -48,7 +56,7 @@ async function observeNativeGit(counts, run) {
 // Git, SQLite, catalog intake, public MCP and the actual prepared/freeze owner
 // are real. Only prior Task acceptance evidence and external validation/effects
 // are controlled ports. No publication or full pipeline is invoked.
-async function fixture(t, { conflicting = false } = {}) {
+async function fixture(t, { conflicting = false, timing = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "prepared-release-"));
   const primary = path.join(root, "primary"), origin = path.join(root, "origin.git");
   await mkdir(primary); await git(primary, "init", "--initial-branch=main");
@@ -91,6 +99,11 @@ async function fixture(t, { conflicting = false } = {}) {
   const planner = new TaskReleasePlanService({ taskBoard: board, taskGitWorkspaces: taskGit });
   const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
   const releaseGit = new ReleaseGitWorkspaceService({ dataDir, environment });
+  const timingFile = path.join(root, "timing.log");
+  const recordTiming = createTaskOperationTimingLogRecorder({ logFile: timingFile,
+    maxBytes: 2 * 1024 * 1024, maxFiles: 2, maxDelayMs: 10 });
+  const traceOwner = new TaskGitWorkspaceService({ dataDir, recordTiming });
+  if (timing) taskGit.withOperationTrace = traceOwner.withOperationTrace.bind(traceOwner);
   let prepareCalls = 0, freezeCalls = 0;
   const originalPrepare = releaseGit.prepareCandidate.bind(releaseGit);
   releaseGit.prepareCandidate = async args => { prepareCalls++; return originalPrepare(args); };
@@ -102,7 +115,7 @@ async function fixture(t, { conflicting = false } = {}) {
     releaseGitWorkspaces: releaseGit, readPublicationState: async () => publication,
     resolveReleaseValidationSource: () => ({ kind: "workspace-release-pipeline", projectRoot: primary }),
     validateProductionCandidate: () => assert.fail("No full validation in prepared capture"),
-    measureOperation: async (stage, run) => { const begin = performance.now(); try { return await run(); } finally { spans.push({ stage, durationMs: performance.now() - begin }); } },
+    measureOperation: timing ? measureTaskOperation : async (stage, run) => { const begin = performance.now(); try { return await run(); } finally { spans.push({ stage, durationMs: performance.now() - begin }); } },
   });
   const prepare = async () => {
     const plan = await planner.plan(workspace.id);
@@ -125,15 +138,30 @@ async function fixture(t, { conflicting = false } = {}) {
   const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight: preflight,
     publication: { publish: never, readback: async () => ({ status: "not_applied", fixture: true }) }, finalization: { finalize: never } });
   const scheduled = [];
-  const operations = new ReleaseOperationService({ store: operationStore, schedule: fn => scheduled.push(fn),
+  const operations = timing ? createReleaseOperationServices({ dataDir, runtimeRoot: root,
+    releasePreflight: preflight, taskBoard: board, workspaceCatalog: catalog,
+    taskGitWorkspaces: taskGit, releaseGitWorkspaces: releaseGit, store: operationStore,
+    taskLifecycle: { setReleaseOperationWake() {}, setReleaseOperationPrepare() {} },
+    publication: { publish: never, readback: async () => ({ status: "not_applied", fixture: true }),
+      loadAuthorizationPolicy: async () => () => ({ recipe: undefined }),
+      resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot,
+        plan: resolveTestSelection(selection, []) })) },
+    finalization: { finalize: never }, observeOperation() {},
+  }).operations : new ReleaseOperationService({ store: operationStore, schedule: fn => scheduled.push(fn),
     processAlive: pid => pid === process.pid, compose: input => adapter.compose(input),
     validate: async () => { validationCalls++; throw Object.assign(new Error("controlled affected validation failure"), { code: "RELEASE_VALIDATION_FAILED" }); },
     publishTarget: never, readTarget: async () => ({ status: "not_applied", fixture: true }), finalize: never,
     reservePublication: input => adapter.reservePublication(input), withTaskSelection: input => adapter.withTaskSelection(input),
+    inspectFirstCompose: input => adapter.inspectFirstCompose(input), recoverFirstCompose: input => adapter.recoverFirstCompose(input),
   });
+  if (timing) {
+    operations.scheduleTask = fn => scheduled.push(fn);
+    operations.validate = async () => { throw Object.assign(new Error("controlled affected validation failure"), { code: "RELEASE_VALIDATION_FAILED" }); };
+  }
   const mcp = new HubMcpService({ workspaceCatalog: catalog, taskBoard: board, releasePreflight: preflight,
     releaseOperations: operations, workLog: { threadTurns: () => [] }, attachmentDirectory: path.join(root, "attachments"),
     secret: "private-synthetic-prepared-fixture", reconcilePendingOnStartup: false,
+    ...(timing ? { taskLifecycle: {}, taskGitWorkspaces: taskGit, measureOperation: measureTaskOperation } : {}),
     releaseCompleter: { completeRelease: never } });
   const context_token = mcp.contextToken({ provider: "codex", threadId: "prepared-fixture" });
   let nextRequest = 0;
@@ -151,9 +179,10 @@ async function fixture(t, { conflicting = false } = {}) {
     if (scheduled.length) scheduled.shift()();
     return operations.drain(operationId);
   };
-  const runLegacy = async () => {
-    const ack = operations.start({ requestId: `legacy-public-${++nextRequest}`, workspaceId: workspace.id,
+  const runLegacy = async (testSelection = null) => {
+    const ack = await operations.start({ requestId: `legacy-public-${++nextRequest}`, workspaceId: workspace.id,
       streamId: stream.id, threadId: "prepared-fixture", authorization: { taskIds: [a.id, b.id].sort(), validationMode: "full",
+        ...(testSelection ? { testSelection } : {}),
         approvedTargets: [{ targetId: "private-target", kind: "agent-hub-publication", repositoryRoot: primary,
           approvedLocalMainCommit: base, approvedOriginMainCommit: base }] } });
     admitted.push(ack.operationId); scheduled.shift()();
@@ -167,8 +196,195 @@ async function fixture(t, { conflicting = false } = {}) {
   });
   return { root, primary, base, a, b, draft, add, prepare, run, runLegacy, continueOriginal, planner, taskStore, board, results,
     releaseGit, preflight, operations, operationStore, mcp, context_token, workspace, adapter, spans, scheduled,
-    counters: () => ({ prepareCalls, freezeCalls, validationCalls }) };
+    catalog, timingFile, stream, counters: () => ({ prepareCalls, freezeCalls, validationCalls }) };
 }
+
+const deferredTiming = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+async function readTiming(file) {
+  return (await readFile(file, "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; }))
+    .split("\n").filter(Boolean).map(line => JSON.parse(line.split("[task-operation-timing] ")[1]));
+}
+
+test("continuation timing follows public amendment, real lock wait, first recovery and inventory", async t => {
+  const f = await fixture(t, { timing: true });
+  await f.prepare();
+  const ordinaryCompose = f.operations.compose;
+  const originalError = new Error("controlled original before capture");
+  f.operations.compose = async () => { throw originalError; };
+  const { ack, snapshot: before } = await f.runLegacy();
+  f.operations.compose = ordinaryCompose;
+  assert.equal(before.operation.currentGeneration, 0);
+  assert.equal(before.operation.state, "failed");
+  const args = { context_token: f.context_token, request_id: "timed-original-amendment", operation_id: ack.operationId,
+    expected_revision: before.operation.revision, expected_generation: 0, task_scope: "all_await",
+    task_ids: [f.a.id, f.b.id].sort(), test_selection: { mode: "none", ids: [] } };
+  const entered = deferredTiming(), release = deferredTiming();
+  const held = f.releaseGit.withAwaitTransition(f.workspace.id, async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  const pending = f.mcp.call("hub_release_continue", args);
+  const observed = pending.catch(() => {});
+  let waitingFailure;
+  try {
+    // A held real lease makes the start observable before any business result.
+    await new Promise(done => setTimeout(done, 100));
+    const waiting = await readTiming(f.timingFile);
+    assert.ok(waiting.some(x => x.operationId === args.request_id && x.stage === "workflow" && x.phase === "start"));
+    assert.ok(waiting.some(x => x.operationId === args.request_id && x.stage === "release:await-boundary" && x.phase === "start"));
+    assert.ok(!waiting.some(x => x.operationId === args.request_id && x.stage === "release:await-acquired"));
+  } catch (error) { waitingFailure = error; }
+  finally { release.resolve(); await held; }
+  const admitted = await pending; await observed;
+  assert.equal(admitted.accepted, true);
+  f.scheduled.shift()();
+  const after = await f.operations.drain(ack.operationId);
+  if (waitingFailure) throw waitingFailure;
+  assert.equal(after.operation.currentGeneration, 1);
+  assert.equal(after.operation.waitReason.code, "validation_failed");
+  const events = (await readTiming(f.timingFile)).filter(x => x.operationId === args.request_id);
+  for (const stage of ["mcp:admission", "release:command-receipt", "release:amendment", "release:first-generation", "release:recovery", "release:resolve-test-plans"]) {
+    assert.ok(events.some(x => x.stage === stage && x.phase === "start"), stage);
+    assert.ok(events.some(x => x.stage === stage && x.phase === "end" && x.outcome === "ok"), stage);
+  }
+  assert.ok(events.some(x => x.stage === "release:await-acquired" && x.waitMs > 0));
+  for (const stage of ["release:await-owned", "release:generation-inspect", "release:generation-capture", "release:prepared-source-lock"]) {
+    assert.ok(events.some(x => x.stage === stage && x.phase === "end" && x.outcome === "ok"), stage);
+  }
+  assert.ok(events.every(x => x.releaseOperationId === ack.operationId && x.processId === process.pid));
+  assert.ok(events.some(x => x.generation === 1));
+  assert.ok(events.some(x => x.stage === "timing-sink-final"));
+  assert.ok(!JSON.stringify(events).includes(originalError.message));
+  assert.deepEqual(after.operation.authorization, before.operation.authorization);
+  assert.equal(f.catalog.mcpOperation(args.request_id).status, "succeeded");
+});
+
+test("failed public amendment flushes correlated timing and keeps failure and original generation", async t => {
+  const f = await fixture(t, { timing: true });
+  await f.prepare();
+  f.operations.compose = async () => { throw new Error("controlled before capture"); };
+  const { ack, snapshot: before } = await f.runLegacy();
+  const failure = new Error("PRIVATE_SOURCE_PAYLOAD");
+  f.releaseGit.firstFrozenGeneration = async () => { throw failure; };
+  const args = { context_token: f.context_token, request_id: "timed-failed-amendment", operation_id: ack.operationId,
+    expected_revision: before.operation.revision, expected_generation: 0, task_scope: "all_await",
+    task_ids: [f.a.id, f.b.id].sort(), test_selection: { mode: "none", ids: [] } };
+  await assert.rejects(f.mcp.call("hub_release_continue", args), error => error === failure);
+  const events = (await readTiming(f.timingFile)).filter(x => x.operationId === args.request_id);
+  assert.ok(events.some(x => x.stage === "release:first-generation" && x.phase === "end" && x.outcome === "error"));
+  assert.ok(events.some(x => x.stage === "workflow" && x.phase === "end" && x.outcome === "error"));
+  assert.equal(events.at(-1).stage, "timing-sink-final");
+  assert.ok(events.every(x => x.releaseOperationId === ack.operationId && x.processId === process.pid));
+  assert.ok(!JSON.stringify(events).includes(failure.message));
+  assert.equal(f.operations.get(ack.operationId).operation.currentGeneration, 0);
+  assert.equal(f.catalog.mcpOperation(args.request_id).status, "unknown");
+});
+
+test("ordinary prepared compose retains existing timing and records its real inventory work", async t => {
+  const f = await fixture(t, { timing: true });
+  await f.prepare();
+  const { ack, snapshot } = await f.runLegacy({ mode: "none", ids: [] });
+  assert.equal(snapshot.operation.currentGeneration, 1);
+  assert.equal(snapshot.operation.waitReason.code, "validation_failed");
+  const events = await readTiming(f.timingFile);
+  assert.ok(events.some(x => x.operationId === ack.operationId && x.stage === "workflow" && x.phase === "end" && x.outcome === "ok"));
+  assert.ok(events.some(x => x.releaseOperationId === ack.operationId && x.stage === "release:resolve-test-plans" && x.phase === "end"));
+});
+
+test("public HTTP admitted first recovery failure flushes timing without replacing the admitted command", async t => {
+  const f = await fixture(t, { timing: true });
+  await f.prepare();
+  f.operations.compose = async () => { throw new Error("controlled original before capture"); };
+  const { ack, snapshot: before } = await f.runLegacy();
+  const args = { context_token: f.context_token, request_id: "http-timed-recovery-failure", operation_id: ack.operationId,
+    expected_revision: before.operation.revision, expected_generation: 0, task_scope: "all_await",
+    task_ids: [f.a.id, f.b.id].sort(), test_selection: { mode: "none", ids: [] } };
+  const server = new HubMcpServer({ service: f.mcp, secret: "synthetic-timing-http", logger: { log() {}, error() {} } });
+  await server.start(); t.after(() => server.close());
+  const response = await fetch(server.url, { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call",
+      params: { name: "hub_release_continue", arguments: args } }) });
+  assert.equal(response.status, 200);
+  const reply = await response.json();
+  assert.equal(reply.result.structuredContent.accepted, true, JSON.stringify(reply));
+  assert.equal(f.catalog.mcpOperation(args.request_id).status, "succeeded");
+  // Only the existing capture port fails. The real recovery/preflight route and
+  // its retained prepared proof run, and no fixture publication is permitted.
+  const failure = new Error("PRIVATE_CAPTURE_PAYLOAD");
+  f.releaseGit.prepareGeneration = async () => { throw failure; };
+  f.scheduled.shift()();
+  const after = await f.operations.drain(ack.operationId);
+  assert.equal(after.operation.state, "failed");
+  assert.equal(after.operation.currentGeneration, 0);
+  assert.deepEqual(after.receipts.filter(x => x.attempt === 1), before.receipts);
+  assert.equal(f.catalog.mcpOperation(args.request_id).status, "succeeded");
+  const events = (await readTiming(f.timingFile)).filter(x => x.operationId === args.request_id);
+  assert.ok(events.some(x => x.stage === "release:recovery" && x.phase === "end" && x.outcome === "error"));
+  assert.ok(events.some(x => x.stage === "release:first-generation" && x.phase === "end" && x.outcome === "error"));
+  assert.ok(events.some(x => x.stage === "timing-sink-final" && x.releaseOperationId === ack.operationId));
+  assert.ok(!JSON.stringify(events).includes(failure.message));
+});
+
+test("generation-zero amendment captures real current whole prepared16 notes through public external022 without remerge", async t => {
+  const f = await fixture(t);
+  // This synthetic Git repository has no application test-suite entrypoint.
+  // Its explicit none plan is a validation port; real capture/HTTP/SQL stay real.
+  f.operations.resolveTestPlans = async (candidates, selection) => candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot,
+    plan: resolveTestSelection(selection, []) }));
+  for (let i = 2; i < 13; i++) await f.add(`Old${i}`);
+  const oldPrepared = await f.prepare();
+  const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+  const metadata = async (name, bytes) => {
+    const sourcePath = path.join(f.root,name); await writeFile(sourcePath,bytes);
+    return { sourcePath, byteLength:bytes.length, rawSha256:sha(bytes), canonicalSha256:sha(bytes) };
+  };
+  const originalNotes = await metadata('original13.md',Buffer.from('# original13\n'));
+  const originalCompose = f.operations.compose;
+  f.operations.compose = async () => { throw new Error('release checkpoint clone is not an exact clean PreRelease checkout for phase prepared'); };
+  const plan13 = await f.planner.plan(f.workspace.id);
+  const original = await f.mcp.call('hub_release_run',{ context_token:f.context_token,request_id:'first-real-original13',
+    task_scope:'all_await',task_ids:plan13.ready.map(x=>x.taskId).sort(),validation_mode:'full',release_metadata:originalNotes,
+    approved_targets:[{targetId:'agent-hub-github-release',kind:'agent-hub-publication',environment:'github-release',repositoryRoot:f.primary,
+      approvedLocalMainCommit:f.base,approvedOriginMainCommit:f.base}] });
+  f.scheduled.shift()(); const before = await f.operations.drain(original.operationId);
+  assert.equal(before.operation.currentGeneration,0); assert.equal(before.operation.state,'failed');
+  assert.equal(before.generations.length,0);
+  for (let i = 13; i < 16; i++) await f.add(`New${i}`);
+  const prepared = await f.prepare();
+  const notesBytes = Buffer.from('# current16\n\nVerified consolidated notes for the complete accepted set.\n');
+  const notes = await metadata('current16.md',notesBytes);
+  await writeFile(path.join(prepared.releaseRoot,'CHANGELOG.md'),notesBytes);
+  await assert.rejects(f.releaseGit.frozenCandidate(f.primary),/clean|PreRelease/);
+  const physical = await f.releaseGit.frozenCandidate(f.primary,{changelogContent:notesBytes});
+  const checkpointBefore = await readFile(physical.checkpointFile);
+  const primaryBefore = await git(f.primary,'status','--porcelain=v1','--untracked-files=all');
+  const plan16 = await f.planner.plan(f.workspace.id);
+  const args = { request_id:'amend-real-whole16',operation_id:original.operationId,
+    expected_revision:before.operation.revision,expected_generation:0,task_scope:'all_await',
+    task_ids:plan16.ready.map(x=>x.taskId).sort(),test_selection:{mode:'none',ids:[]},release_metadata:notes };
+  f.operations.compose = originalCompose;
+  const counters = f.counters();
+  const server = new HubMcpServer({service:f.mcp,secret:'real-first-amendment',logger:{log(){},error(){}}});
+  await server.start();t.after(()=>server.close());
+  const tool = await readReleaseToolPackage(); const {HubClient,executeRelease}=await tool.module('src/hub-client.mjs');
+  const client = new HubClient({url:server.url,contextToken:f.context_token});
+  const ack = await executeRelease(client,'continue',args,{wait:false});
+  assert.equal(ack.accepted,true,JSON.stringify(ack));
+  assert.equal(f.operationStore.get(original.operationId).currentGeneration,0,'admission cannot claim a physical freeze');
+  f.scheduled.shift()();const after = await f.operations.drain(original.operationId);
+  assert.equal(after.operation.currentGeneration,1,JSON.stringify(after.operation.lastError));
+  assert.equal(after.operation.waitReason.code,'validation_failed');
+  assert.equal(after.generations.length,1);
+  assert.equal(after.generations[0].selectedResults.length,16);
+  assert.deepEqual(after.operation.authorization,before.operation.authorization);
+  assert.deepEqual(after.receipts.find(x=>x.stepId==='compose'&&x.attempt===1),before.receipts[0]);
+  assert.equal(f.counters().prepareCalls,counters.prepareCalls,'only existing prepared candidate may be captured');
+  assert.deepEqual(await readFile(physical.checkpointFile),checkpointBefore,'shared prepared checkpoint is unchanged');
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot,'CHANGELOG.md')),notesBytes,'RM notes remain in prepared');
+  assert.equal(await git(f.primary,'status','--porcelain=v1','--untracked-files=all'),primaryBefore);
+  assert.deepEqual(await readFile(path.join(after.generations[0].candidates[0].releaseRoot,'CHANGELOG.md')),notesBytes);
+  assert.equal((await client.readReleaseOriginal(args)).originalCommand.status,'succeeded');
+  assert.equal(f.counters().validationCalls,1);
+  assert.notEqual(oldPrepared.preReleaseHead,prepared.preReleaseHead);
+});
 
 test("public release refuses a subset of an already prepared full Await composition", async t => {
   const f = await fixture(t);

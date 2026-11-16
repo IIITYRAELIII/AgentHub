@@ -835,7 +835,10 @@ export class ReleaseGitWorkspaceService {
     if (typeof operation !== "function") throw new TypeError("Await transition operation is required");
     const identity = sha256(String(workspaceId ?? "").trim()).slice(0, 24);
     const lock = path.join(this.dataDir, "locks", `release-await-${identity}`);
-    return withInterprocessLocks([lock], operation);
+    return measureTaskOperation("release:await-boundary", () => withInterprocessLocks([lock],
+      lease => measureTaskOperation("release:await-owned", () => operation(lease)), {
+        onAcquired: metadata => recordTaskOperationTiming("release:await-acquired", metadata),
+      }));
   }
 
   async inspectMainChanges({
@@ -1115,7 +1118,7 @@ export class ReleaseGitWorkspaceService {
     const layout = this.#layout(projectRoot);
     const stale = message => Object.assign(new Error(`${message}; prepare the current Await candidate through the normal owner`),
       { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-    return withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async () => {
+    return measureTaskOperation("release:prepared-source-lock", () => withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async () => {
       const source = await this.frozenCandidate(projectRoot, { changelogContent }).catch(error => { throw stale(error.message); });
       const manifest = JSON.parse(await readFile(source.manifestFile, "utf8"));
       try {
@@ -1174,7 +1177,7 @@ export class ReleaseGitWorkspaceService {
         withPreparationGitIsolation(this.dataDir, () => objects.withInputMath({ sourceRoot: source.releaseRoot,
           inputs: [source.baseCommit, source.preReleaseHead, ...tasks.map(task => task.resultCommit)] },
           ({ repository }) => verify(repository)), lease, objects));
-    });
+    }, { onAcquired: metadata => recordTaskOperationTiming("release:git-acquired", metadata) }));
   }
 
   async prepareGeneration({
@@ -1205,7 +1208,7 @@ export class ReleaseGitWorkspaceService {
     const generationKey = generationIdentitySha256.slice(0, 24);
     const generationDataDir = path.join(this.dataDir, "release-gens", generationKey);
     const lock = path.join(this.dataDir, "locks", `release-generation-${generationKey}`);
-    return withInterprocessLocks([lock], async () => {
+    return measureTaskOperation("release:generation-capture", () => withInterprocessLocks([lock], async () => {
       try {
         if (expectedAbsentGeneration) {
           const absent = await this.#uncapturedFirstGeneration(operation, sourceRoot);
@@ -1376,7 +1379,7 @@ export class ReleaseGitWorkspaceService {
         }
         throw error;
       }
-    });
+    }, { onAcquired: metadata => recordTaskOperationTiming("release:generation-acquired", metadata) }));
   }
 
   async discardGenerationCandidate(candidate) {
@@ -3549,8 +3552,11 @@ export class ReleaseGitWorkspaceService {
     const identity = await readJson(path.join(this.dataDir, "release-gens", key, "identity.json"));
     if (!identity?.preparedCandidate) {
       if (!options.allowUncaptured || !options.inspectOnly) throw new Error("First compose has no retained prepared generation");
-      return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${key}`)], async () =>
-        ({ binding: await this.#uncapturedFirstGeneration(operationId, sourceRoot), candidate: null }));
+      return measureTaskOperation("release:generation-inspect", () => withInterprocessLocks([
+        path.join(this.dataDir, "locks", `release-generation-${key}`)], async () =>
+        ({ binding: await this.#uncapturedFirstGeneration(operationId, sourceRoot), candidate: null }), {
+          onAcquired: metadata => recordTaskOperationTiming("release:generation-acquired", metadata),
+        }));
     }
     return withPreparationGitIsolation(this.dataDir, () => this.prepareGeneration({
       operationId, generation: 1, projectRoot: sourceRoot, firstComposeRecovery: options }));

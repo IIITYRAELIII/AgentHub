@@ -25,10 +25,18 @@ export function createReleaseOperationServices({
     return recordCommandTrace({ commandId: operationId, stage: "release-persistence", outcome,
       transport: "release-owner", monotonicDurationMs: elapsedMs, lockWaitMs: queueWaitMs, metadata });
   };
-  const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight, publication, finalization });
+  const measure = releasePreflight.measureOperation?.bind(releasePreflight) ?? ((_stage, run) => run());
+  const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight, publication, finalization, measureOperation: measure });
   const operations = new ReleaseOperationService({
-    resolveTestPlans: releaseTestPlans,
-    withTaskSelection: input => adapter.withTaskSelection(input),
+    resolveTestPlans: (candidates, selection, operation) => taskGitWorkspaces.withOperationTrace({
+      operationId: operation.testSelectionAmendments?.at(-1)?.requestId ?? operation.requestId ?? operation.operationId,
+      releaseOperationId: operation.operationId, generation: operation.currentGeneration + 1,
+      ownerEpoch: operation.owner?.epoch,
+    }, () => measure("release:resolve-test-plans", () => releaseTestPlans(candidates, selection, operation))),
+    withTaskSelection: input => taskGitWorkspaces.withOperationTrace({
+      operationId: input.requestId ?? input.operation.operationId, releaseOperationId: input.operation.operationId,
+      generation: input.operation.currentGeneration + 1,
+    }, () => measure("release:amendment", () => adapter.withTaskSelection(input))),
     store,
     compose: input => taskGitWorkspaces.withOperationTrace({
       operationId: input.operation.operationId, generation: input.generation,
@@ -44,7 +52,11 @@ export function createReleaseOperationServices({
     reservePublication: input => adapter.reservePublication(input),
     withReviewedMainRecovery: input => adapter.withReviewedMainRecovery(input),
     inspectFirstCompose: input => adapter.inspectFirstCompose(input),
-    recoverFirstCompose: input => adapter.recoverFirstCompose(input),
+    recoverFirstCompose: input => taskGitWorkspaces.withOperationTrace({
+      operationId: input.recovery.requestId ?? input.operation.requestId ?? input.operation.operationId,
+      releaseOperationId: input.operation.operationId,
+      generation: input.generation, ownerEpoch: input.operation.owner?.epoch,
+    }, () => measure("release:recovery", () => adapter.recoverFirstCompose(input))),
     withRetainedGeneration: input => taskGitWorkspaces.withOperationTrace({
       operationId: input.operation.operationId, generation: input.generation.generation,
     }, () => releasePreflight.measureOperation("release:retained-generation-recovery", () => adapter.withRetainedGeneration(input))),
