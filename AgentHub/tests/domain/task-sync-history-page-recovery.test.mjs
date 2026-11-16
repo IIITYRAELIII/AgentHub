@@ -5,7 +5,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
-import { mergeCachedTaskHistory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
+import { createDesktopTaskHistoryFactory, mergeCachedTaskHistory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
+import { mergeActiveTaskHistory, mergeCompletedTaskHistory } from "../../src/application/task-history.mjs";
 
 const task = { provider: "codex", threadId: "old-page-thread", title: "Old history" };
 
@@ -70,6 +71,8 @@ async function fixture(t, histories, terminals) {
         history: {
           id: runId, provider: reference.provider, threadId: reference.threadId,
           turnId, promptPreview: "Канонический вопрос", userMessages: users,
+          ...(terminal.rootClientUserMessageId ? { clientUserMessageId: terminal.rootClientUserMessageId } : {}),
+          ...(terminal.rootAttachments ? { messageAttachments: terminal.rootAttachments } : {}),
         },
         padding,
       });
@@ -82,8 +85,10 @@ async function fixture(t, histories, terminals) {
           clientUserMessageId: user.clientUserMessageId,
         };
         const result = invalid === "conflict" ? { ...exact, runId: "another-run" } : exact;
+        const attachments = terminal.attachmentsByCommand?.[user.clientUserMessageId];
         insertLedger.run(user.clientUserMessageId, JSON.stringify(exact),
-          JSON.stringify({ ...exact, result }), JSON.stringify(result));
+          JSON.stringify({ ...exact, result: { ...result,
+            ...(attachments ? { attachments } : {}) } }), JSON.stringify(result));
       }
     }
     // The requested turn is older than the bounded startup recovery window.
@@ -186,3 +191,137 @@ for (const invalid of ["missing", "conflict", "oversized"]) {
     assert.deepEqual(await f.store.readHistoryPage([task], { limit: 1 }), before);
   });
 }
+
+test("terminal recovery preserves accepted attachments and repairs the prior recovery version once", async (t) => {
+  const image = { id: "original-screen.png", name: "image.png", type: "image/png" };
+  const turns = [legacyTurn("intact"), { ...legacyTurn("previously-recovered", "01"),
+    userMessageAuthority: "terminal-ledger" }];
+  turns[0].messages[0] = { role: "user", clientUserMessageId: "intact-command", text: "Screenshot", attachments: [image] };
+  const f = await fixture(t, [[task, turns]], turns.map((turn) => ({
+    turnId: turn.id,
+    users: [{ role: "user", clientUserMessageId: `${turn.id}-command`, text: "Screenshot" }],
+    attachmentsByCommand: { [`${turn.id}-command`]: [image] },
+  })));
+  const first = await f.store.readHistoryPage([task], { limit: 2 });
+  for (const { turn } of first.items) {
+    assert.equal(turn.userMessageAuthority, "terminal-ledger");
+    assert.equal(turn.userMessageRecoveryVersion, 2);
+    assert.deepEqual(turn.messages.find((message) => message.role === "user").attachments, [image]);
+  }
+  const observer = new DatabaseSync(f.options.databaseFile, { readOnly: true });
+  try {
+    const beforeVersion = observer.prepare("PRAGMA data_version").get();
+    assert.deepEqual(await f.store.readHistoryPage([task], { limit: 2 }), first);
+    assert.deepEqual(observer.prepare("PRAGMA data_version").get(), beforeVersion);
+  } finally { observer.close(); }
+  await f.reopen();
+  assert.deepEqual(await f.store.readHistoryPage([task], { limit: 2 }), first);
+  await f.store.recordHistory(task, turns);
+  assert.deepEqual(await f.store.readHistoryPage([task], { limit: 2 }), first);
+  // A fresh Desktop owner has no receipt/cache fallback after reopening.
+  const desktopHistory = createDesktopTaskHistoryFactory({
+    selection: { activeProvider: () => task.provider, threadId: () => task.threadId, chatId: () => null },
+    catalog: { entries: () => [{ ...task, streamId: "attachment-stream" }] },
+    historyReader: { readPage: (references, options) => f.store.readHistoryPage(references, options) },
+    runs: { forTask: () => null },
+    historyMerger: { mergeActive: mergeActiveTaskHistory, mergeCompleted: mergeCompletedTaskHistory },
+    receipts: { forMessage: () => null, forTurn: () => [] },
+    responseBudget: { fit: (payload) => payload },
+    attachmentImporter: async () => { assert.fail("accepted attachments need no provider reimport"); },
+  });
+  const projected = await desktopHistory({ ...task, streamId: "attachment-stream", includeActive: false, limit: 2 });
+  for (const turn of projected.items) {
+    assert.deepEqual(turn.messages.find((message) => message.role === "user").attachments, [image]);
+  }
+});
+
+test("exact command receipts keep root, steer and external attachments separate", async (t) => {
+  const rootImage = { id: "root.png", name: "same.png", type: "image/png" };
+  const steerImage = { id: "steer.png", name: "same.png", type: "image/png" };
+  const externalImage = { id: "external.png", name: "same.png", type: "image/png" };
+  const turn = legacyTurn("mixed-attachments");
+  const f = await fixture(t, [[task, [turn]]], [{
+    turnId: turn.id, rootClientUserMessageId: "root-command", rootAttachments: [rootImage],
+    users: [
+      { role: "user", clientUserMessageId: "root-command", text: "Same" },
+      { role: "user", clientUserMessageId: "steer-command", text: "Same" },
+      { role: "user", clientUserMessageId: "text-command", text: "Same" },
+      { role: "user", itemId: "external", text: "Same", attachments: [externalImage] },
+    ],
+    attachmentsByCommand: { "steer-command": [steerImage], "text-command": [] },
+  }]);
+  const page = await f.store.readHistoryPage([task], { limit: 1 });
+  const users = page.items[0].turn.messages.filter((message) => message.role === "user");
+  assert.deepEqual(users.map((message) => message.attachments), [[rootImage], [steerImage], [], [externalImage]]);
+});
+
+test("attachment recovery fails closed for a receipt bound to a different run", async (t) => {
+  const turn = { ...legacyTurn("foreign-attachment"), userMessageAuthority: "terminal-ledger" };
+  const image = { id: "foreign.png", name: "image.png", type: "image/png" };
+  const f = await fixture(t, [[task, [turn]]], [{ turnId: turn.id, invalid: "conflict",
+    users: [{ role: "user", clientUserMessageId: "foreign-command", text: "Screenshot" }],
+    attachmentsByCommand: { "foreign-command": [image] } }]);
+  const before = f.store.historyPage([task], { limit: 1 });
+  assert.deepEqual(await f.store.readHistoryPage([task], { limit: 1 }), before);
+});
+
+test("legacy root attachments require the exact root command identity", async (t) => {
+  const image = { id: "root-only.png", name: "image.png", type: "image/png" };
+  const turn = legacyTurn("unknown-root");
+  const f = await fixture(t, [[task, [turn]]], [{
+    turnId: turn.id, rootAttachments: [image],
+    users: [{ role: "user", clientUserMessageId: "known-command", text: "Screenshot" }],
+  }]);
+  const page = await f.store.readHistoryPage([task], { limit: 1 });
+  assert.deepEqual(page.items[0].turn.messages.find((message) => message.role === "user").attachments, []);
+});
+
+test("attachment upgrade repairs recent custody without repeating the completed global journal backfill", async (t) => {
+  const image = { id: "recent.png", name: "image.png", type: "image/png" };
+  const unrelated = { ...task, threadId: "unopened-journal-thread" };
+  const old = legacyTurn("unopened-journal-turn");
+  const target = { ...legacyTurn("recent-custody"), userMessageAuthority: "terminal-ledger" };
+  const f = await fixture(t, [[task, [target]], [unrelated, [old]]], [{
+    turnId: target.id,
+    users: [{ role: "user", clientUserMessageId: "recent-command", text: "Screenshot" }],
+    attachmentsByCommand: { "recent-command": [image] },
+  }]);
+  const before = f.store.history(unrelated);
+  f.store.close();
+  const terminal = new DatabaseSync(f.options.terminalDatabaseFile);
+  try { terminal.prepare("DELETE FROM provider_turn_terminals WHERE thread_id = ?").run("unrelated-new-thread"); }
+  finally { terminal.close(); }
+  const database = new DatabaseSync(f.options.databaseFile);
+  try {
+    database.exec(`
+      CREATE TABLE journal_records (provider TEXT, thread_id TEXT, task_thread_id TEXT,
+        turn_id TEXT, record_json TEXT, PRIMARY KEY(provider, thread_id, turn_id));
+      CREATE TABLE journal_store_meta (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO journal_store_meta VALUES ('revision', '1');
+      CREATE TABLE unrelated_history_write_audit (event TEXT);
+      CREATE TRIGGER audit_unopened_history_delete BEFORE DELETE ON task_read_model_turns
+        WHEN old.thread_id = 'unopened-journal-thread'
+        BEGIN INSERT INTO unrelated_history_write_audit VALUES ('delete'); END;
+    `);
+    database.prepare("INSERT INTO journal_records VALUES (?, ?, ?, ?, ?)").run(
+      unrelated.provider, unrelated.threadId, unrelated.threadId, old.id,
+      JSON.stringify({ status: "completed", prompt: "Unrelated canonical journal prompt", body: "Answer" }),
+    );
+    const meta = database.prepare("INSERT OR REPLACE INTO task_read_model_meta VALUES (?, ?)");
+    meta.run("backfill_terminal_task_history_version", "4");
+    meta.run("backfill_models_from_journal_version", "1:revision:1");
+    meta.run("backfill_subagent_models_from_journal_version", "1:revision:1");
+    meta.run("backfill_journal_message_search_version", "5:revision:1");
+  } finally { database.close(); }
+  await f.reopen();
+  const observer = new DatabaseSync(f.options.databaseFile, { readOnly: true });
+  try {
+    assert.equal(observer.prepare("SELECT COUNT(*) AS count FROM unrelated_history_write_audit").get().count, 0);
+    assert.equal(observer.prepare("SELECT value FROM task_read_model_meta WHERE key = ?")
+      .get("backfill_terminal_task_history_version").value, "4");
+  } finally { observer.close(); }
+  assert.deepEqual(f.store.history(unrelated), before);
+  const recovered = f.store.history(task)[0];
+  assert.equal(recovered.userMessageRecoveryVersion, 2);
+  assert.deepEqual(recovered.messages.find((message) => message.clientUserMessageId === "recent-command").attachments, [image]);
+});
