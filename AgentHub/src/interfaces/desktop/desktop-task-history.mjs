@@ -225,14 +225,13 @@ function mergeDurableMessages(hydratedMessages, durableMessages, turnId, hydrate
     const author = String(durable?.author ?? "").trim()
       || String(current?.author ?? "").trim();
     const responseAnnotationReferences = Array.isArray(durable?.responseAnnotationReferences)
-      && durable.responseAnnotationReferences.length
       ? durable.responseAnnotationReferences
       : current.responseAnnotationReferences;
     values[index] = {
       ...current,
       ...structuredClone(durable),
       ...(author ? { author } : {}),
-      ...(Array.isArray(responseAnnotationReferences) && responseAnnotationReferences.length
+      ...(Array.isArray(responseAnnotationReferences)
         ? { responseAnnotationReferences: structuredClone(responseAnnotationReferences) }
         : {}),
       time: current.time ?? durable?.time ?? null,

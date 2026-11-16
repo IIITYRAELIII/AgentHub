@@ -1638,6 +1638,74 @@ test("rollout history projects readable Codex citations and structured annotatio
   ]);
 });
 
+test("rollout citation references follow the accumulated answer and its bounded UTF-16 window", () => {
+  const turnId = "paired-active-citations";
+  const parse = messages => parseCodexRolloutActivity([
+    { type: "task_started", turn_id: turnId },
+    ...messages.map(message => ({ type: "agent_message", turn_id: turnId, message })),
+  ].map(payload => JSON.stringify({ type: "event_msg", payload })).join("\n"));
+  const assertPositions = activity => {
+    const text = activity.latestMessages[turnId];
+    for (const reference of activity.responseAnnotationReferences?.[turnId] ?? []) {
+      assert.equal(text.slice(reference.position.start, reference.position.end), `Цитата ${reference.index}`);
+    }
+  };
+  const activity = parse(["Earlier plain text.", '\r\n:agent-annotation{index="1"} Later\r\nline']);
+  assert.equal(activity.latestMessages[turnId], "Earlier plain text.\n\nЦитата 1\nLater\nline");
+  assert.deepEqual(activity.responseAnnotationReferences[turnId], [{ index: 1, position: { start: 21, end: 29 } }]);
+  assertPositions(activity);
+  const repeated = parse([':agent-annotation{index="1"} Earlier', ":agent-annotation{index=\"1\"} Earlier"]);
+  assert.equal(repeated.latestMessages[turnId], "Цитата 1\nEarlier");
+  assertPositions(repeated);
+  const bounded = parse([':agent-annotation{index="1"} Earlier', "x".repeat(200_000),
+    ':agent-annotation{index="1"} Later']);
+  assert.ok(bounded.latestMessages[turnId].length <= 200_000);
+  assert.equal(bounded.responseAnnotationReferences[turnId].length, 1);
+  assertPositions(bounded);
+});
+
+test("rollout final owns the paired citation references including explicit empty clearing", () => {
+  const turnId = "paired-final-citations";
+  const rows = [
+    { type: "task_started", turn_id: turnId },
+    { type: "agent_message", turn_id: turnId, message: ':agent-annotation{index="1"} Earlier' },
+  ];
+  const parse = extra => parseCodexRolloutActivity([...rows, ...extra]
+    .map(payload => JSON.stringify({ type: "event_msg", payload })).join("\n"));
+  for (const final of ["Plain final.", ""]) {
+    const activity = parse([{ type: "task_complete", turn_id: turnId, last_agent_message: final }]);
+    assert.deepEqual(activity.responseAnnotationReferences?.[turnId] ?? [], []);
+    if (final) assert.equal(activity.finalMessages[turnId], final);
+  }
+  const final = parse([
+    { type: "task_complete", turn_id: turnId, last_agent_message: '\r\n:agent-annotation{index="2"} Final\r\nline' },
+    { type: "agent_message", turn_id: turnId, message: ':agent-annotation{index="3"} Late fragment' },
+  ]);
+  assert.equal(final.finalMessages[turnId], "Цитата 2\nFinal\nline");
+  assert.deepEqual(final.responseAnnotationReferences[turnId], [{ index: 2, position: { start: 0, end: 8 } }]);
+  const absent = parse([{ type: "task_complete", turn_id: turnId }]);
+  assert.deepEqual(absent.responseAnnotationReferences[turnId], [{ index: 1, position: { start: 0, end: 8 } }]);
+});
+
+test("cached rollout append replaces earlier citation references with the final's own pair", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-citation-pair-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const turnId = "paired-reader-citations";
+  const row = payload => `${JSON.stringify({ type: "event_msg", payload: { turn_id: turnId, ...payload } })}\n`;
+  try {
+    await writeFile(file, row({ type: "task_started" }) + row({ type: "agent_message", message: ':agent-annotation{index="1"} Earlier' }));
+    const active = await readCodexRolloutActivity(file);
+    assert.deepEqual(active.responseAnnotationReferences[turnId], [{ index: 1, position: { start: 0, end: 8 } }]);
+    await appendFile(file, row({ type: "task_complete", last_agent_message: "Plain final." }));
+    const final = await readCodexRolloutActivity(file);
+    assert.equal(final.finalMessages[turnId], "Plain final.");
+    assert.deepEqual(final.responseAnnotationReferences?.[turnId] ?? [], []);
+    assert.deepEqual(active.responseAnnotationReferences[turnId], [{ index: 1, position: { start: 0, end: 8 } }], "cached snapshots remain immutable");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("concurrent rollout messages stay attached to their response_item turn ids", () => {
   const entry = (timestamp, type, payload) => JSON.stringify({ timestamp, type, payload });
   const assistant = (turnId, text) => entry("2026-07-22T12:00:00.000Z", "response_item", {

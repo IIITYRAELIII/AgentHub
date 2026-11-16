@@ -19,6 +19,7 @@ import {
 } from "../../domain/codex-trace-budget.mjs";
 import {
   codexAssistantResponseProjection,
+  normalizedCodexResponseAnnotationReferences,
   visibleCodexAssistantText,
 } from "../../domain/codex-response-annotation.mjs";
 import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
@@ -370,7 +371,7 @@ function bindCompletedCodexUserProjection(metadata, entry, completedUserMessage)
 
 function rememberCodexTurnMessage(metadata, turnId, message, item = null, rolloutRecord = null) {
   const projection = codexAssistantResponseProjection(message);
-  const value = projection.text.trim();
+  const value = projection.text.replace(/\r\n?/gu, "\n").trim();
   if (!turnId || !value) return;
   if (item) {
     const phase = String(item.phase ?? "").trim();
@@ -380,32 +381,52 @@ function rememberCodexTurnMessage(metadata, turnId, message, item = null, rollou
       const nativeProjection = codexAssistantResponseProjection(rawProviderText);
       metadata.latestAgentMessages.set(turnId, {
         id: String(item.id ?? ""), type: "agentMessage", phase,
-        rawProviderText, text: nativeProjection.text,
+        rawProviderText, text: nativeProjection.text.replace(/\r\n?/gu, "\n").trim(),
         textComplete: rawText.length <= CODEX_AGENT_MESSAGE_CHARS,
         ...(rolloutRecord ? { rolloutRecord } : {}),
         ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
-        ...(nativeProjection.responseAnnotationReferences.length
-          ? { responseAnnotationReferences: structuredClone(nativeProjection.responseAnnotationReferences) }
-          : {}),
+        responseAnnotationReferences: structuredClone(nativeProjection.responseAnnotationReferences),
       });
       while (metadata.latestAgentMessages.size > 8) {
         metadata.latestAgentMessages.delete(metadata.latestAgentMessages.keys().next().value);
       }
     } else metadata.latestAgentMessages.delete(turnId);
   }
-  if (projection.responseAnnotationReferences.length) {
-    metadata.responseAnnotationReferences.set(
-      turnId,
-      projection.responseAnnotationReferences.map((reference) => ({ ...reference })),
-    );
-  }
   const previous = String(metadata.latestMessages.get(turnId) ?? "").trim();
+  const retainedFragment = previous === value || previous.endsWith(`\n\n${value}`);
   const combined = !previous
     ? value
-    : previous === value || previous.endsWith(`\n\n${value}`)
+    : retainedFragment
       ? previous
       : `${previous}\n\n${value}`;
-  metadata.latestMessages.set(turnId, combined.slice(-CODEX_AGENT_MESSAGE_CHARS));
+  const tail = combined.slice(-CODEX_AGENT_MESSAGE_CHARS);
+  const bounded = tail.trim();
+  if (!metadata.finalMessages.has(turnId)) {
+    // Coordinates belong to the existing accumulated legacy answer, not to
+    // the last fragment alone. Reuse its append/replay decision and account
+    // for the exact UTF-16 prefix removed by the bounded window.
+    const fragmentOffset = !previous ? 0 : retainedFragment
+      ? previous.length - value.length : previous.length + 2;
+    const removedPrefix = combined.length - tail.length + tail.length - tail.trimStart().length;
+    const references = normalizedCodexResponseAnnotationReferences([
+      ...(previous ? metadata.responseAnnotationReferences.get(turnId) ?? [] : []),
+      ...projection.responseAnnotationReferences.map(reference => ({
+        ...reference,
+        ...(reference.position ? { position: {
+          start: reference.position.start + fragmentOffset,
+          end: reference.position.end + fragmentOffset,
+        } } : {}),
+      })),
+    ].flatMap(reference => {
+      if (!reference.position) return [reference];
+      const start = reference.position.start - removedPrefix;
+      const end = reference.position.end - removedPrefix;
+      return start >= 0 && end <= bounded.length ? [{ ...reference, position: { start, end } }] : [];
+    }));
+    if (references.length) metadata.responseAnnotationReferences.set(turnId, references);
+    else metadata.responseAnnotationReferences.delete(turnId);
+  }
+  metadata.latestMessages.set(turnId, bounded);
   while (metadata.latestMessages.size > 8) {
     metadata.latestMessages.delete(metadata.latestMessages.keys().next().value);
   }
@@ -1145,12 +1166,16 @@ function observeCodexEntry(
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "task_complete" && turnId) {
     const projection = codexAssistantResponseProjection(entry.payload?.last_agent_message);
-    const message = projection.text.trim();
-    if (message) {
-      metadata.finalMessages.set(turnId, message);
+    const message = projection.text.replace(/\r\n?/gu, "\n").trim();
+    if (typeof entry.payload?.last_agent_message === "string") {
+      // An explicit new final owns both its text and an empty reference map.
+      // An absent final field does not revoke an already observed mapping.
       if (projection.responseAnnotationReferences.length) {
         metadata.responseAnnotationReferences.set(turnId, projection.responseAnnotationReferences);
-      }
+      } else metadata.responseAnnotationReferences.delete(turnId);
+    }
+    if (message) {
+      metadata.finalMessages.set(turnId, message);
       while (metadata.finalMessages.size > 8) {
         const removable = [...metadata.finalMessages.keys()]
           .find((candidate) => candidate !== metadata.requestedTerminalTurnId);

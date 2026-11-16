@@ -21,6 +21,7 @@ import { interstreamDisplayText, interstreamOriginAuthor, normalizeInterstreamOr
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive, updateTaskRunTitle } from "../../domain/task-runs.mjs";
 import { codexRolloutLatestAnswer } from "../../providers/codex/codex-turn-answers.mjs";
+import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 
 const RENAMED_TURN_WINDOW_MS = 5 * 60 * 1000;
 
@@ -365,6 +366,13 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
     const finalAnswer = String(finalMessages[id] ?? "").trim();
     const latestAnswer = codexRolloutLatestAnswer(activity, id);
     const answer = finalAnswer || latestAnswer;
+    // The activity owner has already projected the marker text. Keep its
+    // paired coordinates instead of reparsing the readable "Цитата N" labels.
+    const responseAnnotationReferences = normalizedCodexResponseAnnotationReferences(
+      !finalAnswer && activity.latestAgentMessages?.[id]
+        ? activity.latestAgentMessages[id].responseAnnotationReferences
+        : activity.responseAnnotationReferences?.[id],
+    );
     const generatedImages = (Array.isArray(generatedImageSources[id])
       ? generatedImageSources[id]
       : []).filter((item) => ["generated-path", "display-path"].includes(item?.type))
@@ -384,8 +392,7 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
         role: "agent",
         text: answer,
         ...(completed ? { phase: "final_answer" } : responseItem ? { phase: responseItem.phase } : {}),
-        ...(responseItem?.responseAnnotationReferences?.length
-          ? { responseAnnotationReferences: structuredClone(responseItem.responseAnnotationReferences) } : {}),
+        responseAnnotationReferences: structuredClone(responseAnnotationReferences),
         ...(generatedImages.length ? { attachmentSources: generatedImages } : {}),
       });
     } else if (generatedImages.length) {
@@ -402,6 +409,7 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       id,
       prompt,
       answer,
+      responseAnnotationReferences: structuredClone(responseAnnotationReferences),
       status: completed ? "completed" : active ? "inProgress" : "stopped",
       active,
       completed,
