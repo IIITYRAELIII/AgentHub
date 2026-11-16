@@ -5,13 +5,16 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.IO.Pipes;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("Agent Hub Server")]
@@ -45,6 +48,11 @@ namespace AgentHub.RuntimeHost
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool inJob);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint pid);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint pid);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool CreateProcess(string application, StringBuilder commandLine,
@@ -515,6 +523,9 @@ namespace AgentHub.RuntimeHost
                     return StartOwnedReplacement(runtimeRoot);
                 }
 
+                if (args.Length == 4 && args[0] == "--replacement-owned-entry")
+                    return Run(runtimeRoot, false, args);
+
                 bool checkOnly = args.Length == 1 && args[0] == "--check";
                 if (args.Length > 0 && !checkOnly)
                 {
@@ -537,16 +548,23 @@ namespace AgentHub.RuntimeHost
             }
         }
 
-        private static int Run(string runtimeRoot, bool checkOnly)
+        private static int Run(string runtimeRoot, bool checkOnly, string[] ownedEntry = null)
         {
             bool inheritedAtEntry;
             if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inheritedAtEntry))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
-            if (!checkOnly && !String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID"))
+            bool outsideInheritedJobs = !inheritedAtEntry;
+            if (ownedEntry != null)
+            {
+                VerifyOwnedReplacementEntry(ownedEntry);
+                outsideInheritedJobs = true; // The retained creator proved this before assigning its fresh Job.
+                WriteLifetime(runtimeRoot, "replacement-entry-verified", 0, null, inheritedAtEntry);
+            }
+            else if (!checkOnly && !String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID"))
                 && inheritedAtEntry) throw new InvalidOperationException("Replacement Host must enter outside every inherited Job");
-            Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_REPLACEMENT_OUTSIDE_JOBS", inheritedAtEntry ? "0" : "1");
-            Mutex packageGate = EnterPackageGate(runtimeRoot);
-            Mutex acceptanceGate = EnterAcceptanceGate(runtimeRoot);
+            Environment.SetEnvironmentVariable("AGENT_HUB_PACKAGE_REPLACEMENT_OUTSIDE_JOBS", outsideInheritedJobs ? "1" : "0");
+            Mutex packageGate = MeasureStartup(runtimeRoot, "package-gate", "native", delegate { return EnterPackageGate(runtimeRoot); });
+            Mutex acceptanceGate = MeasureStartup(runtimeRoot, "acceptance-gate", "native", delegate { return EnterAcceptanceGate(runtimeRoot); });
             IntPtr runtimeJob = IntPtr.Zero;
             try
             {
@@ -561,7 +579,7 @@ namespace AgentHub.RuntimeHost
             }
             string currentFile = Path.Combine(runtimeRoot, "current.json");
             EnsureRegularFile(currentFile, "Agent Hub current.json is missing or unsafe");
-            Dictionary<string, object> pointer = ReadJsonObject(currentFile);
+            Dictionary<string, object> pointer = MeasureStartup(runtimeRoot, "current-pointer", "io", delegate { return ReadJsonObject(currentFile); });
             string current = RequiredString(pointer, "current");
             if (current == "." || current == ".." || !ReleaseIdPattern.IsMatch(current))
             {
@@ -577,12 +595,14 @@ namespace AgentHub.RuntimeHost
                 throw new InvalidOperationException("Agent Hub runtime release resolves outside releases");
             }
             EnsureDirectoryWithoutReparsePoint(releaseRoot, "Agent Hub runtime release is missing or unsafe");
-            VerifyManifest(releaseRoot, current);
+            MeasureStartup(runtimeRoot, "manifest-verify", "io", delegate { VerifyManifest(releaseRoot, current, runtimeRoot); });
 
             string packageEntry = Path.Combine(releaseRoot, "src", "runtime", "runtime-package-handoff.mjs");
-            bool packageHandoffAvailable = ManifestDeclares(releaseRoot, "src/runtime/runtime-package-handoff.mjs");
+            bool packageHandoffAvailable = MeasureStartup(runtimeRoot, "package-manifest", "io", delegate {
+                return ManifestDeclares(releaseRoot, "src/runtime/runtime-package-handoff.mjs");
+            });
             if (packageHandoffAvailable && !checkOnly)
-                ProbePackageAdmission(packageEntry, runtimeRoot);
+                MeasureStartup(runtimeRoot, "package-admission", "child-wait", delegate { ProbePackageAdmission(packageEntry, runtimeRoot); });
 
             string server = Path.Combine(releaseRoot, "agent-hub-main.mjs");
             EnsureRegularFile(server, "Agent Hub runtime entry point is missing or unsafe");
@@ -593,7 +613,7 @@ namespace AgentHub.RuntimeHost
             }
 
             SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
-            acceptanceGate = EnterAcceptanceGate(runtimeRoot);
+            acceptanceGate = MeasureStartup(runtimeRoot, "node-acceptance-gate", "native", delegate { return EnterAcceptanceGate(runtimeRoot); });
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = node;
             start.Arguments = QuoteArgument(server);
@@ -601,7 +621,7 @@ namespace AgentHub.RuntimeHost
             start.UseShellExecute = false;
             start.CreateNoWindow = true;
             start.WindowStyle = ProcessWindowStyle.Hidden;
-            ApplyReleaseAcceptanceEnvironment(runtimeRoot, start);
+            MeasureStartup(runtimeRoot, "acceptance-environment", "io", delegate { ApplyReleaseAcceptanceEnvironment(runtimeRoot, start); });
             if (runtimeJob == IntPtr.Zero) runtimeJob = CreateRuntimeJob();
             start.EnvironmentVariables["AGENT_HUB_CONFIG"] = Path.Combine(runtimeRoot, "config.json");
             start.EnvironmentVariables["AGENT_HUB_LAUNCHER"] = Assembly.GetExecutingAssembly().Location;
@@ -613,7 +633,7 @@ namespace AgentHub.RuntimeHost
             // and must not be inherited by provider children or public snapshots.
             start.EnvironmentVariables.Remove("AGENT_HUB_PACKAGE_LAUNCH_TOKEN");
 
-                using (Process process = Process.Start(start))
+                using (Process process = MeasureStartup(runtimeRoot, "node-create", "launch", delegate { return Process.Start(start); }))
                 {
                     if (process == null)
                     {
@@ -643,7 +663,8 @@ namespace AgentHub.RuntimeHost
             Mutex gate = new Mutex(false, AcceptanceObjectName(root) + ".package");
             try
             {
-                try { if (!gate.WaitOne(0)) throw new InvalidOperationException("An exact package handoff owns runtime admission"); }
+                try { if (!MeasureStartup(root, "package-gate-wait", "wait", delegate { return gate.WaitOne(0); }))
+                    throw new InvalidOperationException("An exact package handoff owns runtime admission"); }
                 catch (AbandonedMutexException) { /* Original operation is still checked by its continuation. */ }
                 return gate;
             }
@@ -1179,6 +1200,59 @@ namespace AgentHub.RuntimeHost
         // The old owner retains this pipe-connected launcher until its existing
         // exact ready proof commits, or until native cleanup has proved zero.
         // Only the newly created suspended child is assigned to this fresh Job.
+        private static string ReplacementEntryPipeName(int launcher, string nonce)
+        {
+            return "IIITYRAELIII.AgentHub.Replacement." + launcher.ToString(CultureInfo.InvariantCulture) + "." + nonce;
+        }
+
+        private static void VerifyOwnedReplacementEntry(string[] args)
+        {
+            int launcher;
+            Guid operation, nonce;
+            string original = Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID");
+            if (!Int32.TryParse(args[1], out launcher) || launcher <= 0
+                || !Guid.TryParse(args[2], out operation) || args[2] != original
+                || !Guid.TryParseExact(args[3], "N", out nonce))
+                throw new InvalidOperationException("Replacement Host has invalid owned entry identity");
+            IntPtr owner = OpenProcess(0x00100000 | 0x1000, false, (uint)launcher);
+            IntPtr job = OpenJobObject(4, false, "Local\\IIITYRAELIII.AgentHub." + Process.GetCurrentProcess().Id);
+            try
+            {
+                bool member;
+                if (job == IntPtr.Zero || !IsProcessInJob(GetCurrentProcess(), job, out member) || !member)
+                    throw new InvalidOperationException("Replacement Host is not in its exact new owned Job");
+                StringBuilder image = new StringBuilder(32768); uint length = (uint)image.Capacity;
+                if (owner == IntPtr.Zero || WaitForSingleObject(owner, 0) != 258
+                    || !QueryFullProcessImageName(owner, 0, image, ref length)
+                    || !String.Equals(Path.GetFullPath(image.ToString()), Path.GetFullPath(Assembly.GetExecutingAssembly().Location), StringComparison.OrdinalIgnoreCase)
+                    || ProcessSecurityContext(owner) != ProcessSecurityContext(GetCurrentProcess()))
+                    throw new InvalidOperationException("Replacement Host owned launcher identity changed");
+                // The server exists before CreateProcess. Never wait for an absent/forged issuer.
+                using (var pipe = new NamedPipeClientStream(".", ReplacementEntryPipeName(launcher, args[3]), PipeDirection.InOut))
+                {
+                    pipe.Connect(0);
+                    uint server;
+                    if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out server)
+                        || server != (uint)launcher || WaitForSingleObject(owner, 0) != 258)
+                        throw new InvalidOperationException("Replacement Host has a foreign owned entry issuer");
+                    using (var reader = new StreamReader(pipe, new UTF8Encoding(false)))
+                    {
+                        StringBuilder proof = new StringBuilder();
+                        for (int value; proof.Length <= 128 && (value = reader.Read()) >= 0 && value != '\n'; ) proof.Append((char)value);
+                        string expected = "AGENT_HUB_REPLACEMENT_OWNED " + original + " " + Process.GetCurrentProcess().Id;
+                        if (proof.Length > 128 || proof.ToString().TrimEnd('\r') != expected
+                            || !IsProcessInJob(GetCurrentProcess(), job, out member) || !member)
+                            throw new InvalidOperationException("Replacement Host owned entry proof changed");
+                    }
+                }
+            }
+            finally
+            {
+                if (job != IntPtr.Zero) CloseHandle(job);
+                if (owner != IntPtr.Zero) CloseHandle(owner);
+            }
+        }
+
         private static int StartOwnedReplacement(string runtimeRoot)
         {
             string operation = Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID");
@@ -1190,9 +1264,16 @@ namespace AgentHub.RuntimeHost
             bool committed = false;
             try
             {
+                int launcher = Process.GetCurrentProcess().Id;
+                string nonce = Guid.NewGuid().ToString("N");
                 uint parentPid;
-                child = CreateIndependentProcessCore(Assembly.GetExecutingAssembly().Location, "", runtimeRoot,
+                using (var entry = new NamedPipeServerStream(ReplacementEntryPipeName(launcher, nonce),
+                    PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
+                {
+                string entryArguments = " --replacement-owned-entry " + launcher + " " + operation + " " + nonce;
+                child = CreateIndependentProcessCore(Assembly.GetExecutingAssembly().Location, entryArguments, runtimeRoot,
                     out parentPid, delegate(ProcessInformation suspended) {
+                        AssignOwnedAcceptanceChild(runtimeRoot, suspended);
                         IntPtr created = CreateJobObject(IntPtr.Zero, "Local\\IIITYRAELIII.AgentHub." + suspended.ProcessId);
                         int error = Marshal.GetLastWin32Error();
                         if (created == IntPtr.Zero) throw new Win32Exception(error);
@@ -1205,6 +1286,25 @@ namespace AgentHub.RuntimeHost
                         if (!AssignProcessToJobObject(job, suspended.Process))
                             throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot own suspended replacement Job");
                     });
+                IAsyncResult connection = entry.BeginWaitForConnection(null, null);
+                using (WaitHandle connected = connection.AsyncWaitHandle)
+                {
+                    while (!connected.WaitOne(20))
+                        if (WaitForSingleObject(child.Process, 0) != 258)
+                            throw new InvalidOperationException("Replacement Host exited before owned entry proof");
+                    entry.EndWaitForConnection(connection);
+                }
+                uint peer; bool childMember;
+                if (!GetNamedPipeClientProcessId(entry.SafePipeHandle.DangerousGetHandle(), out peer)
+                    || peer != child.ProcessId || WaitForSingleObject(child.Process, 0) != 258
+                    || !IsProcessInJob(child.Process, job, out childMember) || !childMember)
+                    throw new InvalidOperationException("Replacement entry is not the exact newly created Host");
+                using (var writer = new StreamWriter(entry, new UTF8Encoding(false)))
+                {
+                    writer.WriteLine("AGENT_HUB_REPLACEMENT_OWNED " + operation + " " + child.ProcessId);
+                    writer.Flush();
+                }
+                }
                 bool inherited;
                 if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inherited)) inherited = true;
                 WriteLifetime(runtimeRoot, "replacement-created", (int)child.ProcessId, null, inherited, parentPid, true);
@@ -1269,8 +1369,27 @@ namespace AgentHub.RuntimeHost
             return 0;
         }
 
+        private static T MeasureStartup<T>(string root, string stage, string kind, Func<T> work)
+        {
+            bool inJob;
+            if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inJob)) inJob = true;
+            WriteLifetime(root, stage, 0, null, inJob, null, null, 0, kind, "started");
+            Stopwatch clock = Stopwatch.StartNew();
+            bool completed = false;
+            try { T value = work(); completed = true; return value; }
+            finally { WriteLifetime(root, stage, 0, null, inJob, null, null,
+                clock.Elapsed.TotalMilliseconds, kind, completed ? "succeeded" : "failed"); }
+        }
+
+        private static void MeasureStartup(string root, string stage, string kind, Action work)
+        {
+            MeasureStartup(root, stage, kind, delegate { work(); return true; });
+        }
+
         private static void WriteLifetime(string runtimeRoot, string stage, int childPid, int? exitCode, bool inJob,
-            uint? externalParentPid = null, bool? childInJobBeforeResume = null)
+            uint? externalParentPid = null, bool? childInJobBeforeResume = null,
+            double? elapsedMs = null, string workKind = null, string outcome = null,
+            Dictionary<string, int> counts = null)
         {
             try
             {
@@ -1283,6 +1402,10 @@ namespace AgentHub.RuntimeHost
                 };
                 if (externalParentPid.HasValue) record["externalParentPid"] = externalParentPid.Value;
                 if (childInJobBeforeResume.HasValue) record["childInJobBeforeResume"] = childInJobBeforeResume.Value;
+                if (elapsedMs.HasValue) record["elapsedMs"] = elapsedMs.Value;
+                if (workKind != null) record["workKind"] = workKind;
+                if (outcome != null) record["outcome"] = outcome;
+                if (counts != null) record["counts"] = counts;
                 Guid operation;
                 string original = Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID");
                 if (Guid.TryParse(original, out operation)) record["operationId"] = original;
@@ -1517,11 +1640,40 @@ namespace AgentHub.RuntimeHost
             Mutex gate = new Mutex(false, AcceptanceObjectName(root) + ".gate");
             try
             {
-                try { if (!gate.WaitOne(5000)) throw new InvalidOperationException("Acceptance launch gate timed out"); }
+                try { if (!MeasureStartup(root, "acceptance-gate-wait", "wait", delegate { return gate.WaitOne(5000); }))
+                    throw new InvalidOperationException("Acceptance launch gate timed out"); }
                 catch (AbandonedMutexException) { /* ownership is acquired */ }
                 return gate;
             }
             catch { gate.Dispose(); throw; }
+        }
+
+        private static void AssignOwnedAcceptanceChild(string root, ProcessInformation child)
+        {
+            if (ReadAcceptanceMarker(root) == null) return;
+            Mutex gate = EnterAcceptanceGate(root);
+            IntPtr cohort = IntPtr.Zero;
+            try
+            {
+                if (gate == null || File.Exists(Path.Combine(root, ".agent-hub-release-acceptance.closed")))
+                    throw new InvalidOperationException("Release acceptance is closed; no later runtime may start");
+                cohort = OpenJobObject(1 | 4, false, AcceptanceObjectName(root));
+                bool member, alreadyOwned;
+                if (cohort == IntPtr.Zero || !IsProcessInJob(GetCurrentProcess(), cohort, out member) || !member
+                    || !IsProcessInJob(child.Process, IntPtr.Zero, out alreadyOwned) || alreadyOwned)
+                    throw new InvalidOperationException("Replacement has no exact live acceptance cohort owner");
+                // Windows cannot insert the existing cohort outside an already assigned
+                // fresh Job. Join the verified cohort while still suspended, then let
+                // the caller assign its fresh per-Host child Job before ResumeThread.
+                if (!AssignProcessToJobObject(cohort, child.Process))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot own suspended acceptance replacement");
+                WriteLifetime(root, "replacement-acceptance-joined", (int)child.ProcessId, null, true);
+            }
+            finally
+            {
+                if (cohort != IntPtr.Zero) CloseHandle(cohort);
+                LeaveAcceptanceGate(ref gate);
+            }
         }
 
         private static void LeaveAcceptanceGate(ref Mutex gate)
@@ -1592,11 +1744,12 @@ namespace AgentHub.RuntimeHost
             }
         }
 
-        private static void VerifyManifest(string releaseRoot, string releaseId)
+        private static void VerifyManifest(string releaseRoot, string releaseId, string traceRoot = null)
         {
             string manifestFile = Path.Combine(releaseRoot, "runtime-manifest.json");
             EnsureRegularFile(manifestFile, "Agent Hub runtime manifest is missing or unsafe");
-            Dictionary<string, object> manifest = ReadJsonObject(manifestFile);
+            Dictionary<string, object> manifest = traceRoot == null ? ReadJsonObject(manifestFile)
+                : MeasureStartup(traceRoot, "manifest-read", "io", delegate { return ReadJsonObject(manifestFile); });
             if (!String.Equals(RequiredString(manifest, "releaseId"), releaseId, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException("Agent Hub runtime manifest does not match current.json");
@@ -1619,10 +1772,25 @@ namespace AgentHub.RuntimeHost
             }
 
             string releasePrefix = releaseRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            int count = 0;
-            foreach (object value in files)
+            List<object> members = new List<object>();
+            foreach (object value in files) members.Add(value);
+            if (members.Count == 0) throw new InvalidOperationException("Agent Hub runtime manifest is empty");
+            ManifestHashTiming hashTiming = new ManifestHashTiming();
+            double pathMilliseconds = 0, hashMilliseconds = 0;
+            bool verified = false;
+            try
             {
-                Dictionary<string, object> item = value as Dictionary<string, object>;
+            ValidateManifestMembers(members.Count, delegate(int index)
+            {
+                Stopwatch fileStage = Stopwatch.StartNew();
+                ManifestHashTiming memberTiming = new ManifestHashTiming();
+                double memberPathMilliseconds = 0, memberHashMilliseconds = 0;
+                bool completed = false;
+                lock (hashTiming) { hashTiming.Started++; hashTiming.Active++;
+                    hashTiming.MaxActive = Math.Max(hashTiming.MaxActive, hashTiming.Active); }
+                try
+                {
+                Dictionary<string, object> item = members[index] as Dictionary<string, object>;
                 if (item == null)
                 {
                     throw new InvalidOperationException("Agent Hub runtime manifest entry is invalid");
@@ -1643,17 +1811,82 @@ namespace AgentHub.RuntimeHost
                     throw new InvalidOperationException("Agent Hub runtime size mismatch: " + relative);
                 }
                 string expectedHash = RequiredString(item, "sha256").ToLowerInvariant();
-                string actualHash = ComputeSha256(target);
+                memberPathMilliseconds = fileStage.Elapsed.TotalMilliseconds;
+                fileStage.Restart();
+                string actualHash;
+                try { actualHash = ComputeSha256(target, memberTiming, hashTiming); }
+                finally { memberHashMilliseconds = fileStage.Elapsed.TotalMilliseconds; }
                 if (!String.Equals(expectedHash, actualHash, StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException("Agent Hub runtime hash mismatch: " + relative);
                 }
-                count += 1;
+                completed = true;
+                }
+                finally
+                {
+                    lock (hashTiming)
+                    {
+                        pathMilliseconds += memberPathMilliseconds;
+                        hashMilliseconds += memberHashMilliseconds;
+                        hashTiming.OpenMilliseconds += memberTiming.OpenMilliseconds;
+                        hashTiming.ReadDigestMilliseconds += memberTiming.ReadDigestMilliseconds;
+                        hashTiming.Active--;
+                        if (completed) hashTiming.Completed++;
+                    }
+                }
+            });
+            verified = true;
             }
-            if (count == 0)
+            finally
             {
-                throw new InvalidOperationException("Agent Hub runtime manifest is empty");
+                if (traceRoot != null)
+                {
+                    bool inJob;
+                    if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inJob)) inJob = true;
+                    WriteLifetime(traceRoot, "manifest-path-checks", 0, null, inJob, null, null,
+                        pathMilliseconds, "io", verified ? "succeeded" : "incomplete");
+                    WriteLifetime(traceRoot, "manifest-file-hashes", 0, null, inJob, null, null,
+                        hashMilliseconds, "io", verified ? "succeeded" : "incomplete");
+                    WriteLifetime(traceRoot, "manifest-file-open", 0, null, inJob, null, null,
+                        hashTiming.OpenMilliseconds, "io", verified ? "succeeded" : "incomplete");
+                    WriteLifetime(traceRoot, "manifest-read-digest", 0, null, inJob, null, null,
+                        hashTiming.ReadDigestMilliseconds, "io", verified ? "succeeded" : "incomplete");
+                    WriteLifetime(traceRoot, "manifest-io-concurrency", 0, null, inJob, null, null,
+                        null, "io", verified ? "succeeded" : "incomplete", new Dictionary<string, int> {
+                            { "members", members.Count }, { "started", hashTiming.Started },
+                            { "completed", hashTiming.Completed }, { "active", hashTiming.Active },
+                            { "maxValidations", hashTiming.MaxActive }, { "maxOpenCalls", hashTiming.MaxOpening },
+                            { "maxOpenStreams", hashTiming.MaxStreams }, { "openStreams", hashTiming.Streams }
+                        });
+                }
             }
+        }
+
+        private static void ValidateManifestMembers(int count, Action<int> validate)
+        {
+            object admission = new object();
+            int next = 0, firstFailure = count;
+            Exception[] failures = new Exception[count];
+            Action worker = delegate {
+                for (;;)
+                {
+                    int index;
+                    lock (admission)
+                    {
+                        if (next >= count || next > firstFailure) return;
+                        index = next++;
+                    }
+                    try { validate(index); }
+                    catch (Exception error)
+                    {
+                        lock (admission) { failures[index] = error; firstFailure = Math.Min(firstFailure, index); }
+                    }
+                }
+            };
+            // This call joins both workers even when a validation fails. No Node
+            // launch or exception escapes while another member owns a file handle.
+            Parallel.Invoke(new ParallelOptions { MaxDegreeOfParallelism = 2 }, worker, worker);
+            if (firstFailure < count) ExceptionDispatchInfo.Capture(failures[firstFailure]).Throw();
         }
 
         private static void ValidateRelativePath(string relative)
@@ -1725,9 +1958,34 @@ namespace AgentHub.RuntimeHost
             return result;
         }
 
-        private static string ComputeSha256(string path)
+        private sealed class ManifestHashTiming
         {
-            using (FileStream stream = File.OpenRead(path))
+            internal double OpenMilliseconds, ReadDigestMilliseconds;
+            internal int Started, Completed, Active, MaxActive, Opening, MaxOpening, Streams, MaxStreams;
+        }
+
+        private static string ComputeSha256(string path, ManifestHashTiming timing = null, ManifestHashTiming concurrency = null)
+        {
+            Stopwatch phase = timing == null ? null : Stopwatch.StartNew();
+            FileStream stream = null;
+            if (concurrency != null) lock (concurrency) { concurrency.Opening++;
+                concurrency.MaxOpening = Math.Max(concurrency.MaxOpening, concurrency.Opening); }
+            try
+            {
+                try { stream = File.OpenRead(path); }
+                finally
+                {
+                    if (phase != null) { timing.OpenMilliseconds += phase.Elapsed.TotalMilliseconds; phase.Restart(); }
+                    if (concurrency != null) lock (concurrency) {
+                        concurrency.Opening--;
+                        if (stream != null) { concurrency.Streams++;
+                            concurrency.MaxStreams = Math.Max(concurrency.MaxStreams, concurrency.Streams); }
+                    }
+                }
+            using (stream)
+            {
+            try
+            {
             using (SHA256 hash = SHA256.Create())
             {
                 byte[] value = hash.ComputeHash(stream);
@@ -1738,6 +1996,11 @@ namespace AgentHub.RuntimeHost
                 }
                 return result.ToString();
             }
+            }
+            finally { if (phase != null) timing.ReadDigestMilliseconds += phase.Elapsed.TotalMilliseconds; }
+            }
+            }
+            finally { if (stream != null && concurrency != null) lock (concurrency) { concurrency.Streams--; } }
         }
 
         private static string FindNodeExecutable()

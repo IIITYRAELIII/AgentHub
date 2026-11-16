@@ -13,6 +13,27 @@ external continuation and retained journal, not an automatic new startup effect.
 See ADR-HUB-429-external-product-recipe. All process, pointer, original identity,
 UNKNOWN, restore and Ready invariants below remain mandatory.
 
+## New owned replacement Job (ADR-HUB-450)
+
+The native launcher still proves the suspended replacement is outside every
+inherited Job before assigning its fresh per-Host Job. The resumed Host admits
+that Job only through the same launcher's one-use local entry connection: native
+pipe peer PIDs, pinned live launcher image/security identity, original operation,
+exact child PID and actual Job membership must agree. A matching Job name or
+an environment flag alone grants no admission. Foreign/inherited/unknown entry
+refuses before Node. This proof does not forbid later foreign reassignment.
+Existing Ready/commit/abort, whole old-Job refusal, lost-reply UNKNOWN and joined
+cleanup remain unchanged; no second launcher or new execution deadline follows.
+
+The same Host validates at most two manifest members concurrently. Each member
+still receives fresh path, reparse-point, size and complete-byte hash checks.
+Success requires every member; a refusal joins all started validations and
+closes their handles before returning the original first-in-manifest error.
+No Node starts before this join. Later members are not admitted beyond a known
+failed prefix. This is local startup I/O overlap, not cached verification or a
+new global worker policy. Numeric counts distinguish actual open/stream overlap;
+summed member durations can overlap and are not additional wall-clock time.
+
 ## Public update initiated by an active Hub agent
 
 A capable runtime admits one exact package maintenance original before stopping.
