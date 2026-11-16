@@ -115,7 +115,7 @@ test("publication reservation uses the Workspace Await boundary for the exact ge
       workspaceId: "workspace-1",
       authorization: { taskIds: ["task-a", "task-b"] },
     },
-    generation: { selectedResults },
+    generation: { generation: 1, candidates: [], selectedResults },
     reserve: () => { effects.push("reserve"); return { applied: true }; },
     recompose: () => { effects.push("recompose"); return { applied: true }; },
   });
@@ -125,6 +125,38 @@ test("publication reservation uses the Workspace Await boundary for the exact ge
     ["lock", "workspace-1"],
     ["selection", { workspaceId: "workspace-1", taskIds: ["task-a", "task-b"] }],
   ]);
+});
+
+test("not-applied recovery holds one Await boundary and rechecks selection and frozen authority", async () => {
+  for (const drift of [null, "selection", "frozen"]) {
+    let selected = [{ taskId: "task-a", resultCommit: "result-a", acceptanceRevision: 2 }];
+    const f = fixture(selected);
+    let depth = 0, locks = 0, frozen = "original-frozen", admissions = 0;
+    f.adapter.releasePreflight.withAwaitTransition = async (_workspace, action) => {
+      assert.equal(depth, 0, "no nested Await acquisition"); locks++; depth++;
+      try { return await action(); } finally { depth--; }
+    };
+    f.adapter.releasePreflight.operationSelection = async () => structuredClone(selected);
+    f.adapter.releasePreflight.releaseGitWorkspaces = { inspectRetainedGeneration: async () => {
+      assert.equal(depth, 1); return { commit: frozen };
+    } };
+    f.adapter.publication.withPublicationRecovery = async ({ commit }) => commit({ kind: "fixture-owning-proof", readbacks: [] }, async () => {
+      assert.equal(depth, 1);
+    });
+    const operation = { operationId: "same", workspaceId: "workspace", authorization: {
+      taskScope: "all_await", taskIds: ["task-a"], approvedTargets: [] } };
+    const generation = { generation: 1, selectedResults: structuredClone(selected), candidates: [{ repositoryRoot: "fixture" }] };
+    const result = f.adapter.withPublicationRecovery({ operation, generation,
+      boundary: { kind: "not-applied-publication-recovery-v1" }, commit: async (evidence, validate) => {
+        assert.deepEqual(evidence.frozen, [{ commit: "original-frozen" }]);
+        if (drift === "selection") selected = [{ ...selected[0], resultCommit: "changed" }];
+        if (drift === "frozen") frozen = "changed-frozen";
+        await validate(); admissions++; return { accepted: true };
+      } });
+    if (drift) await assert.rejects(result, /selection changed|frozen authority changed/u);
+    else assert.equal((await result).accepted, true);
+    assert.equal(locks, 1); assert.equal(depth, 0); assert.equal(admissions, drift ? 0 : 1);
+  }
 });
 
 test("terminal operation cleanup delegates only the persisted immutable generation", async () => {
@@ -140,12 +172,38 @@ test("publication reservation recomposes when accepted result identity changed",
   await f.adapter.reservePublication({
     operation: { workspaceId: "workspace-1", authorization: { taskIds: ["task-a"] } },
     generation: {
+      generation: 1, candidates: [],
       selectedResults: [{ taskId: "task-a", resultCommit: "result-1", acceptanceRevision: 2 }],
     },
     reserve: () => { effects.push("reserve"); return { applied: true }; },
     recompose: () => { effects.push("recompose"); return { applied: true }; },
   });
   assert.deepEqual(effects, ["recompose"]);
+});
+
+test("retained publication reservation still verifies its exact frozen recovery before reserving", async () => {
+  const f = fixture([]);
+  const frozen = { commit: "retained-commit", tree: "retained-tree" };
+  const candidate = { repositoryRoot: "retained-repository" };
+  let inspected = 0, reserved = 0;
+  f.adapter.releasePreflight.releaseGitWorkspaces = {
+    inspectRetainedGeneration: async input => {
+      inspected++;
+      assert.equal(input.candidate, candidate);
+      assert.equal(input.generation, 1);
+      return frozen;
+    },
+  };
+  const operation = { operationId: "original", workspaceId: "workspace", authorization: { taskIds: [] },
+    retainedGenerationRecoveries: [{ generation: 1, evidence: [{ frozen: [frozen] }] }] };
+  const input = { operation, generation: { generation: 1, candidates: [candidate], selectedResults: [] },
+    reserve: () => { reserved++; }, recompose: () => assert.fail("same selection must not recompose") };
+  await f.adapter.reservePublication(input);
+  assert.equal(inspected, 1);
+  assert.equal(reserved, 1);
+  operation.retainedGenerationRecoveries[0].evidence[0].frozen = [{ ...frozen, tree: "foreign-tree" }];
+  await assert.rejects(f.adapter.reservePublication(input), /Retained frozen candidate changed/u);
+  assert.equal(reserved, 1);
 });
 
 test("composition replays exact referenced release metadata and rejects changed bytes", async (t) => {

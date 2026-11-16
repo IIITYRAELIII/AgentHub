@@ -1,5 +1,25 @@
 # REL-001 — Task-backed Workspace release
 
+## Exact prepared evidence reconciliation (ADR-HUB-429-prepared-evidence)
+
+The existing release metadata recovery owner may restore a missing prepared
+manifest from its addressed immutable generation capture. It acquires the
+publication, Workspace Await, generation and repository leases in that order.
+Preview is read-only. Confirmation binds the same request, verified source,
+physical roots, original generation owner, current prepared checkpoint digest,
+plan, native preparation journal, clean refs/trees and whole capture digests.
+Reversing only the recorded capture relocation and prepared binding must
+reproduce the exact manifest hash already retained in the current checkpoint.
+Foreign, corrupt, occupied, changed or incomplete evidence refuses restoration.
+
+An exclusive atomic metadata receipt precedes the exclusive manifest link. Both
+use synced temporary files and never overwrite existing destinations. Current
+authority is checked again before each link. A lost reply resumes only the same
+admission; an identical restored manifest is read back without another effect.
+Checkpoint, refs, Task status, failed Await receipts and generation history remain
+unchanged. This operation does not compose, freeze, publish, install or settle an
+UNKNOWN operation. Ordinary Task acceptance must subsequently run its own guards.
+
 ## Original executor continuity after public self-install (ADR-HUB-429)
 
 Before publication effects, the runner retains the verified external tool's
@@ -29,6 +49,22 @@ prior UNKNOWN remains intact. Changed, partly admitted or unproved requests
 retain refusal. Existing operation scheduling resumes only recorded work.
 An installer-proof refusal preserves its content-free target/status/cursor reason
 so a failed Ready observation can be distinguished from changed custody or payload.
+
+A separate not-applied publication recovery admits a definite first-target
+failure before publisher launch. Its exact failed receipt must be NOT_APPLIED;
+later targets have no receipts and no target effect is applied. The original
+compose/validation receipts, candidate, complete accepted selection, test plan,
+version and notes remain unchanged. The existing Await owner rechecks selection
+and frozen custody, and the product owner proves every target not applied under
+the installation lease: execution namespaces are unstarted, remote main and the
+classified installed current still match the publication base, and the public
+version has neither tag nor release. Tool identity and physical location are
+verified and retained in the durable recovery before scheduling. SQL repeats
+the exact failed boundary and CAS. Foreign, changed, partial, applied or UNKNOWN
+evidence cannot enter this mode; the prior partial-publication route retains its
+own proof. Only remaining publication resumes, including the original full
+pipeline when still pending. No compose, clone, freeze or version reallocation
+occurs. Failed attempts and lost-reply admission history remain intact.
 
 Multiple authorized publication targets for one canonical repository share one
 repository approval only when both exact local-main and origin-main pins agree.

@@ -6,6 +6,7 @@ import { providerApplicationFixture } from "../helpers/provider-application.fixt
 test("runtime orchestration actually schedules and persists Codex terminal audit", async () => {
   const jobs = [];
   const events = [];
+  const maintenanceOperations = Object.freeze({});
   const timers = { schedule: (_name, callback) => { jobs.push(callback); return true; } };
   const wiring = await importCompositionWithPorts(
     new URL("../../src/composition/provider-runtime-wiring-composition.mjs", import.meta.url), {
@@ -16,7 +17,10 @@ test("runtime orchestration actually schedules and persists Codex terminal audit
       "./provider-runtime-wiring-composition.mjs": { createProviderRuntimeWiring: wiring.createProviderRuntimeWiring },
       "./runtime-timers-composition.mjs": { createRuntimeTimersComposition: () => ({}) },
       "./task-interaction-wiring-composition.mjs": { createTaskInteractionWiring: () => ({}) },
-      "./runtime-restart-wiring-composition.mjs": { createRuntimeRestartWiring: () => ({ runtimeResources: {} }) },
+      "./runtime-restart-wiring-composition.mjs": { createRuntimeRestartWiring: options => {
+        assert.equal(options.runtimeRestart.maintenanceOperations, maintenanceOperations);
+        return { runtimeResources: {} };
+      } },
     });
   const providerRuntime = boundPort();
   const hostState = { stopping: false };
@@ -27,7 +31,7 @@ test("runtime orchestration actually schedules and persists Codex terminal audit
     provider: { hubThreadNaming: {}, codexTransport: { running: true },
       codexTerminalAudit: { persistsProgress: false, hasPendingHistoricalMaintenance: () => false,
         run: async () => { events.push("audit"); return true; } } },
-    tasks: {}, clients: {}, persistence: { workLogUsageStore: { recordAutomaticBatchAndProject() {} } }, lifecycle: {},
+    tasks: {}, clients: {}, persistence: { workLogUsageStore: { recordAutomaticBatchAndProject() {} } }, lifecycle: { restartRequestService: { operationStore: maintenanceOperations } },
     ports: { providerRuntime, taskInteraction: boundPort(), runtimeRestart: boundPort() },
   });
   providerRuntime.value.scheduleCodexTerminalAudit(0);

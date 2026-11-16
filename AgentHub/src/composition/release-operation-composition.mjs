@@ -1,3 +1,5 @@
+import { publicationRuntimeStatus, startInstalledPublicationRuntime } from "../runtime/runtime-publication-start.mjs";
+import { waitForRuntimeReplacement } from "../runtime/publication-readiness.mjs";
 import { releaseTestPlans } from "../infrastructure/filesystem/release-test-inventory.mjs";
 import { ReleaseOperationService } from "../application/release-operation-service.mjs";
 import { ReleaseOperationCommandService } from "../application/release-operation-command-service.mjs";
@@ -17,7 +19,10 @@ export function createReleaseOperationServices({
   recordCommandTrace = () => false,
   observeOperation = createReleaseProgressObserver({ runtimeRoot }),
   store = new ReleaseOperationStore({ dataDir }),
-  publication = new ReleaseOperationPublication({ dataDir, runtimeRoot }),
+  publication = new ReleaseOperationPublication({ dataDir, runtimeRoot,
+    publicRuntimeInstallerPorts: { readStatus: publicationRuntimeStatus,
+      verifyReady: waitForRuntimeReplacement, startRuntime: startInstalledPublicationRuntime },
+  }),
   finalization = new ReleaseOperationFinalization({ taskBoard, releaseGitWorkspaces, taskGitWorkspaces }),
 } = {}) {
   store.recordPersistence = diagnostic => {

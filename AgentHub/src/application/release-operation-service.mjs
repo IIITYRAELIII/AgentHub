@@ -581,11 +581,16 @@ export class ReleaseOperationService {
       return { accepted: false, reason: "ineligible", operation: current };
     }
     const generation = this.store.generation(operationId, expectedGeneration);
-    return this.withPublicationRecovery({ operation: current, generation, commit: async (evidence, validate) => {
+    return this.withPublicationRecovery({ operation: current, generation, boundary, commit: async (evidence, validate) => {
       if (!evidence || typeof validate !== "function") throw new Error("Publication recovery requires owning evidence");
+      const notApplied = boundary.kind === "not-applied-publication-recovery-v1";
+      if (notApplied && generation.testPlans && (typeof this.resolveTestPlans !== "function"
+        || releaseIdentitySha256(await this.resolveTestPlans(generation.candidates, effectiveTestSelection(current)))
+          !== releaseIdentitySha256(generation.testPlans))) throw new Error("Publication recovery test inventory changed");
       await validate();
       const contents = { requestId, operationId, priorRevision: expectedRevision, generation: expectedGeneration,
         authorizationFingerprint: current.authorization.fingerprint, boundary, evidence,
+        ...(notApplied ? { readbacks: evidence.readbacks } : {}),
         ...(uncapturedOnly ? { admission: { kind: "uncaptured-publication-recovery-v1",
           priorRevision: expectedRevision, generation: expectedGeneration,
           recoveriesSha256: releaseIdentitySha256(current.publicationRecoveries ?? []) } } : {}) };

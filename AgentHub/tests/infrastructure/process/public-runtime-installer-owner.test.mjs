@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { importCompositionWithPorts } from "../../helpers/composition-ports.fixture.mjs";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -9,7 +10,8 @@ import { packageBindingDigest, packageFile } from "../../../src/infrastructure/f
 import { publicationRunStore } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 
-async function fixture(t, { childExit = 0, initiallyStopped = false, firstInstall = false, lostStartReply = false } = {}) {
+async function fixture(t, { childExit = 0, initiallyStopped = false, firstInstall = false, lostStartReply = false,
+  createInstaller = createPublicRuntimeInstaller } = {}) {
   const area = await mkdtemp(path.join(os.tmpdir(), "ah-public-install-owner-"));
   t.after(() => rm(area, { recursive: true, force: true }));
   const runtimeRoot = path.join(area, "runtime");
@@ -76,7 +78,7 @@ async function fixture(t, { childExit = 0, initiallyStopped = false, firstInstal
       return child;
     },
   };
-  const owner = createPublicRuntimeInstaller(options);
+  const owner = await createInstaller(options);
   async function succeed() {
     const saved = (await journal.read()).progress.publicRuntimeInstaller;
     const binding = { operationId: saved.owner.operationId, runtimeRoot, dataDir: path.join(runtimeRoot, "data"),
@@ -238,4 +240,35 @@ test("lost reply after owned scratch checkpoint resumes the same physical prepar
   assert.equal(after.owner.operationId, before.owner.operationId);
   assert.equal(after.installer.sha256, f.input().target.installer.sha256);
   assert.equal(f.state().children, 0);
+});
+
+
+for (const lostStartReply of [false, true]) test(`independent publication runner binds modern installer ports; lost cold start=${lostStartReply}`, async t => {
+  const f = await fixture(t, { initiallyStopped: true, firstInstall: true, lostStartReply,
+    createInstaller: async options => {
+      const { readStatus, verifyReady, startRuntime, ...runnerInput } = options;
+      const { createReleaseOperationPublicInstaller } = await importCompositionWithPorts(
+        new URL("../../../release-operation-publication-runner.mjs", import.meta.url), {
+          "./src/runtime/runtime-publication-start.mjs": {
+            publicationRuntimeStatus: readStatus, startInstalledPublicationRuntime: startRuntime,
+          },
+          "./src/runtime/publication-readiness.mjs": { waitForRuntimeReplacement: verifyReady },
+        });
+      return createReleaseOperationPublicInstaller(runnerInput);
+    },
+  });
+  await f.owner.prepare();
+  if (lostStartReply) {
+    await assert.rejects(f.owner.dispatch(), /cold start reply lost/u);
+    assert.equal((await f.journal.read()).progress.publicRuntimeInstaller.phase, "cold_start_intent");
+    f.setStatus({ current: f.input().target.releaseId, running: true, ready: true });
+  }
+  assert.equal((await f.owner.dispatch()).status, "ready");
+  assert.equal(f.state().children, 1);
+  assert.equal(f.state().joined, 1);
+  assert.equal(f.state().starts, 1);
+  assert.ok(f.state().readyChecks > 0);
+  assert.equal((await f.owner.dispatch()).status, "ready");
+  assert.equal(f.state().children, 1);
+  assert.equal(f.state().starts, 1, "retained startup intent must never be repeated");
 });

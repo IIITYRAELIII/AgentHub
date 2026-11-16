@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, lstat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -509,13 +509,17 @@ test("partial generation amendment freezes a fresh identity and preserves both o
           } });
         return { planRevision: preparedInput.planRevision, releaseCandidates: [candidate] };
       },
-      validateOperationGeneration() {}, operationSelection() {}, withAwaitTransition() {},
+      validateOperationGeneration() {},
+      operationSelection: async () => frozenTasks.map(task => ({ taskId: task.taskId,
+        resultCommit: task.resultCommit, acceptanceRevision: task.taskRevision })),
+      withAwaitTransition: async (_workspaceId, callback) => callback(),
     },
     publication: { publish: () => assert.fail("no publication"), readback() {} }, finalization: { finalize() {} },
   });
   const store = new ReleaseOperationStore({ dataDir: sqlData });
   const service = new ReleaseOperationService({ store, schedule: callback => scheduled.push(callback), processAlive: () => false,
     compose: input => adapter.compose(input),
+    withTaskSelection: input => adapter.withTaskSelection(input),
     validate: async () => { throw Object.assign(new Error("fixture stops before publication"), { code: "RELEASE_VALIDATION_FAILED" }); },
     publishTarget: () => assert.fail("no publication"), finalize: async () => {},
     readTarget: async () => ({ status: (await generationGit(primary, "ls-remote", "origin", "refs/heads/main")).split(/\s+/u)[0] === base ? "not_applied" : "unknown", revision: base }),
@@ -527,10 +531,26 @@ test("partial generation amendment freezes a fresh identity and preserves both o
       approvedTargets: [{ targetId: "origin", kind: "git", repositoryRoot: primary }] } });
   await run();
   assert.equal(store.get(ack.operationId).currentGeneration, 1);
-  service.continue(ack.operationId); await run();
+  const beforePlainContinue = store.snapshot(ack.operationId);
+  const plainContinue = await service.continue(ack.operationId);
+  assert.equal(plainContinue.accepted, false);
+  assert.equal(plainContinue.reason, "test-selection-required");
+  assert.deepEqual(store.snapshot(ack.operationId), beforePlainContinue);
+  assert.equal(scheduled.length, 0);
+  const amendSameInputs = async requestId => {
+    const current = store.get(ack.operationId);
+    const admitted = await service.continue(ack.operationId, { requestId,
+      expectedRevision: current.revision, expectedGeneration: current.currentGeneration,
+      taskIds: ["task"], testSelection: selection("none"), releaseMetadata: oldMetadata });
+    assert.equal(admitted.accepted, true, JSON.stringify({ reason: admitted.reason }));
+    return admitted;
+  };
+  await amendSameInputs("explicit-same-inputs-generation-two"); await run();
   assert.equal(store.get(ack.operationId).currentGeneration, 2);
   const oldGenerations = store.snapshot(ack.operationId).generations;
-  failCapture = true; service.continue(ack.operationId); await run(); failCapture = false;
+  failCapture = true;
+  await amendSameInputs("explicit-same-inputs-failed-generation-three"); await run();
+  failCapture = false;
   const failed = store.snapshot(ack.operationId);
   assert.equal(failed.operation.state, "failed");assert.equal(failed.operation.currentGeneration, 2);
   assert.equal(store.generation(ack.operationId, 3), null);
@@ -539,10 +559,26 @@ test("partial generation amendment freezes a fresh identity and preserves both o
   const partial = path.join(sourceData, "release-gens", key), identity = await readFile(path.join(partial, "identity.json"));
   assert.ok(JSON.parse(identity).preparedCandidate.inputHash);
   assert.equal((await readdir(partial, { recursive: true })).some(name => path.basename(name) === "checkpoint.json"), false);
-  const oldBundle = await readFile(path.join(partial, "source.bundle"));
   await writeFile(path.join(partial, "retained.keep"), "useful partial evidence\n");
+  const partialInventory = async () => {
+    const files = [];
+    for (const relative of (await readdir(partial, { recursive: true })).sort()) {
+      const file = path.join(partial, relative), info = await lstat(file);
+      if (info.isDirectory()) continue;
+      assert.equal(info.isFile(), true, `unexpected retained entry ${relative}`);
+      const bytes = await readFile(file);
+      files.push({ relative, mode: info.mode, bytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex") });
+    }
+    return files;
+  };
+  // The native owner no longer creates a mandatory source.bundle. Preserve
+  // every actual retained file, including a legacy bundle when one exists.
+  const retainedFiles = await partialInventory();
+  assert.ok(retainedFiles.some(file => file.relative === "identity.json"));
+  assert.ok(retainedFiles.some(file => file.relative === "retained.keep"));
   const options = { requestId: "explicit-corrected-metadata", expectedRevision: failed.operation.revision, expectedGeneration: 2,
-    releaseMetadata: nextMetadata, testSelection: selection("none") };
+    taskIds: ["task"], releaseMetadata: nextMetadata, testSelection: selection("none") };
   const amendment = await service.continue(ack.operationId, options);assert.equal(amendment.accepted, true);
   assert.deepEqual((await service.continue(ack.operationId, options)).amendment, amendment.amendment);
   const reopened = new ReleaseOperationStore({ dataDir: sqlData });
@@ -556,7 +592,7 @@ test("partial generation amendment freezes a fresh identity and preserves both o
   assert.deepEqual(after.operation.authorization, failed.operation.authorization);
   assert.equal(after.operation.operationId, ack.operationId);assert.equal(store.generation(ack.operationId, 3), null);
   assert.deepEqual(await readFile(path.join(partial, "identity.json")), identity);
-  assert.deepEqual(await readFile(path.join(partial, "source.bundle")), oldBundle);
+  assert.deepEqual(await partialInventory(), retainedFiles);
   assert.equal(await readFile(path.join(partial, "retained.keep"), "utf8"), "useful partial evidence\n");
   const candidate = store.generation(ack.operationId, 4).candidates[0];
   assert.notEqual(candidate.generationRoot, partial);

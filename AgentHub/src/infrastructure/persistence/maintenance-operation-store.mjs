@@ -13,7 +13,7 @@ import {
 } from "../../domain/maintenance-operation.mjs";
 import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
-import { packageBindingDigest } from "../filesystem/runtime-package-target.mjs";
+import { packageBindingDigest } from "../../domain/runtime-package-identity.mjs";
 
 const LEGACY_RESTART_MIGRATION_KEY = "maintenance-operations:legacy-restart:v1";
 
@@ -80,8 +80,12 @@ export class MaintenanceOperationStore {
     this.now = now;
   }
 
-  runRestartMutation(operation, options = {}) {
+  runMaintenanceMutation(operation, options = {}) {
     return this.#restartMutations.run(operation, options);
+  }
+
+  runRestartMutation(operation, options = {}) {
+    return this.runMaintenanceMutation(operation, options);
   }
 
   #withDatabase(callback) {

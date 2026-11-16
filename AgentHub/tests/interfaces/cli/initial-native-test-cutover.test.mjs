@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { preparationObjectStore } from "../../../src/infrastructure/filesystem/preparation-git-isolation.mjs";
 import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile, unlink } from "node:fs/promises";
 import os from "node:os";
@@ -819,7 +820,8 @@ test("preparation recovery actual ancestry refusal after main audit resumes same
   f.publication.generation = "fixture";
   const replies = await Promise.allSettled([f.invoke("hub_release_prepare_resume", f.resumeArgs),
     f.invoke("hub_release_prepare_resume", f.resumeArgs)]);
-  assert.equal(replies.filter(reply => reply.status === "fulfilled").length, 1);
+  assert.equal(replies.filter(reply => reply.status === "fulfilled").length, 1,
+    JSON.stringify(replies.map(reply => reply.status === "rejected" ? reply.reason.message : "fulfilled")));
   const result = replies.find(reply => reply.status === "fulfilled").value;
   assert.equal(result.requestId, f.originalId);
   const finished = f.catalog.mcpOperation(f.originalId);
@@ -1169,29 +1171,44 @@ test("reviewer concurrent lock refusal cannot poison current preparation owner",
     if(first){first=false;staleEntered.resolve();await refuseStale.promise;throw new Error("Workspace Await lock acquisition refused before owner transfer");}
     return awaitBoundary(...args);
   };
-  let effects=0;
+  let candidateAdmissions=0;
   const prepare=f.releaseGit.prepareCandidate.bind(f.releaseGit);
-  f.releaseGit.prepareCandidate=async (...args)=>{effects++;composeEntered.resolve();await finishCompose.promise;return prepare(...args);};
+  f.releaseGit.prepareCandidate=async (...args)=>{
+    // The same real method delegates into its already-owned object-store
+    // context. Count owner admission, not that internal recursive invocation.
+    if (!preparationObjectStore()) {
+      candidateAdmissions++; composeEntered.resolve(); await finishCompose.promise;
+    }
+    return prepare(...args);
+  };
   const stale=f.invoke("hub_release_prepare_resume",f.resumeArgs).then(value=>({value}),error=>({error:error.message}));
-  await staleEntered.promise;
-  const winner=f.invoke("hub_release_prepare_resume",f.resumeArgs).then(value=>({value}),error=>({error:error.message}));
-  await composeEntered.promise;
-  const owned=f.catalog.mcpOperation(f.originalId);
-  refuseStale.resolve();const refused=await stale;
-  const afterRefusal=f.catalog.mcpOperation(f.originalId);
-  finishCompose.resolve();const completed=await winner;
-  const final=f.catalog.mcpOperation(f.originalId);
-  console.log(JSON.stringify({reviewerRace:{owned:{status:owned.status,phase:owned.preparationState.phase,revision:owned.preparationState.revision,ownerId:owned.preparationState.ownerId},refused,
-    afterRefusal:{status:afterRefusal.status,error:afterRefusal.error,phase:afterRefusal.preparationState.phase,revision:afterRefusal.preparationState.revision,ownerId:afterRefusal.preparationState.ownerId},completed,
-    final:{status:final.status,phase:final.preparationState.phase,revision:final.preparationState.revision}}}));
-  assert.equal(afterRefusal.receiptState,owned.receiptState,"unowned lock refusal changed the live invocation's receipt");
-  assert.deepEqual(afterRefusal,owned);
-  assert.match(refused.error,/lock acquisition refused/u);
-  assert.equal(effects,1);
-  assert.deepEqual(await f.invoke("hub_release_prepare_resume",f.resumeArgs),completed.value);
-  assert.equal(effects,1);
-  assert.deepEqual(f.catalog.mcpOperation(f.originalId),final);
-  assert.ok(completed.value,"the actual owned winner must complete");
+  let winner;
+  try {
+    await Promise.race([staleEntered.promise, stale.then(result => {
+      assert.fail(`stale invocation settled before reaching its barrier: ${JSON.stringify(result)}`);
+    })]);
+    winner=f.invoke("hub_release_prepare_resume",f.resumeArgs).then(value=>({value}),error=>({error:error.message}));
+    await Promise.race([composeEntered.promise, winner.then(result => {
+      assert.fail(`owned winner settled before composition: ${JSON.stringify(result)}`);
+    })]);
+    const owned=f.catalog.mcpOperation(f.originalId);
+    refuseStale.resolve();const refused=await stale;
+    const afterRefusal=f.catalog.mcpOperation(f.originalId);
+    finishCompose.resolve();const completed=await winner;
+    const final=f.catalog.mcpOperation(f.originalId);
+    assert.equal(afterRefusal.receiptState,owned.receiptState,"unowned lock refusal changed the live invocation's receipt");
+    assert.deepEqual(afterRefusal,owned);
+    assert.match(refused.error,/lock acquisition refused/u);
+    assert.ok(completed.value, `owned winner did not complete: ${JSON.stringify(completed)}`);
+    assert.equal(candidateAdmissions,1);
+    assert.deepEqual(await f.invoke("hub_release_prepare_resume",f.resumeArgs),completed.value);
+    assert.equal(candidateAdmissions,1);
+    assert.deepEqual(f.catalog.mcpOperation(f.originalId),final);
+  } finally {
+    refuseStale.resolve();
+    finishCompose.resolve();
+    await Promise.allSettled([stale, ...(winner ? [winner] : [])]);
+  }
 });
 
 

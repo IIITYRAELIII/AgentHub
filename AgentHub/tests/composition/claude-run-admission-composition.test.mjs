@@ -139,18 +139,7 @@ function harness(snapshot) {
       return launchEffect(run, ...args);
     },
   });
-  const runAdmission = createRunAdmissionComposition({
-    config: { deferredInputTtlHours: 24, maxDeferredInputs: 10 },
-    agentProviders: providers,
-    taskRuns,
-    managedRunLifecycle: lifecycle,
-    pendingInputs: new Map(),
-    queuedInputs: new Map(),
-    stageLaunchAdmission: (run) => gate.stageLaunch(run),
-    abortLaunchAdmission: (run, ticket) => gate.abortLaunch(run, ticket),
-    streamHandoff: { consume: async () => "HANDOFF" },
-    logger: { warn() {}, error() {} },
-  });
+  let runAdmission;
   const coordinator = new RunCoordinator({
     taskRuns,
     providers,
@@ -162,7 +151,20 @@ function harness(snapshot) {
     }),
     beginRun: (input, target) => lifecycle.begin(input, target),
     rollbackAdmission: (run) => lifecycle.releaseAdmission(run),
-    launchTurn: runAdmission.launchTurn,
+    launchTurn: (...args) => runAdmission.launchTurn(...args),
+  });
+  runAdmission = createRunAdmissionComposition({
+    config: { deferredInputTtlHours: 24, maxDeferredInputs: 10 },
+    agentProviders: providers,
+    taskRuns,
+    runCoordinator: coordinator,
+    managedRunLifecycle: lifecycle,
+    pendingInputs: new Map(),
+    queuedInputs: new Map(),
+    stageLaunchAdmission: (run) => gate.stageLaunch(run),
+    abortLaunchAdmission: (run, ticket) => gate.abortLaunch(run, ticket),
+    streamHandoff: { consume: async () => "HANDOFF" },
+    logger: { warn() {}, error() {} },
   });
   const compactions = {
     record: null,

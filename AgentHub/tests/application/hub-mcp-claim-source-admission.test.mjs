@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { completionPersistenceFailure } from "../helpers/mcp-completion-persistence.fixture.mjs";
 import childProcess, { execFile } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
@@ -94,11 +95,15 @@ test("invalid claim source seals a terminal refusal and a fresh corrected admiss
 
 test("source refusal seal survives terminal-write loss and reopens with its original invalid locator", async t => {
   const f = await fixture(t); await f.route(f.invalid);
-  f.rawCatalog.failMcpOperation = () => { throw Error("lost terminal reply"); };
+  const terminalFailure = new Error("lost terminal reply");
+  f.rawCatalog.failMcpOperation = () => { throw terminalFailure; };
   const input = { ...f.args, request_id: "lost-source-original" };
-  await assert.rejects(f.hub.call("hub_task_claim", input), /lost terminal reply/);
+  await assert.rejects(f.hub.call("hub_task_claim", input),
+    completionPersistenceFailure("TASK_CLAIM_SOURCE_ADMISSION_FAILED", terminalFailure));
   const original = f.catalog.mcpOperation(input.request_id);
-  assert.equal(original.status, "unknown"); assert.equal(original.result.evidence.kind, "task-claim-source-admission-v1");
+  assert.equal(original.status, "pending"); assert.equal(original.result.evidence.kind, "task-claim-source-admission-v1");
+  assert.equal(original.taskExecution.completionFailure.originalError.code, "TASK_CLAIM_SOURCE_ADMISSION_FAILED");
+  assert.equal(original.taskExecution.completionFailure.persistenceError.message, terminalFailure.message);
   await f.route(f.repo); const reopened = await f.open(), hub = f.service(reopened);
   await assert.rejects(f.reconcile(hub, "wrong-locator", input.request_id, f.repo), /locator/);
   const result = await f.reconcile(hub, "exact-source-reconcile", input.request_id);

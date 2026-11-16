@@ -102,6 +102,120 @@ async function partialPublicationFixture(t, overrides = {}) {
   return { ...f, scheduled, operationId, candidate };
 }
 
+async function unstartedPublicationFixture(t, overrides = {}) {
+  const scheduled = [];
+  let pinned = false, f;
+  f = await fixture(t, { schedule: callback => scheduled.push(callback),
+    compose: async () => { f.calls.push(["compose", 1]); return { ...generation(), authorizedTaskIds: taskIds }; },
+    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({
+      repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection, ["tests/required-full.test.mjs"]),
+    })),
+    validate: async () => { f.calls.push(["validate", 1]); return { status: "ready", pipelineValidationRequired: true }; },
+    publishTarget: async ({ target, generation: value, operation }) => {
+      f.calls.push(["publish", target.targetId]);
+      if (!pinned) throw Error("External release tool requires AGENT_HUB_RELEASE_TOOLS_ROOT and its SHA256 pin");
+      assert.equal(operation.authorization.validationMode, "full");
+      assert.equal(value.testPlans[0].plan.selection.mode, "all");
+      const effect = { status: "applied", revision: `${target.targetId}-revision` };
+      f.effects.set(target.targetId, effect); return effect;
+    },
+    withPublicationRecovery: async ({ generation: value, commit }) => {
+      if (!pinned) throw Error("exact tool pin still missing");
+      const inspect = () => ({ kind: "fixture-unstarted-publication-owner", readbacks: targets.map(target => ({
+        targetId: target.targetId, generation: value.generation,
+        evidence: f.effects.get(target.targetId) ?? { status: "not_applied" },
+      })) });
+      const evidence = inspect();
+      return commit(evidence, async () => assert.deepEqual(inspect(), evidence));
+    }, ...overrides });
+  const created = f.service.start({ requestId: "unstarted-original", workspaceId: "workspace-1", streamId: "stream-1", threadId: "thread-1",
+    authorization: { taskIds, taskScope: "all_await", approvedTargets: targets, validationMode: "full", testSelection: { mode: "all", ids: [] } } });
+  scheduled.shift()(); await f.service.drain(created.operationId);
+  assert.equal(f.store.get(created.operationId).state, "failed");
+  return { ...f, scheduled, operationId: created.operationId, candidate: f.store.generation(created.operationId, 1),
+    fixPin: () => { pinned = true; } };
+}
+
+test("not-applied first publication resumes SAME generation and preserves pending full pipeline", async t => {
+  const f = await unstartedPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  const options = { requestId: "same-unstarted-recovery", expectedRevision: before.operation.revision, expectedGeneration: 1 };
+  assert.equal(before.receipts.find(row => row.stepId === "publish:git").effect.status, "not_applied");
+  assert.equal(before.receipts.some(row => row.stepId === "publish:runtime"), false);
+  assert.equal(before.receipts.find(row => row.stepId === "validate").effect.pipelineValidationRequired, true);
+  await assert.rejects(async () => f.service.continue(f.operationId, options), /tool pin still missing/u);
+  assert.deepEqual(f.store.snapshot(f.operationId), before);
+  f.fixPin();
+  assert.equal((await f.service.continue(f.operationId, options)).accepted, true);
+  const admitted = f.store.snapshot(f.operationId);
+  assert.deepEqual(admitted.generations, before.generations);
+  assert.deepEqual(admitted.receipts, before.receipts);
+  assert.deepEqual(admitted.operation.publicationEffects, before.operation.publicationEffects);
+  assert.equal(admitted.operation.publicationRecoveries[0].boundary.kind, "not-applied-publication-recovery-v1");
+  assert.deepEqual(admitted.operation.publicationRecoveries[0].boundary.priorFailure,
+    { completedAt: before.operation.completedAt, error: before.operation.lastError });
+  assert.equal((await f.service.continue(f.operationId, options)).duplicate, true);
+  assert.equal(f.scheduled.length, 1);
+  f.scheduled.shift()(); await f.service.drain(f.operationId);
+  const after = f.store.snapshot(f.operationId);
+  assert.equal(after.operation.state, "done");
+  assert.deepEqual(after.generations, before.generations);
+  assert.equal(after.operation.currentGeneration, 1);
+  assert.equal(f.calls.filter(row => row[0] === "compose").length, 1);
+  assert.equal(f.calls.filter(row => row[0] === "validate").length, 1);
+  assert.deepEqual(after.receipts.find(row => row.stepId === "publish:git" && row.attempt === 1),
+    before.receipts.find(row => row.stepId === "publish:git"));
+  assert.equal(after.receipts.find(row => row.stepId === "publish:git" && row.attempt === 2).status, "applied");
+});
+
+test("not-applied publication recovery refuses partial, unknown, foreign and changed target authority", async t => {
+  const f = await unstartedPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  assert.equal(failedPublicationRecovery(before).kind, "not-applied-publication-recovery-v1");
+  const first = before.receipts.findIndex(row => row.stepId === "publish:git");
+  for (const status of ["partial", "unknown", "applied"]) {
+    const changed = structuredClone(before); changed.receipts[first].effect.status = status;
+    assert.equal(failedPublicationRecovery(changed), null);
+  }
+  for (const change of [
+    value => { value.receipts[first].status = "unknown"; },
+    value => { value.receipts[first].input.target.targetId = "foreign"; },
+    value => { value.operation.publicationEffects.targets = { runtime: { status: "applied" } }; },
+    value => { value.receipts.push({ ...value.receipts[first], stepId: "publish:runtime" }); },
+    value => { value.generations.push({ ...value.generations[0], generation: 2 }); },
+    value => { value.operation.owner = { pid: process.pid }; },
+    value => { value.operation.lastError.message = "different failure"; },
+  ]) { const changed = structuredClone(before); change(changed); assert.equal(failedPublicationRecovery(changed), null); }
+  f.fixPin();
+  const options = { requestId: "refused-unstarted", expectedRevision: before.operation.revision, expectedGeneration: 1 };
+  assert.equal((await f.service.continue(f.operationId, { ...options, expectedRevision: options.expectedRevision - 1 })).reason, "stale-revision");
+  for (const status of ["partial", "unknown", "applied"]) {
+    f.effects.set("runtime", { status });
+    await assert.rejects(f.service.continue(f.operationId, options), /every exact target readback/u);
+    assert.deepEqual(f.store.snapshot(f.operationId), before);
+  }
+  assert.equal(f.scheduled.length, 0);
+});
+
+test("not-applied publication recovery repeats inventory and canonical failed receipt at admission", async t => {
+  const f = await unstartedPublicationFixture(t), before = f.store.snapshot(f.operationId);
+  f.fixPin();
+  const options = { requestId: "same-cas-recovery", expectedRevision: before.operation.revision, expectedGeneration: 1 };
+  const resolver = f.service.resolveTestPlans;
+  f.service.resolveTestPlans = async () => [];
+  await assert.rejects(f.service.continue(f.operationId, options), /test inventory changed/u);
+  assert.deepEqual(f.store.snapshot(f.operationId), before);
+  f.service.resolveTestPlans = resolver;
+  f.service.withPublicationRecovery = async ({ generation: value, commit }) => commit({
+    readbacks: targets.map(target => ({ targetId: target.targetId, generation: value.generation, evidence: { status: "not_applied" } })),
+  }, async () => {
+    const failed = f.store.latestStep(f.operationId, 1, "publish:git");
+    f.store.beginStep({ operationId: f.operationId, generation: 1, stepId: failed.stepId, input: failed.input });
+  });
+  await assert.rejects(f.service.continue(f.operationId, options), /capture changed/u);
+  assert.equal(f.store.get(f.operationId).state, "failed");
+  assert.equal(f.store.get(f.operationId).publicationRecoveries?.length ?? 0, 0);
+  assert.equal(f.scheduled.length, 0);
+});
+
 test("partial publication recovery keeps original generation, applied receipts and lost-ACK admission", async t => {
   const f = await partialPublicationFixture(t), before = f.store.snapshot(f.operationId);
   const options = { requestId: "same-partial-recovery", expectedRevision: before.operation.revision, expectedGeneration: 1 };
@@ -139,8 +253,8 @@ test("partial publication recovery refuses stale, changed receipt and unproved o
   assert.equal(f.scheduled.length, 0);
 });
 
-async function publicPartialPublicationFixture(t, overrides = {}) {
-  const f = await partialPublicationFixture(t, overrides), before = f.store.snapshot(f.operationId);
+async function publicPartialPublicationFixture(t, overrides = {}, publicationFixture = partialPublicationFixture) {
+  const f = await publicationFixture(t, overrides), before = f.store.snapshot(f.operationId);
   const catalogRoot = await mkdtemp(path.join(os.tmpdir(), "partial-publication-catalog-"));
   const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(catalogRoot, "catalog.sqlite") });
   await catalog.load();
@@ -161,6 +275,67 @@ async function publicPartialPublicationFixture(t, overrides = {}) {
     operation_id: f.operationId, request_id: "same-public-partial", expected_revision: before.operation.revision, expected_generation: 1 };
   return { ...f, before, catalog, hub, args, releaseManager };
 }
+
+test("public not-applied publication pin recovery preserves SAME UNKNOWN, actor and lost admission ACK", async t => {
+  const { before, catalog, hub, args, ...f } = await publicPartialPublicationFixture(t, {}, unstartedPublicationFixture);
+  await assert.rejects(hub.call("hub_release_continue", args), /tool pin still missing/u);
+  const unknown = catalog.mcpOperation(args.request_id);
+  assert.equal(unknown.status, "unknown");
+  assert.deepEqual(f.store.snapshot(f.operationId), before);
+  await assert.rejects(hub.call("hub_release_continue", { ...args, expected_revision: 1 }), /another operation/u);
+  await assert.rejects(hub.call("hub_release_continue", { ...args,
+    context_token: hub.contextToken({ provider: "codex", threadId: "other-thread" }) }), /another operation/u);
+  await assert.rejects(hub.call("hub_release_continue", { ...args, test_selection: { mode: "none", ids: [] } }), /another operation/u);
+  f.fixPin();
+  const complete = catalog.completeUnknownMcpOperation.bind(catalog);
+  catalog.completeUnknownMcpOperation = () => { throw Error("controlled lost zero-effect admission reply"); };
+  await assert.rejects(hub.call("hub_release_continue", args), /receipt reconciliation is required/u);
+  catalog.completeUnknownMcpOperation = complete;
+  const result = await hub.call("hub_release_continue", args);
+  assert.equal(result.accepted, true);
+  assert.equal(result.operatorReconciliation.kind, "failed-publication-admission-readback-v1");
+  assert.deepEqual(result.operatorReconciliation.priorReceipt,
+    { status: unknown.status, error: unknown.error, createdAtMs: unknown.createdAtMs, completedAtMs: unknown.completedAtMs });
+  assert.equal(catalog.mcpOperation(args.request_id).argumentsHash, unknown.argumentsHash);
+  assert.deepEqual(await hub.call("hub_release_continue", args), result);
+  assert.equal(f.store.get(f.operationId).publicationRecoveries.length, 1);
+  assert.equal(f.scheduled.length, 1);
+  assert.deepEqual(f.store.snapshot(f.operationId).generations, before.generations);
+  assert.deepEqual(f.store.snapshot(f.operationId).receipts, before.receipts);
+});
+
+test("public not-applied recovery preserves terminal refusal before a fresh addressed same-generation continuation", async t => {
+  const { before, catalog, hub, args, ...f } = await publicPartialPublicationFixture(t, {}, unstartedPublicationFixture);
+  const continuation = f.service.continue.bind(f.service);
+  // Existing protocol before this recovery mode returned a definite cached refusal.
+  f.service.continue = () => ({ accepted: false, reason: "terminal", operation: before.operation });
+  const refused = await hub.call("hub_release_continue", args);
+  assert.equal(refused.accepted, false);
+  assert.equal(refused.reason, "terminal");
+  const oldReceipt = catalog.mcpOperation(args.request_id);
+  assert.equal(oldReceipt.status, "succeeded");
+  f.service.continue = continuation;
+  f.fixPin();
+  assert.deepEqual(await hub.call("hub_release_continue", args), refused);
+  assert.deepEqual(catalog.mcpOperation(args.request_id), oldReceipt);
+  assert.deepEqual(f.store.snapshot(f.operationId), before);
+  const readback = await hub.call("hub_release_get", { context_token: args.context_token,
+    operation_request_id: args.request_id, original_arguments: args });
+  assert.equal(readback.originalCommand.status, "succeeded");
+  assert.equal(readback.originalCommand.terminal, true);
+  assert.equal(readback.originalCommand.active, false);
+  const next = { ...args, request_id: "explicit-after-definite-terminal-refusal" };
+  const result = await hub.call("hub_release_continue", next);
+  assert.equal(result.accepted, true);
+  assert.equal(f.scheduled.length, 1);
+  assert.equal(f.store.get(f.operationId).currentGeneration, 1);
+  assert.equal(f.store.get(f.operationId).publicationRecoveries.length, 1);
+  assert.equal(f.store.get(f.operationId).publicationRecoveries[0].requestId, next.request_id);
+  assert.deepEqual(f.store.snapshot(f.operationId).generations, before.generations);
+  assert.deepEqual(f.store.snapshot(f.operationId).receipts, before.receipts);
+  assert.deepEqual(catalog.mcpOperation(args.request_id), oldReceipt);
+  assert.deepEqual(await hub.call("hub_release_continue", next), result);
+});
 
 test("public partial publication lost ACK reconciles only its durable SAME admission and actor", async t => {
   const { before, catalog, hub, args, releaseManager, ...f } = await publicPartialPublicationFixture(t);

@@ -20,7 +20,8 @@ import { parseGitHubRemote } from "../persistence/github-publication-baseline.mj
 import { assertReleaseCloneForPublication, assertReleaseCandidateContourSource } from "../filesystem/release-git-workspace.mjs";
 import { measureTaskOperation } from "./task-operation-timing.mjs";
 import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
-import { withRuntimeInstallationLease, readRuntimePointer, captureRuntimeReleaseBinding } from "../filesystem/runtime-installation-custody.mjs";
+import { withRuntimeInstallationLease, readRuntimePointer, captureRuntimeReleaseBinding, readRuntimeManifest, sameRuntimeBinding } from "../filesystem/runtime-installation-custody.mjs";
+import { runtimeReleaseDirectory } from "../filesystem/runtime-layout.mjs";
 import { createPublicRuntimeInstaller, publicRuntimeInstallerBinding, readPublishedRuntimePackage } from "./public-runtime-installer.mjs";
 
 function identity(value) {
@@ -209,8 +210,8 @@ export class ReleaseOperationPublication {
     };
   }
 
-  async #originalTool(layout, runner = null) {
-    const prior = runner ?? await readJson(layout.stateFile);
+  async #originalTool(layout, runner = null, recoveredExecutor = null) {
+    const prior = runner ?? await readJson(layout.stateFile) ?? recoveredExecutor;
     const location = prior?.toolPackage;
     if (location && (location.schema !== 1 || !path.isAbsolute(location.root ?? "")
         || location.sha256 !== prior.tool?.sha256 || location.name !== prior.tool?.name
@@ -226,6 +227,22 @@ export class ReleaseOperationPublication {
         || prior?.tool && releaseIdentitySha256(prior.tool) !== releaseIdentitySha256({ name: tool.name,
           version: tool.version, sha256: tool.sha256 })) throw new Error("Original publication requires its recorded tool executor");
     return tool;
+  }
+
+  #recoveredPublicationExecutor(operation, generation, target) {
+    const recovery = operation.publicationRecoveries?.at(-1);
+    if (recovery?.boundary?.kind !== "not-applied-publication-recovery-v1") return null;
+    const { identitySha256, ...contents } = recovery;
+    const matches = recovery.evidence?.targets?.filter(item => item.targetId === target.targetId);
+    if (recovery.operationId !== operation.operationId || recovery.generation !== generation.generation
+      || recovery.boundary.candidate !== generation.identitySha256
+      || recovery.authorizationFingerprint !== operation.authorization.fingerprint
+      || releaseIdentitySha256(contents) !== identitySha256 || matches?.length !== 1
+      || matches[0].candidate !== candidateFor(generation, target).commit) {
+      throw new Error("Original publication recovery executor authority changed");
+    }
+    const toolPackage = matches[0].tool;
+    return { toolPackage, tool: { name: toolPackage?.name, version: toolPackage?.version, sha256: toolPackage?.sha256 } };
   }
 
   async publish({ operation, generation, target }) {
@@ -255,7 +272,8 @@ export class ReleaseOperationPublication {
         error.code = "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
         throw error;
       }
-      const tool = await this.#originalTool(layout);
+      const recoveredExecutor = this.#recoveredPublicationExecutor(operation, generation, target);
+      const tool = await this.#originalTool(layout, null, recoveredExecutor);
       if (operation.authorization?.runtimeInstallation === PUBLIC_RUNTIME_INSTALLATION) {
         const capabilities = await tool.module("src/publication-artifacts.mjs");
         if (capabilities.publicInstallerHandoffProtocol !== PUBLIC_INSTALLER_HANDOFF) {
@@ -266,6 +284,14 @@ export class ReleaseOperationPublication {
       }
       const toolIdentity = { name: tool.name, version: tool.version, sha256: tool.sha256 };
       const previousRunner = await readJson(layout.stateFile);
+      if (recoveredExecutor && (previousRunner
+        ? previousRunner.operationId !== operation.operationId || previousRunner.generation !== generation.generation
+          || previousRunner.targetId !== target.targetId || previousRunner.candidate !== generation.identitySha256
+          || releaseIdentitySha256(previousRunner.tool) !== releaseIdentitySha256(recoveredExecutor.tool)
+          || releaseIdentitySha256(previousRunner.toolPackage) !== releaseIdentitySha256(recoveredExecutor.toolPackage)
+        : (await readdir(layout.root)).length !== 0)) {
+        throw new Error("Original publication recovery executor namespace changed before launch");
+      }
       if (previousRunner && JSON.stringify(previousRunner.tool) !== JSON.stringify(toolIdentity)) {
         throw new Error("Original publication requires its recorded tool executor; use its retained caller without retargeting this generation");
       }
@@ -526,7 +552,7 @@ export class ReleaseOperationPublication {
     }, { environment: { ...this.environment }, lockTarget: path.join(layout.root, "publication") });
   }
 
-  async withPublicationRecovery({ operation, generation, commit }) {
+  async withPublicationRecovery({ operation, generation, boundary = null, commit }) {
     // Compatibility for the exact pre-resolver failure. Other terminal errors
     // require their own owning evidence, never a generic terminal retry.
     if (operation.lastError?.message !== "External release tool requires AGENT_HUB_RELEASE_TOOLS_ROOT and its SHA256 pin") {
@@ -536,6 +562,9 @@ export class ReleaseOperationPublication {
     if (targets.length !== 2 || targets.filter(target => target.environment === "github-release").length !== 1
       || targets.filter(target => publicRuntimeInstallerBinding({ operation, generation, target })).length !== 1) {
       throw new Error("Publication recovery requires its original public and installed targets");
+    }
+    if (boundary?.kind === "not-applied-publication-recovery-v1") {
+      return this.#withUnstartedPublicationRecovery({ operation, generation, targets, commit });
     }
     return withRuntimeInstallationLease(this.runtimeRoot, async lease => {
       const inspect = async () => {
@@ -578,6 +607,97 @@ export class ReleaseOperationPublication {
       return commit(evidence, async () => {
         if (releaseIdentitySha256(await inspect()) !== releaseIdentitySha256(evidence)) {
           throw new Error("Publication recovery evidence changed before admission");
+        }
+      });
+    });
+  }
+
+  async #withUnstartedPublicationRecovery({ operation, generation, targets, commit }) {
+    return withRuntimeInstallationLease(this.runtimeRoot, async lease => {
+      const physicalRoot = await realpath(this.runtimeRoot);
+      const inspectNamespace = async layout => {
+        const entry = await lstat(layout.root, { bigint: true }).catch(error => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (!entry) return { kind: "absent" };
+        if (!entry.isDirectory() || entry.isSymbolicLink() || (await readdir(layout.root)).length) {
+          throw new Error("Publication recovery executor namespace is not positively unstarted");
+        }
+        return { kind: "empty-directory", physicalRoot: await realpath(layout.root),
+          dev: String(entry.dev), ino: String(entry.ino) };
+      };
+      const inspect = async () => {
+        await lease.assertOwned();
+        const pointer = await readRuntimePointer(physicalRoot);
+        const currentRoot = runtimeReleaseDirectory(physicalRoot, pointer.current);
+        const currentBinding = await captureRuntimeReleaseBinding(currentRoot, pointer.current);
+        if (!sameRuntimeBinding(currentBinding, pointer.runtimeRetention?.current)) {
+          throw new Error("Publication recovery current runtime custody changed");
+        }
+        const { manifest } = await readRuntimeManifest(currentRoot);
+        const publication = await this.readPublicationState();
+        const remotes = new Map(), readbacks = [], targetEvidence = [];
+        for (const target of targets) {
+          const candidate = candidateFor(generation, target), layout = this.#layout(operation, generation, target);
+          const namespace = await inspectNamespace(layout);
+          const frozen = await assertReleaseCandidateContourSource({ sourceRoot: path.join(candidate.releaseRoot, "AgentHub") });
+          const marker = await readJson(frozen.markerFile);
+          const git = async (root, args) => (await promisify(execFile)("git", ownedGitArguments(args),
+            { cwd: root, encoding: "utf8", windowsHide: true })).stdout.trim();
+          const [head, dirty, main] = await Promise.all([
+            git(candidate.releaseRoot, ["rev-parse", "HEAD^{commit}", "HEAD^{tree}"]),
+            git(candidate.releaseRoot, ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"]),
+            git(candidate.repositoryRoot, ["rev-parse", "refs/heads/main^{commit}"]),
+          ]);
+          if (head.split(/\r?\n/u).join(" ") !== `${candidate.commit} ${candidate.tree}` || dirty
+            || path.resolve(marker?.primaryRoot ?? "") !== path.resolve(candidate.repositoryRoot)
+            || main !== target.approvedLocalMainCommit) throw new Error("Publication recovery frozen source or approved main changed");
+          const base = releasePublicationBaseCommit({ baseCommit: candidate.baseCommit, baseProvenance: candidate.manifest?.baseProvenance });
+          if (manifest.publicationRevision !== base || candidate.commit === base
+            || !(publication?.revision === base || publication?.repositories?.some(item =>
+              path.resolve(item.root ?? "") === path.resolve(candidate.repositoryRoot) && item.revision === base))) {
+            throw new Error("Publication recovery current runtime is not the original publication base");
+          }
+          const key = path.resolve(candidate.repositoryRoot);
+          if (!remotes.has(key)) remotes.set(key, await this.gitRemoteHead(candidate));
+          if (remotes.get(key) !== base || target.approvedOriginMainCommit !== base) {
+            throw new Error("Publication recovery remote effect is not positively absent");
+          }
+          const tool = await this.#originalTool(layout);
+          const capabilities = await tool.module("src/publication-artifacts.mjs");
+          if (capabilities.publicInstallerHandoffProtocol !== PUBLIC_INSTALLER_HANDOFF) throw new Error("Publication recovery executor policy changed");
+          let publicAbsence = null;
+          if (target.environment === "github-release") {
+            const remote = parseGitHubRemote(await git(candidate.repositoryRoot, ["remote", "get-url", "origin"]));
+            if (!remote) throw new Error("Publication recovery public repository is unproved");
+            const route = `/repos/${remote.owner}/${remote.repo}`;
+            const api = this.distributionApi ?? (await import("./github-release-publication.mjs")).githubReleaseTransport(undefined, tool);
+            const repository = await api("GET", route);
+            if (repository?.private !== false || repository.full_name?.toLowerCase() !== `${remote.owner}/${remote.repo}`.toLowerCase()
+              || !Number.isSafeInteger(repository.id) || !Number.isSafeInteger(repository.owner?.id)) throw new Error("Publication recovery public repository is unproved");
+            const version = artifactVersionIdentity(candidate.manifest.publication.runtimeReleaseVersion).publicVersion;
+            const tag = await api("GET", `${route}/git/ref/tags/${encodeURIComponent(version)}`, { missing: true });
+            const release = await api("GET", `${route}/releases/tags/${encodeURIComponent(version)}`, { missing: true });
+            if (tag !== null || release !== null) throw new Error("Publication recovery public release or tag already exists");
+            publicAbsence = { repository: { id: repository.id, ownerId: repository.owner.id, name: repository.full_name },
+              version, tag: "absent", release: "absent" };
+          }
+          await tool.assertUnchanged();
+          readbacks.push({ targetId: target.targetId, generation: generation.generation,
+            evidence: { status: "not_applied", revision: base, source: "unstarted-publication-owner-v1" } });
+          targetEvidence.push({ targetId: target.targetId, candidate: candidate.commit, namespace,
+            markerSha256: releaseIdentitySha256(marker), tool: tool.location, publicAbsence });
+        }
+        await lease.assertOwned();
+        return { kind: "not-applied-publication-owner-v1", readbacks, targets: targetEvidence,
+          runtime: { physicalRoot, pointerSha256: releaseIdentitySha256(pointer), currentBinding,
+            publicationRevision: manifest.publicationRevision, publicationStateSha256: releaseIdentitySha256(publication) } };
+      };
+      const evidence = await inspect();
+      return commit(evidence, async () => {
+        if (releaseIdentitySha256(await inspect()) !== releaseIdentitySha256(evidence)) {
+          throw new Error("Publication recovery not-applied authority changed before admission");
         }
       });
     });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import {
   mkdtemp,
   readFile,
@@ -150,10 +150,11 @@ test("desktop control exposes handler failures to the guarded diagnostics bounda
   }
 });
 
-test("desktop IPC retires delivered receipts and stays available beyond receipt capacity", async () => {
+test("desktop IPC retires delivered receipts and stays available beyond receipt capacity", async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-capacity-"));
   const receiptFile = path.join(runtimeRoot, "receipts.json");
   let effects = 0;
+  const retirementStages = [];
   const router = createDesktopControlRouter({
     handlers: { mutate: async ({ index }) => ({ index, effect: ++effects }) },
     mutationActions: ["mutate"],
@@ -164,7 +165,17 @@ test("desktop IPC retires delivered receipts and stays available beyond receipt 
     runtimeRoot,
     protectSecret: async () => {},
     handler: router.handleDesktopControl,
-    onResultDelivered: ({ id }) => router.forgetDesktopControl(id),
+    onResultDelivered: async ({ id }) => {
+      retirementStages.push({ id, stage: "ack-received", at: performance.now() });
+      try {
+        const retired = await router.forgetDesktopControl(id);
+        retirementStages.push({ id, stage: "receipt-retired", retired, at: performance.now() });
+        return retired;
+      } catch (error) {
+        retirementStages.push({ id, stage: "retirement-failed", code: error.code ?? error.name, at: performance.now() });
+        throw error;
+      }
+    },
   });
   try {
     await server.start();
@@ -182,6 +193,7 @@ test("desktop IPC retires delivered receipts and stays available beyond receipt 
       if (records.length === 0) break;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    t.diagnostic(JSON.stringify({ retirementStages: retirementStages.slice(-8) }));
     assert.deepEqual(records, []);
   } finally {
     await server.close();
@@ -217,6 +229,63 @@ test("desktop IPC returns a durable result before receipt retirement finishes", 
   } finally {
     releaseRetirement();
     await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("desktop client retains the acknowledgement connection after returning its business result", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-held-retirement-"));
+  const endpointId = randomBytes(32).toString("hex");
+  const secret = randomBytes(32).toString("hex");
+  const descriptor = { protocol: 2, endpointId, pipeName: `agent-hub-desktop-${endpointId}` };
+  const commandId = "held-retirement";
+  const acknowledged = Promise.withResolvers(), closed = Promise.withResolvers();
+  let peer, observationTimer;
+  const server = createServer(socket => {
+    peer = socket;
+    socket.setEncoding("utf8");
+    socket.on("close", () => closed.resolve(true));
+    let body = "";
+    socket.on("data", chunk => {
+      body += chunk;
+      for (let newline; (newline = body.indexOf("\n")) >= 0;) {
+        const message = JSON.parse(body.slice(0, newline));
+        body = body.slice(newline + 1);
+        if (message.type === "hello") {
+          const challenge = randomBytes(32).toString("hex");
+          const serverProof = createHmac("sha256", secret)
+            .update(["agent-hub-desktop/server/v2", endpointId, message.clientNonce, challenge].join("\n"))
+            .digest("hex");
+          socket.write(`${JSON.stringify({ type: "challenge", protocol: 2, endpointId, challenge, serverProof })}\n`);
+        } else if (message.type === "request") {
+          socket.write(`${JSON.stringify({ ok: true, result: { accepted: true }, ackRequired: true, commandId })}\n`);
+        } else if (message.type === "result-ack") acknowledged.resolve(message.commandId);
+      }
+    });
+  });
+  try {
+    await writeFile(desktopControlSecretFile(runtimeRoot), secret, "utf8");
+    await writeFile(desktopControlEndpointFile(runtimeRoot), JSON.stringify(descriptor), "utf8");
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(desktopControlEndpoint(runtimeRoot, descriptor), resolve);
+    });
+    assert.deepEqual(await callDesktopControl("send-message", {}, { runtimeRoot, commandId, timeoutMs: 1000 }), { accepted: true });
+    assert.equal(await Promise.race([
+      acknowledged.promise,
+      closed.promise.then(() => { throw new Error("Connection closed before result acknowledgement"); }),
+    ]), commandId);
+    const closedBeforeRetirement = await Promise.race([
+      closed.promise,
+      new Promise(resolve => { observationTimer = setTimeout(() => resolve(false), 100); }),
+    ]);
+    assert.equal(closedBeforeRetirement, false, "ACK write completion must not close an outstanding retirement exchange");
+    peer.end(`${JSON.stringify({ type: "result-retired", commandId, retired: true })}\n`);
+    await closed.promise;
+  } finally {
+    clearTimeout(observationTimer);
+    peer?.destroy();
+    await new Promise(resolve => server.close(resolve));
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });

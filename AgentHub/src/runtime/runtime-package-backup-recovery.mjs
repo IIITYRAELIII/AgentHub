@@ -8,7 +8,8 @@ import { packageBindingDigest, packageDirectory, packageFile, assertPackageFiles
 import { verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { inspectRuntimeBackupScope, assertRuntimeBackupScope } from "../infrastructure/persistence/runtime-maintenance-backup.mjs";
 import { withRuntimeInstallationLease } from "../infrastructure/filesystem/runtime-installation-custody.mjs";
-import { assertOldPackageCurrent, packageHandoffBinding } from "./runtime-package-handoff.mjs";
+import { assertOldPackageCurrent } from "../infrastructure/filesystem/runtime-package-current.mjs";
+import { packageHandoffBinding } from "../domain/runtime-package-identity.mjs";
 
 const execute = promisify(execFile);
 const SHA = /^[a-f0-9]{64}$/u;

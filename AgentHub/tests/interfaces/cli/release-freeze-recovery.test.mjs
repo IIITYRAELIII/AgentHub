@@ -17,6 +17,29 @@ const argumentsFor = (...extra) => [
   "--expected-origin-main", commit, ...extra,
 ];
 
+test("prepared metadata reconciliation uses the existing recovery CLI and exact dedicated owner", async () => {
+  const argv = argumentsFor("--recovery-mode", "restore-prepared-evidence-v1",
+    "--generation-operation-id", "original", "--generation", "1", "--expected-checkpoint-sha256", digest,
+    "--expected-prepared-tree", commit, "--expected-generation-owner-sha256", digest,
+    "--expected-capture-manifest-hash", digest, "--expected-frozen-manifest-hash", digest);
+  const input = parseReleaseFreezeRecoveryArguments(argv);
+  let observed;
+  const result = await executeReleaseFreezeRecovery(input, {
+    inspectSource: async () => ({ head: commit, ownerSha256: digest }), load: async () => ({ dataDir: "fixture" }),
+    createService: () => ({ recoverPreparedEvidence: async value => {
+      observed = value; return { status: "preview", proofHash: digest, effects: [] };
+    } }),
+  });
+  assert.equal(result.result.status, "preview");
+  assert.equal(observed.generationOperationId, "original");
+  assert.equal(observed.generation, 1);
+  assert.equal(observed.expected.checkpointSha256, digest);
+  assert.deepEqual(observed.sourceIdentity, { commit, ownerSha256: digest });
+  assert.equal(observed.confirm, false);
+  assert.throws(() => parseReleaseFreezeRecoveryArguments([...argv, "--confirm-recovery"]), /confirmation requires/u);
+  assert.throws(() => parseReleaseFreezeRecoveryArguments([...argv, "--generation", "0"]), /positive generation/u);
+});
+
 test("release freeze recovery CLI keeps preview read-only and passes exact identity", async () => {
   const input = parseReleaseFreezeRecoveryArguments(argumentsFor());
   let observed = null;

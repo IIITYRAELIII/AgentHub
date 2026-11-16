@@ -52,6 +52,32 @@ function selectionIdentity(value) {
 
 export class WorkspaceReleaseOperationAdapter {
   async withPublicationRecovery(input) {
+    if (input.boundary?.kind === "not-applied-publication-recovery-v1") {
+      const { operation, generation } = input;
+      return this.withTaskSelection({ operation, taskScope: effectiveReleaseTaskScope(operation),
+        taskIds: effectiveReleaseTaskIds(operation), commit: async (current, validateSelection) => {
+          if (selectionIdentity(current) !== selectionIdentity(generation.selectedResults)) {
+            throw new Error("Publication recovery accepted selection changed");
+          }
+          const inspect = async () => {
+            const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
+            const frozen = [];
+            for (const candidate of generation.candidates) frozen.push(
+              await this.releasePreflight.releaseGitWorkspaces.inspectRetainedGeneration({
+                operationId: operation.operationId, generation: generation.generation,
+                workspaceId: operation.workspaceId, candidate, changelogContent,
+              }));
+            await validateSelection();
+            return frozen;
+          };
+          const frozen = await inspect();
+          return this.publication.withPublicationRecovery({ ...input, commit: (evidence, validate) => input.commit(
+            { ...evidence, frozen }, async () => {
+              if (JSON.stringify(await inspect()) !== JSON.stringify(frozen)) throw new Error("Publication recovery frozen authority changed");
+              await validate();
+            }) });
+        } });
+    }
     await releaseMetadataBytes(effectiveReleaseMetadata(input.operation));
     return this.publication.withPublicationRecovery({ ...input, commit: (evidence, validate) => input.commit(evidence, async () => {
       await releaseMetadataBytes(effectiveReleaseMetadata(input.operation));
@@ -200,7 +226,7 @@ export class WorkspaceReleaseOperationAdapter {
   reservePublication({ operation, generation, reserve, recompose }) {
     return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
       const recovery = operation.retainedGenerationRecoveries?.at(-1);
-      if (recovery?.generation === generation.generation) {
+      if (recovery && recovery.generation === generation.generation) {
         const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
         const frozen = [];
         for (const candidate of generation.candidates) {

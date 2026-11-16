@@ -1,5 +1,5 @@
 // Hub owner compatibility exports. The operator CLI is the external tool.
-export { parseReleaseArguments, openReleaseRuntime, executeRelease } from "./src/composition/release-api-runtime.mjs";
+export { parseReleaseArguments, openReleaseRuntime, openReleaseApiHost, executeRelease } from "./src/composition/release-api-runtime.mjs";
 import { launchReleaseTool } from "./src/infrastructure/process/release-tool-launcher.mjs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";

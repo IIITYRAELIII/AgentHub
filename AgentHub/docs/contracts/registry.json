@@ -491,6 +491,7 @@
         "src/infrastructure/filesystem/task-git-workspace.mjs",
         "src/infrastructure/filesystem/task-worktree-dependencies.mjs",
         "src/infrastructure/filesystem/release-git-workspace.mjs",
+        "src/infrastructure/filesystem/prepared-evidence-recovery.mjs",
         "src/infrastructure/filesystem/release-task-net-projection.mjs",
         "src/infrastructure/filesystem/freeze-publication-candidate.mjs",
         "src/infrastructure/process/interprocess-lock.mjs",

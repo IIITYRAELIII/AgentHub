@@ -4,7 +4,7 @@ import { claimCustodyFixture } from "../../fixtures/claim-custody-public-fixture
 import { HubMcpServer } from "../../../src/interfaces/mcp/hub-mcp-server.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
 import { readReleaseToolPackage } from "../../../src/infrastructure/process/release-tool-package.mjs";
-import { openReleaseApiHost } from "../../../src/interfaces/mcp/release-api-host.mjs";
+import { openReleaseApiHost } from "../../../release.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
@@ -56,7 +56,7 @@ test("actual external command emits a tool pin and the same durable Hub result",
   assert.equal(output[0].accepted.taskOperation.requestId, "external-command-original");
   assert.equal(output.at(-1).result.taskOperation.argumentsHash, f.catalog.mcpOperation("external-command-original").argumentsHash);
   assert.deepEqual(output[0].tool, output.at(-1).tool);
-  assert.equal(output[0].tool.version, "0.1.0"); assert.match(output[0].tool.sha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(output[0].tool, { name: tool.name, version: tool.version, sha256: tool.sha256 });
   assert.ok(!JSON.stringify(output).includes(f.managerToken));
 });
 

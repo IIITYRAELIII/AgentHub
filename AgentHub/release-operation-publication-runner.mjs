@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { createExternalPublicationTools } from "./src/composition/release-tooling-composition.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
+import { publicationRuntimeStatus, startInstalledPublicationRuntime } from "./src/runtime/runtime-publication-start.mjs";
+import { waitForRuntimeReplacement } from "./src/runtime/publication-readiness.mjs";
 import { installPreparedRuntime, prepareRuntime, verifyInstalledRuntime } from "./src/runtime/runtime-manager.mjs";
 import { createFrozenReleasePublication } from "./src/infrastructure/process/frozen-release-publication.mjs";
 import { createPublicationArtifactSteps } from "./src/infrastructure/process/publication-artifacts.mjs";
@@ -76,6 +78,14 @@ export function distributionArtifactAdapter(artifacts, distribution) {
   };
 }
 
+// The independent child is also a composition root: host-side constructor
+// ports do not cross its process boundary.
+export function createReleaseOperationPublicInstaller(input) {
+  if (!publicRuntimeInstallerBinding(input)) return null;
+  return createPublicRuntimeInstaller({ readStatus: publicationRuntimeStatus,
+    verifyReady: waitForRuntimeReplacement, startRuntime: startInstalledPublicationRuntime, ...input });
+}
+
 async function run() {
   const { publishChanged, runStep } = await createExternalPublicationTools({ sourceRoot: process.cwd() });
   const dataDir = requiredEnvironment("AGENT_HUB_DATA_DIR");
@@ -125,15 +135,14 @@ async function run() {
   const checkpoint = publicationCheckpointStore(path.join(executionRoot, "publication-checkpoint.json"));
   const runtimePublication = releaseOperationRuntimePublicationInput({ operation, generation, candidate });
   const target = releaseApprovedTargets(operation).find(item => item.targetId === targetId);
-  const publicInstaller = publicRuntimeInstallerBinding({ operation, generation, target })
-    ? createPublicRuntimeInstaller({ operation, generation, target, runtimeRoot, journal, tool: toolIdentity,
+  const publicInstaller = createReleaseOperationPublicInstaller({ operation, generation, target, runtimeRoot, journal, tool: toolIdentity,
       readPublishedInput: async () => {
         await tool.assertUnchanged();
         return readPublishedRuntimePackage({ operation, generation, target, dataDir,
           tool: toolIdentity, prepared: await artifacts.preparedRuntimeReceipt((await journal.read()).identity),
           api: githubReleaseTransport() });
       },
-    }) : null;
+    });
   const artifacts = createPublicationArtifactSteps({
     sourceRoot: process.cwd(), runtimeRoot, journal, run: runStep,
     prepareRuntimeImpl: prepareRuntime,

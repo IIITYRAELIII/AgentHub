@@ -375,7 +375,29 @@ export function failedPublicationRecovery({ operation, generations = [], receipt
     || latest("validate")?.status !== "applied" || latest("validate").input?.candidate !== identitySha256) return null;
   const targets = releaseApprovedTargets(operation);
   if (Object.keys(operation.publicationEffects.targets ?? {}).some(id => !targets.some(target => target.targetId === id))) return null;
-  if (!targets.some(target => latest(`publish:${target.targetId}`)?.status === "applied")) return null;
+  const applied = targets.some(target => latest(`publish:${target.targetId}`)?.status === "applied");
+  if (!applied) {
+    // A definite first-target failure before any publisher ran is a different
+    // boundary from partial publication. Absence of other receipts alone is not
+    // effect proof: the adapter must additionally prove every target not applied.
+    const first = targets[0], failed = first && latest(`publish:${first.targetId}`);
+    const publications = receipts.filter(item => item.generation === generation.generation && item.stepId.startsWith("publish:"));
+    if (!failed || Object.keys(operation.publicationEffects.targets ?? {}).length
+      || generations.some(item => item.generation > generation.generation)
+      || publications.some(item => item.operationId !== operation.operationId
+        || item.stepId !== `publish:${first.targetId}` || item.status !== "failed"
+        || item.effect?.status !== "not_applied" || item.input?.candidate !== identitySha256
+        || releaseIdentitySha256(item.input?.target ?? null) !== releaseIdentitySha256(first)
+        || releaseIdentitySha256(item.input) !== item.inputSha256)
+      || failed.error !== operation.lastError.message
+      || targets.slice(1).some(target => latest(`publish:${target.targetId}`))) return null;
+    const ordered = [...receipts].sort((a, b) => a.generation - b.generation || a.stepId.localeCompare(b.stepId) || a.attempt - b.attempt);
+    return { kind: "not-applied-publication-recovery-v1", generation: generation.generation, candidate: identitySha256,
+      failedTargetId: first.targetId, receiptsSha256: releaseIdentitySha256(ordered),
+      inputSha256: releaseIdentitySha256(releaseCompositionInput(operation)),
+      effectsSha256: releaseIdentitySha256(operation.publicationEffects),
+      priorFailure: { completedAt: operation.completedAt, error: operation.lastError } };
+  }
   for (const target of targets) {
     const step = `publish:${target.targetId}`, receipt = latest(step);
     if (!receipt || !["applied", "intent"].includes(receipt.status) || receipt.input?.candidate !== identitySha256
@@ -400,6 +422,13 @@ function normalizedPublicationRecovery(value, operation) {
     || !Number.isSafeInteger(contents.priorRevision) || contents.priorRevision < 1
     || contents.generation !== operation.currentGeneration || !contents.boundary || !contents.evidence
     || releaseIdentitySha256(contents) !== identitySha256) throw new Error("Invalid publication recovery");
+  if (contents.boundary.kind === "not-applied-publication-recovery-v1"
+    && (!Array.isArray(contents.readbacks) || contents.readbacks.length !== releaseApprovedTargets(operation).length
+      || releaseApprovedTargets(operation).some(target => contents.readbacks.filter(item =>
+        item.targetId === target.targetId && item.generation === contents.generation
+        && item.evidence?.status === "not_applied").length !== 1))) {
+    throw new Error("Not-applied publication recovery requires every exact target readback");
+  }
   return structuredClone(value);
 }
 

@@ -1,4 +1,4 @@
-import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
+import { observeRuntimeWorkerMemory } from "../../domain/runtime-worker-memory.mjs";
 import { Worker } from "node:worker_threads";
 
 const DEFAULT_MAX_PENDING_WRITES = 2_048;

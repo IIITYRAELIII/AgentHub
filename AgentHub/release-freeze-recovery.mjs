@@ -12,6 +12,7 @@ import {
 } from "./src/application/release-missing-provenance-resolver.mjs";
 import { loadConfig } from "./src/infrastructure/filesystem/config.mjs";
 import { ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
+import { PREPARED_EVIDENCE_RECOVERY } from "./src/infrastructure/filesystem/prepared-evidence-recovery.mjs";
 import { TaskGitWorkspaceService } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
 import { WorkspaceCatalogStore } from "./src/infrastructure/persistence/workspace-catalog-store.mjs";
 
@@ -60,6 +61,30 @@ export function parseReleaseFreezeRecoveryArguments(argv) {
   const recoveryMode = String(values["recovery-mode"] ?? FREEZING_MODE).trim();
   if (!commitPattern.test(expectedSourceCommit)) throw new Error("--expected-source-commit must be an exact commit");
   if (!digestPattern.test(expectedOwnerSha256)) throw new Error("--expected-owner-sha256 must be a SHA-256 digest");
+  if (recoveryMode === PREPARED_EVIDENCE_RECOVERY) {
+    const expected = {};
+    for (const [key, name, pattern] of [
+      ["checkpointSha256", "checkpoint-sha256", digestPattern], ["manifestHash", "manifest-hash", digestPattern],
+      ["planRevision", "plan-revision", digestPattern], ["preparedHead", "prepared-head", commitPattern],
+      ["preparedTree", "prepared-tree", commitPattern], ["generationOwnerSha256", "generation-owner-sha256", digestPattern],
+      ["captureManifestHash", "capture-manifest-hash", digestPattern], ["frozenManifestHash", "frozen-manifest-hash", digestPattern],
+      ["frozenHead", "frozen-head", commitPattern], ["frozenTree", "frozen-tree", commitPattern],
+    ]) {
+      const value = required(values, `expected-${name}`).toLowerCase();
+      if (!pattern.test(value)) throw new Error(`invalid exact recovery identity: ${key}`);
+      expected[key] = value;
+    }
+    const confirm = values["confirm-recovery"] === true;
+    const expectedProofHash = String(values["expected-proof"] ?? "").toLowerCase() || null;
+    const generation = Number(required(values, "generation"));
+    if (!Number.isSafeInteger(generation) || generation < 1) throw new Error("Exact positive generation is required");
+    if (confirm !== Boolean(expectedProofHash) || (expectedProofHash && !digestPattern.test(expectedProofHash))) {
+      throw new Error("confirmation requires both --confirm-recovery and a valid --expected-proof");
+    }
+    return { projectRoot: path.resolve(required(values, "repository")), workspaceId: required(values, "workspace"),
+      requestId: required(values, "request-id"), generationOperationId: required(values, "generation-operation-id"),
+      generation, recoveryMode, expectedSourceCommit, expectedOwnerSha256, expected, confirm, expectedProofHash };
+  }
   const parsed = {
     projectRoot: path.resolve(required(values, "repository")),
     workspaceId: required(values, "workspace"),
@@ -218,7 +243,9 @@ export async function executeReleaseFreezeRecovery(input, {
   const missingProvenanceRecovery = await readMissingProvenanceRequest(requested, { read });
   const owned = missingProvenanceRecovery ? await createResolver(config) : null;
   try {
-    const result = await createService(config).recoverFreezingPublicationCandidate({
+    const service = createService(config);
+    const method = input.recoveryMode === PREPARED_EVIDENCE_RECOVERY ? "recoverPreparedEvidence" : "recoverFreezingPublicationCandidate";
+    const result = await service[method]({
       ...recovery,
       sourceIdentity: { commit: source.head, ownerSha256: source.ownerSha256 },
       ...(owned ? { missingProvenanceRecovery, missingProvenanceResolver: owned.resolver } : {}),

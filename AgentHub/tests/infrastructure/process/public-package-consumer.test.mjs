@@ -11,9 +11,149 @@ import { ReleaseOperationPublication } from "../../../src/infrastructure/process
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { publicationRunStore } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
 import { packageBindingDigest } from "../../../src/infrastructure/filesystem/runtime-package-target.mjs";
+import { captureRuntimeReleaseBinding } from "../../../src/infrastructure/filesystem/runtime-installation-custody.mjs";
+import { PUBLIC_INSTALLER_HANDOFF } from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
+import { EventEmitter } from "node:events";
+import { releaseIdentitySha256 } from "../../../src/domain/release-operation.mjs";
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const writeJson = async (file, value) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, JSON.stringify(value)); };
+
+async function unstartedPublicationOwnerFixture(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ah-zero-"));
+  t.after(async () => { assert.equal(path.dirname(root), os.tmpdir()); await rm(root, { recursive: true, force: true }); });
+  const primary = path.join(root, "primary"), frozen = path.join(root, "frozen"), runtimeRoot = path.join(root, "runtime");
+  const git = async (cwd, ...args) => (await promisify(execFile)("git", args,
+    { cwd, windowsHide: true, encoding: "utf8" })).stdout.trim();
+  await mkdir(path.join(primary, "AgentHub"), { recursive: true });
+  await git(primary, "init", "--initial-branch=main");
+  await writeFile(path.join(primary, "AgentHub/package.json"), '{"name":"fixture","version":"2.1.6"}\n');
+  await git(primary, "add", "-A");
+  await git(primary, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "base");
+  const base = await git(primary, "rev-parse", "HEAD");
+  await git(primary, "remote", "add", "origin", "https://github.com/IIITYRAELIII/AgentHub.git");
+  await git(root, "clone", "--no-local", primary, frozen);
+  await writeFile(path.join(frozen, "AgentHub/package.json"), '{"name":"fixture","version":"2.1.7"}\n');
+  await git(frozen, "add", "-A");
+  await git(frozen, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "candidate");
+  const commit = await git(frozen, "rev-parse", "HEAD"), tree = await git(frozen, "rev-parse", "HEAD^{tree}");
+  await writeJson(path.join(frozen, ".git/agent-hub-release-clone.json"), {
+    schemaVersion: 1, kind: "agent-hub-owned-release-clone", primaryRoot: primary,
+    primaryGitCommonDir: path.join(primary, ".git"), releaseRoot: frozen, releaseGitCommonDir: path.join(frozen, ".git"),
+  });
+  const oldRoot = path.join(runtimeRoot, "releases", "old-runtime");
+  await writeJson(path.join(oldRoot, "runtime-manifest.json"), { releaseId: "old-runtime", publicationRevision: base, files: [] });
+  const pointer = { current: "old-runtime", runtimeRetention: { current: await captureRuntimeReleaseBinding(oldRoot, "old-runtime") } };
+  await writeJson(path.join(runtimeRoot, "current.json"), pointer);
+  const publicTarget = { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: primary,
+    approvedLocalMainCommit: base, approvedOriginMainCommit: base };
+  const localTarget = { ...publicTarget, targetId: "local", environment: "production" };
+  const operation = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", authorization: {
+    fingerprint: "a".repeat(64), runtimeInstallation: "public-package-v1", approvedTargets: [publicTarget, localTarget],
+  }, lastError: { step: "publish", message: "External release tool requires AGENT_HUB_RELEASE_TOOLS_ROOT and its SHA256 pin" } };
+  const candidate = { repositoryRoot: primary, releaseRoot: frozen, baseCommit: base, commit, tree,
+    manifest: { baseCommit: base, publication: { head: commit, releaseVersion: "2.1.7", runtimeReleaseVersion: "2.1.7+build.29905213" } } };
+  const generation = { operationId: operation.operationId, generation: 1, identitySha256: "b".repeat(64), candidates: [candidate] };
+  const dataDir = path.join(root, "data");
+  const firstRoot = releaseTargetExecutionRoot(dataDir, operation, generation, publicTarget);
+  await mkdir(firstRoot, { recursive: true });
+  const tool = { name: "fixture-tool", version: "0.1.2", sha256: "c".repeat(64), root: path.join(root, "tool") };
+  tool.location = { schema: 1, name: tool.name, version: tool.version, sha256: tool.sha256, root: tool.root };
+  const environment = { AGENT_HUB_RELEASE_TOOLS_ROOT: tool.root, AGENT_HUB_RELEASE_TOOLS_SHA256: tool.sha256 };
+  let remoteHead = base, publicObject = null, releaseObject = null, publications = 0;
+  const requests = [];
+  const publication = new ReleaseOperationPublication({ dataDir, runtimeRoot, environment,
+    spawnImpl: () => { publications++; assert.fail("recovery admission must not spawn a publisher or installer"); },
+    readPublicationStateImpl: async () => ({ revision: base }), gitRemoteHeadImpl: async () => remoteHead,
+    readToolPackage: async input => {
+      assert.equal(input.root, tool.root);
+      if (input.expectedSha256 !== tool.sha256) throw Error("exact tool pin still missing");
+      return { ...tool, assertUnchanged: async () => {}, module: async name => {
+        assert.equal(name, "src/publication-artifacts.mjs"); return { publicInstallerHandoffProtocol: PUBLIC_INSTALLER_HANDOFF };
+      } };
+    },
+    distributionApi: async (method, route) => {
+      assert.equal(method, "GET"); requests.push(route);
+      if (route.endsWith("/git/ref/tags/2.1.7")) return publicObject;
+      if (route.endsWith("/releases/tags/2.1.7")) return releaseObject;
+      assert.equal(route, "/repos/IIITYRAELIII/AgentHub");
+      return { id: 1428402643, full_name: "IIITYRAELIII/AgentHub", private: false, owner: { id: 95281881 } };
+    },
+  });
+  return { root, publication, operation, generation, publicTarget, firstRoot, environment, tool, runtimeRoot, pointer, requests,
+    setRemote: value => { remoteHead = value; }, setTag: value => { publicObject = value; }, setRelease: value => { releaseObject = value; },
+    publications: () => publications, boundary: { kind: "not-applied-publication-recovery-v1" } };
+}
+
+test("unstarted publication owner proves both absent effects and repeats exact proof without INSTALL", async t => {
+  const f = await unstartedPublicationOwnerFixture(t), before = await readFile(path.join(f.runtimeRoot, "current.json"));
+  let admissions = 0;
+  await f.publication.withPublicationRecovery({ ...f, commit: async (evidence, validate) => {
+    assert.deepEqual(evidence.readbacks.map(row => [row.targetId, row.evidence.status]), [["agent-hub-github-release", "not_applied"], ["local", "not_applied"]]);
+    assert.equal(evidence.targets[0].namespace.kind, "empty-directory");
+    assert.equal(evidence.targets[1].namespace.kind, "absent");
+    await validate(); admissions++;
+  } });
+  assert.equal(admissions, 1); assert.equal(f.publications(), 0);
+  assert.equal(f.requests.length, 6);
+  assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), before);
+});
+
+test("unstarted publication owner refuses missing pin, namespace, remote, public and current drift", async t => {
+  const f = await unstartedPublicationOwnerFixture(t);
+  const refuse = pattern => assert.rejects(f.publication.withPublicationRecovery({ ...f,
+    commit: () => assert.fail("no unproved admission") }), pattern);
+  f.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 = "0".repeat(64);
+  await refuse(/tool pin still missing/u); f.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 = f.tool.sha256;
+  for (const name of ["runner.json", "publication-status.json", "foreign.bin"]) {
+    const file = path.join(f.firstRoot, name); await writeFile(file, "retained evidence");
+    await refuse(/positively unstarted/u); await rm(file);
+  }
+  f.setRemote(f.generation.candidates[0].commit); await refuse(/remote effect/u);
+  f.setRemote(f.pointer.runtimeRetention.current.manifestSha256); await refuse(/remote effect/u);
+  const base = f.generation.candidates[0].baseCommit; f.setRemote(base);
+  f.setTag({ object: { sha: f.generation.candidates[0].commit } }); await refuse(/release or tag already exists/u); f.setTag(null);
+  f.setRelease({ id: 1 }); await refuse(/release or tag already exists/u); f.setRelease(null);
+  const pointerFile = path.join(f.runtimeRoot, "current.json"), before = await readFile(pointerFile);
+  await writeJson(pointerFile, { ...f.pointer, runtimeRetention: {} }); await refuse(/current runtime custody/u);
+  await writeFile(pointerFile, before);
+  await assert.rejects(f.publication.withPublicationRecovery({ ...f, commit: async (_evidence, validate) => {
+    f.setTag({ id: "late foreign tag" }); await validate();
+  } }), /release or tag already exists/u);
+  assert.equal(f.publications(), 0);
+});
+
+test("unstarted recovery persists its exact executor across missing ambient pin before one publisher", async t => {
+  const f = await unstartedPublicationOwnerFixture(t);
+  let evidence;
+  await f.publication.withPublicationRecovery({ ...f, commit: async (observed, validate) => { await validate(); evidence = observed; } });
+  const contents = { requestId: "same-recovery", operationId: f.operation.operationId, generation: 1,
+    priorRevision: 3, authorizationFingerprint: f.operation.authorization.fingerprint,
+    boundary: { ...f.boundary, candidate: f.generation.identitySha256 }, evidence };
+  f.operation.publicationRecoveries = [{ ...contents, identitySha256: releaseIdentitySha256(contents) }];
+  delete f.environment.AGENT_HUB_RELEASE_TOOLS_ROOT;
+  delete f.environment.AGENT_HUB_RELEASE_TOOLS_SHA256;
+  let children = 0;
+  f.publication.spawnImpl = (_exe, _args, options) => {
+    children++;
+    assert.equal(options.env.AGENT_HUB_RELEASE_TOOLS_ROOT, f.tool.root);
+    assert.equal(options.env.AGENT_HUB_RELEASE_TOOLS_SHA256, f.tool.sha256);
+    const child = new EventEmitter(); child.pid = 1234567; child.unref = () => {};
+    queueMicrotask(async () => {
+      await writeJson(path.join(f.firstRoot, "result.json"), { status: "applied", operationId: f.operation.operationId,
+        generation: 1, targetId: f.publicTarget.targetId, candidate: f.generation.identitySha256,
+        revision: f.generation.candidates[0].commit, deploymentProfile: "github-release",
+        tool: { name: f.tool.name, version: f.tool.version, sha256: f.tool.sha256 },
+        distribution: { sourceCommit: f.generation.candidates[0].commit } });
+      child.emit("exit", 0);
+    });
+    return child;
+  };
+  assert.equal((await f.publication.publish({ ...f, target: f.publicTarget })).status, "applied");
+  assert.equal(children, 1);
+  const runner = JSON.parse(await readFile(path.join(f.firstRoot, "runner.json"), "utf8"));
+  assert.deepEqual(runner.toolPackage, f.tool.location);
+});
 
 async function fixture(t, { realFrozen = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-public-package-consumer-"));

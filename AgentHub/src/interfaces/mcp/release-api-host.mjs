@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { HubMcpServer } from "./hub-mcp-server.mjs";
-import { openReleaseRuntime } from "../../composition/release-api-runtime.mjs";
 import { mcpArgumentsHash } from "../../domain/mcp-arguments-hash.mjs";
 
 // Supported Hub-side source-owner adapter. External tools only see public MCP;
 // persistence, authority and addressed worker ownership stay inside Hub.
 export async function openReleaseApiHost(identity, {
-  openRuntime = openReleaseRuntime, createServer = options => new HubMcpServer(options),
+  openRuntime, createServer = options => new HubMcpServer(options),
 } = {}) {
+  if (typeof openRuntime !== "function") throw new TypeError("Release runtime composition port is required");
   const runtime = await openRuntime();
   const active = new Set(), addressed = new Map();
   let closing = false;
