@@ -78,6 +78,18 @@ This does not change selection, source/content preservation, native review,
 publication or primary protections. No production restart is implicit. See
 [Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
 
+## Contained ordinary Test publication replay (ADR-HUB-454)
+
+For a repeated ordinary Test whose exact selected result is already contained,
+that result must be the unique native merge base and contain the same sealed
+publication. The existing selected-content owner then uses that publication
+as the replay lower boundary, still reproducing the complete own selected delta.
+Containment alone supplies no content credit. Publication identity, agreed-base
+ancestry and TaskGit's canonical rereads remain required; missing or changed
+authority, lost own content and other merge-base shapes retain refusal. This
+does not grant automatic-absence credit or change history/resolution guards.
+See ADR-HUB-454-contained-published-test-content.
+
 ## Windows Git path handling
 
 All Hub-owned Windows Git invocations use the shared argument policy in

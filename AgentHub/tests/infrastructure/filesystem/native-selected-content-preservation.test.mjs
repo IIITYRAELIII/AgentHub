@@ -103,7 +103,7 @@ test("ordinary selected replay refuses unbound publication ancestry", async t =>
   assert.equal(await gitAt(f.sourceRoot, ["rev-parse", "HEAD"]), f.moved);
 });
 
-test("published ordinary Test replay binds its original identity without changing other selection policies", async t => {
+test("published Test replay validates metadata and retains exact automatic selected content", async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.sourceRoot, "inherited.txt"), "header\n\nmiddle\n\nfooter\n");
   const main = await commit(f.sourceRoot, "agreed base");
