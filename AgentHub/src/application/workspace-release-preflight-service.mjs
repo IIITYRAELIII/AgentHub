@@ -822,16 +822,16 @@ export class WorkspaceReleasePreflightService {
     const { baseline, prospective: plan } = await readPlans();
     const validatePlan = async () => {
       const current = await readPlans();
-      if (current.prospective.blocked.length) {
-        throw new Error(`Await set has blocked Task results: ${current.prospective.blocked.map(item => (
-          `${item.taskNumber ?? item.taskId ?? "Task"}: ${item.reason ?? item.gitError ?? "result unavailable"}`
-        )).join("; ")}`);
-      }
       if (current.baseline.revision !== baseline.revision) {
         throw new Error("release plan revision changed during PreRelease rebuild");
       }
       if (acceptingTask) {
         if (current.prospective.revision !== plan.revision) throw new Error("Task changed during PreRelease acceptance preparation");
+      }
+      if (current.prospective.blocked.length) {
+        throw new Error(`Await set has blocked Task results: ${current.prospective.blocked.map(item => (
+          `${item.taskNumber ?? item.taskId ?? "Task"}: ${item.reason ?? item.gitError ?? "result unavailable"}`
+        )).join("; ")}`);
       }
     };
     if (expectedPlanRevision != null && plan.revision !== requiredPlanRevision(expectedPlanRevision)) {
