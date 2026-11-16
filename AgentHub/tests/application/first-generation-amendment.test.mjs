@@ -24,7 +24,7 @@ const selected = count => ({ mode: "include", ids: inventory.slice(0, count) });
 // SQLite, public HTTP, external022 and SAME receipt are real. These unit cases
 // control only prepared/Git custody ports; the real Git owner is covered in
 // prepared-release-boundary.test.mjs. No production release is invoked.
-async function fixture(t) {
+async function fixture(t, { withMetadata = true } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "first-amendment-"));
   const databaseFile = path.join(root, "catalog.sqlite");
   const catalog = new WorkspaceCatalogStore({ databaseFile }); await catalog.load();
@@ -81,7 +81,8 @@ async function fixture(t) {
     publishTarget: () => assert.fail("publication"), readTarget: () => assert.fail("no frozen generation exists for target readback"),
     finalize: () => assert.fail("finalization") });
   const start = service.start({ requestId: "original-thirteen", workspaceId: workspace.id, streamId: manager.id, threadId: "original-rm",
-    authorization: { taskIds: ids.slice(0,13), taskScope: "all_await", testSelection: selected(316), releaseMetadata: oldNotes,
+    authorization: { taskIds: ids.slice(0,13), taskScope: "all_await", testSelection: selected(316),
+      ...(withMetadata ? { releaseMetadata: oldNotes } : {}),
       validationMode: "full", approvedTargets: [{ targetId: "public", kind: "git", repositoryRoot: root }] } });
   scheduled.shift()(); const before = await service.drain(start.operationId);
   assert.ok(failedFirstComposeRecovery(before));
@@ -91,14 +92,40 @@ async function fixture(t) {
     attachmentDirectory: path.join(root, "attachments"), secret: "synthetic-first-amendment", reconcilePendingOnStartup: false });
   const token = hub.contextToken({ provider: "codex", threadId: "original-rm" });
   const args = { request_id: "explicit-sixteen-351", operation_id: start.operationId, expected_revision: before.operation.revision,
-    expected_generation: 0, task_ids: ids, task_scope: "all_await", test_selection: selected(351), release_metadata: newNotes };
+    expected_generation: 0, task_ids: ids, task_scope: "all_await", test_selection: selected(351),
+    ...(withMetadata ? { release_metadata: newNotes } : {}) };
   t.after(async () => { while(scheduled.length) scheduled.shift()(); await service.drain(start.operationId);
     tasks.close(); catalog.close(); store.close?.(); await rm(root, { recursive:true,force:true }); });
   return { root, catalog, store, service, hub, token, args, before, scheduled, control, ids, newNotes,
     manager, foreign, workspace,
     options: { requestId: args.request_id, expectedRevision: args.expected_revision, expectedGeneration: 0,
-      taskIds: ids, taskScope: "all_await", testSelection: args.test_selection, releaseMetadata: newNotes } };
+      taskIds: ids, taskScope: "all_await", testSelection: args.test_selection,
+      ...(withMetadata ? { releaseMetadata: newNotes } : {}) } };
 }
+
+test("metadata-absent SAME generation-zero amendment recovers its durable admission after lost ACK", async t => {
+  const f=await fixture(t,{withMetadata:false});
+  const args={...f.args,context_token:f.token};
+  assert.equal(Object.hasOwn(args,'release_metadata'),false);
+  assert.equal(Object.hasOwn(f.before.operation.authorization,'releaseMetadata'),false);
+  const complete=f.catalog.completeMcpOperation.bind(f.catalog);
+  f.catalog.completeMcpOperation=()=>{throw Error('controlled lost no-metadata admission ACK');};
+  await assert.rejects(f.hub.call('hub_release_continue',args));
+  f.catalog.completeMcpOperation=complete;
+  const unknown=structuredClone(f.catalog.mcpOperation(args.request_id));
+  assert.equal(unknown.status,'unknown');
+  const admitted=structuredClone(f.store.get(args.operation_id));
+  assert.equal(admitted.testSelectionAmendments.length,1);
+  const foreign=f.hub.contextToken({provider:'codex',threadId:'foreign-rm'});
+  await assert.rejects(f.hub.call('hub_release_continue',{...args,context_token:foreign}),/another operation|authority|identity/);
+  await assert.rejects(f.hub.call('hub_release_continue',{...args,release_metadata:f.newNotes}),/another operation/);
+  const result=await f.hub.call('hub_release_continue',args);
+  assert.equal(result.accepted,true);
+  assert.deepEqual(f.store.get(args.operation_id),admitted);
+  assert.equal(result.operatorReconciliation.priorReceipt.error,unknown.error);
+  assert.equal(f.catalog.mcpOperation(args.request_id).status,'succeeded');
+  assert.deepEqual(await f.hub.call('hub_release_continue',args),result);
+});
 
 test("generation zero public external022 amendment keeps original 13 to 16, manual316 to351 and exact replay", async t => {
   const f = await fixture(t);
