@@ -13,7 +13,7 @@ const keyboardDiagnostics = new WeakMap();
 
 async function openMobileConversation(page) {
   await page.locator('[data-mobile-dialogs-tab="chat"]').click();
-  await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="stream-a"]').first().click();
+  assert.equal(await page.locator("[data-composer-input]").isVisible(), true);
 }
 
 async function openKeyboardPage(browser, { running = false, mobile = false, mapping = null } = {}) {
@@ -72,7 +72,7 @@ test("production left-edge Back saves composer and shortcut dirty-close owns onl
       });
       assert.equal(moveConsumed, true, surface.name);
       assert.equal(page.url(), url);
-      assert.equal(await page.evaluate(() => document.documentElement.dataset.pane), "tasks");
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.pane), surface.mobile ? "chat" : "tasks");
       const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), `agent-hub:composer-drafts:v1:${surface.surface}`);
       assert.equal(stored.find((draft) => draft.taskId === "stream-a").text, "Draft retained by left-edge Back");
       assert.equal(await input.inputValue(), "Draft retained by left-edge Back");

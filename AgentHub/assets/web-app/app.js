@@ -2668,7 +2668,7 @@ function currentQuickMessageContext() {
   if (!task) return null;
   return {
     streamId: streamKey(task),
-    streamName: String(task.streamName ?? task.streamDisplayName ?? "Stream").trim() || "Stream",
+    streamName: String(task.streamName ?? task.streamDisplayName ?? "Поток").trim() || "Поток",
     workspaceId: workspaceKey(task),
     workspaceName: String(task.workspaceName ?? task.title ?? "Workspace").trim() || "Workspace",
   };
@@ -3150,9 +3150,9 @@ function settleQuickMessagesSelection(mutationId = "") {
    заменяет, поэтому и запись идёт единственным прежним путём. */
 const PROMPT_TEMPLATE_SCOPES = ["global", "workspace", "stream"];
 const PROMPT_TEMPLATE_SCOPE_NOTES = {
-  global: "Видны во всех Workspace и Stream.",
-  workspace: "Видны во всех Stream этого Workspace.",
-  stream: "Видны только в этом Stream.",
+  global: "Видны во всех Workspace и потоках.",
+  workspace: "Видны во всех потоках этого Workspace.",
+  stream: "Видны только в этом потоке.",
 };
 
 let promptTemplatesScope = "global";
@@ -3179,7 +3179,7 @@ function promptTemplateScopeAvailable(scope) {
 function promptTemplateScopeName(scope) {
   if (scope === "global") return "Глобальные";
   if (scope === "workspace") return promptTemplatesContext.workspaceName || "Workspace";
-  return promptTemplatesContext.streamName || "Stream";
+  return promptTemplatesContext.streamName || "Поток";
 }
 
 function promptTemplateScopeEntries(scope) {
@@ -3530,7 +3530,7 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false, pr
     .filter((id) => available.has(id));
   const selection = window.AgentHubStreamTabs.applyOpenStreamSelection(selected, streamId, { additive });
   if (selection.limitReached) {
-    showToast("Одновременно можно открыть не больше четырёх Streams.");
+    showToast("Одновременно можно открыть не больше четырёх потоков.");
     return;
   }
   const next = selection.ids;
@@ -3764,7 +3764,7 @@ function setViewContent(view, { persist = true, activate = true } = {}) {
           ? "Null"
           : next === "server"
             ? "Server"
-            : "Chat";
+            : "Диалоги";
   }
   syncMobileNav();
   if (activate) activateView(next);
@@ -3989,6 +3989,13 @@ function workspaceLastActivity(tasks) {
     const value = activityTimestamp(task.lastActivity);
     return value > latest ? value : latest;
   }, 0);
+}
+
+function taskDialogName(task) {
+  return window.AgentHubStreamTabs.streamDisplayName({
+    name: task?.streamName || task?.streamDisplayName,
+    ordinal: task?.streamOrdinal,
+  }, workspaceStreams(state.tasks.filter((item) => workspaceKey(item) === workspaceKey(task))).length);
 }
 
 function representativeWorkspaceTask(tasks) {
@@ -4265,7 +4272,7 @@ function renderActivityRail() {
   const renderEntry = (task) => {
     const presentation = streamPresentation(task);
     const streamName = String(task.streamName || task.streamDisplayName || "").trim()
-      || `Stream ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
+      || `Поток ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
     const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
     const activityTitle = `${workspaceName} — ${streamName}`;
     const provider = String(task?.provider ?? "none");
@@ -4406,8 +4413,8 @@ function renderStreamTabs() {
     class: "stream-tab-utility stream-tab-create",
     "data-action": "stream-create",
     "data-workspace-id": workspaceId,
-    title: "Создать Stream и настроить будущий чат",
-    "aria-label": "Создать Stream",
+    title: "Создать поток и настроить будущий чат",
+    "aria-label": "Новый поток",
   }, [window.AgentHubStreamTabs.createPhosphorIcon(document, "plus", "stream-tab-create-mark")]);
   const overflowItems = [];
   const groups = ordered.map((stream, index) => {
@@ -4422,7 +4429,7 @@ function renderStreamTabs() {
       : task?.running && task.startedAt
         ? formatRunningDuration(task.startedAt)
         : formatRelativeTime(task?.lastActivity);
-    const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : ""} ПКМ — управление Stream.`;
+    const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : ""} ПКМ — управление потоком.`;
     const pinned = pinnedIds.includes(stream.id);
     const attributes = {
       type: "button",
@@ -4594,7 +4601,7 @@ function renderStreamChatPreview(task) {
     selectTaskFromUi(task.id);
   });
   const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
-  const streamName = String(task.streamName || task.streamDisplayName || "Stream").trim();
+  const streamName = String(task.streamName || task.streamDisplayName || "Поток").trim();
   const head = el("header", { class: "stream-chat-preview-head" }, [
     el("strong", { class: "stream-chat-preview-title", text: streamName }),
     el("span", { class: "stream-chat-preview-workspace", text: workspaceName }),
@@ -4604,7 +4611,7 @@ function renderStreamChatPreview(task) {
   if (!messages) {
     log.append(el("p", { class: "stream-chat-preview-empty", text: "Загрузка истории…" }));
   } else if (!messages.length) {
-    log.append(el("p", { class: "stream-chat-preview-empty", text: "В этом Stream пока нет сообщений." }));
+    log.append(el("p", { class: "stream-chat-preview-empty", text: "В этом потоке пока нет сообщений." }));
   } else {
     for (const message of MessageView.conversationSurfaceMessages(messages).slice(-20)) {
       log.append(renderMessage(message, { readOnly: true, task }));
@@ -4724,7 +4731,7 @@ function renderStreamChatDeck() {
   const hasVisible = shown.length > 0;
   streamChatColumns.hidden = !hasVisible;
   chatEmpty.hidden = hasVisible;
-  if (!hasVisible && chatEmptyText) chatEmptyText.textContent = "Выберите Stream в полосе сверху.";
+  if (!hasVisible && chatEmptyText) chatEmptyText.textContent = "Выберите поток в полосе сверху.";
   streamChatColumns.toggleAttribute("data-multi-stream", shown.length > 1);
   streamChatColumns.style.setProperty("--stream-chat-count", String(Math.max(1, shown.length)));
   renderedStreamChatDeckKey = deckKey;
@@ -4951,7 +4958,7 @@ function renderWorkspaceMessageSearch() {
     const first = values[0];
     const group = el("section", { class: "workspace-message-search-group" }, [
       el("header", { class: "workspace-message-search-group-head" }, [
-        el("strong", { text: first.streamName || `Stream ${first.streamOrdinal || 1}` }),
+        el("strong", { text: first.streamName || `Поток ${first.streamOrdinal || 1}` }),
         el("span", { text: String(values.length) }),
       ]),
     ]);
@@ -4985,11 +4992,11 @@ function renderWorkspaceMessageSearch() {
     && !search.loading && !search.error && !indexingActive && !indexingPartial;
   workspaceMessageSearchStatus.textContent = search.error
     || (shortQuery ? "Введите минимум два символа."
-      : search.loading ? "Ищем во всех Streams…"
+      : search.loading ? "Ищем во всех потоках…"
         : indexingActive
-          ? `Индексируем историю: ${indexing.completedThreads ?? 0} из ${indexing.totalThreads ?? 0} Streams.`
+          ? `Индексируем историю: ${indexing.completedThreads ?? 0} из ${indexing.totalThreads ?? 0} потоков.`
           : indexingPartial
-            ? `Индекс готов частично: ${indexing.failedThreads ?? 0} Streams пока недоступно.`
+            ? `Индекс готов частично: ${indexing.failedThreads ?? 0} потоков пока недоступно.`
         : search.results.length ? "" : "Ничего не найдено.");
   workspaceMessageSearchMore.hidden = search.nextOffset == null || search.loading;
 }
@@ -5481,7 +5488,7 @@ function ensureStreamContextMenu() {
   streamContextMenu = el("div", {
     class: "stream-context-menu",
     role: "menu",
-    "aria-label": "Управление Stream",
+    "aria-label": "Управление потоком",
     hidden: true,
   });
   document.body.append(streamContextMenu);
@@ -5542,7 +5549,7 @@ function openStreamContextMenu(event, tab) {
         ? "Сначала завершите текущий ход"
         : !["codex", "claude"].includes(provider)
           ? "Ротация доступна для Codex и Claude"
-          : `Завершить текущий Thread и продолжить Stream в новом Thread ${provider === "claude" ? "Claude" : "Codex"}`,
+          : `Завершить текущую работу агента и продолжить поток в новом контексте ${provider === "claude" ? "Claude" : "Codex"}`,
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -5553,8 +5560,8 @@ function openStreamContextMenu(event, tab) {
       title: tab.hasAttribute("data-running")
         ? "Сначала завершите текущий ход"
         : oppositeProvider
-          ? `Создать новый ${oppositeLabel} Thread в этом Stream и передать ему handoff-пакет`
-          : "Провайдер Stream не определён",
+          ? `Продолжить поток в новом контексте ${oppositeLabel} и передать накопленный контекст`
+          : "Провайдер потока не определён",
     }),
   );
   menu.hidden = false;
@@ -5912,9 +5919,9 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 function renderStreamChatHeader(task, now = Date.now()) {
   mobileDialogs?.sync();
   if (!streamChatHeader) return;
-  streamChatHeader.hidden = !task;
+  streamChatHeader.hidden = !task && !root.hasAttribute("data-mobile-dialogs-enabled");
   const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
-  const streamName = task ? String(task.streamName || task.streamDisplayName || "Stream").trim() : "";
+  const streamName = task ? taskDialogName(task) : "";
   if (streamHeaderWorkspace) {
     streamHeaderWorkspace.textContent = workspaceName;
     streamHeaderWorkspace.title = workspaceName;
@@ -5972,6 +5979,7 @@ function renderStreamChatHeader(task, now = Date.now()) {
   const branch = String(task.branch ?? task.gitBranch ?? task.repositoryBranch ?? "").trim();
   if (streamHeaderBranch) {
     streamHeaderBranch.textContent = branch;
+    streamHeaderBranch.title = branch;
     streamHeaderBranch.hidden = !branch;
   }
   if (streamHeaderBranchSeparator) streamHeaderBranchSeparator.hidden = !branch;
@@ -5993,7 +6001,7 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   const hasTask = Boolean(task);
   if (!hasTask) {
     chatEmpty.hidden = false;
-    if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его Потоки.";
+    if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его потоки.";
     streamTabs.hidden = true;
     streamTabs.replaceChildren();
     chatPane.hidden = true;
@@ -6084,6 +6092,7 @@ function renderContextUsage(task) {
     ? "свёртка…"
     : context.usagePending ? "обновление…" : known
       ? `${context.estimated ? "≈" : ""}${Math.round(percent)}% контекста` : "нет оценки";
+  contextUsageButton.setAttribute("aria-label", `Использование контекста: ${contextLabel.textContent.replace(" контекста", "")}`);
   contextRing.style.setProperty("--context-percent", `${percent}%`);
   contextUsageButton.title = preparing ? "Подготовка обслуживания контекста. Проверяется завершение предыдущего хода…"
     : starting ? "Запуск обслуживания контекста…" : context.compacting
@@ -6468,6 +6477,7 @@ function navigateBack() {
     return true;
   }
   if (root.dataset.view === "chat" && root.dataset.pane === "chat") {
+    if (root.hasAttribute("data-mobile-dialogs-enabled")) return false;
     setPane("tasks");
     return true;
   }
@@ -8276,7 +8286,9 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   node.querySelector("[data-live-author]").textContent = live.author || fallbackAuthor;
   const liveStage = liveStageParts(live.stage);
   const stageNode = node.querySelector("[data-live-stage]");
-  stageNode.textContent = liveStage.status;
+  stageNode.textContent = liveStage.status === "Ход выполняется"
+    ? window.AgentHubStreamTabs.dialogListPresentation(task, { live }).status || "Готовит ответ"
+    : liveStage.status;
   stageNode.hidden = !liveStage.status;
   const durationNode = node.querySelector("[data-live-turn-duration]");
   if (durationNode) {
@@ -10703,8 +10715,8 @@ function renderDialogSettings() {
       : currentDirectory ? `Текущая: ${currentDirectory}` : "Наследуется от Workspace";
     if (dialogWorkingDirectoryNote) {
       dialogWorkingDirectoryNote.textContent = task?.draftStream
-        ? "Будет использована при создании Thread; пустое значение наследуется от Workspace."
-        : "Применится при создании следующего Thread; текущий Thread сохраняет свою директорию.";
+        ? "Будет использована после создания потока; пустое значение наследуется от Workspace."
+        : "Новая директория начнёт использоваться после следующего запуска агента. Текущая работа продолжится в прежней директории.";
     }
     streamWorkingDirectoryField?.refresh();
   }
@@ -10729,7 +10741,7 @@ function renderDialogSettings() {
   }
   if (streamCardRotate) {
     streamCardRotate.disabled = !streamId || running || !["codex", "claude"].includes(provider);
-    streamCardRotate.title = running ? "Сначала завершите текущий ход" : "Продолжить Stream в новом Thread текущего провайдера";
+    streamCardRotate.title = running ? "Сначала завершите текущий ход" : "Продолжить поток в новом контексте текущего провайдера";
   }
   if (streamCardContinueProvider) {
     streamCardContinueProvider.textContent = oppositeProvider
@@ -10739,7 +10751,7 @@ function renderDialogSettings() {
     streamCardContinueProvider.disabled = !streamId || running || !oppositeProvider;
     streamCardContinueProvider.title = running
       ? "Сначала завершите текущий ход"
-      : oppositeProvider ? "Продолжить Stream в противоположном провайдере" : "Провайдер Stream не определён";
+      : oppositeProvider ? "Продолжить поток в противоположном провайдере" : "Провайдер потока не определён";
   }
   const moveOptions = workspaceMenuOptions(workspaceId);
   if (streamCardMoveMenu) {
@@ -10755,12 +10767,12 @@ function renderDialogSettings() {
     streamCardMove.disabled = !streamId || moveOptions.length === 0
       || typeof streamCardMoveMenu?.showPopover !== "function";
     streamCardMove.title = moveOptions.length
-      ? "Выбрать Workspace и сразу перенести Stream"
+      ? "Выбрать Workspace и сразу перенести поток"
       : "Нет доступных Workspace для переноса";
   }
   if (streamCardArchive) {
     streamCardArchive.disabled = !streamId || running;
-    streamCardArchive.title = running ? "Сначала завершите активный ход в этом Stream" : "Архивировать Stream";
+    streamCardArchive.title = running ? "Сначала завершите активный ход в этом потоке" : "Архивировать поток";
   }
   renderStreamRulesPreview();
   renderStreamQuickMessagesSettings();
@@ -11845,6 +11857,7 @@ const AgentHub = {
       && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
     if (sameMessages && (taskId !== state.selectedId || selectedSurfaceOwned)) return;
     if (!sameMessages) state.messages.set(taskId, next);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
@@ -11865,6 +11878,7 @@ const AgentHub = {
     const selectedSurfaceOwned = taskId === state.selectedId
       && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
     if (!sameMessages) state.messages.set(taskId, next);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) {
       if (sameMessages && selectedSurfaceOwned) {
         const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -11902,6 +11916,7 @@ const AgentHub = {
       && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
     if (sameMessages && (taskId !== state.selectedId || selectedSurfaceOwned)) return;
     if (!sameMessages) state.messages.set(taskId, next);
+    mobileDialogs?.sync();
     if (prependedCount > 0 && previousTail.hiddenCount === 0) {
       state.messageRenderLimits.set(
         taskId,
@@ -11933,6 +11948,7 @@ const AgentHub = {
     const list = state.messages.get(taskId) ?? [];
     list.push(message);
     state.messages.set(taskId, list);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
@@ -11944,6 +11960,7 @@ const AgentHub = {
     const message = list.find((item) => item.id === messageId);
     if (!message) return;
     Object.assign(message, patch);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
@@ -11973,6 +11990,7 @@ const AgentHub = {
     const next = live ?? null;
     if (sameData(state.live.get(taskId) ?? null, next)) return;
     state.live.set(taskId, next);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) renderLive();
     else refreshSupplementaryStreamChat(taskId);
   },
@@ -12237,7 +12255,7 @@ const AgentHub = {
     const stream = streams.find((candidate) => candidate.id === normalizedStreamId);
     const target = representativeStreamTask(stream);
     if (!target) {
-      showToast("Stream недоступен");
+      showToast("Поток недоступен");
       return false;
     }
     state.openStreamsByWorkspace.set(normalizedWorkspaceId, [normalizedStreamId]);
@@ -18380,11 +18398,12 @@ AgentHub.setConnection(telegramMode ? "online" : "connecting");
 mobileDialogs = window.AgentHubMobileDialogs.create({
   root, state, currentTask, workspaceKey,
   workspaceStreams: (tasks) => orderedWorkspaceStreams(workspaceStreams(tasks), tasks[0] ? workspaceKey(tasks[0]) : ""),
-  representativeStreamTask,
+  representativeStreamTask, restoreSelection: restoreOpenStreams,
   selectTask: (id) => selectTaskFromUi(id), setView, setPane,
   isMobile: () => surface === "mobile" && !vscodeMode,
-  formatTime: (value) => formatRelativeTime(activityTimestamp(value)), shortModel: shortModelLabel,
-  openSearch: openWorkspaceMessageSearch, openSettings: openPanel,
+  openSettings: openPanel,
+  transientLayers: [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
+    annotationContextMenu, resourceContextMenu, dialog, settingsPanel, workspaceMessageSearch],
   openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
   textDialog: dialog, cancelTextDialog: () => closeDialog(null),
   createStream: (workspaceId) => emit("stream:new", { workspaceId }),
