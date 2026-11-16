@@ -27,18 +27,21 @@ Original-command worker traces retain numeric read/batch/revision measurements,
 including completed phases on callback failure. Synthetic work counts and local
 timings are not production speedup or a changed readiness/ACK contract.
 
-The startup shell can listen after instance ownership while SQLite integrity is
+The startup shell can listen after instance ownership while data preparation is
 pending, using the existing MiniAppServer and browser health polling. The same
 server's later activation keeps its address and auth. Time to listener, first
 HTTP response and actual startup-screen display are distinct from completed
-integrity, business availability and Ready; none substitutes for another.
+data preparation, business availability and Ready; none substitutes for another.
 
-Startup SQLite inspection keeps its full detached DB/WAL integrity check while
-executing synchronous inspection outside the caller event loop. Existing
+Ordinary startup does not copy DB/WAL or run an integrity inspection. Existing
+storage owners open the data and propagate real opening errors; an ordinary
+failure does not quarantine or replace the database. Only an already persisted
+recovery marker/intent continues the existing recovery protocol (ADR-HUB-439).
+That special path retains its detached DB/WAL check outside the caller event loop. Existing
 original-startup phases distinguish DB/WAL copy bytes, query round trip, worker
 open/check/close and cleanup. These bounded numeric phases contain no paths or
-content; logging failure cannot alter recovery. Full required work still gates
-readiness, and event-loop isolation alone does not prove earlier web availability.
+content; logging failure cannot alter recovery. Actual store opening and any
+saved recovery still gate readiness; tiny fixture timing is not production SLO evidence.
 
 ## SQLite capture deadline coverage
 
