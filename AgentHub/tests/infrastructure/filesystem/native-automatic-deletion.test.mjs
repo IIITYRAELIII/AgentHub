@@ -60,6 +60,15 @@ async function fixture(t, { lost = null, conflict = false, descendants = false, 
     }
     await git(["commit", "-m", "own selected entry change"]);
     result = await git(["rev-parse", "HEAD"]);
+    await git(["checkout", "--detach", before]);
+    await git(["merge", "--no-ff", "--no-edit", result], { acceptableExitCodes: [1] });
+    await git(["checkout", result, "--", inherited[0]]);
+    await git(["commit", "-m", "earlier Test retained selected entry"]);
+    await git(["rm", "-f", "--", inherited[0]]);
+    before = await commit("later dev loses selected entry");
+    await git(["checkout", "--detach", result]);
+    await save("later.txt", "new own correction retains selected entry\n");
+    result = await commit("later Task correction");
   }
   if (lost === "new") {
     // The current result descends from an earlier selected result now contained
@@ -213,7 +222,9 @@ test("descendant absence retains publication identity and automatic graph guards
       publishedMetadata: { ...f.identity.nativeHistoryAuthority.publishedMetadata, tree: "0".repeat(40) } } },
   ]) await assert.rejects(f.verify(value, { identity: changed }), { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
   const stale = structuredClone(value.merges);
-  stale[0].resolution.binding.automaticTree = await f.git(["rev-parse", `${f.result}^{tree}`]);
+  stale[0].resolution = { binding: { parents: [f.before, f.result], commit: value.head, tree: value.tree,
+    automaticTree: await f.git(["rev-parse", `${f.result}^{tree}`]),
+    diffSha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" } };
   await assert.rejects(f.verify(value, { merges: stale }), { code: "RELEASE_NATIVE_CHECKOUT_CHANGED" });
   // Reinsert one deleted entry after the automatic merge. Absence evidence
   // cannot hide a candidate that differs from the actual automatic output.
@@ -230,10 +241,6 @@ for (const sourceEntry of ["blob", "mode", "type", "binary"]) {
     const f = await fixture(t, { descendants: true, sourceEntry });
     const file = f.inherited[0];
     assert.notEqual(await f.git(["ls-tree", f.result, "--", file]), await f.git(["ls-tree", f.published, "--", file]));
-    await assert.rejects(f.compose(), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
-    const checkout = path.join(f.root, "capture", "repository");
-    await f.gitAt(checkout, ["rm", "-f", "--", file]);
-    await f.gitAt(checkout, ["-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", "remove selected entry"]);
     await assert.rejects(f.compose(), error => error.code === "RELEASE_SELECTED_CONTENT_MISSING"
       && error.missingPaths.includes(file));
   });
