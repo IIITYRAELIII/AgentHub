@@ -38,7 +38,7 @@ async function fixture(t, { lost = null, conflict = false, descendants = false, 
     await git(["checkout", "--detach", foreignBase ? main : published]);
     await save("peer.txt", "independent dependency work\n");
     peer = await commit("other accepted dependency tip");
-    await git(["merge", "--no-ff", "--no-edit", early]);
+    await git(["merge", "--no-ff", "-m", "dev dependency composition", early]);
   } else await git(["merge", "--no-ff", "--no-edit", published]);
   const leftMerge = await git(["rev-parse", "HEAD"]);
   for (const file of inherited) await rm(path.join(sourceRoot, file));
@@ -46,7 +46,7 @@ async function fixture(t, { lost = null, conflict = false, descendants = false, 
   if (conflict) await save("shared.txt", "header\nleft current\nfooter\n");
   let before = await commit("later dev removes inherited publication files");
   await git(["checkout", "--detach", peer]);
-  await git(["merge", "--no-ff", "--no-edit", early]);
+  await git(["merge", "--no-ff", "-m", "Task dependency composition", early]);
   await save("new.txt", "entire new own contribution\n");
   if (conflict) await save("shared.txt", "header\nsource current\nfooter\n");
   let result = await commit("current Task result");
