@@ -1140,6 +1140,22 @@ replayed, and its response says so. Late originals are fenced before any binding
 or baseline update, including receipt writes; exact post-commit retry reuses the
 same binding and assignment. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).
 
+If the pinned current executor is already the successor Stream, only the exact
+current claimant run is excluded from that busy check. Its nonempty run ID,
+Workspace, Stream, provider, Thread and turn must match the genuine active run;
+object and identity are rechecked before the SQL assignment commit. Other runs,
+ambiguous/old runs and queued inputs remain blocking, including in that Stream.
+The first fenced binding advances the Task revision once even when its assigned
+Stream is unchanged; exact committed readback does not advance it again.
+The active-run authority comes from the running Hub's RunCoordinator through
+its existing MCP composition. A source release runtime/caller token alone has
+no active-run authority. Correct owners must be delivered to that runtime before
+the genuine actor resumes the same addressed UNKNOWN successor through live MCP.
+The existing receipt-first MCP submit owner permits this exact fenced UNKNOWN
+continuation after unchanged actor/tool/argument-hash validation, then invokes
+the existing custody owner. Generic UNKNOWN operations remain read-only; an
+already active local invocation is joined/read, never dispatched a second time.
+
 An independently authorized unassigned original may explicitly pin
 `expected_owner_stream_id=null` only with `isolated-source-v1`. Missing/empty
 owner pins remain invalid. The Task must remain open/new without accepted Git
@@ -1158,6 +1174,16 @@ its matching fence. Persistent SQL guards also reject old cached receipt
 insert/replace/rekey paths. An occupied ID refuses custody preparation rather
 than replacing a receipt or selecting another ID. Exact genuine replay remains
 readback of that same assignment and receipt.
+
+An existing clean managed source may explicitly declare `source.wipPaths: []`
+with SHA-256 of the JSON empty inventory. The same filesystem owner must prove
+absence of WIP throughout the bounded source directory inventory, including
+case variants on Windows. Known Git/dependency namespaces remain separate;
+other aliases cannot establish absence. Missing declaration is invalid.
+The existing repeated prepare/stage/fence/initial-successor reads must all
+observe the declared inventory. These are bounded observations, not a freeze
+of the legacy source or a historical NO_EFFECT claim. Nonempty WIP keeps its
+existing declared-path copy/hash safeguards and budget.
 
 ## Explicit release test-selection amendment
 

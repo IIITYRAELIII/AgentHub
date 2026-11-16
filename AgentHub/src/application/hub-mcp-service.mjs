@@ -1184,6 +1184,11 @@ export class HubMcpService {
         || existing.toolName !== toolName || existing.argumentsHash !== argumentsHash(args)) {
         throw new Error("MCP request_id was already used for another operation");
       }
+      // Only the existing addressed owners can continue their exact UNKNOWN.
+      // A fenced claim still passes the genuine run, lease and SQL guards.
+      const custodyContinuation = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id)
+        && existing.status === "unknown" && !this.#pendingMutations.has(requestId);
+      if (custodyContinuation) this.#claimCustodySuccessor(context, args);
       // Keep cleanup recovery and the addressed reconciliation/interruption owners.
       const cleanupRecovery = !this.#pendingMutations.has(requestId)
         && ((existing.status === "succeeded" && cleanupConfirmationOriginal(existing, false)
@@ -1191,7 +1196,7 @@ export class HubMcpService {
           || (existing.status === "unknown" && cleanupConfirmationOriginal(existing, true)));
       recoveringCleanup = Boolean(cleanupRecovery);
       const continuation = toolName === "hub_task_operation_cancel" && this.taskOperationInterruption
-        || this.#ordinaryAwaitReconciliationContinuation(toolName, args, existing);
+        || this.#ordinaryAwaitReconciliationContinuation(toolName, args, existing) || custodyContinuation;
       if (!cleanupRecovery && (!continuation || existing.status !== "unknown" || this.#pendingMutations.has(requestId))) {
         return this.#taskOperationReadback(context, { operation_request_id: requestId, expected_arguments_hash: argumentsHash(args) });
       }
@@ -2078,9 +2083,9 @@ export class HubMcpService {
     return task;
   }
 
-  #custodyBusy(task) {
+  #custodyBusy(task, claimant = null) {
     if (task.streamId === null) return false;
-    return this.#activeRuns().some(run => run.streamId === task.streamId)
+    return this.#activeRuns().some(run => run.streamId === task.streamId && run !== claimant)
       || this.#deferredInputs().some(input => input.streamId === task.streamId
         || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({ provider: input.provider, threadId: input.threadId })?.streamId === task.streamId));
   }
@@ -2195,9 +2200,28 @@ export class HubMcpService {
       }
       if (committedReadbackOnly) throw new TaskClaimCustodyRejectedError("Committed custody binding is missing");
       this.#custodyTask(context, task.id, fence.envelope);
-      if (this.#custodyBusy(task)) throw new Error("Previous executor became active; exact custody claim may be reopened after its normal terminal");
+      const active = this.#currentRun(context);
+      const identity = Object.fromEntries(["id", "workspaceId", "streamId", "provider", "threadId", "turnId"].map(key => [key, active[key]]));
+      const validateAdmission = (beforeCommit = false) => {
+        const current = this.#currentRun(context);
+        if (current !== active || Object.entries(identity).some(([key, value]) => current[key] !== value)) {
+          throw new Error("Current custody claimant run changed");
+        }
+        const own = task.streamId === context.streamId;
+        if (own && (!String(identity.id ?? "").trim() || identity.workspaceId !== context.workspaceId
+            || identity.streamId !== context.streamId || identity.provider !== context.provider
+            || identity.threadId !== context.threadId || !String(identity.turnId ?? "").trim())) {
+          throw new Error("Current custody claimant requires a complete exact run identity");
+        }
+        // Only the exact current run is the claimant. Other runs and queued
+        // inputs of the same Stream still belong to the existing busy guard.
+        if (this.#custodyBusy(task, own ? active : null)) throw new Error(beforeCommit
+          ? "Previous executor became active before custody assignment commit"
+          : "Previous executor became active; exact custody claim may be reopened after its normal terminal");
+      };
+      validateAdmission();
       await guarded.assertOwned();
-      return this.#writeClaim(context, task, this.#currentRun(context), args.request_id, workspace, fence.requestId);
+      return this.#writeClaim(context, task, active, args.request_id, workspace, fence.requestId, validateAdmission);
     });
   }
 
@@ -2255,7 +2279,7 @@ export class HubMcpService {
     return this.#writeClaim(context, task, active, operationId, gitWorkspace);
   }
 
-  async #writeClaim(context, task, active, operationId, gitWorkspace, forwardCustodyRequestId = null) {
+  async #writeClaim(context, task, active, operationId, gitWorkspace, forwardCustodyRequestId = null, validateCustodyAdmission = null) {
     this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     const claimed = await this.taskBoard.claim({
@@ -2269,7 +2293,7 @@ export class HubMcpService {
       operationKind: "claim",
       gitBaseline: active.gitBaseline ?? null, forwardCustodyRequestId,
       validateClaimAdmission: forwardCustodyRequestId ? () => {
-        if (this.#custodyBusy(task)) throw new Error("Previous executor became active before custody assignment commit");
+        validateCustodyAdmission(true);
         this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
       } : null,
     });

@@ -187,6 +187,34 @@ ordinary behavior, and genuine exact retry/reopen retains one assignment.
 
 ## Verification and retirement of compatibility
 
+### Explicit empty WIP of a preserved managed source
+
+The scoped RM decision for the saved Vega claim of
+[HUB-449](agent-hub://task/0409b27d-2b07-42f4-9a09-fcaf0cfcf7a8 "Убрать мерцание Nexus в Chrome")
+requires the discovered clean managed source itself, not substitution of the
+registered base. It has no WIP. The existing `source.wipPaths` can expressly be
+`[]`, with the SHA-256 digest of `JSON.stringify([])`. Omission remains invalid.
+No new command, state owner or receipt shape is introduced.
+
+For that declaration the existing filesystem inventory owner traverses only
+directory entries, under the existing depth/entry budget. It rejects any WIP
+entry (also Wip/wip), including empty directories, files or aliases. `.git` and
+`node_modules` are excluded as the existing separate Git/dependency custody
+boundaries; other links refuse because absence cannot be proved through them.
+Directory identity and names are checked before/end. Existing clean Git/source
+pins remain required; declared nonempty paths retain the old bounded inventory,
+copy and hash checks.
+
+The existing owner already repeats source inventory during prepare and fence,
+before/after independent staging, and checks the staged initial inventory before
+successor claim. New or changed WIP at those observations refuses without
+refreshing pins. This is not an atomic filesystem snapshot, proof of no
+intermediate appearance, nor perpetual absence. Late work written into the old
+root after the committed fence remains in that preserved old namespace; it does
+not regain successor authority. The independent namespace and SQL fences remain
+the forward guarantee. Partial old dependency aliases stay with their original
+owner; `dependencyPreparation=not-replayed` is not a ready-dependency receipt.
+
 Focused tests use public MCP, real disposable SQLite and managed Git, including
 late originals, one-winner intents, stale pins, every stage commit boundary,
 post-claim event loss, exact reopen, preserved WIP/history, busy/queued owner and
@@ -199,3 +227,33 @@ resolved by explicit forward dispositions or authoritative original outcomes.
 Future typed sealed refusals keep their existing NO_EFFECT mechanism. Delivery,
 actual original readback and managed takeover remain separate required evidence;
 source approval alone is not operational completion.
+
+### Exact claimant of an already assigned Stream
+
+The actual Vega successor first used the source release runtime, whose default
+MCP service has no RunCoordinator binding. Its authenticated context therefore
+did not supply an active run; that addressed UNKNOWN is retained. The existing
+live MCP composition is the authority route after ordinary delivery of the
+reviewed owners, not a snapshot, injected active-run list or another claim API.
+
+A disposable public regression with full run identity also exposed a separate
+busy-guard defect: the current claimant itself blocked takeover when the Task
+was already assigned to the same Stream. The existing busy check now excludes
+only that exact current run after full Workspace/Stream/provider/Thread/turn/run
+identity validation. The same object and identity are rechecked at assignment
+commit; another run, ambiguous identity, turn replacement or queued input still
+refuses. Same-ID UNKNOWN continuation and post-commit reopen use the existing
+receipt and binding owners. The canonical claim transaction advances the Task
+revision once for its first fenced binding even if the Stream is unchanged;
+this retains the existing exact revision check after a lost assignment reply.
+No second binding or revision is created by committed readback. Ordinary claims
+retain their existing revision semantics. Filesystem absence, namespace, SQL and historical
+original fences are unchanged. Actual delivery and genuine successor outcome
+remain separate from the disposable regression.
+
+The full HTTP regression additionally found the receipt-first submit owner
+returned a historical UNKNOWN before reaching that existing continuation. Its
+actor/tool/complete-arguments identity check is retained. Only an inactive exact
+fenced successor UNKNOWN can now pass through to the same custody worker after
+fence validation. Other UNKNOWN operations and active invocations remain reads.
+This is an addressed continuation of the original ID, not generic replay.
