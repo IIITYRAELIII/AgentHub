@@ -1344,6 +1344,11 @@ export class HubMcpService {
         this.#claimCustodySuccessor(context, args);
       }
       const operation = (admissionReceipt) => this.#dispatch({ ...context, admissionReceipt }, toolName, args);
+      if (toolName === "hub_release_continue" && this.taskGitWorkspaces?.withOperationTrace) {
+        return this.taskGitWorkspaces.withOperationTrace({ operationId: args.request_id,
+          releaseOperationId: args.operation_id }, () => this.measureOperation("release:command",
+          () => this.#mutate(context, toolName, args, operation, { onAdmission })));
+      }
       return this.#mutate(context, toolName, args, operation, { onAdmission });
     }
     return this.#dispatch(context, toolName, args);
@@ -3605,13 +3610,13 @@ export class HubMcpService {
           return durable.result;
         }
         if (ownerContinuation) {
-          const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, {
+          const completed = await this.measureOperation("release:command-receipt", () => this.workspaceCatalog.completeUnknownMcpOperation(requestId, {
             workspaceId: context.workspaceId, toolName, result,
             reconciliation: { kind: firstComposeContinuation ? "failed-first-compose-owner-continuation-v1"
               : testSelectionContinuation ? "test-selection-amendment-owner-continuation-v1" : "failed-publication-admission-readback-v1", operationId: args.operation_id,
               recovery: result.recovery ?? result.amendment?.identitySha256, priorReceipt: { status: started.status, error: started.error,
                 createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs } },
-          });
+          }));
           return completed.result;
         } else if (workflowReconciliationContinuation) {
           const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, {
@@ -3633,6 +3638,8 @@ export class HubMcpService {
         } else if (custodyConsume && started.status === "unknown") {
           await this.workspaceCatalog.completeUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
             result, reconciliation: { kind: "forward-claim-binding-reuse-v1", fenceRequestId: args.forward_custody_request_id } });
+        } else if (toolName === "hub_release_continue") {
+          await this.measureOperation("release:command-receipt", () => this.workspaceCatalog.completeMcpOperation(requestId, result));
         } else await this.workspaceCatalog.completeMcpOperation(requestId, result);
         return result;
       } catch (error) {

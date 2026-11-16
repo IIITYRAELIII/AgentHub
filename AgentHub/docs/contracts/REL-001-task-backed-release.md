@@ -1,5 +1,16 @@
 # REL-001 — Task-backed Workspace release
 
+## Continuation timing (ADR-HUB-458)
+
+Public continuation admission, selected-input amendment, first-generation
+recovery and test-plan resolution share the existing bounded timing mechanism.
+Original command ID, separate releaseOperationId, generation and available local
+worker identity correlate start/end/failure, existing lock waiting and protected
+work. Prepared inspection/reread, amendment CAS and server receipt remain
+distinguishable. Server completion does not assert client delivery or rendering.
+Timing failure cannot change the original outcome or grant replay authority;
+measurements alone do not establish or fix the historical delay.
+
 ## Resolved content after later automatic edits (ADR-HUB-456)
 
 An exact captured ordinary native composition may re-prove an earlier owned

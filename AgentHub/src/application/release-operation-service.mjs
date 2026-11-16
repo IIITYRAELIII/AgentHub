@@ -870,7 +870,7 @@ export class ReleaseOperationService {
       const selectedOperation = firstCompose ? { ...current, testSelectionAmendments: [...(current.testSelectionAmendments ?? []),
         { selection, taskIds: selectedTaskIds, taskScope: scope,
           ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }) }] } : current;
-      return this.withTaskSelection({ operation: selectedOperation, firstCompose: Boolean(firstCompose), taskIds: taskIds == null && scope === "all_await" ? null : selectedTaskIds,
+      return this.withTaskSelection({ operation: selectedOperation, requestId, firstCompose: Boolean(firstCompose), taskIds: taskIds == null && scope === "all_await" ? null : selectedTaskIds,
         taskScope: scope, commit });
     }
     return commit();

@@ -85,7 +85,7 @@ export class WorkspaceReleaseOperationAdapter {
     }) });
   }
 
-  constructor({ releasePreflight, publication, finalization } = {}) {
+  constructor({ releasePreflight, publication, finalization, measureOperation = (_stage, run) => run() } = {}) {
     requiredMethod(releasePreflight, "prepareOperationGeneration");
     requiredMethod(releasePreflight, "validateOperationGeneration");
     requiredMethod(releasePreflight, "operationSelection");
@@ -96,6 +96,7 @@ export class WorkspaceReleaseOperationAdapter {
     this.releasePreflight = releasePreflight;
     this.publication = publication;
     this.finalization = finalization;
+    this.measureOperation = measureOperation;
   }
 
   async compose({ operation, generation }) {
@@ -180,12 +181,12 @@ export class WorkspaceReleaseOperationAdapter {
         }
         return results;
       };
-      const results = await capture();
-      return commit(results, async () => {
-        await validatePrepared();
+      const results = await this.measureOperation("release:selection", capture);
+      return this.measureOperation("release:amendment-commit", () => commit(results, async () => {
+        await this.measureOperation("release:amendment-revalidate", validatePrepared);
         if (firstCompose) await releaseMetadataBytes(effectiveReleaseMetadata(operation));
         if (selectionIdentity(await capture()) !== selectionIdentity(results)) throw new Error("Accepted Task selection changed before amendment CAS");
-      }, prepared?.releaseCandidates.map(item => item.binding) ?? null);
+      }, prepared?.releaseCandidates.map(item => item.binding) ?? null));
     };
     if (firstCompose) return releaseMetadataBytes(effectiveReleaseMetadata(operation)).then(changelogContent =>
       this.releasePreflight.firstOperationGeneration({ workspaceId: operation.workspaceId,
