@@ -15,23 +15,24 @@ export async function openReleaseApiHost(identity, {
   try { token = runtime.service.contextToken(identity); }
   catch (error) { await runtime.close(); throw error; }
   const allowed = new Set(["hub_release_run", "hub_release_continue", "hub_release_get",
-    "hub_task_status_update", "hub_task_operation_get", "hub_task_get"]);
+    "hub_task_status_update", "hub_task_operation_reconcile", "hub_task_operation_get", "hub_task_get"]);
+  const taskMutations = new Set(["hub_task_status_update", "hub_task_operation_reconcile"]);
   const service = {
     tools: () => runtime.service.tools().filter(tool => allowed.has(tool.name)),
     call(name, args) {
       if (closing) throw new Error("Release API owner is joining its addressed work");
       if (!allowed.has(name)) throw new Error("Not a release API command");
       if (args.context_token !== token) throw new Error("Release API caller differs from its addressed identity");
-      const key = name === "hub_task_status_update" ? args.task_id
+      const key = taskMutations.has(name) ? args.task_id
         : name === "hub_release_run" ? args.request_id : name === "hub_release_continue" ? args.operation_id : null;
-      if (key && name !== "hub_task_status_update") addressed.set(`${name}:${key}`,
+      if (key && !taskMutations.has(name)) addressed.set(`${name}:${key}`,
         name === "hub_release_run" ? { requestId: key } : { operationId: key });
       const rememberTask = () => addressed.set(`${name}:${key}`, { taskId: key, taskOriginal: structuredClone(args) });
       const pending = Promise.resolve().then(() => runtime.service.submitTaskOperation(name, args)).then(result => {
-        if (name === "hub_task_status_update" && result?.taskOperation?.requestId === args.request_id) rememberTask();
+        if (taskMutations.has(name) && result?.taskOperation?.requestId === args.request_id) rememberTask();
         return result;
       }, error => {
-        if (name === "hub_task_status_update") {
+        if (taskMutations.has(name)) {
           try {
             const row = runtime.service.workspaceCatalog.mcpOperation(args.request_id);
             if (row?.toolName === name && row.argumentsHash === mcpArgumentsHash(args)) rememberTask();

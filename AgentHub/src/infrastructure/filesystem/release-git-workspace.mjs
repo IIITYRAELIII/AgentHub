@@ -36,7 +36,7 @@ import {
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { selectedCompositionFields, selectedCompositionIdentity } from "../../domain/task-selected-composition.mjs";
 import { canonicalPath } from "./config.mjs";
-import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import { withInterprocessLocks, interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
 import { withPublicationLock } from "../process/publication-lock.mjs";
 import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { publicationCheckpointFile, readPublicationCheckpoint } from "../persistence/publication-checkpoint.mjs";
@@ -799,6 +799,13 @@ export class ReleaseGitWorkspaceService {
     const identity = sha256(String(workspaceId ?? "").trim()).slice(0, 24);
     const lock = path.join(this.dataDir, "locks", `release-await-${identity}`);
     return withInterprocessLocks([lock], operation);
+  }
+
+  awaitTransitionAdmissionNoEffect(workspaceId, error) {
+    const identity = sha256(String(workspaceId ?? "").trim()).slice(0, 24);
+    const lockPath = path.join(this.dataDir, "locks", `release-await-${identity}.lock`);
+    return interprocessLockAdmissionTimeoutPath(error) === lockPath
+      ? { kind: "release-await-lock-admission-v1", workspaceId, lockPath } : null;
   }
 
   async inspectMainChanges({

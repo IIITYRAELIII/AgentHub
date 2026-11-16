@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +11,11 @@ import { createPersistenceMutationCapabilities } from "../../src/composition/per
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
+import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { withInterprocessLocks } from "../../src/infrastructure/process/interprocess-lock.mjs";
+import { openReleaseApiHost } from "../../release.mjs";
+import { readReleaseToolPackage } from "../../src/infrastructure/process/release-tool-package.mjs";
+import { spawn } from "node:child_process";
 
 function deferred() {
   let resolve;
@@ -74,11 +80,15 @@ async function fixture(context, { releaseWorkflowEnabled = true, configuredRoot 
   let partialLeaseLoss = false;
   let effects = 0;
   let recoveryLocks = 0;
+  let awaitFailure = null;
+  let processGuard = false;
+  let admissionOwner = null;
   const lease = () => ({ async assertOwned() {
     if (pauseOwnership) { pauseOwnership = false; entered.resolve(); await release.promise; }
     if (leaseLost) throw new Error("lease lost");
   }, signal: null });
   const git = {
+    async assertNoProcessTreeGuardOwned() { if (processGuard) throw new Error("unresolved process-tree guard"); },
     async withTaskRecoveryLock(_id, operation) { recoveryLocks += 1; return operation({ async assertOwned() {}, signal: null }); },
     async withTaskRepositoryRecoveryLock(_id, _root, lease, operation) { return operation(lease); },
     async withTaskLock(_id, operation) {
@@ -98,7 +108,8 @@ async function fixture(context, { releaseWorkflowEnabled = true, configuredRoot 
     releasePlanner: { async plan() { return { ready: [] }; } },
     releaseCompleter: { async completeRelease() { return {}; } },
     releasePreflight: { async preflight() { return {}; }, async prepareAwaitSet() { return {}; },
-      async withAwaitTransition(_id, operation) { return operation(); } },
+      async withAwaitTransition(_id, operation) { if (awaitFailure) throw awaitFailure; return operation(); },
+      awaitTransitionAdmissionNoEffect(workspaceId, error) { return admissionOwner?.awaitTransitionAdmissionNoEffect(workspaceId, error); } },
   });
   const hub = service();
   const token = hub.contextToken({ provider: "codex", threadId: "fixture-thread" });
@@ -107,7 +118,283 @@ async function fixture(context, { releaseWorkflowEnabled = true, configuredRoot 
   return { ...current, root, open, hub, service, token, input, task, workspace, stream,
     entered, release, pause() { pause = true; }, pauseOwnership() { pauseOwnership = true; },
     loseLease() { leaseLost = true; }, partialLeaseLoss() { partialLeaseLoss = true; },
-    effects() { return effects; }, recoveryLocks() { return recoveryLocks; } };
+    effects() { return effects; }, recoveryLocks() { return recoveryLocks; },
+    failAwait(error) { awaitFailure = error; }, processGuard(value) { processGuard = value; },
+    admissionOwner(owner) { admissionOwner = owner; } };
+}
+
+async function actualLockAdmissionError(f, workspaceId = f.workspace.id) {
+  const key = createHash("sha256").update(workspaceId).digest("hex").slice(0, 24);
+  const target = path.join(f.root, "locks", `release-await-${key}`), lock = `${target}.lock`;
+  await mkdir(lock, { recursive: true });
+  await writeFile(path.join(lock, "owner.json"), JSON.stringify({ token: "controlled-live-owner", pid: process.pid,
+    processInstanceId: "controlled-other-lock-owner", createdAt: Date.now() }));
+  let entered = 0;
+  try {
+    await withInterprocessLocks([target], () => { entered += 1; }, { timeoutMs: 10, retryDelayMs: 1,
+      isProcessAlive: () => true, processIdentityState: () => "alive" });
+    assert.fail("controlled lock must remain held");
+  } catch (error) {
+    assert.equal(entered, 0);
+    assert.equal(error.code, "INTERPROCESS_LOCK_ADMISSION_TIMEOUT");
+    return error;
+  } finally { await rm(lock, { recursive: true, force: true }); }
+}
+
+test("a genuine Await lock admission refusal is durably failed without entering lifecycle", async context => {
+  const f = await fixture(context);
+  f.admissionOwner(new ReleaseGitWorkspaceService({ dataDir: f.root }));
+  f.failAwait(await actualLockAdmissionError(f));
+  const input = { ...f.input, status: "awaiting_implementation" };
+  await assert.rejects(f.hub.call("hub_task_status_update", input), error => error.code === "TASK_WORKFLOW_NO_EFFECT");
+  assert.equal(f.catalog.mcpOperation(input.request_id).status, "failed");
+  assert.equal(f.tasks.lifecycleTransition(input.request_id), null);
+  assert.equal(f.tasks.lifecycleOutcome(input.request_id).result.noEffect.admissionFence.origin, "lock-acquire-refusal");
+  assert.equal(f.effects(), 0);
+});
+
+for (const kind of ["forged", "foreign-lock"]) {
+  test(`${kind} lock error cannot gain live Await admission refusal authority`, async context => {
+    const f = await fixture(context);
+    f.admissionOwner(new ReleaseGitWorkspaceService({ dataDir: f.root }));
+    const genuine = await actualLockAdmissionError(f, kind === "foreign-lock" ? "foreign-workspace" : f.workspace.id);
+    const error = kind === "forged" ? Object.assign(new Error(genuine.message), { code: genuine.code }) : genuine;
+    f.failAwait(error);
+    const input = { ...f.input, status: "awaiting_implementation" };
+    await assert.rejects(f.hub.call("hub_task_status_update", input), candidate => candidate === error);
+    assert.equal(f.catalog.mcpOperation(input.request_id).status, "unknown");
+    assert.equal(f.tasks.lifecycleTransition(input.request_id), null);
+    assert.equal(f.tasks.lifecycleOutcome(input.request_id), null);
+    assert.equal(f.effects(), 0);
+  });
+}
+
+async function unadmittedAwait(f) {
+  const input = { ...f.input, status: "awaiting_implementation" };
+  const error = new Error("controlled failure before Await boundary entry");
+  f.failAwait(error);
+  await assert.rejects(f.hub.call("hub_task_status_update", input), candidate => candidate === error);
+  f.failAwait(null);
+  assert.equal(f.catalog.mcpOperation(input.request_id).status, "unknown");
+  assert.equal(f.tasks.lifecycleTransition(input.request_id), null);
+  assert.equal(f.tasks.lifecycleOutcome(input.request_id), null);
+  return input;
+}
+
+function unadmittedReconciliation(f, input, extra = {}) {
+  return { context_token: f.token, request_id: "unadmitted-await-reconcile", task_id: f.task.id,
+    operation_request_id: input.request_id, expected_arguments_hash: mcpArgumentsHash(input),
+    project_root: f.root, confirm_reconcile: true, expected_task_revision: 17,
+    expected_workflow_status: "testing", ...extra };
+}
+
+async function historicalUnknownControl(f, args) {
+  // Reconstruct the old control's canonical persisted admission/classification,
+  // not a source-host retirement certificate or an invented lifecycle outcome.
+  await f.catalog.beginMcpOperation({ requestId: args.request_id, workspaceId: f.workspace.id,
+    streamId: f.stream.id, provider: "codex", threadId: "fixture-thread",
+    toolName: "hub_task_operation_reconcile", argumentsHash: mcpArgumentsHash(args) });
+  await f.catalog.markMcpOperationUnknown(args.request_id, new Error("historical pre-recovery lock timeout"));
+  return f.catalog.mcpOperation(args.request_id);
+}
+
+test("a fresh reconciliation control refusing before its recovery callback is failed without touching the Await", async context => {
+  const f = await fixture(context), input = await unadmittedAwait(f);
+  const original = f.catalog.mcpOperation(input.request_id);
+  f.failAwait(await actualLockAdmissionError(f));
+  await assert.rejects(f.hub.call("hub_task_operation_reconcile", unadmittedReconciliation(f, input)), /lock/i);
+  assert.equal(f.catalog.mcpOperation("unadmitted-await-reconcile").status, "failed");
+  assert.deepEqual(f.catalog.mcpOperation(input.request_id), original);
+  assert.equal(f.tasks.lifecycleOutcome(input.request_id), null);
+  assert.equal(f.effects(), 0);
+});
+
+test("a saved UNKNOWN reconciliation control resumes its SAME owner and retains both original histories", async context => {
+  const f = await fixture(context), input = await unadmittedAwait(f);
+  const args = unadmittedReconciliation(f, input), before = f.tasks.task(f.task.id);
+  const original = f.catalog.mcpOperation(input.request_id), control = await historicalUnknownControl(f, args);
+  const second = await f.open(), hub = f.service(second);
+  await assert.rejects(hub.call("hub_task_operation_reconcile", { ...args, expected_arguments_hash: "f".repeat(64) }));
+  assert.deepEqual(second.catalog.mcpOperation(args.request_id), control);
+  const result = await hub.call("hub_task_operation_reconcile", args);
+  assert.equal(result.resolved, true);
+  assert.equal(second.catalog.mcpOperation(args.request_id).status, "succeeded");
+  assert.equal(second.catalog.mcpOperation(args.request_id).createdAtMs, control.createdAtMs);
+  assert.deepEqual(second.catalog.mcpOperation(args.request_id).result.operatorReconciliation.previousReceipt, { ...control, replayed: true });
+  assert.equal(second.catalog.mcpOperation(input.request_id).status, "failed");
+  assert.deepEqual(second.tasks.lifecycleOutcome(input.request_id).result.noEffect.previousReceipt, original);
+  assert.deepEqual(second.tasks.task(f.task.id), before);
+  const repeat = await hub.call("hub_task_operation_reconcile", args);
+  assert.deepEqual(repeat, second.catalog.mcpOperation(args.request_id).result);
+  assert.equal(f.effects(), 0);
+});
+
+test("a resumed UNKNOWN reconciliation control refusing again preserves its prior ambiguous effects", async context => {
+  const f = await fixture(context), input = await unadmittedAwait(f), args = unadmittedReconciliation(f, input);
+  const original = f.catalog.mcpOperation(input.request_id);
+  const control = await historicalUnknownControl(f, args);
+  f.processGuard(true);
+  await assert.rejects(f.hub.call("hub_task_operation_reconcile", args), /process-tree guard/);
+  const after = f.catalog.mcpOperation(args.request_id);
+  assert.deepEqual(after, control);
+  assert.deepEqual(f.catalog.mcpOperation(input.request_id), original);
+  assert.equal(f.tasks.lifecycleOutcome(input.request_id), null);
+  assert.equal(f.effects(), 0);
+});
+
+test("lost reconciliation control completion reads the already settled admission refusal without another outcome write", async context => {
+  const f = await fixture(context), input = await unadmittedAwait(f), args = unadmittedReconciliation(f, input);
+  const complete = f.rawCatalog.completeMcpOperation.bind(f.rawCatalog);
+  f.rawCatalog.completeMcpOperation = (id, value) => {
+    if (id === args.request_id) throw new Error("controlled lost control completion");
+    return complete(id, value);
+  };
+  await assert.rejects(f.hub.call("hub_task_operation_reconcile", args), /receipt reconciliation/);
+  const original = f.catalog.mcpOperation(input.request_id), outcome = f.tasks.lifecycleOutcome(input.request_id);
+  assert.equal(original.status, "failed");
+  assert.equal(f.catalog.mcpOperation(args.request_id).status, "unknown");
+  const second = await f.open();
+  const result = await f.service(second).call("hub_task_operation_reconcile", args);
+  assert.equal(result.resolved, true);
+  assert.equal(second.catalog.mcpOperation(args.request_id).status, "succeeded");
+  assert.deepEqual(second.catalog.mcpOperation(input.request_id), original);
+  assert.deepEqual(second.tasks.lifecycleOutcome(input.request_id), outcome);
+  assert.equal(f.effects(), 0);
+});
+
+test("external task-reconcile CLI uses the real source API host and canonical SQL owner", async context => {
+  const f = await fixture(context);
+  const input = await unadmittedAwait(f);
+  const original = f.catalog.mcpOperation(input.request_id);
+  const before = f.tasks.task(f.task.id);
+  const tool = await readReleaseToolPackage();
+  const executor = await f.catalog.createStream({ workspaceId: f.workspace.id, name: "Executor" });
+  await f.catalog.bindThread({ streamId: executor.id, provider: "codex", threadId: "executor-thread", projectRoot: f.root });
+  for (const manager of [false, true]) {
+    let closed = false;
+    const host = await openReleaseApiHost({ provider: "codex", threadId: manager ? "fixture-thread" : "executor-thread" }, {
+      openRuntime: async () => ({ service: f.hub, operations: { async drainAddressed() {} }, close() { closed = true; } }),
+    });
+    context.after(() => host.close());
+    const connection = path.join(f.root, `connection-${manager}.json`), request = path.join(f.root, `request-${manager}.json`);
+    await writeFile(connection, JSON.stringify(host.connection));
+    const args = unadmittedReconciliation(f, input, { request_id: `external-reconcile-${manager}` });
+    if (manager) await historicalUnknownControl(f, args);
+    delete args.context_token;
+    await writeFile(request, JSON.stringify(args));
+    const child = spawn(process.execPath, [path.join(tool.root, "bin/release.mjs"), "task-reconcile",
+      "--connection-file", connection, "--request-file", request], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", bytes => { stdout += bytes; }); child.stderr.on("data", bytes => { stderr += bytes; });
+    const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    const rows = stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+    assert.equal(code, manager ? 0 : 1, stderr || JSON.stringify(rows.at(-1)));
+    if (manager) {
+      assert.equal(stderr, "");
+      const terminal = rows.at(-1).result;
+      assert.equal(terminal.taskOperation.requestId, args.request_id);
+      assert.equal(terminal.taskOperation.status, "succeeded");
+      assert.equal(terminal.result.resolved, true);
+      assert.equal(terminal.result.receipt.requestId, input.request_id);
+      assert.equal(terminal.result.receipt.status, "failed");
+      assert.deepEqual(f.tasks.lifecycleOutcome(input.request_id).result.noEffect.previousReceipt, original);
+    } else {
+      assert.deepEqual(f.catalog.mcpOperation(input.request_id), original);
+      assert.equal(f.tasks.lifecycleOutcome(input.request_id), null);
+    }
+    await host.close(); assert.equal(closed, true);
+    assert.deepEqual(f.tasks.task(f.task.id), before);
+    assert.equal(f.effects(), 0);
+  }
+});
+
+test("ordinary Await with no lifecycle intent is fenced by its canonical outcome before SAME-original settlement", async context => {
+  const f = await fixture(context);
+  const input = await unadmittedAwait(f);
+  const original = f.catalog.mcpOperation(input.request_id);
+  const before = f.tasks.task(f.task.id);
+  const second = await f.open();
+  const hub = f.service(second);
+  const args = unadmittedReconciliation(f, input);
+  const result = await hub.call("hub_task_operation_reconcile", args);
+  assert.equal(result.resolved, true);
+  assert.equal(result.outcome, "failed");
+  assert.equal(second.catalog.mcpOperation(input.request_id).status, "failed");
+  assert.equal(second.catalog.mcpOperation(input.request_id).createdAtMs, original.createdAtMs);
+  const outcome = second.tasks.lifecycleOutcome(input.request_id);
+  assert.equal(outcome.result.noEffect.code, "WORKFLOW_AWAIT_NOT_ADMITTED");
+  assert.deepEqual(outcome.result.noEffect.previousReceipt, original);
+  assert.deepEqual(second.tasks.task(f.task.id), before);
+  assert.equal(second.tasks.lifecycleTransition(input.request_id), null);
+  assert.deepEqual(await hub.call("hub_task_operation_reconcile", args), result);
+  // This connection existed before reconciliation. The existing SQL BEGIN
+  // owner sees the new terminal outcome and cannot start the late original.
+  await assert.rejects(f.tasks.beginLifecycleTransition({ id: f.task.id, operationId: input.request_id,
+    expectedRevision: 17, targetWorkflowStatus: "awaiting_implementation" }), /terminal outcome/);
+  await assert.rejects(f.hub.call("hub_task_status_update", input), /not admitted|NO_EFFECT|workflow/i);
+  assert.deepEqual(second.tasks.lifecycleOutcome(input.request_id), outcome);
+  assert.equal(f.effects(), 0);
+});
+
+test("an Await lifecycle BEGIN winning first preserves UNKNOWN instead of creating an unadmitted outcome", async context => {
+  const f = await fixture(context);
+  const input = await unadmittedAwait(f);
+  await f.tasks.beginLifecycleTransition({ id: f.task.id, operationId: input.request_id,
+    expectedRevision: 17, targetWorkflowStatus: "awaiting_implementation" });
+  const original = f.catalog.mcpOperation(input.request_id);
+  const second = await f.open();
+  await assert.rejects(f.service(second).call("hub_task_operation_reconcile", unadmittedReconciliation(f, input)), /guard|intent/);
+  assert.deepEqual(second.catalog.mcpOperation(input.request_id), original);
+  assert.equal(second.tasks.lifecycleOutcome(input.request_id), null);
+  assert.equal(f.effects(), 0);
+});
+
+test("a concurrent Task append at the refusal transaction cannot certify the stale original CAS", async context => {
+  const f = await fixture(context), input = await unadmittedAwait(f);
+  const original = f.catalog.mcpOperation(input.request_id), second = await f.open();
+  const record = second.rawTasks.recordUnadmittedAwaitRefusal.bind(second.rawTasks);
+  second.rawTasks.recordUnadmittedAwaitRefusal = payload => {
+    // Deliberate two-connection negative: the older canonical store commits
+    // metadata immediately before the new refusal transaction starts.
+    f.rawTasks.updatePresentation(f.task.id, { title: f.task.title, description: "concurrent append" });
+    return record(payload);
+  };
+  await assert.rejects(f.service(second).call("hub_task_operation_reconcile", unadmittedReconciliation(f, input)), /CAS changed/);
+  assert.equal(second.tasks.task(f.task.id).revision, 18);
+  assert.deepEqual(second.catalog.mcpOperation(input.request_id), original);
+  assert.equal(second.tasks.lifecycleOutcome(input.request_id), null);
+  assert.equal(f.effects(), 0);
+});
+
+test("a failed unadmitted-outcome write preserves the UNKNOWN original and cannot report successful reconciliation", async context => {
+  const f = await fixture(context), input = await unadmittedAwait(f);
+  const original = f.catalog.mcpOperation(input.request_id), second = await f.open();
+  second.rawTasks.recordUnadmittedAwaitRefusal = () => { throw new Error("controlled outcome persistence failure"); };
+  await assert.rejects(f.service(second).call("hub_task_operation_reconcile", unadmittedReconciliation(f, input)), /outcome persistence failure/);
+  assert.deepEqual(second.catalog.mcpOperation(input.request_id), original);
+  assert.equal(second.tasks.lifecycleOutcome(input.request_id), null);
+  assert.equal(second.catalog.mcpOperation("unadmitted-await-reconcile").status, "unknown");
+  assert.equal(f.effects(), 0);
+});
+
+for (const changed of ["hash", "cas", "root", "guard", "task-state", "process-guard"]) {
+  test(`unadmitted Await refuses changed ${changed} without reclassifying its original`, async context => {
+    const f = await fixture(context);
+    const input = await unadmittedAwait(f);
+    const original = f.catalog.mcpOperation(input.request_id);
+    const extra = changed === "hash" ? { expected_arguments_hash: "0".repeat(64) }
+      : changed === "cas" ? { expected_task_revision: 18 }
+      : changed === "root" ? { project_root: path.join(f.root, "foreign") }
+      : changed === "guard" ? { guard_id: "supplied-guard" } : {};
+    if (changed === "task-state") await f.tasks.update({ id: f.task.id, title: f.task.title, description: "changed" });
+    if (changed === "process-guard") f.processGuard(true);
+    const second = await f.open();
+    await assert.rejects(f.service(second).call("hub_task_operation_reconcile", unadmittedReconciliation(f, input, extra)));
+    assert.equal(second.catalog.mcpOperation("unadmitted-await-reconcile").status, "failed");
+    assert.deepEqual(second.catalog.mcpOperation(input.request_id), original);
+    assert.equal(second.tasks.lifecycleOutcome(input.request_id), null);
+    assert.equal(f.effects(), 0);
+  });
 }
 
 for (const [configuredRoot, suppliedRoot] of [[false, true], [false, false], [true, true]]) {

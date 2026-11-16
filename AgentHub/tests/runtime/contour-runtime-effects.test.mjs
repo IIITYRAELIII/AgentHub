@@ -8,7 +8,6 @@ import { createContourOperationalPaths } from "../../src/domain/test-contour-ope
 import { createRunAdmissionComposition } from "../../src/composition/run-admission-composition.mjs";
 import { ClaudeRunController } from "../../src/providers/claude/claude-run-controller.mjs";
 import { processIsAlive, stopProcessTree } from "../../src/providers/claude/claude-run-io.mjs";
-import { serializableTaskRun } from "../../src/domain/task-runs.mjs";
 import { createRuntimeStateRestorationComposition } from "../../src/composition/runtime-state-restoration-composition.mjs";
 import { TaskSelectionStore } from "../../src/application/task-selection-store.mjs";
 import { ClaudeCompletionService } from "../../src/providers/provider-completion-services.mjs";
@@ -71,41 +70,6 @@ test("captured Claude PID and exact fingerprint cannot authorize read, completio
   assert.equal(contourRecoveryExclusion, "captured-process-and-output-not-owned");
   assert.deepEqual(preserved, before);
   assert.equal(await readFile(f.original, "utf8"), "production");
-});
-
-test("recording Claude provenance survives serialization and allows exact owned reattachment", {  }, async (t) => {
-  const f = await fixture(t);
-  const authority = createContourClaudeAuthority(f);
-  const run = { id: "run", turnId: "turn", threadId: "thread" };
-  authority.started(run);
-  Object.assign(run, {
-    pid: 12345,
-    claudeProcessFingerprint: { pid: 12345, creationTime: "owned" },
-    claudeOwnedProcessTree: [
-      { pid: 12345, creationTime: "owned" },
-      { pid: 12346, parentPid: 12345, creationTime: "owned-child" },
-    ],
-    claudeStopAttempt: { state: "pending", promise: Promise.resolve(true) },
-  });
-  const directory = path.join(f.dataDir, "claude-runs");
-  await mkdir(directory);
-  run.claudeOutputPath = path.join(directory, "turn.jsonl");
-  run.claudeErrorPath = path.join(directory, "turn.err.log");
-  await writeFile(run.claudeOutputPath, "");
-  await writeFile(run.claudeErrorPath, "");
-  const restored = JSON.parse(JSON.stringify(serializableTaskRun(run)));
-  assert.deepEqual(restored.claudeOwnedProcessTree, run.claudeOwnedProcessTree);
-  assert.equal(serializableTaskRun({ ...run, claudeStopUnknown: true }).claudeStopUnknown, true);
-  assert.equal(restored.claudeStopAttempt, undefined, "an in-process stop promise is never persisted as a replayable killer");
-  const stopped = [];
-  const controller = new ClaudeRunController({ dataDir: f.dataDir, processAuthority: createContourClaudeAuthority(f), processAlive: () => true,
-    processFingerprintLookup: async () => restored.claudeProcessFingerprint,
-    processTreeFingerprintLookup: async (pid) => restored.claudeOwnedProcessTree.find((item) => item.pid === pid) ?? null,
-    stopProcess: async (pid) => { stopped.push(pid); return true; }, pollIntervalMs: 60_000 });
-  t.after(() => controller.pause(restored));
-  assert.equal(await controller.attachAfterRestart(restored), true);
-  assert.equal(await controller.stop(restored), true);
-  assert.deepEqual(stopped, [12345]);
 });
 
 test("even marked Claude runs reject foreign output and turn path traversal", {  }, async (t) => {

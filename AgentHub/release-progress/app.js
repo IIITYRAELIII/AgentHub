@@ -50,7 +50,13 @@ function render(data) {
   }));
   $('counts').textContent = `Результатов: ${data.totalCases} · Пройдено: ${data.counts.passed} · Ошибок: ${data.counts.failed} · Пропущено: ${data.counts.skipped}`;
   $('error-count').textContent = data.counts.failed || '';
-  $('last-result').textContent = data.lastResult ? `Последний завершённый тест: ${data.lastResult.name}` : 'Результаты тестов пока не записаны.';
+  const phases = { execution: 'выполнение', 'child-starting': 'процесс запущен', 'child-exited': 'ожидание закрытия вывода',
+    'child-closed': 'процесс и вывод закрыты', cleanup: 'очистка временных данных', 'cleanup-finished': 'очистка завершена',
+    'checkpoint-queued': 'ожидание очереди сохранения', 'checkpoint-writing': 'сохранение результата' };
+  const active = data.activeFiles ?? [];
+  $('last-result').textContent = active.length ? active.map(file =>
+    `${file.file}${file.pid ? ` · PID ${file.pid}` : ''} · ${phases[file.phase] ?? file.phase} · ${duration(Date.now() - file.startedAt)} · последнее продвижение ${duration(Date.now() - file.observedAt)} назад`).join('\n')
+    : data.lastResult ? `Последний завершённый тест: ${data.lastResult.name}` : 'Результаты тестов пока не записаны.';
   $('identity').textContent = `Поколение ${data.generation} · ${data.operationId}`;
   $('run-error').hidden = !data.error; $('run-error').textContent = data.error || '';
   $('log-info').textContent = `Последние ${Math.min(data.logLines, 200)} строк из ${data.logLines}. Полный файл доступен по ссылке.`;

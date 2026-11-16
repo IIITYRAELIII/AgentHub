@@ -22,6 +22,7 @@ import {
   TASK_WORKFLOW_STATUSES,
   TaskLifecycleBeginRejectedError,
   workflowAdmissionNoEffectEvidence,
+  ordinaryAwaitOriginalArguments,
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
 import {
@@ -3178,6 +3179,66 @@ export class TaskBoardStore {
         database.exec("ROLLBACK");
         throw error;
       }
+    });
+  }
+
+  recordUnadmittedAwaitRefusal({ taskId, receipt, projectRoot, lockAdmission = null } = {}) {
+    return this.#withDatabase(database => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const row = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(receipt?.requestId);
+        const current = this.#taskRow(database, taskId);
+        const args = ordinaryAwaitOriginalArguments(receipt);
+        const fresh = ["pending", "reconciling"].includes(row?.receipt_state)
+          && lockAdmission?.kind === "release-await-lock-admission-v1"
+          && lockAdmission.workspaceId === receipt.workspaceId;
+        if (!row || !args || args.task_id !== taskId || row.status !== "pending"
+            || !(row.receipt_state === "unknown" || fresh)
+            || row.tool_name !== receipt.toolName || row.workspace_id !== receipt.workspaceId
+            || row.stream_id !== receipt.streamId || row.provider !== receipt.provider || row.provider_thread_id !== receipt.threadId
+            || row.arguments_hash !== receipt.argumentsHash || Number(row.created_at_ms) !== receipt.createdAtMs
+            || (row.completed_at_ms == null ? null : Number(row.completed_at_ms)) !== receipt.completedAtMs
+            || String(row.error_text ?? "") !== String(receipt.error ?? "") || row.result_json != null
+            || row.task_execution_json !== JSON.stringify(receipt.taskExecution)
+            || row.preparation_state_json || row.claim_custody_json || row.interstream_content_hash
+            || current.workspace_id !== receipt.workspaceId || Number(current.row_revision) !== args.expected_task_revision
+            || current.workflow_status !== "testing" || current.status === "done"
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_transitions WHERE operation_id = ?").get(receipt.requestId)
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(receipt.requestId)
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_transitions WHERE task_id = ? AND phase IN ('pending_git','cleanup')").get(taskId)) {
+          throw new Error("Unadmitted Await original, lifecycle or Task CAS changed");
+        }
+        assertNoPendingTaskInterruption(database, taskId);
+        const workspace = database.prepare("SELECT settings_json FROM hub_workspaces WHERE id = ?").get(current.workspace_id);
+        const stream = current.stream_id
+          ? database.prepare("SELECT settings_json FROM hub_streams WHERE id = ? AND workspace_id = ?").get(current.stream_id, current.workspace_id) : null;
+        const configuredRoot = workspace && taskProjectRoot({ workspace: { settings: parsedSettings(workspace.settings_json) },
+          stream: stream ? { settings: parsedSettings(stream.settings_json) } : null });
+        if (!configuredRoot || !projectRoot || !sameResolvedPath(configuredRoot, projectRoot)
+            || parsedSettings(workspace.settings_json).releaseWorkflowEnabled !== true) {
+          throw new Error("Unadmitted Await repository or Workspace changed");
+        }
+        const noEffect = { version: 1, code: "WORKFLOW_AWAIT_NOT_ADMITTED", taskId, projectRoot,
+          targetWorkflowStatus: args.status, expectedRevision: args.expected_task_revision, expectedWorkflowStatus: "testing",
+          observedRevision: Number(current.row_revision), observedWorkflowStatus: current.workflow_status,
+          ...Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName",
+            "argumentsHash", "createdAtMs"].map(key => [key, receipt[key]])),
+          admissionFence: { kind: "lifecycle-outcome-before-await-admission-v1", ownerId: receipt.taskExecution.ownerId,
+            origin: fresh ? "lock-acquire-refusal" : "reconciliation-boundary" },
+          lockAdmission: fresh ? structuredClone(lockAdmission) : null,
+          previousReceipt: structuredClone(receipt),
+        };
+        const outcome = { operationId: receipt.requestId, taskId, kind: "workflow", result: { noEffect } };
+        if (!workflowAdmissionNoEffectEvidence(outcome, receipt)) throw new Error("Unadmitted Await proof identity differs");
+        // The existing BEGIN owner checks this outcome in the same SQLite
+        // transaction before any Git effect. A late original either committed
+        // its transition first (and we refused above), or can no longer begin.
+        database.prepare(`INSERT INTO hub_task_lifecycle_outcomes
+          (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, ?)`)
+          .run(receipt.requestId, taskId, JSON.stringify(outcome.result), this.now());
+        database.exec("COMMIT");
+        return outcome;
+      } catch (error) { database.exec("ROLLBACK"); throw error; }
     });
   }
 

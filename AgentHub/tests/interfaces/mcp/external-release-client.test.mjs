@@ -10,6 +10,7 @@ import path from "node:path";
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationService } from "../../../src/application/release-operation-service.mjs";
 import { mcpArgumentsHash } from "../../../src/domain/mcp-arguments-hash.mjs";
+import { spawn } from "node:child_process";
 const tool = await readReleaseToolPackage();
 const { HubClient, executeRelease } = await tool.module("src/hub-client.mjs");
 const { main } = await tool.module("bin/release.mjs");
@@ -119,4 +120,57 @@ test("original release readback resolves its real indexed owner while preserving
   await assert.rejects(foreign.readReleaseOriginal(original), /authority differs/);
   await assert.rejects(client.readReleaseOriginal({ ...original, request_id: "missing-original" }), /receipt is unavailable/);
   assert.deepEqual(f.catalog.mcpOperation(original.request_id), row);
+});
+
+test("external CLI recovers a real compact canonical release receipt and lost transport without another effect", async t => {
+  const f = await claimCustodyFixture(t);
+  const dataDir = path.join(f.root, "release-state"); await mkdir(dataDir);
+  const store = new ReleaseOperationStore({ dataDir });
+  const forbidden = () => assert.fail("readback cannot schedule, recover or publish");
+  f.hub.releaseOperations = new ReleaseOperationService({ store, compose: forbidden, validate: forbidden,
+    publishTarget: forbidden, readTarget: forbidden, finalize: forbidden, schedule: forbidden, processAlive: () => false });
+  const saved = store.create({ requestId: "original-release-admission", workspaceId: f.prior.workspaceId,
+    streamId: f.manager.id, threadId: `${f.manager.id}-thread`, runnerVersion: "controlled-owner", state: "waiting",
+    authorization: { taskIds: [f.prior.id], approvedTargets: [{ targetId: "controlled", kind: "tiny-project" }], validationMode: "focused" } }).operation;
+  const original = { request_id: "compacted-release-original", operation_id: saved.operationId, expected_revision: saved.revision };
+  await f.catalog.beginMcpOperation({ requestId: original.request_id, workspaceId: f.prior.workspaceId,
+    streamId: f.manager.id, provider: "codex", threadId: `${f.manager.id}-thread`,
+    toolName: "hub_release_continue", argumentsHash: mcpArgumentsHash(original) });
+  await f.catalog.completeMcpOperation(original.request_id, { accepted: true, operationId: saved.operationId,
+    retainedDetail: "x".repeat(70_000) });
+  const before = f.catalog.mcpOperation(original.request_id);
+  assert.equal(before.result.receiptCompacted, true);
+  const server = new HubMcpServer({ service: f.hub, secret: "canonical-compact-receipt", logger: { log() {}, error() {} } });
+  await server.start(); t.after(() => server.close());
+  const connection = { url: server.url, contextToken: f.managerToken };
+  const connectionFile = path.join(f.root, "connection.json"), requestFile = path.join(f.root, "original.json");
+  await writeFile(connectionFile, JSON.stringify(connection), { mode: 0o600 });
+  await writeFile(requestFile, JSON.stringify(original));
+  const child = spawn(process.execPath, [path.join(tool.root, "bin/release.mjs"), "continue",
+    "--connection-file", connectionFile, "--request-file", requestFile],
+    { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+  const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+  assert.equal(code, 0); assert.equal(stderr, "");
+  const rows = stdout.trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(rows[0].accepted.receiptCompacted, true);
+  assert.equal(rows.at(-1).result.originalCommand.status, "succeeded");
+  assert.equal(rows.at(-1).result.operation.state, "waiting");
+  assert.ok(!stdout.includes(f.managerToken));
+  let mutations = 0;
+  const lost = new HubClient(connection, { fetchImpl: async (url, options) => {
+    const message = JSON.parse(options.body);
+    const response = await fetch(url, options);
+    if (message.params.name === "hub_release_continue") {
+      mutations++; await response.arrayBuffer(); throw new Error("controlled lost response after actual canonical reply");
+    }
+    return response;
+  } });
+  const recovered = await executeRelease(lost, "continue", original);
+  assert.equal(recovered.originalCommand.status, "succeeded");
+  assert.equal(recovered.originalCommand.argumentsHash, before.argumentsHash);
+  assert.equal(mutations, 1);
+  assert.deepEqual(store.get(saved.operationId), saved);
+  assert.deepEqual(f.catalog.mcpOperation(original.request_id), before);
 });

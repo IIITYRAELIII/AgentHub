@@ -13,25 +13,36 @@ export class ReleaseOperationPublication {
     this.environment = options.environment ?? process.env;
   }
   async #recipe(input = null) {
-    if (!this.#resolved) this.#resolved = (async () => {
-      const tool = await readReleaseToolPackage({ root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT,
-        expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 });
-      if (!tool.recipe || tool.recipe.apiVersion !== 1) throw new Error("Pinned tool has no release recipe API");
-      const recipe = await tool.module(tool.recipe.module);
-      if (recipe.releaseRecipeApiVersion !== 1 || typeof recipe.createPublicationOwner !== "function") {
-        throw new Error("Pinned release recipe API differs");
-      }
-      return { tool, recipe, owner: recipe.createPublicationOwner(this.options, this.platform) };
-    })().catch(error => { this.#resolved = null; throw error; });
-    const result = await this.#resolved;
-    await result.tool.assertUnchanged();
     const expected = input?.operation?.authorization?.recipe?.executor;
-    if (expected && !isDeepStrictEqual(expected, result.tool.location)) {
+    const recorded = input?.operation?.authorization?.recipe !== undefined;
+    const location = recorded ? { root: expected?.root ?? null, expectedSha256: expected?.sha256 ?? null, expectedLocation: expected }
+      : { root: this.environment.AGENT_HUB_RELEASE_TOOLS_ROOT ?? null,
+        expectedSha256: this.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 ?? null };
+    const key = JSON.stringify(location);
+    let resolution = this.#resolved;
+    if (resolution?.key !== key) {
+      resolution = { key, promise: null };
+      resolution.promise = (async () => {
+        const tool = await readReleaseToolPackage(location);
+        if (!tool.recipe || tool.recipe.apiVersion !== 1) throw new Error("Pinned tool has no release recipe API");
+        const recipe = await tool.module(tool.recipe.module);
+        if (recipe.releaseRecipeApiVersion !== 1 || typeof recipe.createPublicationOwner !== "function") {
+          throw new Error("Pinned release recipe API differs");
+        }
+        return { tool, recipe, owner: recipe.createPublicationOwner({ ...this.options,
+          environment: { ...this.environment, AGENT_HUB_RELEASE_TOOLS_ROOT: tool.location.root,
+            AGENT_HUB_RELEASE_TOOLS_SHA256: tool.location.sha256 } }, this.platform) };
+      })().catch(error => { if (this.#resolved === resolution) this.#resolved = null; throw error; });
+      this.#resolved = resolution;
+    }
+    const result = await resolution.promise;
+    await result.tool.assertUnchanged();
+    if (recorded && !isDeepStrictEqual(expected, result.tool.location)) {
       throw new Error("Release recipe executor differs from its original authority");
     }
     for (const candidate of input?.generation?.candidates ?? []) {
       const frozen = candidate.manifest?.publication?.recipeExecutor;
-      if (expected && !isDeepStrictEqual(expected, frozen)) throw new Error("Frozen recipe executor authority differs");
+      if (recorded && !isDeepStrictEqual(expected, frozen)) throw new Error("Frozen recipe executor authority differs");
     }
     return result;
   }
@@ -40,7 +51,9 @@ export class ReleaseOperationPublication {
   async publishPreparedAssets(input) { return (await this.#recipe(input)).owner.publishPreparedAssets(input); }
   async withPublicationRecovery(input) { return (await this.#recipe(input)).owner.withPublicationRecovery(input); }
   async withRetainedGeneration(input) { return (await this.#recipe(input)).owner.withRetainedGeneration(input); }
-  async resolveTestPlans(candidates, selection) { return (await this.#recipe()).recipe.resolveTestPlans(candidates, selection); }
+  async resolveTestPlans(candidates, selection, operation) {
+    return (await this.#recipe({ operation, generation: { candidates } })).recipe.resolveTestPlans(candidates, selection);
+  }
   async loadAuthorizationPolicy() {
     const { recipe, tool } = await this.#recipe();
     if (typeof recipe.prepareAuthorization !== "function") throw new TypeError("Recipe authorization policy is required");

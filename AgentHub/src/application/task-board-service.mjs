@@ -383,6 +383,11 @@ export class TaskBoardService {
     return this.store.recordWorkflowAdmissionRefusal(payload);
   }
 
+  recordUnadmittedAwaitRefusal(payload) {
+    requiredMethod(this.store, "recordUnadmittedAwaitRefusal");
+    return this.store.recordUnadmittedAwaitRefusal(payload);
+  }
+
   returnedNativeTestPriorResult(taskId) {
     requiredMethod(this.store, "returnedNativeTestPriorResult");
     return this.store.returnedNativeTestPriorResult(taskId);

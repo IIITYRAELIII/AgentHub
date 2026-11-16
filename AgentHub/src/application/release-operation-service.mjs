@@ -619,7 +619,7 @@ export class ReleaseOperationService {
       if (!evidence || typeof validate !== "function") throw new Error("Publication recovery requires owning evidence");
       const notApplied = boundary.kind === "not-applied-publication-recovery-v1";
       if (notApplied && generation.testPlans && (typeof this.resolveTestPlans !== "function"
-        || releaseIdentitySha256(await this.resolveTestPlans(generation.candidates, effectiveTestSelection(current)))
+        || releaseIdentitySha256(await this.resolveTestPlans(generation.candidates, effectiveTestSelection(current), current))
           !== releaseIdentitySha256(generation.testPlans))) throw new Error("Publication recovery test inventory changed");
       await validate();
       const contents = { requestId, operationId, priorRevision: expectedRevision, generation: expectedGeneration,
@@ -653,7 +653,7 @@ export class ReleaseOperationService {
     const generation = this.store.generation(operationId, expectedGeneration);
     return this.withRetainedGeneration({ operation: current, generation, commit: async (evidence, validate) => {
       if (typeof this.resolveTestPlans !== "function"
-          || releaseIdentitySha256(await this.resolveTestPlans(generation.candidates, effectiveTestSelection(current))) !== releaseIdentitySha256(generation.testPlans)) {
+          || releaseIdentitySha256(await this.resolveTestPlans(generation.candidates, effectiveTestSelection(current), current)) !== releaseIdentitySha256(generation.testPlans)) {
         throw new Error("Retained generation test inventory changed");
       }
       const readbacks = [];
@@ -1278,7 +1278,7 @@ export class ReleaseOperationService {
         ...(effectiveReleaseTaskScope(operation) === "all_await"
           ? { authorizedTaskIds: composed.authorizedTaskIds }
           : operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
-        ...(effectiveTestSelection(operation) ? { testPlans: await this.resolveTestPlans(composed.candidates, effectiveTestSelection(operation)),
+        ...(effectiveTestSelection(operation) ? { testPlans: await this.resolveTestPlans(composed.candidates, effectiveTestSelection(operation), operation),
           testSelectionAmendmentId: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
         operationId: operation.operationId,
         generation: generationNumber,

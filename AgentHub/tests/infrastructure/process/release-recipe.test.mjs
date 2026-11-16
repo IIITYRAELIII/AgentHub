@@ -9,6 +9,7 @@ import os from "node:os";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
+import { releaseRecipeModule } from "../../../src/infrastructure/process/release-recipe.mjs";
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationService } from "../../../src/application/release-operation-service.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
@@ -26,6 +27,7 @@ export const releaseRecipeApiVersion = 1;
 export const metadataPaths = [];
 export const inspectMetadata = async () => ({ version: "1.0.0", writes: [], changed: false });
 export const prepareAuthorization = value => ({recipe:{apiVersion:1,id:"tiny-project",configuration:{environments:value.approvedTargets.map(target=>target.environment)},targetOrder:value.approvedTargets.map(target=>target.targetId)}});
+export const resolveTestPlans = async (candidates, selection) => ({product:"tiny-project", candidates:candidates.map(item=>item.commit), selection});
 export async function executePublication(input, platform) {
   if (platform.apiVersion !== 1) throw new Error("platform differs");
   const target = input.operation.authorization.approvedTargets.find(target=>target.targetId===input.targetId);
@@ -174,7 +176,7 @@ test("the same prepared and frozen owner accepts another product without Hub pac
     const policy = await new ReleaseOperationPublication({ platform: releasePublicationPlatform(), environment: f.environment }).loadAuthorizationPolicy();
     const expectedRecipeExecutor = policy({ approvedTargets: [f.target] }).recipe.executor;
     await assert.rejects(owner.freezePublicationCandidate({ ...input,
-      expectedRecipeExecutor: { ...expectedRecipeExecutor, sha256: "0".repeat(64) } }), /original authority/);
+      expectedRecipeExecutor: { ...expectedRecipeExecutor, sha256: "0".repeat(64) } }), /pinned version/);
     const frozen = await owner.freezePublicationCandidate({ ...input, expectedRecipeExecutor });
     const manifest = JSON.parse(await readFile(frozen.manifestFile, "utf8"));
     assert.equal(manifest.publication.releaseVersion, "1.0.0");
@@ -187,7 +189,8 @@ test("the same prepared and frozen owner accepts another product without Hub pac
     const changed = await fixture(t);
     process.env.AGENT_HUB_RELEASE_TOOLS_ROOT = changed.toolRoot;
     process.env.AGENT_HUB_RELEASE_TOOLS_SHA256 = changed.pin;
-    await assert.rejects(owner.freezePublicationCandidate({ ...input, expectedRecipeExecutor }), /original authority/);
+    const retainedFreeze = await owner.freezePublicationCandidate({ ...input, expectedRecipeExecutor });
+    assert.equal(retainedFreeze.preReleaseHead, frozen.preReleaseHead);
     assert.deepEqual(await readFile(frozen.manifestFile), retained);
   } finally {
     for (const [key, value] of [["AGENT_HUB_RELEASE_TOOLS_ROOT", before.root], ["AGENT_HUB_RELEASE_TOOLS_SHA256", before.pin]]) {
@@ -228,7 +231,7 @@ test("Agent Hub recipe keeps public-package target ordering and refuses missing 
   assert.equal(scheduled.length, 1);
 });
 
-test("authorized recipe and frozen executor bindings refuse another valid package before product effects", async t => {
+test("saved original executor survives another ambient package while frozen drift still refuses effects", async t => {
   const f = await fixture(t), other = await fixture(t);
   const publication = new ReleaseOperationPublication({ platform: releasePublicationPlatform(), environment: f.environment, executionRoot: f.executionRoot });
   const policy = await publication.loadAuthorizationPolicy();
@@ -238,11 +241,50 @@ test("authorized recipe and frozen executor bindings refuse another valid packag
   const input = { operation: { operationId: "pinned-original", authorization }, candidate, target: f.target,
     generation: { generation: 1, identitySha256: "b".repeat(64), candidates: [candidate] } };
   const foreign = new ReleaseOperationPublication({ platform: releasePublicationPlatform(), environment: other.environment, executionRoot: f.executionRoot });
-  await assert.rejects(foreign.publish(input), /original authority/);
   await assert.rejects(publication.publish({ ...input, generation: { ...input.generation,
     candidates: [{ ...candidate, manifest: { publication: { recipeExecutor: other.pin } } }] } }), /Frozen recipe executor/);
   await assert.rejects(readFile(path.join(f.executionRoot, "artifact.txt")), { code: "ENOENT" });
-  assert.equal((await publication.publish(input)).status, "applied");
+  const applied = await foreign.publish(input);
+  assert.equal(applied.status, "applied");
+  assert.deepEqual(await publication.publish(input), applied, "original tool and receipt remain the same despite ambient drift");
+});
+
+test("a restarted generic owner resolves only its recorded executor without ambient tool configuration", async t => {
+  const f = await fixture(t);
+  const configured = new ReleaseOperationPublication({ platform: releasePublicationPlatform(), environment: f.environment, executionRoot: f.executionRoot });
+  const policy = await configured.loadAuthorizationPolicy();
+  const authorization = { approvedTargets: [f.target], ...policy({ approvedTargets: [f.target] }) };
+  const candidate = { releaseRoot: f.candidate, commit: "a".repeat(40),
+    manifest: { publication: { recipeExecutor: authorization.recipe.executor } } };
+  const input = { operation: { operationId: "restart-retained-original", authorization }, candidate, target: f.target,
+    generation: { generation: 1, identitySha256: "b".repeat(64), candidates: [candidate] } };
+  const before = structuredClone(input);
+  assert.deepEqual((await releaseRecipeModule({ environment: {}, expectedExecutor: authorization.recipe.executor })).tool.location,
+    authorization.recipe.executor);
+  await assert.rejects(releaseRecipeModule({ environment: {} }), { code: "RELEASE_EXTERNAL_CONDITION" });
+  const restarted = new ReleaseOperationPublication({ platform: releasePublicationPlatform(), environment: {}, executionRoot: f.executionRoot });
+  await assert.rejects(restarted.loadAuthorizationPolicy(), { code: "RELEASE_EXTERNAL_CONDITION" });
+  const effect = await restarted.publish(input);
+  const receipt = await readFile(path.join(f.executionRoot, "result.json"));
+  assert.equal(effect.status, "applied");
+  const secondRestart = new ReleaseOperationPublication({ platform: releasePublicationPlatform(), environment: {}, executionRoot: f.executionRoot });
+  assert.deepEqual(await secondRestart.readback(input), effect);
+  assert.deepEqual(await secondRestart.publish(input), effect);
+  assert.deepEqual(await secondRestart.resolveTestPlans([candidate], { mode: "none" }, input.operation),
+    { product: "tiny-project", candidates: [candidate.commit], selection: { mode: "none" } });
+  assert.deepEqual(await readFile(path.join(f.executionRoot, "result.json")), receipt);
+  assert.deepEqual(input, before);
+  for (const executor of [null, undefined, false, { ...authorization.recipe.executor, sha256: "0".repeat(64) },
+    { ...authorization.recipe.executor, directory: { ...authorization.recipe.executor.directory, ino: "foreign" } },
+    { ...authorization.recipe.executor, suppliedPublication: true }]) {
+    const changed = { ...input, operation: { ...input.operation,
+      authorization: { ...authorization, recipe: { ...authorization.recipe, executor } } } };
+    await assert.rejects(secondRestart.publish(changed));
+    assert.deepEqual(await readFile(path.join(f.executionRoot, "result.json")), receipt);
+  }
+  await writeFile(path.join(f.toolRoot, "recipe.mjs"), recipeBody + "\n// changed after restart\n");
+  await assert.rejects(secondRestart.readback(input), /pinned version/);
+  assert.deepEqual(await readFile(path.join(f.executionRoot, "result.json")), receipt);
 });
 
 test("a derived recipe does not change direct original replay or grant another target", async t => {

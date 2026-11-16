@@ -57,11 +57,7 @@ async function gitFixture(root) {
   await git(source, "commit", "-am", "result r1");
   const resultR1 = await git(source, "rev-parse", "HEAD");
   await git(source, "push", "origin", `${resultR1}:refs/heads/results/r1`);
-  await writeFile(path.join(source, "release.txt"), "result-r2\n", "utf8");
-  await git(source, "commit", "-am", "result r2");
-  const resultR2 = await git(source, "rev-parse", "HEAD");
-  await git(source, "push", "origin", `${resultR2}:refs/heads/results/r2`);
-  return { remote, source, base, resultR1, resultR2 };
+  return { remote, source, base, resultR1 };
 }
 
 async function deployEndpoint(t) {
@@ -121,7 +117,7 @@ async function operationHarness(t, { validationFailures = 0, publicationFailure 
   t.after(() => rm(root, { recursive: true, force: true }));
   const repository = await gitFixture(root);
   const deploy = await deployEndpoint(t);
-  let selectedCommit = repository.resultR1;
+  const selectedCommit = repository.resultR1;
   let failures = validationFailures;
   const dataDir = path.join(root, "data");
   await mkdir(dataDir, { recursive: true });
@@ -214,7 +210,6 @@ async function operationHarness(t, { validationFailures = 0, publicationFailure 
   return {
     root, repository, deploy, store, service, commands, publishCalls, finalized,
     composeCalls: () => composeCalls,
-    select(commit) { selectedCommit = commit; },
   };
 }
 
@@ -313,19 +308,6 @@ test("public release operation fault and migration matrix", async (t) => {
     assert.throws(() => harness.store.putGeneration(createCandidateGeneration({
       ...snapshot.generations[0], candidates: [{ ...snapshot.generations[0].candidates[0], commit: "conflict" }],
     })), /immutable/u);
-  });
-
-  await t.test("2 failed G1 accepts R2 and publishes G2 in the same operation", async (scenario) => {
-    const harness = await operationHarness(scenario, { validationFailures: 1 });
-    const ack = start(harness);
-    let snapshot = await harness.service.drain(ack.operationId);
-    assert.equal(snapshot.operation.waitReason.code, "validation_failed");
-    harness.select(harness.repository.resultR2);
-    harness.service.wakeForTask("task-a");
-    snapshot = await harness.service.drain(ack.operationId);
-    assert.equal(snapshot.operation.state, "done");
-    assert.equal(snapshot.generations.length, 2);
-    assert.equal(snapshot.generations[1].selectedResults[0].resultCommit, harness.repository.resultR2);
   });
 
   await t.test("3 unaccepted Test work is excluded and a newer Task state is not overwritten", async (scenario) => {

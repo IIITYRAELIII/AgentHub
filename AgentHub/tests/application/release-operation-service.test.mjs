@@ -108,9 +108,12 @@ async function unstartedPublicationFixture(t, overrides = {}) {
   let pinned = false, f;
   f = await fixture(t, { schedule: callback => scheduled.push(callback),
     compose: async () => { f.calls.push(["compose", 1]); return { ...generation(), authorizedTaskIds: taskIds }; },
-    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({
-      repositoryRoot: candidate.repositoryRoot, plan: resolveTestSelection(selection, ["tests/required-full.test.mjs"]),
-    })),
+    resolveTestPlans: async (candidates, selection, operation) => {
+      assert.equal(operation.requestId, "unstarted-original");
+      assert.deepEqual(operation.authorization, f.store.get(operation.operationId).authorization);
+      return candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot,
+        plan: resolveTestSelection(selection, ["tests/required-full.test.mjs"]) }));
+    },
     validate: async () => { f.calls.push(["validate", 1]); return { status: "ready", pipelineValidationRequired: true }; },
     publishTarget: async ({ target, generation: value, operation }) => {
       f.calls.push(["publish", target.targetId]);

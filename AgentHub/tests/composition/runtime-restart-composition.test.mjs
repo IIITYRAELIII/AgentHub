@@ -16,7 +16,7 @@ import { ProviderLoginService } from "../../src/application/provider-login-servi
 import { EventEmitter } from "node:events";
 import { packageBindingDigest, packageDigest, packageDirectory, packageFile } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
 
-test("restart composition records the original through its trace service and closes the composition worker", async () => {
+test("restart composition records the original through its trace service and closes the composition worker", async t => {
   const area = await realpath(await mkdtemp(path.join(os.tmpdir(), "hub398-restart-trace-")));
   const root = path.join(area, "runtime"), scratchRoot = path.join(area, "scratch");
   await mkdir(root); await mkdir(scratchRoot);
@@ -67,7 +67,10 @@ test("restart composition records the original through its trace service and clo
       status: "running", phase: "running",
       metadata: { packageHandoff: { schema: 1, binding, sha256: packageBindingDigest(binding) } },
     });
-    let blocked = true, stoppingAttempts = 0;
+    let blocked = true, stoppingAttempts = 0, newAttempts = 0;
+    const effects = [];
+    const create = store.create.bind(store);
+    t.mock.method(store, "create", (...args) => { newAttempts++; return create(...args); });
     const wiring = createRuntimeRestartWiring({
       taskRuns: { values: () => [] }, agentProviders: {},
       runCoordinator: { hasPendingAdmission: () => blocked },
@@ -77,8 +80,9 @@ test("restart composition records the original through its trace service and clo
       runtimeRestart: {
         getRestartRequest: () => request, updateOffset: () => 0,
         isStopping: () => false, beginStopping: () => { stoppingAttempts++; return false; },
-        setWaiting: noop, setStopping: noop, updateRestartMessage: noop, saveState: noop,
-        stopRuntimeTimers: noop, stopCodexAppServerTree: noop,
+        setWaiting: async () => effects.push("waiting-state"), setStopping: () => effects.push("stopping-state"),
+        updateRestartMessage: async () => effects.push("restart-message"), saveState: async () => effects.push("save-state"),
+        stopRuntimeTimers: () => effects.push("stop-timers"), stopCodexAppServerTree: async () => effects.push("stop-provider"),
         maintenanceOperations: store,
         commandTrace: { ...trace, close: async () => { await trace.close(); closed = true; } },
         workLogUsageStore: { close: noop }, rateLimitHistoryStore: { close: noop },
@@ -89,8 +93,10 @@ test("restart composition records the original through its trace service and clo
     assert.equal(wiring.restartBlockingWorkCount(), 1);
     blocked = false;
     assert.equal(wiring.restartBlockingWorkCount(), 0);
-    assert.equal((await wiring.performRestart()).status, "ignored");
+    await wiring.performRestart();
     assert.equal(stoppingAttempts, 1, "verified package reaches the synchronous stopping fence");
+    assert.deepEqual(effects, [], "a declined fence cannot begin restart or stop the running resources");
+    assert.equal(newAttempts, 0, "a declined restart cannot manufacture a replacement original");
     assert.deepEqual(store.getReadonly(operationId), request, "declined stopping fence grants no package attempt");
     assert.equal((await wiring.runtimeResources.finalize()).ok, true);
     assert.equal(closed, true);

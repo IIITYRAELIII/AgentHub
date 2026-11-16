@@ -285,12 +285,17 @@ test("same addressed assets request resumes its owner after a pre-admission dirt
   assert.deepEqual(await f.hub.call("hub_release_continue", request), result);
   assert.equal(f.state.writes.length, writes);
   let ordinaryCalls = 0;
-  f.operations.continue = () => { ordinaryCalls++; throw new Error("controlled ambiguous ordinary continuation"); };
+  const originalError = new Error("controlled ambiguous ordinary continuation");
+  f.operations.continue = () => { ordinaryCalls++; throw originalError; };
   const ordinaryRequest = { ...request, request_id: "ordinary-unknown" };
   delete ordinaryRequest.assets_publication;
-  await assert.rejects(f.hub.call("hub_release_continue", ordinaryRequest), /controlled ambiguous/u);
-  await assert.rejects(f.hub.call("hub_release_continue", ordinaryRequest), /outcome is unknown/u);
+  await assert.rejects(f.hub.call("hub_release_continue", ordinaryRequest), error => error === originalError);
+  const unknownOriginal = structuredClone(f.catalog.mcpOperation(ordinaryRequest.request_id));
+  assert.equal(unknownOriginal.status, "unknown");
+  await assert.rejects(f.hub.call("hub_release_continue", ordinaryRequest));
   assert.equal(ordinaryCalls, 1);
+  assert.deepEqual(f.catalog.mcpOperation(ordinaryRequest.request_id), unknownOriginal,
+    "reading an unknown original cannot replace its identity/history or dispatch another effect");
   await f.unchanged();
 });
 

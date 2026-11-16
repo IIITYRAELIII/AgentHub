@@ -1212,6 +1212,38 @@ operation before the next ordinary action, without changing Task assignment.
 
 ## Task admission and original result readback
 
+An ordinary Await original with its canonical execution binding and exact five
+business arguments may fail before lifecycle admission. A genuine low-level
+Await-lock admission refusal is recorded by the existing lifecycle/outcome owner
+only when its callback was not entered; an error code or message is not proof.
+For an already UNKNOWN original without lifecycle state, explicit RM reconciliation
+uses the existing Await/Task/repository leases and process guard. In one existing
+Task-store transaction it rechecks the canonical MCP identity, complete arguments,
+current Task CAS and absence of a transition/outcome, then records its terminal
+admission refusal. The existing lifecycle BEGIN checks that outcome before Git:
+a concurrent BEGIN either won first and reconciliation refuses, or cannot start
+after the refusal. This atomic fence, not unchanged Task fields or a missing PID,
+establishes the unadmitted disposition. The complete previous UNKNOWN receipt is
+retained in the outcome. Existing admitted/partial/guarded/STOPPED or foreign
+originals do not gain this authority. No Git action or original mutation is replayed.
+
+The external source API host exposes the existing `hub_task_operation_reconcile`
+through the same capability and addressed-worker close/join. The external CLI
+`task-reconcile` reads its own control receipt by exact request/arguments identity;
+the addressed old Await and the reconciliation command have separate outcomes.
+
+If that ordinary reconciliation control itself is UNKNOWN, an explicit SAME
+control invocation with its unchanged actor, arguments hash and ordinary Await
+identity re-enters only the existing reconciliation owner. It does not resubmit
+the Await. The owner repeats its normal leases and exact original validation;
+an already settled admission refusal is read only from its matching durable
+outcome and canonical failure receipt. The control retains its previous UNKNOWN
+receipt when completed. A refusal during this continuation leaves that earlier
+UNKNOWN intact; it cannot disprove effects of the previous invocation. A fresh
+control that never entered the recovery lease callback fails before effects
+instead of creating another ambiguous original. Other reconciliation families
+retain their existing continuation rules.
+
 A local live invocation is reported as active, an explicit UNKNOWN receipt as
 unknown, and a nonterminal receipt without observed local execution as unresolved.
 Receipt presence and a missing worker never prove queue membership or completion;

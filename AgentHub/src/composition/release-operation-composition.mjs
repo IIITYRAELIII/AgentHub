@@ -28,7 +28,7 @@ export function createReleaseOperationServices({
   const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight, publication, finalization });
   const operations = new ReleaseOperationService({
     loadAuthorizationPolicy: () => publication.loadAuthorizationPolicy(),
-    resolveTestPlans: (candidates, selection) => publication.resolveTestPlans(candidates, selection),
+    resolveTestPlans: (candidates, selection, operation) => publication.resolveTestPlans(candidates, selection, operation),
     withTaskSelection: input => adapter.withTaskSelection(input),
     store,
     compose: input => taskGitWorkspaces.withOperationTrace({
