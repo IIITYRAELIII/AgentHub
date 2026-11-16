@@ -260,10 +260,23 @@ export function failedFirstComposeRecovery({ operation, receipts = [], generatio
       || Object.keys(operation.publicationEffects).length || generations.length || !receipts.length) return null;
   const inputSha256 = releaseIdentitySha256(releaseCompositionInput(operation));
   const ordered = [...receipts].sort((left, right) => left.attempt - right.attempt);
+  const amendments = operation.testSelectionAmendments ?? [];
+  const boundaries = amendments.map((amendment, index) => ({ amendment, index }))
+    .filter(({ amendment }) => amendment.priorGeneration === 0);
+  for (const [index, { amendment, index: amendmentIndex }] of boundaries.entries()) {
+    const recovery = amendment.firstComposeRecovery;
+    const prior = releaseCompositionInput({ ...operation, testSelectionAmendments: amendments.slice(0, amendmentIndex) });
+    if (!recovery || recovery.inputSha256 !== releaseIdentitySha256(prior)
+        || recovery.attempt <= (boundaries[index - 1]?.amendment.firstComposeRecovery.attempt ?? 0)
+        || releaseIdentitySha256(ordered[recovery.attempt - 1]) !== recovery.receiptSha256) return null;
+  }
   if (ordered.some((receipt, index) => receipt.operationId !== operation.operationId
       || receipt.stepId !== "compose" || receipt.generation !== 1 || receipt.attempt !== index + 1
       || receipt.status !== "failed" || receipt.effect != null || !receipt.error
-      || receipt.inputSha256 !== inputSha256 || releaseIdentitySha256(receipt.input) !== inputSha256)
+      || receipt.inputSha256 !== (boundaries.find(({ amendment }) => receipt.attempt <= amendment.firstComposeRecovery.attempt)
+        ?.amendment.firstComposeRecovery.inputSha256 ?? inputSha256)
+      || releaseIdentitySha256(receipt.input) !== receipt.inputSha256)
+      || ordered.at(-1).inputSha256 !== inputSha256
       || ordered.at(-1).error !== operation.lastError.message) return null;
   return { generation: 1, attempt: ordered.at(-1).attempt, inputSha256,
     receiptSha256: releaseIdentitySha256(ordered.at(-1)) };
@@ -674,9 +687,21 @@ export function createCandidateGeneration({
 
 export function normalizeTestSelectionAmendment(value, operation) {
   const { identitySha256, ...contents } = value ?? {};
+  const first = contents.firstComposeRecovery;
+  if (first != null) {
+    normalizedFirstComposeRecovery(first, operation);
+    if (contents.priorGeneration !== 0 || first.requestId !== contents.requestId
+        || first.priorRevision !== contents.priorRevision || contents.taskScope !== "all_await"
+        || !contents.requestArguments?.taskIds || !contents.requestArguments?.testSelection
+        || !contents.taskSelection?.length
+        || first.candidates.some(candidate => candidate.kind !== "uncaptured-first-generation-v1" || !candidate.preparedSource)) {
+      throw new Error("Invalid first compose amendment authority");
+    }
+  }
   if (typeof contents.requestId !== "string" || !contents.requestId.trim()
       || !Number.isSafeInteger(contents.priorRevision) || contents.priorRevision < 1
-      || !Number.isSafeInteger(contents.priorGeneration) || contents.priorGeneration < 1
+      || !Number.isSafeInteger(contents.priorGeneration) || contents.priorGeneration < 0
+      || contents.priorGeneration === 0 && first == null
       || contents.authorizationFingerprint !== operation.authorization.fingerprint
       || releaseIdentitySha256(contents) !== identitySha256
       || contents.taskScope != null && normalizeReleaseTaskScope(contents.taskScope) !== contents.taskScope
@@ -685,9 +710,10 @@ export function normalizeTestSelectionAmendment(value, operation) {
       || contents.taskSelection != null && JSON.stringify([...new Set(contents.taskSelection.map(item => item.taskId))].sort()) !== JSON.stringify(contents.taskIds)
       || contents.releaseMetadata != null && releaseIdentitySha256(normalizedReleaseMetadata(contents.releaseMetadata)) !== releaseIdentitySha256(contents.releaseMetadata)
       || contents.requestArguments != null && !validAmendmentRequest(contents)
-      || !Array.isArray(contents.readbacks) || contents.readbacks.length !== operation.authorization.approvedTargets.length
-      || operation.authorization.approvedTargets.some(target => contents.readbacks.filter(item => item.targetId === target.targetId
-        && item.generation === contents.priorGeneration && item.evidence?.status === "not_applied").length !== 1)) {
+      || !Array.isArray(contents.readbacks)
+      || (first ? contents.readbacks.length !== 0 : contents.readbacks.length !== operation.authorization.approvedTargets.length
+        || operation.authorization.approvedTargets.some(target => contents.readbacks.filter(item => item.targetId === target.targetId
+          && item.generation === contents.priorGeneration && item.evidence?.status === "not_applied").length !== 1))) {
     throw new Error("Invalid original test selection amendment");
   }
   return structuredClone(value);

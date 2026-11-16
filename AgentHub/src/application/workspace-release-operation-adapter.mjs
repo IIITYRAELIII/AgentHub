@@ -85,7 +85,7 @@ export class WorkspaceReleaseOperationAdapter {
 
   async inspectFirstCompose({ operation, generation }) {
     const result = await this.releasePreflight.firstOperationGeneration({ workspaceId: operation.workspaceId,
-      operationId: operation.operationId, generation, taskIds: operation.authorization.taskIds,
+      operationId: operation.operationId, generation, taskIds: effectiveReleaseTaskIds(operation),
       approvedRepositories: approvedRepositories(operation), inspectOnly: true,
       changelogContent: await releaseMetadataBytes(effectiveReleaseMetadata(operation)),
       releaseVersion: operation.authorization.releaseVersion });
@@ -94,7 +94,7 @@ export class WorkspaceReleaseOperationAdapter {
 
   async recoverFirstCompose({ operation, generation, recovery, validateBeforeCommit }) {
     const prepared = await this.releasePreflight.firstOperationGeneration({ workspaceId: operation.workspaceId,
-      operationId: operation.operationId, generation, taskIds: operation.authorization.taskIds,
+      operationId: operation.operationId, generation, taskIds: effectiveReleaseTaskIds(operation),
       approvedRepositories: approvedRepositories(operation), expectedBindings: recovery.candidates,
       changelogContent: await releaseMetadataBytes(effectiveReleaseMetadata(operation)),
       releaseVersion: operation.authorization.releaseVersion, validateBeforeCommit });
@@ -130,8 +130,8 @@ export class WorkspaceReleaseOperationAdapter {
     };
   }
 
-  withTaskSelection({ operation, taskIds, taskScope = null, commit }) {
-    return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
+  withTaskSelection({ operation, taskIds, taskScope = null, firstCompose = false, commit }) {
+    const captureAndCommit = async (prepared = null, validatePrepared = async () => {}) => {
       const capture = async () => {
         const results = await this.releasePreflight.operationSelection({ workspaceId: operation.workspaceId,
           ...(taskScope === "all_await" ? {} : { taskIds }) });
@@ -142,9 +142,18 @@ export class WorkspaceReleaseOperationAdapter {
       };
       const results = await capture();
       return commit(results, async () => {
+        await validatePrepared();
+        if (firstCompose) await releaseMetadataBytes(effectiveReleaseMetadata(operation));
         if (selectionIdentity(await capture()) !== selectionIdentity(results)) throw new Error("Accepted Task selection changed before amendment CAS");
-      });
-    });
+      }, prepared?.releaseCandidates.map(item => item.binding) ?? null);
+    };
+    if (firstCompose) return releaseMetadataBytes(effectiveReleaseMetadata(operation)).then(changelogContent =>
+      this.releasePreflight.firstOperationGeneration({ workspaceId: operation.workspaceId,
+        operationId: operation.operationId, generation: 1, taskIds,
+        approvedRepositories: approvedRepositories(operation), changelogContent,
+        releaseVersion: operation.authorization.releaseVersion, expectedRecipeExecutor: operation.authorization.recipe?.executor,
+        inspectOnly: true, inspectCommit: captureAndCommit }));
+    return this.releasePreflight.withAwaitTransition(operation.workspaceId, () => captureAndCommit());
   }
 
   withReviewedMainRecovery(input) {

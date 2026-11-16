@@ -8,6 +8,10 @@ import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { promisify } from "node:util";
 import { performance } from "node:perf_hooks";
+import { createHash } from "node:crypto";
+import { HubMcpServer } from "../../src/interfaces/mcp/hub-mcp-server.mjs";
+import { readReleaseToolPackage } from "../../src/infrastructure/process/release-tool-package.mjs";
+import { resolveTestSelection } from "../../src/domain/test-selection.mjs";
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
@@ -130,6 +134,9 @@ async function fixture(t, { conflicting = false } = {}) {
     validate: async () => { validationCalls++; throw Object.assign(new Error("controlled affected validation failure"), { code: "RELEASE_VALIDATION_FAILED" }); },
     publishTarget: never, readTarget: async () => ({ status: "not_applied", fixture: true }), finalize: never,
     reservePublication: input => adapter.reservePublication(input), withTaskSelection: input => adapter.withTaskSelection(input),
+    inspectFirstCompose: input => adapter.inspectFirstCompose(input), recoverFirstCompose: input => adapter.recoverFirstCompose(input),
+    resolveTestPlans: async (candidates, selection) => candidates.map(candidate => ({ repositoryRoot: candidate.repositoryRoot,
+      plan: resolveTestSelection(selection, []) })),
   });
   const mcp = new HubMcpService({ workspaceCatalog: catalog, taskBoard: board, releasePreflight: preflight,
     releaseOperations: operations, workLog: { threadTurns: () => [] }, attachmentDirectory: path.join(root, "attachments"),
@@ -167,8 +174,67 @@ async function fixture(t, { conflicting = false } = {}) {
   });
   return { root, primary, base, a, b, draft, add, prepare, run, runLegacy, continueOriginal, planner, taskStore, board, results,
     releaseGit, preflight, operations, operationStore, mcp, context_token, workspace, adapter, spans, scheduled,
-    counters: () => ({ prepareCalls, freezeCalls, validationCalls }) };
+    catalog, counters: () => ({ prepareCalls, freezeCalls, validationCalls }) };
 }
+
+test("generation-zero amendment captures real current whole prepared16 notes through public external022 without remerge", async t => {
+  const f = await fixture(t);
+  for (let i = 2; i < 13; i++) await f.add(`Old${i}`);
+  const oldPrepared = await f.prepare();
+  const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+  const metadata = async (name, bytes) => {
+    const sourcePath = path.join(f.root,name); await writeFile(sourcePath,bytes);
+    return { sourcePath, byteLength:bytes.length, rawSha256:sha(bytes), canonicalSha256:sha(bytes) };
+  };
+  const originalNotes = await metadata('original13.md',Buffer.from('# original13\n'));
+  const originalCompose = f.operations.compose;
+  f.operations.compose = async () => { throw new Error('release checkpoint clone is not an exact clean PreRelease checkout for phase prepared'); };
+  const plan13 = await f.planner.plan(f.workspace.id);
+  const original = await f.mcp.call('hub_release_run',{ context_token:f.context_token,request_id:'first-real-original13',
+    task_scope:'all_await',task_ids:plan13.ready.map(x=>x.taskId).sort(),validation_mode:'full',release_metadata:originalNotes,
+    approved_targets:[{targetId:'agent-hub-github-release',kind:'agent-hub-publication',environment:'github-release',repositoryRoot:f.primary,
+      approvedLocalMainCommit:f.base,approvedOriginMainCommit:f.base}] });
+  f.scheduled.shift()(); const before = await f.operations.drain(original.operationId);
+  assert.equal(before.operation.currentGeneration,0); assert.equal(before.operation.state,'failed');
+  assert.equal(before.generations.length,0);
+  for (let i = 13; i < 16; i++) await f.add(`New${i}`);
+  const prepared = await f.prepare();
+  const notesBytes = Buffer.from('# current16\n\nVerified consolidated notes for the complete accepted set.\n');
+  const notes = await metadata('current16.md',notesBytes);
+  await writeFile(path.join(prepared.releaseRoot,'CHANGELOG.md'),notesBytes);
+  await assert.rejects(f.releaseGit.frozenCandidate(f.primary),/clean|PreRelease/);
+  const physical = await f.releaseGit.frozenCandidate(f.primary,{changelogContent:notesBytes});
+  const checkpointBefore = await readFile(physical.checkpointFile);
+  const primaryBefore = await git(f.primary,'status','--porcelain=v1','--untracked-files=all');
+  const plan16 = await f.planner.plan(f.workspace.id);
+  const args = { request_id:'amend-real-whole16',operation_id:original.operationId,
+    expected_revision:before.operation.revision,expected_generation:0,task_scope:'all_await',
+    task_ids:plan16.ready.map(x=>x.taskId).sort(),test_selection:{mode:'none',ids:[]},release_metadata:notes };
+  f.operations.compose = originalCompose;
+  const counters = f.counters();
+  const server = new HubMcpServer({service:f.mcp,secret:'real-first-amendment',logger:{log(){},error(){}}});
+  await server.start();t.after(()=>server.close());
+  const tool = await readReleaseToolPackage(); const {HubClient,executeRelease}=await tool.module('src/hub-client.mjs');
+  const client = new HubClient({url:server.url,contextToken:f.context_token});
+  const ack = await executeRelease(client,'continue',args,{wait:false});
+  assert.equal(ack.accepted,true,JSON.stringify(ack));
+  assert.equal(f.operationStore.get(original.operationId).currentGeneration,0,'admission cannot claim a physical freeze');
+  f.scheduled.shift()();const after = await f.operations.drain(original.operationId);
+  assert.equal(after.operation.currentGeneration,1,JSON.stringify(after.operation.lastError));
+  assert.equal(after.operation.waitReason.code,'validation_failed');
+  assert.equal(after.generations.length,1);
+  assert.equal(after.generations[0].selectedResults.length,16);
+  assert.deepEqual(after.operation.authorization,before.operation.authorization);
+  assert.deepEqual(after.receipts.find(x=>x.stepId==='compose'&&x.attempt===1),before.receipts[0]);
+  assert.equal(f.counters().prepareCalls,counters.prepareCalls,'only existing prepared candidate may be captured');
+  assert.deepEqual(await readFile(physical.checkpointFile),checkpointBefore,'shared prepared checkpoint is unchanged');
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot,'CHANGELOG.md')),notesBytes,'RM notes remain in prepared');
+  assert.equal(await git(f.primary,'status','--porcelain=v1','--untracked-files=all'),primaryBefore);
+  assert.deepEqual(await readFile(path.join(after.generations[0].candidates[0].releaseRoot,'CHANGELOG.md')),notesBytes);
+  assert.equal((await client.readReleaseOriginal(args)).originalCommand.status,'succeeded');
+  assert.equal(f.counters().validationCalls,1);
+  assert.notEqual(oldPrepared.preReleaseHead,prepared.preReleaseHead);
+});
 
 test("public release refuses a subset of an already prepared full Await composition", async t => {
   const f = await fixture(t);
