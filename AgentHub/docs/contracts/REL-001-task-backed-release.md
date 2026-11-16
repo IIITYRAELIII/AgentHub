@@ -1,5 +1,18 @@
 # REL-001 — Task-backed Workspace release
 
+## Resolved content after later automatic edits (ADR-HUB-456)
+
+An exact captured ordinary native composition may re-prove an earlier owned
+resolution through its ordered later native steps. Each changed text entry must
+equal that step's verified automatic result. Replaying the prior composed
+content from the same composition base must reproduce that entry without a
+conflict on the path, or insert only an already retained identical block under
+the existing idempotent-addition rule. Unchanged entries retain exact identity.
+The final graph and every selected result remain checked. Lost earlier/new
+content, changed modes/types/binary payload, foreign bindings and unproved
+history gain no new credit. No prefix stamp, new journal authority, default
+Test replay boundary or multiple-base policy change is introduced.
+
 Multiple authorized publication targets for one canonical repository share one
 repository approval only when both exact local-main and origin-main pins agree.
 Both target identities and publication ordering remain in original authorization.

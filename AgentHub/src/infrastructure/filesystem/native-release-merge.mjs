@@ -459,6 +459,48 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
   return additions > 0 && retained();
 }
 
+// A later selected automatic edit can change a file whose earlier owned
+// resolution already proved its combined content. Re-prove that content at
+// every subsequent native step; an ancestor or an old path stamp is not proof.
+async function retainsOrderedResolution({ git, baseCommit, merges, resolutions, head, file }) {
+  const prior = resolutions.findLast(item => item.conflictPaths.includes(file));
+  if (!prior) return false;
+  const index = merges.findIndex(step => step.commit === prior.commit
+    && step.resultCommit === prior.binding.parents[1]);
+  if (index < 0 || index === merges.length - 1) return false;
+  const entry = async revision => new Map(await entries(git,
+    ["--literal-pathspecs", "ls-tree", "--full-tree", "-z", revision, "--", file])).get(file);
+  let retained = prior.commit;
+  let before = await entry(retained);
+  for (const step of merges.slice(index + 1)) {
+    const after = await entry(step.commit);
+    if (after !== before) {
+      // New credit is confined to the exact clean automatic text entry. A
+      // changed mode/type, binary payload or unbound resolution keeps refusal.
+      if (!/^100(?:644|755) blob [a-f0-9]{40}$/u.test(before ?? "")
+          || before.split(" ")[0] !== after?.split(" ")[0]) return false;
+      const actual = resolutions.find(item => item.commit === step.commit
+        && item.binding.parents[0] === retained && item.binding.parents[1] === step.resultCommit);
+      if (!actual || actual.conflictPaths.includes(file)
+          || await entry(actual.binding.automaticTree) !== after) return false;
+      const delta = String(await git(["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv",
+        "--numstat", retained, step.commit, "--", file], { rawOutput: true }));
+      if (/^-\t-\t/mu.test(delta)) return false;
+      const replay = String(await git(["merge-tree", "--write-tree", "--name-only", "-z",
+        `--merge-base=${baseCommit}`, step.commit, retained], { acceptableExitCodes: [1] })).split("\0");
+      const replayTree = replay.shift();
+      if (!/^[a-f0-9]{40}$/u.test(replayTree)) return false;
+      const boundary = replay.indexOf("");
+      if (replay.slice(0, boundary < 0 ? replay.length : boundary).includes(file)) return false;
+      if (await entry(replayTree) !== after
+          && !await repeatsRetainedContent(git, step.commit, replayTree, file)) return false;
+    }
+    retained = step.commit;
+    before = after;
+  }
+  return retained === head;
+}
+
 // Reachability alone does not prove content. Reproduce each selected delta, but
 // retain the actual automatic context and verified conflict resolutions instead
 // of requiring a message to authorize that same Git evidence.
@@ -520,6 +562,10 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
       // acquire deletion credit from an empty or unrelated automatic map.
       if (merged && !actual.has(file) && !target.has(file)
           && inherited.has(file) && source.get(file) === inherited.get(file)) continue;
+      if (capturedComposition && await retainsOrderedResolution({ git, baseCommit, merges, resolutions, head, file })) {
+        resolvedPaths.add(file);
+        continue;
+      }
       if ((!conflicts.has(file) || await changesCleanConflictContext(git, replayTree, head, file, replayBefore, task.resultCommit))
           && !await repeatsRetainedContent(git, head, replayTree, file)) missing.push(file);
     }
