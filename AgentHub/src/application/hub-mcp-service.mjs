@@ -2935,6 +2935,7 @@ export class HubMcpService {
     const owner = this.#releaseOperation();
     if (reconcileFirstCompose) return owner.reconcileFirstComposeContinuation(operationId, {
       requestId: args.request_id, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
+      testSelection: args.test_selection, taskIds: args.task_ids, taskScope: args.task_scope, releaseMetadata: args.release_metadata,
     });
     if (reconcilePublication) return owner.reconcilePublicationContinuation(operationId, {
       requestId: args.request_id, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
@@ -3513,7 +3514,10 @@ export class HubMcpService {
     const assetsContinuation = toolName === "hub_release_continue" && args.assets_publication != null;
     const firstComposeContinuation = toolName === "hub_release_continue" && started.replayed
       && args.expected_generation === 0 && Number.isSafeInteger(args.expected_revision)
-      && Object.keys(args).every(key => ["context_token", "operation_id", "request_id", "expected_revision", "expected_generation"].includes(key))
+      && (Object.keys(args).every(key => ["context_token", "operation_id", "request_id", "expected_revision", "expected_generation"].includes(key))
+        || args.test_selection != null && Array.isArray(args.task_ids) && args.task_scope === "all_await"
+          && Object.keys(args).every(key => ["context_token", "operation_id", "request_id", "expected_revision", "expected_generation",
+            "test_selection", "task_ids", "task_scope", "release_metadata"].includes(key)))
       && typeof this.releaseOperations?.reconcileFirstComposeContinuation === "function";
     const publicationContinuation = toolName === "hub_release_continue" && started.replayed
       && Number.isSafeInteger(args.expected_generation) && args.expected_generation > 0 && Number.isSafeInteger(args.expected_revision)

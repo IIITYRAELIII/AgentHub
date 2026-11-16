@@ -695,6 +695,19 @@ export class ReleaseOperationStore {
         if (testSelectionAmendment && expectedRevision === current.revision) {
           const raw = JSON.parse(row.operation_json);
           if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) throw new Error("Test selection amendment is source-owner-fenced");
+          if (testSelectionAmendment.priorGeneration === 0) {
+            const proof = testSelectionAmendment.firstComposeRecovery;
+            const failed = failedFirstComposeRecovery({ operation: current,
+              receipts: database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=?")
+                .all(id).map(row => readJson(row.receipt_json)),
+              generations: database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=?")
+                .all(id).map(row => readJson(row.generation_json)) });
+            if (!proof || !failed || proof.receiptSha256 !== failed.receiptSha256
+                || proof.inputSha256 !== failed.inputSha256 || proof.attempt !== failed.attempt
+                || releaseIdentitySha256(proof.input) !== releaseIdentitySha256(releaseCompositionInput(current))) {
+              throw new Error("First compose amendment failed receipt changed");
+            }
+          }
           const admission = testSelectionAmendment.admission;
           if (admission) {
             const boundary = failedValidationAmendmentBoundary({ operation: current,

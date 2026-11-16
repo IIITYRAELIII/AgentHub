@@ -583,10 +583,11 @@ export class WorkspaceReleasePreflightService {
   }
 
   async firstOperationGeneration({ workspaceId, operationId, generation, taskIds, approvedRepositories,
-    changelogContent, releaseVersion, expectedRecipeExecutor, inspectOnly, expectedBindings = [], validateBeforeCommit = async () => {} }) {
+    changelogContent, releaseVersion, expectedRecipeExecutor, inspectOnly, expectedBindings = [], validateBeforeCommit = async () => {}, inspectCommit = null }) {
     if (generation !== 1) throw new Error("First compose recovery requires generation one");
     requiredMethod(this.releaseGitWorkspaces, "firstFrozenGeneration");
     return this.withAwaitTransition(workspaceId, async () => {
+      const inspect = async () => {
       const approvals = approvedRepositoryEntries(approvedRepositories);
       if (!approvals.size) throw new Error("First compose recovery requires original repository approvals");
       const releaseCandidates = [];
@@ -625,6 +626,19 @@ export class WorkspaceReleasePreflightService {
       }
       await validateBeforeCommit();
       return { planRevision: recovered[0].planRevision, releaseCandidates: recovered };
+      };
+      const prepared = await inspect();
+      if (!inspectCommit) return prepared;
+      if (!inspectOnly || prepared.releaseCandidates.some(item => item.binding?.kind !== "uncaptured-first-generation-v1")) {
+        throw new Error("First compose amendment requires positively uncaptured custody");
+      }
+      const identity = taskGitIdentityHash(prepared.releaseCandidates.map(item => item.binding));
+      return inspectCommit(prepared, async () => {
+        const fresh = await inspect();
+        if (taskGitIdentityHash(fresh.releaseCandidates.map(item => item.binding)) !== identity) {
+          throw new Error("First compose prepared source or custody changed before amendment CAS");
+        }
+      });
     });
   }
 

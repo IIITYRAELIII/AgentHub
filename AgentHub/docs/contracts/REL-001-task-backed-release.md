@@ -1,5 +1,24 @@
 # REL-001 — Task-backed Workspace release
 
+## Explicit inputs before first freeze (ADR-HUB-455)
+
+Before generation one exists, an explicit whole-Await amendment may change the
+same idle failed original's accepted membership, selected tests and verified
+notes. All compose receipts must positively bind their exact original or
+retained prior amendment input; registered generations, publication effects,
+active/scheduled work and UNKNOWN/partial compose evidence refuse. The existing
+first-generation owner proves complete current prepared selection and original
+main/repository authority, plus absent checkout/archive namespaces, under one
+Await lease. It repeats those bindings before amendment CAS; SQLite repeats
+the exact failed receipt/input and original authorization. The amendment retains
+that proof, prior failure and argument identity without creating a generation.
+
+Ordinary first capture uses that exact amended prepared binding and moves the
+generation only after immutable capture. Old receipts and original authorization
+stay unchanged, including after another pre-capture failure. Captured or partial
+first generations retain their existing frozen recovery path. Later-generation
+amendments keep their candidate and positive target-readback requirements.
+
 ## Await admission before lifecycle intent
 
 The existing lifecycle/outcome owner distinguishes a proven Await-lock admission

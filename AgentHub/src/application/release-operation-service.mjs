@@ -678,11 +678,22 @@ export class ReleaseOperationService {
     } });
   }
 
-  async reconcileFirstComposeContinuation(operationId, { requestId, expectedRevision, expectedGeneration }) {
+  async reconcileFirstComposeContinuation(operationId, options) {
+    const { requestId, expectedRevision, expectedGeneration } = options;
     requiredText(operationId, "operationId");
     requiredText(requestId, "first compose recovery requestId");
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || expectedGeneration !== 0) {
       throw new Error("First compose continuation requires its original revision and generation zero");
+    }
+    if (options.testSelection != null || options.taskIds != null || options.taskScope != null || options.releaseMetadata != null) {
+      const current = this.store.get(operationId);
+      if (!current?.testSelectionAmendments?.some(item => item.requestId === requestId)
+          && !failedFirstComposeRecovery(this.store.snapshot(operationId))) {
+        throw new Error("First compose amendment has no exact failed boundary");
+      }
+      const result = await this.#amendTestSelection(operationId, options);
+      if (!result.accepted) throw new Error("First compose amendment has no durable same-request admission");
+      return result;
     }
     const admitted = () => {
       const current = this.store.get(operationId);
@@ -782,8 +793,16 @@ export class ReleaseOperationService {
     if (expectedRevision !== current.revision || expectedGeneration !== current.currentGeneration) {
       return { accepted: false, reason: "stale-revision", operation: current };
     }
-    if (current.owner || !["waiting", "failed"].includes(current.state) || current.currentGeneration < 1) {
+    const firstCompose = current.currentGeneration === 0
+      ? failedFirstComposeRecovery(this.store.snapshot(operationId)) : null;
+    if (current.owner || !["waiting", "failed"].includes(current.state)
+        || current.currentGeneration === 0 && (!firstCompose || this.#running.has(operationId) || this.#scheduled.has(operationId)
+          || typeof this.recoverFirstCompose !== "function")) {
       return { accepted: false, reason: "ineligible", operation: current };
+    }
+    if (firstCompose && (taskScope !== "all_await" || taskIds == null || testSelection == null
+        || effectiveReleaseMetadata(current) != null && releaseMetadata == null)) {
+      return { accepted: false, reason: "release-inputs-required", operation: current };
     }
     if (current.waitReason?.code === "release_inputs_changed"
         && (taskIds == null || testSelection == null || effectiveReleaseMetadata(current) != null && releaseMetadata == null)) {
@@ -797,13 +816,17 @@ export class ReleaseOperationService {
       }
     }
     const generation = this.store.generation(operationId, current.currentGeneration);
-    if (!generation) throw new Error("Original generation is missing");
+    if (!generation && !firstCompose) throw new Error("Original generation is missing");
     const boundary = reconcileUnknown ? failedValidationAmendmentBoundary(this.store.snapshot(operationId)) : null;
     if (reconcileUnknown && !boundary) throw new Error("Test selection failed-validation proof changed");
     const scope = taskScope == null ? effectiveReleaseTaskScope(current) : requestArguments.taskScope;
-    const commit = async (taskSelection = null, validateBeforeCommit = async () => {}) => {
+    const commit = async (taskSelection = null, validateBeforeCommit = async () => {}, candidates = null) => {
+    if (firstCompose && (!taskSelection?.length || !candidates?.length
+        || candidates.some(item => item.kind !== "uncaptured-first-generation-v1" || !item.preparedSource))) {
+      throw new Error("First compose amendment requires positively uncaptured prepared custody");
+    }
     const readbacks = [];
-    for (const target of releaseApprovedTargets(current)) {
+    for (const target of firstCompose ? [] : releaseApprovedTargets(current)) {
       const evidence = normalizeReadback(await this.readTarget({ operation: current, generation, target }));
       if (evidence.status !== "not_applied") throw new Error(`Original publication effect is ${evidence.status}`);
       readbacks.push({ targetId: target.targetId, generation: current.currentGeneration, evidence });
@@ -817,6 +840,10 @@ export class ReleaseOperationService {
         }
       }
     }
+    const firstContents = firstCompose ? { ...firstCompose, requestId, operationId, priorGeneration: 0,
+      priorRevision: current.revision, authorizationFingerprint: current.authorization.fingerprint,
+      input: releaseCompositionInput(current), candidates,
+      priorFailure: { completedAt: current.completedAt, error: current.lastError } } : null;
     const composeRecovery = failedCompositionRecovery(this.store.snapshot(operationId));
     const capturedTaskIds = taskSelection ? [...new Set(taskSelection.map(item => item.taskId))].sort() : selectedTaskIds;
     const contents = { requestId, requestArguments, selection, taskIds: capturedTaskIds, taskSelection,
@@ -824,6 +851,7 @@ export class ReleaseOperationService {
         amendmentsSha256: releaseIdentitySha256(current.testSelectionAmendments ?? []) } } : {}),
       ...(scope == null ? {} : { taskScope: scope }),
       ...(composeRecovery ? { composeRecovery } : {}),
+      ...(firstContents ? { firstComposeRecovery: { ...firstContents, identitySha256: releaseIdentitySha256(firstContents) } } : {}),
       ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }), priorRevision: current.revision, priorGeneration: current.currentGeneration,
       authorizationFingerprint: current.authorization.fingerprint,
       priorFailure: { state: current.state, completedAt: current.completedAt, error: current.lastError },
@@ -839,7 +867,10 @@ export class ReleaseOperationService {
     };
     if (taskIds != null || scope === "all_await") {
       if (typeof this.withTaskSelection !== "function") throw new Error("Accepted Task selection owner is unavailable");
-      return this.withTaskSelection({ operation: current, taskIds: taskIds == null && scope === "all_await" ? null : selectedTaskIds,
+      const selectedOperation = firstCompose ? { ...current, testSelectionAmendments: [...(current.testSelectionAmendments ?? []),
+        { selection, taskIds: selectedTaskIds, taskScope: scope,
+          ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }) }] } : current;
+      return this.withTaskSelection({ operation: selectedOperation, firstCompose: Boolean(firstCompose), taskIds: taskIds == null && scope === "all_await" ? null : selectedTaskIds,
         taskScope: scope, commit });
     }
     return commit();
@@ -1267,7 +1298,9 @@ export class ReleaseOperationService {
     }
     let composedGeneration = null;
     try {
-      const firstRecovery = operation.currentGeneration === 0 ? operation.firstComposeRecovery : null;
+      const firstRecovery = operation.currentGeneration === 0
+        ? [operation.testSelectionAmendments?.at(-1)?.firstComposeRecovery, operation.firstComposeRecovery]
+          .filter(Boolean).sort((a, b) => b.priorRevision - a.priorRevision)[0] : null;
       const composed = firstRecovery
         ? await this.recoverFirstCompose({ operation, generation: 1, recovery: firstRecovery,
           validateBeforeCommit: async () => this.#assertOwner(operation.operationId, owner) })
@@ -1316,7 +1349,8 @@ export class ReleaseOperationService {
     const advance = () => this.#advance(operation.operationId, "validate", {
       ...candidate, nextAction: "validate immutable candidate generation",
     }, owner);
-    if (!operation.firstComposeRecovery || operation.currentGeneration !== 0) return advance();
+    if (!(operation.testSelectionAmendments?.at(-1)?.firstComposeRecovery ?? operation.firstComposeRecovery)
+        || operation.currentGeneration !== 0) return advance();
     return this.reservePublication({ operation, generation, reserve: advance,
       recompose: () => this.#advance(operation.operationId, "waiting", { ...candidate,
         resumeState: "compose", waitReason: { code: "release_inputs_changed",

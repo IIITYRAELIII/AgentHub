@@ -1,5 +1,18 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Generation-zero explicit amendment continuity (ADR-HUB-455)
+
+The existing first-compose continuation also accepts an exact pending/UNKNOWN
+explicit whole-Await test/notes amendment with generation-zero CAS. It must
+retain its original request, full actor, argument hash and RM authority. The
+existing amendment owner requires positive failed first-compose receipts and
+fresh complete prepared/uncaptured-custody proof, repeated inside canonical
+admission. Only its durable same-request amendment completes outer recovery;
+lost replies read that admission without another freeze or replacement request.
+The prior UNKNOWN diagnostic remains retained. Changed, foreign, active,
+partially captured or unproved originals remain refused. Other amendment and
+UNKNOWN families keep their existing requirements.
+
 ## Failed-validation amendment continuation (ADR-HUB-429-amendment)
 
 An exact pending/UNKNOWN whole-Await test-selection and notes amendment may
