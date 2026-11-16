@@ -311,10 +311,11 @@ test('Stream admission waits for the exact overlay history entry to close before
     await page.locator('[data-mobile-stream-switch]').click();
     await page.locator('[data-mobile-stream-switcher] [data-mobile-stream-id="stream-b"]').click();
     await page.waitForFunction(() => typeof window.__releaseHistoryBack === 'function');
-    assert.equal((await bridgeCalls(page, 'open-task')).filter((r) => r.params.threadId === 'thread-b').length, 0);
+    assert.equal((await bridgeCalls(page, 'select-task')).filter((r) => r.params.threadId === 'thread-b').length, 0);
     assert.equal(await page.locator('[data-mobile-stream-name]').innerText(), 'Stream A');
     await page.evaluate(() => window.__releaseHistoryBack());
     await page.waitForFunction(() => location.hash === '#/chat/stream/stream-b' && document.querySelector('[data-mobile-stream-name]')?.textContent === 'Stream B');
+    assert.equal((await bridgeCalls(page, 'select-task')).filter((r) => r.params.threadId === 'thread-b').length, 1);
     assert.equal(await page.evaluate(() => Boolean(history.state?.mobileDialogs)), false);
     await page.evaluate(() => window.__releaseHistoryBack());
     await page.waitForFunction(() => history.state?.previous === true && location.hash === '#/chat/stream/stream-a');

@@ -362,29 +362,35 @@ async function openFixture(page, {
         let result = {};
         let error = "";
         if (message.action === "snapshot") result = fixture.snapshot;
-        else if (message.action === "open-task" || message.action === "task-history") {
+        else if (message.action === "open-task" || message.action === "task-history" || message.action === "select-task") {
           const streamId = message.params.streamId
             || fixture.snapshot.tasks.find((entry) => entry.provider === message.params.provider
               && entry.threadId === message.params.threadId)?.streamId
             || null;
-          if (followSelection && message.action === "open-task") {
+          if (followSelection && ["open-task", "select-task"].includes(message.action)) {
             for (const task of fixture.snapshot.tasks) task.selected = task.streamId === streamId;
             fixture.snapshot.selected = { ...fixture.snapshot.selected, streamId,
               provider: message.params.provider, threadId: message.params.threadId };
           }
-          const fixtureHistoryMatches = fixture.history?.provider === message.params.provider
-            && fixture.history?.threadId === message.params.threadId
-            && fixture.history?.streamId === streamId;
-          const history = fixtureHistoryMatches ? fixture.history : {
-            provider: message.params.provider,
-            threadId: message.params.threadId,
-            streamId,
-            items: [], start: 0, end: 0, total: 0, messageTotal: 0,
-            nextBefore: null, version: "empty",
-          };
-          result = message.action === "task-history"
-            ? history
-            : { history, snapshot: fixture.snapshot };
+          if (message.action === "select-task") {
+            result = message.params.deferSnapshot
+              ? { selectionChanged: true, snapshotDeferred: true }
+              : fixture.snapshot;
+          } else {
+            const fixtureHistoryMatches = fixture.history?.provider === message.params.provider
+              && fixture.history?.threadId === message.params.threadId
+              && fixture.history?.streamId === streamId;
+            const history = fixtureHistoryMatches ? fixture.history : {
+              provider: message.params.provider,
+              threadId: message.params.threadId,
+              streamId,
+              items: [], start: 0, end: 0, total: 0, messageTotal: 0,
+              nextBefore: null, version: "empty",
+            };
+            result = message.action === "task-history"
+              ? history
+              : { history, snapshot: fixture.snapshot };
+          }
         } else if (message.action === "upload-attachment") {
           fixture.uploadSequence += 1;
           localStorage.setItem("fixture:upload-sequence", String(fixture.uploadSequence));
