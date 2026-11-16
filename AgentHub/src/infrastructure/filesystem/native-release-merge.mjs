@@ -469,8 +469,23 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
   // when its unique-base rule supplies no new replay lower boundary.
   const publication = identity.policy === "native-dev-merge-v1"
     ? identity.nativeHistoryAuthority?.publishedMetadata : null;
+  const commonBases = publication
+    ? String(await git(["merge-base", "--all", baseCommit, tasks[0].resultCommit])).split(/\r?\n/u) : [];
+  let inheritedPublication = commonBases.includes(publication?.commit);
+  if (publication && !inheritedPublication && commonBases.length) {
+    // Dependency tips can replace the publication itself as the real common
+    // bases. Only all of those exact tips containing the same sealed publication
+    // extend the existing automatic-absence proof, never the replay boundary.
+    inheritedPublication = true;
+    for (const commonBase of commonBases) {
+      if (await maybe(git, ["merge-base", "--is-ancestor", publication.commit, commonBase]) === null) {
+        inheritedPublication = false;
+        break;
+      }
+    }
+  }
   const inherited = publication
-    && String(await git(["merge-base", "--all", baseCommit, tasks[0].resultCommit])).split(/\r?\n/u).includes(publication.commit)
+    && inheritedPublication
     && await maybe(git, ["merge-base", "--is-ancestor", tasks[0].baseCommit || baseCommit, publication.commit]) !== null
     ? new Map(await entries(git, ["ls-tree", "-r", "-z", publication.commit])) : new Map();
   const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit
