@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "rootProductionModules": 36,
+    "rootProductionModules": 38,
     "rootTestModules": 0
   },
   "publicRootModules": [
@@ -18,12 +18,14 @@
     "publish-all.mjs",
     "publish-changed.mjs",
     "rate-limit-backfill.mjs",
+    "recipe.mjs",
     "release-api.mjs",
-    "release-operation-publication-runner.mjs",
     "release-freeze-recovery.mjs",
+    "release-operation-publication-runner.mjs",
     "release-version.mjs",
     "release.mjs",
     "request-safe-restart.mjs",
+    "runtime-maintenance.mjs",
     "runtime-manager.mjs",
     "runtime-manifest-verifier.mjs",
     "send-images.mjs",

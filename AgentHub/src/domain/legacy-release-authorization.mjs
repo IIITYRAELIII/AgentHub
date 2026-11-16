@@ -1,3 +1,7 @@
+// Compatibility codec for immutable pre-recipe authorizations only.
+// New intake policy is computed by the pinned external recipe. Remove this
+// codec only after the supported originals using runtimeInstallation are retired;
+// it never selects a target, starts an executor or writes an original.
 import path from "node:path";
 
 export const PUBLIC_RUNTIME_INSTALLATION = "public-package-v1";
@@ -8,7 +12,7 @@ function repositoryIdentity(root) {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-export function publicRuntimeInstallationAuthorization(targets = []) {
+function publicRuntimeInstallationAuthorization(targets = []) {
   const local = targets.filter(target => target.kind === "agent-hub-publication" && target.environment !== "github-release");
   if (!local.length) return {};
   for (const target of local) {

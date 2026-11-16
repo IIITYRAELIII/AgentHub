@@ -7,10 +7,10 @@ import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { publishChanged } from "../../publish-changed.mjs";
-import { releaseOperationRuntimePublicationInput } from "../../release-operation-publication-runner.mjs";
-import { createPublicationArtifactSteps, artifactFiles, buildArtifact, readArtifact } from "../../src/infrastructure/process/publication-artifacts.mjs";
-import { publicationCheckpointStore, runPublicationSteps } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
-import { publicationRunStore } from "../../src/infrastructure/persistence/publication-run-store.mjs";
+import { externalRecipientRoot, externalExtensionInstaller, releaseOperationRuntimePublicationInput, createPublicationArtifactSteps, artifactFiles, buildArtifact, readArtifact, publicationCheckpointStore, runPublicationSteps, publicationRunStore } from "../helpers/external-release-recipe.fixture.mjs";
+
+
+
 import { artifactVersionIdentity } from "../../src/domain/agent-hub-version.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -31,7 +31,6 @@ async function fixture(t, { runtimePublication = null, relocated = false, public
   const pkg = { publisher: "test", name: "hub", version: "1.0.0" };
   await save(path.join(sourceRoot, "VSCodeExtension", "package.json"), JSON.stringify(pkg));
   await save(path.join(sourceRoot, "VSCodeExtension", "extension.js"), "prepared extension");
-  await save(path.join(sourceRoot, "install.py"), "# fixture installer");
   await save(path.join(sourceRoot, "src/infrastructure/filesystem/git-invocation-policy.json"),
     await readFile(path.resolve(import.meta.dirname, "../../src/infrastructure/filesystem/git-invocation-policy.json")));
   await save(path.join(sourceRoot, "cloudflare-worker", "wrangler.jsonc"), JSON.stringify({ name: "fixture", main: "src/worker.mjs", assets: {}, routes: ["fixture.test/*"] }));
@@ -60,7 +59,7 @@ async function fixture(t, { runtimePublication = null, relocated = false, public
       if (state.failWorker) { state.failWorker = false; throw new Error("lost Worker reply"); }
     }
     if (step.label === "Установка расширения VS Code") {
-      const plan = JSON.parse(step.args.at(-1));
+      const plan = JSON.parse(step.args.at(-2));
       const source = path.join(path.dirname(step.args[4]), "VSCodeExtension");
       const target = path.join(home, ".vscode", "extensions", plan.targetName);
       await cp(source, target, { recursive: true });
@@ -107,7 +106,7 @@ async function fixture(t, { runtimePublication = null, relocated = false, public
         const version = semantic?.publicVersion ?? "2026.9.16";
         const bytes = JSON.stringify({ name: "agent-hub", version });
         await save(path.join(releaseRoot, "package.json"), bytes);
-        const extra = relocated ? { "AgentHub.RuntimeHost.exe": "synthetic; never execute", "agent-hub-main.mjs": "export {};\n" } : {};
+        const extra = relocated ? { "AgentHub.RuntimeHost.exe": "synthetic; never execute", "agent-hub-main.mjs": "export {};\n", "runtime-maintenance.mjs": "// synthetic public API data; never execute\n" } : {};
         for (const [name, value] of Object.entries(extra)) await save(path.join(releaseRoot, name), value);
         await save(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify({ releaseId, version,
           ...(semantic ? semantic : {}),
@@ -203,7 +202,7 @@ test("relocated artifact owner supplies physical receipt and body to the unchang
   const checkInput = () => promisify(execFile)(process.platform === "win32" ? "python.exe" : "python3", [
     "-X", "utf8", "-c", script, path.join(process.env.AGENT_HUB_RELEASE_TOOLS_ROOT, "python"), prepared.receiptFile,
     prepared.receiptSha256, frozenRuntime.sourceCommit, frozenRuntime.version, license, notices,
-    path.resolve(import.meta.dirname, "../../distribution"),
+    externalRecipientRoot,
   ], { encoding: "utf8", windowsHide: true, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
   const { stdout } = await checkInput();
   assert.equal(stdout.trim(), prepared.receiptSha256);
@@ -516,7 +515,6 @@ test("checkpoint reuse checks the actual result before skipping a saved stage", 
 
 test("prepared extension is applied and reconciled by the real Python installer in an isolated home", async (t) => {
   const f = await fixture(t);
-  await cp(path.resolve(import.meta.dirname, "../../install.py"), path.join(f.sourceRoot, "install.py"));
   await save(path.join(f.sourceRoot, "package.json"), JSON.stringify({ version: "2026.9.18" }));
   const legacy = path.join(f.home, ".vscode/extensions/test.hub-1.0.0");
   await save(path.join(legacy, "package.json"), JSON.stringify({ publisher: "test", name: "hub", version: "1.0.0" }));
@@ -541,15 +539,14 @@ test("prepared extension is applied and reconciled by the real Python installer 
   await steps[0].execute();
   const [artifactId] = await readdir(path.join(f.runtimeRoot, "publication-artifacts"));
   const extensionArtifact = path.join(f.runtimeRoot, "publication-artifacts", artifactId, "extension");
-  const gitPolicy = "src/infrastructure/filesystem/git-invocation-policy.json";
-  const policyBytes = await readFile(path.join(f.sourceRoot, gitPolicy));
-  const preparedPolicy = path.join(extensionArtifact, "payload", gitPolicy);
+  const policyBytes = await readFile(externalExtensionInstaller);
+  const preparedPolicy = path.join(extensionArtifact, "payload", "install.py");
   assert.deepEqual(await readFile(preparedPolicy), policyBytes);
   const manifest = await readArtifact(extensionArtifact, {
     revision: identity.revision, sourceRoot: f.sourceRoot, runtimeRoot: f.runtimeRoot, protocol: 1,
   });
-  assert.equal(manifest.files.find((file) => file.path === gitPolicy)?.sha256, hash(policyBytes));
-  await writeFile(preparedPolicy, "{}");
+  assert.equal(manifest.files.find((file) => file.path === "install.py")?.sha256, hash(policyBytes));
+  await writeFile(preparedPolicy, "changed installer policy");
   await assert.rejects(steps[1].execute(), /Publication artifact bytes changed or are missing/);
   assert.equal(installations, 0, "changed installer policy must refuse before application");
   await writeFile(preparedPolicy, policyBytes);
@@ -562,7 +559,6 @@ test("prepared extension is applied and reconciled by the real Python installer 
 
 test("unchanged extension bytes retain installed provenance across publication revisions", async (t) => {
   const f = await fixture(t);
-  await cp(path.resolve(import.meta.dirname, "../../install.py"), path.join(f.sourceRoot, "install.py"));
   await save(path.join(f.sourceRoot, "package.json"), JSON.stringify({ version: "2026.9.18" }));
   const invoke = async (command, args) => (await promisify(execFile)(command, args, { encoding: "utf8", windowsHide: true,
     env: { ...process.env, HOME: f.home, USERPROFILE: f.home, LOCALAPPDATA: path.join(f.home, "AppData", "Local"), PYTHONUTF8: "1" },

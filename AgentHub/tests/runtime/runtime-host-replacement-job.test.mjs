@@ -7,7 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { buildWindowsRuntimeHost, runtimeHostCompilerCandidates } from '../../src/infrastructure/process/runtime-host-builder.mjs';
+import { buildWindowsRuntimeHost, runtimeHostCompilerCandidates } from '../helpers/external-runtime-builder.fixture.mjs';
 
 const execute = promisify(execFile);
 test('real controlled Host escapes the old Job, joins its relay and retains whole-job refusal and cleanup', {

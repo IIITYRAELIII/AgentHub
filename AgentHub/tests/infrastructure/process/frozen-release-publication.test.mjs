@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { createFrozenReleasePublication, readPublicationReleasePlan } from "../../../src/infrastructure/process/frozen-release-publication.mjs";
-import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
+import { ProductPublicationOwner as ReleaseOperationPublication } from "../../helpers/external-release-recipe.fixture.mjs";
 import { releasePublicationBaseCommit } from "../../../src/domain/release-base-provenance.mjs";
 
 const execute = promisify(execFile);

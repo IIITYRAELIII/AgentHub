@@ -26,15 +26,8 @@ import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-boa
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { DatabaseSync } from "node:sqlite";
-import {
-  PUBLICATION_STAGE_CONTRACT,
-  publicationRunPaths,
-  publicationRunStore,
-} from "../../../src/infrastructure/persistence/publication-run-store.mjs";
-import {
-  publicationCheckpointStore,
-  runPublicationSteps,
-} from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
+import { PUBLICATION_STAGE_CONTRACT, publicationRunPaths, publicationRunStore, publicationCheckpointStore, runPublicationSteps } from "../../helpers/external-release-recipe.fixture.mjs";
+
 import {
   resolveTestContourSource,
   TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,

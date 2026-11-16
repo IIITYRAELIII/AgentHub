@@ -1,5 +1,46 @@
 # REL-001 — Task-backed Workspace release
 
+## Generation-scoped recovered executor (ADR-HUB-429-generation-executor)
+
+A recorded publication recovery binds the executor only for its own immutable
+generation. Later amended generations retain that history and use their own
+normal pinned executor, or their exact same-generation recovery. A current
+record cannot be masked by a later historical entry. Candidate, authorization,
+record digest, target, tool and namespace checks remain required for the selected
+record; historical records are never rewritten or retargeted.
+
+The specific older implementation refusal caused by applying a valid older
+generation's recovery to a later generation may enter the existing not-applied
+continuation only with its exact failed-generation boundary, valid prior record,
+no current-generation recovery and fresh complete all-target absence proof.
+It reuses that generation/candidate/version through normal SQL admission and
+remaining publication. Current-generation authority failures, unproved namespace,
+partial or UNKNOWN effects retain their existing blockers.
+
+## Pre-publication validation and same amendment recovery (ADR-HUB-429-amendment)
+
+A missing public installer checkpoint after validation failure requires the
+existing publication owner to distinguish an unstarted local consumer from
+partially published work. Positive absence binds the original closed failed
+publisher, exact selected/GitHub stage contract, empty progress, current failed
+validation checkpoint and frozen test plan. Every artifact/Git/distribution
+effect stage must remain pending. Under installation custody the owner also
+verifies all target namespaces, frozen source, approved main/origin, classified
+current runtime/publication and public tag/release absence. Changed, foreign,
+active or contradictory evidence retains the partial/unknown blocker. Refusal
+exposes only its fixed proof phase and canonical target identity.
+
+An outer pending/UNKNOWN explicit whole-Await selection/notes amendment can
+continue through that same existing owner. Exact request, actor, arguments and
+CAS remain required. A previously recorded amendment is read back. Unadmitted
+continuation requires the idle validation-failed boundary, complete positive
+not-applied readbacks repeated before admission, and canonical same-request
+amendment absence plus unchanged history digest inside SQL. Old receipt,
+generation, authorization and failure evidence remain retained. The ordinary
+amendment alone admits the next checked generation with current full membership,
+notes and test selection. Future compose intents, immutable future generations,
+applied, partial or UNKNOWN effects require their own existing recovery.
+
 ## Exact prepared evidence reconciliation (ADR-HUB-429-prepared-evidence)
 
 The existing release metadata recovery owner may restore a missing prepared
@@ -338,9 +379,12 @@ with request-addressed release recovery; no replacement mutation is inferred.
 The existing operation-ID read remains unchanged. Waiting and inactive unknown
 results are owner boundaries, not automatic continuation permission.
 
-Publication execution order, artifact orchestration, archive packaging and
-GitHub effects are supplied by the independently pinned external tool to the
-existing Hub state/domain ports. The existing runner intent binds tool
+Product metadata, validation inventory, build, artifact orchestration, archive
+packaging, publication and installation orchestration belong to the independently
+pinned external recipe. Hub supplies the generic candidate/Git execution API,
+not Agent Hub build/install callbacks or private replacement owners. The recipe
+uses the application's explicit maintenance CLI for application-owned status,
+Ready, installation and maintenance readback. The existing runner intent binds tool
 name/version/digest separately from its immutable application generation and
 candidate before launch. Tool updates happen between joined consumers. A saved
 runner cannot acquire a different tool, and a historical runner without that
@@ -348,9 +392,13 @@ binding retains its original executor. Applied historical readbacks remain
 unchanged. The existing package checkpoint binds the external tool and explicit
 recipient files, never modifies the prepared source manifest and never becomes
 an orchestration ledger. Source-only operators and the tool package are excluded
-from the runtime artifact; Hub retains its minimal independent self-build API.
-See ADR-HUB-419-independent-release-tools. Legacy in-process exported helpers are
-Hub owner adapters for retained callers, not an external CLI importing Hub.
+from the runtime artifact. Development aliases delegate to the explicit pinned
+recipe instead of retaining a private runtime builder. Legacy codecs read only
+already admitted authorization and journal schemas, with the removal condition
+in ADR-HUB-429-external-product-recipe. They do not select a fallback for new
+intakes. Product checks move with the recipe; project checks use the candidate's
+public test inventory. Changed inventory requires a new authorized selection,
+never a rewrite of a frozen plan or an assertion that old failures passed.
 
 Native resolution is ordinary Git work in the issued owner checkout. It needs
 no review envelope, approval receipt or review bundle. Auto-review remains the

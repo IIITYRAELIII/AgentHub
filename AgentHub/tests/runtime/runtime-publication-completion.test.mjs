@@ -6,9 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { publicationAwareReadiness, resumeRuntimePublicationCompletion } from "../../src/runtime/runtime-publication-completion.mjs";
-import { publicationRunStore } from "../../src/infrastructure/persistence/publication-run-store.mjs";
-import { publicationCheckpointStore } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
+import { publicationAwareReadiness, resumeRuntimePublicationCompletion, publicationRunStore, publicationCheckpointStore } from "../helpers/external-release-recipe.fixture.mjs";
+
+
 import {
   PUBLICATION_STAGE_DELEGATION_ENV,
   withPublicationLock,

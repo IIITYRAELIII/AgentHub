@@ -10,7 +10,7 @@ import {
   buildWindowsIcon,
   buildWindowsRuntimeHost,
   windowsIconEntries,
-} from "../../../src/infrastructure/process/runtime-host-builder.mjs";
+} from "../../helpers/external-runtime-builder.fixture.mjs";
 import { verifyRuntimeManifest } from "../../../runtime-manifest-verifier.mjs";
 import {
   protectRuntimeConfig,

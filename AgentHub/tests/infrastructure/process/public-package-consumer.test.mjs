@@ -6,15 +6,17 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createPublicRuntimeInstaller, readPublishedRuntimePackage, releaseTargetExecutionRoot } from "../../../src/infrastructure/process/public-runtime-installer.mjs";
-import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
+import { createPublicRuntimeInstaller, readPublishedRuntimePackage, releaseTargetExecutionRoot, publicationRunStore, PUBLIC_INSTALLER_HANDOFF } from "../../helpers/external-release-recipe.fixture.mjs";
+import { ProductPublicationOwner as ReleaseOperationPublication } from "../../helpers/external-release-recipe.fixture.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
-import { publicationRunStore } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
+
 import { packageBindingDigest } from "../../../src/infrastructure/filesystem/runtime-package-target.mjs";
 import { captureRuntimeReleaseBinding } from "../../../src/infrastructure/filesystem/runtime-installation-custody.mjs";
-import { PUBLIC_INSTALLER_HANDOFF } from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
+
+import { controlledProductInstallerOwner } from "../../helpers/controlled-product-api.fixture.mjs";
 import { EventEmitter } from "node:events";
 import { releaseIdentitySha256 } from "../../../src/domain/release-operation.mjs";
+import { resolveTestSelection } from "../../../src/domain/test-selection.mjs";
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const writeJson = async (file, value) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, JSON.stringify(value)); };
@@ -28,6 +30,7 @@ async function unstartedPublicationOwnerFixture(t) {
   await mkdir(path.join(primary, "AgentHub"), { recursive: true });
   await git(primary, "init", "--initial-branch=main");
   await writeFile(path.join(primary, "AgentHub/package.json"), '{"name":"fixture","version":"2.1.6"}\n');
+  await writeFile(path.join(primary, "AgentHub/release-operation-publication-runner.mjs"), "// Literal retained caller data; controlled spawn does not execute it.\n");
   await git(primary, "add", "-A");
   await git(primary, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "base");
   const base = await git(primary, "rev-parse", "HEAD");
@@ -99,6 +102,81 @@ test("unstarted publication owner proves both absent effects and repeats exact p
   assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), before);
 });
 
+test("failed selected public validation proves both targets unapplied before an installer exists", async t => {
+  const f = await unstartedPublicationOwnerFixture(t);
+  Object.assign(f.operation, { workspaceId: "workspace", state: "waiting", currentStep: "validate",
+    currentGeneration: 1, owner: null, waitReason: { code: "validation_failed" } });
+  const candidate = f.generation.candidates[0];
+  const plan = resolveTestSelection({ mode: "include", ids: ["tests/required.test.mjs"] }, ["tests/required.test.mjs"]);
+  f.generation.testPlans = [{ repositoryRoot: candidate.repositoryRoot, plan }];
+  const labels = ["Проверка release candidate в изолированном контуре", "Выбранные тесты Agent Hub",
+    "Подготовка артефактов публикации", "Упаковка установочного архива", "Публикация Git", "Публикация GitHub Release"];
+  const identity = { mode: "changed", from: candidate.baseCommit, revision: candidate.commit,
+    worktreeRoot: candidate.releaseRoot, runtimeRoot: f.runtimeRoot, validationMode: "include", testPlan: plan,
+    deploymentProfile: "github-release", workspaceId: f.operation.workspaceId, artifactProtocol: 1, labels,
+    release: { workspaceId: f.operation.workspaceId, primaryRoot: candidate.repositoryRoot, preReleaseHead: candidate.commit } };
+  const journal = publicationRunStore({ runtimeRoot: f.firstRoot });
+  await journal.start(identity, labels.map(label => ({ label })));
+  await journal.stepStarted(labels[0]); await journal.stepFinished(labels[0], { status: "completed" });
+  await journal.stepStarted(labels[1]); await journal.stepFinished(labels[1], { status: "failed", error: "validation failed" });
+  await journal.finish("failed", "validation failed");
+  const checkpoint = { identity, checkpointScope: { mode: "changed", from: identity.from,
+    runtimeRoot: identity.runtimeRoot, validationMode: identity.validationMode, testPlan: plan },
+    completedLabels: [labels[0]], completedFingerprints: { [labels[0]]: "exact-contour" } };
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), checkpoint);
+  const runner = { status: "exited", exitCode: 1, completedAt: new Date().toISOString(), pid: 2147483647,
+    operationId: f.operation.operationId, generation: 1, targetId: f.publicTarget.targetId,
+    candidate: f.generation.identitySha256, tool: { name: f.tool.name, version: f.tool.version, sha256: f.tool.sha256 } };
+  await writeJson(path.join(f.firstRoot, "runner.json"), runner);
+  const local = f.operation.authorization.approvedTargets[1];
+  const beforePointer = await readFile(path.join(f.runtimeRoot, "current.json"));
+  const beforeRun = await readFile(path.join(f.firstRoot, "publication-status.json"));
+  const readback = () => f.publication.readback({ operation: f.operation, generation: f.generation, target: local });
+  const result = await readback();
+  assert.equal(result.status, "not_applied");
+  assert.equal(result.source, "failed-prepublication-validation-owner-v1");
+  assert.deepEqual(result.evidence.readbacks.map(item => item.evidence.status), ["not_applied", "not_applied"]);
+  assert.equal(result.evidence.targets[0].namespace.kind, "failed-prepublication-validation");
+  assert.equal(result.evidence.targets[1].namespace.kind, "absent");
+  assert.equal(f.publications(), 0);
+  assert.deepEqual(await readFile(path.join(f.runtimeRoot, "current.json")), beforePointer);
+  assert.deepEqual(await readFile(path.join(f.firstRoot, "publication-status.json")), beforeRun);
+  for (const [mutate, stage] of [
+    [() => f.setTag({ object: { sha: candidate.commit } }), "public-tag-release"],
+    [() => f.setRelease({ id: 1 }), "public-tag-release"],
+    [() => f.setRemote(candidate.commit), "remote-main"],
+  ]) {
+    mutate();
+    const refused = await readback();
+    assert.equal(refused.status, "partial");
+    assert.equal(refused.cursor.proofStage, stage);
+    assert.equal(refused.cursor.proofTarget, f.publicTarget.targetId);
+    f.setTag(null); f.setRelease(null); f.setRemote(candidate.baseCommit);
+  }
+  await writeFile(path.join(f.firstRoot, "foreign.bin"), "unclassified");
+  assert.equal((await readback()).status, "partial"); await rm(path.join(f.firstRoot, "foreign.bin"));
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), { ...checkpoint, completedLabels: [...labels] });
+  assert.equal((await readback()).status, "partial");
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), checkpoint);
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), { ...checkpoint,
+    checkpointScope: { ...checkpoint.checkpointScope, testPlan: { ...plan, selection: { mode: "none", ids: [] } } } });
+  assert.equal((await readback()).status, "partial");
+  await writeJson(path.join(f.firstRoot, "publication-checkpoint.json"), checkpoint);
+  for (const pid of [undefined, process.pid]) {
+    await writeJson(path.join(f.firstRoot, "runner.json"), { ...runner, pid });
+    assert.equal((await readback()).status, "partial");
+  }
+  await writeJson(path.join(f.firstRoot, "runner.json"), runner);
+  const changed = JSON.parse(beforeRun);
+  changed.progress.githubDistribution = { createStarted: true };
+  await writeJson(path.join(f.firstRoot, "publication-status.json"), changed);
+  assert.equal((await readback()).status, "partial");
+  await writeFile(path.join(f.firstRoot, "publication-status.json"), beforeRun);
+  f.operation.waitReason = { code: "external_effect_readback" };
+  assert.equal((await readback()).status, "partial");
+  assert.equal(f.publications(), 0);
+});
+
 test("unstarted publication owner refuses missing pin, namespace, remote, public and current drift", async t => {
   const f = await unstartedPublicationOwnerFixture(t);
   const refuse = pattern => assert.rejects(f.publication.withPublicationRecovery({ ...f,
@@ -145,7 +223,7 @@ test("unstarted recovery persists its exact executor across missing ambient pin 
         revision: f.generation.candidates[0].commit, deploymentProfile: "github-release",
         tool: { name: f.tool.name, version: f.tool.version, sha256: f.tool.sha256 },
         distribution: { sourceCommit: f.generation.candidates[0].commit } });
-      child.emit("exit", 0);
+      child.emit("exit", 0); child.emit("close", 0);
     });
     return child;
   };
@@ -153,6 +231,134 @@ test("unstarted recovery persists its exact executor across missing ambient pin 
   assert.equal(children, 1);
   const runner = JSON.parse(await readFile(path.join(f.firstRoot, "runner.json"), "utf8"));
   assert.deepEqual(runner.toolPackage, f.tool.location);
+});
+
+async function executorGenerationFixture(t) {
+  const f = await unstartedPublicationOwnerFixture(t);
+  let evidence;
+  await f.publication.withPublicationRecovery({ ...f, commit: async (value, validate) => { await validate(); evidence = value; } });
+  const contents = { requestId: "generation-one-recovery", operationId: f.operation.operationId, generation: 1,
+    priorRevision: 3, authorizationFingerprint: f.operation.authorization.fingerprint,
+    boundary: { ...f.boundary, generation: 1, candidate: f.generation.identitySha256 }, evidence };
+  const oldRecovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+  f.operation.publicationRecoveries = [oldRecovery];
+  const oldSource = f.generation.candidates[0];
+  const nextRoot = path.join(f.root, "generation-two");
+  const git = async (cwd, ...args) => (await promisify(execFile)("git", args,
+    { cwd, windowsHide: true, encoding: "utf8" })).stdout.trim();
+  await git(f.root, "clone", "--no-local", oldSource.releaseRoot, nextRoot);
+  await writeFile(path.join(nextRoot, "amendment.txt"), "generation two retained correction\n");
+  await git(nextRoot, "add", "-A");
+  await git(nextRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "amended candidate");
+  const commit = await git(nextRoot, "rev-parse", "HEAD"), tree = await git(nextRoot, "rev-parse", "HEAD^{tree}");
+  await writeJson(path.join(nextRoot, ".git/agent-hub-release-clone.json"), {
+    schemaVersion: 1, kind: "agent-hub-owned-release-clone", primaryRoot: oldSource.repositoryRoot,
+    primaryGitCommonDir: path.join(oldSource.repositoryRoot, ".git"), releaseRoot: nextRoot, releaseGitCommonDir: path.join(nextRoot, ".git"),
+  });
+  const candidate = { ...oldSource, releaseRoot: nextRoot, commit, tree,
+    manifest: { ...oldSource.manifest, publication: { ...oldSource.manifest.publication, head: commit } } };
+  const generation = { ...f.generation, generation: 2, identitySha256: "d".repeat(64), candidates: [candidate] };
+  f.operation.currentGeneration = 2;
+  const tool = { ...f.tool, recipe: { apiVersion: 1 }, version: "0.2.0", sha256: "e".repeat(64), root: path.join(f.root, "recipe020") };
+  tool.location = { ...f.tool.location, root: tool.root, version: tool.version, sha256: tool.sha256 };
+  f.environment.AGENT_HUB_RELEASE_TOOLS_ROOT = tool.root;
+  f.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 = tool.sha256;
+  f.publication.readToolPackage = async input => {
+    assert.equal(input.root, tool.root);
+    assert.equal(input.expectedSha256, tool.sha256);
+    return { ...tool, assertUnchanged: async () => {}, module: async () => ({ publicInstallerHandoffProtocol: PUBLIC_INSTALLER_HANDOFF }) };
+  };
+  const execution = releaseTargetExecutionRoot(f.publication.dataDir, f.operation, generation, f.publicTarget);
+  let children = 0;
+  f.publication.spawnImpl = (_exe, _args, options) => {
+    children++;
+    assert.equal(options.env.AGENT_HUB_RELEASE_TOOLS_ROOT, tool.root);
+    assert.equal(options.env.AGENT_HUB_RELEASE_TOOLS_SHA256, tool.sha256);
+    const child = new EventEmitter(); child.pid = 1234567; child.unref = () => {};
+    queueMicrotask(async () => {
+      await writeJson(path.join(execution, "result.json"), { status: "applied", operationId: f.operation.operationId,
+        generation: 2, targetId: f.publicTarget.targetId, candidate: generation.identitySha256,
+        revision: commit, deploymentProfile: "github-release", tool: { name: tool.name, version: tool.version, sha256: tool.sha256 },
+        distribution: { sourceCommit: commit } });
+      child.emit("exit", 0); child.emit("close", 0);
+    });
+    return child;
+  };
+  return { ...f, generation, candidate, tool, execution, oldRecovery, children: () => children };
+}
+
+test("old generation recovery remains history while amended generation launches its explicitly selected recipe executor", async t => {
+  const f = await executorGenerationFixture(t);
+  const history = structuredClone(f.operation.publicationRecoveries);
+  assert.equal((await f.publication.publish({ ...f, target: f.publicTarget })).status, "applied");
+  assert.equal(f.children(), 1);
+  const runner = JSON.parse(await readFile(path.join(f.execution, "runner.json")));
+  assert.equal(runner.generation, 2);
+  assert.deepEqual(runner.toolPackage, f.tool.location);
+  assert.deepEqual(f.operation.publicationRecoveries, history);
+});
+
+test("current generation executor authority cannot be masked by trailing old history or changed proof", async t => {
+  const f = await executorGenerationFixture(t);
+  const contents = { ...f.oldRecovery, generation: 2,
+    boundary: { ...f.oldRecovery.boundary, generation: 2, candidate: f.generation.identitySha256 },
+    evidence: { targets: [{ targetId: f.publicTarget.targetId, candidate: f.candidate.commit, tool: f.tool.location }] } };
+  delete contents.identitySha256;
+  const current = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+  for (const change of [
+    row => { row.boundary.candidate = "0".repeat(64); },
+    row => { row.authorizationFingerprint = "0".repeat(64); },
+    row => { row.evidence.targets[0].candidate = "0".repeat(40); },
+    row => { row.operationId = "foreign-operation"; },
+    row => { row.evidence.targets.push(structuredClone(row.evidence.targets[0])); },
+  ]) {
+    const bad = structuredClone(current); change(bad);
+    const { identitySha256, ...body } = bad;
+    bad.identitySha256 = releaseIdentitySha256(body);
+    f.operation.publicationRecoveries = [bad, f.oldRecovery];
+    await assert.rejects(f.publication.publish({ ...f, target: f.publicTarget }), /executor authority changed/u);
+  }
+  f.operation.publicationRecoveries = [{ ...current, identitySha256: "0".repeat(64) }, f.oldRecovery];
+  await assert.rejects(f.publication.publish({ ...f, target: f.publicTarget }), /executor authority changed/u);
+  const changedTool = structuredClone(current); changedTool.evidence.targets[0].tool.sha256 = "0".repeat(64);
+  const { identitySha256, ...body } = changedTool; changedTool.identitySha256 = releaseIdentitySha256(body);
+  f.operation.publicationRecoveries = [changedTool, f.oldRecovery];
+  await assert.rejects(f.publication.publish({ ...f, target: f.publicTarget }), /strictEqual|equal|tool|pin/iu);
+  assert.equal(f.children(), 0);
+  f.operation.publicationRecoveries = [current, f.oldRecovery];
+  f.environment.AGENT_HUB_RELEASE_TOOLS_ROOT = path.join(f.root, "changed-ambient-executor");
+  f.environment.AGENT_HUB_RELEASE_TOOLS_SHA256 = "0".repeat(64);
+  assert.equal((await f.publication.publish({ ...f, target: f.publicTarget })).status, "applied");
+  const runner = JSON.parse(await readFile(path.join(f.execution, "runner.json")));
+  assert.deepEqual(runner.toolPackage, f.tool.location);
+  assert.equal(f.children(), 1);
+});
+
+test("historical executor refusal requires exact old proof and fresh both-target absence before same-generation recovery", async t => {
+  const f = await executorGenerationFixture(t);
+  Object.assign(f.operation, { state: "failed", owner: null, lastError: { step: "publish", message: "Original publication recovery executor authority changed" } });
+  const boundary = { kind: "not-applied-publication-recovery-v1", generation: 2, candidate: f.generation.identitySha256 };
+  let admitted = 0;
+  const recover = () => f.publication.withPublicationRecovery({ ...f, boundary, commit: async (evidence, validate) => {
+    assert.deepEqual(evidence.readbacks.map(row => row.evidence.status), ["not_applied", "not_applied"]);
+    await validate(); admitted++;
+  } });
+  const history = structuredClone(f.operation.publicationRecoveries);
+  const currentBody = { ...f.oldRecovery, generation: 2 };
+  delete currentBody.identitySha256;
+  f.operation.publicationRecoveries = [{ ...currentBody, identitySha256: releaseIdentitySha256(currentBody) }];
+  await assert.rejects(recover(), /no executor recovery proof/u);
+  f.operation.publicationRecoveries = structuredClone(history);
+  f.operation.publicationRecoveries[0].identitySha256 = "0".repeat(64);
+  await assert.rejects(recover(), /no executor recovery proof/u);
+  f.operation.publicationRecoveries = structuredClone(history);
+  f.setTag({ object: { sha: f.candidate.commit } });
+  await assert.rejects(recover(), /tag already exists/u); f.setTag(null);
+  await writeFile(path.join(f.firstRoot, "history-only.bin"), "retained historical namespace\n");
+  await recover();
+  assert.equal(admitted, 1);
+  assert.equal(f.children(), 0);
+  assert.deepEqual(f.operation.publicationRecoveries, history);
 });
 
 async function fixture(t, { realFrozen = false } = {}) {
@@ -324,12 +530,14 @@ test("actual publication readback requires same canonical maintenance, installed
   assert.equal(children, 1); assert.equal(joined, 1);
   const saved = (await journal.read()).progress.publicRuntimeInstaller;
   await writeJson(path.join(localRoot, "runner.json"), { candidate: generation.identitySha256, tool, status: "exited", exitCode: 0 });
-  const publication = new ReleaseOperationPublication({ dataDir, runtimeRoot,
+  const publication = await controlledProductInstallerOwner(t, input => createPublicRuntimeInstaller({
+    ...input, ...ports, readPublishedInput: () => readPublishedRuntimePackage(f.options),
+  }), { dataDir, runtimeRoot,
     spawnImpl: () => { publicationChildren++; return spawn(process.execPath, ["-e", "process.exit(0)"], { windowsHide: true, stdio: "ignore" }); },
     processAliveImpl: () => false, readPublicationStateImpl: async () => ({ revision: identity.revision }),
     readToolPackage: async () => ({ ...tool, assertUnchanged: async () => {} }),
     createArtifactSteps: () => ({ preparedRuntimeReceipt: async () => f.prepared }),
-    distributionApi: f.options.api, publicRuntimeInstallerPorts: ports,
+    distributionApi: f.options.api,
   });
   const readback = () => publication.readback({ operation, generation, target });
   assert.equal((await readback()).status, "unknown");

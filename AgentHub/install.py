@@ -111,52 +111,10 @@ def contour_only_component_change(args: argparse.Namespace, *, fresh_install: bo
     )
 
 
-def _owned_extension_swap_artifacts(target: Path, kind: str) -> list[Path]:
-    prefix = f".{target.name}.{kind}-"
-    artifacts: list[Path] = []
-    parent = target.parent.resolve()
-    if not target.parent.is_dir():
-        return artifacts
-    for candidate in target.parent.iterdir():
-        if not candidate.name.startswith(prefix):
-            continue
-        token = candidate.name[len(prefix):]
-        if not SWAP_TOKEN_PATTERN.fullmatch(token):
-            continue
-        if candidate.is_symlink() or not candidate.is_dir() or candidate.resolve().parent != parent:
-            raise RuntimeError(f"Refusing unsafe extension swap artifact: {candidate}")
-        artifacts.append(candidate)
-    return sorted(artifacts)
 
 
-def _extension_package_matches(candidate: Path, package: dict) -> bool:
-    try:
-        return json.loads((candidate / "package.json").read_text(encoding="utf-8")) == package
-    except (OSError, json.JSONDecodeError):
-        return False
 
 
-def recover_interrupted_extension_swap(target: Path, package: dict) -> bool:
-    staging = _owned_extension_swap_artifacts(target, "staging")
-    rollbacks = _owned_extension_swap_artifacts(target, "rollback")
-    if not staging and not rollbacks:
-        return False
-    if target.exists():
-        if target.is_symlink() or not _extension_package_matches(target, package):
-            raise RuntimeError(f"Refusing to clean swap artifacts for invalid extension target: {target}")
-    else:
-        if len(rollbacks) > 1:
-            raise RuntimeError(f"Cannot recover {target}: multiple rollback artifacts exist")
-        if rollbacks:
-            rollback = rollbacks.pop()
-            if not _extension_package_matches(rollback, package):
-                raise RuntimeError(f"Cannot recover invalid extension rollback: {rollback}")
-            os.replace(rollback, target)
-    for rollback in rollbacks:
-        shutil.rmtree(rollback)
-    for staged in staging:
-        shutil.rmtree(staged)
-    return True
 
 
 def require_embedded_sqlite() -> None:
@@ -333,428 +291,34 @@ def request_safe_restart() -> bool:
     return result.returncode == 0
 
 
-def vscode_extension_package(source_package: dict, profile: str = "production") -> dict:
-    if profile not in EXTENSION_PROFILES:
-        raise ValueError(f"Unknown VS Code extension profile: {profile}")
-    package = json.loads(json.dumps(source_package))
-    if profile == "production":
-        return package
-    package.update({
-        "name": "agent-hub-test-contour",
-        "displayName": "Agent Hub Test",
-        "description": "Изолированный VS Code-клиент тестового контура Agent Hub.",
-    })
-    package["activationEvents"] = [
-        "onView:agentHubTestContour.view",
-        "onCommand:agentHubTestContour.open",
-        "onCommand:agentHubTestContour.refresh",
-    ]
-    contributes = package["contributes"]
-    contributes["viewsContainers"] = {
-        "activitybar": [{
-            "id": "agentHubTestContour",
-            "title": "Agent Hub Test",
-            "icon": "media/agent-hub-test.svg",
-        }]
-    }
-    contributes["views"] = {
-        "agentHubTestContour": [{
-            "type": "webview",
-            "id": "agentHubTestContour.view",
-            "name": "Agent Hub Test",
-        }]
-    }
-    contributes["commands"] = [
-        {
-            "command": "agentHubTestContour.open",
-            "title": "Открыть Agent Hub Test",
-            "category": "Agent Hub Test",
-            "icon": "$(open-preview)",
-        },
-        {
-            "command": "agentHubTestContour.refresh",
-            "title": "Обновить Agent Hub Test",
-            "category": "Agent Hub Test",
-            "icon": "$(refresh)",
-        },
-    ]
-    return package
 
 
-def extension_source_fingerprint(source: Path) -> str:
-    digest = hashlib.sha256()
-    for file in sorted(source.rglob("*"), key=lambda item: item.relative_to(source).as_posix()):
-        relative = file.relative_to(source)
-        if (
-            not file.is_file()
-            or file.name.endswith(".vsix")
-            or "node_modules" in relative.parts
-            or "__pycache__" in relative.parts
-            or file.name in (".agent-hub-source.sha256", EXTENSION_PROVENANCE_FILE)
-        ):
-            continue
-        digest.update(relative.as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(file.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
-def numeric_extension_version(value: str) -> tuple[int, int, int]:
-    parts = value.split(".")
-    if len(parts) != 3 or any(not part.isdigit() for part in parts):
-        raise RuntimeError(f"VS Code extension version must be numeric SemVer: {value}")
-    return tuple(int(part) for part in parts)
 
 
-def extension_source_revision() -> str:
-    try:
-        revision = subprocess.run(
-            ["git", *WINDOWS_GIT_ARGS, "-C", str(ROOT), "rev-parse", "HEAD^{commit}"],
-            check=True,
-            capture_output=True,
-            encoding="utf-8",
-        ).stdout.strip().lower()
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise RuntimeError("VS Code extension source revision is unavailable") from error
-    if not re.fullmatch(r"[a-f0-9]{40,64}", revision):
-        raise RuntimeError("VS Code extension source revision is invalid")
-    return revision
 
 
-def extension_revision_is_ancestor(previous: str, current: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["git", *WINDOWS_GIT_ARGS, "-C", str(ROOT), "merge-base", "--is-ancestor", previous, current],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError as error:
-        raise RuntimeError("Cannot verify VS Code extension source ancestry") from error
-    if result.returncode == 0:
-        return True
-    if result.returncode == 1:
-        return False
-    raise RuntimeError("Cannot verify VS Code extension source ancestry")
 
 
-def extension_source_provenance(
-    source: Path,
-    fingerprint: str,
-    revision: str,
-    release_version: str | None = None,
-) -> dict:
-    if release_version is None:
-        release_package = ROOT / "package.json"
-        package_file = release_package if release_package.is_file() else source / "package.json"
-        package = json.loads(package_file.read_text(encoding="utf-8"))
-        release_version = str(package["version"])
-    if not re.fullmatch(r"[a-f0-9]{40,64}", revision):
-        raise RuntimeError("VS Code extension source revision is invalid")
-    return {
-        "schemaVersion": 1,
-        "releaseVersion": release_version,
-        "sourceRevision": revision,
-        "sourceFingerprint": fingerprint,
-    }
 
 
-def read_extension_provenance(candidate: Path) -> dict | None:
-    file = candidate / EXTENSION_PROVENANCE_FILE
-    if not file.exists():
-        return None
-    try:
-        value = json.loads(file.read_text(encoding="utf-8"))
-        release_version = str(value["releaseVersion"])
-        revision = str(value["sourceRevision"]).lower()
-        fingerprint = str(value["sourceFingerprint"])
-        if (
-            value.get("schemaVersion") != 1
-            or not re.fullmatch(r"[a-f0-9]{40,64}", revision)
-            or not re.fullmatch(r"[a-f0-9]{64}", fingerprint)
-        ):
-            raise ValueError("invalid extension provenance")
-        recorded_fingerprint = (candidate / ".agent-hub-source.sha256").read_text(encoding="ascii").strip()
-        if recorded_fingerprint != fingerprint:
-            raise ValueError("extension provenance fingerprint mismatch")
-        return {
-            "schemaVersion": 1,
-            "releaseVersion": release_version,
-            "sourceRevision": revision,
-            "sourceFingerprint": fingerprint,
-        }
-    except (OSError, KeyError, ValueError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"Installed VS Code extension provenance is invalid: {candidate}") from error
 
 
-def extension_install_version(requested: str, installed: list[str]) -> str:
-    requested_tuple = numeric_extension_version(requested)
-    installed_tuples = [numeric_extension_version(value) for value in installed]
-    if not installed_tuples or requested_tuple > max(installed_tuples):
-        return requested
-    major, minor, patch = max(installed_tuples)
-    return f"{major}.{minor}.{patch + 1}"
 
 
-def _installed_vscode_extensions(package: dict, extensions_root: Path) -> list[dict]:
-    prefix = f"{package['publisher']}.{package['name']}-"
-    installed = []
-    if not extensions_root.is_dir():
-        return installed
-    for candidate in extensions_root.iterdir():
-        if not candidate.is_dir() or not candidate.name.startswith(prefix):
-            continue
-        # Inventory is read-only: existing installations may be directory links.
-        # Replacement targets are checked separately before any staging or write.
-        resolved = candidate.resolve()
-        try:
-            installed_package = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
-            installed_version = str(installed_package["version"])
-            numeric_extension_version(installed_version)
-            if (
-                installed_package.get("publisher") != package["publisher"]
-                or installed_package.get("name") != package["name"]
-                or candidate.name != f"{prefix}{installed_version}"
-            ):
-                continue
-            try:
-                installed_fingerprint = (candidate / ".agent-hub-source.sha256").read_text(
-                    encoding="ascii",
-                ).strip()
-            except FileNotFoundError:
-                installed_fingerprint = None
-            installed.append({
-                "target": resolved,
-                "registrationName": candidate.name,
-                "version": installed_version,
-                "fingerprint": installed_fingerprint,
-                "provenance": read_extension_provenance(candidate),
-            })
-        except (OSError, KeyError, ValueError, json.JSONDecodeError):
-            continue
-    return installed
 
 
-def _installed_extension_identity(entry: dict | None) -> str:
-    if entry is None:
-        return "none"
-    if entry["provenance"] is not None:
-        return f"revision:{entry['provenance']['sourceRevision']}"
-    fingerprint = entry["fingerprint"] or extension_source_fingerprint(entry["target"])
-    return f"legacy:{fingerprint}"
 
 
-def installed_vscode_extension_identity(profile: str = "production", *, extensions_root: Path | None = None) -> str:
-    source_package = json.loads((ROOT / "VSCodeExtension" / "package.json").read_text(encoding="utf-8"))
-    package = vscode_extension_package(source_package, profile)
-    root = (extensions_root or (Path.home() / ".vscode" / "extensions")).resolve()
-    installed = _installed_vscode_extensions(package, root)
-    newest = max(installed, key=lambda entry: numeric_extension_version(entry["version"]), default=None)
-    return _installed_extension_identity(newest)
 
 
-def vscode_extension_install_plan(
-    profile: str = "production",
-    *,
-    source_revision: str | None = None,
-    release_version: str | None = None,
-    expected_installed_identity: str | None = None,
-    extensions_root: Path | None = None,
-) -> dict:
-    source = ROOT / "VSCodeExtension"
-    source_package = json.loads((source / "package.json").read_text(encoding="utf-8"))
-    package = vscode_extension_package(source_package, profile)
-    root = (extensions_root or (Path.home() / ".vscode" / "extensions")).resolve()
-    fingerprint = extension_source_fingerprint(source)
-    revision = (source_revision or extension_source_revision()).strip().lower()
-    provenance = extension_source_provenance(source, fingerprint, revision, release_version)
-    installed = _installed_vscode_extensions(package, root)
-    installed_versions = [entry["version"] for entry in installed]
-    newest = max(installed, key=lambda entry: numeric_extension_version(entry["version"]), default=None)
-    installed_identity = _installed_extension_identity(newest)
-    expected = str(expected_installed_identity or "").strip().lower()
-    if (
-        newest is not None
-        and newest["provenance"] is not None
-        and newest["fingerprint"] == fingerprint
-    ):
-        return {
-            "profile": profile,
-            "action": "current",
-            "package": json.loads((newest["target"] / "package.json").read_text(encoding="utf-8")),
-            "provenance": newest["provenance"],
-            "sourceFingerprint": newest["fingerprint"],
-            "installedIdentity": installed_identity,
-            "targetName": newest["registrationName"],
-        }
-    if expected and expected != installed_identity:
-        raise RuntimeError(
-            "VS Code extension installed identity changed: "
-            f"expected {expected}, observed {installed_identity}"
-        )
-    if newest is not None and newest["provenance"] is not None:
-        installed_revision = newest["provenance"]["sourceRevision"]
-        if installed_revision == revision:
-            raise RuntimeError("VS Code extension fingerprint changed within the same source revision")
-        if expected != installed_identity and not extension_revision_is_ancestor(installed_revision, revision):
-            raise RuntimeError(
-                "Refusing VS Code extension source without descendant proof; "
-                f"installed identity is {installed_identity}"
-            )
-    package["version"] = extension_install_version(str(package["version"]), installed_versions)
-    return {
-        "profile": profile,
-        "action": "install",
-        "package": package,
-        "provenance": provenance,
-        "sourceFingerprint": fingerprint,
-        "installedIdentity": installed_identity,
-        "targetName": f"{package['publisher']}.{package['name']}-{package['version']}",
-    }
 
 
-def _prepared_extension_plan_is_applied(plan: dict, prepared_plan: dict) -> bool:
-    provenance = prepared_plan.get("provenance")
-    if not isinstance(provenance, dict):
-        return False
-    return (
-        prepared_plan.get("action") == "install"
-        and plan.get("action") == "current"
-        and plan.get("targetName") == prepared_plan.get("targetName")
-        and plan.get("package") == prepared_plan.get("package")
-        and plan.get("sourceFingerprint") == prepared_plan.get("sourceFingerprint")
-        and plan.get("provenance") == provenance
-        and plan.get("installedIdentity") == f"revision:{provenance.get('sourceRevision')}"
-    )
 
 
-def install_vscode_extension(
-    profile: str = "production",
-    *,
-    source_revision: str | None = None,
-    release_version: str | None = None,
-    expected_installed_identity: str | None = None,
-    prepared_plan: dict | None = None,
-) -> Path | None:
-    source = ROOT / "VSCodeExtension"
-    if not source.is_dir():
-        print("VS Code extension source is not present; skipped.")
-        return None
-    extensions_root = (Path.home() / ".vscode" / "extensions").resolve()
-    plan = vscode_extension_install_plan(
-        profile,
-        source_revision=source_revision,
-        release_version=release_version,
-        expected_installed_identity=expected_installed_identity,
-        extensions_root=extensions_root,
-    )
-    if prepared_plan is not None and plan != prepared_plan:
-        if _prepared_extension_plan_is_applied(plan, prepared_plan):
-            target = (extensions_root / plan["targetName"]).resolve()
-            print(f"VS Code extension is current: {target}")
-            return target
-        raise RuntimeError("Prepared VS Code extension install plan changed")
-    package = plan["package"]
-    source_package = json.loads((source / "package.json").read_text(encoding="utf-8"))
-    requested_id = f"{package['publisher']}.{package['name']}-{package['version']}"
-    requested_target = (extensions_root / requested_id).resolve()
-    target = (extensions_root / plan["targetName"]).resolve()
-    if plan["action"] == "current":
-        print(f"VS Code extension is current: {target}")
-        return target
-    fingerprint = plan["sourceFingerprint"]
-    provenance = plan["provenance"]
-    if target.parent != extensions_root or not target.name.startswith(f"{package['publisher']}.{package['name']}-"):
-        raise RuntimeError(f"Refusing to replace unexpected extension path: {target}")
-    extensions_root.mkdir(parents=True, exist_ok=True)
-    recover_interrupted_extension_swap(requested_target, vscode_extension_package(source_package, profile))
-    if target != requested_target:
-        recover_interrupted_extension_swap(target, package)
-    staging = extensions_root / f".{target.name}.staging-{uuid4().hex}"
-    rollback = extensions_root / f".{target.name}.rollback-{uuid4().hex}"
-    # VS Code owns retirement of its previous Agent Hub versions.  A publisher
-    # running from a stale checkout must never delete a newer version that VS
-    # Code has already registered or loaded; doing so leaves extensions.json
-    # pointing at a directory without package.json until the next repair.
-    removable_prefixes = ("tyrael.work-log-view-",) if profile == "production" else ()
-    try:
-        shutil.copytree(
-            source,
-            staging,
-            ignore=shutil.ignore_patterns("*.vsix", "node_modules", "__pycache__"),
-        )
-        (staging / "package.json").write_text(
-            json.dumps(package, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        (staging / ".agent-hub-source.sha256").write_text(f"{fingerprint}\n", encoding="ascii")
-        (staging / EXTENSION_PROVENANCE_FILE).write_text(
-            json.dumps(provenance, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        profile_file = staging / "extension-profile.json"
-        if profile == "test-contour":
-            profile_file.write_text(
-                json.dumps({"profile": "test-contour"}, indent=2) + "\n",
-                encoding="utf-8",
-            )
-        elif profile_file.exists():
-            profile_file.unlink()
-        staged_package = json.loads((staging / "package.json").read_text(encoding="utf-8"))
-        if staged_package != package:
-            raise RuntimeError("Staged VS Code extension package does not match source package.")
-        if target.exists():
-            os.replace(target, rollback)
-        try:
-            os.replace(staging, target)
-        except Exception:
-            if rollback.exists():
-                os.replace(rollback, target)
-            raise
-        shutil.rmtree(rollback, ignore_errors=True)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
-
-    # Only retire older copies after the replacement is usable.  A cleanup
-    # failure leaves a working extension rather than removing all versions.
-    for candidate in extensions_root.iterdir():
-        resolved = candidate.resolve()
-        if candidate == target or resolved.parent != extensions_root:
-            continue
-        if candidate.is_dir() and candidate.name.startswith(removable_prefixes):
-            shutil.rmtree(resolved, ignore_errors=True)
-    print(f"Installed VS Code extension: {target}")
-    return target
 
 
-def uninstall_vscode_extension(profile: str) -> list[Path]:
-    if profile not in EXTENSION_PROFILES:
-        raise ValueError(f"Unknown VS Code extension profile: {profile}")
-    source = ROOT / "VSCodeExtension"
-    source_package = json.loads((source / "package.json").read_text(encoding="utf-8"))
-    package = vscode_extension_package(source_package, profile)
-    extensions_root = (Path.home() / ".vscode" / "extensions").resolve()
-    if not extensions_root.is_dir():
-        return []
-    prefix = f"{package['publisher']}.{package['name']}-"
-    removed = []
-    for candidate in extensions_root.iterdir():
-        if not candidate.name.startswith(prefix):
-            continue
-        resolved = candidate.resolve()
-        if candidate.is_symlink() or not candidate.is_dir() or resolved.parent != extensions_root:
-            raise RuntimeError(f"Refusing to remove unsafe extension path: {candidate}")
-        try:
-            installed = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise RuntimeError(f"Refusing to remove invalid extension: {candidate}") from error
-        if installed.get("publisher") != package["publisher"] or installed.get("name") != package["name"]:
-            raise RuntimeError(f"Refusing to remove foreign extension: {candidate}")
-        shutil.rmtree(resolved)
-        removed.append(resolved)
-    return removed
 
 
 def install_autostart() -> None:
@@ -849,6 +413,31 @@ def backfill_team_rate_limit_accounts(target_root: Path, participant: str | None
         check=True,
     )
 
+
+
+def _external_extension(action: str, profile: str, **options):
+    result = subprocess.run(["node", str(ROOT / "recipe.mjs"), action], cwd=ROOT,
+                            input=json.dumps({"profile": profile, **options}),
+                            capture_output=True, text=True, encoding="utf-8", check=True)
+    rows = result.stdout.rstrip().splitlines()
+    if not rows:
+        raise RuntimeError("External extension recipe returned no outcome")
+    for row in rows[:-1]:
+        print(row)
+    return json.loads(rows[-1])["result"]
+
+
+def install_vscode_extension(profile: str = "production", *, source_revision: str | None = None,
+                             release_version: str | None = None, expected_installed_identity: str | None = None,
+                             prepared_plan: dict | None = None) -> Path | None:
+    result = _external_extension("extension-install", profile, source_revision=source_revision,
+                                release_version=release_version, expected_installed_identity=expected_installed_identity,
+                                prepared_plan=prepared_plan)
+    return Path(result) if result is not None else None
+
+
+def uninstall_vscode_extension(profile: str) -> list[Path]:
+    return [Path(value) for value in _external_extension("extension-remove", profile)]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Configure Agent Hub")

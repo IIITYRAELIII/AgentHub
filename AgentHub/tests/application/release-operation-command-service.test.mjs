@@ -59,7 +59,6 @@ test("release command service binds the public request to a real initiating Thre
       taskScope: "all_await",
       validationMode: "full",
       approvedTargets,
-      runtimeInstallation: "public-package-v1",
     },
   }]);
   assert.deepEqual(service.get({ operationId: "operation-1" }), { operationId: "operation-1" });

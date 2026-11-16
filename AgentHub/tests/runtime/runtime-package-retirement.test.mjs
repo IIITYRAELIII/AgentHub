@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { buildWindowsRuntimeHost, runtimeHostCompilerCandidates } from "../../src/infrastructure/process/runtime-host-builder.mjs";
+import { buildWindowsRuntimeHost, runtimeHostCompilerCandidates } from "../helpers/external-runtime-builder.fixture.mjs";
 
 const execute = promisify(execFile);
 

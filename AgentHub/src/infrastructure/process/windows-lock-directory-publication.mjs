@@ -5,10 +5,16 @@ import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { buildWindowsRuntimeHost, runtimeHostSourceHash, RUNTIME_HOST_SOURCE_INPUTS } from "./runtime-host-builder.mjs";
-import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
+function runtimeHostCompilerCandidates(environment = process.env) {
+  const windows = environment.WINDIR || environment.SystemRoot || "C:\\Windows";
+  return [path.join(windows, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe"),
+    path.join(windows, "Microsoft.NET", "Framework", "v4.0.30319", "csc.exe")];
+}
 
+import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "../../..");
+import { LOCK_PUBLISHER_SOURCE } from "./lock-publisher-protocol.mjs";
+const SOURCE_FILE = path.join(import.meta.dirname, LOCK_PUBLISHER_SOURCE);
 const execute = promisify(execFile);
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const failure = (message, code, cause) => Object.assign(new Error(message, cause ? { cause } : undefined), { code });
@@ -22,15 +28,11 @@ async function regularBytes(file) {
 
 async function prepare() {
   if (process.platform !== "win32") throw new Error("Windows lock directory publisher is unavailable on this platform");
-  const sourceHash = await runtimeHostSourceHash(SOURCE_ROOT);
-  const sourceInputs = [];
-  for (const name of RUNTIME_HOST_SOURCE_INPUTS) {
-    const bytes = await regularBytes(path.join(SOURCE_ROOT, name));
-    sourceInputs.push({ path: name, bytes: bytes.length, sha256: sha(bytes) });
-  }
-  let manifestBytes = await readFile(path.join(SOURCE_ROOT, "runtime-manifest.json")).catch(error => {
-    if (error.code === "ENOENT") return null;
-    throw error;
+  const sourceBytes = await regularBytes(SOURCE_FILE);
+  const sourceHash = sha(sourceBytes);
+  const sourceInputs = [{ path: "release-lock-publisher.cs", bytes: sourceBytes.length, sha256: sourceHash }];
+  const manifestBytes = await readFile(path.join(SOURCE_ROOT, "runtime-manifest.json")).catch(error => {
+    if (error.code === "ENOENT") return null; throw error;
   });
   let binary, binaryHash, ownedRoot = null, ownedIdentity = null;
   const assertOwnedRoot = (info) => {
@@ -55,49 +57,44 @@ async function prepare() {
   if (manifestBytes !== null) {
     const manifest = JSON.parse(manifestBytes);
     await verifyRuntimeManifest(SOURCE_ROOT, manifest.releaseId);
-    for (const name of [...RUNTIME_HOST_SOURCE_INPUTS, "AgentHub.RuntimeHost.exe", "AgentHub.RuntimeHost.exe.sha256", "AgentHub.RuntimeHost.source.sha256"]) {
+    for (const name of ["src/infrastructure/process/release-lock-publisher.cs", "ReleaseLockPublisher.exe", "ReleaseLockPublisher.source.sha256"]) {
       if (!manifest.files.some(entry => entry.path === name)) throw new Error("Prepared lock publisher input is not manifested");
     }
-    binary = path.join(SOURCE_ROOT, "AgentHub.RuntimeHost.exe");
+    binary = path.join(SOURCE_ROOT, "ReleaseLockPublisher.exe");
     binaryHash = sha(await regularBytes(binary));
-    if ((await readFile(path.join(SOURCE_ROOT, "AgentHub.RuntimeHost.source.sha256"), "utf8")).trim() !== sourceHash
-        || (await readFile(path.join(SOURCE_ROOT, "AgentHub.RuntimeHost.exe.sha256"), "utf8")).trim() !== binaryHash) {
+    if ((await readFile(path.join(SOURCE_ROOT, "ReleaseLockPublisher.source.sha256"), "utf8")).trim() !== sourceHash) {
       throw new Error("Prepared lock publisher provenance mismatch");
     }
     Object.assign(provenance, { mode: "prepared", manifestHash: sha(manifestBytes) });
   } else {
-    ownedRoot = await mkdtemp(path.join(os.tmpdir(), "ah-lockhost-"));
-    ownedIdentity = await lstat(ownedRoot, { bigint: true });
-    try {
-      const snapshot = path.join(ownedRoot, "source");
-      for (const entry of sourceInputs) {
-        const bytes = await regularBytes(path.join(SOURCE_ROOT, entry.path));
-        if (sha(bytes) !== entry.sha256) throw new Error("Lock publisher source input changed");
-        const target = path.join(snapshot, entry.path);
-        await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, bytes, { flag: "wx" });
+  ownedRoot = await mkdtemp(path.join(os.tmpdir(), "ah-lockhost-"));
+  ownedIdentity = await lstat(ownedRoot, { bigint: true });
+  try {
+    const snapshot = path.join(ownedRoot, "release-lock-publisher.cs");
+    await writeFile(snapshot, sourceBytes, { flag: "wx" });
+    let compiler;
+    for (const candidate of runtimeHostCompilerCandidates(process.env)) {
+      if ((await lstat(candidate).catch(error => { if (error.code === "ENOENT") return null; throw error; }))?.isFile()) {
+        compiler = await realpath(candidate); break;
       }
-      if (await runtimeHostSourceHash(snapshot) !== sourceHash) throw new Error("Lock publisher snapshot mismatch");
-      binary = path.join(ownedRoot, "AgentHub.RuntimeHost.exe");
-      await buildWindowsRuntimeHost({ sourceRoot: snapshot, outputFile: binary,
-        execute: async (command, args, options) => {
-          const executable = await realpath(command);
-          const before = sha(await regularBytes(executable));
-          const result = await execute(executable, args, options);
-          if (sha(await regularBytes(executable)) !== before) throw new Error("Lock publisher compiler executable changed");
-          provenance.compilerExecutions.push({ executable, sha256: before });
-          return result;
-        },
-      });
-      if (await runtimeHostSourceHash(SOURCE_ROOT) !== sourceHash || await runtimeHostSourceHash(snapshot) !== sourceHash) {
-        throw new Error("Lock publisher inputs changed during compilation");
-      }
-      binaryHash = sha(await regularBytes(binary));
-      provenance.mode = "source";
-    } catch (error) {
-      try { await removeOwnedRoot(); } catch (cleanupError) { error.cleanupError = cleanupError; }
-      throw error;
     }
+    if (!compiler) throw new Error("System C# compiler for the release lock publisher was not found");
+    const compilerHash = sha(await regularBytes(compiler));
+    binary = path.join(ownedRoot, "AgentHub.ReleaseLockPublisher.exe");
+    await execute(compiler, ["/nologo", "/target:exe", "/optimize+", `/out:${binary}`,
+      "/reference:System.dll", "/reference:System.Web.Extensions.dll", snapshot],
+      { windowsHide: true, maxBuffer: 1024 * 1024 });
+    if (sha(await regularBytes(compiler)) !== compilerHash
+        || sha(await regularBytes(SOURCE_FILE)) !== sourceHash || sha(await regularBytes(snapshot)) !== sourceHash) {
+      throw new Error("Lock publisher inputs changed during compilation");
+    }
+    provenance.compilerExecutions.push({ executable: compiler, sha256: compilerHash });
+    binaryHash = sha(await regularBytes(binary));
+    provenance.mode = "source";
+  } catch (error) {
+    try { await removeOwnedRoot(); } catch (cleanupError) { error.cleanupError = cleanupError; }
+    throw error;
+  }
   }
   Object.assign(provenance, { executable: binary, binaryHash });
   const active = new Set();
@@ -106,6 +103,9 @@ async function prepare() {
     if (sha(await regularBytes(binary)) !== binaryHash) throw failure("Lock publisher binary changed", "WINDOWS_LOCK_PUBLISHER_CHANGED");
     if (manifestBytes && !(await readFile(path.join(SOURCE_ROOT, "runtime-manifest.json"))).equals(manifestBytes)) {
       throw failure("Lock publisher manifest changed", "WINDOWS_LOCK_PUBLISHER_CHANGED");
+    }
+    if (sha(await regularBytes(SOURCE_FILE)) !== sourceHash) {
+      throw failure("Lock publisher source changed", "WINDOWS_LOCK_PUBLISHER_CHANGED");
     }
   };
   const shutdown = async () => {

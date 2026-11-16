@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { publicationRunStore } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
-import { publicationCheckpointStore } from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
-import { completePublication, resumePendingPublicationCompletion } from "../../../src/infrastructure/persistence/publication-completion.mjs";
+import { publicationRunStore, publicationCheckpointStore, completePublication, resumePendingPublicationCompletion } from "../../helpers/external-release-recipe.fixture.mjs";
+
+
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-publication-completion-"));

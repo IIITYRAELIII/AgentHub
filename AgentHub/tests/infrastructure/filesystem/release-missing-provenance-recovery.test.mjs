@@ -14,15 +14,8 @@ import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import {
-  publicationCheckpointStore,
-  runPublicationSteps,
-} from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
-import {
-  PUBLICATION_STAGE_CONTRACT,
-  publicationRunPaths,
-  publicationRunStore,
-} from "../../../src/infrastructure/persistence/publication-run-store.mjs";
+import { publicationCheckpointStore, runPublicationSteps, PUBLICATION_STAGE_CONTRACT, publicationRunPaths, publicationRunStore } from "../../helpers/external-release-recipe.fixture.mjs";
+
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { retainLegacyPreparedCandidate } from "../../fixtures/legacy-release-candidate-fixture.mjs";
 

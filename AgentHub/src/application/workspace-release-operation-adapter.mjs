@@ -106,6 +106,7 @@ export class WorkspaceReleaseOperationAdapter {
       workspaceId: operation.workspaceId,
       operationId: operation.operationId,
       generation,
+      expectedRecipeExecutor: operation.authorization.recipe?.executor,
       ...(effectiveReleaseTaskScope(operation) === "all_await" ? {} : { taskIds: effectiveReleaseTaskIds(operation) }),
       previousSelectedResults: operation.selectedResults,
       ...(frozenVersions?.length ? { frozenVersions } : {}),
@@ -122,7 +123,7 @@ export class WorkspaceReleaseOperationAdapter {
       operationId: operation.operationId, generation, taskIds: operation.authorization.taskIds,
       approvedRepositories: approvedRepositories(operation), inspectOnly: true,
       changelogContent: await releaseMetadataBytes(effectiveReleaseMetadata(operation)),
-      releaseVersion: operation.authorization.releaseVersion });
+      releaseVersion: operation.authorization.releaseVersion, expectedRecipeExecutor: operation.authorization.recipe?.executor });
     return result.releaseCandidates.map(item => item.binding);
   }
 
@@ -131,11 +132,16 @@ export class WorkspaceReleaseOperationAdapter {
       operationId: operation.operationId, generation, taskIds: operation.authorization.taskIds,
       approvedRepositories: approvedRepositories(operation), expectedBindings: recovery.candidates,
       changelogContent: await releaseMetadataBytes(effectiveReleaseMetadata(operation)),
-      releaseVersion: operation.authorization.releaseVersion, validateBeforeCommit });
+      releaseVersion: operation.authorization.releaseVersion, expectedRecipeExecutor: operation.authorization.recipe?.executor, validateBeforeCommit });
     return this.#composed(operation, prepared);
   }
 
   #composed(operation, prepared) {
+    const executor = operation.authorization.recipe?.executor;
+    if (executor && prepared.releaseCandidates.some(candidate =>
+        JSON.stringify(candidate.manifest?.publication?.recipeExecutor) !== JSON.stringify(executor))) {
+      throw new Error("Composed generation recipe executor differs from original authority");
+    }
     const selectedResults = prepared.releaseCandidates.flatMap((candidate) => (
       candidate.frozenTasks.map((task) => ({ taskId: task.taskId, resultCommit: task.resultCommit,
         ...selectedCompositionFields(task), acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision }))
@@ -220,6 +226,7 @@ export class WorkspaceReleaseOperationAdapter {
     return this.releasePreflight.validateOperationGeneration({
       workspaceId: operation.workspaceId,
       generation,
+      expectedRecipeExecutor: operation.authorization.recipe?.executor,
     });
   }
 

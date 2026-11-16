@@ -22,7 +22,9 @@ import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/work
 // Runtime behavior is exercised by the owning service suites and phase composition
 // scenarios, not by counting constructor names or matching callback source text.
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
-const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler", "WIP"]);
+// Dependency custody can retain the same installed package beside node_modules.
+// It remains third-party input, not a maintained application source layer.
+const IGNORED_DIRECTORIES = new Set(["node_modules", ".agent-hub-dependency-retained", "build", "dist", ".wrangler", "WIP"]);
 const SOURCE_LAYERS = new Set([
   "application",
   "composition",

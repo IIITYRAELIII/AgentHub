@@ -401,7 +401,6 @@ test("every default-lock validation suite uses a fixture root while the publishe
       "tests/infrastructure/persistence/local-publication-receipt-baseline.test.mjs",
       "tests/application/request-safe-restart.test.mjs",
       "tests/public/release-candidate-contour.test.mjs",
-      "tests/public/publish-all.test.mjs",
       "tests/runtime/runtime-publication-completion.test.mjs",
     ];
     await withPublicationLock(async () => {

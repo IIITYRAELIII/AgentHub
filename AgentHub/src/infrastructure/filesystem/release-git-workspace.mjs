@@ -17,8 +17,7 @@ import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { runOwnedGit, TaskGitWorkspaceService } from "./task-git-workspace.mjs";
 import { readOwnGitPublicationOrigin } from "../persistence/release-operation-store.mjs";
 import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline, publishedMetadataContext,
-  assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, assertHistoricalChangelog, sourceBlobs } from "./local-source-baseline.mjs";
-import { isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure } from "./runtime-manifest-verifier.mjs";
+  assertInstalledAgreedMainOrigin, assertOwnGitPublicationOrigin, assertHistoricalChangelog } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { inspectPublishedNotesArchive, archivePublishedNotesCheckout } from "./native-await-published-notes-recovery.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
@@ -59,45 +58,6 @@ const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
   "AWAIT_ACCEPTANCE_UNKNOWN",
 ]);
 
-async function assertNativeRuntimeImportClosure(gitAt, composition) {
-  // Inspect immutable native objects, never a dirty checkout, installed runtime
-  // or moving selected branch. Existing verified batch reads keep this one
-  // inventory + bounded-by-input object traversal, not one Git child per file.
-  const git = (args, options) => gitAt(composition.root,
-    ["--no-optional-locks", "--no-lazy-fetch", "--no-replace-objects", "-c", "core.fsmonitor=false", ...args], options);
-  const entries = new Map(String(await git(["ls-tree", "-r", "-z", "--full-tree", composition.head]))
-    .split("\0").filter(Boolean).map(row => {
-      const tab = row.indexOf("\t");
-      const [mode, type, oid] = row.slice(0, tab).split(" ");
-      return [row.slice(tab + 1), { mode, type, oid }];
-    }));
-  const regular = file => entries.get(file)?.type === "blob"
-    && ["100644", "100755"].includes(entries.get(file).mode);
-  const packageFiles = ["package.json", "AgentHub/package.json"].filter(regular);
-  const packages = await sourceBlobs(git, entries, packageFiles);
-  for (const file of packageFiles) {
-    let metadata;
-    try { metadata = JSON.parse(packages.get(file).toString("utf8")); }
-    catch { continue; } // Other products keep their own package validation.
-    if (metadata?.name !== "agent-hub") continue;
-    const prefix = file.slice(0, -"package.json".length);
-    const files = [...entries.keys()].filter(name => name.startsWith(prefix) && regular(name))
-      .map(name => name.slice(prefix.length));
-    const modules = files.filter(isRuntimeSourceModule).map(name => prefix + name);
-    const sources = await sourceBlobs(git, entries, modules);
-    // Membership is the same canonical runtime source selection, including
-    // non-module targets; tests/tools cannot satisfy a shipped relative import.
-    const included = files.filter(isRuntimeSourceFile);
-    try {
-      await verifyRuntimeImportClosure(composition.root, included, {
-        readModule: name => sources.get(prefix + name).toString("utf8"),
-      });
-    } catch (error) {
-      throw new ReleasePreparationRejectedError(
-        `Native runtime import closure failed in ${composition.root}: ${error.message}`, { cause: error });
-    }
-  }
-}
 
 function runGit(args, options = {}) {
   return measureTaskOperation("release:git-command", () => runGitUnmeasured(args, options), { detail: true });
@@ -632,13 +592,7 @@ export async function assertReleaseCloneForPublication({ repositoryRoot: request
   return { ...marker, markerFile };
 }
 
-export async function assertReleaseCandidateContourSource({ sourceRoot: requestedRoot } = {}) {
-  const requestedSourceRoot = canonicalPath(String(requestedRoot ?? ""));
-  const marker = await assertReleaseCloneForPublication({ repositoryRoot: requestedSourceRoot });
-  const expectedSourceRoot = canonicalPath(path.join(marker.releaseRoot, "AgentHub"));
-  if (!samePath(requestedSourceRoot, expectedSourceRoot)) {
-    throw new Error("release candidate contour source must be the AgentHub directory of the managed release clone");
-  }
+async function assertManagedMainPublication(marker) {
   const [branch, headCommit, mainCommit, dirty] = await Promise.all([
     runGit(["symbolic-ref", "--short", "HEAD"], { cwd: marker.releaseRoot }),
     runGit(["rev-parse", "HEAD^{commit}"], { cwd: marker.releaseRoot }),
@@ -646,23 +600,31 @@ export async function assertReleaseCandidateContourSource({ sourceRoot: requeste
     runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: marker.releaseRoot }),
   ]);
   if (branch !== "main") {
-    throw new Error(`release candidate contour source must be attached to main, got ${branch}`);
+    throw new Error(`publication source must be attached to main, got ${branch}`);
   }
   if (headCommit !== mainCommit) {
-    throw new Error("release candidate contour source HEAD must equal refs/heads/main");
+    throw new Error("publication source HEAD must equal refs/heads/main");
   }
   if (dirty) {
-    throw new Error("release candidate contour source must be clean");
+    throw new Error("publication source must be clean");
   }
-  return {
-    kind: "release-candidate",
-    branch,
-    headCommit,
-    sourceRoot: expectedSourceRoot,
-    releaseRoot: marker.releaseRoot,
-    releaseGitCommonDir: marker.releaseGitCommonDir,
-    markerFile: marker.markerFile,
-  };
+  return { branch, headCommit, releaseRoot: marker.releaseRoot,
+    releaseGitCommonDir: marker.releaseGitCommonDir, markerFile: marker.markerFile };
+}
+
+// Product-neutral Git/custody proof shared by recipes and application previews.
+export async function assertPreparedPublicationSource({ repositoryRoot } = {}) {
+  return assertManagedMainPublication(await assertReleaseCloneForPublication({ repositoryRoot }));
+}
+
+export async function assertReleaseCandidateContourSource({ sourceRoot: requestedRoot } = {}) {
+  const requestedSourceRoot = canonicalPath(String(requestedRoot ?? ""));
+  const marker = await assertReleaseCloneForPublication({ repositoryRoot: requestedSourceRoot });
+  const expectedSourceRoot = canonicalPath(path.join(marker.releaseRoot, "AgentHub"));
+  if (!samePath(requestedSourceRoot, expectedSourceRoot)) {
+    throw new Error("release candidate contour source must be the AgentHub directory of the managed release clone");
+  }
+  return { ...await assertManagedMainPublication(marker), kind: "release-candidate", sourceRoot: expectedSourceRoot };
 }
 
 const SUPPLEMENTAL_PROVENANCE_KIND = "supplemental-reviewed-adoption-v1";
@@ -1155,9 +1117,6 @@ export class ReleaseGitWorkspaceService {
       else if (manifest.baseProvenance?.adoptions) await assertInstalledAgreedMainOrigin({
         provenance: manifest.baseProvenance,
         git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }) });
-      await measureTaskOperation("release:prepared-runtime-import-closure", () => assertNativeRuntimeImportClosure(
-        (cwd, args, options = {}) => runGit(args, { ...options, cwd }),
-        { root: verificationRepository, head: source.preReleaseHead, tree: source.tree }));
       const binding = { kind: "native-prepared-release-v1", releaseRoot: source.releaseRoot,
         commit: source.preReleaseHead, tree: source.tree, manifestHash: source.manifestHash,
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
@@ -1182,7 +1141,7 @@ export class ReleaseGitWorkspaceService {
     operationId, generation, planRevision, projectRoot, workspaceId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
-    ephemeral = false, releaseVersion = undefined,
+    ephemeral = false, releaseVersion = undefined, expectedRecipeExecutor = undefined,
     expectedRuntimeVersion = undefined, firstComposeRecovery = null, expectedAbsentGeneration = null,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
@@ -1193,7 +1152,7 @@ export class ReleaseGitWorkspaceService {
         ({ lease, objects }) => withPreparationGitIsolation(this.dataDir, () => this.prepareGeneration({
           operationId, generation, planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
           baseProvenance, validateBeforeCommit, changelogContent, freezePublication, ephemeral,
-          releaseVersion, expectedRuntimeVersion, firstComposeRecovery, expectedAbsentGeneration }), lease, objects));
+          releaseVersion, expectedRecipeExecutor, expectedRuntimeVersion, firstComposeRecovery, expectedAbsentGeneration }), lease, objects));
     }
     if (releaseVersion !== undefined) normalizeReleaseVersion(releaseVersion);
     const operation = String(operationId ?? "").trim();
@@ -1352,6 +1311,7 @@ export class ReleaseGitWorkspaceService {
           reusePersistedChangelog: Boolean(localCheckpoint?.publicationFreeze),
           ...(releaseVersion !== undefined ? { expectedVersion: releaseVersion } : {}),
           ...(expectedRuntimeVersion !== undefined ? { expectedRuntimeVersion } : {}),
+          expectedRecipeExecutor,
           validateBeforeCommit: validatePrepared,
         });
         const frozen = await isolated.frozenCandidate(sourceRoot);
@@ -2443,8 +2403,6 @@ export class ReleaseGitWorkspaceService {
           || baseCommit !== preparationGuard.approvedBaseCommit)) {
         throw new ReleasePreparationRejectedError("Full selected/joint preparation tree differs from the reviewed tree");
       }
-      await measureTaskOperation("preparation:runtime-import-closure", () => assertNativeRuntimeImportClosure(
-        (cwd, args, options = {}) => runGit(args, { ...options, cwd }), composition));
       const cutover = archive?.cutover ?? await this.#nativeCutover(clone, checkpoint);
       const manifest = {
         schemaVersion: 2, compositionPolicy: NATIVE_RELEASE_POLICY,
@@ -3665,6 +3623,9 @@ export class ReleaseGitWorkspaceService {
         for (const key of ["preparedHead", "releaseVersion", "runtimeReleaseVersion", "changelogBlob", "changelogContentHash", "changelogPayloadFile"]) {
           if (publication[key] !== intent[key]) throw new Error("Retained frozen publication intent changed");
         }
+        if (stableManifest(publication.recipeExecutor ?? null) !== stableManifest(intent.recipeExecutor ?? null)) {
+          throw new Error("Retained frozen recipe executor changed");
+        }
         if (intent.changelogPayloadFile !== `publication-changelog-${intent.changelogContentHash}.bin`
             || sha256(await readFile(path.join(path.dirname(actual.checkpointFile), "evidence", intent.changelogPayloadFile))) !== intent.changelogContentHash
             || sha256(await readFile(path.join(actual.releaseRoot, "CHANGELOG.md"))) !== intent.changelogContentHash) {
@@ -3781,6 +3742,9 @@ export class ReleaseGitWorkspaceService {
     for (const key of ["preparedHead", "releaseVersion", "runtimeReleaseVersion", "changelogBlob", "changelogContentHash", "changelogPayloadFile"]) {
       if (manifest.publication?.[key] !== intent[key]) throw new Error("First frozen publication intent changed");
     }
+    if (stableManifest(manifest.publication?.recipeExecutor ?? null) !== stableManifest(intent.recipeExecutor ?? null)) {
+      throw new Error("First frozen recipe executor changed");
+    }
     if (manifest.publication?.head !== candidate.preReleaseHead) throw new Error("First frozen publication head changed");
     const payload = intent.changelogPayloadFile == null ? null
       : await readFile(path.join(path.dirname(candidate.checkpointFile), "evidence", intent.changelogPayloadFile));
@@ -3798,7 +3762,7 @@ export class ReleaseGitWorkspaceService {
     if (stableManifest(binding) !== stableManifest(expectedBinding)) throw new Error("First frozen generation changed after recovery admission");
     await this.freezePublicationCandidate({ projectRoot, workspaceId, expectedPlanRevision: candidate.planRevision,
       expectedPreparedHead: intent.preparedHead, changelogContent: payload, reusePersistedChangelog: true,
-      recoverMetadataMaterialization: true, validateBeforeCommit,
+      recoverMetadataMaterialization: true, validateBeforeCommit, expectedRecipeExecutor: intent.recipeExecutor,
       expectedVersion: intent.releaseVersion, expectedRuntimeVersion: intent.runtimeReleaseVersion });
     const frozen = await this.frozenCandidate(projectRoot);
     if (frozen.manifestHash !== binding.manifestHash || frozen.preReleaseHead !== binding.commit

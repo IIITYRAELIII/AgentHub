@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { artifactVersionIdentity } from "../domain/agent-hub-version.mjs";
+import { releaseRecipeModule } from "../infrastructure/process/release-recipe.mjs";
 import { assertReleaseCloneForPublication, ReleaseGitWorkspaceService } from "../infrastructure/filesystem/release-git-workspace.mjs";
 import { readCandidatePublicationReleasePlan } from "./publication-release-plan-composition.mjs";
 import { assertCleanPublicationTree, assertCurrentPublicationRevision } from "../infrastructure/persistence/publication-state.mjs";
@@ -53,14 +53,12 @@ export async function freezePreparedPublication({
   await assertCleanTree({ cwd: repositoryRoot });
   await assertCurrentRevision({ cwd: repositoryRoot });
   if (includeArtifactVersion) {
-    const runtimeReleaseVersion = frozenManifest.publication?.runtimeReleaseVersion;
-    const identity = artifactVersionIdentity(runtimeReleaseVersion);
     const head = frozenManifest.publication?.head;
-    if (identity.publicVersion !== releaseVersion || head !== frozen.preReleaseHead
-        || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(head ?? "")) {
+    if (head !== frozen.preReleaseHead || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(head ?? "")) {
       throw new Error("Frozen public/source/artifact version binding changed");
     }
-    return { releaseVersion, runtimeReleaseVersion, head };
+    const { recipe } = await releaseRecipeModule();
+    return recipe.frozenPublicationIdentity(frozenManifest.publication);
   }
   return releaseVersion;
 }

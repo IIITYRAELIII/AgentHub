@@ -21,7 +21,7 @@ import { packageBackupRecoveryRequest, recoverPackageBackup, assertPackageBackup
   settlePackageBackupRecoveryStage } from "../../src/runtime/runtime-package-backup-recovery.mjs";
 import { readInterprocessLockStatus } from "../../src/infrastructure/process/interprocess-lock.mjs";
 import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
-import { buildWindowsRuntimeHost, runtimeHostSourceHash, RUNTIME_HOST_SOURCE_INPUTS } from "../../src/infrastructure/process/runtime-host-builder.mjs";
+import { buildWindowsRuntimeHost, runtimeHostSourceHash, RUNTIME_HOST_SOURCE_INPUTS } from "../helpers/external-runtime-builder.fixture.mjs";
 
 const noop = async () => {};
 const quiet = { log() {}, error() {}, warn() {} };

@@ -14,7 +14,7 @@ import { assertNativeTaskHistories } from "../../../src/infrastructure/filesyste
 import { localSourceSelectionHash, normalizedReleaseBaseProvenance } from "../../../src/domain/release-base-provenance.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
 import { readAgentHubVersion } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
-import { nextRuntimeReleaseVersion } from "../../../src/infrastructure/filesystem/runtime-release-version.mjs";
+import { nextRuntimeReleaseVersion } from "../../helpers/external-release-recipe.fixture.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";

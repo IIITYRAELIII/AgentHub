@@ -3,12 +3,12 @@ import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { link, lstat, readFile, writeFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { promisify } from "node:util";
 
-import { inspectAgentHubReleaseVersion } from "./release-version.mjs";
-import { nextRuntimeReleaseVersion } from "./runtime-release-version.mjs";
-import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
-import { artifactVersionIdentity } from "../../domain/agent-hub-version.mjs";
+import { defaultRuntimeRoot } from "./runtime-layout.mjs";
+import { releaseRecipeModule } from "../process/release-recipe.mjs";
+import { measureTaskOperation } from "../process/task-operation-timing.mjs";
 
 const execute = promisify(execFile);
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -25,12 +25,21 @@ async function git(root, args, { GIT_INDEX_FILE } = {}) {
   })).stdout).trimEnd();
 }
 
-const frozenMetadataPaths = new Set(["CHANGELOG.md", "AgentHub/package.json", "AgentHub/package-lock.json"]);
+function normalizedMetadataPaths(paths) {
+  if (!Array.isArray(paths) || paths.some(name => typeof name !== "string" || path.isAbsolute(name)
+      || name.includes("\\") || name.split("/").some(part => !part || part === "." || part === ".."))) {
+    throw new Error("Release recipe metadata paths differ");
+  }
+  return new Set(["CHANGELOG.md", ...paths]);
+}
 
 // A read-only proof of the legacy writer's exact CRLF materialization. The
 // caller retains generation ownership and rechecks this proof before effects.
 export async function frozenMetadataMaterialization({ root, head }) {
   const dirty = await git(root, ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  if (!dirty) return [];
+  const { recipe } = await releaseRecipeModule();
+  const frozenMetadataPaths = normalizedMetadataPaths(recipe.metadataPaths);
   const result = [];
   for (const entry of dirty.split("\0").filter(Boolean)) {
     const name = entry.slice(3);
@@ -109,19 +118,27 @@ async function persistChangelogPayload(layout, content, expectedHash) {
 export async function freezePreparedPublicationCandidate({
   layout, marker, expectedPlanRevision, expectedPreparedHead, workspaceId,
   changelogContent, reusePersistedChangelog = false, releaseDate = new Date(), releaseType = "patch",
-  expectedVersion = undefined,
+  expectedVersion = undefined, expectedRecipeExecutor = null,
   expectedRuntimeVersion = undefined,
   recoverMetadataMaterialization = false,
   runtimeRoot = defaultRuntimeRoot(),
   validateBeforeCommit = async () => {}, onPhase = async () => {},
 }) {
   const root = layout.releaseRoot;
+  const { recipe, tool } = await releaseRecipeModule({ expectedExecutor: expectedRecipeExecutor });
+  if (typeof recipe.inspectMetadata !== "function") throw new Error("Release recipe metadata API is unavailable");
+  const metadataPaths = normalizedMetadataPaths(recipe.metadataPaths);
   let checkpoint = JSON.parse(await readFile(layout.checkpointFile, "utf8"));
   if (!/^[a-f0-9]{64}$/u.test(checkpoint.manifestHash ?? "")) throw new Error("invalid prepared manifest hash");
   const manifestBytes = await readFile(path.join(layout.evidenceRoot, `${checkpoint.manifestHash}.json`));
   if (digest(manifestBytes) !== checkpoint.manifestHash) throw new Error("prepared release manifest digest changed");
   let manifest = JSON.parse(manifestBytes.toString("utf8"));
   const priorFreeze = checkpoint.publicationFreeze;
+  if (priorFreeze?.recipeExecutor && (!isDeepStrictEqual(priorFreeze.recipeExecutor, tool.location)
+      || !isDeepStrictEqual(priorFreeze.recipeExecutor, manifest.publication?.recipeExecutor))
+      || priorFreeze && expectedRecipeExecutor && !isDeepStrictEqual(priorFreeze.recipeExecutor, expectedRecipeExecutor)) {
+    throw new Error("Frozen recipe executor differs from the original freeze intent");
+  }
   if (priorFreeze && expectedVersion !== undefined && priorFreeze.releaseVersion !== expectedVersion) {
     throw new Error("publication version differs from the original frozen intent");
   }
@@ -169,9 +186,7 @@ export async function freezePreparedPublicationCandidate({
       git(root, ["ls-files", "--unmerged"]),
     ]);
     if (index || !["refs/heads/PreRelease", "refs/heads/main"].includes(branch)) throw new Error("publication freeze requires an unconflicted prepared release branch");
-    const recoverableFreezePaths = new Set([
-      "CHANGELOG.md", "AgentHub/package.json", "AgentHub/package-lock.json",
-    ]);
+    const recoverableFreezePaths = metadataPaths;
     for (const line of dirty.split(/\r?\n/u).filter(Boolean)) {
       const file = line.slice(3).replaceAll("\\", "/");
       if (file !== "CHANGELOG.md"
@@ -200,9 +215,9 @@ export async function freezePreparedPublicationCandidate({
   let state = await inspect({ requireSuppliedBytes: checkpoint.phase === "prepared" });
   if (checkpoint.phase === "frozen") {
     const frozenVersion = String(manifest.publication?.releaseVersion ?? "");
-    const versionState = frozenVersion ? await inspectAgentHubReleaseVersion({
-      root: path.join(root, "AgentHub"), expectedVersion: frozenVersion,
-    }) : { changed: true };
+    const versionState = frozenVersion ? await recipe.inspectMetadata({
+      root, runtimeRoot, phase: "frozen", expectedVersion: frozenVersion,
+    }, { trace: { measure: measureTaskOperation } }) : { changed: true };
     if (!priorFreeze || state.head !== checkpoint.preReleaseHead || state.branch !== "refs/heads/main"
         || manifest.publication?.head !== state.head || versionState.changed
         || await git(root, ["rev-parse", "refs/heads/PreRelease^{commit}"]) !== state.head) {
@@ -230,6 +245,7 @@ export async function freezePreparedPublicationCandidate({
     return { ...checkpoint, releaseRoot: root, reused: true };
   }
   await validateBeforeCommit();
+  await tool.assertUnchanged();
   if (checkpoint.phase !== "freezing") {
     if (checkpoint.phase !== "prepared" || state.head !== checkpoint.preReleaseHead) throw new Error("publication must freeze the exact prepared release head");
     const preparedHead = state.head;
@@ -237,22 +253,11 @@ export async function freezePreparedPublicationCandidate({
     const oldPreRelease = await git(root, ["rev-parse", "refs/heads/PreRelease^{commit}"]);
     if (oldPreRelease !== preparedHead) throw new Error("prepared PreRelease branch changed");
     const changelogPayloadFile = await persistChangelogPayload(layout, suppliedChangelog, suppliedChangelogHash);
-    const versionState = await inspectAgentHubReleaseVersion({
-      root: path.join(root, "AgentHub"), now: releaseDate, releaseType,
-      ...(expectedVersion !== undefined ? { expectedVersion } : {}),
-    });
-    // This is a frozen expectation, not a reservation or allocation. The
-    // installation owner compares it again under its existing lease before
-    // preparing any bytes. Resume reuses this same immutable expectation.
-    const retainedRuntime = expectedRuntimeVersion === undefined ? null : artifactVersionIdentity(expectedRuntimeVersion);
-    if (retainedRuntime && retainedRuntime.publicVersion !== versionState.version) throw new Error("Original frozen public/runtime version mismatch");
-    const runtimeReleaseVersion = await nextRuntimeReleaseVersion({
-      releasesDir: runtimeLayout(runtimeRoot).releasesDir, packageVersion: versionState.version,
-      ...(retainedRuntime ? { allocationFloor: retainedRuntime.buildNumber - 1 } : {}),
-    });
-    if (expectedRuntimeVersion !== undefined && runtimeReleaseVersion !== expectedRuntimeVersion) {
-      throw new Error("Original frozen runtime version is no longer available");
-    }
+    const versionState = await recipe.inspectMetadata({ root, runtimeRoot, phase: "prepared", releaseDate, releaseType,
+      ...(expectedVersion === undefined ? {} : { expectedVersion }),
+      ...(expectedRuntimeVersion === undefined ? {} : { expectedRuntimeVersion }),
+    }, { trace: { measure: measureTaskOperation } });
+    const runtimeReleaseVersion = versionState.runtimeReleaseVersion ?? null;
     const indexFile = path.join(marker.releaseGitCommonDir, `publication-freeze-index-${randomUUID()}`);
     let head = preparedHead;
     let changelogBlob = null;
@@ -265,6 +270,7 @@ export async function freezePreparedPublicationCandidate({
       }
       for (const update of versionState.writes) {
         const relative = path.relative(root, update.file).replaceAll("\\", "/");
+        if (!metadataPaths.has(relative)) throw new Error("Release recipe metadata write is outside its declared paths");
         const temporary = path.join(marker.releaseGitCommonDir, `publication-version-${randomUUID()}`);
         try {
           await writeFile(temporary, update.content, "utf8");
@@ -277,7 +283,7 @@ export async function freezePreparedPublicationCandidate({
       if (tree !== oldTree) {
         const changed = (await git(root, ["diff-tree", "--no-commit-id", "--name-only", "-r", oldTree, tree]))
           .split(/\r?\n/u).filter(Boolean);
-        const allowed = new Set(["CHANGELOG.md", "AgentHub/package.json", "AgentHub/package-lock.json"]);
+        const allowed = metadataPaths;
         if (changed.some((file) => !allowed.has(file))) throw new Error("publication freeze would change source files");
         head = await git(root, ["-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
           "commit-tree", tree, "-p", preparedHead, "-m", "release: freeze version and changelog"]);
@@ -285,7 +291,7 @@ export async function freezePreparedPublicationCandidate({
     } finally { await rm(indexFile, { force: true }); }
     const changelogContentHash = suppliedChangelogHash;
     manifest = { ...manifest, workspaceId, publication: {
-      preparedHead, head, changelogBlob, changelogContentHash, changelogPayloadFile,
+      preparedHead, head, recipeExecutor: tool.location, changelogBlob, changelogContentHash, changelogPayloadFile,
       releaseVersion: versionState.version,
       runtimeReleaseVersion,
       sourceManifestHash: checkpoint.manifestHash,
@@ -296,10 +302,11 @@ export async function freezePreparedPublicationCandidate({
     await writeFile(manifestFile, text, "utf8");
     checkpoint = { ...checkpoint, phase: "freezing", manifestHash, manifestFile, preReleaseHead: head,
       publicationFreeze: {
-        preparedHead, oldMain, oldPreRelease, changelogBlob, changelogContentHash, changelogPayloadFile,
+        preparedHead, oldMain, oldPreRelease, recipeExecutor: tool.location, changelogBlob, changelogContentHash, changelogPayloadFile,
         releaseVersion: versionState.version,
         runtimeReleaseVersion,
       }, updatedAt: new Date().toISOString() };
+    await tool.assertUnchanged();
     await save(layout.checkpointFile, checkpoint);
     await onPhase("intent");
   }
@@ -315,6 +322,7 @@ export async function freezePreparedPublicationCandidate({
   if (![intent.preparedHead, checkpoint.preReleaseHead].includes(state.head)) throw new Error("release branch moved during publication freeze");
   await requireMaterializedChangelog(state.content, intent.changelogBlob);
   await validateBeforeCommit();
+  await tool.assertUnchanged();
   for (const [ref, previous] of [["refs/heads/PreRelease", intent.oldPreRelease], ["refs/heads/main", intent.oldMain]]) {
     const current = await git(root, ["rev-parse", `${ref}^{commit}`]);
     if (current !== checkpoint.preReleaseHead) {

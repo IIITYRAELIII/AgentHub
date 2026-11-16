@@ -1,5 +1,18 @@
 # RST-001 — Restart and maintenance recovery
 
+## Application and external recipe boundary
+
+The application owns status, Ready evidence, maintenance admission, package
+installation and its original maintenance receipts. Its explicit JSON maintenance
+CLI is the application boundary for an independently pinned release recipe;
+the recipe owns build, packaging, distribution and installation orchestration.
+The recipe neither imports private application owners nor opens their database.
+Application startup marks its own readiness without running product publication
+finalization. Pending old publication completion remains with its original
+external continuation and retained journal, not an automatic new startup effect.
+See ADR-HUB-429-external-product-recipe. All process, pointer, original identity,
+UNKNOWN, restore and Ready invariants below remain mandatory.
+
 ## Public update initiated by an active Hub agent
 
 A capable runtime admits one exact package maintenance original before stopping.

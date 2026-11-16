@@ -16,7 +16,7 @@ import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspac
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationCommandService } from "../../src/application/release-operation-command-service.mjs";
 import { focusedSteps, parseChangedArguments, runReleaseOperationCli } from "../../publish-changed.mjs";
-import { releaseOperationPublicationArguments } from "../../release-operation-publication-runner.mjs";
+import { releaseOperationPublicationArguments } from "../helpers/external-release-recipe.fixture.mjs";
 import { runSelectedTests } from "../../test-suite.mjs";
 import { discoverReleaseTestInventory } from "../../src/infrastructure/filesystem/release-test-inventory.mjs";
 
