@@ -297,7 +297,7 @@ html[data-mobile-dialogs-enabled] .composer-primary-actions {
   display: flex; align-items: center; justify-content: end; gap: 3px;
   grid-row: 2; grid-column: -2 / -1; background: transparent;
 }
-html[data-mobile-dialogs-enabled] .composer-primary-actions:has(.chat-stop-bottom:not([hidden])) .composer-send { display: none; }
+html[data-mobile-dialogs-enabled] .composer-primary-actions:has(.chat-stop-bottom:not([hidden])) .composer-send:disabled { display: none; }
 html[data-mobile-dialogs-enabled] .composer-primary-actions > :is(.context-usage, .chat-stop-bottom, .composer-send) { flex: none; }
 html[data-mobile-dialogs-enabled][data-mobile-keyboard] .mobile-nav { display: none; }
 html[data-mobile-dialogs-enabled][data-mobile-keyboard][data-view="chat"] body { padding-bottom: env(safe-area-inset-bottom); }
