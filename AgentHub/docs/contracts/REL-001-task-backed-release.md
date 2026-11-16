@@ -337,6 +337,12 @@ implied. See ADR-HUB-375 for the callable input and migration boundary.
 
 ## Normal release continuation (ADR-0132)
 
+The existing metadata adapter verifies the referenced consolidated CHANGELOG
+bytes before capture. Generation preflight carries those same bytes through
+every prepared-candidate read and reread. Only the existing exact regular-file
+notes exception applies; ordinary preflight without metadata remains strict.
+Other dirty paths, source/selection drift and mismatching metadata still refuse.
+
 The existing `hub_release_run` / `hub_release_continue` owner captures the WHOLE
 already prepared PreRelease, equal to every current accepted Await Task in the
 Workspace. It does not call Await preparation or the native Task sequencer.
