@@ -26,16 +26,35 @@ class AutonomousInstallerTests(unittest.TestCase):
             root=Path(temp)/"selected"; root.mkdir()
             unrelated=Path(temp)/"unrelated-node.mjs"
             unrelated.write_text("console.log('started');setInterval(()=>{},1000)",encoding="utf-8")
-            process=subprocess.Popen([shutil.which("node"),str(unrelated),str(root/"agent-hub-main.mjs")],
+            (root/"agent-hub-main.mjs").write_text("throw Error('must not execute')",encoding="utf-8")
+            for program in [[str(unrelated)], ["--eval=console.log('started');setInterval(()=>{},1000)"]]:
+                process=subprocess.Popen([shutil.which("node"),*program,str(root/"agent-hub-main.mjs")],
+                    stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=0x08000000)
+                try:
+                    self.assertEqual(process.stdout.readline().strip(),b"started")
+                    row=next(r for r in installer.process_snapshot() if int(r["ProcessId"])==process.pid)
+                    self.assertFalse(installer.selected_process(row,root))
+                    self.assertEqual(installer.stop_selected(root),[])
+                    self.assertIsNone(process.poll())
+                finally:
+                    process.kill(); process.wait(); process.stdout.close()
+
+    @unittest.skipUnless(shutil.which("node"), "Node process fixture")
+    def test_real_import_equals_preserves_actual_script_ownership(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); entry=root/"agent-hub-main.mjs"; preload=root/"preload.mjs"
+            preload.write_text("export{}",encoding="utf-8")
+            entry.write_text("console.log('actual entry');setInterval(()=>{},1000)",encoding="utf-8")
+            process=subprocess.Popen([shutil.which("node"),"--import="+preload.as_uri(),str(entry)],
                 stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=0x08000000)
             try:
-                self.assertEqual(process.stdout.readline().strip(),b"started")
+                self.assertEqual(process.stdout.readline().strip(),b"actual entry")
                 row=next(r for r in installer.process_snapshot() if int(r["ProcessId"])==process.pid)
-                self.assertFalse(installer.selected_process(row,root))
-                self.assertEqual(installer.stop_selected(root),[])
-                self.assertIsNone(process.poll())
+                self.assertTrue(installer.selected_process(row,root))
+                installer.stop_selected(root); process.wait(timeout=10)
             finally:
-                process.kill(); process.wait(); process.stdout.close()
+                if process.poll() is None: process.kill(); process.wait()
+                process.stdout.close()
 
     def test_node_entry_program_position_and_option_values(self):
         node=str(Path(sys.executable).parent/"node.exe"); root=Path(tempfile.gettempdir())/"selected"
@@ -43,6 +62,9 @@ class AutonomousInstallerTests(unittest.TestCase):
         for args, expected in [([entry,unrelated],True),([unrelated,entry],False),
             (["--require",entry,unrelated],False),(["--import",unrelated,entry],True),
             (["--no-warnings","--",entry],True),(["--eval",entry],False),
+            (["--eval=code",entry],False),(["--print=code",entry],False),
+            (["--check=code",entry],False),(["--run=task",entry],False),(["--test=filter",entry],False),
+            (["--import="+unrelated,entry],True),
             (["--unknown-value-option",entry,unrelated],False)]:
             row=dict(ExecutablePath=node,CommandLine=subprocess.list2cmdline([node,*args]))
             self.assertEqual(installer.selected_process(row,root),expected,args)

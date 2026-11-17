@@ -877,11 +877,12 @@ def node_entrypoint(row):
     i = 0
     while i < len(args):
         arg = args[i]
+        option_name = arg.partition("=")[0]
         if arg == "--":
             return Path(args[i+1]) if i+1 < len(args) and args[i+1] != "-" else None
         if not arg.startswith("-"):
             return Path(arg)
-        if arg in {"-e", "--eval", "-p", "--print", "-c", "--check", "--run", "--test", "-"}:
+        if option_name in {"-e", "--eval", "-p", "--print", "-c", "--check", "--run", "--test", "-"}:
             return None
         if arg in values:
             if i+1 >= len(args): return None
