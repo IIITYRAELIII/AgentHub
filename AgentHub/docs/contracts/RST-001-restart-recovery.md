@@ -837,6 +837,23 @@ security context are explicit v1 bounds; other layouts/authority refuse.
 
 ## Retained source after completed generation retirement (ADR-HUB-385)
 
+### Autonomous explicitly requested recipient update (ADR-HUB-467)
+
+The standalone recipient installer supersedes the legacy Enter/manual-stop
+window above. The requested update explicitly permits force stopping the
+selected installation and its active work. It first retains its input outside
+the runtime and proves its worker is outside all old Jobs. Installed API/handoff
+availability and stdin are not admission requirements. Other installations and
+unrelated Node processes remain outside its authority.
+
+Native handles, creation time, image and actual selected-tree ownership bind
+termination. The existing maintenance original, stopped backup, verified package
+and installation owners remain authoritative. Actual Ready must bind the new
+Host and Node, not just a successful spawn. A joined failed replacement restores
+verified prior code once and checks previous Ready, preserving current data and
+all prior outcomes. Unproven/failed recovery retains UNKNOWN and backup evidence.
+See ADR-HUB-467 for the layout boundary and compatibility removal condition.
+
 A runtime/prepared source remains pinned by its declared and physical path and
 by every actual Git/commondir/recursive alternate object store. If the generation
 owner has removed its live identity and Git metadata but left source files,

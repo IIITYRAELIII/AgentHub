@@ -122,3 +122,24 @@ pin compatibility. Tool updates are separate from application installation and
 must not advance a pin used by an active build. No recipe/orchestrator API is
 loaded by runtime-manager preparation. Standalone Worker tools remain separate
 from the manual desktop package installation.
+# Autonomous recipient installer
+
+`install_release.py` is the single-file recipient entry. It needs Windows,
+Python and Node.js with `node:sqlite` (22.5 or newer). It verifies the public
+package, escapes the calling Hub Job, force stops only the selected installation,
+backs up durable state, installs and starts the new version, and checks real
+Ready. A failed replacement restores verified prior code and checks old Ready.
+The update authorizes interruption of active work in that installation.
+
+Example: `python install_release.py --release 2.1.7 --runtime-root <Hub-directory> --scratch-root <separate-directory>`.
+Offline input uses `--archive <ZIP> --sha256 <exact-digest>` instead of `--release`.
+Keep the reported retained directory: it contains progress, backup and the
+original result. Dispatch is not completion. Repeat the same command to read the
+same original without restarting effects. Never reuse an old skipped operation
+ID for a new installation attempt. `--prepare-update` uses this same autonomous
+entry; no Enter or manual process termination is involved.
+
+The preserved public 2.1.7 archive/old installer are inputs, not files this Task
+overwrites. Deliver the new installer as a separately hashed artifact until the
+distribution owner updates normal download entrypoints. Historical cooperative
+package callers and versioned offline installer bytes retain their own protocol.
