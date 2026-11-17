@@ -858,20 +858,61 @@ def command_arguments(text):
         c.windll.kernel32.LocalFree(argv)
 
 
+HUB_NODE_ENTRIES = {"agent-hub-main.mjs", "agent-hub-server.mjs", "server.mjs", "bot.mjs"}
+
+
+def node_entrypoint(row):
+    """Return Node's program position, never an application data argument."""
+    if Path(row.get("ExecutablePath") or "").name.lower() not in {"node.exe", "node"}:
+        return None
+    args = command_arguments(row.get("CommandLine"))[1:]
+    values = {"-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions",
+              "--inspect-port", "--env-file", "--env-file-if-exists", "--icu-data-dir", "--openssl-config",
+              "--title", "--trace-event-categories", "--trace-event-file-pattern", "--diagnostic-dir",
+              "--report-directory", "--report-filename", "--redirect-warnings", "--snapshot-blob",
+              "--build-snapshot-config", "--security-revert", "--watch-path"}
+    flags = {"--no-warnings", "--experimental-sqlite", "--experimental-vm-modules", "--experimental-strip-types",
+             "--enable-source-maps", "--no-deprecation", "--trace-warnings", "--trace-deprecation",
+             "--preserve-symlinks", "--preserve-symlinks-main", "--inspect", "--inspect-brk", "--watch"}
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            return Path(args[i+1]) if i+1 < len(args) and args[i+1] != "-" else None
+        if not arg.startswith("-"):
+            return Path(arg)
+        if arg in {"-e", "--eval", "-p", "--print", "-c", "--check", "--run", "--test", "-"}:
+            return None
+        if arg in values:
+            if i+1 >= len(args): return None
+            i += 2
+        elif arg in flags or (arg.startswith("--") and "=" in arg) or (arg.startswith("-r") and len(arg)>2):
+            i += 1
+        else:
+            # Unknown option arity cannot turn its value into executable code.
+            return None
+    return None
+
+
+def descendant_birth_matches(parent, child):
+    try:
+        return 0 < int(parent["Created"]) <= int(child["Created"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def selected_process(row, root):
     image = row.get("ExecutablePath")
     if not image: return False
     image = Path(image).resolve()
     if image == root/"AgentHub.RuntimeHost.exe": return True
-    if image.name.lower() not in {"node.exe", "node"}: return False
-    for arg in command_arguments(row.get("CommandLine")):
-        try:
-            p = Path(arg)
-            if p.is_absolute() and p.name in {"agent-hub-main.mjs", "agent-hub-server.mjs", "server.mjs", "bot.mjs"}:
-                relative = p.resolve().relative_to(root)
-                if len(relative.parts) == 1 or (len(relative.parts) == 3 and relative.parts[0].lower() == "releases"):
-                    return True
-        except (OSError, ValueError): pass
+    p = node_entrypoint(row)
+    try:
+        if p and p.is_absolute() and p.name in HUB_NODE_ENTRIES:
+            relative = p.resolve().relative_to(root)
+            if len(relative.parts) == 1 or (len(relative.parts) == 3 and relative.parts[0].lower() == "releases"):
+                return True
+    except (OSError, ValueError): pass
     return False
 
 
@@ -884,6 +925,7 @@ def stop_selected(root, *, inspect_only=False):
         while True:
             rows = process_snapshot(); bypid = {int(r["ProcessId"]): r for r in rows}
             wanted = {pid for pid, row in bypid.items() if selected_process(row, root)}
+            edges = {}
             for pid, item in retained.items():
                 if k.WaitForSingleObject(item[0], 0) == 258: wanted.add(pid)
             changed = True
@@ -891,15 +933,18 @@ def stop_selected(root, *, inspect_only=False):
                 changed = False
                 for pid, row in bypid.items():
                     if pid in wanted or int(row["ParentProcessId"]) not in wanted: continue
+                    parent_pid = int(row["ParentProcessId"])
+                    parent_row = bypid.get(parent_pid)
+                    if not parent_row or not descendant_birth_matches(parent_row, row): continue
                     image = (row.get("ExecutablePath") or "").lower()
-                    args = command_arguments(row.get("CommandLine"))
+                    entry = node_entrypoint(row)
                     foreign = image.endswith("agenthub.runtimehost.exe") and not selected_process(row, root)
-                    foreign |= any(Path(a).is_absolute() and Path(a).name in {"agent-hub-main.mjs", "agent-hub-server.mjs"}
-                                   and not selected_process(row, root) for a in args)
+                    foreign |= bool(entry and entry.name in HUB_NODE_ENTRIES and not selected_process(row, root))
                     if foreign:
                         # Killing a Host can close its kill-on-close Job. Do
                         # not silently prune another Hub then kill its parent.
                         raise RuntimeError("Another Hub installation is nested in the selected process tree")
+                    edges[pid] = (parent_pid, parent_row["Created"])
                     wanted.add(pid); changed = True
             if inspect_only:
                 if wanted: raise RuntimeError("Selected runtime still has live processes")
@@ -925,6 +970,13 @@ def stop_selected(root, *, inspect_only=False):
                 except BaseException:
                     if pid not in retained: k.CloseHandle(handle)
                     raise
+            # Every discovered edge must also bind the captured native parent,
+            # not just an integer PPID from discovery. A reused/missing parent
+            # never grants authority over its alleged children.
+            for pid, (parent_pid, parent_created) in edges.items():
+                parent = retained.get(parent_pid)
+                if (not parent or int(parent[1]["created"])//10 != int(parent_created)//10):
+                    raise RuntimeError("Selected descendant parent identity changed")
             live = [(pid, h, identity) for pid, (h, identity) in retained.items() if k.WaitForSingleObject(h, 0) == 258]
             if not live: return records
             for pid, handle, identity in live:

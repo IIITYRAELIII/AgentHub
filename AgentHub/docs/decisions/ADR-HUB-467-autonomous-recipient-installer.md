@@ -16,6 +16,12 @@ creation identities and images. Descendants are captured before termination;
 another Hub installation cuts off that branch. PID/name alone is not authority.
 The installer never terminates a shared outer Job.
 
+Only Node's executable program position establishes a root entrypoint; preload,
+evaluation text and application data arguments do not. Unknown option arity is
+not guessed. Descendant edges require creation order and the exact retained
+native parent's birth identity, preventing integer PPID reuse from granting
+authority. All supported Hub entry names share the same foreign-root cutoff.
+
 The existing maintenance-operation store owns the original and its terminal
 result. An external flushed request/dispatch fence is transport, not a second
 restart registry. Repetition reads the same original and never repeats dispatch.

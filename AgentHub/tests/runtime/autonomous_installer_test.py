@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[2] / "distribution/install_release.py"
 spec = importlib.util.spec_from_file_location("installer", SOURCE)
@@ -19,6 +20,62 @@ spec.loader.exec_module(installer)
 
 @unittest.skipUnless(os.name == "nt", "Windows recipient installer")
 class AutonomousInstallerTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node process fixture")
+    def test_real_node_hub_path_as_data_does_not_grant_stop_authority(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/"selected"; root.mkdir()
+            unrelated=Path(temp)/"unrelated-node.mjs"
+            unrelated.write_text("console.log('started');setInterval(()=>{},1000)",encoding="utf-8")
+            process=subprocess.Popen([shutil.which("node"),str(unrelated),str(root/"agent-hub-main.mjs")],
+                stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=0x08000000)
+            try:
+                self.assertEqual(process.stdout.readline().strip(),b"started")
+                row=next(r for r in installer.process_snapshot() if int(r["ProcessId"])==process.pid)
+                self.assertFalse(installer.selected_process(row,root))
+                self.assertEqual(installer.stop_selected(root),[])
+                self.assertIsNone(process.poll())
+            finally:
+                process.kill(); process.wait(); process.stdout.close()
+
+    def test_node_entry_program_position_and_option_values(self):
+        node=str(Path(sys.executable).parent/"node.exe"); root=Path(tempfile.gettempdir())/"selected"
+        entry=str(root/"agent-hub-main.mjs"); unrelated=str(root.parent/"unrelated-node.mjs")
+        for args, expected in [([entry,unrelated],True),([unrelated,entry],False),
+            (["--require",entry,unrelated],False),(["--import",unrelated,entry],True),
+            (["--no-warnings","--",entry],True),(["--eval",entry],False),
+            (["--unknown-value-option",entry,unrelated],False)]:
+            row=dict(ExecutablePath=node,CommandLine=subprocess.list2cmdline([node,*args]))
+            self.assertEqual(installer.selected_process(row,root),expected,args)
+
+    def test_actual_stop_algorithm_rejects_reused_ppid_and_all_foreign_legacy_entries(self):
+        c,w,_=installer.native_api(); root=Path(tempfile.gettempdir())/"selected"
+        parent=dict(ProcessId=101,ParentProcessId=0,ExecutablePath=str(root/"AgentHub.RuntimeHost.exe"),CommandLine="host",Created="20000")
+        class Kernel:
+            def __init__(self,rows): self.rows=rows; self.live={r['ProcessId'] for r in rows}; self.killed=[]
+            def OpenProcess(self,access,inherit,pid): return pid
+            def CloseHandle(self,h): return True
+            def WaitForSingleObject(self,h,timeout): return 258 if h in self.live else 0
+            def TerminateProcess(self,h,code): self.live.remove(h); self.killed.append(h); return True
+        def run(child):
+            kernel=Kernel([parent,child])
+            def identity(pid):
+                row=next(r for r in kernel.rows if r['ProcessId']==pid)
+                return dict(created=row['Created'],image=str(Path(row['ExecutablePath']).resolve()))
+            with patch.object(installer,'native_api',return_value=(c,w,kernel)),patch.object(installer,'process_identity',side_effect=identity),patch.object(installer,'process_snapshot',side_effect=lambda:[r for r in kernel.rows if r['ProcessId'] in kernel.live]):
+                installer.stop_selected(root)
+            return kernel
+        child=dict(ProcessId=102,ParentProcessId=101,ExecutablePath=sys.executable,CommandLine="python worker",Created="10000")
+        self.assertEqual(run(child).killed,[101])
+        self.assertCountEqual(run({**child,'Created':'30000'}).killed,[101,102])
+        node=str(Path(sys.executable).parent/'node.exe')
+        for name in installer.HUB_NODE_ENTRIES:
+            child={**child,'Created':'30000','ExecutablePath':node,'CommandLine':subprocess.list2cmdline([node,str(root.parent/'foreign'/name)])}
+            kernel=Kernel([parent,child])
+            with patch.object(installer,'native_api',return_value=(c,w,kernel)),patch.object(installer,'process_snapshot',return_value=[parent,child]):
+                with self.assertRaisesRegex(RuntimeError,'Another Hub installation'):
+                    installer.stop_selected(root)
+            self.assertEqual(kernel.killed,[])
+
     @unittest.skipUnless(shutil.which("node"), "Node process fixture")
     def test_real_foreign_peer_survives_and_nested_installation_refuses_before_stop(self):
         with tempfile.TemporaryDirectory() as temp:
