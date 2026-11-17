@@ -8236,7 +8236,7 @@ async function focusResponseCitationSource(button) {
         const candidate = { ...projection.message, activityGroups: [group] };
         if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
         article.querySelector("[data-citation-trace]")?.remove();
-        recoveredTraceSurface = traceReasoningNode(group);
+        recoveredTraceSurface = traceReasoningNode(group, projection.message);
         const target = el("section", { "data-citation-trace": "" }, [recoveredTraceSurface]);
         article.append(target);
       } catch { return false; }
@@ -9808,7 +9808,7 @@ async function responseAnnotationFromSelection(selection) {
     const selectedNativeItemId = traceDetailSources.get(selection.surface)?.sourceItemId;
     if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return responseAnnotationRefusal("source-item-mismatch");
     sourceMessage = { ...current, activityGroups: page.groups };
-    sourceSurface = traceReasoningNode(page.groups[0]);
+    sourceSurface = traceReasoningNode(page.groups[0], sourceMessage);
     // A cut Markdown construct may render differently. Do not guess a new range.
     if (!sourceSurface.textContent.startsWith(selectedSurfaceText.trimEnd())) return responseAnnotationRefusal("rendered-prefix-mismatch");
     if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return responseAnnotationRefusal("selected-range-mismatch");

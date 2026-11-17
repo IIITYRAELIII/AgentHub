@@ -222,3 +222,98 @@ test("commentary citations survive SQLite history and addressed trace pages with
     await browser?.close(); store.close(); await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("linked commentary can be quoted again and its exact source reopened after history reload", { timeout: 30_000 }, async () => {
+  const raw = 'The correction is ready. :agent-annotation{index="1"}';
+  const selectedText = 'The correction is ready.';
+  const activity = parseCodexRolloutActivity(start() + message('requote-comment', 'commentary', raw));
+  const group = activity.activityGroups[turnId][0];
+  const { desktopRunSnapshot } = createDesktopSnapshotFactory({
+    runs: { titleFor: () => '' }, context: { latestUsage: () => null, compactionFor: () => null },
+  });
+  const live = desktopRunSnapshot({ id: 'requote-run', provider: 'codex', threadId: 'thread-a', turnId,
+    status: 'running', responseText: '', responsePhase: 'commentary', activityGroups: [group] }, { operationKind: 'user-turn' });
+  const firstUser = { role: 'user', itemId: 'requote-user', text: 'Check',
+    responseAnnotations: [{ text: 'Original source', annotation: 'Exact user comment' }] };
+  const value = snapshot(); value.tasks[0].running = true;
+  value.tasks[0].run = { ...live, projectionState: 'active' };
+  const initialHistory = { provider: 'codex', threadId: 'thread-a', streamId: 'stream-a', start: 0, end: 1,
+    total: 1, messageTotal: 1, version: 'requote-live', items: [{ id: turnId, active: true, messages: [firstUser] }] };
+  const browser = await launchBrowser();
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hub-comment-requote-'));
+  const binding = { provider: 'codex', threadId: 'thread-a', streamId: 'stream-a', projectRoot: directory };
+  const filePath = path.join(directory, 'tasks.json');
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    page.setDefaultTimeout(3_000);
+    let annotation;
+    try {
+      const errors = await openFixture(page, { fixtureSnapshot: value, fixtureHistory: initialHistory });
+      await page.locator('[data-stream-task-id="stream-a"]').first().click();
+      await page.locator('[data-chat-live] [data-response-citation-index="1"]').waitFor();
+      const result = await page.evaluate(async ({ group, selectedText }) => {
+        window.AgentHub.on('history:trace-page', ({ resolve }) => resolve({ groups: [group] }));
+        const surface = document.querySelector('[data-chat-live] .turn-trace-reasoning');
+        const range = window.AgentHubMessageDisclosure.domRangeFromOffsets(surface, 0, selectedText.length);
+        getSelection().removeAllRanges(); getSelection().addRange(range);
+        const selection = selectedQuotableSelection();
+        return { accepted: await addAnnotation(selection), draft: composerDraftState('stream-a') };
+      }, { group: live.activityGroups[0], selectedText });
+      assert.equal(result.accepted, true);
+      annotation = result.draft.annotations[0];
+      assert.equal(annotation.quote, selectedText);
+      assert.equal(annotation.source.itemId, 'requote-comment');
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+
+    await store.load();
+    // The retained preview is shorter than the native source. Navigation must
+    // read the exact full group, not weaken any source or rendered hash guard.
+    await store.recordHistory(binding, [{ id: turnId, completed: true, status: 'completed',
+      prompt: firstUser.text, answer: 'Saved final', activityGroups: [{ ...group, reasoning: selectedText }],
+      messages: [firstUser, { role: 'agent', itemId: 'requote-final', text: 'Saved final' }] },
+    { id: 'requote-followup', completed: true, status: 'completed', prompt: 'Check again', messages: [{
+      role: 'user', itemId: 'followup-user', text: 'Check again',
+      responseAnnotations: [{ text: annotation.quote, annotation: 'Quoted commentary', source: annotation.source }],
+    }] }]);
+    store.close(); store = new LocalTaskSyncStore({ filePath }); await store.load();
+    const before = structuredClone(store.history(binding));
+    const api = createDesktopTaskHistoryFactory({
+      selection: { activeProvider: () => 'codex', threadId: () => binding.threadId, chatId: () => 42 },
+      catalog: { entries: () => [{ ...binding, title: 'Requoted chat' }] },
+      historyReader: { read: async () => ({ history: store.history(binding) }), refresh: async () => ({ groups: [group] }) },
+      runs: { forTask: () => null }, receipts: { forMessage: () => null, forTurn: () => null },
+      historyMerger: { mergeActive: mergeActiveTaskHistory, mergeCompleted: mergeCompletedTaskHistory },
+      responseBudget: { fit: payload => payload },
+    });
+    const history = await api({ provider: 'codex', threadId: 'thread-a', includeActive: false });
+    const fullPage = (await api({ provider: 'codex', threadId: 'thread-a', tracePage: { turnId, groupId: group.id } })).tracePage;
+    assert.deepEqual(history.items[1].messages[0].responseAnnotations[0].source, annotation.source);
+    for (const width of [1280, 390]) {
+      const cold = await browser.newPage({ viewport: { width, height: 900 }, isMobile: width === 390, hasTouch: width === 390 });
+      cold.setDefaultTimeout(3_000);
+      try {
+        const errors = await openFixture(cold, { fixtureHistory: history });
+        for (const reload of [false, true]) {
+          if (reload) await cold.reload({ waitUntil: 'load' });
+          if (width === 390) await cold.evaluate(() => window.AgentHub.showSelectedTask());
+          else await cold.locator('[data-stream-task-id="stream-a"]').first().click();
+          await cold.evaluate(fullPage => window.AgentHub.on('history:trace-page', ({ resolve }) => resolve(fullPage)), fullPage);
+          const quote = cold.locator('.msg-annotation-content[data-response-annotation-source]');
+          await quote.click();
+          await cold.locator('[data-citation-trace] .msg-source-citation-highlight').waitFor();
+          assert.equal((await cold.locator('[data-citation-trace] .msg-source-citation-highlight').allTextContents()).join(''), selectedText);
+          assert.ok((await cold.locator('[data-citation-trace]').innerText()).includes('Exact user comment'));
+          assert.equal((await cold.locator('[data-citation-trace]').innerText()).includes('Quoted commentary'), false);
+        }
+        assert.deepEqual(errors, []);
+        if (process.env.AGENT_HUB_QA_SCREENSHOT_DIR) await cold.screenshot({
+          path: path.join(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, `requote-history-${width}.png`),
+        });
+      } finally { await cold.close(); }
+    }
+    assert.deepEqual(store.history(binding), before);
+    assert.equal(group.reasoning, raw);
+  } finally { await browser.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
+});
