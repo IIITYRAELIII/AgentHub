@@ -1034,6 +1034,8 @@ PRESTOP_LEGACY_INSTALLER_SHA = "8c0937601384d3a67398dec48961d8bc08c87b2f3d21e414
 def verify_pre_stop_resume(root, retained, original):
     """Positive proof for the one published pre-capture refusal, not UNKNOWN=none."""
     from datetime import datetime
+    if original.get("kind") != "restart" or original.get("streamId") != "agent-hub-installer" or Path(original.get("threadId", "")).resolve() != root:
+        raise RuntimeError("Original installer scope differs")
     if (original.get("status"), original.get("phase"), original.get("outcome"), original.get("revision")) != ("reconciling", "installer-recovery-required", "unknown", 2):
         raise RuntimeError("Original is not the exact pre-stop refusal")
     metadata = original.get("metadata", {})
@@ -1050,7 +1052,9 @@ def verify_pre_stop_resume(root, retained, original):
         raise RuntimeError("Retained pre-stop input differs")
     if any((retained/name).exists() for name in ["backup", "retired.json", "install.stdout", "install.stderr", "launch-intent.json", "recovery-launch-intent.json", "result.json"]):
         raise RuntimeError("Original has admitted later boundaries")
-    _read_record(retained/"failure.json")
+    failure = _read_record(retained/"failure.json")
+    if failure.get("code") != "RuntimeError" or failure.get("diagnostic") != metadata["autonomousError"]["diagnostic"] or failure.get("effectsAdmitted") is not True:
+        raise RuntimeError("Retained failure is not the bound pre-stop refusal")
     old_worker = _read_record(retained/"worker-started.json")
     dispatch = _read_record(retained/"dispatch.json")
     if old_worker["pid"] != binding["workerPid"] or any(old_worker.get(key) != dispatch.get(key) for key in ["pid","created","image","outsideAllJobs"]):

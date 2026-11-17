@@ -133,6 +133,9 @@ The update authorizes interruption of active work in that installation.
 
 Example: `python install_release.py --release 2.1.7 --runtime-root <Hub-directory> --scratch-root <separate-directory>`.
 Offline input uses `--archive <ZIP> --sha256 <exact-digest>` instead of `--release`.
+An explicitly requested `--resume-prestop --operation-id <same-original>` can
+continue only the positively verified published8c09 pre-stop foreign refusal;
+it preserves the old UNKNOWN/history and never replays backup/install/launch.
 Keep the reported retained directory: it contains progress, backup and the
 original result. Dispatch is not completion. Repeat the same command to read the
 same original without restarting effects. Never reuse an old skipped operation

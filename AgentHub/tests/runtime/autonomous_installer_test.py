@@ -32,6 +32,16 @@ def foreign_layout(root, entries):
 
 @unittest.skipUnless(os.name == "nt", "Windows recipient installer")
 class AutonomousInstallerTests(unittest.TestCase):
+    def test_pre_stop_resume_rejects_other_scope_and_later_effects_before_io(self):
+        root=Path(tempfile.gettempdir())/'selected'
+        original=dict(kind='restart',streamId='agent-hub-installer',threadId=str(root),status='reconciling',
+            phase='installer-recovery-required',outcome='unknown',revision=2,metadata={})
+        for patch_fields in [dict(kind='context-compaction'),dict(threadId=str(root.parent/'other')),
+                             dict(revision=3),dict(phase='installer-backed-up'),dict(status='succeeded'),
+                             dict(metadata={'autonomousBackup':{}})]:
+            with self.assertRaises(RuntimeError):
+                installer.verify_pre_stop_resume(root,root/'absent-retained',{**original,**patch_fields})
+
     @unittest.skipUnless(shutil.which("node"), "Node process fixture")
     def test_real_node_hub_path_as_data_does_not_grant_stop_authority(self):
         with tempfile.TemporaryDirectory() as temp:
