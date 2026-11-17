@@ -811,8 +811,7 @@ def independent_worker(command, directory, environment):
         initialized = True; parent_value = w.HANDLE(parent)
         if not k.UpdateProcThreadAttribute(memory, 0, 0x00020000, c.byref(parent_value), c.sizeof(parent_value), None, None):
             raise c.WinError(c.get_last_error())
-        startup = SIX(); startup.si.cb = c.sizeof(startup); startup.si.flags = 0x100
-        startup.attributes = c.addressof(memory)
+        startup = SIX(); startup.si.cb = c.sizeof(startup); startup.attributes = c.addressof(memory)
         env = c.create_unicode_buffer("\0".join(f"{a}={b}" for a, b in sorted(environment.items())) + "\0\0")
         cmd = c.create_unicode_buffer(subprocess.list2cmdline(command))
         if not k.CreateProcessW(command[0], cmd, None, None, False, 0x00080000 | 0x00000400 | 0x08000000 | 4,
