@@ -13,7 +13,10 @@ receipts also outlive Git clean status and must not be discarded to close a card
 The existing RM-only Task Complete surface has explicit `manual_delivery` mode.
 Revision, release ID and raw manifest hash are pinned; the runtime root comes
 from the configured installation owner. The reader uses the existing installed
-verifier and Ready/process observation, reads exact main/origin, proves every
+verifier and authenticated desktop-control `runtime-health`: live/ready and
+exact PID/release must match the process observation. The endpoint descriptor
+is stable around each probe and across verification; retained Ready lock/PID
+alone cannot certify delivery. The reader reads exact main/origin, proves every
 Task result and current managed head is included, and compares runtime source
 to Git using the existing source line-ending/LFS policy and compiled Host hash.
 Pointer, manifest and process identity are rechecked. Evidence belongs only to
@@ -42,6 +45,10 @@ manual completion argument forwarding. A real dev CAS with a lost reply is
 recovered through the same original journal. The public Complete test loses
 the terminal MCP write after the SQLite outcome and reconciles that original
 without replaying proof, closure or Git cleanup.
+The affected readiness test uses the real authenticated local control transport
+and covers absent/foreign control, PID/release mismatch, not-live/not-ready and
+endpoint/instance drift. The unrelated-live-PID counterexample refuses with the
+default installed verifier and status reader.
 
 ## Existing owner inputs
 

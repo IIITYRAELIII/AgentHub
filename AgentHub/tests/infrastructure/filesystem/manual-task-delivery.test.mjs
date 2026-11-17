@@ -11,6 +11,8 @@ import { TaskBoardService } from "../../../src/application/task-board-service.mj
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { HubMcpService } from "../../../src/application/hub-mcp-service.mjs";
+import { DesktopControlServer, readDesktopControlEndpoint, desktopControlEndpointFile, desktopControlSecretFile } from "../../../src/infrastructure/process/desktop-control.mjs";
+import { runtimeStatus } from "../../../src/runtime/runtime-manager.mjs";
 
 const sha = b => createHash("sha256").update(b).digest("hex");
 async function fixture(t) {
@@ -46,8 +48,15 @@ async function fixture(t) {
     return { revision, releaseId: "manual", manifestSha256: sha(raw) };
   };
   const input = await install(base);
+  let health = { live: true, ready: true, process: { pid: observed.pid, releaseId: "manual", instanceId: "fixture" } };
+  const control = new DesktopControlServer({ runtimeRoot, protectSecret: async () => {}, handler: ({ action }) => {
+    assert.equal(action, "runtime-health"); return health;
+  } });
+  await control.start();
+  beforeCleanup.push(() => control.close());
   const read = options => readManualTaskDelivery({ runtimeRoot, input, git, ...ports, ...options });
   return { root, repo, runtimeRoot, git, commit, base, input, read, ports, install, beforeCleanup,
+    control, setHealth: value => { health = value; },
     setStatus: value => { observed = { ...observed, ...value }; } };
 }
 
@@ -66,6 +75,47 @@ test("manual delivery verifies actual Git containment and rejects source/manifes
   await assert.rejects(f.read({ verifyInstalled: async () => {
     await writeFile(path.join(f.runtimeRoot, "current.json"), '{"current":"other"}'); return true;
   } }), /changed during/u);
+});
+
+test("manual delivery requires authenticated live control matching the Ready PID/release and stable endpoint", async t => {
+  const f = await fixture(t);
+  await mkdir(path.join(f.runtimeRoot, "data"), { recursive: true });
+  await writeFile(path.join(f.runtimeRoot, "data/bot.lock"), JSON.stringify({ pid: process.pid, releaseId: "manual", ready: true }));
+  const health = { live: true, ready: true, process: { pid: process.pid, releaseId: "manual", instanceId: "exact" } };
+  f.setHealth(health);
+  const read = options => f.read({ status: runtimeStatus, ...options });
+  const positive = await read();
+  assert.equal(positive.running.pid, process.pid);
+  assert.equal(positive.running.endpoint.endpointId, (await readDesktopControlEndpoint(f.runtimeRoot)).endpointId);
+  for (const wrong of [
+    { ...health, live: false }, { ...health, ready: false },
+    { ...health, process: { ...health.process, pid: process.pid + 1 } },
+    { ...health, process: { ...health.process, releaseId: "foreign" } },
+  ]) { f.setHealth(wrong); await assert.rejects(read(), /authenticated ready/u); }
+  f.setHealth(health);
+  const secretFile = desktopControlSecretFile(f.runtimeRoot);
+  const secret = await readFile(secretFile);
+  try {
+    await writeFile(secretFile, "foreign-fixture-secret-".repeat(4));
+    await assert.rejects(read(), /authentication failed/u);
+  } finally { await writeFile(secretFile, secret); }
+  const originalEndpoint = await readDesktopControlEndpoint(f.runtimeRoot);
+  await assert.rejects(read({ verifyInstalled: async () => {
+    const endpointId = "f".repeat(64);
+    await writeFile(desktopControlEndpointFile(f.runtimeRoot), JSON.stringify({ protocol: 2, endpointId,
+      pipeName: `agent-hub-desktop-${endpointId}` }));
+    return true;
+  } }));
+  await writeFile(desktopControlEndpointFile(f.runtimeRoot), JSON.stringify(originalEndpoint));
+  await assert.rejects(read({ verifyInstalled: async () => {
+    f.setHealth({ ...health, process: { ...health.process, instanceId: "replacement" } }); return true;
+  } }), /changed during/u);
+  f.setHealth(health);
+  await f.control.close();
+  // This live PID and retained Ready lock belong to the test process, not Hub.
+  const stale = await runtimeStatus({ runtimeRoot: f.runtimeRoot, requireProcessEvidence: true });
+  assert.equal(stale.ready, true); assert.equal(stale.pid, process.pid);
+  await assert.rejects(read(), /ENOENT/u);
 });
 
 test("manual completion closes through SQLite lifecycle while retaining ignored data, branch and worktree; exact retry survives reopen", async t => {

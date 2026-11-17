@@ -6,12 +6,14 @@ import { verifyInstalledRuntime, runtimeStatus } from "../../runtime/runtime-man
 import { isRuntimeSourceFile } from "./runtime-manifest-verifier.mjs";
 import { sourceBlobs, sourceMatches } from "./local-source-baseline.mjs";
 import { RUNTIME_HOST_SOURCE_INPUTS, runtimeHostSourceHash } from "../process/runtime-host-source-identity.mjs";
+import { callDesktopControl, readDesktopControlEndpoint } from "../process/desktop-control.mjs";
 
 const sha = value => createHash("sha256").update(value).digest("hex");
 
 // This reads actual installation and Git state. It never writes publication history.
 export async function readManualTaskDelivery({ runtimeRoot, input, git, resultCommits = [],
-  verifyInstalled = verifyInstalledRuntime, status = runtimeStatus } = {}) {
+  verifyInstalled = verifyInstalledRuntime, status = runtimeStatus,
+  readEndpoint = readDesktopControlEndpoint, probe = callDesktopControl } = {}) {
   if (!runtimeRoot || !input || Object.keys(input).some(k => !["revision", "releaseId", "manifestSha256"].includes(k))
       || !/^[a-f0-9]{40}$/u.test(input.revision ?? "") || !/^[a-f0-9]{64}$/u.test(input.manifestSha256 ?? "")) {
     throw Error("Exact manual delivery revision, release and manifest hash are required");
@@ -27,6 +29,7 @@ export async function readManualTaskDelivery({ runtimeRoot, input, git, resultCo
     throw Error("Manual delivery manifest, source or installed pointer differs");
   }
   const inspect = async () => {
+    const endpoint = await readEndpoint(runtimeRoot);
     const [main, origin, observed] = await Promise.all([
       git(["rev-parse", "--verify", "refs/heads/main^{commit}"]),
       git(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"]),
@@ -36,7 +39,15 @@ export async function readManualTaskDelivery({ runtimeRoot, input, git, resultCo
         || observed.current !== input.releaseId || observed.runningRelease !== input.releaseId || observed.restartRequired) {
       throw Error("Manual delivery requires exact main/origin and the same ready installed runtime");
     }
-    return { pid: observed.pid, releaseId: observed.runningRelease };
+    const health = await probe("runtime-health", {}, { runtimeRoot, timeoutMs: 10_000 });
+    const confirmedEndpoint = await readEndpoint(runtimeRoot);
+    if (health?.live !== true || health?.ready !== true || health?.process?.pid !== observed.pid
+        || health?.process?.releaseId !== input.releaseId
+        || JSON.stringify(confirmedEndpoint) !== JSON.stringify(endpoint)) {
+      throw Error("Manual delivery requires the same authenticated ready runtime control endpoint");
+    }
+    return { pid: observed.pid, releaseId: observed.runningRelease, endpoint,
+      instanceId: health.process.instanceId ?? null };
   };
   const running = await inspect();
   if (!await verifyInstalled({ runtimeRoot, releaseId: input.releaseId, releaseRoot })) {
