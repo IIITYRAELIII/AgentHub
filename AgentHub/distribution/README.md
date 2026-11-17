@@ -143,4 +143,3 @@ The preserved public 2.1.7 archive/old installer are inputs, not files this Task
 overwrites. Deliver the new installer as a separately hashed artifact until the
 distribution owner updates normal download entrypoints. Historical cooperative
 package callers and versioned offline installer bytes retain their own protocol.
-

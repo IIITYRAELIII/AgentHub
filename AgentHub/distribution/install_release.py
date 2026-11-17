@@ -867,8 +867,10 @@ def selected_process(row, root):
     for arg in command_arguments(row.get("CommandLine")):
         try:
             p = Path(arg)
-            if p.is_absolute() and p.resolve().is_relative_to(root) and p.name in {"agent-hub-main.mjs", "server.mjs", "bot.mjs"}:
-                return True
+            if p.is_absolute() and p.name in {"agent-hub-main.mjs", "agent-hub-server.mjs", "server.mjs", "bot.mjs"}:
+                relative = p.resolve().relative_to(root)
+                if len(relative.parts) == 1 or (len(relative.parts) == 3 and relative.parts[0].lower() == "releases"):
+                    return True
         except (OSError, ValueError): pass
     return False
 
@@ -892,9 +894,13 @@ def stop_selected(root, *, inspect_only=False):
                     image = (row.get("ExecutablePath") or "").lower()
                     args = command_arguments(row.get("CommandLine"))
                     foreign = image.endswith("agenthub.runtimehost.exe") and not selected_process(row, root)
-                    foreign |= any(Path(a).is_absolute() and Path(a).name == "agent-hub-main.mjs"
-                                   and not Path(a).resolve().is_relative_to(root) for a in args)
-                    if not foreign: wanted.add(pid); changed = True
+                    foreign |= any(Path(a).is_absolute() and Path(a).name in {"agent-hub-main.mjs", "agent-hub-server.mjs"}
+                                   and not selected_process(row, root) for a in args)
+                    if foreign:
+                        # Killing a Host can close its kill-on-close Job. Do
+                        # not silently prune another Hub then kill its parent.
+                        raise RuntimeError("Another Hub installation is nested in the selected process tree")
+                    wanted.add(pid); changed = True
             if inspect_only:
                 if wanted: raise RuntimeError("Selected runtime still has live processes")
                 return []

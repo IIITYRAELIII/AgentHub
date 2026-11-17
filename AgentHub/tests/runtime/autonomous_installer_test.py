@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,39 @@ spec.loader.exec_module(installer)
 
 @unittest.skipUnless(os.name == "nt", "Windows recipient installer")
 class AutonomousInstallerTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node process fixture")
+    def test_real_foreign_peer_survives_and_nested_installation_refuses_before_stop(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); root=base/"selected"; foreign=base/"foreign"
+            root.mkdir(); foreign.mkdir()
+            entry=root/"agent-hub-main.mjs"; other=foreign/"agent-hub-main.mjs"
+            other.write_text("setInterval(()=>{},1000)",encoding="utf-8")
+            entry.write_text("import {spawn} from 'node:child_process'; const p=process.argv[2]?spawn(process.execPath,[process.argv[2]],{windowsHide:true,stdio:'ignore'}):null; console.log(JSON.stringify({child:p?.pid})); setInterval(()=>{},1000);",encoding="utf-8")
+            peer=subprocess.Popen([shutil.which("node"),str(other)],stdin=subprocess.DEVNULL,creationflags=0x08000000)
+            selected=subprocess.Popen([shutil.which("node"),str(entry)],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=0x08000000)
+            try:
+                json.loads(selected.stdout.readline())
+                installer.stop_selected(root)
+                selected.wait(timeout=10)
+                self.assertIsNone(peer.poll())
+            finally:
+                if selected.poll() is None: selected.kill(); selected.wait()
+                selected.stdout.close(); peer.kill(); peer.wait()
+            nested=subprocess.Popen([shutil.which("node"),str(entry),str(other)],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=0x08000000)
+            child=None
+            try:
+                pid=json.loads(nested.stdout.readline())["child"]
+                c,w,k=installer.native_api(); child=k.OpenProcess(0x1000|0x100000|1,False,pid)
+                self.assertTrue(child)
+                with self.assertRaisesRegex(RuntimeError,"Another Hub installation"):
+                    installer.stop_selected(root)
+                self.assertIsNone(nested.poll()); self.assertEqual(k.WaitForSingleObject(child,0),258)
+            finally:
+                if child:
+                    k.TerminateProcess(child,1); k.WaitForSingleObject(child,10000); k.CloseHandle(child)
+                if nested.poll() is None: nested.kill(); nested.wait()
+                nested.stdout.close()
+
     def test_missing_legacy_database_and_table_are_read_only_absence(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); (root / "data").mkdir()
@@ -37,6 +71,7 @@ class AutonomousInstallerTests(unittest.TestCase):
         node = str(Path(sys.executable).parent / "node.exe")
         for script, expected in [(root / "agent-hub-main.mjs", True),
                                  (root / "releases/old/agent-hub-main.mjs", True),
+                                 (root / "data/task-worktrees/source/agent-hub-main.mjs", False),
                                  (root.parent / "foreign/agent-hub-main.mjs", False)]:
             self.assertEqual(installer.selected_process({"ExecutablePath": node,
                 "CommandLine": subprocess.list2cmdline([node, str(script)])}, root), expected)
