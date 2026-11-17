@@ -64,6 +64,13 @@ export class TaskBoardService {
     return this.store.close?.();
   }
 
+  get snapshotRevision() {
+    const boardRevision = this.store.snapshotRevision ?? this.store.revision;
+    const workspaceRevision = this.workspaceCatalog.snapshotRevision ?? this.workspaceCatalog.revision;
+    if (boardRevision == null || workspaceRevision == null) return "";
+    return `${String(boardRevision)}:${String(workspaceRevision)}`;
+  }
+
   #event(type, task, payload = {}, options = {}) {
     if (!task?.workspaceId || !this.recordEvent) return;
     try {
