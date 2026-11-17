@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,13 +15,16 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
 }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'hub408-replacement-job-'));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
+  const alias = `${root}-launcher-alias`;
+  await symlink(root, alias, 'junction');
+  t.after(() => rm(alias, { force: true, recursive: true }));
   const host = path.join(root, 'AgentHub.RuntimeHost.exe'), driver = path.join(root, 'driver.exe');
   const source = path.resolve(import.meta.dirname, '../..');
   await buildWindowsRuntimeHost({ sourceRoot: source, outputFile: host });
   await execute(runtimeHostCompilerCandidates()[0], ['/nologo', '/target:exe', `/out:${driver}`,
     '/reference:System.dll', '/reference:System.Web.Extensions.dll',
     path.join(source, 'tests/fixtures/runtime-host-replacement-job.cs')], { windowsHide: true });
-  for (const mode of ['ready', 'extra', 'not-ready', 'foreign-ready', 'lost-reply', 'entry-inherited', 'entry-foreign', 'entry-forged-job', 'ready-acceptance', 'acceptance-unowned', 'acceptance-closed']) await t.test(mode, async () => {
+  for (const mode of ['ready', 'ready-junction', 'extra', 'not-ready', 'foreign-ready', 'lost-reply', 'entry-inherited', 'entry-foreign', 'entry-forged-job', 'ready-acceptance', 'acceptance-unowned', 'acceptance-closed']) await t.test(mode, async () => {
     const run = path.join(root, mode); await mkdir(run);
     // Actual compiled Host location owns its runtime root. Each mode is joined
     // before the next pointer change; no live Hub or provider is started.
@@ -56,7 +59,7 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
       else {
         let leaf;
         if(mode==='extra'||mode==='foreign-ready'){leaf=spawn(process.execPath,[import.meta.filename,'leaf'],{stdio:'ignore',windowsHide:true,detached:true});leaf.unref();}
-        const env={...process.env,AGENT_HUB_LAUNCHER:${JSON.stringify(host)},AGENT_HUB_RESTART_OPERATION_ID:${JSON.stringify(operation)}};
+        const env={...process.env,AGENT_HUB_LAUNCHER:${JSON.stringify(mode === 'ready-junction' ? path.join(alias, 'AgentHub.RuntimeHost.exe') : host)},AGENT_HUB_RESTART_OPERATION_ID:${JSON.stringify(operation)}};
         if(mode==='foreign-ready')env.FIXTURE_READY_PID=String(leaf.pid);
         let launches=0;
         const start=(...args)=>{
@@ -92,7 +95,7 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
       assert.ok(proof.targetPid > 0);
       assert.equal(proof.targetExitCode, 1);
       assert.equal(nodeIdentity, null, 'foreign/inherited/forged Job never reaches Node');
-      assert.match(failure, /Replacement Host (must enter outside|is not in its exact new owned Job|owned launcher identity changed)/);
+      assert.match(failure, /Replacement Host (must enter outside|is not in its exact new owned Job|owned launcher (identity changed|image differs|security context differs|is not live))/);
       t.diagnostic(JSON.stringify({ mode, ...proof, failure }));
       return;
     }
@@ -117,7 +120,7 @@ test('real controlled Host escapes the old Job, joins its relay and retains whol
       assert.equal(proof.newRuntimeAlive, true);
       assert.equal(proof.acceptanceOwnsReplacement, true, 'both actual Host and Node belong to the exact retained acceptance cohort');
       assert.ok(proof.oldActive >= 2, 'cohort accounting includes the replacement, not a zero-old-Job assertion');
-    } else if (mode === 'ready') {
+    } else if (mode === 'ready' || mode === 'ready-junction') {
       assert.equal(outcome.ready, true);
       assert.equal(proof.newRuntimeAlive, true);
       assert.equal(proof.oldActive, 0, 'successor and completed relay must leave no member in the exact old Job');
