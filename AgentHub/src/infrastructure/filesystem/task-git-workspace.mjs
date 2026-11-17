@@ -6576,28 +6576,39 @@ export class TaskGitWorkspaceService {
     return state;
   }
 
-  async manualDeliveryPreviewOwned({ task, input, lease }) {
+  async manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories = [] }) {
     await requiredGuardLease(lease).assertOwned();
-    if (!(task.gitReferences?.length)) throw Error("Manual delivery completion requires exact Task results");
+    const references = task.gitReferences ?? [];
     const workspaces = await this.describe(task.id);
+    if (!references.length && !workspaces.length) throw Error("Manual delivery requires exact Task results or owned managed source");
     if (workspaces.some(w => w.dirty)) throw Error("Manual delivery preserves unfinished Task work; clean it before closing");
+    const roots = [...new Set((references.length ? references.map(r => r.projectRoot) : workspaces.map(w => w.repositoryRoot)).map(canonicalPath))];
+    const extra = workspaces.filter(w => !roots.some(root => samePath(root, w.repositoryRoot)));
+    if (!Array.isArray(retainedRepositories) || retainedRepositories.length !== extra.length
+        || new Set(retainedRepositories.map(r => r.project_root)).size !== retainedRepositories.length
+        || extra.some(w => !retainedRepositories.some(r => samePath(r.project_root, w.projectRoot) && r.head_commit === w.headCommit))) {
+      throw Error("Manual delivery has an unrepresented Task repository; exact preservation pins are required");
+    }
+    for (const w of references.length ? extra : workspaces) {
+      if (!samePath(await this.managedRepositoryRoot(w.projectRoot, { taskId: task.id, taskNumber: task.taskNumber }), w.repositoryRoot)) {
+        throw Error("Manual delivery managed source or retained repository ownership changed");
+      }
+    }
     const deliveries = [];
-    for (const root of [...new Set(task.gitReferences.map(r => canonicalPath(r.projectRoot)))]) {
-      const results = task.gitReferences.filter(r => samePath(r.projectRoot, root)).map(r => r.resultCommit);
+    for (const root of roots) {
+      const results = references.filter(r => samePath(r.projectRoot, root)).map(r => r.resultCommit);
       const owned = workspaces.filter(w => samePath(w.repositoryRoot, root));
       const delivery = await this.measureOperation("manual-delivery-proof", () => this.readManualDelivery({ runtimeRoot: this.runtimeRoot, input,
         resultCommits: [...new Set([...results, ...owned.map(w => w.headCommit)])],
         git: (args, options = {}) => runGit(args, { ...options, cwd: root }) }));
-      deliveries.push({ repositoryRoot: root, delivery });
-    }
-    if (workspaces.some(w => !deliveries.some(d => samePath(d.repositoryRoot, w.repositoryRoot)))) {
-      throw Error("Manual delivery has an unrepresented Task repository");
+      deliveries.push({ repositoryRoot: root, delivery, ...(!references.length ? { sourceKind: "owned-managed-source-without-test-ref" } : {}) });
     }
     for (const w of workspaces) w.ignoredPaths = String(await runGit([
       "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z",
     ], { cwd: w.projectRoot })).split("\0").filter(Boolean);
     await requiredGuardLease(lease).assertOwned();
-    return { taskId: task.id, workspaces, gitReferences: task.gitReferences, manualDelivery: deliveries,
+    return { taskId: task.id, workspaces, gitReferences: references, manualDelivery: deliveries,
+      retainedUnrepresented: extra.map(w => ({ projectRoot: w.projectRoot, repositoryRoot: w.repositoryRoot, headCommit: w.headCommit })),
       dirty: false, unpublished: [], deleting: [], retainedIgnored: workspaces.flatMap(w =>
         w.ignoredPaths.map(name => ({ projectRoot: w.projectRoot, path: name }))) };
   }

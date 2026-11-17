@@ -13,6 +13,7 @@ import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/w
 import { HubMcpService } from "../../../src/application/hub-mcp-service.mjs";
 import { DesktopControlServer, readDesktopControlEndpoint, desktopControlEndpointFile, desktopControlSecretFile } from "../../../src/infrastructure/process/desktop-control.mjs";
 import { runtimeStatus } from "../../../src/runtime/runtime-manager.mjs";
+import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 
 const sha = b => createHash("sha256").update(b).digest("hex");
 async function fixture(t) {
@@ -58,6 +59,29 @@ async function fixture(t) {
   return { root, repo, runtimeRoot, git, commit, base, input, read, ports, install, beforeCleanup,
     control, setHealth: value => { health = value; },
     setStatus: value => { observed = { ...observed, ...value }; } };
+}
+
+async function publicFixture(t) {
+  const f = await fixture(t), databaseFile = path.join(f.root, "journal.sqlite");
+  const catalog = new WorkspaceCatalogStore({ databaseFile }); await catalog.load();
+  const raw = new TaskBoardStore({ databaseFile });
+  f.beforeCleanup.push(() => { raw.close(); catalog.close(); });
+  const workspace = await catalog.runMutation(() => catalog.createWorkspace({ name: "Manual", settings: {
+    workingDirectory: f.repo, releaseWorkflowEnabled: true,
+  } }));
+  const stream = await catalog.runMutation(() => catalog.createStream({ workspaceId: workspace.id, name: "RM", settings: { releaseManager: true } }));
+  await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: "rm", streamId: stream.id }));
+  const board = new TaskBoardService({ store: raw, workspaceCatalog: catalog });
+  const task = raw.create({ text: "Actual delivery", bucket: "workspace", workspaceId: workspace.id });
+  const taskGit = new TaskGitWorkspaceService({ dataDir: path.join(f.root, "data"), runtimeRoot: f.runtimeRoot,
+    recordTiming: () => {}, readManualDelivery: args => readManualTaskDelivery({ ...args, ...f.ports }) });
+  const managed = await taskGit.prepare({ taskId: task.id, projectRoot: f.repo, dependencyMode: "skip" });
+  const lifecycle = new TaskLifecycleService({ taskBoard: board, workspaceCatalog: catalog, taskGitWorkspaces: taskGit });
+  const hub = new HubMcpService({ workspaceCatalog: catalog, taskBoard: board, taskGitWorkspaces: taskGit, taskLifecycle: lifecycle,
+    workLog: { threadTurns: () => [] }, attachmentDirectory: f.root, secret: "fixture", reconcilePendingOnStartup: false });
+  const token = hub.contextToken({ provider: "codex", threadId: "rm" });
+  return { ...f, raw, catalog, board, task, taskGit, managed, lifecycle, hub,
+    call: (name, args) => hub.call(name, { context_token: token, ...args }) };
 }
 
 test("manual delivery verifies actual Git containment and rejects source/manifest/pointer/ready/installation drift", async t => {
@@ -244,4 +268,138 @@ test("public manual Complete reconciles its exact lost reply without replaying c
   assert.deepEqual(board.lifecycleOutcome("original"), outcome);
   assert.equal(await f.git(["rev-parse", managed.branch]), f.base);
   assert.equal((await taskGit.describe(task.id))[0].headCommit, f.base);
+});
+
+test("manual sync binds all criss-cross merge bases and retains its original conflict context", async t => {
+  const f = await fixture(t);
+  const service = new TaskGitWorkspaceService({ dataDir: path.join(f.root, "data"), runtimeRoot: f.runtimeRoot,
+    recordTiming: () => {}, readManualDelivery: args => readManualTaskDelivery({ ...args, ...f.ports }) });
+  const dev = await service.prepareDev(f.repo);
+  await writeFile(path.join(dev.projectRoot, "left.txt"), "left Task work\n");
+  const left = await f.commit(dev.projectRoot);
+  await writeFile(path.join(f.repo, "right.txt"), "published work\n");
+  const right = await f.commit();
+  const merge = (cwd, revision) => runTaskGitCommand(["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "-m", "criss-cross fixture", revision], { cwd });
+  await merge(dev.projectRoot, right);
+  await merge(f.repo, left);
+  await writeFile(path.join(dev.projectRoot, "AgentHub/app.mjs"), "export const version = 'later-dev';\n");
+  const oldDev = await f.commit(dev.projectRoot);
+  await writeFile(path.join(f.repo, "AgentHub/app.mjs"), "export const version = 'delivered-main';\n");
+  const main = await f.commit();
+  await f.git(["update-ref", "refs/remotes/origin/main", main]);
+  const bases = (await f.git(["merge-base", "--all", oldDev, main])).split("\n").sort();
+  assert.deepEqual(bases, [left, right].sort());
+  const options = { projectRoot: f.repo, publishedRevision: main, manualSync: {
+    operationId: "manual-criss-cross", workspaceId: "workspace", expectedDevCommit: oldDev, delivery: await f.install(main) } };
+  const first = await service.synchronizeMainIntoDev(options);
+  assert.equal(first.status, "review_required");
+  const journal = path.join(path.dirname(first.nativeConflictRoot), "merge.json");
+  const before = await readFile(journal);
+  const state = JSON.parse(before);
+  assert.deepEqual(state.identity.mergeBases, bases);
+  assert.equal((await service.synchronizeMainIntoDev(options)).nativeConflictRoot, first.nativeConflictRoot);
+  assert.deepEqual(await readFile(journal), before);
+  assert.equal(await f.git(["rev-parse", "dev"]), oldDev);
+  const task = { taskId: `published:${state.identity.operationId}`, mergeBases: bases, resultCommit: main };
+  const reached = Error("validated binding reached original-state reader");
+  const check = (identity, tasks) => mergeSelectedResults({ root: path.join(f.root, "guard-only"), sourceRoot: f.repo,
+    baseCommit: oldDev, tasks, identity, gitAt: (cwd, args, opts = {}) => runTaskGitCommand(args, { ...opts, cwd }),
+    readJson: () => { throw reached; }, writeJson: () => assert.fail("guard check cannot write state") });
+  await assert.rejects(check({ ...state.identity, policy: "published-main-dev-sync-v1" }, [task]), error => error === reached);
+  await assert.rejects(check({ ...state.identity, policy: "foreign-policy" }, [task]), error => error.code === "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  const wrong = [f.base, left].sort();
+  await assert.rejects(check({ ...state.identity, mergeBases: wrong }, [{ ...task, mergeBases: wrong }]), error => error.code === "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  await writeFile(path.join(first.nativeConflictRoot, "AgentHub/app.mjs"), "export const version = 'delivered-main';\nexport const later = 'later-dev';\n");
+  const resolved = await f.commit(first.nativeConflictRoot);
+  assert.equal((await service.synchronizeMainIntoDev(options)).headCommit, resolved);
+  assert.equal(await readFile(path.join(dev.projectRoot, "left.txt"), "utf8"), "left Task work\n");
+  assert.equal(await readFile(path.join(dev.projectRoot, "right.txt"), "utf8"), "published work\n");
+  await f.git(["merge-base", "--is-ancestor", oldDev, resolved]);
+  await f.git(["merge-base", "--is-ancestor", main, resolved]);
+});
+
+test("manual Done and Complete verify delivered owned source without manufacturing a Test reference", async t => {
+  const f = await publicFixture(t);
+  await writeFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "export const version = 'own-delivered-change';\n");
+  const own = await f.commit(f.managed.projectRoot);
+  const before = f.board.task(f.task.id);
+  await assert.rejects(f.lifecycle.updateWorkflowStatus({ taskId: f.task.id, operationId: "not-delivered",
+    status: "done", manualDelivery: f.input, expectedRevision: before.revision, expectedWorkflowStatus: before.workflowStatus }));
+  assert.equal(f.board.task(f.task.id).workflowStatus, before.workflowStatus);
+  assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
+  await f.git(["merge", "--ff-only", own]);
+  await f.git(["update-ref", "refs/remotes/origin/main", own]);
+  const delivery = await f.install(own);
+  await assert.rejects(f.call("hub_task_status_update", { request_id: "wrong-status", task_id: f.task.id,
+    status: "testing", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus }), /only.*Done|requires an RM/u);
+  const ordinary = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId: before.workspaceId, name: "worker" }));
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "worker", streamId: ordinary.id }));
+  await assert.rejects(f.hub.call("hub_task_status_update", { context_token: f.hub.contextToken({ provider: "codex", threadId: "worker" }),
+    request_id: "foreign-caller", task_id: f.task.id, status: "done", manual_delivery: delivery,
+    expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus }), /requires an RM/u);
+  const done = await f.call("hub_task_status_update", { request_id: "actual-delivery-done", task_id: f.task.id,
+    status: "done", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus });
+  assert.equal(done.workflowStatus, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
+  assert.equal(f.raw.lifecycleOutcome("actual-delivery-done").result.evidence.outcome, "verified_manual_delivery");
+  const args = { task_id: f.task.id, completion_mode: "manual_delivery", manual_delivery: delivery };
+  const p = await f.call("hub_task_complete", { ...args, request_id: "delivered-preview" });
+  assert.equal(p.preview.manualDelivery[0].sourceKind, "owned-managed-source-without-test-ref");
+  const closed = await f.call("hub_task_complete", { ...args, request_id: "delivered-close", confirm_cleanup: true, expected_cleanup_token: p.cleanupToken });
+  assert.equal(closed.status, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
+  assert.equal(await readFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "utf8"), "export const version = 'own-delivered-change';\n");
+});
+
+test("manual completion pins and preserves an unrepresented legacy repository and reconciles only its hash-bound read-only preview", async t => {
+  const f = await publicFixture(t);
+  const legacy = path.join(f.root, "legacy"); await mkdir(legacy);
+  await runTaskGitCommand(["init", "-b", "main"], { cwd: legacy });
+  await writeFile(path.join(legacy, ".gitignore"), "WIP/\n");
+  await writeFile(path.join(legacy, "legacy.txt"), "historical base\n"); await f.commit(legacy);
+  const historical = await f.taskGit.prepare({ taskId: f.task.id, projectRoot: legacy, dependencyMode: "skip" });
+  await writeFile(path.join(historical.projectRoot, "legacy.txt"), "unique historical work\n");
+  const legacyHead = await f.commit(historical.projectRoot);
+  const evidence = path.join(historical.projectRoot, "WIP/evidence.txt"); await mkdir(path.dirname(evidence)); await writeFile(evidence, "preserve me");
+  const task = f.board.task(f.task.id);
+  f.raw.beginLifecycleTransition(task.id, { operationId: "done", targetWorkflowStatus: "done", expectedRevision: task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "done", gitReferences: [{ projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base }] });
+  const original = { request_id: "old-preview", task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input };
+  await assert.rejects(f.call("hub_task_complete", original), /unrepresented/u);
+  const receipt = f.catalog.mcpOperation(original.request_id); assert.equal(receipt.status, "unknown");
+  const reconcile = { task_id: task.id, operation_request_id: original.request_id, expected_arguments_hash: receipt.argumentsHash,
+    manual_preview_arguments: original, confirm_reconcile: true };
+  await assert.rejects(f.call("hub_task_operation_reconcile", { ...reconcile, request_id: "not-preview", manual_preview_arguments: { ...original, confirm_cleanup: true } }), /read-only/u);
+  assert.equal(f.catalog.mcpOperation(original.request_id).status, "unknown");
+  await assert.rejects(f.call("hub_task_operation_reconcile", { ...reconcile, request_id: "wrong-hash", expected_arguments_hash: "0".repeat(64) }), /read-only/u);
+  assert.equal((await f.call("hub_task_operation_reconcile", { ...reconcile, request_id: "address-preview" })).outcome, "NO_EFFECT");
+  assert.equal(f.catalog.mcpOperation(original.request_id).status, "failed");
+  const retained = [{ project_root: historical.projectRoot, head_commit: legacyHead }];
+  await assert.rejects(f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task: f.board.task(task.id), input: f.input,
+    lease, retainedRepositories: [{ ...retained[0], head_commit: f.base }] })), /exact preservation pins/u);
+  const args = { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input, retained_repositories: retained };
+  const p = await f.call("hub_task_complete", { ...args, request_id: "preserved-preview" });
+  assert.equal(p.preview.retainedUnrepresented[0].headCommit, legacyHead);
+  assert.equal(p.preview.manualDelivery.length, 1); assert.deepEqual(p.preview.deleting, []);
+  const done = await f.call("hub_task_complete", { ...args, request_id: "preserved-close", confirm_cleanup: true, expected_cleanup_token: p.cleanupToken });
+  assert.equal(done.status, "done");
+  assert.equal(await readFile(evidence, "utf8"), "preserve me");
+  assert.equal(await runTaskGitCommand(["rev-parse", historical.branch], { cwd: legacy }), legacyHead);
+  assert.equal(await readFile(path.join(historical.projectRoot, "legacy.txt"), "utf8"), "unique historical work\n");
+});
+
+test("read-only preview reconciliation refuses a real confirmed UNKNOWN even with its exact original hash", async t => {
+  const f = await publicFixture(t), task = f.board.task(f.task.id);
+  f.raw.beginLifecycleTransition(task.id, { operationId: "done", targetWorkflowStatus: "done", expectedRevision: task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "done", gitReferences: [{ projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base }] });
+  await writeFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "unsaved source\n");
+  const original = { request_id: "confirmed-unknown", task_id: task.id, completion_mode: "manual_delivery",
+    manual_delivery: f.input, confirm_cleanup: true, expected_cleanup_token: "not-valid" };
+  await assert.rejects(f.call("hub_task_complete", original), /unfinished Task work/u);
+  const receipt = f.catalog.mcpOperation(original.request_id); assert.equal(receipt.status, "unknown");
+  await assert.rejects(f.call("hub_task_operation_reconcile", { request_id: "refuse-confirmed", task_id: task.id,
+    operation_request_id: original.request_id, expected_arguments_hash: receipt.argumentsHash, manual_preview_arguments: original,
+    confirm_reconcile: true }), /read-only/u);
+  assert.equal(f.catalog.mcpOperation(original.request_id).status, "unknown");
+  assert.equal(f.board.task(task.id).status, "open");
+  assert.equal(await readFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "utf8"), "unsaved source\n");
 });
