@@ -917,6 +917,47 @@ def selected_process(row, root):
     return False
 
 
+def foreign_hub_installation(row, selected_root):
+    """A generic server.mjs is not an installation identity."""
+    image = Path(row.get("ExecutablePath") or "").resolve()
+    entry = node_entrypoint(row)
+    native = image.name.lower() == "agenthub.runtimehost.exe"
+    if native:
+        candidate = image.parent
+    elif entry and entry.is_absolute() and entry.name.lower() in HUB_NODE_ENTRIES:
+        entry = entry.resolve()
+        candidate = entry.parents[2] if entry.parent.parent.name.lower() == "releases" else entry.parent
+    else:
+        return False
+    if candidate == selected_root:
+        return False
+    markers = [candidate/"current.json", candidate/"AgentHub.RuntimeHost.exe", candidate/"data"]
+    if not all(p.exists() for p in markers):
+        return False
+    # A recognizable installation with changed/unreadable identity refuses;
+    # absence of these markers on an ordinary MCP package does not.
+    _plain_chain(candidate); _plain(candidate/"data", directory=True)
+    pointer = _read_record(candidate/"current.json")
+    release = pointer.get("current")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", release or ""):
+        raise RuntimeError("Foreign Hub installation pointer is invalid")
+    release_root = candidate/"releases"/release
+    if not native and entry.parent.parent.name.lower() == "releases":
+        release_root = entry.parent
+    manifest = _read_record(release_root/"runtime-manifest.json")
+    if manifest.get("releaseId") != release_root.name:
+        raise RuntimeError("Foreign Hub manifest identity differs")
+    files = {x.get("path"): x for x in manifest.get("files", []) if isinstance(x, dict)}
+    host = files.get("AgentHub.RuntimeHost.exe")
+    if not host or file_hash(candidate/"AgentHub.RuntimeHost.exe") != host.get("sha256"):
+        raise RuntimeError("Foreign Hub native image is not bound")
+    if entry:
+        record = files.get(entry.name)
+        if not record or file_hash(entry) != record.get("sha256"):
+            raise RuntimeError("Foreign Hub entry is not bound to its manifest")
+    return True
+
+
 def stop_selected(root, *, inspect_only=False):
     c, w, k = native_api(); retained = {}; records = []
     deadline = time.monotonic() + 45
@@ -937,11 +978,7 @@ def stop_selected(root, *, inspect_only=False):
                     parent_pid = int(row["ParentProcessId"])
                     parent_row = bypid.get(parent_pid)
                     if not parent_row or not descendant_birth_matches(parent_row, row): continue
-                    image = (row.get("ExecutablePath") or "").lower()
-                    entry = node_entrypoint(row)
-                    foreign = image.endswith("agenthub.runtimehost.exe") and not selected_process(row, root)
-                    foreign |= bool(entry and entry.name in HUB_NODE_ENTRIES and not selected_process(row, root))
-                    if foreign:
+                    if foreign_hub_installation(row, root):
                         # Killing a Host can close its kill-on-close Job. Do
                         # not silently prune another Hub then kill its parent.
                         raise RuntimeError("Another Hub installation is nested in the selected process tree")
@@ -991,6 +1028,70 @@ def stop_selected(root, *, inspect_only=False):
         for handle, _ in retained.values(): k.CloseHandle(handle)
 
 
+PRESTOP_LEGACY_INSTALLER_SHA = "8c0937601384d3a67398dec48961d8bc08c87b2f3d21e4140cf0f6713cd6ae1f"
+
+
+def verify_pre_stop_resume(root, retained, original):
+    """Positive proof for the one published pre-capture refusal, not UNKNOWN=none."""
+    from datetime import datetime
+    if (original.get("status"), original.get("phase"), original.get("outcome"), original.get("revision")) != ("reconciling", "installer-recovery-required", "unknown", 2):
+        raise RuntimeError("Original is not the exact pre-stop refusal")
+    metadata = original.get("metadata", {})
+    if set(metadata) != {"autonomousInstaller", "autonomousError"} or metadata["autonomousError"] != {
+        "code": "RuntimeError", "diagnostic": "Another Hub installation is nested in the selected process tree"}:
+        raise RuntimeError("Original has different or later effects")
+    binding = metadata["autonomousInstaller"]
+    old_request = _read_record(retained/"request.json")
+    if (old_request.get("operationId") != original["operationId"] or Path(old_request["runtimeRoot"]).resolve() != root
+            or _directory_identity(root) != old_request["runtimeIdentity"]
+            or binding.get("installerSha256") != PRESTOP_LEGACY_INSTALLER_SHA
+            or file_hash(retained/"install_release.py") != PRESTOP_LEGACY_INSTALLER_SHA
+            or binding["archiveSha256"] != file_hash(Path(old_request["archive"]))):
+        raise RuntimeError("Retained pre-stop input differs")
+    if any((retained/name).exists() for name in ["backup", "retired.json", "install.stdout", "install.stderr", "launch-intent.json", "recovery-launch-intent.json", "result.json"]):
+        raise RuntimeError("Original has admitted later boundaries")
+    _read_record(retained/"failure.json")
+    old_worker = _read_record(retained/"worker-started.json")
+    dispatch = _read_record(retained/"dispatch.json")
+    if old_worker["pid"] != binding["workerPid"] or any(old_worker.get(key) != dispatch.get(key) for key in ["pid","created","image","outsideAllJobs"]):
+        raise RuntimeError("Previous worker identity is not bound")
+    c,w,k = native_api(); handle = k.OpenProcess(0x1000|0x100000, False, old_worker["pid"])
+    if handle:
+        try:
+            current = process_identity(handle)
+            if current["created"] == old_worker["created"] and k.WaitForSingleObject(handle,0) == 258:
+                raise RuntimeError("Previous installer worker is still live")
+        finally: k.CloseHandle(handle)
+    elif c.get_last_error() != 87:
+        raise RuntimeError("Previous installer worker retirement is unknown")
+    previous = binding["previous"]
+    if _read_record(root/"current.json").get("current") != previous["releaseId"] or file_hash(root/"releases"/previous["releaseId"]/"runtime-manifest.json") != previous["manifestSha256"]:
+        raise RuntimeError("Previous installation changed")
+    lock = _read_record(root/"data"/"bot.lock")
+    if lock.get("ready") is not True or lock.get("releaseId") != previous["releaseId"]:
+        raise RuntimeError("Original old instance is not still Ready")
+    rows = process_snapshot(); node = next((x for x in rows if x["ProcessId"] == lock["pid"]), None)
+    host = next((x for x in rows if node and x["ProcessId"] == node["ParentProcessId"]), None)
+    admission_ms = datetime.fromisoformat(original["createdAt"].replace("Z", "+00:00")).timestamp()*1000
+    proof = []
+    for row in [host,node]:
+        if not row or not selected_process(row,root): raise RuntimeError("Old Host/Node ownership changed")
+        h = k.OpenProcess(0x1000|0x100000,False,row["ProcessId"])
+        if not h: raise RuntimeError("Old Host/Node is not live")
+        try:
+            identity = process_identity(h)
+            if (k.WaitForSingleObject(h,0) != 258 or int(identity["created"])//10 != int(row["Created"])//10
+                    or (int(identity["created"])-116444736000000000)/10000 >= admission_ms):
+                raise RuntimeError("Old process does not predate the original admission")
+            proof.append(dict(pid=row["ProcessId"],**identity))
+        finally: k.CloseHandle(h)
+    if Path(proof[0]["image"]) != root/"AgentHub.RuntimeHost.exe":
+        raise RuntimeError("Old native Host identity differs")
+    return dict(expectedOriginal=original, oldProcesses=proof, previous=previous,
+                priorRequestSha256=file_hash(retained/"request.json"), priorCache=str(retained),
+                oldWorker=old_worker, installerSha256=file_hash(Path(__file__).resolve()))
+
+
 def assert_launched(root, pid, created):
     c, w, k = native_api(); handle = k.OpenProcess(0x1000 | 0x100000, False, pid)
     if not handle: raise RuntimeError("New Host exited before Ready")
@@ -1027,6 +1128,15 @@ let op = store.get(id); const value = input ? JSON.parse(await fs.readFile(input
 if(action==='create') {
   if(!op) op=store.create({operationId:id,kind:'restart',streamId:'agent-hub-installer',threadId:root,
     status:'running',phase:'installer-stopping',metadata:{autonomousInstaller:value}});
+} else if(action==='resume-prestop') {
+  const {isDeepStrictEqual}=await import('node:util');
+  if(!isDeepStrictEqual(op,value.expectedOriginal)) throw Error('Original changed before resume CAS');
+  const {callDesktopControl}=await load('src/infrastructure/process/desktop-control.mjs');
+  const health=await callDesktopControl('runtime-health',{}, {runtimeRoot:root,timeoutMs:5000});
+  if(!health.live || !health.ready || health.process.pid!==value.oldProcesses[1].pid
+    || health.process.releaseId!==value.previous.releaseId) throw Error('Old Ready identity changed');
+  const changed=store.transition(id,{phase:'installer-stopping',metadata:{autonomousResume:{...value,workerPid:process.ppid}}},{expectedRevision:op.revision});
+  if(!changed.applied) throw Error('Pre-stop continuation CAS refused'); op=changed.operation;
 } else if(action==='backup') {
   const {backupStoppedRuntime}=await load('src/infrastructure/persistence/runtime-maintenance-backup.mjs');
   const proof=await backupStoppedRuntime({runtimeRoot:root,destination:value.destination,
@@ -1113,10 +1223,17 @@ def autonomous_worker(request_file):
         binding = dict(runtimeRoot=str(root),archiveSha256=file_hash(archive),releaseId=descriptor["releaseId"],previous=previous,
                        installerSha256=request["installerSha256"],workerPid=os.getpid())
         old = read_update_original(root,request["operationId"])
-        if old is not None:
+        if request.get("resume"):
+            if old != request["resume"]["original"]: raise RuntimeError("Original changed before continuation")
+            proof = verify_pre_stop_resume(root,Path(request["resume"]["cache"]),old)
+            if previous != proof["previous"] or binding["archiveSha256"] != old["metadata"]["autonomousInstaller"]["archiveSha256"]:
+                raise RuntimeError("Continuation package or previous release changed")
+            owner("resume-prestop",proof)
+        elif old is not None:
             stage("existing-original-read-only"); _write_record(cache/"result.json",original_status(request["operationId"],old)); return
-        op = owner("create",binding)
-        if op["metadata"].get("autonomousInstaller") != binding: raise RuntimeError("Original installer binding differs")
+        else:
+            op = owner("create",binding)
+            if op["metadata"].get("autonomousInstaller") != binding: raise RuntimeError("Original installer binding differs")
         admitted = True; stage("stopping-selected-runtime")
         stopped = stop_selected(root); _write_record(cache/"retired.json",dict(processes=stopped))
         stage("backing-up-durable-state")
@@ -1185,6 +1302,7 @@ def autonomous_main():
     parser.add_argument("--scratch-root",type=Path,required=True)
     parser.add_argument("--operation-id"); parser.add_argument("--prepare-update",action="store_true")
     parser.add_argument("--update-status",action="store_true")
+    parser.add_argument("--resume-prestop",action="store_true",help="Continue the exact published pre-stop refusal, retaining its UNKNOWN history")
     parser.add_argument("--inspect-package",action="store_true")
     args=parser.parse_args()
     if args.inspect_package: return historical_main()
@@ -1200,9 +1318,21 @@ def autonomous_main():
     if not re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',op): parser.error("Invalid original operation ID")
     selection['operationId']=op
     original=read_update_original(root,op)
-    if original is not None or args.update_status:
+    if args.resume_prestop and (not args.operation_id or not args.archive or args.update_status):
+        parser.error("Pre-stop continuation requires exact original and archive input")
+    if (original is not None and not args.resume_prestop) or args.update_status:
         print(json.dumps(original_status(op,original))); return
     cache=scratch/('agenthub-autonomous-'+hashlib.sha256((str(root)+'\0'+op).encode()).hexdigest()[:32])
+    if args.resume_prestop:
+        if original and original.get("metadata",{}).get("autonomousResume"):
+            print(json.dumps(original_status(op,original))); return
+        if not original: raise RuntimeError("Original pre-stop refusal is missing")
+        previous_request=_read_record(cache/'request.json')
+        if any(previous_request.get(key)!=selection.get(key) for key in ['runtimeRoot','runtimeIdentity','archive','sha256','release','operationId']):
+            raise RuntimeError("Original continuation input changed")
+        verify_pre_stop_resume(root,cache,original)
+        selection['resume']=dict(cache=str(cache),original=original)
+        cache=cache/('resume-'+selection['installerSha256'][:16])
     if cache.exists():
         prior=_read_record(cache/'request.json')
         if prior!=selection: raise RuntimeError("Original input differs; no effects replayed")

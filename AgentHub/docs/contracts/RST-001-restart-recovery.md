@@ -849,6 +849,14 @@ verified prior code once and checks previous Ready, preserving current data and
 all prior outcomes. Unproven/failed recovery retains UNKNOWN and backup evidence.
 See ADR-HUB-467 for the layout boundary and compatibility removal condition.
 
+A foreign Node entry requires positive installation layout and manifest/native/
+entry binding. Generic owned MCP server.mjs children are ordinary descendants.
+The explicit published8c09 pre-stop continuation binds the exact old refusal,
+retired worker, unchanged pointer/input and still-live old Host/Ready Node born
+before admission; absence or effectsAdmitted alone is insufficient. The existing
+maintenance CAS preserves the entire prior UNKNOWN before the SAME original
+continues. Backup/install/launch effects and their history are never replayed.
+
 A runtime/prepared source remains pinned by its declared and physical path and
 by every actual Git/commondir/recursive alternate object store. If the generation
 owner has removed its live identity and Git metadata but left source files,

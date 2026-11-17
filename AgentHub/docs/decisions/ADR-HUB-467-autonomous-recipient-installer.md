@@ -22,6 +22,22 @@ not guessed. Descendant edges require creation order and the exact retained
 native parent's birth identity, preventing integer PPID reuse from granting
 authority. All supported Hub entry names share the same foreign-root cutoff.
 
+Post-publication correction: names such as server.mjs also belong to ordinary
+owned MCP children. A foreign installation requires its physical current/data/
+native-Host layout plus matching manifest/native/entry bytes. A basename is not
+that proof. Genuine foreign installations still refuse before parent retirement.
+
+Explicit --resume-prestop continues only the published8c09 pre-capture foreign
+refusal. The old worker must be retired, both unchanged old Host/Ready Node must
+predate original admission, pointer/manifest/input must match and no backup,
+retirement/install/launch boundary may exist. Together with the exact old code
+and error this proves the stopping pass never reached termination; generic
+effectsAdmitted or absence alone does not. The existing maintenance CAS retains
+the whole prior UNKNOWN in autonomousResume, without rewriting old cache/history.
+The same original proceeds under a fresh outside-Job worker and becomes terminal
+only after real Ready. Repetition joins/readbacks that continuation. Remove this
+bounded8c09 compatibility once those exact pre-stop originals are disposed.
+
 The existing maintenance-operation store owns the original and its terminal
 result. An external flushed request/dispatch fence is transport, not a second
 restart registry. Repetition reads the same original and never repeats dispatch.
