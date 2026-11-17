@@ -38,6 +38,26 @@ The same original proceeds under a fresh outside-Job worker and becomes terminal
 only after real Ready. Repetition joins/readbacks that continuation. Remove this
 bounded8c09 compatibility once those exact pre-stop originals are disposed.
 
+The d148 production attempt exposed a separate native race after partial stop.
+Terminating a Host can close its Job before the retained child is processed.
+Windows returns access denied when TerminateProcess targets that already-exited
+process. The retained original handle, checked again after failure, distinguishes
+this from access denied on a live process. Every actual target keeps its native
+identity. Discovery is refreshed once for the whole captured batch rather than
+querying every machine process for every target. The existing 45-second budget
+is enforced before effects and waits. Per-original snapshot/capture/termination/
+wait timings and flushed captured targets remain available after failure.
+
+Explicit --resume-partialstop continues only the exact d148 revision3 stopping
+attempt after its worker has retired and verified previous Ready is restored.
+It verifies both prior retained requests/scripts/workers, the whole canonical
+resume proof, physical roots, archive and previous manifest. Any later backup,
+install or launch boundary refuses. This is admitted partial retirement. The
+existing maintenance CAS preserves the whole previous row in autonomousPartialResume
+before fresh selected retirement and first backup/install/start. Repetition reads
+the same continuation. Retire this bounded compatibility after the exact d148
+originals are disposed.
+
 The existing maintenance-operation store owns the original and its terminal
 result. An external flushed request/dispatch fence is transport, not a second
 restart registry. Repetition reads the same original and never repeats dispatch.

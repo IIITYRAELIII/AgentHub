@@ -133,6 +133,15 @@ The update authorizes interruption of active work in that installation.
 
 Example: `python install_release.py --release 2.1.7 --runtime-root <Hub-directory> --scratch-root <separate-directory>`.
 Offline input uses `--archive <ZIP> --sha256 <exact-digest>` instead of `--release`.
+An explicitly requested `--resume-partialstop --operation-id <same-original>`
+continues the exact retained d148 partial-stop revision3 after verified previous
+Ready is restored. The same archive/runtime/scratch arguments are required.
+The whole prior UNKNOWN and its earlier history are saved by the existing CAS.
+Fresh retirement uses retained-handle exit proof, batch process capture and the
+existing stop budget. Timing and captured target identities are retained with
+the worker evidence. This bounded compatibility ends when those originals are
+disposed.
+
 An explicitly requested `--resume-prestop --operation-id <same-original>` can
 continue only the positively verified published8c09 pre-stop foreign refusal;
 it preserves the old UNKNOWN/history and never replays backup/install/launch.

@@ -857,6 +857,25 @@ before admission; absence or effectsAdmitted alone is insufficient. The existing
 maintenance CAS preserves the entire prior UNKNOWN before the SAME original
 continues. Backup/install/launch effects and their history are never replayed.
 
+Retirement observes each retained original process handle immediately before
+identity/termination and again after a failing native call. A signalled original
+handle proves exit even when closing its Host's Job ended the child first.
+Access denied on a live original handle remains an error. Capture uses one
+initial and one fresh whole process inventory per batch while native handles
+remain held. Creation/image/command/parent binding remains mandatory. The stop
+budget is checked during capture and before each effect and wait. Payload-free
+operation-bound timing and target capture survive failed retirement.
+
+The explicit d148 partial-stop continuation retains the whole admitted UNKNOWN
+and its previous pre-stop history. Only the exact d148 stopping failure, retired
+workers, unchanged archive/root/prior code, absence of later backup/install/launch
+boundaries and authenticated restored previous Ready can enter the existing
+revision CAS. It can repeat validated selected-process retirement, then perform
+its first backup/install/launch. Existing terminal outcomes remain readback-only.
+Remove this compatibility after the bound d148 originals have been disposed.
+Previous-version recovery uses the same exit-aware retirement and proceeds when
+original handles are signalled.
+
 A runtime/prepared source remains pinned by its declared and physical path and
 by every actual Git/commondir/recursive alternate object store. If the generation
 owner has removed its live identity and Git metadata but left source files,
