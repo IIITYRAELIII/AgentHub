@@ -1221,12 +1221,19 @@ namespace AgentHub.RuntimeHost
                 bool member;
                 if (job == IntPtr.Zero || !IsProcessInJob(GetCurrentProcess(), job, out member) || !member)
                     throw new InvalidOperationException("Replacement Host is not in its exact new owned Job");
-                StringBuilder image = new StringBuilder(32768); uint length = (uint)image.Capacity;
-                if (owner == IntPtr.Zero || WaitForSingleObject(owner, 0) != 258
-                    || !QueryFullProcessImageName(owner, 0, image, ref length)
-                    || !String.Equals(Path.GetFullPath(image.ToString()), Path.GetFullPath(Assembly.GetExecutingAssembly().Location), StringComparison.OrdinalIgnoreCase)
-                    || ProcessSecurityContext(owner) != ProcessSecurityContext(GetCurrentProcess()))
-                    throw new InvalidOperationException("Replacement Host owned launcher identity changed");
+                if (owner == IntPtr.Zero || WaitForSingleObject(owner, 0) != 258)
+                    throw new InvalidOperationException("Replacement Host owned launcher is not live");
+                StringBuilder image = new StringBuilder(32768), currentImage = new StringBuilder(32768);
+                uint length = (uint)image.Capacity, currentLength = (uint)currentImage.Capacity;
+                // Compare both live images through the same native owner. CLR's
+                // Assembly.Location can retain a supported relocation junction
+                // spelling while Windows returns its physical target here.
+                if (!QueryFullProcessImageName(owner, 0, image, ref length)
+                    || !QueryFullProcessImageName(GetCurrentProcess(), 0, currentImage, ref currentLength)
+                    || !String.Equals(Path.GetFullPath(image.ToString()), Path.GetFullPath(currentImage.ToString()), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Replacement Host owned launcher image differs");
+                if (ProcessSecurityContext(owner) != ProcessSecurityContext(GetCurrentProcess()))
+                    throw new InvalidOperationException("Replacement Host owned launcher security context differs");
                 // The server exists before CreateProcess. Never wait for an absent/forged issuer.
                 using (var pipe = new NamedPipeClientStream(".", ReplacementEntryPipeName(launcher, args[3]), PipeDirection.InOut))
                 {
