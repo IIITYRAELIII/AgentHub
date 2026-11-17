@@ -849,7 +849,11 @@ export class HubMcpService {
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
         absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
-        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational"], description: "Release Manager-only published service closure, exact direct-delivery cleanup, or completed operational zero-own-delta cleanup." },
+        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery"], description: "Release Manager-only closure. manual_delivery verifies the actual installation and exact main/origin while preserving all Task artifacts." },
+        manual_delivery: { type: "object", additionalProperties: false, required: ["revision", "releaseId", "manifestSha256"], properties: {
+          revision: { type: "string", pattern: "^[a-f0-9]{40}$" }, releaseId: { type: "string" },
+          manifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        } },
         completed_operation_request_id: { type: "string", description: "Original canonical published-service closure supplying historical repository proof for its already closed zero-own-delta source." },
         published_delivery: { type: "object", properties: {
           runtimeRoot: { type: "string" }, publicationRunSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
@@ -2195,14 +2199,15 @@ export class HubMcpService {
     absorption_mode: absorptionMode = null,
     completion_mode: completionMode = null,
     published_delivery: publishedDelivery = null,
+    manual_delivery: manualDelivery = null,
     completed_operation_request_id: completedOperationRequestId = null,
     } = args;
     const task = this.#task(context, taskId);
     this.#validateCleanupToken(task, args, "complete");
     const result = await this.taskLifecycle.complete({
       taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
-      absorptionMode, completionMode, publishedDelivery, completedOperationRequestId,
-      originalArguments: ["published_delivery", "operational"].includes(completionMode)
+      absorptionMode, completionMode, publishedDelivery, manualDelivery, completedOperationRequestId,
+      originalArguments: ["published_delivery", "operational", "manual_delivery"].includes(completionMode)
         ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) : null,
     });
     return result?.confirmationRequired
@@ -3144,10 +3149,12 @@ export class HubMcpService {
     const outcome = this.taskBoard.lifecycleOutcome?.(args.operation_request_id);
     const evidence = outcome?.result?.evidence ?? transition?.evidence;
     const captured = evidence?.originalArguments;
+    const deliveredTaskId = captured?.completion_mode === "manual_delivery"
+      ? evidence?.manualDelivery?.taskId : evidence?.publishedDelivery?.taskId;
     if (!original || original.workspaceId !== context.workspaceId || original.toolName !== "hub_task_complete"
-        || evidence?.publishedDelivery?.taskId !== args.task_id || !captured
+        || deliveredTaskId !== args.task_id || !captured
         || captured.task_id !== args.task_id || captured.request_id !== original.requestId
-        || !["published_delivery", "operational"].includes(captured.completion_mode) || captured.confirm_cleanup !== true
+        || !["published_delivery", "operational", "manual_delivery"].includes(captured.completion_mode) || captured.confirm_cleanup !== true
         || argumentsHash(captured) !== original.argumentsHash
         || (transition && (transition.taskId !== args.task_id || transition.kind !== "complete" || transition.phase !== "cleanup"))
         || (outcome && (outcome.taskId !== args.task_id || outcome.kind !== "complete"))) {
@@ -3158,7 +3165,8 @@ export class HubMcpService {
     if (result?.id !== args.task_id || result?.status !== "done") throw Error("Original direct cleanup did not finish");
     if (original.status === "unknown") await this.workspaceCatalog.completeUnknownMcpOperation(original.requestId, {
       workspaceId: context.workspaceId, toolName: "hub_task_complete", result,
-      reconciliation: { kind: "direct-published-cleanup-original-v1", lifecycleOperationId: original.requestId },
+      reconciliation: { kind: captured.completion_mode === "manual_delivery"
+        ? "manual-delivery-completion-original-v1" : "direct-published-cleanup-original-v1", lifecycleOperationId: original.requestId },
     });
     else if (original.status !== "succeeded") await this.workspaceCatalog.completeMcpOperation(original.requestId, result);
     return { taskId: args.task_id, operationId: original.requestId, outcome: "COMPLETED", result };

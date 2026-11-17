@@ -2244,12 +2244,20 @@ test("claim forwards an explicit user dependency exception and complete forwards
   assert.equal(result.cleanupToken, "preview");
   const schema = service.tools().find((tool) => tool.name === "hub_task_complete").inputSchema;
   assert.deepEqual(schema.properties.absorption_mode.enum, ["published_duplicate"]);
-  assert.deepEqual(schema.properties.completion_mode.enum, ["published_release_service", "published_delivery", "operational"]);
+  assert.deepEqual(schema.properties.completion_mode.enum, ["published_release_service", "published_delivery", "operational", "manual_delivery"]);
   await service.call("hub_task_complete", { context_token: token,
     request_id: "release-service-preview", task_id: "task-current",
     completion_mode: "published_release_service" });
   assert.equal(received.completionMode, "published_release_service");
+  const manual = { revision: "a".repeat(40), releaseId: "manual", manifestSha256: "b".repeat(64) };
+  await service.call("hub_task_complete", { context_token: token, request_id: "manual-preview",
+    task_id: "task-current", completion_mode: "manual_delivery", manual_delivery: manual });
+  assert.deepEqual(received.manualDelivery, manual);
+  assert.equal(received.completionMode, "manual_delivery");
   const otherToken = service.contextToken({ provider: "codex", threadId: "thread-2" });
+  await assert.rejects(service.call("hub_task_complete", { context_token: otherToken,
+    request_id: "manual-non-manager", task_id: "task-current", completion_mode: "manual_delivery",
+    manual_delivery: manual }), /requires a Release Manager Stream/u);
   await assert.rejects(service.call("hub_task_complete", {
     context_token: otherToken,
     request_id: "absorb-published-non-manager",

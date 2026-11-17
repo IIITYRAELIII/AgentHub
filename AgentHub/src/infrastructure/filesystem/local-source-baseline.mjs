@@ -104,7 +104,7 @@ async function regular(file) {
   return readFile(file);
 }
 
-function sourceMatches(source, physical, relative) {
+export function sourceMatches(source, physical, relative) {
   const pointer = /^version https:\/\/git-lfs.github.com\/spec\/v1\noid sha256:([a-f0-9]{64})\nsize (\d+)\n?$/u
     .exec(normalized(source).toString("utf8"));
   if (pointer) return sha(physical) === pointer[1] && physical.length === Number(pointer[2]);
