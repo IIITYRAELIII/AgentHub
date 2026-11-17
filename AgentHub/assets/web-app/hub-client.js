@@ -2222,7 +2222,9 @@ function activeMaintenanceMessage(task) {
   const measurementStatus = String(compaction.measurementStatus ?? "");
   let text = "";
   if (status === "running") {
-    text = compaction.origin === "automatic"
+    text = compaction.dedicatedProviderTurn === true && !String(compaction.turnId ?? "").trim()
+      ? "Запуск обслуживания контекста…"
+      : compaction.origin === "automatic"
       ? "Автосвёртка контекста…"
       : "Свёртка контекста…";
   } else if (status === "completed" && (
@@ -2269,7 +2271,37 @@ function syncActiveMaintenanceMessages(tasks) {
   return changed;
 }
 
-function observeContextCompactions(tasks) {
+function reconcileContextCompactions(tasks) {
+  return (tasks ?? []).map(task => {
+    const incoming = task.context?.compaction;
+    const id = String(incoming?.operationId ?? incoming?.id ?? "");
+    if (!id) return task;
+    const observed = observedContextCompactions.get(id);
+    const sameBinding = observed?.provider === task.provider && observed?.threadId === task.threadId;
+    const previous = sameBinding ? observed.compaction : null;
+    const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+    const persisted = (maintenanceEventsByTask.get(stableTaskId) ?? []).find(event => (
+      event.id === `maintenance:compaction:${id}` && event.provider === task.provider
+      && event.threadId === task.threadId && event.maintenanceType === "compaction"
+    ));
+    const terminal = value => ["completed", "failed"].includes(value);
+    const priorRevision = Number(previous?.revision) || 0;
+    const incomingRevision = Number(incoming.revision) || 0;
+    let compaction = incoming;
+    if (previous && ((priorRevision > 0 && incomingRevision < priorRevision)
+      || (terminal(previous.status) && (incoming.status === "running"
+        || (priorRevision > 0 && incoming.status !== previous.status))))) {
+      compaction = previous;
+    } else if (persisted && terminal(persisted.maintenanceStatus)
+      && (incoming.status === "running" || (Number(persisted.revision) > incomingRevision))) {
+      compaction = { ...incoming, status: persisted.maintenanceStatus,
+        revision: persisted.revision, completedAt: persisted.time };
+    }
+    return compaction === incoming ? task : { ...task, context: { ...task.context, compaction } };
+  });
+}
+
+function observeContextCompactions(tasks, { notify = true } = {}) {
   const changed = new Set();
   for (const task of tasks ?? []) {
     const context = task.context;
@@ -2300,8 +2332,9 @@ function observeContextCompactions(tasks) {
     const requested = requestedContextCompactions.has(compactionId);
     const eventAtMs = Date.parse(String(compaction.completedAt ?? compaction.startedAt ?? "")) || 0;
     const recent = eventAtMs > 0 && Date.now() - eventAtMs < 90_000;
-    if (status === "running"
-      && previousStatus !== "running"
+    const providerStarted = status === "running" && Boolean(String(compaction.turnId ?? "").trim());
+    if (notify && providerStarted
+      && !previous.started
       && compaction.origin === "automatic"
       && recent) {
       agentHub.toast(`Началась автосвёртка контекста · ${taskDisplayTitle(task)}`);
@@ -2318,6 +2351,8 @@ function observeContextCompactions(tasks) {
       const unknown = status !== "failed";
       if (rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
+        operationId: compactionId,
+        revision: compaction.revision ?? null,
         provider: task.provider,
         threadId: task.threadId,
         itemId: eventId,
@@ -2366,6 +2401,8 @@ function observeContextCompactions(tasks) {
             : "Свёртка завершена; оценка контекста недоступна";
       if (!rotationFailed && rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
+        operationId: compactionId,
+        revision: compaction.revision ?? null,
         provider: task.provider,
         threadId: task.threadId,
         itemId: eventId,
@@ -2396,6 +2433,10 @@ function observeContextCompactions(tasks) {
     observedContextCompactions.delete(compactionId);
     observedContextCompactions.set(compactionId, {
       status,
+      provider: task.provider,
+      threadId: task.threadId,
+      compaction,
+      started: previous.started || providerStarted || ["completed", "failed"].includes(status),
       measurementStatus,
       beforePercent,
       afterPercent,
@@ -2574,6 +2615,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     }
     lastSnapshot = snapshot;
     const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
+    const maintenanceTasks = reconcileContextCompactions(snapshot.tasks);
     // Pending/retry identities belong to the current canonical final. Capacity
     // pressure must never create a second operation for that same read.
     const currentReadTasks = new Map(representativeTasks.map((task) => [
@@ -2616,9 +2658,9 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     agentHub.setMessagePins(snapshot.messagePins ?? []);
     agentHub.setArchivedWorkspaces(snapshot.archivedWorkspaces ?? []);
     const maintenanceChanged = new Set([
-      ...observeContextCompactions(snapshot.tasks),
+      ...observeContextCompactions(maintenanceTasks, { notify: Boolean(previousSnapshot) }),
       ...observeStreamRotations(previousTasks, snapshot.tasks),
-      ...syncActiveMaintenanceMessages(representativeTasks),
+      ...syncActiveMaintenanceMessages(representativeSnapshotTasks(maintenanceTasks)),
     ]);
     if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts) applyMessageReceipts(snapshot);
     const serverDeferredClientUserMessageIds = new Set(queuedCommandClientUserMessageIds(

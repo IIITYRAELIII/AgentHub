@@ -228,6 +228,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   commands; inter-Stream authorship must not leak into another user message.
 - Context compaction and maintenance operations have separate kinds and never
   create user-turn cards. Context estimates are observations, not generated turns.
+  A dedicated compaction awaiting its provider turn is preparation, not a
+  confirmed start notification. Repeated snapshots and reconnect retain the
+  same operation's terminal revision; an older running projection cannot revive
+  it. Reload reuses the existing terminal maintenance marker. Notifications of
+  observed automatic starts occur once per exact operation in the current
+  client session, with the initial snapshot as its baseline; new operations and
+  real failures remain visible.
 - The ordinary browser shell never waits on the third-party Telegram runtime.
   A same-origin parser bootstrap requests that runtime only when Telegram launch
   parameters or a native Telegram bridge are already present, preserving the
