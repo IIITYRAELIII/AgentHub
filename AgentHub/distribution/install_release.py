@@ -887,7 +887,7 @@ def node_entrypoint(row):
         if arg in values:
             if i+1 >= len(args): return None
             i += 2
-        elif arg in flags or (arg.startswith("--") and "=" in arg) or (arg.startswith("-r") and len(arg)>2):
+        elif arg in flags or (arg.startswith("--") and "=" in arg and option_name in values | flags) or (arg.startswith("-r") and len(arg)>2):
             i += 1
         else:
             # Unknown option arity cannot turn its value into executable code.

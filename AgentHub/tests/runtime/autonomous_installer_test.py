@@ -65,6 +65,8 @@ class AutonomousInstallerTests(unittest.TestCase):
             (["--eval=code",entry],False),(["--print=code",entry],False),
             (["--check=code",entry],False),(["--run=task",entry],False),(["--test=filter",entry],False),
             (["--import="+unrelated,entry],True),
+            (["--require="+unrelated,entry],True),
+            (["--unknown-mode=value",entry],False),(["--prof-process=logfile",entry],False),
             (["--unknown-value-option",entry,unrelated],False)]:
             row=dict(ExecutablePath=node,CommandLine=subprocess.list2cmdline([node,*args]))
             self.assertEqual(installer.selected_process(row,root),expected,args)
