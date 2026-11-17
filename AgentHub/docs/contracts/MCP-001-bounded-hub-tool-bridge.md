@@ -1,5 +1,11 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+RM-only `hub_task_complete` supports explicit `manual_delivery` with exact
+revision/release/manifest hash and the configured installation root. Existing
+authenticated mutation, original receipt, preview token and Task CAS remain
+owners. It closes a verified Done card while preserving its artifacts; WIP
+cleanup and publication history remain separate (ADR-HUB-466).
+
 Release-only tools and their HTTP/CLI adapters are removed by ADR-HUB-463.
 No `hub_release_*` request is admitted. Historical receipts are preserved; no
 release worker resumes them. The Task and generic original-receipt invariants

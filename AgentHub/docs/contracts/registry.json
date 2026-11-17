@@ -673,7 +673,9 @@
         "docs/decisions/ADR-HUB-463-remove-release-mechanism.md",
         "src/infrastructure/persistence/task-publication-history.mjs",
         "src/domain/legacy-task-publication-*.mjs",
-        "tests/application/tasks-without-release.test.mjs"
+        "tests/application/tasks-without-release.test.mjs",
+        "src/infrastructure/filesystem/manual-task-delivery.mjs",
+        "tests/infrastructure/filesystem/manual-task-delivery.test.mjs"
       ]
     },
     {

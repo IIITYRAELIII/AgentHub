@@ -1,5 +1,17 @@
 # REL-001 — Task Git integration
 
+## Verified manual delivery (ADR-HUB-466)
+
+RM Task Complete may explicitly verify a real manual installation instead of
+consulting an old publication generation. Exact runtime/manifest/source,
+main/origin and Task-result containment are mandatory. Workflow Done precedes
+closing; preview/confirmation uses existing Task CAS. All Task Git artifacts,
+ignored WIP and dependency receipts are preserved. Cleanup is separate.
+The explicit main-to-dev service may bind the same proof to its existing
+isolated native sync journal and expected dev revision. Normal conflict
+resolution and fresh delivery fences precede dev CAS. Historical publication
+and UNKNOWN receipts retain their meaning; no release generation is made.
+
 ## Scope after removal of the release mechanism (ADR-HUB-463)
 
 The application has no release operation, generation, freeze, publication worker,
