@@ -12,13 +12,11 @@ export const NATIVE_CAPTURE_RUNTIME_ASSET = "src/infrastructure/filesystem/seale
 
 const MODULE_FILE_PATTERN = /\.(?:cjs|mjs)$/iu;
 
-export const RELEASE_PROGRESS_RUNTIME_ASSETS = Object.freeze([
-  "release-progress/server.mjs", "release-progress/reader.mjs", "release-progress/identity.mjs",
-  "release-progress/index.html", "release-progress/app.js", "release-progress/style.css",
-]);
+export const RELEASE_PROGRESS_RUNTIME_ASSETS = Object.freeze([]);
 const RELEASE_PROGRESS_RUNTIME_FILES = new Set(RELEASE_PROGRESS_RUNTIME_ASSETS);
 const SOURCE_OPERATOR_FILES = new Set([
-  "recipe.mjs", "release-version.mjs", "wrangler-runner.mjs", "release.mjs", "publish-all.mjs", "publish-changed.mjs", "release-api.mjs", "build-runtime.mjs",
+  "android-build.mjs", "extension-maintenance.mjs",
+  "release-operation-publication-runner.mjs", "recipe.mjs", "release-version.mjs", "wrangler-runner.mjs", "release.mjs", "publish-all.mjs", "publish-changed.mjs", "release-api.mjs", "build-runtime.mjs",
   "src/composition/release-api-runtime.mjs", "src/interfaces/mcp/release-api-host.mjs",
 ]);
 

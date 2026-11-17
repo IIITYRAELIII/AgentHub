@@ -6,10 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { DatabaseSync } from "node:sqlite";
-import { releaseIdentitySha256, releaseSelectionSha256 } from "../../../src/domain/release-operation.mjs";
-import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
-import { runtimeDatabasePath } from "../../../src/infrastructure/persistence/runtime-state-store.mjs";
+
+
+
+
 import { TaskGitWorkspaceService, runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { releaseTaskNetProjections } from "../../../src/infrastructure/filesystem/release-task-net-projection.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
@@ -21,165 +21,9 @@ import { retainedLegacySelectedPreview, retainLegacySelectedOriginal } from "../
 const exec = promisify(execFile);
 const TASK_ID = "367ffe17-f69f-4886-b9be-901558ecace2";
 
-test("retained selected Test proof survives its exact partial native publication but refuses foreign origin", async t => {
-  const f = await fixture(t);
-  const preview = await retainedLegacySelectedPreview(f, { taskId: TASK_ID, expectedTaskRevision: 1,
-    authority: { workspaceId: "workspace", streamId: "rm", provider: "codex", threadId: "thread", proofRequestId: "retained-published" } });
-  await retainLegacySelectedOriginal(f, preview, "retained-published");
-  await f.service.withTaskLock(TASK_ID, lease => f.service.applySelectedCompositionOwned(preview, { operationId: "retained-published", lease }));
-  const tasks = [{ taskId: TASK_ID, taskRevision: 2, projectRoot: f.root,
-    branch: f.taskWorkspace.branch, resultCommit: f.task,
-    selectedCompositionRequired: true, selectedComposition: preview }];
-  const evidence = () => f.service.releaseIntegrationEvidence({ projectRoot: f.root, tasks });
-  await evidence();
-  await git(f.root, "push", "-q", "origin", `${f.proof}:refs/heads/main`);
-  await assert.rejects(evidence(), /remote advanced/u);
-  const store = new ReleaseOperationStore({ dataDir: f.dataDir });
-  const operation = store.create({ operationId: "native-partial", requestId: "native-partial", workspaceId: "workspace", streamId: "rm", threadId: "thread",
-    authorization: { taskIds: [TASK_ID], approvedTargets: [{ id: "production", kind: "git-runtime" }], validationMode: "full" }, runnerVersion: "test" }).operation;
-  const generation = store.putGeneration({ operationId: operation.operationId, generation: 1,
-    repositoryBases: [{ repositoryRoot: f.root, baseCommit: f.local }], selectedResults: tasks,
-    candidates: [{ repositoryRoot: f.root, releaseRoot: f.root, commit: f.proof, tree: f.tree, manifestHash: "a".repeat(64),
-      manifest: { workspaceId: "workspace", compositionPolicy: "main-selected-git-merge-v1",
-        baseProvenance: { publishedBaseCommit: f.published }, tasks } }], runnerVersion: "test" }).generation;
-  const validation = store.beginStep({ operationId: operation.operationId, generation: 1, stepId: "validate", input: { candidate: f.proof } }).receipt;
-  store.finishStep(validation, { status: "applied" });
-  const database = new DatabaseSync(runtimeDatabasePath(f.dataDir));
-  f.closeResources.push(() => database.close());
-  // External owner's persisted shape. The installed store has no executable
-  // native capability; the proof read must preserve these rows and receipts.
-  const persisted = { ...operation, state: "publish", currentGeneration: 1, selectedResults: generation.selectedResults,
-    authorization: { ...operation.authorization, nativeOwnerCutover: { schemaVersion: 1, kind: "native-publication-owner-v1" } } };
-  const { fingerprint: originalFingerprint, ...originalAuthority } = persisted.authorization;
-  persisted.authorization.fingerprint = releaseIdentitySha256(originalAuthority);
-  const save = value => database.prepare("UPDATE release_operations SET state=?, operation_json=? WHERE operation_id=?")
-    .run(value.state, JSON.stringify(value), operation.operationId);
-  save(persisted);
-  const rows = () => JSON.stringify({ operation: database.prepare("SELECT * FROM release_operations").all(),
-    generations: database.prepare("SELECT * FROM release_candidate_generations").all(), receipts: database.prepare("SELECT * FROM release_step_receipts").all() });
-  const before = rows();
-  assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
-  assert.equal(rows(), before);
-  for (const changed of [{ ...persisted, state: "waiting", resumeState: "compose" },
-    { ...persisted, currentGeneration: 2 }, { ...persisted, selectedResults: [] }]) {
-    save(changed); const unchanged = rows();
-    assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
-    assert.equal(rows(), unchanged);
-  }
-  for (const changed of [{ ...persisted, workspaceId: "foreign" },
-    { ...persisted, authorization: { ...persisted.authorization, taskIds: ["foreign"] } },
-    { ...persisted, authorization: { ...persisted.authorization, nativeOwnerCutover: null } }]) {
-    save(changed); await assert.rejects(evidence(), /remote advanced|authorization identity changed/u);
-  }
-  save(persisted);
-  await git(f.root, "update-ref", "refs/heads/foreign", f.proof);
-  await git(f.root, "switch", "-q", "foreign");
-  await writeFile(path.join(f.root, "foreign.txt"), "foreign\n");
-  await git(f.root, "add", "-f", "foreign.txt");
-  await git(f.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "foreign");
-  const foreign = await git(f.root, "rev-parse", "HEAD");
-  await git(f.root, "push", "-q", "origin", `${foreign}:refs/heads/main`);
-  await git(f.root, "switch", "-q", "main");
-  await assert.rejects(evidence(), /remote advanced/u);
-  assert.equal(rows(), before);
-});
 
-test("retained selected acceptance uses OWN historical facts after terminal and later selection changes", async t => {
-  const f = await fixture(t);
-  const preview = await retainedLegacySelectedPreview(f, { taskId: TASK_ID, expectedTaskRevision: 1,
-    authority: { workspaceId: "workspace", streamId: "rm", provider: "codex", threadId: "thread", proofRequestId: "terminal-published" } });
-  await retainLegacySelectedOriginal(f, preview, "terminal-published");
-  await f.service.withTaskLock(TASK_ID, lease => f.service.applySelectedCompositionOwned(preview, { operationId: "terminal-published", lease }));
-  const tasks = [{ taskId: TASK_ID, taskRevision: 2, projectRoot: f.root, branch: f.taskWorkspace.branch,
-    resultCommit: f.task, selectedCompositionRequired: true, selectedComposition: preview }];
-  const evidence = () => f.service.releaseIntegrationEvidence({ projectRoot: f.root, tasks });
-  await git(f.root, "push", "-q", "origin", `${f.proof}:refs/heads/main`);
-  await assert.rejects(evidence(), /remote advanced/u);
-  const store = new ReleaseOperationStore({ dataDir: f.dataDir });
-  const operation = store.create({ operationId: "terminal-native", requestId: "terminal-native", workspaceId: "workspace", streamId: "rm", threadId: "thread",
-    authorization: { taskIds: [TASK_ID], approvedTargets: [{ targetId: "production", kind: "agent-hub-publication",
-      repositoryRoot: f.root, approvedOriginMainCommit: f.published }], validationMode: "full" }, runnerVersion: "test" }).operation;
-  const makeGeneration = (generation, commit) => store.putGeneration({ operationId: operation.operationId, generation,
-    repositoryBases: [{ repositoryRoot: f.root, baseCommit: f.local }], selectedResults: tasks,
-    candidates: [{ repositoryRoot: f.root, releaseRoot: f.root, commit, tree: f.tree, manifestHash: "a".repeat(64),
-      manifest: { workspaceId: "workspace", compositionPolicy: "main-selected-git-merge-v1",
-        baseProvenance: { publishedBaseCommit: f.published }, tasks } }], runnerVersion: "test" }).generation;
-  const prior = makeGeneration(1, f.proof);
-  const applied = (generation, stepId, effect = null) => {
-    const receipt = store.beginStep({ operationId: operation.operationId, generation, stepId, input: { fixture: stepId } }).receipt;
-    store.finishStep(receipt, { status: "applied", effect });
-  };
-  const effect = { targetId: "production", status: "partial", revision: f.proof,
-    releaseVersion: "2026.10.12", publicationStatus: "awaiting_restart" };
-  const advance = patch => {
-    const current = store.get(operation.operationId);
-    const result = store.transition(operation.operationId, patch, { expectedRevision: current.revision });
-    assert.equal(result.applied, true, result.reason);
-  };
-  applied(1, "compose", { identitySha256: prior.identitySha256 });
-  advance({ state: "validate", currentGeneration: 1, selectedResults: prior.selectedResults });
-  applied(1, "validate");
-  advance({ state: "publish" });
-  applied(1, "startup-readback:production", effect);
-  advance({ state: "compose" });
-  const next = makeGeneration(2, f.task);
-  applied(2, "compose", { identitySha256: next.identitySha256 });
-  advance({ state: "validate", currentGeneration: 2, selectedResults: next.selectedResults });
-  const binding = commit => ({ schemaVersion: 1, kind: "native-publication-owner-v1", admissionSha256: "b".repeat(64),
-    source: { root: f.root, branch: "native-fixture", commit, tree: f.tree },
-    intake: { taskRevision: 1, provider: "codex", threadId: "thread", turnId: "turn", serviceTaskId: "service", repositoryRoot: f.root } });
-  const seal = record => ({ ...record, recordHash: releaseIdentitySha256(record) });
-  const original = binding(f.local), recovered = binding(f.task), corrected = binding(f.proof);
-  const recovery = seal({ schemaVersion: 1, kind: "reviewed-native-owner-recovery-v1", originalBinding: original,
-    binding: recovered, executionBindingHash: releaseIdentitySha256(recovered), preservedSha256: "c".repeat(64) });
-  const oldEffects = { generation: 1, publishStarted: true, targets: { production: effect } };
-  const correction = seal({ schemaVersion: 1, kind: "reviewed-native-startup-correction-v1",
-    binding: corrected, executionBindingHash: releaseIdentitySha256(corrected), preservedSha256: "d".repeat(64),
-    previousExecutionBinding: recovered, previousPublicationEffects: oldEffects,
-    scope: { priorGeneration: 1, nextGeneration: 2, priorIdentitySha256: prior.identitySha256, priorCommit: f.proof,
-      releaseVersion: "2026.10.12", selectionSha256: releaseSelectionSha256(next.selectedResults), effects: [effect] } });
-  const { fingerprint, ...oldAuthorization } = operation.authorization;
-  const authorization = { ...oldAuthorization, nativeOwnerCutover: original };
-  const persisted = { ...store.get(operation.operationId), state: "failed", currentGeneration: 2, completedAt: new Date().toISOString(), owner: null,
-    selectedResults: next.selectedResults, authorization: { ...authorization, fingerprint: releaseIdentitySha256(authorization) },
-    nativeOwnerRecovery: recovery, nativeStartupCorrection: correction,
-    publicationEffects: { generation: 2, targets: {}, priorGenerations: { 1: oldEffects } } };
-  const database = new DatabaseSync(runtimeDatabasePath(f.dataDir));
-  f.closeResources.push(() => database.close());
-  // A private external-owner terminal shape; public acceptance performs only reads.
-  const save = value => database.prepare("UPDATE release_operations SET state=?, operation_json=? WHERE operation_id=?")
-    .run(value.state, JSON.stringify(value), operation.operationId);
-  const rows = () => JSON.stringify({ operation: database.prepare("SELECT * FROM release_operations").all(),
-    generations: database.prepare("SELECT * FROM release_candidate_generations").all(), receipts: database.prepare("SELECT * FROM release_step_receipts").all() });
-  save(persisted); const before = rows();
-  assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
-  assert.equal(rows(), before);
-  for (const mutate of [value => { value.owner = { ownerId: "live" }; },
-    value => { value.state = "done"; }, value => { value.selectedResults = []; },
-    value => { value.currentGeneration = 1; }]) {
-    const changed = structuredClone(persisted); mutate(changed); save(changed);
-    const immutable = rows();
-    assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
-    assert.equal(rows(), immutable, "authorship read grants no owner or effect mutation");
-  }
-  for (const mutate of [value => { value.workspaceId = "foreign"; },
-    value => { value.authorization.nativeOwnerCutover.admissionSha256 = "f".repeat(64); }]) {
-    const changed = structuredClone(persisted); mutate(changed); save(changed);
-    const immutable = rows(); await assert.rejects(evidence(), /remote advanced|authorization identity changed/u);
-    assert.equal(rows(), immutable);
-  }
-  save(persisted);
-  const readback = database.prepare("SELECT receipt_json FROM release_step_receipts WHERE step_id='startup-readback:production'").get();
-  database.prepare("UPDATE release_step_receipts SET status='failed', receipt_json=? WHERE step_id='startup-readback:production'")
-    .run(JSON.stringify({ ...JSON.parse(readback.receipt_json), status: "failed" }));
-  const historical = rows();
-  assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
-  assert.equal(rows(), historical, "actual OWN commit and validation establish authorship without a special startup receipt");
-  database.prepare("UPDATE release_step_receipts SET status='applied', receipt_json=? WHERE step_id='startup-readback:production'").run(readback.receipt_json);
-  assert.equal(rows(), before);
-  await git(f.root, "push", "-q", "--force", "origin", `${f.task}:refs/heads/main`);
-  await assert.rejects(evidence(), /remote advanced/u); assert.equal(rows(), before);
-});
+
+
 
 async function git(cwd, ...args) {
   return (await exec("git", args, { cwd })).stdout.trim();

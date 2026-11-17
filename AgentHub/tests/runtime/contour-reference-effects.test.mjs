@@ -14,7 +14,7 @@ import { UsageSyncAutoService } from "../../src/application/usage-sync-auto-serv
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
 import { taskRepositoryKey } from "../../src/domain/task-git-reference.mjs";
 
@@ -73,7 +73,7 @@ test("recording Git owners reject copied Task cleanup before CAS and preserve re
 
 test("recording Git owners deny every executable public operation before argument or lease processing", async (t) => {
   const { root, policy } = await fixture(t);
-  for (const Owner of [TaskGitWorkspaceService, ReleaseGitWorkspaceService]) {
+  for (const Owner of [TaskGitWorkspaceService, TaskIntegrationGitService]) {
     assert.throws(() => new Owner({ dataDir: root, contourExternalEffects: { exclude() {} } }), /Unverified/);
     const owner = new Owner({ dataDir: root, contourExternalEffects: policy });
     for (const method of Object.getOwnPropertyNames(Owner.prototype)
@@ -81,7 +81,7 @@ test("recording Git owners deny every executable public operation before argumen
       await assert.rejects(async () => owner[method](), { code: "CONTOUR_EXTERNAL_EFFECT_EXCLUDED" }, `${Owner.name}.${method}`);
     }
   }
-  const release = new ReleaseGitWorkspaceService({ dataDir: root, contourExternalEffects: policy });
+  const release = new TaskIntegrationGitService({ dataDir: root, contourExternalEffects: policy });
   let changed = false;
   await assert.rejects(release.withAwaitTransition("workspace", async () => { changed = true; }), { code: "CONTOUR_EXTERNAL_EFFECT_EXCLUDED" });
   assert.equal(changed, false);

@@ -426,7 +426,7 @@
     },
     {
       "id": "REL-001",
-      "title": "Task-backed Workspace release",
+      "title": "Task Git integration",
       "document": "REL-001-task-backed-release.md",
       "paths": [
         "docs/decisions/ADR-HUB-422-public-runtime-installer.md",
@@ -454,7 +454,7 @@
         "assets/web-app/task-board.js",
         "src/application/sqlite-mutation-owner.mjs",
         "src/application/workspace-release-service.mjs",
-        "src/application/workspace-release-preflight-service.mjs",
+        "src/application/task-integration-service.mjs",
         "src/application/release-operation-*.mjs",
         "src/application/workspace-release-operation-adapter.mjs",
         "src/application/task-board-service.mjs",
@@ -483,7 +483,7 @@
         "tests/infrastructure/persistence/test-retry-plan.test.mjs",
         "docs/decisions/ADR-HUB-351-release-metadata-amendment.md",
         "docs/decisions/ADR-HUB-391-validation-retry-admission.md",
-        "src/domain/workspace-release-workflow.mjs",
+        "src/domain/workspace-task-workflow.mjs",
         "src/domain/release-primary-workspace-policy.mjs",
         "src/infrastructure/persistence/task-board-store.mjs",
         "src/infrastructure/persistence/workspace-catalog-store.mjs",
@@ -492,7 +492,7 @@
         "src/infrastructure/persistence/release-publication-verifier.mjs",
         "src/infrastructure/filesystem/task-git-workspace.mjs",
         "src/infrastructure/filesystem/task-worktree-dependencies.mjs",
-        "src/infrastructure/filesystem/release-git-workspace.mjs",
+        "src/infrastructure/filesystem/task-integration-git.mjs",
         "src/infrastructure/filesystem/prepared-evidence-recovery.mjs",
         "src/infrastructure/filesystem/release-task-net-projection.mjs",
         "src/infrastructure/filesystem/freeze-publication-candidate.mjs",
@@ -612,7 +612,7 @@
         "tests/application/task-direct-published-cleanup.test.mjs",
         "docs/decisions/ADR-HUB-369-direct-published-cleanup.md",
         "src/infrastructure/filesystem/cleanup-preservation.mjs",
-        "src/application/task-release-plan-service.mjs",
+        "src/application/task-composition-plan-service.mjs",
         "tests/application/prepared-release-boundary.test.mjs",
         "docs/decisions/ADR-HUB-364-whole-prepared-release.md",
         "src/domain/runtime-package-identity.mjs",
@@ -670,7 +670,11 @@
         "tests/helpers/external-release-recipe.fixture.mjs",
         "tests/helpers/external-runtime-builder.fixture.mjs",
         "tests/infrastructure/filesystem/publication-freeze-adapter.test.mjs",
-        "recipe.mjs"
+        "recipe.mjs",
+        "docs/decisions/ADR-HUB-463-remove-release-mechanism.md",
+        "src/infrastructure/persistence/task-publication-history.mjs",
+        "src/domain/legacy-task-publication-*.mjs",
+        "tests/application/tasks-without-release.test.mjs"
       ]
     },
     {

@@ -9,7 +9,7 @@ const WORKSPACE_MUTATIONS = new Set([
   "bindMcpOperationInterstreamContentHash", "bindTaskOperationExecution", "requestTaskOperationInterruption", "finishTaskOperationInterruption",
   "completeMcpOperation", "recoverCompactedCleanupPreview", "failMcpOperation", "recordClaimAdmissionRefusal", "cancelMcpOperation", "beginMcpOperationReconciliation",
   "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation", "recordMcpOperationCompletionFailure",
-  "checkpointMcpPreparation", "settleMcpPreparationFailure", "checkpointClaimCustody", "checkpointMcpPreparationForward",
+  "checkpointClaimCustody",
   "mergeWorkspaces", "createWorkspaceFromStream", "createStream", "renameStream",
   "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   "moveStreamToStart", "reorderStream", "moveStreamOrdered", "bindThread", "rebindThread",
@@ -34,8 +34,8 @@ const TASK_MUTATIONS = new Set([
   "completePreparedStartCancellation", "markStarted", "complete", "setWorkflowStatus", "claim",
   "requestWorkflowStatus", "beginLifecycleTransition", "recordWorkflowAdmissionRefusal", "recordUnadmittedAwaitRefusal", "failLifecycleTransition", "resumeConfirmedDeleteTransition",
   "commitWorkflowTransition", "commitSquashTransferTransition", "rollbackWorkflowOutcome", "finalizeCleanupTransition", "recordTaskTurn",
-  "recordTaskGitReference", "adoptLegacyGitReference", "completeRelease", "completeReleaseOperation", "remove", "setCaptureEnabled",
-  "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending", "recordReleaseFinalizationStage",
+  "recordTaskGitReference", "adoptLegacyGitReference", "remove", "setCaptureEnabled",
+  "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending",
 ]);
 
 // These owners perform external effects outside SQL retry and queue their own

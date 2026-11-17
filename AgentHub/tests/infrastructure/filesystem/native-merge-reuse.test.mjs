@@ -12,7 +12,7 @@ import { performance } from "node:perf_hooks";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 
 const execute = promisify(execFile);
 async function git(cwd, ...args) {
@@ -408,7 +408,7 @@ test("actual preparation admits one legacy prepared seed and still refuses missi
   await git(f.root, "init", "--bare", "--initial-branch=main", origin);
   await git(f.source, "remote", "add", "origin", origin); await git(f.source, "push", "origin", "main");
   const a = await f.result("A", "A.txt", "a\n"), b = await f.result("B", "B.txt", "b\n");
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"),
+  const service = new TaskIntegrationGitService({ dataDir: path.join(f.root, "data"),
     environment: { ...process.env, LOCALAPPDATA: path.join(f.root, "runtime"), XDG_STATE_HOME: path.join(f.root, "runtime") } });
   const request = (tasks, planRevision) => ({ workspaceId: "fixture", projectRoot: f.source,
     approvedBaseCommit: f.base, frozenTasks: tasks, planRevision });

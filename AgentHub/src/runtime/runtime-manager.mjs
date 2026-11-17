@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { artifactVersionIdentity } from "../domain/agent-hub-version.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
-import { releaseRecipeModule } from "../infrastructure/process/release-recipe.mjs";
+import { readReleaseToolPackage } from "../infrastructure/process/release-tool-package.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
@@ -169,9 +169,9 @@ async function installStableRuntimeFiles(layout, releaseRoot, {
 }
 
 export async function prepareRuntime(options = {}) {
-  const { recipe } = await releaseRecipeModule();
-  if (typeof recipe.prepareArtifact !== "function") throw new Error("Pinned recipe has no artifact preparation API");
-  return recipe.prepareArtifact({ sourceRoot: SOURCE_ROOT, ...options });
+  const tool = await readReleaseToolPackage();
+  const builder = await tool.module("src/runtime-build.mjs");
+  return builder.prepareRuntime({ sourceRoot: SOURCE_ROOT, ...options });
 }
 
 export async function verifyInstalledRuntime({ runtimeRoot = defaultRuntimeRoot(), releaseId, releaseRoot }) {

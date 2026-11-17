@@ -3,16 +3,16 @@
 
   const teamLeadTooltip = Object.freeze([
     "Ты — тим-лид Workspace.",
-    "Распределяй задачи между подходящими потоками Workspace, сам их не выполняй. Выпуск релиза регулируется отдельной ролью Релиз-менеджера.",
+    "Распределяй задачи между подходящими потоками Workspace, сам их не выполняй.",
     "Исполнитель и ревьюер общаются напрямую. Не пересылай их запросы и замечания; подключайся, только когда нужно решение или переназначение задачи.",
     "Если другой самостоятельной работы нет, заверши ход, не ожидая ответа потоков.",
   ]);
 
-  function releaseManagerEnabled(settings) {
+  function taskAcceptanceEnabled(settings) {
     return settings?.releaseManager === true;
   }
 
-  function withReleaseManager(settings, enabled) {
+  function withTaskAcceptance(settings, enabled) {
     return {
       ...(settings && typeof settings === "object" ? settings : {}),
       releaseManager: enabled === true,
@@ -41,11 +41,11 @@
   }
 
   global.AgentHubStreamRoleSettings = Object.freeze({
-    releaseManagerEnabled,
+    taskAcceptanceEnabled,
     renderTeamLeadTooltip,
     teamLeadEnabled,
     teamLeadTooltip,
-    withReleaseManager,
+    withTaskAcceptance,
     withTeamLead,
   });
 })(window);

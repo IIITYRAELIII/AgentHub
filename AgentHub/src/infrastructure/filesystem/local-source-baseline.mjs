@@ -6,7 +6,7 @@ import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash,
   normalizedReleaseBaseProvenance, assertHistoricalChangelogOriginal } from "../../domain/release-base-provenance.mjs";
 import { runtimeRetirementCandidates } from "./runtime-release-retention-policy.mjs";
 import { runtimeHostSourceHash } from "../process/runtime-host-source-identity.mjs";
-import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
+import { TaskPreparationRejectedError } from "../../domain/task-preparation-error.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { publicationStateRepositories } from "../persistence/publication-state.mjs";
 import { canonicalPath } from "./config.mjs";
@@ -15,7 +15,7 @@ import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { verifyRuntimeManifest } from "./runtime-manifest-verifier.mjs";
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
-const reject = message => { throw new ReleasePreparationRejectedError(`Installed local source baseline: ${message}`); };
+const reject = message => { throw new TaskPreparationRejectedError(`Installed local source baseline: ${message}`); };
 const normalized = bytes => Buffer.from(Buffer.from(bytes).toString("utf8").replace(/\r\n/gu, "\n"));
 const metadata = name => /^(?:docs|tests)\//u.test(name)
   || /(?:^|\/)[^/]+\.test\.(?:mjs|cjs|js)$/u.test(name) || /^(?:README|AGENTS)\.md$/u.test(name)

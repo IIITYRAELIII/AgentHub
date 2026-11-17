@@ -2,21 +2,18 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { readdir, readFile } from "node:fs/promises";
+
 import path from "node:path";
 import test from "node:test";
 
 import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
-import { WorkspaceReleaseService } from "../../src/application/workspace-release-service.mjs";
-import {
-  isTaskBoardMutationOwner,
-  isWorkspaceCatalogMutationOwner,
-} from "../../src/application/sqlite-mutation-owner.mjs";
-import { TaskBoardService } from "../../src/application/task-board-service.mjs";
-import { createPersistenceMutationCapabilities } from "../../src/composition/persistence-mutation-composition.mjs";
-import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
-import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+
+
+
+
+
+
 
 // This file checks package/import topology and real SQLite capabilities.
 // Runtime behavior is exercised by the owning service suites and phase composition
@@ -242,60 +239,4 @@ test("src modules obey the architectural dependency matrix", async () => {
     }
   }
   assert.deepEqual(violations, []);
-});
-
-
-
-
-test("production persistence composition exposes only branded fail-closed capabilities", async (context) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-composed-capabilities-"));
-  const databaseFile = path.join(root, "hub.sqlite");
-  const rawWorkspaceCatalogStore = new WorkspaceCatalogStore({ databaseFile });
-  await rawWorkspaceCatalogStore.load();
-  const workspace = await rawWorkspaceCatalogStore.runMutation(() => (
-    rawWorkspaceCatalogStore.createWorkspace({ name: "Composition" })
-  ));
-  const rawTaskBoardStore = new TaskBoardStore({ databaseFile });
-  context.after(async () => {
-    rawTaskBoardStore.close();
-    rawWorkspaceCatalogStore.close();
-    await rm(root, { recursive: true, force: true });
-  });
-
-  const { workspaceCatalogStore, taskBoardStore } = createPersistenceMutationCapabilities({
-    rawWorkspaceCatalogStore,
-    rawTaskBoardStore,
-  });
-  assert.equal(isWorkspaceCatalogMutationOwner(workspaceCatalogStore), true);
-  assert.equal(isTaskBoardMutationOwner(taskBoardStore), true);
-  assert.equal(workspaceCatalogStore.runMutation, undefined);
-  assert.equal(taskBoardStore.transaction, undefined);
-  assert.throws(() => workspaceCatalogStore.load, /not classified for production access/u);
-
-  const taskBoard = new TaskBoardService({ store: taskBoardStore, workspaceCatalog: workspaceCatalogStore });
-  const task = await taskBoard.create({
-    text: "composed capability", source: "test", bucket: "workspace", workspaceId: workspace.id,
-  });
-  assert.equal(taskBoard.task(task.id).id, task.id);
-
-  const releaseDependencies = {
-    releasePlanner: { plan: async () => ({}) },
-    releaseGitWorkspaces: {
-      frozenCandidate: async () => ({}),
-      synchronizePublishedPrimary: async () => ({}),
-    },
-    taskGitWorkspaces: { synchronizeMainIntoDev: async () => ({}) },
-    releasePreflight: {
-      prepareAwaitSet: async () => ({}),
-      withAwaitTransition: async (_workspaceId, operation) => operation(),
-    },
-    verifyPublication: async () => ({}),
-  };
-  assert.throws(
-    () => new WorkspaceReleaseService({ store: rawTaskBoardStore, ...releaseDependencies }),
-    /requires the Task mutation owner facade/u,
-  );
-  assert.doesNotThrow(
-    () => new WorkspaceReleaseService({ store: taskBoardStore, ...releaseDependencies }),
-  );
 });

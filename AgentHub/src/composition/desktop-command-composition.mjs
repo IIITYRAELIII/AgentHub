@@ -76,8 +76,6 @@ export function createDesktopCommandComposition({
       moveWorkspaceToFolder: workspaceActions.moveWorkspaceToFolder,
       renameWorkspaceFolder: workspaceActions.renameWorkspaceFolder,
       updateWorkspaceDeveloperRules: workspaceActions.updateWorkspaceDeveloperRules,
-      readWorkspaceReleasePlan: workspaceActions.readWorkspaceReleasePlan,
-      completeWorkspaceRelease: workspaceActions.completeWorkspaceRelease,
       createWorkspace: workspaceActions.createWorkspace,
       archiveWorkspace: workspaceActions.archiveWorkspace,
       restoreWorkspace: workspaceActions.restoreWorkspace,

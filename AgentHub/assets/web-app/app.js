@@ -119,13 +119,13 @@ const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rul
 const workspaceCardQuickMessagesEntry = document.querySelector("[data-workspace-card-quick-messages-entry]");
 const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-card-quick-messages-count]");
 const workspaceCardArchive = document.querySelector("[data-workspace-card-archive]");
-const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
-const workspaceCardReleaseWorkflowTooltip = document.querySelector("[data-workspace-release-workflow-tooltip]");
+const workspaceCardTaskWorkflow = document.querySelector("[data-workspace-task-workflow]");
+const workspaceCardTaskWorkflowTooltip = document.querySelector("[data-workspace-task-workflow-tooltip]");
 const workspaceCardAutoReview = document.querySelector("[data-workspace-auto-review]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
-window.AgentHubWorkspaceReleaseWorkflow?.renderTooltip(workspaceCardReleaseWorkflowTooltip);
-window.AgentHubWorkspaceReleaseWorkflow?.renderAutoReviewTooltip(document.querySelector("[data-workspace-auto-review-tooltip]"));
+window.AgentHubWorkspaceTaskWorkflow?.renderTooltip(workspaceCardTaskWorkflowTooltip);
+window.AgentHubWorkspaceTaskWorkflow?.renderAutoReviewTooltip(document.querySelector("[data-workspace-auto-review-tooltip]"));
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
@@ -187,7 +187,7 @@ const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-
 const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
-const dialogStreamReleaseManager = document.querySelector("[data-dialog-stream-release-manager]");
+const dialogStreamTaskAcceptance = document.querySelector("[data-dialog-stream-task-acceptance]");
 const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
 const dialogStreamTeamLeadTooltip = document.querySelector("[data-stream-team-lead-tooltip]");
 const dialogStreamQuickMessagesEntry = document.querySelector("[data-dialog-stream-quick-messages-entry]");
@@ -5312,7 +5312,7 @@ function openWorkspaceCard(workspaceId) {
   workspaceWorkingDirectoryField?.setValue(String(workspace.settings?.workingDirectory ?? ""));
   workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
-  workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
+  workspaceCardTaskWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
   workspaceCardAutoReview.checked = workspace.settings?.autoReviewEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages(workspace.id);
@@ -5349,7 +5349,7 @@ function openNewWorkspaceCard() {
   workspaceWorkingDirectoryField?.setValue("");
   workspaceCardTaskPrefix.value = "";
   workspaceCardRules.value = "";
-  workspaceCardReleaseWorkflow.checked = false;
+  workspaceCardTaskWorkflow.checked = false;
   workspaceCardAutoReview.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages("");
@@ -10341,7 +10341,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
       workingDirectory: workspaceCardWorkingDirectory.value.trim(),
       taskPrefix: workspaceCardTaskPrefix.value.trim(),
       rules: workspaceCardRules.value,
-      releaseWorkflowEnabled: workspaceCardReleaseWorkflow.checked,
+      releaseWorkflowEnabled: workspaceCardTaskWorkflow.checked,
       autoReviewEnabled: workspaceCardAutoReview.checked,
       beforeColumnId: order[targetIndex] ?? null,
     });
@@ -10350,7 +10350,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
   }
   const workspace = workspaceCatalogItem(workspaceCardId);
   if (!workspace) return closeWorkspaceCard();
-  const releaseWorkflowEnabled = workspaceCardReleaseWorkflow.checked;
+  const releaseWorkflowEnabled = workspaceCardTaskWorkflow.checked;
   const columnId = `workspace:${workspace.id}`;
   const remaining = order.filter((id) => id !== columnId);
   const targetIndex = Math.max(0, Math.min(remaining.length, requestedOrder - 1));
@@ -10720,9 +10720,9 @@ function renderDialogSettings() {
     }
     streamWorkingDirectoryField?.refresh();
   }
-  if (dialogStreamReleaseManager) {
-    dialogStreamReleaseManager.checked = streamRoleSettings.releaseManagerEnabled(task?.streamSettings);
-    dialogStreamReleaseManager.disabled = !task?.streamId;
+  if (dialogStreamTaskAcceptance) {
+    dialogStreamTaskAcceptance.checked = streamRoleSettings.taskAcceptanceEnabled(task?.streamSettings);
+    dialogStreamTaskAcceptance.disabled = !task?.streamId;
   }
   if (dialogStreamTeamLead) {
     dialogStreamTeamLead.checked = streamRoleSettings.teamLeadEnabled(task?.streamSettings);
@@ -10910,11 +10910,11 @@ dialogSettings.addEventListener("change", (event) => {
     selectDialogSetting(setting.dataset.dialogOptions, setting.value);
     return;
   }
-  const releaseManager = event.target.closest("[data-dialog-stream-release-manager]");
+  const releaseManager = event.target.closest("[data-dialog-stream-task-acceptance]");
   if (releaseManager) {
     const task = currentTask();
     if (!task?.streamId) return;
-    task.streamSettings = streamRoleSettings.withReleaseManager(task.streamSettings, releaseManager.checked);
+    task.streamSettings = streamRoleSettings.withTaskAcceptance(task.streamSettings, releaseManager.checked);
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
     renderOptions();
     return;

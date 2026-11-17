@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 
 const exec = promisify(execFile);
 
@@ -58,7 +58,7 @@ async function fixture(t) {
   const consumer = { taskId: "consumer", taskRevision: 2, baseCommit: base,
     resultCommit: result, integrations: [await integrate(result, 2)] };
   await git("checkout", "main");
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(root, "data") });
   const prior = await service.prepareCandidate({
     projectRoot: primary, approvedBaseCommit: base,
     planRevision: "before-consumer", frozenTasks: [neighbor],

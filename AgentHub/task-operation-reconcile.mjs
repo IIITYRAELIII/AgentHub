@@ -4,15 +4,13 @@ import { readFile } from "node:fs/promises";
 import { TaskBoardService } from "./src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "./src/application/task-lifecycle-service.mjs";
 import { TaskOperationReconciliationService } from "./src/application/task-operation-reconciliation-service.mjs";
-import { TaskReleasePlanService } from "./src/application/task-release-plan-service.mjs";
-import { WorkspaceReleasePreflightService } from "./src/application/workspace-release-preflight-service.mjs";
-import { resolveReleaseValidationSource } from "./src/composition/infrastructure-composition.mjs";
+import { TaskCompositionPlanService } from "./src/application/task-composition-plan-service.mjs";
+import { TaskIntegrationService } from "./src/application/task-integration-service.mjs";
 import { createPersistenceMutationCapabilities } from "./src/composition/persistence-mutation-composition.mjs";
 import { loadConfig } from "./src/infrastructure/filesystem/config.mjs";
-import { ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "./src/infrastructure/filesystem/task-integration-git.mjs";
 import { TaskGitWorkspaceService } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
 import { readPublicationState } from "./src/infrastructure/persistence/publication-state.mjs";
-import { createRepositoryProductionValidationAdapter } from "./src/infrastructure/process/repository-production-validation.mjs";
 import { openTaskOperationReconciliationStores } from "./src/interfaces/cli/task-operation-reconciliation-runtime.mjs";
 
 function options(argv) {
@@ -76,18 +74,13 @@ try {
     recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir });
-  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir });
-  const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
-  const releasePreflight = new WorkspaceReleasePreflightService({
+  const releaseGitWorkspaces = new TaskIntegrationGitService({ dataDir: config.dataDir });
+  const releasePlanner = new TaskCompositionPlanService({ taskBoard, taskGitWorkspaces });
+  const releasePreflight = new TaskIntegrationService({
     releasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,
-    resolveReleaseValidationSource,
     readPublicationState,
-    validateProductionCandidate: createRepositoryProductionValidationAdapter({
-      policies: config.releaseValidation?.repositories ?? [],
-      dataDir: path.join(config.dataDir, "release-validation"),
-    }),
   });
   const taskLifecycle = new TaskLifecycleService({
     taskBoard,

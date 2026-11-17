@@ -14,14 +14,10 @@ export class WorkspaceCatalogService {
   constructor({
     store,
     taskBoard = null,
-    releasePlanner = null,
-    releaseCompleter = null,
     blockingRunForWorkspace = () => null,
   } = {}) {
     this.#store = requiredStore(store);
     this.taskBoard = taskBoard;
-    this.releasePlanner = releasePlanner;
-    this.releaseCompleter = releaseCompleter;
     this.blockingRunForWorkspace = blockingRunForWorkspace;
   }
 
@@ -110,18 +106,6 @@ export class WorkspaceCatalogService {
 
   updateWorkspaceDeveloperRules({ workspaceId, content = "" } = {}) {
     return this.#store.updateWorkspaceDeveloperRules(workspaceId, content);
-  }
-
-  releasePlan({ workspaceId } = {}) {
-    if (typeof this.releasePlanner?.plan !== "function") throw new Error("Task release plan is unavailable");
-    return this.releasePlanner.plan(workspaceId);
-  }
-
-  completeRelease(params = {}) {
-    if (typeof this.releaseCompleter?.completeRelease !== "function") {
-      throw new Error("Task release completion is unavailable");
-    }
-    return this.releaseCompleter.completeRelease(params);
   }
 
   createWorkspaceFromStream({ streamId, name } = {}) {

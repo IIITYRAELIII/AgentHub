@@ -61,8 +61,6 @@ export function createDesktopShellComposition({
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
     taskReleasePlanner,
-    workspaceReleaseService,
-    releaseOperationCommands,
     streamHandoff,
     runtimeStateStore,
     commandTraceService,
@@ -303,8 +301,6 @@ export function createDesktopShellComposition({
   const workspaceCatalog = new WorkspaceCatalogService({
     store: workspaceCatalogStore,
     taskBoard,
-    releasePlanner: taskReleasePlanner,
-    releaseCompleter: workspaceReleaseService,
     blockingRunForWorkspace,
   });
   const workspaceMutation = async (run, { resultKey = "" } = {}) => {
@@ -434,8 +430,7 @@ export function createDesktopShellComposition({
       streamHandoff,
       workspaceCatalog: workspaceCatalogStore,
       workspaceCatalogService: workspaceCatalog,
-      releaseOperationCommands,
-      workspaceMutation,
+        workspaceMutation,
       blockingWorkCount: runtime.restartBlockingWorkCount,
       maintenanceOperations,
       announceDesktopRestart,
@@ -540,8 +535,7 @@ export function createDesktopShellComposition({
         }) ?? fallbackReceipt,
       }),
       commandTrace: commandTraceService,
-      releaseOperationCommands,
-      usageSyncAuto,
+        usageSyncAuto,
       usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
       executionRuntimeLabel: taskExecutionRuntimeLabel,
       sendMessageTo,

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { StorageRetentionService } from "../../src/application/storage-retention-service.mjs";
 import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { RuntimeTimerCoordinator } from "../../src/runtime/runtime-timer-coordinator.mjs";
 import { agentHubRuntimeHealth } from "../../src/application/runtime-health.mjs";
 import { RuntimeUpdateBackupRetention } from "../../src/infrastructure/persistence/runtime-update-backup-retention.mjs";
@@ -16,7 +16,7 @@ RuntimeUpdateBackupRetention.prototype.list = async function (...args) {
   events.push(`list:${this.id}`);
   return backupList.apply(this, args);
 };
-for (const Factory of [TaskGitWorkspaceService, ReleaseGitWorkspaceService]) {
+for (const Factory of [TaskGitWorkspaceService, TaskIntegrationGitService]) {
   const original = Factory.prototype.storageRetentionOwner;
   Factory.prototype.storageRetentionOwner = function (options) {
     if (Factory === TaskGitWorkspaceService) {

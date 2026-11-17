@@ -11,7 +11,7 @@ import {
   normalizedTaskSquashTransfer,
 } from "../../../src/domain/task-squash-transfer.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { releaseTaskNetProjections } from "../../../src/infrastructure/filesystem/release-task-net-projection.mjs";
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 
@@ -390,7 +390,7 @@ test("mandatory results advance before an earlier ordinary integration and rollb
   const conflictTask = task(
     "task-conflict", resultConflict, integrationConflict, integrationA, 2, proofConflict,
   );
-  const service = new ReleaseGitWorkspaceService({ dataDir: releaseData });
+  const service = new TaskIntegrationGitService({ dataDir: releaseData });
   const accepted = await service.prepareCandidate({
     workspaceId: "workspace", planRevision: "two-mandatory",
     projectRoot: root, approvedBaseCommit: main, frozenTasks: [ordinaryTask, taskA, taskB],

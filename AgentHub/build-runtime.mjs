@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { prepareRuntime } from "./src/runtime/runtime-manager.mjs";
 
 // Development compatibility interface. prepareRuntime delegates to the explicit
-// external recipe; this entry owns no application build algorithm or release.
+// external independent builder; this entry owns no application build algorithm or release.
 export async function buildRuntime(args, { prepare = prepareRuntime } = {}) {
   const options = {};
   for (let i = 0; i < args.length; i += 2) {

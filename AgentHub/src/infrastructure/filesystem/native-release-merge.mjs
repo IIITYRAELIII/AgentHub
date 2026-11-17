@@ -8,7 +8,7 @@ import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorp
 import { nativeReuseContext, nativeReuseCandidates, verifiedNativePrefix, retainedNativeConflict } from "./native-merge-reuse.mjs";
 import { measureTaskOperation } from "../process/task-operation-timing.mjs";
 
-// Internal Git sequencing of ReleaseGitWorkspaceService. This has no Task,
+// Internal Git sequencing of TaskIntegrationGitService. This has no Task,
 // publication or ref-promotion authority. The application retains those leases.
 export const NATIVE_RELEASE_POLICY = "main-selected-git-merge-v1";
 

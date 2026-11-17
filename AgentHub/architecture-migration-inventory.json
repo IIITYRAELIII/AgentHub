@@ -1,12 +1,13 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "rootProductionModules": 38,
+    "rootProductionModules": 32,
     "rootTestModules": 0
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
     "agent-hub-server.mjs",
+    "android-build.mjs",
     "build-runtime.mjs",
     "claude-work-log-backfill-cli.mjs",
     "codex-stop-hook-launcher.mjs",
@@ -14,16 +15,9 @@
     "desktop-control.mjs",
     "direct-gateway-cli.mjs",
     "doctor.mjs",
+    "extension-maintenance.mjs",
     "open-local-web.mjs",
-    "publish-all.mjs",
-    "publish-changed.mjs",
     "rate-limit-backfill.mjs",
-    "recipe.mjs",
-    "release-api.mjs",
-    "release-freeze-recovery.mjs",
-    "release-operation-publication-runner.mjs",
-    "release-version.mjs",
-    "release.mjs",
     "request-safe-restart.mjs",
     "runtime-maintenance.mjs",
     "runtime-manager.mjs",

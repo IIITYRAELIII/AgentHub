@@ -11,11 +11,11 @@ import { createPersistenceMutationCapabilities } from "../../src/composition/per
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
-import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { withInterprocessLocks } from "../../src/infrastructure/process/interprocess-lock.mjs";
-import { openReleaseApiHost } from "../../release.mjs";
-import { readReleaseToolPackage } from "../../src/infrastructure/process/release-tool-package.mjs";
-import { spawn } from "node:child_process";
+
+
+
 
 function deferred() {
   let resolve;
@@ -143,7 +143,7 @@ async function actualLockAdmissionError(f, workspaceId = f.workspace.id) {
 
 test("a genuine Await lock admission refusal is durably failed without entering lifecycle", async context => {
   const f = await fixture(context);
-  f.admissionOwner(new ReleaseGitWorkspaceService({ dataDir: f.root }));
+  f.admissionOwner(new TaskIntegrationGitService({ dataDir: f.root }));
   f.failAwait(await actualLockAdmissionError(f));
   const input = { ...f.input, status: "awaiting_implementation" };
   await assert.rejects(f.hub.call("hub_task_status_update", input), error => error.code === "TASK_WORKFLOW_NO_EFFECT");
@@ -156,7 +156,7 @@ test("a genuine Await lock admission refusal is durably failed without entering 
 for (const kind of ["forged", "foreign-lock"]) {
   test(`${kind} lock error cannot gain live Await admission refusal authority`, async context => {
     const f = await fixture(context);
-    f.admissionOwner(new ReleaseGitWorkspaceService({ dataDir: f.root }));
+    f.admissionOwner(new TaskIntegrationGitService({ dataDir: f.root }));
     const genuine = await actualLockAdmissionError(f, kind === "foreign-lock" ? "foreign-workspace" : f.workspace.id);
     const error = kind === "forged" ? Object.assign(new Error(genuine.message), { code: genuine.code }) : genuine;
     f.failAwait(error);
@@ -262,51 +262,7 @@ test("lost reconciliation control completion reads the already settled admission
   assert.equal(f.effects(), 0);
 });
 
-test("external task-reconcile CLI uses the real source API host and canonical SQL owner", async context => {
-  const f = await fixture(context);
-  const input = await unadmittedAwait(f);
-  const original = f.catalog.mcpOperation(input.request_id);
-  const before = f.tasks.task(f.task.id);
-  const tool = await readReleaseToolPackage();
-  const executor = await f.catalog.createStream({ workspaceId: f.workspace.id, name: "Executor" });
-  await f.catalog.bindThread({ streamId: executor.id, provider: "codex", threadId: "executor-thread", projectRoot: f.root });
-  for (const manager of [false, true]) {
-    let closed = false;
-    const host = await openReleaseApiHost({ provider: "codex", threadId: manager ? "fixture-thread" : "executor-thread" }, {
-      openRuntime: async () => ({ service: f.hub, operations: { async drainAddressed() {} }, close() { closed = true; } }),
-    });
-    context.after(() => host.close());
-    const connection = path.join(f.root, `connection-${manager}.json`), request = path.join(f.root, `request-${manager}.json`);
-    await writeFile(connection, JSON.stringify(host.connection));
-    const args = unadmittedReconciliation(f, input, { request_id: `external-reconcile-${manager}` });
-    if (manager) await historicalUnknownControl(f, args);
-    delete args.context_token;
-    await writeFile(request, JSON.stringify(args));
-    const child = spawn(process.execPath, [path.join(tool.root, "bin/release.mjs"), "task-reconcile",
-      "--connection-file", connection, "--request-file", request], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", bytes => { stdout += bytes; }); child.stderr.on("data", bytes => { stderr += bytes; });
-    const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-    const rows = stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
-    assert.equal(code, manager ? 0 : 1, stderr || JSON.stringify(rows.at(-1)));
-    if (manager) {
-      assert.equal(stderr, "");
-      const terminal = rows.at(-1).result;
-      assert.equal(terminal.taskOperation.requestId, args.request_id);
-      assert.equal(terminal.taskOperation.status, "succeeded");
-      assert.equal(terminal.result.resolved, true);
-      assert.equal(terminal.result.receipt.requestId, input.request_id);
-      assert.equal(terminal.result.receipt.status, "failed");
-      assert.deepEqual(f.tasks.lifecycleOutcome(input.request_id).result.noEffect.previousReceipt, original);
-    } else {
-      assert.deepEqual(f.catalog.mcpOperation(input.request_id), original);
-      assert.equal(f.tasks.lifecycleOutcome(input.request_id), null);
-    }
-    await host.close(); assert.equal(closed, true);
-    assert.deepEqual(f.tasks.task(f.task.id), before);
-    assert.equal(f.effects(), 0);
-  }
-});
+
 
 test("ordinary Await with no lifecycle intent is fenced by its canonical outcome before SAME-original settlement", async context => {
   const f = await fixture(context);

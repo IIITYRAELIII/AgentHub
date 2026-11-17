@@ -8,9 +8,9 @@ param(
     [string]$ArtifactVersion = ''
 )
 $ErrorActionPreference = 'Stop'
-$recipeArguments = @('android-build')
+$buildArguments = @()
 foreach ($entry in $PSBoundParameters.GetEnumerator()) {
-    $recipeArguments += @('-' + $entry.Key, [string]$entry.Value)
+    $buildArguments += @('-' + $entry.Key, [string]$entry.Value)
 }
-& node (Join-Path (Split-Path -Parent $PSScriptRoot) 'recipe.mjs') @recipeArguments
-if ($LASTEXITCODE -ne 0) { throw 'External Android recipe failed.' }
+& node (Join-Path (Split-Path -Parent $PSScriptRoot) 'android-build.mjs') @buildArguments
+if ($LASTEXITCODE -ne 0) { throw 'External Android build failed.' }

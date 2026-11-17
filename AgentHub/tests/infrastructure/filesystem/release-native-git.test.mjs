@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
+
 
 import { withTaskOperationTiming, measureTaskOperation, createTaskOperationTimingBatchRecorder }
   from "../../../src/infrastructure/process/task-operation-timing.mjs";
@@ -44,7 +44,7 @@ async function fixture(t, { versioned = false, publicVersion = "2026.10.12", joi
   const base = await commit(primary, "main");
   await git(primary, "push", "origin", "main");
   const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data"), environment });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(root, "data"), environment });
   const branches = new Map();
   const result = async (id, file, text, start = base) => {
     let folder = branches.get(id);
@@ -135,128 +135,11 @@ test("ordinary issued resolutions survive a lost journal reply without review in
   assert.deepEqual(await readFile(path.join(root, "merge.json")), before);
 });
 
-test("manual public version freezes all three numbers and reopens its original interrupted intent", { timeout: 120000 }, async t => {
-  const f = await fixture(t, { versioned: true, publicVersion: "2.0.3" });
-  const a = await f.result("A", "a.txt", "accepted\n");
-  const request = { ...f.request([a]), operationId: "manual-version-original", generation: 1, releaseVersion: "3.7.9" };
-  const prepared = await f.service.prepareCandidate(f.request([a]));
-  const key = createHash("sha256").update(`${request.operationId}:1:${f.primary}`).digest("hex").slice(0, 24);
-  const checkpointFile = path.join(f.root, "data", "release-gens", key, "release-repositories",
-    path.basename(path.dirname(prepared.releaseRoot)), "checkpoint.json");
-  await assert.rejects(f.service.prepareGeneration({ ...request, validateBeforeCommit: async () => {
-    const checkpoint = await readFile(checkpointFile, "utf8").then(JSON.parse, error => { if (error.code === "ENOENT") return null; throw error; });
-    if (checkpoint?.publicationFreeze) throw new Error("controlled interruption after version intent");
-  } }), /controlled interruption after version intent/u);
-  const before = JSON.parse(await readFile(checkpointFile, "utf8"));
-  assert.equal(before.publicationFreeze.releaseVersion, "3.7.9");
-  const reopened = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
-  await assert.rejects(reopened.prepareGeneration({ ...request, releaseVersion: "4.8.10" }), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  const { releaseVersion: _manual, ...omitted } = request;
-  await assert.rejects(reopened.prepareGeneration(omitted), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  const frozen = await reopened.prepareGeneration(request);
-  assert.equal(frozen.manifest.publication.releaseVersion, "3.7.9");
-  assert.equal(frozen.manifest.publication.runtimeReleaseVersion, before.publicationFreeze.runtimeReleaseVersion);
-  const reflog = await git(frozen.releaseRoot, "reflog", "show", "PreRelease");
-  assert.equal((await reopened.prepareGeneration(request)).preReleaseHead, frozen.preReleaseHead);
-  assert.equal(await git(frozen.releaseRoot, "reflog", "show", "PreRelease"), reflog);
-  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
-  assert.equal(JSON.parse(await readFile(path.join(f.primary, "AgentHub/package.json"), "utf8")).version, "2.0.3");
-});
 
-test("normal publication generation requires and captures its ordinary prepared candidate", { timeout: 120000 }, async t => {
-  const f = await fixture(t, { versioned: true }), a = await f.result("A", "a.txt", "accepted\n");
-  const request = { ...f.request([a]), operationId: "one-command", generation: 1 };
-  await assert.rejects(f.service.prepareGeneration(request), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  const prepared = await f.service.prepareCandidate(f.request([a]));
-  const generated = await f.service.prepareGeneration(request);
-  assert.equal(generated.manifest.preparedCandidate.commit, prepared.preReleaseHead);
-  assert.equal(generated.manifest.preparedCandidate.tree, prepared.tree);
-  assert.equal(generated.manifest.tasks[0].resultCommit, a.resultCommit);
-  const reflog = await git(generated.releaseRoot, "reflog", "show", "PreRelease");
-  const reopened = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
-  assert.equal((await reopened.prepareGeneration(request)).preReleaseHead, generated.preReleaseHead);
-  assert.equal(await git(generated.releaseRoot, "reflog", "show", "PreRelease"), reflog);
-  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
-});
 
-test("missing prepared evidence recovers exact captured bytes under the original metadata owner", { timeout: 120000 }, async t => {
-  const f = await fixture(t, { versioned: true });
-  const { createHash: hash } = await import("node:crypto");
-  const sha = value => hash("sha256").update(value).digest("hex");
-  const a = await f.result("A", "a.txt", "accepted\n");
-  const preparation = f.request([a], sha("prepared-plan"));
-  const prepared = await f.service.prepareCandidate(preparation);
-  prepared.checkpointFile = path.join(path.dirname(path.dirname(prepared.manifestFile)), "checkpoint.json");
-  const generationOperationId = "captured-original";
-  const frozen = await f.service.prepareGeneration({ ...preparation, operationId: generationOperationId, generation: 1 });
-  frozen.checkpointFile = path.join(path.dirname(path.dirname(frozen.manifestFile)), "checkpoint.json");
-  const layoutRoot = path.dirname(prepared.checkpointFile);
-  const generationRoot = path.join(f.root, "data", "release-gens", sha(`${generationOperationId}:1:${f.primary}`).slice(0, 24));
-  const ownerBytes = await readFile(path.join(generationRoot, "identity.json"));
-  const generationEvidence = path.join(path.dirname(frozen.checkpointFile), "evidence");
-  const captures = await Promise.all((await readdir(generationEvidence)).filter(name => /^[a-f0-9]{64}\.json$/u.test(name))
-    .map(async name => ({ name, bytes: await readFile(path.join(generationEvidence, name)) })));
-  const capture = captures.find(value => !JSON.parse(value.bytes).publication);
-  assert.ok(capture, "the actual capture owner retained the prepared manifest");
-  const checkpointBytes = await readFile(prepared.checkpointFile);
-  const manifestBytes = await readFile(prepared.manifestFile);
-  const nativeBytes = await readFile(path.join(layoutRoot, "native-preparation.json"));
-  const frozenCheckpointBytes = await readFile(frozen.checkpointFile);
-  const frozenHead = await git(frozen.releaseRoot, "rev-parse", "HEAD");
-  const expected = { checkpointSha256: sha(checkpointBytes), manifestHash: prepared.manifestHash,
-    planRevision: preparation.planRevision, preparedHead: prepared.preReleaseHead, preparedTree: prepared.tree,
-    generationOwnerSha256: sha(ownerBytes), captureManifestHash: capture.name.slice(0, -5),
-    frozenManifestHash: frozen.manifestHash, frozenHead, frozenTree: await git(frozen.releaseRoot, "rev-parse", "HEAD^{tree}") };
-  const input = { projectRoot: f.primary, workspaceId: preparation.workspaceId, requestId: "recover-metadata-original",
-    sourceIdentity: { commit: "a".repeat(40), ownerSha256: "b".repeat(64) }, generationOperationId, generation: 1, expected };
-  // Delete only this test's disposable metadata namespace, matching the actual
-  // ancestor-loss incident. Repositories and the immutable capture remain.
-  await rm(path.dirname(prepared.manifestFile), { recursive: true });
-  await assert.rejects(f.service.frozenCandidate(f.primary), { code: "ENOENT" });
-  const preview = await f.service.recoverPreparedEvidence(input);
-  assert.equal(preview.status, "preview");
-  assert.deepEqual(preview.effects, [prepared.manifestFile]);
-  await assert.rejects(readFile(prepared.manifestFile), { code: "ENOENT" });
-  const confirm = { ...input, confirm: true, expectedProofHash: preview.proofHash };
-  await assert.rejects(f.service.recoverPreparedEvidence({ ...confirm, expectedProofHash: "0".repeat(64) }), /confirmation proof/u);
-  await writeFile(prepared.checkpointFile, Buffer.concat([checkpointBytes, Buffer.from(" ")]));
-  await assert.rejects(f.service.recoverPreparedEvidence(confirm), /checkpoint digest/u);
-  await writeFile(prepared.checkpointFile, checkpointBytes);
-  const captureFile = path.join(generationEvidence, capture.name);
-  await writeFile(captureFile, Buffer.concat([capture.bytes, Buffer.from(" ")]));
-  await assert.rejects(f.service.recoverPreparedEvidence(confirm), /capture digest/u);
-  await writeFile(captureFile, capture.bytes);
-  await git(prepared.releaseRoot, "update-ref", "refs/heads/main", prepared.preReleaseHead, f.base);
-  await assert.rejects(f.service.recoverPreparedEvidence(confirm), /confirmation proof/u);
-  await git(prepared.releaseRoot, "update-ref", "refs/heads/main", f.base, prepared.preReleaseHead);
-  await assert.rejects(f.service.recoverPreparedEvidence({ ...confirm, workspaceId: "foreign" }), /capture binding/u);
-  await mkdir(path.dirname(prepared.manifestFile));
-  await writeFile(prepared.manifestFile, "foreign bytes");
-  await assert.rejects(f.service.recoverPreparedEvidence(confirm), /occupied/u);
-  assert.equal(await readFile(prepared.manifestFile, "utf8"), "foreign bytes");
-  await rm(prepared.manifestFile);
-  const interrupted = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment,
-    recoveryPhase: async phase => {
-      if (phase === "prepared-evidence-admitted") throw new Error("lost reply after durable admission");
-    } });
-  await assert.rejects(interrupted.recoverPreparedEvidence(confirm), /lost reply/u);
-  await assert.rejects(readFile(prepared.manifestFile), { code: "ENOENT" });
-  await assert.rejects(f.service.recoverPreparedEvidence({ ...confirm, requestId: "foreign-recovery",
-    expectedProofHash: (await f.service.recoverPreparedEvidence({ ...input, requestId: "foreign-recovery" })).proofHash }), /another identity/u);
-  const restored = await f.service.recoverPreparedEvidence(confirm);
-  assert.equal(restored.status, "restored");
-  assert.equal(restored.reused, true);
-  assert.deepEqual(await readFile(prepared.manifestFile), manifestBytes);
-  const replay = await f.service.recoverPreparedEvidence(confirm);
-  assert.deepEqual(replay.effects, []);
-  assert.equal(replay.receiptSha256, restored.receiptSha256);
-  assert.equal((await f.service.frozenCandidate(f.primary)).manifestHash, expected.manifestHash);
-  assert.deepEqual(await readFile(prepared.checkpointFile), checkpointBytes);
-  assert.deepEqual(await readFile(path.join(layoutRoot, "native-preparation.json")), nativeBytes);
-  assert.deepEqual(await readFile(frozen.checkpointFile), frozenCheckpointBytes);
-  assert.deepEqual(await readFile(path.join(generationRoot, "identity.json")), ownerBytes);
-  for (const value of captures) assert.deepEqual(await readFile(path.join(generationEvidence, value.name)), value.bytes);
-});
+
+
+
 
 test("native merge selects exact independent main branches and complete corrections", { timeout: 60000 }, async (t) => {
   let ownedWork;
@@ -430,136 +313,4 @@ test("one-time native cutover retains exact old snapshot and original results", 
   assert.equal(reused.preReleaseHead, next.preReleaseHead);
   assert.deepEqual(reused.manifest.cutover, next.manifest.cutover);
   assert.deepEqual(await readFile(manifestFile), bytes);
-});
-
-test("immutable generation promotion uses native checkout and preserves private collision", async t => {
-  const f = await fixture(t), a = await f.result("A", "a.txt", "a\n");
-  const prior = await f.service.prepareCandidate(f.request([a], "prior"));
-  await f.result("B", "b.txt", "b\n");
-  const folder = f.branches.get("B");
-  await writeFile(path.join(folder, "private.txt"), "selected bytes\n");
-  await git(folder, "add", "-f", "private.txt");
-  const b = { taskId: "B", taskRevision: 1, baseCommit: f.base, resultCommit: await commit(folder, "tracked private-name path") };
-  const generation = await f.service.prepareGeneration({ ...f.request([a, b], "generation"),
-    operationId: "release-original", generation: 1, freezePublication: false });
-  const foreign = Buffer.from([0, 255, 7]);
-  await writeFile(path.join(prior.releaseRoot, "private.txt"), foreign);
-  const checkpointFile = path.join(path.dirname(prior.releaseRoot), "checkpoint.json");
-  const checkpoint = await readFile(checkpointFile);
-  await assert.rejects(f.service.promoteGenerationCandidate({ projectRoot: f.primary, candidate: generation }));
-  assert.deepEqual(await readFile(path.join(prior.releaseRoot, "private.txt")), foreign);
-  assert.equal(await git(prior.releaseRoot, "rev-parse", "PreRelease"), prior.preReleaseHead);
-  assert.deepEqual(await readFile(checkpointFile), checkpoint);
-  await rm(path.join(prior.releaseRoot, "private.txt"));
-  const result = await f.service.promoteGenerationCandidate({ projectRoot: f.primary, candidate: generation });
-  assert.equal(result.preReleaseHead, generation.preReleaseHead);
-  assert.equal(await git(result.releaseRoot, "show", "PreRelease:private.txt"), "selected bytes");
-  assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
-});
-
-test("generation promotion reopens its original target after lost SQLite response without another Git CAS", async t => {
-  const f = await fixture(t), a = await f.result("A", "a.txt", "a\n");
-  const prior = await f.service.prepareCandidate(f.request([a], "prior"));
-  const b = await f.result("B", "b.txt", "b\n");
-  const candidate = await f.service.prepareGeneration({ ...f.request([a, b], "generation"),
-    operationId: "release-original", generation: 1, freezePublication: false });
-  await assert.rejects(f.service.promoteGenerationCandidate({ projectRoot: f.primary, candidate,
-    commitPrepared: async () => { throw Object.assign(new Error("lost SQL response"), { code: "AWAIT_ACCEPTANCE_UNKNOWN" }); },
-  }), { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
-  const reflog = await git(prior.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
-  assert.equal(await git(prior.releaseRoot, "rev-parse", "PreRelease"), candidate.preReleaseHead);
-  const reopened = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
-  let terminals = 0;
-  const completed = await reopened.promoteGenerationCandidate({ projectRoot: f.primary, candidate,
-    commitPrepared: async () => { terminals += 1; },
-  });
-  assert.equal(completed.preReleaseHead, candidate.preReleaseHead);
-  assert.equal(terminals, 1);
-  assert.equal(await git(prior.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
-  assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
-});
-
-test("publication generation resumes its exact materialized notes before freeze intent", { timeout: 120_000 }, async t => {
-  const f = await fixture(t, { versioned: true }), a = await f.result("A", "a.txt", "accepted\n");
-  const prepared = await f.service.prepareCandidate(f.request([a]));
-  const notes = Buffer.from("exact consolidated release notes\n");
-  const operationId = "original-materialized-notes";
-  const key = createHash("sha256").update(`${operationId}:1:${f.primary}`).digest("hex").slice(0, 24);
-  const generationRoot = path.join(f.root, "data", "release-gens", key);
-  const repositoryKey = path.basename(path.dirname(prepared.releaseRoot));
-  const repository = path.join(generationRoot, "release-repositories", repositoryKey, "repository");
-  const notesFile = path.join(repository, "CHANGELOG.md");
-  const checkpointFile = path.join(path.dirname(repository), "checkpoint.json");
-  const request = { ...f.request([a]), operationId, generation: 1, changelogContent: notes };
-  await assert.rejects(f.service.prepareGeneration({ ...request, validateBeforeCommit: async () => {
-    const content = await readFile(notesFile).catch(error => { if (error.code === "ENOENT") return null; throw error; });
-    if (content?.equals(notes)) throw new Error("controlled refusal after notes materialization before freeze intent");
-  } }), /controlled refusal after notes materialization/u);
-  const checkpoint = await readFile(checkpointFile);
-  assert.equal(JSON.parse(checkpoint).phase, "prepared");
-  assert.equal(JSON.parse(checkpoint).publicationFreeze, undefined);
-  assert.deepEqual(await readFile(notesFile), notes);
-  const beforeHead = await git(repository, "rev-parse", "HEAD");
-  const beforeReflog = await git(repository, "reflog", "show", "--format=%H", "PreRelease");
-  const reopened = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
-  await assert.rejects(reopened.prepareGeneration({ ...request, changelogContent: Buffer.from("different request\n") }),
-    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  const foreign = Buffer.from("foreign physical notes\n");
-  await writeFile(notesFile, foreign);
-  await assert.rejects(reopened.prepareGeneration(request), /exact clean PreRelease/u);
-  assert.deepEqual(await readFile(notesFile), foreign);
-  assert.deepEqual(await readFile(checkpointFile), checkpoint);
-  await writeFile(notesFile, notes);
-  const extra = path.join(repository, "foreign.txt");
-  await writeFile(extra, "unbound bytes\n");
-  await assert.rejects(reopened.prepareGeneration(request), /exact clean PreRelease/u);
-  assert.equal(await readFile(extra, "utf8"), "unbound bytes\n");
-  assert.equal(await git(repository, "rev-parse", "HEAD"), beforeHead);
-  assert.equal(await git(repository, "reflog", "show", "--format=%H", "PreRelease"), beforeReflog);
-  await rm(extra);
-  const result = await reopened.prepareGeneration(request);
-  assert.deepEqual(await readFile(notesFile), notes);
-  assert.equal(result.checkpointPhase, "frozen");
-  const finalReflog = await git(repository, "reflog", "show", "--format=%H", "PreRelease");
-  assert.equal((await reopened.prepareGeneration(request)).preReleaseHead, result.preReleaseHead);
-  assert.equal(await git(repository, "reflog", "show", "--format=%H", "PreRelease"), finalReflog);
-  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
-  assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), prepared.preReleaseHead);
-});
-
-test("publication generation retains dirty preparation and binds its immutable input after correction", { timeout: 120_000 }, async t => {
-  const f = await fixture(t, { versioned: true }), a = await f.result("A", "a.txt", "accepted\n");
-  const prepared = await f.service.prepareCandidate(f.request([a]));
-  const checkpointFile = path.join(path.dirname(prepared.releaseRoot), "checkpoint.json");
-  const checkpoint = await readFile(checkpointFile);
-  const request = { ...f.request([a]), operationId: "prepared-original", generation: 1 };
-  const foreign = path.join(prepared.releaseRoot, "foreign.txt");
-  await writeFile(foreign, "unbound source bytes\n");
-  const sourceHead = await git(prepared.releaseRoot, "rev-parse", "HEAD");
-  const sourceRef = await git(prepared.releaseRoot, "rev-parse", "PreRelease");
-  const sourceStages = await git(prepared.releaseRoot, "ls-files", "--stage", "-z");
-  const sourceReflog = await git(prepared.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
-  await assert.rejects(f.service.prepareGeneration(request), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  assert.equal(await readFile(foreign, "utf8"), "unbound source bytes\n");
-  assert.deepEqual(await readFile(checkpointFile), checkpoint);
-  assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), sourceHead);
-  assert.equal(await git(prepared.releaseRoot, "rev-parse", "PreRelease"), sourceRef);
-  assert.equal(await git(prepared.releaseRoot, "ls-files", "--stage", "-z"), sourceStages);
-  assert.equal(await git(prepared.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), sourceReflog);
-  await rm(foreign);
-  const frozen = await f.service.prepareGeneration(request);
-  const frozenReflog = await git(frozen.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
-  for (const changed of [{ planRevision: "stale" }, { changelogContent: Buffer.from("foreign notes\n") },
-    { approvedBaseCommit: a.resultCommit }]) {
-    await assert.rejects(f.service.prepareGeneration({ ...request, ...changed }), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  }
-  const corrected = await f.result("A", "a.txt", "corrected\n");
-  await assert.rejects(f.service.prepareGeneration({ ...request, frozenTasks: [corrected] }),
-    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  // A frozen generation owns its own bytes, independently of later preparation.
-  await writeFile(foreign, "later preparation WIP\n");
-  assert.equal((await f.service.prepareGeneration(request)).preReleaseHead, frozen.preReleaseHead);
-  assert.equal(await readFile(foreign, "utf8"), "later preparation WIP\n");
-  assert.equal(await git(frozen.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), frozenReflog);
-  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
 });

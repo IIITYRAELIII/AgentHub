@@ -27,15 +27,13 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
     "../application/task-lifecycle-service.mjs": { TaskLifecycleService: Inert },
     "../application/work-log-usage-store.mjs": { createWorkLogUsageStore: async () => new Inert() },
     "../application/task-board-service.mjs": { TaskBoardService: Inert },
-    "../application/task-release-plan-service.mjs": { TaskReleasePlanService: Inert },
-    "../application/workspace-release-preflight-service.mjs": { WorkspaceReleasePreflightService: Inert },
-    "./release-operation-composition.mjs": { createReleaseOperationServices: () => ({ operations: new Inert(), commands: {} }) },
-    "../infrastructure/persistence/release-operation-legacy-import.mjs": { importLegacyReleaseOperations: async () => {} },
+    "../application/task-composition-plan-service.mjs": { TaskCompositionPlanService: Inert },
+    "../application/task-integration-service.mjs": { TaskIntegrationService: Inert },
     "../application/stream-handoff-service.mjs": { StreamHandoffService: Inert },
     "../infrastructure/filesystem/agent-hub-package.mjs": { AGENT_HUB_VERSION: "2.0.2" },
     "../infrastructure/filesystem/config.mjs": { samePath: (a, b) => a === b },
     "../infrastructure/filesystem/task-git-workspace.mjs": { TaskGitWorkspaceService: Inert },
-    "../infrastructure/filesystem/release-git-workspace.mjs": { ReleaseGitWorkspaceService: Inert },
+    "../infrastructure/filesystem/task-integration-git.mjs": { TaskIntegrationGitService: Inert },
     "../infrastructure/media/attachment-thumbnail-service.mjs": { AttachmentThumbnailService: Inert },
     "../infrastructure/persistence/pre-turn-instruction-store.mjs": { PreTurnInstructionStore: Inert },
     "../infrastructure/persistence/rotating-log.mjs": { installRotatingConsole: noop },
@@ -48,7 +46,6 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
     "../infrastructure/persistence/usage-sync-identity-store.mjs": { UsageSyncIdentityStore: Inert },
     "../infrastructure/persistence/usage-sync-remote-config-store.mjs": { UsageSyncRemoteConfigStore: Inert },
     "../infrastructure/process/instance-lock.mjs": { SingleInstanceGuard: Inert },
-    "../infrastructure/process/repository-production-validation.mjs": { createRepositoryProductionValidationAdapter: () => ({}) },
     "../application/runtime-health.mjs": { agentHubRuntimeHealth: {
       setDiagnosticSource: noop, begin: noop, startOperation: noop, completeOperation: noop, failOperation: noop,
     } },
@@ -63,22 +60,15 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
     }) },
     "../interfaces/mcp/hub-mcp-server.mjs": { HubMcpServer: Inert },
   };
-  let mcpOptions, miniAppOptions, releaseOptions;
+  let mcpOptions, miniAppOptions;
   const spans = [];
   const reached = new Error("owned trace initialization boundary");
   const trace = {
     recordBestEffort(span) { assert.equal(this, trace); spans.push(span); return true; },
   };
   let closed = 0;
-  const mcpSpan = { commandId: "release:original:7:operation.progress", stage: "release-event-intake", outcome: "started" };
+  const mcpSpan = { commandId: "task:original:7:operation.progress", stage: "task-event-intake", outcome: "started" };
   const miniAppSpan = { commandId: "existing-mini-app", stage: "intake", outcome: "started" };
-  const releaseSpan = { commandId: "original-release", stage: "release-persistence", outcome: "failed" };
-  modules["./release-operation-composition.mjs"] = { createReleaseOperationServices: options => {
-    releaseOptions = options;
-    assert.equal(typeof options.recordCommandTrace, "function");
-    assert.equal(options.recordCommandTrace(releaseSpan), false);
-    return { operations: new Inert(), commands: {} };
-  } };
   modules["../application/hub-mcp-service.mjs"] = { HubMcpService: class {
     constructor(options) {
       mcpOptions = options;
@@ -100,8 +90,6 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
         assert.equal(miniAppOptions.recordCommandTrace(miniAppSpan), true, "the existing MiniApp recorder still works");
         assert.equal(spans[0], mcpSpan, "forward the original span unchanged to the existing sink");
         assert.equal(spans[1], miniAppSpan);
-        assert.equal(releaseOptions.recordCommandTrace(releaseSpan), true);
-        assert.equal(spans[2], releaseSpan);
         throw reached;
       }, close: async () => { closed += 1; },
     }),
@@ -116,6 +104,6 @@ test("actual infrastructure forwards the lazy MCP recorder into the existing tra
     }, agentHubRoot: root, runtimeCommandRoot: root, journalDatabaseFile: root + "/journal.sqlite",
     instanceLockFile: root + "/instance.lock", stateFile: root + "/state.json", globalWorkLogProjectRoots: [],
   }), error => error === reached);
-  assert.deepEqual(spans, [mcpSpan, miniAppSpan, releaseSpan]);
+  assert.deepEqual(spans, [mcpSpan, miniAppSpan]);
   assert.equal(closed, 1, "the owned trace fixture is drained at the sentinel boundary");
 });

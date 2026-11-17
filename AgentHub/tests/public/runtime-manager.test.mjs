@@ -20,7 +20,7 @@ import {
   runtimeStatus,
 } from "../../runtime-manager.mjs";
 import { isRuntimeSourceFile, verifyRuntimeImportClosure } from "../../src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
-import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
+
 import { captureRuntimeReleaseBinding } from "../../src/infrastructure/filesystem/runtime-installation-custody.mjs";
 import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
 
@@ -86,43 +86,9 @@ test("prepared runtime retains the Codex custody companion and refuses its absen
   await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), { code: "ENOENT" });
 });
 
-test('release progress canonical artifact contains the independent viewer and launches only its prepared files', async t => {
-  const { sourceRoot, runtimeRoot } = await fixture();
-  t.after(() => rm(path.dirname(sourceRoot), { recursive: true, force: true }));
-  const files = ['src/infrastructure/process/release-progress-monitor.mjs',
-    ...['server.mjs', 'reader.mjs', 'identity.mjs', 'index.html', 'app.js', 'style.css'].map(name => `release-progress/${name}`)];
-  for (const file of files) {
-    await mkdir(path.dirname(path.join(sourceRoot, file)), { recursive: true });
-    await cp(path.join(ROOT, file), path.join(sourceRoot, file));
-  }
-  await writeFile(path.join(sourceRoot, 'release-progress/unrelated.txt'), 'not an observer asset');
-  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: 'monitor-shipment' });
-  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, 'runtime-manifest.json'), 'utf8'));
-  for (const file of files) {
-    assert.ok(manifest.files.some(entry => entry.path.replaceAll('\\', '/') === file));
-    assert.deepEqual(await readFile(path.join(prepared.releaseRoot, file)), await readFile(path.join(sourceRoot, file)));
-  }
-  assert.equal(manifest.files.some(entry => entry.path.includes('unrelated.txt')), false);
-  const { startMonitor } = await import(pathToFileURL(path.join(prepared.releaseRoot, 'release-progress/server.mjs')).href);
-  const viewer = await startMonitor({ runtimeRoot, operationId: 'prepared-original' });
-  t.after(() => new Promise(resolve => viewer.server.close(resolve)));
-  const { ensureReleaseProgressMonitor } = await import(pathToFileURL(path.join(prepared.releaseRoot, files[0])).href);
-  const reused = await ensureReleaseProgressMonitor({ runtimeRoot, operationId: 'prepared-original', port: viewer.server.address().port });
-  assert.equal(reused.reused, true); assert.equal(reused.pid, process.pid);
-  assert.equal((await fetch(reused.url)).status, 200);
-  assert.equal((await (await fetch(reused.url + '/api/identity')).json()).operationId, 'prepared-original');
-  assert.equal((await fetch(reused.url + '/api/status')).status, 503);
-});
 
-test('release progress missing mandatory asset refuses canonical preparation without a pointer', async t => {
-  const { sourceRoot, runtimeRoot } = await fixture();
-  t.after(() => rm(path.dirname(sourceRoot), { recursive: true, force: true }));
-  const file = 'src/infrastructure/process/release-progress-monitor.mjs';
-  await mkdir(path.dirname(path.join(sourceRoot, file)), { recursive: true });
-  await cp(path.join(ROOT, file), path.join(sourceRoot, file));
-  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: 'missing-monitor' }), /Runtime module asset is missing/);
-  await assert.rejects(readFile(path.join(runtimeRoot, 'current.json')), { code: 'ENOENT' });
-});
+
+
 
 test("canonical runtime source membership retains JSON and assets but excludes test and tooling imports", async t => {
   const { sourceRoot, runtimeRoot } = await fixture();
@@ -520,56 +486,7 @@ test("runtime dependency admission rejects a missing lock before installation", 
   await assert.rejects(readFile(path.join(runtimeRoot, "current.json"), "utf8"), /ENOENT/u);
 });
 
-test("runner N operation remains readable across an interrupted and retried N+1 installation", async (t) => {
-  const { sourceRoot, runtimeRoot } = await fixture();
-  const root = path.dirname(runtimeRoot);
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "runner-n" });
-  const operationData = path.join(root, "operation-data");
-  await mkdir(operationData, { recursive: true });
-  const store = new ReleaseOperationStore({ dataDir: operationData });
-  store.create({
-    operationId: "operation-runner-n",
-    requestId: "request-runner-n",
-    workspaceId: "workspace",
-    streamId: "stream",
-    threadId: "thread",
-    authorization: {
-      taskIds: ["task-a"],
-      approvedTargets: [{ targetId: "production", kind: "agent-hub-publication" }],
-      validationMode: "full",
-    },
-    runnerVersion: "runner-n",
-  });
-  store.acquire("operation-runner-n", "worker-n", { leaseMs: 60_000, processId: process.pid });
 
-  await writeFile(
-    path.join(sourceRoot, "release-operation-publication-runner.mjs"),
-    "export const durableReleaseRunner = 'runner-n+1';\n",
-    "utf8",
-  );
-  const prepared = await prepareRuntime({
-    sourceRoot, runtimeRoot, releaseId: "runner-n1", publicationRevision: "b".repeat(40),
-  });
-  await assert.rejects(installPreparedRuntime({
-    runtimeRoot,
-    ...prepared,
-    beforePointerCommit: () => { throw new Error("injected N+1 install interruption"); },
-  }), /injected N\+1 install interruption/u);
-  assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current, "runner-n");
-  assert.match(await readFile(path.join(runtimeRoot, "releases", "runner-n", "release-operation-publication-runner.mjs"), "utf8"),
-    /durableReleaseRunner = true/u);
-  assert.equal(new ReleaseOperationStore({ dataDir: operationData }).get("operation-runner-n").runnerVersion, "runner-n");
-
-  await installPreparedRuntime({ runtimeRoot, ...prepared });
-  assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current, "runner-n1");
-  assert.match(await readFile(path.join(runtimeRoot, "releases", "runner-n1", "release-operation-publication-runner.mjs"), "utf8"),
-    /runner-n\+1/u);
-  const reopened = new ReleaseOperationStore({ dataDir: operationData }).get("operation-runner-n");
-  assert.equal(reopened.runnerVersion, "runner-n");
-  assert.equal(reopened.state, "compose");
-  assert.equal(reopened.owner.ownerId, "worker-n");
-});
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "telegram-runtime-"));

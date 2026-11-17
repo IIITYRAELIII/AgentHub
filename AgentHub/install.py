@@ -416,12 +416,12 @@ def backfill_team_rate_limit_accounts(target_root: Path, participant: str | None
 
 
 def _external_extension(action: str, profile: str, **options):
-    result = subprocess.run(["node", str(ROOT / "recipe.mjs"), action], cwd=ROOT,
+    result = subprocess.run(["node", str(ROOT / "extension-maintenance.mjs"), action], cwd=ROOT,
                             input=json.dumps({"profile": profile, **options}),
                             capture_output=True, text=True, encoding="utf-8", check=True)
     rows = result.stdout.rstrip().splitlines()
     if not rows:
-        raise RuntimeError("External extension recipe returned no outcome")
+        raise RuntimeError("External extension installer returned no outcome")
     for row in rows[:-1]:
         print(row)
     return json.loads(rows[-1])["result"]

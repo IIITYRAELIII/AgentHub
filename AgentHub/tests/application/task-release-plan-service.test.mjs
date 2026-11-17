@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TaskReleasePlanService } from "../../src/application/task-release-plan-service.mjs";
+import { TaskCompositionPlanService } from "../../src/application/task-composition-plan-service.mjs";
 import { taskReleasePlan } from "../../src/domain/task-release-snapshot.mjs";
 
 const reference = {
@@ -26,7 +26,7 @@ function task(overrides = {}) {
 
 test("release planner derives ready files from the accepted Git result commit", async () => {
   const calls = [];
-  const service = new TaskReleasePlanService({
+  const service = new TaskCompositionPlanService({
     taskBoard: { releaseTasks: () => [task()], selectedCompositionForRelease: () => null },
     taskGitWorkspaces: {
       releaseEvidence: async (value) => {
@@ -56,7 +56,7 @@ test("release planner reads Git only for the prospective Await set, independent 
   const rows = [...archive, draft, audit, awaiting];
   const calls = [];
   const changedFiles = [{ projectRoot: reference.projectRoot, path: "app.txt", operation: "modified" }];
-  const service = new TaskReleasePlanService({
+  const service = new TaskCompositionPlanService({
     taskBoard: { releaseTasks: () => rows, selectedCompositionForRelease: () => null },
     taskGitWorkspaces: { releaseEvidence: async ({ taskId }) => {
       calls.push(taskId);
@@ -85,7 +85,7 @@ test("release planner reads Git only for the prospective Await set, independent 
 });
 
 test("release planner keeps an invalid or missing Git result visible as blocked", async () => {
-  const service = new TaskReleasePlanService({
+  const service = new TaskCompositionPlanService({
     taskBoard: { releaseTasks: () => [task()], selectedCompositionForRelease: () => null },
     taskGitWorkspaces: { releaseEvidence: async () => { throw new Error("result commit is missing"); } },
   });
@@ -97,7 +97,7 @@ test("release planner keeps an invalid or missing Git result visible as blocked"
 
 test("prospective Await plan predicts only the accepting Task CAS without mutating stored status", async () => {
   const current = task({ workflowStatus: "testing", revision: 20, releaseRevision: 3 });
-  const service = new TaskReleasePlanService({
+  const service = new TaskCompositionPlanService({
     taskBoard: { releaseTasks: () => [current], selectedCompositionForRelease: () => null },
     taskGitWorkspaces: { releaseEvidence: async () => ({
       changedFiles: [{ projectRoot: reference.projectRoot, path: "app.txt", operation: "modified" }],

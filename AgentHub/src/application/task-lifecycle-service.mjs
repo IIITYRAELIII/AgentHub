@@ -119,8 +119,6 @@ function confirmation(task, action, preview) {
 }
 
 export class TaskLifecycleService {
-  #releaseOperationWake = null;
-  #releaseOperationPrepare = null;
 
   constructor({ taskBoard, workspaceCatalog, taskGitWorkspaces = null, releasePreflight = null } = {}) {
     for (const name of [
@@ -141,16 +139,6 @@ export class TaskLifecycleService {
     this.workspaceCatalog = workspaceCatalog;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.releasePreflight = releasePreflight;
-  }
-
-  setReleaseOperationWake(wake) {
-    if (wake != null && typeof wake !== "function") throw new TypeError("release operation wake must be a function");
-    this.#releaseOperationWake = wake;
-  }
-
-  setReleaseOperationPrepare(prepare) {
-    if (prepare != null && typeof prepare !== "function") throw new TypeError("release operation prepare must be a function");
-    this.#releaseOperationPrepare = prepare;
   }
 
   #task(taskId) {
@@ -240,7 +228,6 @@ export class TaskLifecycleService {
       } catch (persistenceError) { throw new TaskLifecyclePersistenceError(error, persistenceError); }
       throw new TaskLifecycleNoEffectError(outcome.result.noEffect, { cause: error });
     }
-    if (result?.task?.workflowStatus === "awaiting_implementation") this.#releaseOperationWake?.(result.task.id);
     return result;
   }
 
@@ -1129,7 +1116,6 @@ export class TaskLifecycleService {
                       }
                     }
                     try {
-                      this.#releaseOperationPrepare?.(task.id);
                     } catch {}
                     return {
                       task: current,

@@ -457,18 +457,9 @@ the Task Git snapshot and `dev` integration outside provider admission and
 terminal-delivery latency. Await prepares PreRelease before committing acceptance
 under the existing Workspace Await and Task ownership boundaries. A failed
 preparation leaves the Task in Test (ADR-0055). It does not run release tests,
-builds or deployment. Active release generations never delay later Task work or
-Await acceptance.
+builds or deployment. There is no release worker/generation workload (ADR-HUB-463).
 
-`hub_release_run` measures and persists only bounded admission before returning
-its ACK. Candidate composition, validation, Git/network publication, deployment
-and finalization run after the response under the durable operation owner. Short
-SQLite and identity CAS sections do not enclose tests, child processes, network
-requests or repository publication. Queue/lease time, stage duration, retries,
-waiting reason and per-target effect are separate measurements; transport timeout
-is not operation latency and cannot create a second operation.
-
-Release validation admits independent files against a target of 40% of total
+The standalone test runner admits independent files against a target of 40% of total
 machine CPU capacity and 40% of physical RAM for the whole test process tree,
 including Git, browsers and helpers. Other applications reduce available
 headroom. Admission retains one-core and estimated resident-memory demand until

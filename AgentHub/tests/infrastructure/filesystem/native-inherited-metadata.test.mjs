@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -10,12 +10,12 @@ import { assertNativeTaskHistories } from "../../../src/infrastructure/filesyste
 import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { localSourceSelectionHash } from "../../../src/domain/release-base-provenance.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
-import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
-import { preparationEnvelope } from "../../helpers/release-preparation-envelope.mjs";
-import { validatePreparationEnvelope } from "../../../src/application/release-preparation-admission.mjs";
-import { mcpArgumentsHash } from "../../../src/domain/mcp-arguments-hash.mjs";
-import { FORWARD_PREPARATION, preparationLegacyHash } from "../../../src/domain/release-preparation.mjs";
-import { validatePreparationForward } from "../../../src/application/release-preparation-forward.mjs";
+
+
+
+
+
+
 
 const exec = promisify(execFile), sha = b => createHash("sha256").update(b).digest("hex");
 async function fixture(t) {
@@ -130,104 +130,4 @@ test("installed metadata authority does not permit authored notes, changed modes
   const boxed = Buffer.from(JSON.stringify({ ...f.manifest, publicationRevision: [f.installedSource] }));
   await f.save(f.release, "runtime-manifest.json", boxed);
   assert.deepEqual((await f.verify({ ...f.provenance, installedManifestSha256: sha(boxed) })).metadataBases, [f.sourceBase]);
-});
-
-async function historicalFixture(t) {
-  const f = await fixture(t), runtimeRoot = defaultRuntimeRoot({ environment: f.environment });
-  const oldBytes = await readFile(path.join(f.release, "runtime-manifest.json"));
-  const nextManifest = { ...f.manifest, releaseId: "newer", releaseVersion: "2026.10.12.2",
-    sourceRoot: path.join(f.root, "merged", "AgentHub"), publicationRevision: f.sourceBase };
-  const nextBytes = Buffer.from(JSON.stringify(nextManifest));
-  await f.save(path.join(runtimeRoot, "releases", "newer"), "runtime-manifest.json", nextBytes);
-  await f.save(path.join(runtimeRoot, "releases", "newer"), "server.mjs", await readFile(path.join(f.release, "server.mjs")));
-  const binding = (releaseId, bytes) => ({ releaseId, manifestSha256: sha(bytes), root: { dev: "1", ino: "2", birthFileTime: "3" } });
-  const pointer = { current: "newer", previous: "installed", runtimeRetention: { version: 1,
-    current: binding("newer", nextBytes), previous: binding("installed", oldBytes), retired: [] } };
-  await f.save(runtimeRoot, "current.json", JSON.stringify(pointer));
-  const original = preparationEnvelope(f.primary);
-  original.planRevision = f.provenance.planRevision;
-  original.tasks = f.tasks.map(task => ({ ...task, rowRevision: 1, projectRoot: f.primary }));
-  Object.assign(original.repositories[0], { approvedBaseCommit: f.provenance.sourceBaseCommit,
-    publishedRevision: f.provenance.publishedBaseCommit, primaryMainCommit: f.provenance.agreedMainCommit,
-    originMainCommit: f.provenance.approvedOriginMainCommit, localSourceBaseline: f.provenance });
-  validatePreparationEnvelope(original);
-  const requestId = "retained-original", argumentsHash = mcpArgumentsHash({ request_id: requestId, preparation: original });
-  const entry = await f.git(["ls-tree", f.installedSource, "--", "CHANGELOG.md"]);
-  const historicalChangelog = { requestId, argumentsHash, installedReleaseId: "installed", installedManifestSha256: sha(oldBytes),
-    sourceCommit: f.installedSource, sourceTree: await f.git(["rev-parse", f.installedSource + "^{tree}"]),
-    taskId: f.tasks[0].taskId, taskRevision: f.tasks[0].taskRevision, resultCommit: f.tasks[0].resultCommit,
-    path: "CHANGELOG.md", mode: "100644", blob: entry.split(/\s/u)[2] };
-  const provenance = { ...f.provenance, installedReleaseId: "newer", installedManifestSha256: sha(nextBytes), historicalChangelog };
-  const authority = { requestId, argumentsHash, originalPreparation: original };
-  await mkdir(path.join(f.root, "release-data"));
-  const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(f.root, "release-data", "journal.sqlite") });
-  await catalog.load();
-  try {
-    const { workspace, stream } = catalog.createWorkspaceWithStream({ name: "Historical original" });
-    const identity = { workspaceId: workspace.id, streamId: stream.id, provider: "codex", threadId: "fixture", argumentsHash };
-    catalog.beginMcpOperation({ ...identity, requestId, toolName: "hub_release_prepare" });
-    catalog.markMcpOperationUnknown(requestId, new Error("retained legacy uncertainty"));
-    const legacy = catalog.mcpOperation(requestId);
-    catalog.checkpointMcpPreparationForward(requestId, { identity, expectedRevision: 0, legacyHash: preparationLegacyHash(legacy), transfer: true,
-      validate: () => {}, state: { schemaVersion: 2, kind: FORWARD_PREPARATION, revision: 1, epoch: 1, ownerId: "fixture-owner",
-        phase: "checking", legacy, originalPreparation: original, envelope: { ...original, repositories: [{ ...original.repositories[0], localSourceBaseline: provenance }] },
-        sourceRoot: f.root, sourceRootIdentity: "fixture", events: [{ phase: "checking", ownerId: "fixture-owner" }] } });
-  } catch (error) { catalog.close(); throw error; }
-  const verify = (p = provenance, a = authority, tasks = f.tasks) => assertInstalledLocalSourceBaseline({ provenance: p, originalAuthority: a,
-    git: f.git, repositoryRoot: f.primary, primaryMainCommit: f.provenance.agreedMainCommit,
-    publishedRevision: f.provenance.publishedBaseCommit, planRevision: "metadata", tasks, runtimeRoot });
-  return { ...f, catalog, original, provenance, authority, pointer, oldBytes, nextBytes, runtimeRoot, verifyHistorical: verify };
-}
-
-test("retained CHANGELOG binding refuses foreign original, selection, path, mode, manifest and source drift", async t => {
-  const f = await historicalFixture(t);
-  try {
-    const record = f.catalog.mcpOperation(f.authority.requestId);
-    const current = { ...f.original, repositories: [{ ...f.original.repositories[0], localSourceBaseline: f.provenance }] };
-    const initial = { ...record, preparationState: undefined };
-    assert.deepEqual(validatePreparationForward({ record: initial, requestId: record.requestId,
-      originalPreparation: f.original, preparation: current }).current, current);
-    const foreignCurrent = structuredClone(current); foreignCurrent.repositories[0].localSourceBaseline.historicalChangelog.requestId = "foreign";
-    assert.throws(() => validatePreparationForward({ record: initial, requestId: record.requestId,
-      originalPreparation: f.original, preparation: foreignCurrent }), /original or selection/);
-    assert.deepEqual(f.catalog.mcpOperation(record.requestId), record);
-    for (const change of [{ requestId: "foreign" }, { argumentsHash: "0".repeat(64) }, { taskId: "foreign" },
-      { resultCommit: f.sourceBase }, { path: "AgentHub/CHANGELOG.md" }, { mode: "100755" }, { blob: "0".repeat(40) },
-      { installedManifestSha256: "0".repeat(64) }, { sourceCommit: f.sourceBase }, { sourceTree: "0".repeat(40) }]) {
-      await assert.rejects(f.verifyHistorical({ ...f.provenance, historicalChangelog: { ...f.provenance.historicalChangelog, ...change } }));
-    }
-    await assert.rejects(f.verifyHistorical(f.provenance, null), /original or selection/);
-    await assert.rejects(f.verifyHistorical(f.provenance, { ...f.authority, originalPreparation: { ...f.original, planRevision: "foreign" } }), /original or selection/);
-    await f.save(f.release, "runtime-manifest.json", JSON.stringify({ ...f.manifest, publicationRevision: [f.installedSource] }));
-    await assert.rejects(f.verifyHistorical(), /historical installed manifest changed/);
-    await f.save(f.release, "runtime-manifest.json", f.oldBytes);
-    await rm(path.join(f.release, "runtime-manifest.json"));
-    await assert.rejects(f.verifyHistorical(), /required source or installed artifact is absent/);
-    await f.save(f.release, "runtime-manifest.json", f.oldBytes);
-    await f.gitAt(f.retained, ["checkout", "--detach", f.installedSource + "^"]);
-    await assert.rejects(f.verifyHistorical(), /historical source HEAD\/tree\/clean/);
-    await f.gitAt(f.retained, ["checkout", "--detach", f.installedSource]);
-    await f.save(f.retained, "untracked.txt", "foreign\n");
-    await assert.rejects(f.verifyHistorical(), /historical source HEAD\/tree\/clean/);
-    await rm(path.join(f.retained, "untracked.txt"));
-    for (const malformed of [Object.assign([], f.provenance.historicalChangelog), { ...f.provenance.historicalChangelog, authority: true }]) {
-      await assert.rejects(f.verifyHistorical({ ...f.provenance, historicalChangelog: malformed }), /historical root CHANGELOG binding/);
-    }
-    await f.save(f.retained, "AgentHub/README.md", "not an ancestor of current source\n");
-    const foreign = await f.commit(f.retained, "nonancestor retained endpoint");
-    const manifest = Buffer.from(JSON.stringify({ ...f.manifest, publicationRevision: foreign }));
-    await f.save(f.release, "runtime-manifest.json", manifest);
-    const original = structuredClone(f.original);
-    original.repositories[0].localSourceBaseline.installedManifestSha256 = sha(manifest);
-    const argumentsHash = mcpArgumentsHash({ request_id: f.authority.requestId, preparation: original });
-    const p = { ...f.provenance, historicalChangelog: { ...f.provenance.historicalChangelog, argumentsHash,
-      installedManifestSha256: sha(manifest), sourceCommit: foreign, sourceTree: await f.gitAt(f.retained, ["rev-parse", "HEAD^{tree}"]) } };
-    await f.save(f.runtimeRoot, "current.json", JSON.stringify({ ...f.pointer,
-      runtimeRetention: { ...f.pointer.runtimeRetention, previous: { ...f.pointer.runtimeRetention.previous, manifestSha256: sha(manifest) } } }));
-    await assert.rejects(f.verifyHistorical(p, { ...f.authority, argumentsHash, originalPreparation: original }), /merge-base/);
-    await f.save(f.release, "runtime-manifest.json", f.oldBytes);
-    await f.gitAt(f.retained, ["checkout", "--detach", f.installedSource]);
-    await f.save(f.runtimeRoot, "current.json", JSON.stringify({ ...f.pointer, runtimeRetention: undefined }));
-    await assert.rejects(f.verifyHistorical(), /historical runtime retention/);
-  } finally { f.catalog.close(); }
 });

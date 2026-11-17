@@ -11,7 +11,7 @@ import { readNativeUpstreamAdoptions } from "../../../src/infrastructure/filesys
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash } from "../../../src/domain/release-base-provenance.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { createContourExternalEffectsPort } from "../../../src/ports/contour-external-effects.mjs";
 
 const exec = promisify(execFile);
@@ -49,7 +49,7 @@ for (const method of ["deriveInstalledLocalSourceBaselineForSelection", "validat
   test(`installed source contour policy excludes ${method} before authority access`, async t => {
     const f = await fixture(t), exclusions = [];
     const dataDir = path.join(f.root, ".git", "fixture-data");
-    const service = new ReleaseGitWorkspaceService({
+    const service = new TaskIntegrationGitService({
       dataDir, environment: { LOCALAPPDATA: path.join(f.root, ".git", "fixture-local") },
       contourExternalEffects: createContourExternalEffectsPort(event => exclusions.push(event)),
       readPreparationAuthority: () => { throw new Error("unexpected preparation authority access"); },

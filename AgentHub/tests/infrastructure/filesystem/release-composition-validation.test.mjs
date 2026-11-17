@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const exec = promisify(execFile);
@@ -30,7 +30,7 @@ async function fixture(t) {
   const base = await commit(primary, "base");
   await git(primary, "push", "origin", "main");
   const dataDir = path.join(root, "data");
-  const service = new ReleaseGitWorkspaceService({ dataDir });
+  const service = new TaskIntegrationGitService({ dataDir });
   const sourceRoots = [primary];
   async function result(branch, content) {
     const worktree = path.join(root, branch);

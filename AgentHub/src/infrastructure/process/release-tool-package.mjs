@@ -39,9 +39,6 @@ export async function readReleaseToolPackage({
   }
   if (sha(JSON.stringify(files)) !== expectedSha256) throw new Error("Release tool differs from its pinned version");
   const metadata = JSON.parse(await readFile(path.join(physical, "package.json"), "utf8"));
-  const recipe = metadata.releaseRecipe ?? null;
-  if (recipe !== null && (recipe.apiVersion !== 1 || typeof recipe.module !== "string"
-      || !manifest.files.includes(recipe.module))) throw new Error("Release recipe is outside the pinned export");
   const location = Object.freeze({ schema: 1, root: physical, name: metadata.name, version: metadata.version,
     sha256: expectedSha256, directory: Object.freeze({ dev: String(directory.dev), ino: String(directory.ino) }) });
   const afterDirectory = await lstat(physical, { bigint: true });
@@ -50,7 +47,7 @@ export async function readReleaseToolPackage({
     throw new Error("Original release tool location changed");
   }
   return Object.freeze({ root: physical, name: metadata.name, version: metadata.version, sha256: expectedSha256,
-    location, recipe: recipe === null ? null : Object.freeze({ ...recipe }),
+    location,
     async module(relative) {
       if (!manifest.files.includes(relative)) throw new Error("Tool module is outside its pinned export");
       const url = pathToFileURL(path.join(physical, relative));

@@ -1,20 +1,20 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createHash } from "node:crypto";
+
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
-import { TaskReleasePlanService } from "../../src/application/task-release-plan-service.mjs";
-import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
+import { TaskCompositionPlanService } from "../../src/application/task-composition-plan-service.mjs";
+import { TaskIntegrationService } from "../../src/application/task-integration-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
-import { taskGitIdentityHash } from "../../src/domain/task-git-reference.mjs";
+import { TaskIntegrationGitService } from "../../src/infrastructure/filesystem/task-integration-git.mjs";
+
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -63,10 +63,10 @@ async function fixture(t, { recordTiming = () => {} } = {}) {
   };
   const taskBoard = new TaskBoardService({ store, workspaceCatalog });
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir, recordTiming });
-  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir });
-  const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
+  const releaseGitWorkspaces = new TaskIntegrationGitService({ dataDir });
+  const releasePlanner = new TaskCompositionPlanService({ taskBoard, taskGitWorkspaces });
   const forbidden = () => assert.fail("Await must not start publication, production validation or the test contour");
-  const releasePreflight = new WorkspaceReleasePreflightService({
+  const releasePreflight = new TaskIntegrationService({
     releasePlanner, taskGitWorkspaces, releaseGitWorkspaces,
     resolveReleaseValidationSource: forbidden, refreshTestContour: forbidden,
     readTestContourStatus: forbidden, validateProductionCandidate: forbidden,
@@ -193,65 +193,9 @@ test("Await refuses a missing native runtime import before promotion and accepts
   assert.equal(await git(f.primary, "status", "--porcelain=v1"), primaryBefore);
 });
 
-test("editorial Task changes reuse prepared and frozen candidate identities", { timeout: 90000 }, async (t) => {
-  const f = await fixture(t);
-  const task = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
-  const { candidate } = await acceptAndPrepare(f, task, "accept-editorial");
-  const plan = await f.releasePlanner.plan(f.workspace.id);
-  f.store.updatePresentation(task.id, { title: "Clarified accepted Task", description: "More detail" });
-  await f.store.updateChecklist({ id: task.id, operation: "add", text: "Checked",
-    expectedRevision: f.store.task(task.id).revision, requestId: "editorial-checklist" });
-  const retry = await f.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
-  assert.equal(retry.planRevision, plan.revision);
-  assert.equal(retry.releaseCandidates[0].reused, true);
-  assert.equal(retry.releaseCandidates[0].preReleaseHead, candidate.preReleaseHead);
-  assert.equal(retry.releaseCandidates[0].manifestHash, candidate.manifestHash);
-  await writeFile(path.join(candidate.releaseRoot, "CHANGELOG.md"), "release\n");
-  const frozen = await f.releaseGitWorkspaces.freezePublicationCandidate({
-    projectRoot: f.primary, workspaceId: f.workspace.id, expectedPlanRevision: plan.revision,
-    expectedPreparedHead: candidate.preReleaseHead, changelogContent: Buffer.from("release\n") });
-  f.store.updatePresentation(task.id, { title: "Edited during frozen release" });
-  assert.equal((await f.releasePlanner.plan(f.workspace.id)).revision, plan.revision);
-  const readback = await f.releaseGitWorkspaces.frozenCandidate(f.primary);
-  assert.equal(readback.preReleaseHead, frozen.preReleaseHead);
-  assert.equal(readback.manifestHash, frozen.manifestHash);
-  f.store.completeRelease(f.workspace.id, { expectedPlanRevision: plan.revision, plan,
-    verificationEvidence: { publishedRevision: frozen.preReleaseHead },
-    awaitRebuild: { planRevision: plan.revision, fallbackProjectRoots: [f.primary] } });
-  assert.equal(f.store.task(task.id).workflowStatus, "done");
-});
 
-test("Task work advances live PreRelease while the prior frozen commit remains immutable", async (t) => {
-  const f = await fixture(t);
-  const accepted = await f.testedTask("Release", "release.txt", "release\n");
-  const { response, prepared, candidate } = await acceptAndPrepare(f, accepted, "accept-release");
-  await writeFile(path.join(candidate.releaseRoot, "CHANGELOG.md"), "release\n");
-  const frozen = await f.releaseGitWorkspaces.freezePublicationCandidate({
-    projectRoot: f.primary, workspaceId: f.workspace.id,
-    expectedPlanRevision: prepared.planRevision,
-    expectedPreparedHead: candidate.preReleaseHead, changelogContent: Buffer.from("release\n"),
-  });
-  const checkpointFile = path.join(path.dirname(candidate.releaseRoot), "checkpoint.json");
-  const frozenTree = await git(candidate.releaseRoot, "rev-parse", `${frozen.preReleaseHead}^{tree}`);
-  const next = await f.testedTask("Next", "next.txt", "next\n");
-  const acceptedNext = await f.lifecycle.updateWorkflowStatus({
-    taskId: next.id, status: "awaiting_implementation", operationId: "accept-next",
-  });
-  assert.equal(acceptedNext.task.workflowStatus, "awaiting_implementation");
-  assert.equal(acceptedNext.releaseCandidate.status, "prepared");
-  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:next.txt"), "next");
-  assert.equal(await git(candidate.releaseRoot, "rev-parse", `${frozen.preReleaseHead}^{tree}`), frozenTree);
-  await git(candidate.releaseRoot, "push", "origin", "main");
-  const returned = await f.lifecycle.updateWorkflowStatus({
-    taskId: accepted.id, status: "in_progress", operationId: "return-frozen",
-  });
-  assert.equal(returned.task.workflowStatus, "in_progress");
-  assert.equal(returned.acceptedResultPreserved, true);
-  assert.equal(returned.releaseCandidate.status, "preserved");
-  assert.notEqual(await readFile(checkpointFile, "utf8"), "");
-  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:next.txt"), "next");
-  assert.equal(await git(candidate.releaseRoot, "rev-parse", `${frozen.preReleaseHead}^{tree}`), frozenTree);
-});
+
+
 
 // Await, return and re-acceptance exercise finite Git/SQLite transitions. Await
 // their assertions and cleanup instead of cancelling the scenario by wall time.
@@ -470,32 +414,4 @@ test("same-status Await refuses an unrecognized native candidate ref rewind", as
   assert.equal(f.taskBoard.task(accepted.id).releaseRevision, acceptanceIdentity);
   assert.equal(f.taskBoard.task(accepted.id).gitReferences[0].resultCommit, acceptedTask.gitReferences[0].resultCommit);
   assert.equal(await git(candidate.releaseRoot, "rev-parse", "PreRelease"), candidate.baseCommit);
-});
-
-test("a frozen candidate keeps its identity while a later Await enters the next generation", async (t) => {
-  const f = await fixture(t);
-  const accepted = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
-  const { prepared, candidate } = await acceptAndPrepare(f, accepted, "accept-freeze-retry");
-  await writeFile(path.join(candidate.releaseRoot, "CHANGELOG.md"), "release\n");
-  const frozen = await f.releaseGitWorkspaces.freezePublicationCandidate({
-    projectRoot: f.primary, workspaceId: f.workspace.id,
-    expectedPlanRevision: prepared.planRevision,
-    expectedPreparedHead: candidate.preReleaseHead, changelogContent: Buffer.from("release\n"),
-  });
-  const next = await f.testedTask("Next", "next.txt", "next\n");
-  const checkpointFile = path.join(path.dirname(candidate.releaseRoot), "checkpoint.json");
-  const checkpointBefore = JSON.parse(await readFile(checkpointFile, "utf8"));
-  const frozenManifestFile = path.join(path.dirname(candidate.releaseRoot), "evidence", `${checkpointBefore.manifestHash}.json`);
-  const frozenManifestBefore = await readFile(frozenManifestFile, "utf8");
-
-  const acceptedNext = await f.lifecycle.updateWorkflowStatus({
-    taskId: next.id, status: "awaiting_implementation", operationId: "accept-into-frozen",
-  });
-  assert.equal(acceptedNext.task.workflowStatus, "awaiting_implementation");
-  assert.equal(acceptedNext.releaseCandidate.status, "prepared");
-  const checkpointAfter = JSON.parse(await readFile(checkpointFile, "utf8"));
-  assert.equal(checkpointAfter.phase, "prepared");
-  assert.notEqual(checkpointAfter.manifestHash, frozen.manifestHash);
-  assert.equal(await readFile(frozenManifestFile, "utf8"), frozenManifestBefore);
-  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:next.txt"), "next");
 });
