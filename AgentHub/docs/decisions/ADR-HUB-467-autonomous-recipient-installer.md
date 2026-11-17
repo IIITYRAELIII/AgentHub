@@ -58,6 +58,25 @@ before fresh selected retirement and first backup/install/start. Repetition read
 the same continuation. Retire this bounded compatibility after the exact d148
 originals are disposed.
 
+The subsequent a297 revision5 refusal is an explicitly addressed continuation
+of that same history, before its first backup/install/launch. Its pinned script,
+request, retired worker and whole revision3 proof are revalidated. The existing
+CAS retains the entire revision5 row before repeating selected retirement.
+Other errors, later boundaries and changed originals remain readback-only.
+
+Capture tolerates a child already absent before opening its handle; it grants
+no effect authority over that PID. Every live captured edge still binds the
+native parent and original birth. Child-first retirement retains original
+handles into recovery. A native access error can finish only after that exact
+handle signals, including when retiring its authorized parent closes the Job.
+
+Configured web readiness must bind the authenticated Node to the actual local
+TCP listener as well as the launched native Host. Generic overall Ready with a
+failed optional web component cannot complete an interactive installation.
+The standalone owner's existing Ready observer waits while the exact Host is
+live, terminating on explicit startup failure or Host exit. A slow startup is
+not a joined failure and cannot trigger rollback merely at a deadline.
+
 The existing maintenance-operation store owns the original and its terminal
 result. An external flushed request/dispatch fence is transport, not a second
 restart registry. Repetition reads the same original and never repeats dispatch.

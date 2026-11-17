@@ -876,6 +876,22 @@ Remove this compatibility after the bound d148 originals have been disposed.
 Previous-version recovery uses the same exit-aware retirement and proceeds when
 original handles are signalled.
 
+The pinned a297 revision5 descendant-parent refusal may continue that SAME
+partial-stop original only before its first backup/install/launch. Its complete
+revision3 history, a297 request/script/retired worker, physical inputs and restored
+previous Ready are revalidated before the existing CAS retains the whole row.
+Remove this extension when those addressed originals are disposed.
+An uncaptured child already absent grants no effect authority and requires no
+parent effect binding. Live captured children retain native parent/birth checks.
+Native rundown denial never proves exit: the original handle must signal.
+
+For the autonomous recipient entry, configured local web capability and TCP
+listener ownership must agree with the authenticated Node and launched Host.
+Headless installations keep disabled web semantics. Its existing observer may
+continue while the exact Host is live; elapsed startup time is not a joined
+failure authorizing rollback. Explicit startup capability failure or Host exit
+uses the existing recovery owner; ambiguous startup remains nonterminal.
+
 A runtime/prepared source remains pinned by its declared and physical path and
 by every actual Git/commondir/recursive alternate object store. If the generation
 owner has removed its live identity and Git metadata but left source files,

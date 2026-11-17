@@ -134,13 +134,27 @@ The update authorizes interruption of active work in that installation.
 Example: `python install_release.py --release 2.1.7 --runtime-root <Hub-directory> --scratch-root <separate-directory>`.
 Offline input uses `--archive <ZIP> --sha256 <exact-digest>` instead of `--release`.
 An explicitly requested `--resume-partialstop --operation-id <same-original>`
-continues the exact retained d148 partial-stop revision3 after verified previous
-Ready is restored. The same archive/runtime/scratch arguments are required.
+continues the exact retained d148 partial-stop revision3, or its pinned a297
+revision5 descendant-parent refusal, after verified previous Ready is restored.
+Revision5 retains and revalidates the whole revision3 history plus the retired
+a297 worker and its exact input. The same archive/runtime/scratch arguments are required.
 The whole prior UNKNOWN and its earlier history are saved by the existing CAS.
 Fresh retirement uses retained-handle exit proof, batch process capture and the
 existing stop budget. Timing and captured target identities are retained with
 the worker evidence. This bounded compatibility ends when those originals are
 disposed.
+
+An exited child which disappeared before native capture does not require a
+parent effect binding. Live children still require the native original parent
+and birth. Native rundown errors remain pending until that same retained handle
+signals; a live denied handle never grants stopped backup or installation.
+Recovery keeps those original handles across the failed stopping pass.
+
+Ready also verifies the configured local web capability and TCP listener owner
+against the authenticated Node and its launched Host. Headless configuration
+remains supported. A slow startup is observed while the exact Host remains live;
+elapsed time alone no longer triggers rollback. Host exit or an explicit startup
+capability failure follows the existing previous-version recovery path.
 
 An explicitly requested `--resume-prestop --operation-id <same-original>` can
 continue only the positively verified published8c09 pre-stop foreign refusal;
