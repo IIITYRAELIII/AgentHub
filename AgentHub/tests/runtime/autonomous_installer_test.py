@@ -54,7 +54,18 @@ class AutonomousInstallerTests(unittest.TestCase):
                 children.append(process)
                 self.assertTrue(k.AssignProcessToJobObject(job,int(process._handle)))
                 identities.append(installer.process_identity(int(process._handle)))
-            k.CloseHandle(job); job=None
+            # The handle is live at admission, but closing the real Job between
+            # identity read and TerminateProcess signals it before termination.
+            original_identity=installer.process_identity
+            def raced_identity(handle):
+                nonlocal job
+                identity=original_identity(handle)
+                k.CloseHandle(job); job=None
+                self.assertEqual(k.WaitForSingleObject(handle,10000),0)
+                return identity
+            with patch.object(installer,'process_identity',side_effect=raced_identity):
+                result=installer.terminate_retained(children[0].pid,int(children[0]._handle),identities[0])
+            self.assertTrue(result['alreadyExited'])
             for process,identity in zip(children,identities):
                 self.assertEqual(k.WaitForSingleObject(int(process._handle),10000),0)
                 self.assertFalse(k.TerminateProcess(int(process._handle),1))
