@@ -314,6 +314,11 @@ Restart and compaction are persisted operations with `operationId`, kind, exact
 Stream and Thread, optional provider turn identity, status and revision. They are
 not user turns.
 
+Post-turn automatic maintenance requires a nonempty provider turn identity.
+The progress/admission cleanup of a rejected or unconfirmed launch is not a
+completed provider turn, even when that Thread retains high context usage.
+Repeated cleanup preserves the original input and does not start compaction.
+
 The client may show an explicit compaction boundary with before/after context
 as a system maintenance marker. Codex uses its preliminary provider estimate,
 labelled as approximate; missing evidence remains unknown. Context maintenance
