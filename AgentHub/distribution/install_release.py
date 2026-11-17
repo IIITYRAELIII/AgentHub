@@ -1517,6 +1517,13 @@ def clean_installer_environment():
     return result
 
 
+def continuation_cache(scratch, root, operation_id, installer_sha256):
+    # Canonical whole-row history and priorCache retain preceding attempts.
+    # Recursively nesting their directories breaks SQLite's sidecar paths.
+    identity = str(root)+'\0'+operation_id+'\0'+installer_sha256
+    return scratch/('agenthub-resume-'+hashlib.sha256(identity.encode('utf-8')).hexdigest()[:32])
+
+
 def autonomous_worker(request_file):
     request = _read_record(request_file); cache = request_file.parent
     c, w, k = native_api()
@@ -1721,11 +1728,11 @@ def autonomous_main():
                 cache=cache/('resume-'+PARTIAL_STOP_INSTALLER_SHA[:16])
             verify_partial_stop_resume(root,cache,original)
             selection['resumePartial']=dict(cache=str(cache),original=original)
-            cache=cache/('resume-partial-'+selection['installerSha256'][:16])
+            cache=continuation_cache(scratch,root,op,selection['installerSha256'])
         else:
             verify_pre_stop_resume(root,cache,original)
             selection['resume']=dict(cache=str(cache),original=original)
-            cache=cache/('resume-'+selection['installerSha256'][:16])
+            cache=continuation_cache(scratch,root,op,selection['installerSha256'])
     if cache.exists():
         prior=_read_record(cache/'request.json')
         if prior!=selection: raise RuntimeError("Original input differs; no effects replayed")

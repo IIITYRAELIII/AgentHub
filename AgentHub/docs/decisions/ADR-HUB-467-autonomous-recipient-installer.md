@@ -64,6 +64,14 @@ request, retired worker and whole revision3 proof are revalidated. The existing
 CAS retains the entire revision5 row before repeating selected retirement.
 Other errors, later boundaries and changed originals remain readback-only.
 
+Continuation directories are flat under the caller's supplied scratch root,
+with exact original/installer-byte identity. History remains in the priorCache
+binding and canonical whole-row proof. Recursive transport directory growth
+caused a real Windows SQLite backup failure at a252-character target before
+installation; ordinary flat transport avoids that growth without changing the
+backup owner, scope or physical-directory guards. Definitively rolled-back
+terminal invocations remain terminal and readback-only.
+
 Capture tolerates a child already absent before opening its handle; it grants
 no effect authority over that PID. Every live captured edge still binds the
 native parent and original birth. Child-first retirement retains original

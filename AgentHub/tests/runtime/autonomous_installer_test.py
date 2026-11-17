@@ -33,6 +33,41 @@ def foreign_layout(root, entries):
 
 @unittest.skipUnless(os.name == "nt", "Windows recipient installer")
 class AutonomousInstallerTests(unittest.TestCase):
+    def test_flat_continuation_avoids_real_sqlite_backup_path_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); root=base/'hub'; root.mkdir()
+            flat=installer.continuation_cache(base,root,'same-original','a'*64)
+            self.assertEqual(flat.parent,base)
+            self.assertEqual(flat,installer.continuation_cache(base,root,'same-original','a'*64))
+            self.assertNotEqual(flat,installer.continuation_cache(base,root,'another-original','a'*64))
+            self.assertNotEqual(flat,installer.continuation_cache(base,root,'same-original','b'*64))
+            filename='journal.sqlite.before-release-status-repair-1786625258183'
+            old=base/('x'*(252-len(str(base))-len('/backup/data/'+filename)-1))/'backup'
+            flat=flat/'backup'; old.parent.mkdir(); flat.parent.mkdir()
+            code="""
+import {DatabaseSync} from 'node:sqlite';import fs from 'node:fs/promises';import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+const [modulePath,root,old,flat,name]=process.argv.slice(1);
+const {backupStoppedRuntime}=await import(pathToFileURL(modulePath).href);
+await fs.mkdir(path.join(root,'data'));await fs.writeFile(path.join(root,'config.json'),'{}');
+const db=new DatabaseSync(path.join(root,'data',name));db.exec('CREATE TABLE data(value);INSERT INTO data VALUES(42)');db.close();
+let refused=false;
+try{await backupStoppedRuntime({runtimeRoot:root,destination:old,assertStopped:async()=>{}})}
+catch(error){if(error.code!=='ERR_SQLITE_ERROR')throw error;refused=true}
+if(!refused)throw Error('Expected actual historical path-length counterexample');
+const proof=await backupStoppedRuntime({runtimeRoot:root,destination:flat,assertStopped:async()=>{}});
+const saved=new DatabaseSync(path.join(flat,'data',name),{readOnly:true});
+if(saved.prepare('SELECT value FROM data').get().value!==42)throw Error('Backup content lost');saved.close();
+if(proof.files.find(item=>item.path===path.join('data',name)).integrity!=='ok')throw Error('Missing integrity proof');
+console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,flatTargetLength:path.join(flat,'data',name).length,passed:true}));
+"""
+            result=subprocess.run([shutil.which('node'),'--input-type=module','-e',code,
+                str(SOURCE.parents[1]/'src/infrastructure/persistence/runtime-maintenance-backup.mjs'),str(root),str(old),str(flat),filename],
+                capture_output=True,encoding='utf-8',creationflags=0x08000000,timeout=30)
+            self.assertEqual(result.returncode,0,result.stderr)
+            proof=json.loads(result.stdout); self.assertEqual(proof['oldTargetLength'],252)
+            self.assertLess(proof['flatTargetLength'],252); self.assertTrue(proof['passed'])
+
     def test_real_job_close_signals_original_handles_and_live_access_denied_refuses(self):
         c,w,k=installer.native_api()
         k.CreateJobObjectW.argtypes=[c.c_void_p,w.LPCWSTR]; k.CreateJobObjectW.restype=w.HANDLE

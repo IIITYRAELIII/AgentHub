@@ -139,6 +139,10 @@ revision5 descendant-parent refusal, after verified previous Ready is restored.
 Revision5 retains and revalidates the whole revision3 history plus the retired
 a297 worker and its exact input. The same archive/runtime/scratch arguments are required.
 The whole prior UNKNOWN and its earlier history are saved by the existing CAS.
+Continuation transport directories stay directly under the supplied scratch
+root, keyed by original and installer bytes. Prior directories remain linked
+through the retained input and canonical whole-row history. They are not nested
+again: repeated path growth can prevent SQLite from creating backup sidecars.
 Fresh retirement uses retained-handle exit proof, batch process capture and the
 existing stop budget. Timing and captured target identities are retained with
 the worker evidence. This bounded compatibility ends when those originals are
