@@ -17,7 +17,6 @@ import { clearInheritedPublicationOwnership } from "./src/infrastructure/process
 import { testResourceAdmission } from "./src/infrastructure/process/test-resource-admission.mjs";
 import { prepareTaskWorktreeDependencies } from "./src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { runTaskGitCommand } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
-import { readPublicationTestSelection } from "./src/infrastructure/filesystem/publication-test-selection.mjs";
 
 const ROOT = import.meta.dirname;
 const RUNNER_INPUTS = [
@@ -28,7 +27,6 @@ const RUNNER_INPUTS = [
   "src/domain/test-selection.mjs",
   "src/domain/test-suite-groups.mjs",
   "src/infrastructure/filesystem/release-test-inventory.mjs",
-  "src/infrastructure/filesystem/publication-test-selection.mjs",
 ].map((file) => path.join(ROOT, file));
 const TEST_RUNNER_FILE = fileURLToPath(import.meta.url);
 // WIP не содержит поставляемого кода. Без этого исключения случайный
@@ -439,11 +437,11 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
   else if (mode === "--list-tests") console.log(JSON.stringify(await discoverReleaseTestInventory(ROOT), null, 2));
   else {
     const args = process.argv.slice(3);
-    const fileSelection = args.some(arg => arg.startsWith("--selection-file=") || arg.startsWith("--selection-sha256="));
-    if (fileSelection && mode !== "selected") throw new Error("Selected-test file requires selected mode");
+    if (args.some(arg => arg.startsWith("--selection-file=") || arg.startsWith("--selection-sha256="))) {
+      throw new Error("Publication selection files are no longer supported; use --selection=");
+    }
     const selectionArgument = process.argv.slice(2).find(arg => arg.startsWith("--selection="));
-    const selection = fileSelection ? await readPublicationTestSelection(args, { sourceRoot: ROOT })
-      : selectionArgument ? JSON.parse(selectionArgument.slice(12)) : null;
+    const selection = selectionArgument ? JSON.parse(selectionArgument.slice(12)) : null;
     await runTestSuite(selection ? "selected" : mode, { selection });
   }
 }
