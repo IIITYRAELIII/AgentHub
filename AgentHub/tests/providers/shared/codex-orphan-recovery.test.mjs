@@ -4,6 +4,7 @@ import { CodexRecoveryService } from "../../../src/providers/provider-recovery-s
 import { ProviderCancellationService } from "../../../src/providers/provider-turn-services.mjs";
 import { CodexAppServerTransport } from "../../../src/providers/codex/codex-app-server-transport.mjs";
 import { markProviderTurnRequested, markProviderTurnAccepted, markProviderFirstEvent } from "../../../src/domain/task-runs.mjs";
+import { TaskObserverController } from "../../../src/application/task-observer-controller.mjs";
 
 test("metadata recovery records a failed provider read without releasing the original", async () => {
   const spans = [];
@@ -43,6 +44,10 @@ test("metadata recovery read spans survive the existing trace worker reopen", as
     assert.deepEqual(readSpans.map(row => row.outcome), ["started", "succeeded"]);
     assert.equal(readSpans.every(row => row.metadata.turnId === f.run.turnId && row.metadata.metadataOnly === true), true);
     assert.equal(readSpans[1].metadata.operationSpanId, readSpans[0].metadata.operationSpanId);
+    assert.equal(readSpans[1].metadata.threadState, "idle");
+    assert.equal(readSpans[1].metadata.snapshotTurnId, f.run.turnId);
+    assert.equal(readSpans[1].metadata.snapshotCompleted, false);
+    assert.equal(readSpans[1].metadata.recoveryEligible, true);
     assert.equal(JSON.stringify(timeline).includes("Retained partial answer"), false);
   } finally {
     await store.close();
@@ -511,4 +516,53 @@ test("reviewer metadata recovery retains guarded reconciliation for a dangling a
   assert.equal(f.current(), null, "Fresh provider/native inactivity plus exact interrupt rejection must still reach the existing terminal owner");
   assert.deepEqual(f.calls.slice(0, 3), ["fresh-activity", "interrupt-original", "fresh-activity"]);
   assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+});
+
+test("ordinary observation recovers the retained original after a newer external turn finishes", async () => {
+  const { CodexTaskSnapshotService, codexTurnSnapshot } = await import("../../../src/providers/codex/codex-task-snapshot-service.mjs");
+  const { codexRolloutTurnState, parseCodexRolloutActivity } = await import("../../../src/providers/codex/codex-rollout-activity.mjs");
+  const row = (type, turn_id) => JSON.stringify({ type: "event_msg", payload: { type, turn_id } });
+  const rows = [row("task_started", "turn-original"), row("task_started", "turn-newer")];
+  const thread = { id: "thread-original", path: "fixture", status: { type: "active" } };
+  const snapshots = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => thread.path,
+    readRolloutActivity: async () => parseCodexRolloutActivity(rows.join("\n") + "\n"),
+    rolloutTurnState: codexRolloutTurnState, capturedOwner: () => null,
+    runtimeActive: async () => false, resolveOwner: async () => "hub",
+    readThread: async () => ({ thread }), selectTurn: () => null,
+    turnSnapshot: codexTurnSnapshot, turnStartedAt: () => null, describeItem: () => "stage",
+    hubOwner: () => "hub", agentHubPid: () => 1, modelLabel: String,
+    runtimeLabel: String, delay: async () => {}, reindexRun() {},
+  });
+  const f = fixture({ readCodexSnapshot: run => snapshots.read(run) }, {
+    readThread: async (_id, { applySnapshot }) => applySnapshot({ thread }),
+    readTaskSnapshot: (run, options) => snapshots.read(run, options),
+  });
+  f.run.executionOwner = "hub";
+  markProviderTurnRequested(f.run);
+  markProviderTurnAccepted(f.run, { turnId: f.run.turnId });
+  const observer = new TaskObserverController({
+    canObserve: run => f.current() === run, readSnapshot: run => snapshots.read(run),
+    pollDelay: () => 1, onUnknown: run => f.recovery.recover(run, { reconcileOnly: true }),
+    onMissing() {}, onTurnChanged: () => assert.fail("Original turn cannot change"),
+    onCompleted: () => assert.fail("Later terminal is not original completion"), onActive() {},
+    onError: (_run, error) => { throw error; }, setTimeoutImpl: () => 1, clearTimeoutImpl() {},
+  });
+  // Startup while the newer external turn is live must preserve the original.
+  await f.recovery.recover(f.run);
+  await observer.poll(f.run);
+  assert.equal(f.current(), f.run);
+  assert.equal(f.calls.includes("interrupt-original"), false);
+  rows.push(row("task_complete", "turn-newer"));
+  thread.status = { type: "idle" };
+  const snapshot = await snapshots.read(f.run);
+  assert.equal(snapshot.turnId, "turn-original");
+  assert.equal(snapshot.active, true, "Unclosed task_started remains a retained marker");
+  assert.equal(snapshot.completed, false);
+  await observer.poll(f.run);
+  assert.equal(f.current(), null, "Ordinary observer must re-enter the same guarded recovery owner");
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+  assert.deepEqual(f.calls.at(-1).slice(0, 2), ["commit", "interrupted"]);
+  assert.equal(f.run.turnId, "turn-original");
+  assert.equal(f.run.clientUserMessageId, "message-original");
 });
