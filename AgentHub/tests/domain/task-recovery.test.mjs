@@ -22,7 +22,7 @@ test("Codex recovery handles missing, approval, active and terminal turns", () =
   assert.equal(resolveTaskRecoveryAction({ run, codexAvailable: true }), A.MISSING_CODEX_TURN);
   assert.equal(resolveTaskRecoveryAction({
     run, codexAvailable: true, codexTurn: { status: "inProgress" }, autoApprove: true, waitingOnApproval: true,
-  }), A.RETRY_LOST_APPROVAL);
+  }), A.ATTACH_CODEX);
   assert.equal(resolveTaskRecoveryAction({
     run, codexAvailable: true, codexTurn: { status: "inProgress" },
   }), A.ATTACH_CODEX);

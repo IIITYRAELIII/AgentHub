@@ -319,7 +319,7 @@ test("recovery process absence bypasses cached and in-flight ordinary observatio
     probe: async () => assert.fail("Newer cached evidence must survive older completion") }), false);
 });
 
-test("fresh recovery requires both explicit idle provider and successful native absence", async () => {
+test("fresh recovery requires idle or notLoaded provider and successful native absence", async () => {
   let probes = 0;
   const options = { rolloutPath: "C:/strict-recovery.jsonl", platform: "win32",
     forceFresh: true, probe: async () => { probes += 1; return snapshot([], []); } };
@@ -327,11 +327,31 @@ test("fresh recovery requires both explicit idle provider and successful native 
     activity: { running: false } }, options)).state, "inactive");
   assert.equal(probes, 1, "Even an inactive/empty rollout requires a native probe");
   assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "active" } }, options)).state, "active");
-  assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "notLoaded" } }, options)).state, "unknown");
+  assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "notLoaded" } }, options)).state, "inactive");
+  for (const type of ["systemError", "unknown", undefined]) {
+    assert.equal((await resolveCodexTaskActivity({ threadStatus: { type } }, options)).state, "unknown");
+  }
   assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "idle" } }, {
     ...options, probe: async () => { throw new Error("denied"); },
   })).state, "unknown");
   assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "idle" } }, {
     ...options, rolloutPath: null,
   })).state, "unknown");
+});
+
+test("notLoaded cannot hide a live foreign holder or unavailable fresh native evidence", async () => {
+  const input = { threadStatus: { type: "notLoaded" } };
+  const options = { rolloutPath: "fixture-not-loaded.jsonl", platform: "win32", forceFresh: true };
+  assert.equal((await resolveCodexTaskActivity(input, { ...options,
+    probe: async () => snapshot([40], [{ processId: 40, parentProcessId: 1,
+      name: "codex.exe", commandLine: "codex.exe resume other-turn" }]),
+  })).state, "active");
+  assert.equal((await resolveCodexTaskActivity(input, { ...options,
+    probe: async () => { throw new Error("denied"); },
+  })).state, "unknown");
+  for (const missing of [{ rolloutPath: null }, { platform: "linux" }]) {
+    assert.equal((await resolveCodexTaskActivity(input, { ...options, ...missing,
+      probe: async () => assert.fail("No proof available"),
+    })).state, "unknown");
+  }
 });

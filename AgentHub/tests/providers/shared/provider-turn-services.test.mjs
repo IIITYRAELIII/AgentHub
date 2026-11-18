@@ -366,7 +366,7 @@ test("Codex turn service retries one active-turn transition with the same messag
   ]);
 });
 
-test("Codex turn service resumes a recycled app-server thread and retries the same steer identity", async () => {
+test("Codex turn service refuses an unloaded old turn without resuming or repeating steer", async () => {
   const calls = [];
   let steerAttempts = 0;
   const service = codexTurnService({
@@ -379,27 +379,20 @@ test("Codex turn service resumes a recycled app-server thread and retries the sa
     },
   });
 
-  const result = await service.steer({
+  await assert.rejects(service.steer({
     run: { turnId: "turn-1" },
     target: { threadId: "thread-1" },
     input: [{ type: "text", text: "Retry without duplication" }],
     clientUserMessageId: "message-1",
-  });
+  }), /thread not found: thread-1/);
 
-  assert.deepEqual(calls.map((call) => call.method), ["turn/steer", "thread/resume", "turn/steer"]);
-  assert.strictEqual(calls[0].params, calls[2].params);
+  assert.deepEqual(calls.map((call) => call.method), ["turn/steer"]);
   assert.deepEqual(calls[0].params, {
     threadId: "thread-1",
     expectedTurnId: "turn-1",
     input: [{ type: "text", text: "Retry without duplication" }],
     clientUserMessageId: "message-1",
   });
-  assert.deepEqual(calls[1].params, {
-    threadId: "thread-1",
-    approvalPolicy: "on-request",
-    sandbox: "workspace-write",
-  });
-  assert.deepEqual(result, { turnId: "turn-1" });
 });
 
 test("Codex turn service persists the exact receipt before background materialization", async () => {
@@ -749,4 +742,17 @@ test("Codex turn service never rejects or repeats an acknowledged turn with a de
   assert.equal(run.providerStart.state, "accepted-awaiting-first-event");
   assert.deepEqual(scheduled, ["turn-1"]);
   assert.deepEqual(completed, []);
+});
+
+test("a new input authentication rejection is explicit failed completion, never a resume fence", async () => {
+  const events = [];
+  const service = codexTurnService({
+    sendRpc: async (method) => { events.push(method); throw new Error("401 Unauthorized"); },
+    finishProgress: async (_run, stage) => events.push(stage),
+    completeRun: async run => events.push(["complete", run.providerTerminalStatus]),
+  });
+  await assert.rejects(service.launch({ id: "new-auth-run", threadId: "saved-thread",
+    projectRoot: "D:/fixture", modelId: "gpt-5.6-codex", collaborationMode: "default",
+    reasoningId: "medium", clientUserMessageId: "new-auth-input" }, "new input"), /401 Unauthorized/);
+  assert.deepEqual(events, ["turn/start", "Ошибка запуска: 401 Unauthorized", ["complete", "failed"]]);
 });

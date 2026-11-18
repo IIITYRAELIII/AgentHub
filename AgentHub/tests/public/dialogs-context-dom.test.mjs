@@ -234,7 +234,7 @@ for (const surface of surfaces) {
         assert.equal(await page.evaluate(() => document.documentElement.hasAttribute('data-mobile-dialogs-enabled')), false);
         assert.equal(await page.locator('[data-action="stream-create"]').getAttribute('aria-label'), 'Новый поток');
         await page.evaluate(() => AgentHub.showSelectedTask());
-        assert.equal(await page.locator('.stream-chat-workspace-label').isVisible(), true);
+        assert.equal(await page.locator('.stream-chat-workspace-label').count(), 0);
         assert.equal(await page.locator('[data-stream-header-workspace]').innerText(), workspaceName);
         await capture(page, `${surface.name}-direct`);
         if (surface.width >= 860) {

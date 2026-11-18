@@ -42,7 +42,7 @@ export function restorePersistedTaskRun(savedRun, restoredChatId, lifecycleStore
       ? savedRun.observedInitialResponseText
       : String(savedRun.responseText ?? ""),
     observedResponseChanged: savedRun.observedResponseChanged === true,
-    progressStage: String(savedRun.progressStage ?? "Восстановление потока…"),
+    progressStage: String(savedRun.progressStage ?? "Проверка завершения сохранённого хода…"),
     progressReasoning: String(savedRun.progressReasoning ?? ""),
     lastMeaningfulProgressAt: String(
       savedRun.lastMeaningfulProgressAt
