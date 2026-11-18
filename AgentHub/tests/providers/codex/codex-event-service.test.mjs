@@ -25,6 +25,8 @@ test("late commentary phase keeps the native item's pre-steer annotation target 
     await send("item/completed", { item: { id: "answer-A", type: "agentMessage", phase: "commentary", text: 'A :agent-annotation{index="1"}' } });
     await send("item/completed", { item: { id: "answer-B", type: "agentMessage", phase: "commentary", text: 'B :agent-annotation{index="1"}' } });
     assert.deepEqual(run.activityGroups.map(group => group.responseAnnotationTarget.clientUserMessageId), ["client-A", "client-B"]);
+    assert.equal(run.activityGroups[0].reasoning, 'A :agent-annotation{index="1"}',
+      "native commentary retains the original provider source for the existing citation projection");
     const recovered = {}; replaceRunActivityGroups(recovered, run.activityGroups);
     assert.deepEqual(recovered.activityGroups, run.activityGroups);
     const task = { provider: "codex", threadId: "thread", projectRoot: directory };

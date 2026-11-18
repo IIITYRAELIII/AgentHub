@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { parseCodexRolloutActivity } from "../../src/providers/codex/codex-rollout-activity.mjs";
 import { readCodexTracePageInWorker } from "../../src/providers/codex/codex-rollout-activity-worker-client.mjs";
+import { startCodexAgentMessage, completeCodexAgentMessage, codexAgentMessageSourceText } from "../../src/providers/codex/codex-agent-message-reducer.mjs";
+import { upsertRunReasoningBlock } from "../../src/domain/run-activity.mjs";
 import { createObservedTaskRun } from "../../src/domain/task-runs.mjs";
 import { createDesktopSnapshotFactory } from "../../src/interfaces/desktop/desktop-snapshot.mjs";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
@@ -178,4 +180,71 @@ test("commentary references do not create a detached empty answer citation", { t
     }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
+});
+
+test("native A survives late completion observation and SQLite history while a new final targets B", { timeout: 30_000 }, async () => {
+  const a = { role: "user", itemId: "user-A", clientUserMessageId: "client-A", text: "Check A", responseAnnotations: [{ text: "same", annotation: "Comment A" }] };
+  const b = { ...a, itemId: "user-B", clientUserMessageId: "client-B", text: "Check B", responseAnnotations: [{ text: "same", annotation: "Comment B" }] };
+  const run = { ...binding, id: "native-run", userMessages: [a], responseItems: [] };
+  const rawA = marked("Native answer A.");
+  startCodexAgentMessage(run, { turnId, item: { id: "native-A", type: "agentMessage", phase: "commentary" } });
+  run.userMessages.push(b);
+  const item = completeCodexAgentMessage(run, { turnId, item: { id: "native-A", type: "agentMessage", phase: "commentary", text: rawA } });
+  upsertRunReasoningBlock(run, { id: item.id, sourceItemId: item.id, kind: "commentary", text: codexAgentMessageSourceText(item), responseAnnotationTarget: item.responseAnnotationTarget });
+  const records = start() + user("user-A", "Comment A") + user("user-B", "Comment B")
+    + message("native-A", "commentary", rawA);
+  const activity = parseCodexRolloutActivity(records);
+  const service = observer(async () => activity);
+  const initialHistory = historyFor(activity); initialHistory.items[0].messages = [a, b];
+  const browser = await launchBrowser();
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub469-native-observer-"));
+  const filePath = path.join(directory, "tasks.json"); let store;
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    page.setDefaultTimeout(3_000);
+    const errors = await openFixture(page, { fixtureSnapshot: liveSnapshot(run, "native-before-observation"), fixtureHistory: initialHistory });
+    await page.evaluate(() => window.AgentHub.showSelectedTask());
+    const aLink = page.locator('[data-chat-live] [data-trace-group-id="commentary:native-A"] [data-response-citation-index="1"]');
+    await aLink.waitFor(); assert.match(await aLink.innerText(), /Comment A/u);
+    assert.equal(await page.locator('[data-live-body] [data-response-citation-index="1"]').count(), 0,
+      "native commentary never creates a second answer citation");
+    service.applyObserved(run, await service.read(run));
+    await applyFixtureSnapshot(page, liveSnapshot(run, "native-after-observation"));
+    assert.match(await aLink.innerText(), /Comment A/u);
+    assert.doesNotMatch(await aLink.innerText(), /Comment B/u);
+    const finalText = marked("New final B.");
+    startCodexAgentMessage(run, { turnId, item: { id: "native-B", type: "agentMessage", phase: "final_answer" } });
+    completeCodexAgentMessage(run, { turnId, item: { id: "native-B", type: "agentMessage", phase: "final_answer", text: finalText } });
+    await applyFixtureSnapshot(page, liveSnapshot(run, "native-final-B"));
+    const bLink = page.locator('[data-live-body] [data-response-citation-index="1"]');
+    await bLink.waitFor(); assert.match(await bLink.innerText(), /Comment B/u);
+    assert.match(await aLink.innerText(), /Comment A/u);
+    store = new LocalTaskSyncStore({ filePath }); await store.load();
+    await store.recordHistory({ ...binding, projectRoot: directory }, [{ id: turnId, completed: true, status: "completed", answer: "New final B.",
+      activityGroups: run.activityGroups, messages: [a, b, { role: "agent", itemId: "native-B", phase: "final_answer", text: run.responseText,
+        responseAnnotationReferences: run.responseAnnotationReferences }] }]);
+    store.close(); store = new LocalTaskSyncStore({ filePath }); await store.load();
+    const api = createDesktopTaskHistoryFactory({
+      selection: { activeProvider: () => "codex", threadId: () => "thread-a", chatId: () => 42 },
+      catalog: { entries: () => [{ ...binding, title: "Native history" }] },
+      historyReader: { read: async () => ({ history: store.history(binding) }) },
+      runs: { forTask: () => null }, receipts: { forMessage: () => null, forTurn: () => null },
+      historyMerger: { mergeActive: mergeActiveTaskHistory, mergeCompleted: mergeCompletedTaskHistory }, responseBudget: { fit: value => value },
+    });
+    const history = await api({ provider: "codex", threadId: "thread-a", includeActive: false });
+    const cold = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }); cold.setDefaultTimeout(3_000);
+    try {
+      const coldErrors = await openFixture(cold, { fixtureHistory: history });
+      for (const reload of [false, true]) {
+        if (reload) await cold.reload({ waitUntil: "load" });
+        await cold.evaluate(() => window.AgentHub.showSelectedTask());
+        const trace = cold.locator("details.turn-trace"); await trace.locator("summary").click();
+        assert.match(await trace.locator('[data-trace-group-id="commentary:native-A"] [data-response-citation-index="1"]').innerText(), /Comment A/u);
+        assert.match(await cold.locator('.msg-agent > .msg-body [data-response-citation-index="1"]').last().innerText(), /Comment B/u);
+      }
+      assert.deepEqual(coldErrors, []);
+      if (process.env.AGENT_HUB_QA_SCREENSHOT_DIR) await cold.screenshot({ path: path.join(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, "late-native-source-390.png") });
+    } finally { await cold.close(); }
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); store?.close(); await rm(directory, { recursive: true, force: true }); }
 });

@@ -13,7 +13,7 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../../domain/interstream-message.mjs";
-import { normalizedCodexResponseAnnotationReferences, normalizedResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
+import { normalizedCodexResponseAnnotationReferences, normalizedResponseAnnotationTarget, preferredResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations, normalizedResponseAnnotationItemId } from "../../domain/response-annotation-source.mjs";
 import {
   durableUserCommandItemId,
@@ -392,6 +392,15 @@ function preserveDurableResponseAnnotationReferences(existingHistory, incomingHi
       if (itemId) byItemId.set(itemId, message);
     }
     const next = { ...turn };
+    if (Array.isArray(turn.activityGroups)) next.activityGroups = turn.activityGroups.map((group) => {
+      const nativeId = normalizedResponseAnnotationItemId(group?.sourceItemId);
+      const matches = nativeId ? (existingTurn.activityGroups ?? []).filter(previous => (
+        previous.id === group.id && previous.sourceItemId === nativeId
+      )) : [];
+      const target = preferredResponseAnnotationTarget(matches.length === 1 ? matches[0].responseAnnotationTarget : null,
+        group.responseAnnotationTarget);
+      return target ? { ...group, responseAnnotationTarget: target } : group;
+    });
     if (Array.isArray(turn?.messages)) {
       next.messages = turn.messages.map((message) => {
         const itemId = String(message?.itemId ?? "").trim();
@@ -401,9 +410,18 @@ function preserveDurableResponseAnnotationReferences(existingHistory, incomingHi
           String(turn?.id ?? "").trim(),
           message,
         );
-        const responseAnnotationReferences = Array.isArray(message?.responseAnnotationReferences)
+        let responseAnnotationReferences = Array.isArray(message?.responseAnnotationReferences)
           ? message.responseAnnotationReferences
           : terminalSource?.responseAnnotationReferences;
+        if (existingMessage && (existingTurn.messages ?? []).filter(candidate => candidate.itemId === itemId
+          && candidate.role === message.role).length === 1 && Array.isArray(responseAnnotationReferences)) {
+          const previous = cleanResponseAnnotationReferences(existingMessage.responseAnnotationReferences);
+          responseAnnotationReferences = responseAnnotationReferences.map(reference => {
+            const target = preferredResponseAnnotationTarget(previous.find(item => item.index === reference.index)?.target,
+              reference.target);
+            return target ? { ...reference, target } : reference;
+          });
+        }
         return {
           ...message,
           ...(Array.isArray(responseAnnotationReferences)

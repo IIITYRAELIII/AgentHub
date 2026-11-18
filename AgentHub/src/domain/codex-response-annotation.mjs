@@ -13,7 +13,16 @@ export function normalizedResponseAnnotationTarget(value) {
     const id = String(value[key] ?? "").trim();
     if (id && id.length <= 300 && !/[\u0000-\u001f]/u.test(id)) target[key] = id;
   }
-  return Object.keys(target).length ? target : null;
+  if (!Object.keys(target).length) return null;
+  if (value.origin === "native-item") target.origin = "native-item";
+  return target;
+}
+
+export function preferredResponseAnnotationTarget(existing, incoming) {
+  const previous = normalizedResponseAnnotationTarget(existing);
+  const next = normalizedResponseAnnotationTarget(incoming);
+  return next?.origin === "native-item" && previous?.origin !== "native-item"
+    ? next : previous ?? next;
 }
 
 export function responseAnnotationTargetForMessages(messages) {
@@ -40,7 +49,8 @@ export function normalizedCodexResponseAnnotationReferences(references) {
     const target = normalizedResponseAnnotationTarget(reference.target);
     if (seen.has(index)) {
       const retained = normalized.find((item) => item.index === index);
-      if (!retained.target && target) retained.target = target;
+      const preferred = preferredResponseAnnotationTarget(retained.target, target);
+      if (preferred) retained.target = preferred;
       continue;
     }
     seen.add(index);

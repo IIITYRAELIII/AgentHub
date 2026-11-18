@@ -276,6 +276,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   provider/Thread/turn. Native items and trace groups retain that target across
   steer, observation, terminal storage and reload; a new input does not retarget
   an existing item. Missing, foreign or ambiguous explicit targets fail closed.
+  A native item-start capture takes precedence over a target inferred from
+  completion order. Observation, hydration and existing SQLite history merges
+  retain it only for the same provider/Thread/turn and native item/group identity;
+  a later completion after steer B cannot replace item A's captured target.
+  Incoming reference positions and explicit empty lists remain authoritative.
+  Native commentary is projected from its original provider text; its hidden
+  response body must not create a second detached citation.
   Legacy references without target metadata retain the nearest preceding
   annotated-user compatibility mapping by canonical message key. The renderer
   renders the user's annotation/comment text and exposes a keyboard-operable

@@ -1,6 +1,6 @@
 import { normalizedResponseAnnotationItemId } from "./response-annotation-source.mjs";
 import { boundedTraceId } from "./codex-trace-budget.mjs";
-import { normalizedResponseAnnotationTarget, responseAnnotationTargetForMessages } from "./codex-response-annotation.mjs";
+import { normalizedResponseAnnotationTarget, preferredResponseAnnotationTarget, responseAnnotationTargetForMessages } from "./codex-response-annotation.mjs";
 
 const MAX_RUN_ACTIVITY_BYTES = 2_500_000;
 
@@ -67,9 +67,27 @@ export function upsertRunReasoningBlock(run, { id, sourceItemId = id, kind = "re
   return group;
 }
 
+export function preserveRunActivityAnnotationTargets(run, groups, owner = {}) {
+  const values = Array.isArray(groups) ? groups : [];
+  if (!run?.provider || !run.threadId || !run.turnId
+    || owner.provider && owner.provider !== run.provider
+    || owner.threadId && owner.threadId !== run.threadId
+    || owner.turnId && owner.turnId !== run.turnId) return values;
+  return values.map((group) => {
+    const nativeItemId = normalizedResponseAnnotationItemId(group?.sourceItemId);
+    if (!nativeItemId) return group;
+    const items = (run.responseItems ?? []).filter(item => item.id === nativeItemId && item.turnId === run.turnId);
+    const previous = (run.activityGroups ?? []).filter(candidate => candidate.id === group.id && candidate.sourceItemId === nativeItemId);
+    if (items.length > 1 || previous.length > 1) return group;
+    const captured = preferredResponseAnnotationTarget(previous[0]?.responseAnnotationTarget, items[0]?.responseAnnotationTarget);
+    const target = preferredResponseAnnotationTarget(captured, group.responseAnnotationTarget);
+    return target ? { ...group, responseAnnotationTarget: target } : group;
+  });
+}
+
 export function replaceRunActivityGroups(run, groups) {
   if (!run) return [];
-  run.activityGroups = (Array.isArray(groups) ? groups : []).map((group, index) => ({
+  run.activityGroups = preserveRunActivityAnnotationTargets(run, groups).map((group, index) => ({
     id: String(group?.id ?? `group:${index}`),
     ...(normalizedResponseAnnotationTarget(group?.responseAnnotationTarget)
       ? { responseAnnotationTarget: normalizedResponseAnnotationTarget(group.responseAnnotationTarget) } : {}),
