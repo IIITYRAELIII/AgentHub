@@ -34,6 +34,132 @@ def foreign_layout(root, entries):
 
 @unittest.skipUnless(os.name == "nt", "Windows recipient installer")
 class AutonomousInstallerTests(unittest.TestCase):
+    def test_explicit_modes_and_cancel_never_default_to_force(self):
+        for mode in ['wait','force']:
+            self.assertEqual(installer.choose_install_mode(mode),mode)
+            self.assertEqual(installer.choose_install_mode(None,lambda: mode),mode)
+        for invalid in [None,'unknown','']:
+            with self.assertRaises(ValueError): installer.choose_install_mode(None,lambda: invalid)
+        with patch.object(sys.stdin,'isatty',return_value=False):
+            with self.assertRaisesRegex(ValueError,'--mode'): installer.choose_install_mode(None)
+
+    def test_wait_current_observes_drain_and_refuses_unknown_or_changed_owner(self):
+        process=dict(pid=123,instanceId='original-instance',releaseId='old')
+        def health(count=0,pending=False,**delta):
+            state=dict(protocol=1,operationId='same-update',revision=1,mode='wait',admissionClosed=True,
+                       activeCount=count,unknownCount=0,pendingAdmission=pending)
+            state.update(delta)
+            return dict(live=True,ready=True,process=process,installerCutover=state)
+        samples=iter([health(2),health(0,True),health()]); observed=[]; waits=[]
+        result=installer.wait_for_current_turns(lambda:next(samples),'same-update',process,observed.append,waits.append)
+        self.assertEqual(result['activeCount'],0); self.assertEqual(len(observed),3); self.assertEqual(waits,[1,1])
+        negatives=[health(unknownCount=1),health(protocol=0),health(operationId='foreign'),health(mode='force'),
+                   health(admissionClosed=False),health(activeCount=None),health(pendingAdmission=None),
+                   dict(health(),process=dict(process,pid=999)),dict(health(),live=False),dict(health(),ready=False)]
+        for sample in negatives:
+            with self.subTest(sample=sample):
+                with self.assertRaises(RuntimeError):
+                    installer.wait_for_current_turns(lambda:sample,'same-update',process,delay=lambda _:self.fail('must refuse'))
+        with self.assertRaises(OSError):
+            installer.wait_for_current_turns(lambda: (_ for _ in []).throw(OSError('endpoint unavailable')),
+                                             'same-update',process)
+
+    def test_actual_entrypoint_retains_each_selected_mode_before_independent_dispatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); root=base/'hub'; (root/'data').mkdir(parents=True); scratch=base/'scratch'
+            archive=base/'package.zip'; archive.write_bytes(b'Not executed: transport selection fixture')
+            dispatched=[]
+            def dispatch(arguments,cache,environment):
+                request=installer._read_record(cache/'request.json')
+                self.assertEqual(installer.file_hash(cache/'install_release.py'),installer.file_hash(SOURCE))
+                self.assertEqual(arguments[-1],str(cache/'request.json'))
+                dispatched.append(request)
+                return dict(pid=123,outsideAllJobs=True)
+            for mode in ['wait','force']:
+                args=[str(SOURCE),'--archive',str(archive),'--sha256',installer.file_hash(archive),
+                      '--runtime-root',str(root),'--scratch-root',str(scratch),'--mode',mode]
+                with patch.object(sys,'argv',args), patch.object(installer,'independent_worker',side_effect=dispatch):
+                    installer.autonomous_main()
+                self.assertEqual(dispatched[-1]['mode'],mode)
+            self.assertNotEqual(dispatched[0]['operationId'],dispatched[1]['operationId'])
+            # Same original/readback never dispatches a second worker.
+            with patch.object(sys,'argv',args), patch.object(installer,'independent_worker',side_effect=AssertionError('replay')):
+                installer.autonomous_main()
+
+    @unittest.skipUnless(shutil.which('node'), 'Real authenticated IPC/SQLite/native old-layout fixture')
+    def test_wait_original_authenticated_drain_then_native_stop_old_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); root=base/'old-hub'; (root/'data').mkdir(parents=True)
+            (root/'data/history-marker').write_text('retained history and input',encoding='utf-8')
+            source=SOURCE.parents[1]; package=base/'package'; package.mkdir()
+            subprocess.run(['node','-e',"require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')",
+                           str(source),str(package/'runtime')],check=True,capture_output=True,creationflags=0x08000000)
+            imports={name:(source/name).as_uri() for name in [
+                'src/infrastructure/process/desktop-control.mjs','src/infrastructure/persistence/maintenance-operation-store.mjs',
+                'src/application/installer-cutover.mjs','src/application/run-coordinator.mjs']}
+            code="""import fs from 'node:fs';
+const root=process.argv[2]; const urls=JSON.parse(process.argv[3]);
+const {DesktopControlServer}=await import(urls['src/infrastructure/process/desktop-control.mjs']);
+const {MaintenanceOperationStore}=await import(urls['src/infrastructure/persistence/maintenance-operation-store.mjs']);
+const {installerCutoverOperation,installerCutoverSnapshot}=await import(urls['src/application/installer-cutover.mjs']);
+const {RunCoordinator}=await import(urls['src/application/run-coordinator.mjs']);
+const store=new MaintenanceOperationStore({dataDir:root+'/data'});
+store.create({operationId:'fixture-schema',kind:'restart',streamId:'fixture',threadId:'fixture',status:'succeeded'});
+const run={id:'actual-current',provider:'codex',threadId:'original-thread',turnId:'original-turn',status:'running'};
+let launches=0;
+const coordinator=new RunCoordinator({taskRuns:{forTask:()=>run},providers:{call:async()=>{run.status='completed';}},
+ externalActivity:async()=>({state:'inactive'}),repositoryConflict:async()=>null,
+ beginRun:async()=>{launches++;throw Error('new provider execution');},rollbackAdmission:async()=>{},launchTurn:async()=>{launches++;},
+ isRuntimeStopping:()=>Boolean(installerCutoverOperation(store,root+'/data')),
+ deferInput:async()=>({id:'same-queued',item:{id:'same-queued'}})});
+const server=new DesktopControlServer({runtimeRoot:root,protectSecret:async()=>{},handler:async request=>{
+ if(request.action==='fixture-complete'){await coordinator.completeManaged(run,{});return {completed:true};}
+ if(request.action==='fixture-input')return coordinator.submitClientInput({input:'retained input',target:run,clientUserMessageId:'same-input'});
+ if(request.action!=='runtime-health')throw Error('fixture action');
+ return {live:true,ready:true,process:{pid:process.pid,instanceId:'fixture-native',releaseId:'legacy'},
+ installerCutover:installerCutoverSnapshot({operation:installerCutoverOperation(store,root+'/data'),runs:[run],
+ pendingAdmission:coordinator.hasPendingAdmission(()=>true)}),launches};}});
+await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
+"""
+            entry=root/'bot.mjs'; entry.write_text(code,encoding='utf-8')
+            child=subprocess.Popen(['node',str(entry),str(root),json.dumps(imports)],stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,encoding='utf-8',creationflags=0x08000000)
+            try:
+                deadline=time.monotonic()+10
+                while not (root/'fixture-ready').exists():
+                    if child.poll() is not None: self.fail(child.communicate()[1])
+                    if time.monotonic()>deadline:self.fail('Fixture IPC startup timeout')
+                    time.sleep(.02)
+                owner=base/'owner.mjs'; owner.write_text(installer.OWNER_MODULE,encoding='utf-8')
+                value=base/'value.json'
+                def call(action,payload=None):
+                    args=['node',str(owner),str(package),str(root),'same-install',action]
+                    if payload is not None:
+                        value.write_text(json.dumps(payload),encoding='utf-8'); args.append(str(value))
+                    result=subprocess.run(args,capture_output=True,encoding='utf-8',timeout=10,creationflags=0x08000000)
+                    self.assertEqual(result.returncode,0,result.stderr); return json.loads(result.stdout)
+                initial=call('wait-probe'); self.assertEqual(initial['process']['pid'],child.pid)
+                original=call('create',dict(runtimeRoot=str(root),mode='wait'))
+                self.assertEqual(original['phase'],'installer-waiting')
+                def control(action):
+                    script='import{callDesktopControl}from '+json.dumps(imports['src/infrastructure/process/desktop-control.mjs'])+";console.log(JSON.stringify(await callDesktopControl(process.argv[1],{},{runtimeRoot:process.argv[2]})));"
+                    result=subprocess.run(['node','--input-type=module','-e',script,action,str(root)],
+                        capture_output=True,encoding='utf-8',timeout=10,creationflags=0x08000000)
+                    self.assertEqual(result.returncode,0,result.stderr); return json.loads(result.stdout)
+                queued=control('fixture-input'); self.assertTrue(queued['queued'])
+                states=[]
+                settled=installer.wait_for_current_turns(lambda:call('wait-probe'),'same-install',initial['process'],
+                    record=states.append,delay=lambda _:control('fixture-complete'))
+                self.assertEqual([s['activeCount'] for s in states],[1,0]); self.assertIsNone(child.poll())
+                self.assertEqual(call('wait-probe')['launches'],0)
+                call('wait-complete',dict(state=settled,process=initial['process']))
+                stopped=installer.stop_selected(root); child.wait(timeout=10)
+                self.assertIn(child.pid,[p['pid'] for p in stopped])
+                self.assertEqual((root/'data/history-marker').read_text(encoding='utf-8'),'retained history and input')
+            finally:
+                if child.poll() is None:child.kill(); child.wait(timeout=10)
+                child.stdout.close(); child.stderr.close()
+
     @unittest.skipUnless(shutil.which('node'), 'Real SQLite owner contention fixture')
     def test_ready_checkpoint_waits_for_real_writer_without_replaying_launch_and_keeps_cas(self):
         with tempfile.TemporaryDirectory() as temp:

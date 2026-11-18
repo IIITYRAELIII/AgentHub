@@ -52,7 +52,7 @@ The recipient needs Python >=3.10 and Node >=22.5/SQLite, not Git/npm or the
 source checkout. Use the versioned installer shipped with the exact package:
 
 ```powershell
-python <recipient>/install_release.py --archive <archive.zip> --sha256 <archive-SHA256> --runtime-root <existing-runtime> --scratch-root <private-scratch>
+python <recipient>/install_release.py --archive <archive.zip> --sha256 <archive-SHA256> --runtime-root <existing-runtime> --scratch-root <private-scratch> --mode force
 ```
 
 For a first installation, provide the selected `--project-root` as required by
@@ -124,6 +124,22 @@ loaded by runtime-manager preparation. Standalone Worker tools remain separate
 from the manual desktop package installation.
 # Autonomous recipient installer
 
+Every future installer asset uses the common `distribution/install_release.py`.
+Choose "Дождаться текущих ходов" (`--mode wait`) or "Завершить все ходы"
+(`--mode force`). Without the flag, an interactive run opens the two-button
+picker. Background callers must pass the explicit mode; closing the picker
+does not start an update.
+
+Wait closes new provider admission through the existing maintenance original
+and preserves new inputs in the durable queue while current work finishes. It
+requires a runtime supporting fenced drain. An old API without that capability,
+unknown activity or changed process refuses before stopping; choose force
+explicitly if interruption is wanted. Wait never escalates itself. Force works
+without the old API, retains native ownership guards and interrupts selected
+work. Neither mode resumes old provider turns. The interrupted turn's terminal
+accounting belongs to the existing startup owner, while history and queued
+input remain retained.
+
 `install_release.py` is the single-file recipient entry. It needs Windows,
 Python and Node.js with `node:sqlite` (22.5 or newer). It verifies the public
 package, escapes the calling Hub Job, force stops only the selected installation,
@@ -131,7 +147,7 @@ backs up durable state, installs and starts the new version, and checks real
 Ready. A failed replacement restores verified prior code and checks old Ready.
 The update authorizes interruption of active work in that installation.
 
-Example: `python install_release.py --release 2.1.7 --runtime-root <Hub-directory> --scratch-root <separate-directory>`.
+Example: `python install_release.py --release <version> --runtime-root <Hub-directory> --scratch-root <separate-directory> --mode force`.
 Offline input uses `--archive <ZIP> --sha256 <exact-digest>` instead of `--release`.
 An explicitly requested `--resume-partialstop --operation-id <same-original>`
 continues the exact retained d148 partial-stop revision3, or its pinned a297

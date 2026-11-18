@@ -858,6 +858,24 @@ security context are explicit v1 bounds; other layouts/authority refuse.
 
 ### Autonomous explicitly requested recipient update (ADR-HUB-467)
 
+The common recipient entry permanently offers "Дождаться текущих ходов"
+(`--mode wait`) and "Завершить все ходы" (`--mode force`). The selected mode is
+part of the immutable request and maintenance binding through independent
+worker dispatch. There is no version-specific wrapper or implicit wait-to-force
+transition. Without an explicit CLI mode an interactive entry offers both
+buttons; cancellation and noninteractive missing choice admit no dispatch.
+
+Wait requires a live authenticated selected runtime with the fenced-drain
+protocol. Its original closes new provider admission, while the same existing
+run owner accounts for current runs and in-flight admissions. The worker waits
+for exact-process, same-original positive idle. Unknown activity, changed
+identity or unavailable protocol refuses before native retirement; this refusal
+does not restore or stop the old Hub. Old versions lacking fenced drain retain
+the separately explicit force option. They are not reported as safely drained.
+Force uses the existing selected native handles and remains independent of old
+API availability. Neither mode resumes/replays an old provider turn. History,
+queued inputs, native/foreign guards, backup/rollback and real Ready remain.
+
 The standalone recipient installer supersedes the legacy Enter/manual-stop
 window above. The requested update explicitly permits force stopping the
 selected installation and its active work. It first retains its input outside
