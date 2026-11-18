@@ -716,6 +716,25 @@ lock or start any runtime.
 
 ### Update backup retention (ADR-HUB-383)
 
+ADR-HUB-471 extends this SAME owner to autonomousInstaller/autonomousBackup.
+Autonomous and package backups share the existing five slots. Authenticated
+previous-ready rollback without unresolved retirement permits disposed-artifact
+cleanup; active/UNKNOWN resources stay protected. Before-copy physical namespace
+and planned names bind future partial backups. Whole exact descriptor/hash proof
+binds owned extracted payloads and downloads; borrowed inputs remain excluded.
+Retired creator, physical ancestry and native final-entry deletion are required.
+Original updates/history and compact receipts are preserved.
+
+Historical canonical complete backups can locate only their exact producer
+cache for verified migration into a NEW canonical storage child. A historical
+unrecorded partial requires explicit current delivery-owner custody, an exact
+current identity/hash preview, whole disposed original and a named verified
+successor/current pointer. That addressed route is never automatic adoption of
+unknown directories. It records contemporary custody rather than old creation
+proof. New files/root/current drift refuse. Remove it after those admitted legacy
+roots are retired. These bounded extensions supersede the older exclusions below
+only for positively bound installer artifacts, not arbitrary scratch/archives.
+
 The existing after-ready StorageRetentionService automatically converges to at
 most five confirmed update backups across their original scratch roots. Discovery
 uses bounded read-only pages of canonical restart originals, never a disk scan.
@@ -853,6 +872,49 @@ Host and Node, not just a successful spawn. A joined failed replacement restores
 verified prior code once and checks previous Ready, preserving current data and
 all prior outcomes. Unproven/failed recovery retains UNKNOWN and backup evidence.
 See ADR-HUB-467 for the layout boundary and compatibility removal condition.
+
+A foreign Node entry requires positive installation layout and manifest/native/
+entry binding. Generic owned MCP server.mjs children are ordinary descendants.
+The explicit published8c09 pre-stop continuation binds the exact old refusal,
+retired worker, unchanged pointer/input and still-live old Host/Ready Node born
+before admission; absence or effectsAdmitted alone is insufficient. The existing
+maintenance CAS preserves the entire prior UNKNOWN before the SAME original
+continues. Backup/install/launch effects and their history are never replayed.
+
+Retirement observes each retained original process handle immediately before
+identity/termination and again after a failing native call. A signalled original
+handle proves exit even when closing its Host's Job ended the child first.
+Access denied on a live original handle remains an error. Capture uses one
+initial and one fresh whole process inventory per batch while native handles
+remain held. Creation/image/command/parent binding remains mandatory. The stop
+budget is checked during capture and before each effect and wait. Payload-free
+operation-bound timing and target capture survive failed retirement.
+
+The explicit d148 partial-stop continuation retains the whole admitted UNKNOWN
+and its previous pre-stop history. Only the exact d148 stopping failure, retired
+workers, unchanged archive/root/prior code, absence of later backup/install/launch
+boundaries and authenticated restored previous Ready can enter the existing
+revision CAS. It can repeat validated selected-process retirement, then perform
+its first backup/install/launch. Existing terminal outcomes remain readback-only.
+Remove this compatibility after the bound d148 originals have been disposed.
+Previous-version recovery uses the same exit-aware retirement and proceeds when
+original handles are signalled.
+
+The pinned a297 revision5 descendant-parent refusal may continue that SAME
+partial-stop original only before its first backup/install/launch. Its complete
+revision3 history, a297 request/script/retired worker, physical inputs and restored
+previous Ready are revalidated before the existing CAS retains the whole row.
+Remove this extension when those addressed originals are disposed.
+An uncaptured child already absent grants no effect authority and requires no
+parent effect binding. Live captured children retain native parent/birth checks.
+Native rundown denial never proves exit: the original handle must signal.
+
+For the autonomous recipient entry, configured local web capability and TCP
+listener ownership must agree with the authenticated Node and launched Host.
+Headless installations keep disabled web semantics. Its existing observer may
+continue while the exact Host is live; elapsed startup time is not a joined
+failure authorizing rollback. Explicit startup capability failure or Host exit
+uses the existing recovery owner; ambiguous startup remains nonterminal.
 
 A runtime/prepared source remains pinned by its declared and physical path and
 by every actual Git/commondir/recursive alternate object store. If the generation

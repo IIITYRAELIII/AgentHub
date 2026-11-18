@@ -180,7 +180,7 @@ export async function createProviderApplicationComposition({
     releaseGitWorkspaces: infrastructure.releaseGitWorkspaces,
     timers: runtimeTimers, readReady: () => agentHubRuntimeHealth.snapshot().ready,
     readBusy: () => runtimeData.taskRuns.size > 0, isStopping: () => hostState.stopping,
-    health: agentHubRuntimeHealth });
+    health: agentHubRuntimeHealth, trace: commandTraceService });
   agentHubRuntimeHealth.setDiagnosticSource("restart", () => {
     const settled = maintenanceOperations.latestSettledRestart();
     return settled ? { operationId: settled.operationId, status: settled.status,

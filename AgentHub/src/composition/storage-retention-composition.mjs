@@ -19,11 +19,11 @@ export function storageRetentionEnabled({ environment = process.env, recording =
 }
 
 export function createStorageRetentionComposition({ config, store, taskBoard, taskGitWorkspaces, releaseGitWorkspaces,
-  timers, readReady, readBusy, isStopping, health, environment = process.env } = {}) {
+  timers, readReady, readBusy, isStopping, health, trace = null, environment = process.env } = {}) {
   if (!storageRetentionEnabled({ environment, recording: Boolean(config.testContourRecording) })) return null;
   const service = new StorageRetentionService({ store, timers, isStopping,
     owners: [new RuntimeUpdateBackupRetention({ runtimeRoot: environment.AGENT_HUB_RUNTIME_ROOT ?? defaultRuntimeRoot({ environment }), store,
-      isStopping: () => isStopping() || readBusy() }),
+      isStopping: () => isStopping() || readBusy(), trace }),
       taskGitWorkspaces.storageRetentionOwner({ taskBoard, readGeneration: () => null,
         isStopping: () => isStopping() || readBusy() }),
       new RuntimeReleaseRetention({ runtimeRoot: defaultRuntimeRoot({ environment }), pythonExe: config.pythonExe,
@@ -33,6 +33,6 @@ export function createStorageRetentionComposition({ config, store, taskBoard, ta
     withLease: fn => withStorageRetentionLease(config.dataDir, fn),
   });
   // Health reads only cached bounded status, never the maintenance DB or files.
-  health.setDiagnosticSource("storageRetention", () => service.status());
+  health.setDiagnosticSource("storageRetention", () => ({ ...service.status(), busy: readBusy() }));
   return service;
 }
