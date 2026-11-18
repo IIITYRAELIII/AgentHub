@@ -93,8 +93,9 @@ export class CodexRecoveryService {
         metadata: { runId: run.id, threadId: run.threadId, turnId: run.turnId, metadataOnly },
       });
     } catch { /* Diagnostics never grant recovery authority. */ }
+    const observation = {};
     const finishRead = (outcome) => {
-      try { readSpan?.finish({ outcome }); } catch { /* Best effort. */ }
+      try { readSpan?.finish({ outcome, metadata: observation }); } catch { /* Best effort. */ }
     };
     let recoveryResult;
     try {
@@ -103,7 +104,8 @@ export class CodexRecoveryService {
         includeTurns: !metadataOnly,
         priority: "interactive",
         applySnapshot: async (snapshot) => {
-          recoveryResult = await this.#recoverFromThread(run, snapshot, { reconcileOnly });
+          recoveryResult = await this.#recoverFromThread(run, snapshot, { reconcileOnly, observation });
+          observation.recoveryEligible = recoveryResult === INACTIVE_RECOVERY;
         },
       });
       finishRead("succeeded");
@@ -123,7 +125,7 @@ export class CodexRecoveryService {
     return recoveryResult;
   }
 
-  async #recoverFromThread(run, result, { reconcileOnly }) {
+  async #recoverFromThread(run, result, { reconcileOnly, observation }) {
     const d = this.#d;
     const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
     const exactTurnId = String(run.turnId ?? "").trim();
@@ -149,6 +151,14 @@ export class CodexRecoveryService {
         // original run and let the exact observer retry the same identity.
       }
     }
+    Object.assign(observation, {
+      threadState: ["idle", "active", "notLoaded", "systemError"].includes(result.thread?.status?.type)
+        ? result.thread.status.type : "unknown",
+      snapshotTurnId: String(terminalSnapshot?.turnId ?? "").slice(0, 256) || null,
+      snapshotActive: terminalSnapshot?.active === true,
+      snapshotCompleted: terminalSnapshot?.completed === true,
+      snapshotUnknown: terminalSnapshot?.activityUnknown === true,
+    });
     const exactTerminal = terminalSnapshot?.completed === true
       && String(terminalSnapshot.turnId ?? "").trim() === exactTurnId
       ? terminalSnapshot : null;

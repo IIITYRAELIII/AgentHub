@@ -6870,9 +6870,14 @@ function patchRenderedMessage(node, message) {
 
 function messageRenderSpec(message, index, lastAgentIndex, taskDiff, citationPresentations = []) {
   const withDiff = index === lastAgentIndex && Boolean(taskDiff);
-  const renderedMessage = citationPresentations.length
+  let renderedMessage = citationPresentations.length
     ? { ...message, responseCitationPresentations: citationPresentations }
     : message;
+  if (message.role === "agent" && message.activityGroups?.some((group) => group.responseAnnotationPresentation)) {
+    renderedMessage = { ...renderedMessage,
+      activityGroups: message.activityGroups.map((group) => traceCitationPresentation(group, message)),
+    };
+  }
   return {
     key: MessageView.messageKey(message, index),
     signature: MessageView.messageContentSignature(renderedMessage, {
@@ -7606,9 +7611,32 @@ function visibleTurnTraceGroups(groups) {
 
 const traceDetailSources = new WeakMap();
 
-function traceReasoningNode(group) {
+function traceCitationPresentation(group, identity) {
+  const presentation = group.responseAnnotationPresentation;
+  if (!presentation || typeof presentation.text !== "string") return group;
+  const messages = state.messages.get(state.selectedId) ?? [];
+  const ownerIndex = identity ? messages.findIndex((message) => (
+    MessageView.messageKey(message) === MessageView.messageKey(identity)
+  )) : -1;
+  const live = state.live.get(state.selectedId);
+  const currentLive = identity && live && MessageView.messageKey({ ...identity, role: "agent" })
+    === MessageView.messageKey({ ...live, role: "agent" });
+  const preceding = ownerIndex >= 0 ? messages.slice(0, ownerIndex) : currentLive ? messages : [];
+  const message = { ...identity, ...presentation, role: "agent" };
+  return { ...group, responseAnnotationPresentation: { ...presentation,
+    responseCitationPresentations: MessageView.responseCitationPresentations(
+      [...preceding, message], preceding.length,
+    ),
+  } };
+}
+
+function traceReasoningNode(group, identity = null) {
   const node = el("div", { class: "turn-trace-reasoning", "data-trace-group-id": group.id });
-  renderMarkdown(node, group.reasoning);
+  const presentation = traceCitationPresentation(group, identity).responseAnnotationPresentation;
+  if (presentation && typeof presentation.text === "string") {
+    const message = { ...identity, ...presentation, role: "agent" };
+    renderAgentResponseBody(node, message, presentation.text);
+  } else renderMarkdown(node, group.reasoning);
   traceDetailSources.set(node, group);
   return node;
 }
@@ -7644,7 +7672,7 @@ function traceArchiveNode(identity) {
       if (direction === "previous") offsets.pop();
       page = result;
       content.replaceChildren(...page.groups.map((group) => el("section", {}, [
-        ...(group.reasoning ? [traceReasoningNode(group)] : []),
+        ...(group.reasoning ? [traceReasoningNode(group, identity)] : []),
         ...group.activities.map(activityItemNode),
       ])));
       status.textContent = "";
@@ -7680,7 +7708,7 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [], identi
       class: "turn-trace-block",
       "data-trace-index": String(index),
     });
-    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
+    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index], identity);
     section.append(reasoningNode);
     return section;
   });
@@ -7730,7 +7758,7 @@ function turnTraceNode(groups, identity = null) {
     const omission = traceOmissionNode(values, identity);
     if (omission) target.append(omission);
     content.reasoningBlocks.forEach((reasoning, index) => {
-      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
+      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index], identity);
       target.append(el("section", {
         class: "turn-trace-block",
         "data-trace-index": String(index),
@@ -8208,7 +8236,7 @@ async function focusResponseCitationSource(button) {
         const candidate = { ...projection.message, activityGroups: [group] };
         if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
         article.querySelector("[data-citation-trace]")?.remove();
-        recoveredTraceSurface = traceReasoningNode(group);
+        recoveredTraceSurface = traceReasoningNode(group, projection.message);
         const target = el("section", { "data-citation-trace": "" }, [recoveredTraceSurface]);
         article.append(target);
       } catch { return false; }
@@ -8299,7 +8327,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     durationNode.textContent = durationLabel;
     durationNode.hidden = !durationLabel;
   }
-  const groups = visibleTurnTraceGroups(live.activityGroups);
+  const groups = visibleTurnTraceGroups(live.activityGroups).map((group) => traceCitationPresentation(group, live));
   const stageDetail = node.querySelector("[data-live-stage-detail]");
   const standaloneStageDetail = standaloneLiveStageDetail({ stage: live.stage, traceGroups: groups });
   stageDetail.textContent = standaloneStageDetail;
@@ -9780,7 +9808,7 @@ async function responseAnnotationFromSelection(selection) {
     const selectedNativeItemId = traceDetailSources.get(selection.surface)?.sourceItemId;
     if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return responseAnnotationRefusal("source-item-mismatch");
     sourceMessage = { ...current, activityGroups: page.groups };
-    sourceSurface = traceReasoningNode(page.groups[0]);
+    sourceSurface = traceReasoningNode(page.groups[0], sourceMessage);
     // A cut Markdown construct may render differently. Do not guess a new range.
     if (!sourceSurface.textContent.startsWith(selectedSurfaceText.trimEnd())) return responseAnnotationRefusal("rendered-prefix-mismatch");
     if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return responseAnnotationRefusal("selected-range-mismatch");

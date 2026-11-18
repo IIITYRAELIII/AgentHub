@@ -747,6 +747,9 @@ export class HubMcpService {
       }, ["task_id"]),
       tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails. Await also composes the accepted result into PreRelease before it commits: a composition conflict leaves the Task in Test with the last good candidate.", {
         task_id: { type: "string" },
+        manual_delivery: { type: "object", additionalProperties: false, required: ["revision", "releaseId", "manifestSha256"], description: "RM-only actual manual-delivery proof for Done with exact Task/status CAS; does not create a Test reference.", properties: {
+          revision: { type: "string", pattern: "^[a-f0-9]{40}$" }, releaseId: { type: "string" }, manifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        } },
         status: { type: "string", enum: ["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"] },
         expected_task_revision: { type: "integer", minimum: 1, description: "Optional exact current Task revision CAS." },
         expected_workflow_status: { type: "string", enum: ["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"], description: "Optional exact current workflow status CAS." },
@@ -782,6 +785,7 @@ export class HubMcpService {
       }, ["task_id", "operation_request_id", "request_id", "expected_arguments_hash", "expected_task_revision", "confirm_cancel"]),
       tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A real unresolved process guard requires trusted proof; exact pending withdrawal or squash state can reconcile without inventing one. An already terminal lifecycle settles its original receipt without Git replay.", {
         task_id: { type: "string" },
+        manual_preview_arguments: { type: "object", description: "Exact original business arguments for a read-only manual Complete preview; hash-bound classification, never a confirmed closure." },
         operation_request_id: { type: "string" },
         expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$", description: "Required for deterministic malformed-status settlement; binds the unchanged stored original arguments." },
         runtime_witness: { type: "object", description: "Existing trusted exact native retirement witness for a malformed original owned by a previous runtime." },
@@ -849,7 +853,14 @@ export class HubMcpService {
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
         absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
-        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational"], description: "Release Manager-only published service closure, exact direct-delivery cleanup, or completed operational zero-own-delta cleanup." },
+        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery"], description: "Release Manager-only closure. manual_delivery verifies the actual installation and exact main/origin while preserving all Task artifacts." },
+        retained_repositories: { type: "array", description: "Manual mode only: exact managed worktree/head pins for historical repositories no longer represented by the canonical Task result. Retained, not certified delivered or deleted.", items: { type: "object", additionalProperties: false, required: ["project_root", "head_commit"], properties: {
+          project_root: { type: "string" }, head_commit: { type: "string", pattern: "^[a-f0-9]{40}$" },
+        } } },
+        manual_delivery: { type: "object", additionalProperties: false, required: ["revision", "releaseId", "manifestSha256"], properties: {
+          revision: { type: "string", pattern: "^[a-f0-9]{40}$" }, releaseId: { type: "string" },
+          manifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        } },
         completed_operation_request_id: { type: "string", description: "Original canonical published-service closure supplying historical repository proof for its already closed zero-own-delta source." },
         published_delivery: { type: "object", properties: {
           runtimeRoot: { type: "string" }, publicationRunSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
@@ -2002,6 +2013,7 @@ export class HubMcpService {
     selected_preview_request_id: selectedPreviewRequestId = null,
     expected_selected_preview_hash: expectedSelectedPreviewHash = null,
     initial_native_test: initialNativeTest = null,
+    manual_delivery: manualDelivery = null,
   } = {}, { source = null } = {}) {
     const validationStarted = performance.now();
     let workflowStatus;
@@ -2023,6 +2035,10 @@ export class HubMcpService {
       throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
     }
     const task = this.#task(context, taskId);
+    if (manualDelivery && (workflowStatus !== "done" || !this.#isReleaseManager(context) || source
+        || expectedRevision == null || expectedWorkflowStatus == null)) {
+      throw new TaskInputValidationError("Manual delivery Done requires an RM and exact Task/status CAS");
+    }
     const squashValues = [
       squashSourceTaskId, squashSourceTaskRevision, squashBaselineResultCommit,
       squashNewResultCommit, squashDevAfterTree,
@@ -2032,6 +2048,9 @@ export class HubMcpService {
       .some((value) => value != null);
     const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution,
       selectedPreviewRequestId, expectedSelectedPreviewHash].some((value) => value != null);
+    if (manualDelivery && (squashRequested || selectedRequested || selectedAbsorptionHandoff || initialNativeTest)) {
+      throw new TaskInputValidationError("Manual delivery Done cannot combine another integration input");
+    }
     if (selectedRequested) {
       throw Object.assign(new TaskInputValidationError("New selected materialization is closed; use ordinary native Git Test and isolated conflict resolution"),
         { code: "TASK_NATIVE_GIT_REQUIRED" });
@@ -2132,6 +2151,7 @@ export class HubMcpService {
     } catch {}
     const options = {
       taskId: task.id,
+      manualDelivery,
       status: workflowStatus,
       operationId,
       binding,
@@ -2195,14 +2215,16 @@ export class HubMcpService {
     absorption_mode: absorptionMode = null,
     completion_mode: completionMode = null,
     published_delivery: publishedDelivery = null,
+    manual_delivery: manualDelivery = null,
+    retained_repositories: retainedRepositories = [],
     completed_operation_request_id: completedOperationRequestId = null,
     } = args;
     const task = this.#task(context, taskId);
     this.#validateCleanupToken(task, args, "complete");
     const result = await this.taskLifecycle.complete({
       taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
-      absorptionMode, completionMode, publishedDelivery, completedOperationRequestId,
-      originalArguments: ["published_delivery", "operational"].includes(completionMode)
+      absorptionMode, completionMode, publishedDelivery, manualDelivery, retainedRepositories, completedOperationRequestId,
+      originalArguments: ["published_delivery", "operational", "manual_delivery"].includes(completionMode)
         ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) : null,
     });
     return result?.confirmationRequired
@@ -3138,16 +3160,42 @@ export class HubMcpService {
 
   async #reconcilePublishedDeliveryComplete(context, args) {
     const refuse = message => { throw new TaskOperationReconciliationRefusedError(new Error(message)); };
+    if (args.manual_preview_arguments) {
+      const captured = args.manual_preview_arguments;
+      const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+      if (Object.keys(args).some(k => !["context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile", "expected_arguments_hash", "manual_preview_arguments"].includes(k))
+          || Object.keys(captured).some(k => !["request_id", "task_id", "completion_mode", "manual_delivery", "confirm_cleanup"].includes(k))
+          || captured.confirm_cleanup != null && captured.confirm_cleanup !== false
+          || captured.completion_mode !== "manual_delivery" || captured.task_id !== args.task_id
+          || captured.request_id !== args.operation_request_id || !captured.manual_delivery
+          || !original || original.workspaceId !== context.workspaceId || original.toolName !== "hub_task_complete"
+          || original.status !== "unknown" || original.argumentsHash !== args.expected_arguments_hash
+          || argumentsHash(captured) !== original.argumentsHash
+          || this.taskBoard.lifecycleTransition?.(original.requestId) || this.taskBoard.lifecycleOutcome?.(original.requestId)) {
+        refuse("Only the exact hash-bound read-only manual Complete preview can be classified");
+      }
+      // The positive proof is the immutable original argument form: this
+      // preview cannot enter the lifecycle mutation branch. Absence alone is
+      // never sufficient, and confirmed originals cannot use this path.
+      await this.workspaceCatalog.failUnknownMcpOperation(original.requestId, {
+        workspaceId: context.workspaceId, toolName: original.toolName,
+        error: original.error || "Read-only manual Complete preview failed",
+        reconciliation: { kind: "manual-complete-read-only-preview-v1", outcome: "NO_EFFECT", originalArguments: captured },
+      });
+      return { taskId: args.task_id, operationId: original.requestId, outcome: "NO_EFFECT", readOnlyPreview: true };
+    }
     if (Object.keys(args).some(k => !["context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile", "project_root"].includes(k))) refuse("Complete reconciliation accepts only its original identity");
     const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
     const transition = this.taskBoard.lifecycleTransition?.(args.operation_request_id);
     const outcome = this.taskBoard.lifecycleOutcome?.(args.operation_request_id);
     const evidence = outcome?.result?.evidence ?? transition?.evidence;
     const captured = evidence?.originalArguments;
+    const deliveredTaskId = captured?.completion_mode === "manual_delivery"
+      ? evidence?.manualDelivery?.taskId : evidence?.publishedDelivery?.taskId;
     if (!original || original.workspaceId !== context.workspaceId || original.toolName !== "hub_task_complete"
-        || evidence?.publishedDelivery?.taskId !== args.task_id || !captured
+        || deliveredTaskId !== args.task_id || !captured
         || captured.task_id !== args.task_id || captured.request_id !== original.requestId
-        || !["published_delivery", "operational"].includes(captured.completion_mode) || captured.confirm_cleanup !== true
+        || !["published_delivery", "operational", "manual_delivery"].includes(captured.completion_mode) || captured.confirm_cleanup !== true
         || argumentsHash(captured) !== original.argumentsHash
         || (transition && (transition.taskId !== args.task_id || transition.kind !== "complete" || transition.phase !== "cleanup"))
         || (outcome && (outcome.taskId !== args.task_id || outcome.kind !== "complete"))) {
@@ -3158,7 +3206,8 @@ export class HubMcpService {
     if (result?.id !== args.task_id || result?.status !== "done") throw Error("Original direct cleanup did not finish");
     if (original.status === "unknown") await this.workspaceCatalog.completeUnknownMcpOperation(original.requestId, {
       workspaceId: context.workspaceId, toolName: "hub_task_complete", result,
-      reconciliation: { kind: "direct-published-cleanup-original-v1", lifecycleOperationId: original.requestId },
+      reconciliation: { kind: captured.completion_mode === "manual_delivery"
+        ? "manual-delivery-completion-original-v1" : "direct-published-cleanup-original-v1", lifecycleOperationId: original.requestId },
     });
     else if (original.status !== "succeeded") await this.workspaceCatalog.completeMcpOperation(original.requestId, result);
     return { taskId: args.task_id, operationId: original.requestId, outcome: "COMPLETED", result };

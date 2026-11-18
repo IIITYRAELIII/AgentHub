@@ -5,6 +5,11 @@ import {
   CodexTurnService,
   unsupportedProviderSteer,
 } from "../../../src/providers/provider-turn-services.mjs";
+import { ManagedRunLifecycleService } from "../../../src/application/managed-run-lifecycle-service.mjs";
+import { StreamContextMaintenanceService } from "../../../src/application/stream-context-maintenance-service.mjs";
+import { StreamMaintenanceRegistry } from "../../../src/application/stream-maintenance-registry.mjs";
+import { TaskRunRegistry, createManagedTaskRun } from "../../../src/domain/task-runs.mjs";
+import { TaskProgressController } from "../../../src/interfaces/telegram/task-progress-controller.mjs";
 
 function codexTurnService(overrides = {}) {
   const noop = async () => {};
@@ -34,6 +39,60 @@ function codexTurnService(overrides = {}) {
     ...overrides,
   });
 }
+
+test("active-writer launch refusals release real progress/admission without starting context maintenance", async () => {
+  const noop = async () => {};
+  const registry = new StreamMaintenanceRegistry();
+  const taskRuns = new TaskRunRegistry();
+  let compactions = 0;
+  const maintenance = new StreamContextMaintenanceService({
+    registry, provider: {
+      start: async () => { compactions += 1; throw new Error("already has an active writer"); },
+      rotate: noop, rotateCompacted: noop, waitForTurnIdle: async () => true,
+      compactions: { get: () => null, isRunning: () => false },
+    },
+    latestContextUsage: () => ({ usedTokens: 95, modelContextWindow: 100 }),
+    autoCompactEnabled: () => true, autoCompactThreshold: () => 75,
+    deferredInputs: { values: () => [] }, logger: { error: noop },
+  });
+  const lifecycle = new ManagedRunLifecycleService({
+    taskRuns, currentTarget: noop, findProject: noop, codexSettings: noop,
+    currentPreferences: noop, normalizeCodexModel: noop, modelLabel: noop,
+    persistTaskDiff: noop, syncRun: noop, invalidateCatalog: noop, saveState: noop,
+    scheduleProgressStart: noop, clearSelectedDiff: noop, clearApprovals: noop,
+    pauseObservation: noop, pauseClaude: noop, stopTyping: noop,
+    prepareAdmission: noop, revokeAdmission: noop,
+    beforeCompletion: run => maintenance.reserveAfterTurn(run),
+    completionAborted: run => maintenance.cancelAfterTurn(run),
+    afterCompletion: run => maintenance.maintainAfterTurn(run),
+  });
+  const progress = new TaskProgressController({});
+  const input = "Preserved synthetic input";
+  const attempts = [];
+  const launch = codexTurnService({
+    sendRpc: async (method, params) => {
+      attempts.push({ method, params });
+      throw Object.assign(new Error("thread thread-old already has an active writer"), { code: -32600 });
+    },
+    finishProgress: (run, stage) => progress.finish(run, stage),
+    completeRun: run => lifecycle.complete(run),
+  });
+  for (let index = 0; index < 3; index += 1) {
+    const run = createManagedTaskRun({ provider: "codex", streamId: "same-stream", threadId: "thread-old",
+      projectRoot: "D:/Work", clientUserMessageId: "same-original-input", collaborationMode: "default",
+      modelId: "gpt-5.6-codex", reasoningId: "high" });
+    taskRuns.add(run);
+    await assert.rejects(launch.launch(run, input), /already has an active writer/u);
+    assert.equal(run.turnId, null);
+    assert.equal(taskRuns.size, 0);
+    assert.equal(registry.activeCount(), 0);
+  }
+  assert.equal(compactions, 0);
+  assert.equal(attempts.length, 3);
+  assert.ok(attempts.every(({ method, params }) => method === "turn/start"
+    && params.threadId === "thread-old" && params.clientUserMessageId === "same-original-input"
+    && params.input.some(item => item.type === "text" && item.text === input)));
+});
 
 test("pending naming failure is a pre-provider rejection, preserving the exact run and message", async () => {
   const failure = new Error("native name unconfirmed");

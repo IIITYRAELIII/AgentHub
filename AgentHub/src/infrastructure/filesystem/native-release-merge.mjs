@@ -24,7 +24,7 @@ export function nativeMergeBaseFields(output) {
 async function publishedVirtualReplay({ git, identity, baseCommit, tasks }) {
   if (!Object.hasOwn(identity, "mergeBases") && !tasks.some(task => Object.hasOwn(task, "mergeBases"))) return false;
   const task = tasks[0];
-  if (identity.policy !== "published-main-dev-sync-v1" || tasks.length !== 1
+  if (!["published-main-dev-sync-v1", "manual-main-dev-sync-v1"].includes(identity.policy) || tasks.length !== 1
       || identity.devCommit !== baseCommit || task.taskId !== `published:${identity.operationId}`
       || task.resultCommit !== identity.publishedRevision || Object.hasOwn(identity, "mergeBase")
       || Object.hasOwn(task, "baseCommit") || !Array.isArray(identity.mergeBases)
