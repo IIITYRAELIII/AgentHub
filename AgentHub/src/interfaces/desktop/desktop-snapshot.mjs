@@ -557,7 +557,7 @@ export function createDesktopSnapshotFactory({
       responseAttachments: Array.isArray(run.responseAttachments)
         ? run.responseAttachments.map((attachment) => ({ ...attachment }))
         : [],
-      ...(responseProjection.responseAnnotationReferences.length
+      ...(responseProjection.text.trim() && responseProjection.responseAnnotationReferences.length
         ? {
           responseAnnotationReferences: responseProjection.responseAnnotationReferences,
         }

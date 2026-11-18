@@ -14,7 +14,7 @@
         || index > MAX_RESPONSE_ANNOTATION_INDEX || seen.has(index)) continue;
       seen.add(index);
       const position = reference?.position;
-      normalized.push({ index, ...(Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
+      normalized.push({ index, ...(reference.target && typeof reference.target === "object" ? { target: reference.target } : {}), ...(Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
         && position.end === position.start + `Цитата ${index}`.length
         ? { position: { start: position.start, end: position.end } } : {}) });
     }
@@ -87,8 +87,23 @@
         break;
       }
     }
-    const target = values[targetIndex];
     return references.flatMap((reference) => {
+      let target = values[targetIndex];
+      let exactTargetIndex = targetIndex;
+      if (reference.target) {
+        const locator = reference.target;
+        const matches = values.flatMap((candidate, index) => {
+          if (!message.provider || !message.threadId || !message.turnId
+            || index >= messageIndex || candidate?.role !== "user"
+            || candidate.provider !== message.provider || candidate.threadId !== message.threadId
+            || candidate.turnId !== message.turnId) return [];
+          const key = locator.clientUserMessageId ? "clientUserMessageId"
+            : locator.sourceOccurrenceId ? "sourceOccurrenceId" : locator.itemId ? "itemId" : "";
+          return key && candidate[key] === locator[key] ? [{ candidate, index }] : [];
+        });
+        target = matches.length === 1 ? matches[0].candidate : null;
+        exactTargetIndex = matches.length === 1 ? matches[0].index : -1;
+      }
       const index = Number(reference?.index);
       const annotation = target?.responseAnnotations?.[index - 1];
       const interactive = Boolean(target && annotation);
@@ -102,7 +117,7 @@
         label: `Цитата ${index}`,
         quote: interactive ? quote : "",
         annotation: quote,
-        targetMessageKey: interactive ? messageKey(target, targetIndex) : "",
+        targetMessageKey: interactive ? messageKey(target, exactTargetIndex) : "",
         ...(interactive && source ? { source } : {}),
         interactive,
       }];

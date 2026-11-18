@@ -277,7 +277,8 @@ export class CodexEventService {
         hydrationReplay: params.agentHubHydrationReplay === true,
       });
       if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
-        d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.itemId ?? "", kind: "commentary", text: item.text });
+        d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.itemId ?? "", kind: "commentary", text: item.text,
+          responseAnnotationTarget: item.responseAnnotationTarget });
       }
       if (delta && params.agentHubHydrationReplay !== true) {
         const reasoning = ["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""));
@@ -323,7 +324,8 @@ export class CodexEventService {
       if (run) {
         const item = startCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
         if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
-          d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.item?.id ?? "", kind: "commentary", text: item.text });
+          d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.item?.id ?? "", kind: "commentary", text: item.text,
+            responseAnnotationTarget: item.responseAnnotationTarget });
         }
         d.startLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, false));
@@ -345,7 +347,8 @@ export class CodexEventService {
       if (run) {
         const item = completeCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
         if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
-          d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.item?.id ?? "", kind: "commentary", text: item.text });
+          d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.item?.id ?? "", kind: "commentary", text: item.text,
+            responseAnnotationTarget: item.responseAnnotationTarget });
         }
         d.completeLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, true));

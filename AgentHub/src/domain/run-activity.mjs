@@ -1,5 +1,6 @@
 import { normalizedResponseAnnotationItemId } from "./response-annotation-source.mjs";
 import { boundedTraceId } from "./codex-trace-budget.mjs";
+import { normalizedResponseAnnotationTarget, responseAnnotationTargetForMessages } from "./codex-response-annotation.mjs";
 
 const MAX_RUN_ACTIVITY_BYTES = 2_500_000;
 
@@ -45,13 +46,16 @@ function currentRunActivityGroup(run) {
   return group;
 }
 
-export function upsertRunReasoningBlock(run, { id, sourceItemId = id, kind = "reasoning", text = "", delta = "" } = {}) {
+export function upsertRunReasoningBlock(run, { id, sourceItemId = id, kind = "reasoning", text = "", delta = "", responseAnnotationTarget } = {}) {
   if (!run) return null;
   const groupId = `${kind === "commentary" ? "commentary" : "reasoning"}:${boundedTraceId(String(id ?? "current").trim() || "current")}`;
   const groups = runActivityGroups(run);
   let group = groups.find((entry) => entry.id === groupId);
   if (!group) {
     group = { id: groupId, reasoning: "", activities: [] };
+    const target = normalizedResponseAnnotationTarget(responseAnnotationTarget)
+      ?? responseAnnotationTargetForMessages(run.userMessages);
+    if (target) group.responseAnnotationTarget = target;
     groups.push(group);
   }
   if (text) group.reasoning = String(text).trim();
@@ -67,6 +71,8 @@ export function replaceRunActivityGroups(run, groups) {
   if (!run) return [];
   run.activityGroups = (Array.isArray(groups) ? groups : []).map((group, index) => ({
     id: String(group?.id ?? `group:${index}`),
+    ...(normalizedResponseAnnotationTarget(group?.responseAnnotationTarget)
+      ? { responseAnnotationTarget: normalizedResponseAnnotationTarget(group.responseAnnotationTarget) } : {}),
     ...(normalizedResponseAnnotationItemId(group?.sourceItemId)
       ? { sourceItemId: normalizedResponseAnnotationItemId(group.sourceItemId) } : {}),
     reasoning: String(group?.reasoning ?? ""),

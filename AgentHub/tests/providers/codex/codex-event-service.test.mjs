@@ -11,6 +11,30 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+test("late commentary phase keeps the native item's pre-steer annotation target through SQLite", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub469-native-target-"));
+  const filePath = path.join(directory, "tasks.json"); let store;
+  try {
+    const a = { role: "user", itemId: "user-A", clientUserMessageId: "client-A", responseAnnotations: [{ text: "same", annotation: "same" }] };
+    const b = { ...a, itemId: "user-B", clientUserMessageId: "client-B" };
+    const run = { id: "run", provider: "codex", threadId: "thread", turnId: "turn", status: "running", userMessages: [a] };
+    const service = createService(run, { upsertReasoningBlock: upsertRunReasoningBlock });
+    const send = (method, params) => service.handle({ method, params: { threadId: "thread", turnId: "turn", ...params } });
+    await send("item/started", { item: { id: "answer-A", type: "agentMessage" } });
+    run.userMessages.push(b);
+    await send("item/completed", { item: { id: "answer-A", type: "agentMessage", phase: "commentary", text: 'A :agent-annotation{index="1"}' } });
+    await send("item/completed", { item: { id: "answer-B", type: "agentMessage", phase: "commentary", text: 'B :agent-annotation{index="1"}' } });
+    assert.deepEqual(run.activityGroups.map(group => group.responseAnnotationTarget.clientUserMessageId), ["client-A", "client-B"]);
+    const recovered = {}; replaceRunActivityGroups(recovered, run.activityGroups);
+    assert.deepEqual(recovered.activityGroups, run.activityGroups);
+    const task = { provider: "codex", threadId: "thread", projectRoot: directory };
+    store = new LocalTaskSyncStore({ filePath }); await store.load();
+    await store.recordHistory(task, [{ id: "turn", prompt: "Check", answer: "", active: true, activityGroups: run.activityGroups }]);
+    store.close(); store = new LocalTaskSyncStore({ filePath }); await store.load();
+    assert.deepEqual(store.history(task)[0].activityGroups.map(group => group.responseAnnotationTarget.clientUserMessageId), ["client-A", "client-B"]);
+  } finally { store?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("active quote native item provenance agrees across event rollout history and SQLite reopen",async()=>{
   const temp=await mkdtemp(path.join(os.tmpdir(),'quote-native-')); let store;
   try {

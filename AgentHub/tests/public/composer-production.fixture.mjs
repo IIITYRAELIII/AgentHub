@@ -212,12 +212,14 @@ async function openFixture(page, {
   initialHash = "",
   themeRegistry = null,
   followSelection = false,
+  tracePageReader = null,
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error") diagnostics.push(message.text());
   });
+  if (tracePageReader) await page.exposeFunction("__fixtureTracePageReader", tracePageReader);
   await page.addInitScript(({
     initialSnapshot, initialHistory, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
     transportSurface, direct, followSelection,
@@ -383,6 +385,14 @@ async function openFixture(page, {
               ? { selectionChanged, snapshotDeferred: true }
               : { ...fixture.snapshot, selectionChanged };
           }
+        }
+        else if (message.action === "task-history" && message.params.tracePage
+          && typeof window.__fixtureTracePageReader === "function") {
+          void window.__fixtureTracePageReader(message.params).then(
+            result => respond({ id: message.id, result }),
+            failure => respond({ id: message.id, ok: false, error: String(failure?.message ?? failure) }),
+          );
+          return;
         }
         else if (message.action === "open-task" || message.action === "task-history") {
           const streamId = message.params.streamId

@@ -27,3 +27,20 @@ backfill is permitted.
   annotation JSON, so no parallel persistence owner or schema column is added.
 - A source edit or renderer-visible content change disables source highlighting
   instead of selecting a plausible but incorrect fragment.
+
+## Same-turn steering and active commentary
+
+The owning Codex native-item and ordered history projections capture the exact
+annotated-user identity when the item is created. That bounded target travels
+through the existing reference/group JSON; it is presentation metadata, not a
+new message authority or a source locator. SQLite and snapshots preserve it.
+Full-source reads reuse only the addressed group's captured context after the
+existing native identity checks, so steering B cannot rewrite earlier A.
+
+Explicit detail reads validate and skip oversized tool-result records which
+cannot project a trace item, using the existing streaming JSON validator.
+Their complete bytes still enter the source-prefix SHA. Oversized assistant,
+unknown, malformed and ambiguous source records retain their visible refusals.
+Source identity, selected range and all three content hashes are unchanged.
+The existing command trace measures annotation-source validation separately
+from send/ACK/queue/provider/DOM work; it records no selected text or payload.

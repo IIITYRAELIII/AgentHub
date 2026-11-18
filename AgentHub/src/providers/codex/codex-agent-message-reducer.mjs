@@ -1,4 +1,4 @@
-import { codexAssistantResponseProjection } from "../../domain/codex-response-annotation.mjs";
+import { codexAssistantResponseProjection, normalizedResponseAnnotationTarget, responseAnnotationTargetForMessages } from "../../domain/codex-response-annotation.mjs";
 
 const MAX_AGENT_MESSAGES = 64;
 const PROVIDER_TEXT = Symbol("codex-provider-text");
@@ -62,6 +62,8 @@ function setProviderText(item, value, knownProjection = null) {
   item.text = projection.text;
   if (projection.responseAnnotationReferences?.length) {
     item.responseAnnotationReferences = structuredClone(projection.responseAnnotationReferences);
+    if (item.responseAnnotationTarget) item.responseAnnotationReferences = item.responseAnnotationReferences
+      .map((reference) => ({ ...reference, target: { ...item.responseAnnotationTarget } }));
   } else delete item.responseAnnotationReferences;
 }
 
@@ -82,12 +84,15 @@ function messageId({ itemId, turnId }) {
   return normalizedId(itemId) || `legacy:${normalizedId(turnId) || "unknown"}`;
 }
 
-function upsertAgentMessage(run, reference, defaults = {}) {
+function upsertAgentMessage(run, reference, defaults = {}, captureContext = true) {
   const items = agentMessages(run);
   const id = messageId(reference);
   let item = items.find((candidate) => candidate.id === id);
   if (!item) {
     item = { id, type: defaults.type ?? "agentMessage", text: "", phase: null, status: "inProgress" };
+    const target = normalizedResponseAnnotationTarget(defaults.responseAnnotationTarget)
+      ?? (captureContext ? responseAnnotationTargetForMessages(run.userMessages) : null);
+    if (target) item.responseAnnotationTarget = target;
     items.push(item);
     if (items.length > MAX_AGENT_MESSAGES) items.shift();
   }
@@ -211,8 +216,10 @@ export function observeCodexAgentMessage(run, { turnId = null, item = null, expe
   const phase = agentMessagePhase(item);
   const message = upsertAgentMessage(run, { turnId, itemId: item.id }, {
     type: item.type, ...(phase ? { phase } : {}), status: "completed", textComplete: item.textComplete,
+    ...(normalizedResponseAnnotationTarget(item.responseAnnotationTarget)
+      ? { responseAnnotationTarget: normalizedResponseAnnotationTarget(item.responseAnnotationTarget) } : {}),
     ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
-  });
+  }, false);
   setProviderText(message, item.rawProviderText ?? agentMessageText(item), item);
   if (item.rolloutRecord) message.rolloutRecord = { ...item.rolloutRecord };
   else delete message.rolloutRecord;
@@ -237,6 +244,8 @@ export function hydrateCodexAgentMessages(run, items = [], { turnId = null } = {
       phase: agentMessagePhase(item),
       ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
       status: String(item.status ?? "completed"),
+      ...(normalizedResponseAnnotationTarget(item.responseAnnotationTarget ?? previous.get(normalizedId(item.id))?.responseAnnotationTarget)
+        ? { responseAnnotationTarget: normalizedResponseAnnotationTarget(item.responseAnnotationTarget ?? previous.get(normalizedId(item.id))?.responseAnnotationTarget) } : {}),
       ...(previous.get(normalizedId(item.id))?.rolloutRecord
         ? { rolloutRecord: { ...previous.get(normalizedId(item.id)).rolloutRecord } } : {}),
     };

@@ -13,7 +13,7 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../../domain/interstream-message.mjs";
-import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
+import { normalizedCodexResponseAnnotationReferences, normalizedResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations, normalizedResponseAnnotationItemId } from "../../domain/response-annotation-source.mjs";
 import {
   durableUserCommandItemId,
@@ -116,6 +116,8 @@ function cleanActivityGroups(groups) {
     if (!reasoning && !activities.length) return [];
     return [{
       id: cleanText(group?.id, 300) || `group:${index}`,
+      ...(normalizedResponseAnnotationTarget(group?.responseAnnotationTarget)
+        ? { responseAnnotationTarget: normalizedResponseAnnotationTarget(group.responseAnnotationTarget) } : {}),
       ...(normalizedResponseAnnotationItemId(group?.sourceItemId) ? { sourceItemId: normalizedResponseAnnotationItemId(group.sourceItemId) } : {}),
       reasoning,
       activities,
