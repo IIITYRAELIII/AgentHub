@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, readFile, writeFile, lstat, rm, symlink, rename } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, lstat, rm, symlink, rename, cp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -69,7 +69,11 @@ async function fixture(t) {
       await json(path.join(cache, "input-backup.json"), { destination: backup });
       await writeFile(path.join(backup, "data", "partial.bin"), "producer-written prefix before caught failure");
     } else {
-      const raw = await backupStoppedRuntime({ runtimeRoot: root, destination: backup, assertStopped: async () => {} });
+      const raw = await backupStoppedRuntime({ runtimeRoot: root, destination: backup, assertStopped: async () => {},
+        onCreated: historical || legacy ? null : async scope => {
+          const attempt = await installerBackupIntent(scope);
+          op = store.transition(id, { metadata: { autonomousBackupAttempt: attempt } }, { expectedRevision: op.revision }).operation;
+        } });
       const snapshot = legacy ? raw : await sealRuntimeUpdateBackup(raw);
       op = store.transition(id, { metadata: { autonomousBackup: snapshot } }, { expectedRevision: op.revision }).operation;
     }
@@ -110,6 +114,43 @@ test("six real SQLite backups converge to five; every owned payload retires, bor
   assert.equal(JSON.parse(await readFile(path.join(f.root, "config.json"), "utf8")).marker, "user-data");
   t.diagnostic(JSON.stringify({ elapsedMs: performance.now() - before, logicalBytes: service.status().logicalBytes,
     knownBackups: owner.status().knownBackups }));
+});
+
+test("completed backup preserves creator root through sealing and preview; identical replacement stays protected", async t => {
+  const f = await fixture(t), updates = [];
+  for (let i = 1; i <= 6; i++) updates.push(await f.create(`update-${i}`));
+  const original = updates[0], creator = original.original.metadata.autonomousBackupAttempt.root;
+  const positive = await sealAutonomousInstallerStorage({ runtimeRoot: f.root, operation: original.original, cache: original.cache });
+  assert.notEqual(positive.backupUnverified, true);
+  assert.deepEqual(positive.backup.root, creator);
+  const normal = f.make(), candidate = { id: original.id, cursor: `2026-01-01:${original.id}` };
+  const unchanged = await normal.owner.preview({ candidate });
+  assert.equal(unchanged.status, "eligible");
+  assert.equal(unchanged.binding.root.ino, creator.ino);
+
+  const kept = original.backup + "-creator-kept";
+  await rename(original.backup, kept); await cp(kept, original.backup, { recursive: true });
+  const replacement = await installerDirectory(original.backup);
+  assert.notEqual(replacement.ino, creator.ino);
+  const sealed = await sealAutonomousInstallerStorage({ runtimeRoot: f.root, operation: original.original, cache: original.cache });
+  assert.equal(sealed.backupUnverified, true);
+  assert.deepEqual(sealed.backup.root, creator, "foreign root must not replace canonical creator evidence");
+  const current = { ...original.original, metadata: { ...original.original.metadata, autonomousStorage: sealed } };
+  const store = {
+    getReadonly: id => id === original.id ? current : f.store.getReadonly(id),
+    listPackageBackupOriginsReadonly: input => {
+      const page = f.store.listPackageBackupOriginsReadonly(input);
+      return { ...page, items: page.items.map(op => op.operationId === original.id ? current : op) };
+    },
+    listInstallerStorageEvidenceReadonly: input => f.store.listInstallerStorageEvidenceReadonly(input),
+    latestStorageArtifactReadonly: (...args) => f.store.latestStorageArtifactReadonly(...args),
+  };
+  const owner = new RuntimeUpdateBackupRetention({ runtimeRoot: f.root, store,
+    deleteEntry: () => assert.fail("replacement must not reach native deletion") });
+  const refused = await owner.preview({ candidate });
+  assert.equal(refused.status, "retained"); assert.equal(refused.binding, undefined);
+  assert.ok(owner.status().protected >= 1); assert.ok(owner.status().unverified >= 1);
+  assert.deepEqual(f.store.getReadonly(original.id), original.original);
 });
 
 test("explicit contemporary custody admits only the exact disposed legacy partial and preserves whole source history", async t => {

@@ -164,10 +164,13 @@ export async function sealAutonomousInstallerStorage({ runtimeRoot, operation, c
     if (!equalPath(backup.directory, path.join(cache, "backup"))) throw Error("installer-storage-backup-unbound");
     // Never add companions or other files to a historical inventory. Fresh
     // producers seal generated SQLite companions BEFORE their checkpoint.
-    evidence.backup = { ...backup };
+    const creatorRoot = attempt ? attempt.root : backup.root ?? null;
+    evidence.backup = { ...backup, ...(creatorRoot ? { root: creatorRoot } : {}) };
     try {
-      evidence.backup.root = await installerDirectory(backup.directory);
-      await tree(backup.directory, records(backup.retentionFiles ?? backup.files));
+      if (attempt && !creatorRoot || creatorRoot && !equalPath(creatorRoot.file ?? "", backup.directory))
+        throw Error("installer-storage-backup-creator-unbound");
+      const captured = await tree(backup.directory, records(backup.retentionFiles ?? backup.files), { root: creatorRoot });
+      evidence.backup.root = captured.root;
     } catch { evidence.backupUnverified = true; }
   } else if (attempt && equalPath(attempt.root?.file ?? "", path.join(cache, "backup"))) {
     const allowed = attempt.files.flatMap(file => [file, ...(file.sqlite ? ["-wal", "-shm"].map(suffix => ({ path: file.path + suffix })) : [])]);

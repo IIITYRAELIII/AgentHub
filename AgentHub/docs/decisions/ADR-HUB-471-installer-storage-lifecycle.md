@@ -18,6 +18,9 @@ it seals actual produced contents on the SAME update original before terminal
 settlement. A caught partial backup may include only those planned paths and
 their SQLite companions under the original directory identity. Additional,
 linked or changed files refuse. Worker retirement is checked before cleanup.
+Completed backups consume the same original before-copy directory identity as
+partial backups. A byte-identical replacement directory stays protected; sealing
+does not replace creator evidence with the currently observed foreign identity.
 A live PID with a different birth retires the recorded worker only; denied or
 unavailable native lifetime proof retains it. Python's Windows volume identity
 uses its low Win32 volume-serial DWORD for comparison with Node/native deletion;
