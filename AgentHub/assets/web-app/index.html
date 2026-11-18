@@ -1049,15 +1049,18 @@
     <footer class="board-task-actions" data-task-card-actions></footer>
   </dialog>
 
-  <dialog class="task-delete-modal" data-task-delete-modal aria-labelledby="task-delete-title">
+  <div class="task-lifecycle-status" data-task-lifecycle-status role="status" aria-live="polite" aria-atomic="true"></div>
+  <dialog class="task-delete-modal" data-task-delete-modal aria-labelledby="task-delete-title"
+    aria-describedby="task-delete-description">
     <section>
       <p class="eyebrow">Удаление задачи</p>
-      <h2 id="task-delete-title">Вы уверены?</h2>
-      <p>Задача будет удалена без возможности восстановления.</p>
+      <h2 id="task-delete-title">Удалить задачу безвозвратно?</h2>
+      <p id="task-delete-description" data-task-delete-description></p>
+      <p class="task-delete-error" data-task-delete-error role="alert" hidden></p>
     </section>
     <footer>
       <button type="button" class="board-task-quiet" data-task-delete-cancel>Отмена</button>
-      <button type="button" class="task-delete-confirm" data-task-delete-confirm>Удалить</button>
+      <button type="button" class="task-delete-confirm" data-task-delete-confirm>Удалить задачу</button>
     </footer>
   </dialog>
 

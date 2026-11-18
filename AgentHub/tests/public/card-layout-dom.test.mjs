@@ -331,40 +331,29 @@ for (const width of [1440, 390]) {
   });
 }
 
-test("действия карточки задачи одного размера, а удаление отделено справа", async () => {
+test("архив и удаление отделены от основных действий карточки", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);
   try {
     const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
     await openFixture(page);
     await page.evaluate(() => {
-      const dialog = document.querySelector("[data-task-card-modal]");
-      dialog.showModal();
-      dialog.querySelector("[data-task-card-actions]").innerHTML = `
-        <button type="button" class="board-task-primary">Переназначить…</button>
-        <select class="board-task-destination"><option>Agent HUB</option></select>
-        <button type="button" class="board-task-quiet">Закрыть задачу</button>
-        <button type="button" class="board-task-remove">Удалить</button>`;
+      window.AgentHubTaskBoard.setSnapshot({ tasks: [{ id: "lifecycle", title: "Lifecycle Task",
+        text: "Lifecycle Task", bucket: "workspace", workspaceId: "w", status: "new" }],
+        workspaces: [{ id: "w", name: "Workspace", streams: [] }] });
+      document.dispatchEvent(new CustomEvent("agenthub:task-reference-open", { detail: { taskId: "lifecycle" } }));
     });
     const layout = await page.evaluate(() => {
       const footer = document.querySelector("[data-task-card-actions]");
-      const heights = [...footer.children].map((child) => Math.round(child.getBoundingClientRect().height));
-      const remove = footer.querySelector(".board-task-remove").getBoundingClientRect();
-      const quiet = footer.querySelector(".board-task-quiet").getBoundingClientRect();
-      const style = getComputedStyle(footer);
-      return {
-        heights,
-        removeRight: Math.round(remove.right),
-        quietRight: Math.round(quiet.right),
-        footerInner: Math.round(footer.getBoundingClientRect().right - Number.parseFloat(style.paddingRight)),
-      };
+      const rect = n => { const r = n.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; };
+      return { primary: rect(footer.querySelector(".task-primary-actions")),
+        lifecycle: rect(footer.querySelector(".task-lifecycle-actions")),
+        buttons: [...footer.querySelectorAll(".task-lifecycle-button")].map(n => ({ text: n.textContent, ...rect(n) })) };
     });
-    assert.ok(Math.max(...layout.heights) - Math.min(...layout.heights) <= 1,
-      `высоты действий футера разошлись: ${layout.heights.join(", ")}`);
-    assert.equal(layout.removeRight, layout.footerInner,
-      "удаление не прижато к правому краю футера");
-    assert.ok(layout.removeRight > layout.quietRight + 24,
-      "удаление не отделено от обычных действий");
+    assert.ok(layout.lifecycle.top > layout.primary.bottom);
+    assert.deepEqual(layout.buttons.map(n => n.text), ["Закрыть в архив", "Удалить задачу"]);
+    assert.ok(layout.buttons.every(n => n.height >= 44));
+    assert.ok(layout.buttons[1].top >= layout.buttons[0].bottom + 12);
   } finally {
     await browser.close();
   }

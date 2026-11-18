@@ -226,32 +226,80 @@
 
   window.AgentHubTaskCardEditor = Object.freeze({ createAutoGrowTextarea });
 
-  function createDeleteDialog({ dialog, cancelButton, confirmButton, onConfirm } = {}) {
+  function createDeleteDialog({ dialog, cancelButton, confirmButton, description, errorMessage, onConfirm,
+    fallbackFocus = () => null } = {}) {
     let pendingTaskId = null;
+    let busy = false;
+    let opener = null;
 
-    function close() {
+    function close({ force = false, restoreFocus = true } = {}) {
+      if (busy && !force) {
+        modalOverlays?.activateOverlay(dialog);
+        return;
+      }
       pendingTaskId = null;
+      busy = false;
       if (dialog?.open) dialog.close?.();
       dialog?.removeAttribute?.("open");
+      if (restoreFocus) (opener?.isConnected ? opener : fallbackFocus())?.focus?.();
     }
 
-    function request(taskId) {
+    function request(taskId, { title = "", returnFocus = dialog?.ownerDocument?.activeElement } = {}) {
+      if (busy) return;
       pendingTaskId = taskId ?? null;
       if (pendingTaskId == null || !dialog) return;
+      opener = returnFocus;
+      if (description) description.textContent = `Карточка «${title}» будет удалена без возможности восстановления. Чтобы сохранить её, отмените удаление и выберите «Закрыть в архив».`;
+      if (errorMessage) { errorMessage.textContent = ""; errorMessage.hidden = true; }
+      setBusy(false);
       dialog.showModal?.();
       if (!dialog.open) dialog.setAttribute?.("open", "");
+      cancelButton?.focus?.();
     }
 
-    cancelButton?.addEventListener("click", close);
+    function setBusy(value) {
+      busy = value;
+      dialog?.setAttribute?.("aria-busy", String(value));
+      if (cancelButton) cancelButton.disabled = value;
+      if (confirmButton) {
+        confirmButton.disabled = value;
+        confirmButton.textContent = value ? "Удаляю…" : "Удалить задачу";
+      }
+    }
+
+    function finish({ succeeded, error = "", cancelled = false } = {}) {
+      if (pendingTaskId == null) return;
+      setBusy(false);
+      if (succeeded) close({ restoreFocus: false });
+      else {
+        if (errorMessage) {
+          errorMessage.textContent = cancelled ? "" : error || "Не удалось удалить задачу. Повторите попытку.";
+          errorMessage.hidden = cancelled;
+        }
+        cancelButton?.focus?.();
+      }
+    }
+
+    cancelButton?.addEventListener("click", () => close());
     confirmButton?.addEventListener("click", () => {
       const taskId = pendingTaskId;
-      if (taskId == null) return;
-      close();
-      onConfirm?.(taskId);
+      if (taskId == null || busy) return;
+      setBusy(true);
+      try { onConfirm?.(taskId); }
+      catch (error) { finish({ succeeded: false, error: String(error?.message ?? error) }); }
     });
-    modalOverlays?.installDismissibleOverlay({ dialog, close });
+    dialog?.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab" || busy) return;
+      if (event.shiftKey && dialog.ownerDocument?.activeElement === cancelButton) {
+        event.preventDefault(); confirmButton?.focus?.();
+      } else if (!event.shiftKey && dialog.ownerDocument?.activeElement === confirmButton) {
+        event.preventDefault(); cancelButton?.focus?.();
+      }
+    });
+    modalOverlays?.installDismissibleOverlay({ dialog, close: () => close(),
+      returnFocus: () => opener, fallbackFocus });
 
-    return Object.freeze({ request, close });
+    return Object.freeze({ request, close, finish });
   }
 
   window.AgentHubTaskDeleteDialog = Object.freeze({ create: createDeleteDialog });
@@ -997,6 +1045,7 @@
     savingStatusTaskId: null,
     attachingTaskId: null,
     removingTaskId: null,
+    completingTaskId: null,
     pendingChecklistActions: new Map(),
     checklistLinkedActionPrompts: new Map(),
     editingChecklistItemId: null,
@@ -1006,10 +1055,13 @@
     dialog: taskDeleteModal,
     cancelButton: taskDeleteCancel,
     confirmButton: taskDeleteConfirm,
+    description: document.querySelector("[data-task-delete-description]"),
+    errorMessage: document.querySelector("[data-task-delete-error]"),
+    fallbackFocus: () => taskCardActions.querySelector("[data-task-delete-trigger]"),
     onConfirm: (id) => {
       if (state.removingTaskId != null) return;
+      rememberLifecycleFocus(id);
       state.removingTaskId = id;
-      renderOpenTaskCard();
       emit("remove", { id });
     },
   });
@@ -1162,6 +1214,45 @@
     document.dispatchEvent(new CustomEvent("agenthub:board-action", {
       detail: { type, ...detail },
     }));
+  }
+
+  let lifecycleFocus = null;
+  let taskCardOpener = null;
+
+  function rememberLifecycleFocus(id) {
+    const cards = [...columns.querySelectorAll("[data-board-task-id]")];
+    const card = taskCardOpener?.isConnected && taskCardOpener.dataset.boardTaskId === id
+      ? taskCardOpener : cards.find(element => element.dataset.boardTaskId === id);
+    const column = card?.closest(".task-board-column");
+    const panel = !column ? card?.closest(".workspace-task-list") : null;
+    const siblings = [...((column ?? panel)?.querySelectorAll("[data-board-task-id]") ?? [])];
+    const index = siblings.indexOf(card);
+    lifecycleFocus = {
+      id, columnId: column?.dataset.boardColumnId, panel,
+      next: siblings.slice(index + 1).map(element => element.dataset.boardTaskId),
+      previous: siblings.slice(0, index).reverse().map(element => element.dataset.boardTaskId),
+    };
+  }
+
+  function finishLifecycleFocus(id) {
+    const frame = lifecycleFocus;
+    if (frame?.id !== id) return;
+    lifecycleFocus = null;
+    const column = frame.panel ?? [...columns.querySelectorAll(".task-board-column")]
+      .find(element => element.dataset.boardColumnId === frame.columnId);
+    const cards = [...(column?.querySelectorAll("[data-board-task-id]") ?? [])];
+    const target = [...frame.next, ...frame.previous]
+      .map(taskId => cards.find(element => element.dataset.boardTaskId === taskId)).find(Boolean);
+    const heading = column?.querySelector("h2") ?? frame.panel?.closest("section")?.querySelector("h2, h3, header strong")
+      ?? board.querySelector(".task-board-matrix-head h2")
+      ?? document.querySelector('[data-view="dashboard"] h1');
+    if (!target && heading) heading.setAttribute("tabindex", "-1");
+    (target ?? heading)?.focus({ preventScroll: true });
+  }
+
+  function announceLifecycle(text) {
+    const status = document.querySelector("[data-task-lifecycle-status]");
+    if (status) status.textContent = text;
   }
 
   function openAttachment(event, attachment, gallery, index) {
@@ -1470,7 +1561,7 @@
     taskCardBackdrop?.remove();
     taskCardBackdrop = null;
     const openedTaskId = state.openTaskId;
-    taskDeleteDialog.close();
+    taskDeleteDialog.close({ force: true, restoreFocus: false });
     diffGeneration += 1;
     state.openTaskId = null;
     state.taskCardModalRequested = false;
@@ -1801,7 +1892,8 @@
     if (!taskCardModal) return;
     let task = state.tasks.find((item) => item.id === state.openTaskId);
     if (!task) {
-      if (state.openTaskId) closeTaskCard();
+      if (state.openTaskId && state.removingTaskId !== state.openTaskId
+        && state.completingTaskId !== state.openTaskId) closeTaskCard();
       return;
     }
     const detail = openTaskDetails.get(task.id);
@@ -1910,25 +2002,44 @@
       }));
     }
     if (task.status !== "done") actions.push(destinationSelect(task));
-    if (task.status !== "done") {
-      actions.push(node("button", {
-        type: "button", class: "board-task-quiet", text: "Закрыть задачу",
-        title: "Скрыть после приёмки заказчиком или когда сдача работ не требуется",
-        onclick: () => { closeTaskCard(); emit("complete", { id: task.id }); },
-      }));
-    }
-    actions.push(node("button", {
-      type: "button",
-      class: "board-task-remove",
-      text: state.removingTaskId === task.id ? "Удаляю…" : "Удалить",
-      disabled: state.removingTaskId === task.id ? "" : null,
-      onclick: () => taskDeleteDialog.request(task.id),
-    }));
-    taskCardActions.replaceChildren(...actions);
+    const lifecycleBusy = state.removingTaskId === task.id || state.completingTaskId === task.id;
+    const lifecycleRows = [];
+    if (task.status !== "done") lifecycleRows.push(node("div", { class: "task-lifecycle-row" }, [
+      node("p", { id: "task-archive-help", text: "Карточка сохранится в архиве и исчезнет с активной доски." }),
+      node("button", {
+        type: "button", class: "task-lifecycle-button", "data-task-archive-trigger": "",
+        text: state.completingTaskId === task.id ? "Закрываю…" : "Закрыть в архив",
+        "aria-describedby": "task-archive-help", disabled: lifecycleBusy ? "" : null,
+        onclick: () => {
+          if (state.completingTaskId || state.removingTaskId) return;
+          rememberLifecycleFocus(task.id);
+          state.completingTaskId = task.id;
+          renderOpenTaskCard();
+          emit("complete", { id: task.id });
+        },
+      }),
+    ]));
+    lifecycleRows.push(node("div", { class: "task-lifecycle-row" }, [
+      node("p", { id: "task-remove-help", text: "Карточка будет удалена без возможности восстановления." }),
+      node("button", {
+        type: "button", class: "task-lifecycle-button is-danger", "data-task-delete-trigger": "",
+        text: "Удалить задачу", "aria-describedby": "task-remove-help", disabled: lifecycleBusy ? "" : null,
+        onclick: event => taskDeleteDialog.request(task.id, {
+          title: task.title || task.text, returnFocus: event.currentTarget,
+        }),
+      }),
+    ]));
+    const lifecycle = node("section", { class: "task-lifecycle-actions", role: "group",
+      "aria-labelledby": "task-lifecycle-title" }, [
+      node("h3", { id: "task-lifecycle-title", text: "Действия с карточкой" }),
+      ...lifecycleRows,
+    ]);
+    taskCardActions.replaceChildren(node("div", { class: "task-primary-actions" }, actions), lifecycle);
     syncTaskCardBackdrop();
   }
 
   function openTaskCard(task, { modal = false } = {}) {
+    taskCardOpener = document.activeElement?.closest?.("[data-board-task-id]") ?? null;
     taskDetailsOpening += 1;
     // Full history belongs only to the open card, never to every card visited.
     pendingTaskDetails.clear();
@@ -2193,6 +2304,7 @@
       "aria-label": laneCell ? title : null,
       "data-board-destination": acceptsTaskDrops ? id : null,
       "data-board-workspace-id": workspace?.id,
+      "data-board-column-id": id,
     });
     column.addEventListener("dragover", (event) => {
       if (!acceptsTaskDrops) return;
@@ -2897,7 +3009,8 @@
         requestOpenTaskDetails();
       }
     },
-    finishAction({ type, id, succeeded, requestId = null, operation = null, itemId = null } = {}) {
+    finishAction({ type, id, succeeded, error = "", cancelled = false,
+      requestId = null, operation = null, itemId = null } = {}) {
       const pendingMove = pendingBoardMoves.get(id);
       if (type === "status" && pendingMove?.phase === "status" && pendingMove.requestId !== requestId) return;
       if (pendingMove?.requestId === requestId && pendingMove.phase === type) {
@@ -2935,8 +3048,23 @@
       }
       if (type === "remove" && state.removingTaskId === id) {
         state.removingTaskId = null;
-        if (succeeded) closeTaskCard();
-        else renderOpenTaskCard();
+        taskDeleteDialog.finish({ succeeded, error, cancelled });
+        if (succeeded) {
+          closeTaskCard();
+          finishLifecycleFocus(id);
+          announceLifecycle("Задача удалена.");
+        }
+      }
+      if (type === "complete" && state.completingTaskId === id) {
+        state.completingTaskId = null;
+        if (succeeded) {
+          closeTaskCard();
+          finishLifecycleFocus(id);
+          announceLifecycle("Задача закрыта и сохранена в архиве.");
+        } else {
+          renderOpenTaskCard();
+          taskCardActions.querySelector("[data-task-archive-trigger]")?.focus();
+        }
       }
       if (type === "status" && state.savingStatusTaskId === id) {
         state.savingStatusTaskId = null;

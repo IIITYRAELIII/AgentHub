@@ -101,11 +101,24 @@ test("task deletion requires explicit confirmation and supports cancellation", a
 
   controller.request("task-1");
   confirmButton.dispatch("click");
-  assert.equal(dialog.open, false);
+  assert.equal(dialog.open, true);
+  assert.equal(confirmButton.disabled, true);
+  cancelButton.dispatch("click");
+  dialog.dispatch("cancel");
+  assert.equal(dialog.open, true, "pending deletion cannot be dismissed as a cancellation");
   assert.deepEqual(confirmed, ["task-1"]);
 
   confirmButton.dispatch("click");
   assert.deepEqual(confirmed, ["task-1"]);
+  controller.finish({ succeeded: false, error: "Denied" });
+  assert.equal(dialog.open, true);
+  assert.equal(confirmButton.disabled, false);
+  confirmButton.dispatch("click");
+  assert.deepEqual(confirmed, ["task-1", "task-1"]);
+  controller.finish({ succeeded: true });
+  assert.equal(dialog.open, false);
+  confirmButton.dispatch("click");
+  assert.deepEqual(confirmed, ["task-1", "task-1"]);
 });
 
 test("Complete and Delete confirmations render exact server evidence and cancellation performs no mutation", async () => {

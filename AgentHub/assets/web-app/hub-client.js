@@ -4417,6 +4417,8 @@ document.addEventListener("agenthub:board-action", (event) => {
     return;
   }
   let succeeded = false;
+  let actionError = "";
+  let cancelled = false;
   void runAction(async () => {
     if (!lastSnapshot?.boardLayout && ["move-column", "update-comment"].includes(detail.type)) {
       agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
@@ -4457,7 +4459,7 @@ document.addEventListener("agenthub:board-action", (event) => {
         params,
         request: control,
       });
-      if (!decision.confirmed) return;
+      if (!decision.confirmed) { cancelled = true; return; }
       result = decision.result;
     }
     succeeded = true;
@@ -4466,11 +4468,13 @@ document.addEventListener("agenthub:board-action", (event) => {
     if (detail.type === "update") agentHub.toast("Изменения сохранены");
     if (detail.type === "status") agentHub.toast("Статус задачи изменён");
     if (detail.type === "remove") agentHub.toast("Задача удалена");
-  }).finally(() => {
+  }, error => { actionError = String(error?.message ?? error); }).finally(() => {
     window.AgentHubTaskBoard?.finishAction?.({
       type: detail.type,
       id: detail.id,
       succeeded,
+      error: actionError,
+      cancelled,
       requestId: detail.requestId,
       operation: detail.operation,
       itemId: detail.itemId,
