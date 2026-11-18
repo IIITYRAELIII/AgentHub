@@ -88,6 +88,12 @@ not a joined failure and cannot trigger rollback merely at a deadline.
 The existing maintenance-operation store owns the original and its terminal
 result. An external flushed request/dispatch fence is transport, not a second
 restart registry. Repetition reads the same original and never repeats dispatch.
+All recipient checkpoints use that store's existing asynchronous SQLite mutation
+queue. Contention retries only the captured persistence callback and exact CAS;
+backup, process retirement, installation, readiness RPC and launch remain outside
+it. An accepted checkpoint waits for the database writer rather than converting
+contention into a failed replacement. The existing installer timing stream binds
+retry/wait/commit evidence to the same original, including a CAS refusal.
 Missing historical maintenance schema is compatible absence before first
 dispatch; an existing failed, skipped or UNKNOWN original remains read-only.
 

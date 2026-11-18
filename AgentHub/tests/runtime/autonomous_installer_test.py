@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -33,6 +34,73 @@ def foreign_layout(root, entries):
 
 @unittest.skipUnless(os.name == "nt", "Windows recipient installer")
 class AutonomousInstallerTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Real SQLite owner contention fixture')
+    def test_ready_checkpoint_waits_for_real_writer_without_replaying_launch_and_keeps_cas(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); root=base/'hub'; (root/'data').mkdir(parents=True)
+            runtime=base/'package/runtime'
+            def module(name,body):
+                file=runtime/name; file.parent.mkdir(parents=True,exist_ok=True); file.write_text(body,encoding='utf-8')
+            actual=(SOURCE.parents[1]/'src/infrastructure/persistence/maintenance-operation-store.mjs').as_uri()
+            module('src/infrastructure/persistence/maintenance-operation-store.mjs',
+                'export {MaintenanceOperationStore} from '+json.dumps(actual)+';')
+            module('src/runtime/publication-readiness.mjs',"export async function waitForRuntimeReplacement(){}")
+            module('src/infrastructure/process/process-liveness.mjs',"export const processIsAlive=()=>true;")
+            module('src/infrastructure/process/desktop-control.mjs',
+                "export async function callDesktopControl(){return {live:true,ready:true,process:{releaseId:'new',pid:123},capabilities:[{name:'mini_app',state:'disabled'}]}}")
+            owner=base/'owner.mjs'; owner.write_text(installer.OWNER_MODULE,encoding='utf-8')
+            assertion=base/'assert.py'; assertion.write_text(
+                "import pathlib,sys,time\np=pathlib.Path(sys.argv[2]); (p/'verified').write_text('verified')\n"
+                "with (p/'assertions').open('a') as f:f.write('one\\n')\n"
+                "end=time.monotonic()+10\nwhile not (p/'locked').exists():\n"
+                " if time.monotonic()>end:raise TimeoutError('No fixture writer')\n time.sleep(.01)\n",encoding='utf-8')
+            (root/'data/bot.lock').write_text('{"pid":123}',encoding='utf-8')
+            value=base/'input.json'; value.write_text(json.dumps(dict(releaseId='new',hostPid=456,hostCreated='789',
+                python=sys.executable,installer=str(assertion))),encoding='utf-8')
+            create="import{MaintenanceOperationStore}from "+json.dumps(actual)+";const s=new MaintenanceOperationStore({dataDir:process.argv[1]});console.log(JSON.stringify(s.create({operationId:process.argv[2],kind:'restart',streamId:'agent-hub-installer',threadId:process.argv[3],status:'running',phase:'installer-backed-up'})));"
+            for changed in [False,True]:
+                with self.subTest(casChanged=changed):
+                    ident='ready-cas' if changed else 'ready-original'
+                    initial=subprocess.run(['node','--input-type=module','-e',create,str(root/'data'),ident,str(root)],
+                        capture_output=True,encoding='utf-8',check=True,creationflags=0x08000000)
+                    original=json.loads(initial.stdout)
+                    for name in ['verified','locked','assertions']:(root/name).unlink(missing_ok=True)
+                    process=subprocess.Popen(['node',str(owner),str(base/'package'),str(root),ident,'ready',str(value)],
+                        stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',creationflags=0x08000000)
+                    try:
+                        deadline=time.monotonic()+10
+                        while not (root/'verified').exists():
+                            if process.poll() is not None or time.monotonic()>deadline:
+                                out,err=process.communicate(timeout=3); self.fail(out+err)
+                            time.sleep(.01)
+                        with closing(sqlite3.connect(root/'data/runtime.sqlite',timeout=0)) as writer:
+                            writer.execute('BEGIN IMMEDIATE')
+                            if changed:
+                                altered={**original,'revision':original['revision']+1,'phase':'foreign-progress'}
+                                writer.execute('UPDATE maintenance_operations SET revision=?,operation_json=? WHERE operation_id=?',
+                                    (altered['revision'],json.dumps(altered),ident))
+                            (root/'locked').touch()
+                            time.sleep(.35 if changed else 2.25)
+                            if process.poll() is not None:
+                                out,err=process.communicate(timeout=3)
+                                self.fail('Owner did not await the SAME contended persistence: '+out+err)
+                            writer.commit()
+                        out,err=process.communicate(timeout=10)
+                        with closing(sqlite3.connect(root/'data/runtime.sqlite')) as db:
+                            current=json.loads(db.execute('SELECT operation_json FROM maintenance_operations WHERE operation_id=?',(ident,)).fetchone()[0])
+                        self.assertEqual((root/'assertions').read_text().splitlines(),['one'])
+                        if changed:
+                            self.assertNotEqual(process.returncode,0); self.assertEqual(current,altered)
+                            self.assertIn('Original Ready checkpoint refused',err)
+                        else:
+                            self.assertEqual(process.returncode,0,err); self.assertEqual(current['status'],'succeeded')
+                            self.assertEqual(current['operationId'],ident); self.assertEqual(current['revision'],original['revision']+1)
+                        records=[json.loads(line) for line in (base/'stop-timing.jsonl').read_text().splitlines()]
+                        self.assertTrue(any(row['operationId']==ident and row['retries']>0 for row in records))
+                    finally:
+                        if process.poll() is None:process.kill(); process.wait(timeout=5)
+                        process.stdout.close(); process.stderr.close()
+
     @unittest.skipUnless(shutil.which('node'), 'Node SQLite process fixture')
     def test_owner_backup_persists_creator_intent_before_real_sqlite_copy_and_seals_storage(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -429,6 +497,7 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             module('src/infrastructure/persistence/maintenance-operation-store.mjs',
                 "import fs from 'node:fs';import path from 'node:path';export class MaintenanceOperationStore {"
                 "constructor({dataDir}){this.file=path.join(dataDir,'operation.json')}get(){return JSON.parse(fs.readFileSync(this.file))}"
+                "async runMaintenanceMutation(fn){return fn()}"
                 "transition(id,delta,{expectedRevision}){let op=this.get();if(op.revision!==expectedRevision)return {applied:false};"
                 "op={...op,...delta,revision:op.revision+1};fs.writeFileSync(this.file,JSON.stringify(op));return {applied:true,operation:op}}}")
             module('src/infrastructure/process/desktop-control.mjs',

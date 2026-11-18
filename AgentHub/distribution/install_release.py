@@ -1408,6 +1408,7 @@ def assert_launched(root, pid, created, web=None):
 OWNER_MODULE = r'''
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import {appendFileSync} from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 const [pkg,root,id,action,input] = process.argv.slice(2);
@@ -1423,7 +1424,14 @@ if(action==='previous') {
 }
 const {MaintenanceOperationStore} = await load('src/infrastructure/persistence/maintenance-operation-store.mjs');
 const store = new MaintenanceOperationStore({dataDir:path.join(root,'data')});
-let op = store.get(id); const value = input ? JSON.parse(await fs.readFile(input,'utf8')) : {};
+// A live replacement shares SQLite with the installer. Contention must wait
+// for this SAME persistence call, never become a reason to reinstall/rollback.
+const mutate = async fn => store.runMaintenanceMutation(fn,{requestId:id,timeoutMs:Number.POSITIVE_INFINITY,
+  recordMutationTiming:timing=>{
+    appendFileSync(path.join(path.dirname(process.argv[1]),'stop-timing.jsonl'),
+      JSON.stringify({operationId:id,stage:'owner-'+action+'-persistence',...timing})+'\n');
+  }});
+let op = await mutate(()=>store.get(id)); const value = input ? JSON.parse(await fs.readFile(input,'utf8')) : {};
 async function storageCheckpoint() {
   let storage;
   try { storage = await load('src/infrastructure/persistence/autonomous-installer-storage.mjs'); }
@@ -1459,8 +1467,8 @@ async function assertReadyEndpoint(health, releaseId, hostPid, hostCreated) {
   execFileSync(value.python,args,{windowsHide:true,stdio:'pipe'});
 }
 if(action==='create') {
-  if(!op) op=store.create({operationId:id,kind:'restart',streamId:'agent-hub-installer',threadId:root,
-    status:'running',phase:'installer-stopping',metadata:{autonomousInstaller:value}});
+  if(!op) op=await mutate(()=>store.create({operationId:id,kind:'restart',streamId:'agent-hub-installer',threadId:root,
+    status:'running',phase:'installer-stopping',metadata:{autonomousInstaller:value}}));
 } else if(action==='resume-prestop' || action==='resume-partialstop') {
   const {isDeepStrictEqual}=await import('node:util');
   if(!isDeepStrictEqual(op,value.expectedOriginal)) throw Error('Original changed before resume CAS');
@@ -1470,7 +1478,7 @@ if(action==='create') {
     || health.process.releaseId!==value.previous.releaseId) throw Error('Old Ready identity changed');
   await assertReadyEndpoint(health,value.previous.releaseId,value.oldProcesses[0].pid,value.oldProcesses[0].created);
   const key=action==='resume-prestop'?'autonomousResume':'autonomousPartialResume';
-  const changed=store.transition(id,{phase:'installer-stopping',metadata:{[key]:{...value,workerPid:process.ppid}}},{expectedRevision:op.revision});
+  const changed=await mutate(()=>store.transition(id,{phase:'installer-stopping',metadata:{[key]:{...value,workerPid:process.ppid}}},{expectedRevision:op.revision}));
   if(!changed.applied) throw Error('Pre-stop continuation CAS refused'); op=changed.operation;
 } else if(action==='backup') {
   const {backupStoppedRuntime}=await load('src/infrastructure/persistence/runtime-maintenance-backup.mjs');
@@ -1478,13 +1486,13 @@ if(action==='create') {
     onCreated:async scope=>{
       const {installerBackupIntent}=await load('src/infrastructure/persistence/autonomous-installer-storage.mjs');
       const attempt=await installerBackupIntent(scope);
-      const saved=store.transition(id,{metadata:{autonomousBackupAttempt:attempt}},{expectedRevision:op.revision});
+      const saved=await mutate(()=>store.transition(id,{metadata:{autonomousBackupAttempt:attempt}},{expectedRevision:op.revision}));
       if(!saved.applied) throw Error('Backup creation checkpoint refused'); op=saved.operation;
     },
     assertStopped:async()=>execFileSync(value.python,[value.installer,'--assert-stopped',root],{windowsHide:true,stdio:'pipe'})});
   const {sealRuntimeUpdateBackup}=await load('src/infrastructure/persistence/runtime-update-backup-retention.mjs');
   const sealed=await sealRuntimeUpdateBackup(proof);
-  const changed=store.transition(id,{phase:'installer-backed-up',metadata:{autonomousBackup:sealed}},{expectedRevision:op.revision});
+  const changed=await mutate(()=>store.transition(id,{phase:'installer-backed-up',metadata:{autonomousBackup:sealed}},{expectedRevision:op.revision}));
   if(!changed.applied) throw Error('Original backup checkpoint refused'); op=changed.operation;
 } else if(action==='restore') {
   const {createHash}=await import('node:crypto');
@@ -1503,9 +1511,9 @@ if(action==='create') {
   if(!health.live || !health.ready || health.process.pid!==value.oldProcesses[1].pid
     || health.process.releaseId!==value.previous.releaseId) throw Error('Previous Ready identity changed');
   await assertReadyEndpoint(health,value.previous.releaseId,value.oldProcesses[0].pid,value.oldProcesses[0].created);
-  const changed=store.transition(id,{status:'failed',outcome:'rolled-back',phase:'previous-ready',
-    metadata:{...await storageCheckpoint(),autonomousRecovery:{releaseId:value.previous.releaseId,pid:health.process.pid,
-      hostPid:value.oldProcesses[0].pid,preservedRunning:true}}},{expectedRevision:op.revision});
+  const metadata={...await storageCheckpoint(),autonomousRecovery:{releaseId:value.previous.releaseId,pid:health.process.pid,
+      hostPid:value.oldProcesses[0].pid,preservedRunning:true}};
+  const changed=await mutate(()=>store.transition(id,{status:'failed',outcome:'rolled-back',phase:'previous-ready',metadata},{expectedRevision:op.revision}));
   if(!changed.applied) throw Error('Previous Ready checkpoint refused'); op=changed.operation;
   await storageWake();
 } else if(action==='ready' || action==='recovered') {
@@ -1525,14 +1533,15 @@ if(action==='create') {
   const lock=JSON.parse(await fs.readFile(path.join(root,'data/bot.lock'),'utf8'));
   const recovered=action==='recovered';
   const unresolved=recovered && value.retirementUnknown===true;
-  const changed=store.transition(id,{status:unresolved?'reconciling':recovered?'failed':'succeeded',outcome:unresolved?'unknown':recovered?'rolled-back':'succeeded',phase:recovered?'previous-ready':'ready',
-    metadata:{...await storageCheckpoint(),[recovered?'autonomousRecovery':'autonomousReady']:{releaseId:value.releaseId,pid:lock.pid,hostPid:value.hostPid,
-      ...(unresolved?{retirementUnknown:true}: {})}}},{expectedRevision:op.revision});
+  const metadata={...await storageCheckpoint(),[recovered?'autonomousRecovery':'autonomousReady']:{releaseId:value.releaseId,pid:lock.pid,hostPid:value.hostPid,
+      ...(unresolved?{retirementUnknown:true}: {})}};
+  const changed=await mutate(()=>store.transition(id,{status:unresolved?'reconciling':recovered?'failed':'succeeded',outcome:unresolved?'unknown':recovered?'rolled-back':'succeeded',phase:recovered?'previous-ready':'ready',
+    metadata},{expectedRevision:op.revision}));
   if(!changed.applied) throw Error('Original Ready checkpoint refused'); op=changed.operation;
   await storageWake();
 } else if(action==='unknown') {
-  if(op && !['succeeded','failed'].includes(op.status)) op=store.transition(id,{status:'reconciling',outcome:'unknown',
-    phase:'installer-recovery-required',metadata:{autonomousError:value}},{expectedRevision:op.revision}).operation;
+  if(op && !['succeeded','failed'].includes(op.status)) op=(await mutate(()=>store.transition(id,{status:'reconciling',outcome:'unknown',
+    phase:'installer-recovery-required',metadata:{autonomousError:value}},{expectedRevision:op.revision}))).operation;
 } else if(action!=='read') throw Error('Unknown installer owner action');
 console.log(JSON.stringify(op));
 '''

@@ -159,6 +159,10 @@ against the authenticated Node and its launched Host. Headless configuration
 remains supported. A slow startup is observed while the exact Host remains live;
 elapsed time alone no longer triggers rollback. Host exit or an explicit startup
 capability failure follows the existing previous-version recovery path.
+The existing maintenance SQLite queue retries only the same checkpoint while
+another writer owns the database. A contended Ready write waits for persistence;
+it does not repeat launch, replace the original identity or trigger rollback.
+Its persistence retries and wait are recorded in the original installer timing.
 
 An explicitly requested `--resume-prestop --operation-id <same-original>` can
 continue only the positively verified published8c09 pre-stop foreign refusal;
