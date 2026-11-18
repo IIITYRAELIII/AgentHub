@@ -5,6 +5,7 @@ import { ProviderCancellationService } from "../../../src/providers/provider-tur
 import { CodexAppServerTransport } from "../../../src/providers/codex/codex-app-server-transport.mjs";
 import { markProviderTurnRequested, markProviderTurnAccepted, markProviderFirstEvent } from "../../../src/domain/task-runs.mjs";
 import { TaskObserverController } from "../../../src/application/task-observer-controller.mjs";
+import { resolveCodexTaskActivity } from "../../../src/providers/codex/codex-runtime-owner.mjs";
 
 test("metadata recovery records a failed provider read without releasing the original", async () => {
   const spans = [];
@@ -373,7 +374,7 @@ test("canonical accepted-before-first-event recovery retains original guards", a
 });
 
 function metadataRecoveryFixture({ threadState = "idle", activity = "inactive", snapshotMode = "exact",
-  trace = null, acceptance = "accepted", interrupt = "rejected" } = {}) {
+  trace = null, acceptance = "accepted", interrupt = "rejected", nativeEvidence = false } = {}) {
   const requests = [];
   const transport = new CodexAppServerTransport({ spawnProcess: () => assert.fail("No real provider process") });
   transport.request = async (method, params) => {
@@ -389,8 +390,16 @@ function metadataRecoveryFixture({ threadState = "idle", activity = "inactive", 
       assert.equal(options.forceFresh, true);
       assert.equal(transport.threadHydrations.size, 0, "Thread lane must be released before cancellation checks");
       f.calls.push("fresh-activity");
-      return { state: activity === "new-live-after" && ++checks > 1 ? "active"
-        : activity === "new-live-after" ? "inactive" : activity };
+      const state = activity === "new-live-after" && ++checks > 1 ? "active"
+        : activity === "new-live-after" ? "inactive" : activity;
+      if (!nativeEvidence) return { state };
+      return resolveCodexTaskActivity({ threadStatus: { type: threadState } }, {
+        forceFresh: true, platform: "win32", rolloutPath: "fixture-native-evidence",
+        probe: async () => {
+          if (state === "unknown") throw new Error("controlled unavailable native evidence");
+          return { rootProcessIds: state === "active" ? [40] : [], processes: [] };
+        },
+      });
     },
     ...(interrupt === "rejected" ? {} : { interruptCodex: async () => {
       f.calls.push("interrupt-original");
@@ -518,7 +527,7 @@ test("reviewer metadata recovery retains guarded reconciliation for a dangling a
   assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
 });
 
-test("ordinary observation recovers the retained original after a newer external turn finishes", async () => {
+for (const recoveredThreadState of ["idle", "notLoaded"]) test(`ordinary observation recovers the retained original after a newer external turn finishes (${recoveredThreadState})`, async () => {
   const { CodexTaskSnapshotService, codexTurnSnapshot } = await import("../../../src/providers/codex/codex-task-snapshot-service.mjs");
   const { codexRolloutTurnState, parseCodexRolloutActivity } = await import("../../../src/providers/codex/codex-rollout-activity.mjs");
   const row = (type, turn_id) => JSON.stringify({ type: "event_msg", payload: { type, turn_id } });
@@ -554,7 +563,7 @@ test("ordinary observation recovers the retained original after a newer external
   assert.equal(f.current(), f.run);
   assert.equal(f.calls.includes("interrupt-original"), false);
   rows.push(row("task_complete", "turn-newer"));
-  thread.status = { type: "idle" };
+  thread.status = { type: recoveredThreadState };
   const snapshot = await snapshots.read(f.run);
   assert.equal(snapshot.turnId, "turn-original");
   assert.equal(snapshot.active, true, "Unclosed task_started remains a retained marker");
@@ -565,4 +574,45 @@ test("ordinary observation recovers the retained original after a newer external
   assert.deepEqual(f.calls.at(-1).slice(0, 2), ["commit", "interrupted"]);
   assert.equal(f.run.turnId, "turn-original");
   assert.equal(f.run.clientUserMessageId, "message-original");
+});
+
+test("notLoaded accepted original enters guarded recovery at startup and ordinary reconciliation", async () => {
+  for (const reconcileOnly of [false, true]) {
+    for (const snapshotMode of ["exact", "active"]) {
+      const f = metadataRecoveryFixture({ threadState: "notLoaded", snapshotMode, nativeEvidence: true });
+      await f.recovery.recover(f.run, { reconcileOnly });
+      assert.equal(f.current(), null);
+      assert.deepEqual(f.requests.map(x => x.method), ["thread/read"]);
+      assert.deepEqual(f.calls, ["fresh-activity", "interrupt-original", "fresh-activity",
+        ["commit", "interrupted", "Retained partial answer"]]);
+      assert.equal(f.transport.threadHydrations.size, 0);
+    }
+  }
+});
+
+test("notLoaded is eligibility only and never bypasses original ownership or inactivity proof", async () => {
+  for (const variant of [
+    { activity: "active" }, { activity: "unknown" }, { activity: "new-live-after" },
+    { snapshotMode: "missing" }, { snapshotMode: "foreign" },
+    { acceptance: "foreign" }, { acceptance: "external" },
+    { interrupt: "accepted" }, { interrupt: "unknown" },
+    { threadState: "systemError" }, { threadState: "unknown" },
+  ]) {
+    const f = metadataRecoveryFixture({ threadState: "notLoaded", snapshotMode: "active", nativeEvidence: true, ...variant });
+    await f.recovery.recover(f.run, { reconcileOnly: true }).catch(() => {});
+    assert.equal(f.current(), f.run, JSON.stringify(variant));
+    assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), false);
+    if (["active", "unknown"].includes(variant.activity) || variant.snapshotMode
+      || variant.acceptance || variant.threadState) assert.equal(f.calls.includes("interrupt-original"), false);
+  }
+  for (const mode of ["observer", "missing-command", "unconfirmed", "missing-acceptance"]) {
+    const f = metadataRecoveryFixture({ threadState: "notLoaded", snapshotMode: "active" });
+    if (mode === "observer") f.run.observer = true;
+    if (mode === "missing-command") delete f.run.clientUserMessageId;
+    if (mode === "unconfirmed") f.run.providerStart.state = "unconfirmed";
+    if (mode === "missing-acceptance") delete f.run.providerStart;
+    await f.recovery.recover(f.run, { reconcileOnly: true }).catch(() => {});
+    assert.equal(f.current(), f.run, mode);
+    assert.equal(f.calls.includes("interrupt-original"), false, mode);
+  }
 });

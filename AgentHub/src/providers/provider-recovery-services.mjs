@@ -175,10 +175,14 @@ export class CodexRecoveryService {
     const retainedAcceptedTurn = (turn?.status === "inProgress" || exactRetainedSnapshot)
       && normalizeTaskExecutionOwner(run.executionOwner) === TASK_EXECUTION_OWNERS.HUB
       && providerTurnAcceptance(run).accepted;
+    // A restarted App Server may not have loaded the retained Thread. This
+    // permits the same guarded activity checks, never a terminal by itself.
+    const recoveryThreadEligible = result.thread?.status?.type === "idle"
+      || (result.thread?.status?.type === "notLoaded" && retainedAcceptedTurn);
     if (!exactTerminal && run.observer !== true && exactTurnId
       && String(run.clientUserMessageId ?? "").trim()
       && run.providerStart?.state !== "unconfirmed"
-      && result.thread?.status?.type === "idle"
+      && recoveryThreadEligible
       && (["interrupted", "aborted"].includes(turn?.status) || retainedAcceptedTurn)
       && typeof d.recoverInactiveRun === "function") return INACTIVE_RECOVERY;
     if (!exactTerminal && recoveryAction === TASK_RECOVERY_ACTIONS.MISSING_CODEX_TURN) {

@@ -356,6 +356,10 @@ metadata and its exact rollout snapshot without requiring paginated full history
 An exact UNKNOWN snapshot grants eligibility only; missing/foreign snapshots,
 live/unknown provider or native activity still cannot settle or release the run.
 The existing tracer records the original recovery read start/outcome without payload.
+Fresh `notLoaded` metadata also permits this guarded recovery for an exact
+retained accepted Hub-owned original (ADR-HUB-470). Not being loaded in this
+App Server is not evidence of inactivity elsewhere or a terminal outcome.
+Unknown/error metadata and missing acceptance keep the original fenced.
 
 After a trusted later system boot, the existing canonical managed lifecycle has
 a separate local-only disposition (ADR-HUB-392). Only an exact Hub-owned accepted

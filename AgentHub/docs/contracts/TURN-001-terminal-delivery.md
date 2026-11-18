@@ -70,6 +70,14 @@ terminal.
   or failed snapshot/terminal persistence keeps admission. This does not infer a
   historical success, rewrite the rollout, replay the old prompt or authorize a
   different run. Terminal persistence still precedes admission release.
+  A fresh `notLoaded` Thread is also eligible for that same retained accepted
+  Hub-owned original, including its exact nonterminal rollout snapshot
+  (ADR-HUB-470). It is not inactivity or terminal evidence: all fresh activity,
+  exact rejection, identity and persistence checks above still apply.
+  Fresh activity resolution treats `notLoaded` plus successful native absence
+  for the exact rollout as inactive; a live holder is active, failed/missing
+  native proof or unknown/error Thread metadata is unknown. This shared activity
+  result alone never releases the retained managed original.
 - Ordinary managed UNKNOWN observation re-enters that same recovery owner at its
   existing cadence. Inconclusive/live prechecks cannot cache a negative recovery
   result forever. Concurrent checks share one attempt; an accepted or ambiguous
