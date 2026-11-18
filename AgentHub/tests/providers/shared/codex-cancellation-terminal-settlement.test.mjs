@@ -184,10 +184,11 @@ test("accepted orphan recovery commits SQLite before one same-ID queued input wi
   traceStore = new CommandTraceWorkerStore({ databaseFile: tracesFile });
   await traceStore.initialize();
   const spans = await traceStore.readCommandTimeline(f.run.clientUserMessageId);
-  for (const stage of ["recovery-activity-before", "recovery-interrupt", "recovery-activity-after"]) {
+  for (const stage of ["recovery-activity-before", "recovery-activity-after"]) {
     assert.deepEqual(spans.filter(s => s.stage === stage).map(s => s.outcome),
-      ["started", stage === "recovery-interrupt" ? "failed" : "succeeded"]);
+      ["started", "succeeded"]);
   }
+  assert.equal(spans.some(s => s.stage === "recovery-interrupt"), false);
   assert.doesNotMatch(JSON.stringify(spans), /original annotated input|original-image|retained partial answer/);
 });
 

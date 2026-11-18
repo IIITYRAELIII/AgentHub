@@ -65,24 +65,25 @@ terminal.
   A fresh idle provider Thread with that exact interrupted turn is only eligibility.
   An exact retained `inProgress` turn is also eligible only with positive Hub
   ownership and an accepted/observed provider-start bound to the same turn: fresh
-  provider/native inactivity, definite rejection of the original exact interrupt,
+  provider/native inactivity,
   a second fresh inactivity check and unchanged ownership are required. Missing
   or failed snapshot/terminal persistence keeps admission. This does not infer a
   historical success, rewrite the rollout, replay the old prompt or authorize a
-  different run. Terminal persistence still precedes admission release.
+  different run. No automatic interrupt, provider resume, prompt reconstruction or
+  turn reexecution is used to obtain this proof (ADR-HUB-470 user override).
+  Terminal persistence still precedes admission release.
   A fresh `notLoaded` Thread is also eligible for that same retained accepted
   Hub-owned original, including its exact nonterminal rollout snapshot
   (ADR-HUB-470). It is not inactivity or terminal evidence: all fresh activity,
-  exact rejection, identity and persistence checks above still apply.
+  identity and persistence checks above still apply.
   Fresh activity resolution treats `notLoaded` plus successful native absence
   for the exact rollout as inactive; a live holder is active, failed/missing
   native proof or unknown/error Thread metadata is unknown. This shared activity
   result alone never releases the retained managed original.
-- Ordinary managed UNKNOWN observation re-enters that same recovery owner at its
+- Ordinary managed UNKNOWN observation re-enters that same read-only settlement owner at its
   existing cadence. Inconclusive/live prechecks cannot cache a negative recovery
-  result forever. Concurrent checks share one attempt; an accepted or ambiguous
-  interrupt remains fenced and cannot be repeated by polling. Its ACK is not a
-  terminal. Another live turn or external owner in the same Thread keeps the
+  result forever. Concurrent checks share one attempt and never send an interrupt
+  or resume RPC. An explicit Stop ACK is not a terminal. Another live turn or external owner in the same Thread keeps the
   original blocked; mailbox read/cancellation cannot establish provider terminal.
 - The canonical managed lifecycle may durably retire only an old local Codex Hub
   execution after trusted later system boot and exact canonical saved-run provenance
@@ -96,6 +97,9 @@ terminal.
   Missing/ambiguous proof, same boot, foreign/new identity, registry replacement
   and failed persistence retain the fence. PID absence/reuse never authorizes
   retirement or interruption. See ADR-HUB-392.
+  These historical local-only dispositions remain readable; automatic startup
+  no longer creates them after the ADR-HUB-470 user override. New interrupted
+  originals use the canonical terminal settlement above.
   A generic completion call cannot settle a locally retired UNKNOWN. Only an
   exact durable terminal with the original provider/Thread/turn/run identity
   and committed terminal revision may finalize it. Late nonterminal events keep

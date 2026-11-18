@@ -1,7 +1,5 @@
 import { pathInsideOrSame } from "../infrastructure/filesystem/config.mjs";
-import { codexThreadSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
 import { reconcileCodexThreadSubscriptions } from "../providers/codex/codex-thread-subscriptions.mjs";
-import { needsThreadResume } from "../providers/codex/codex-recovery.mjs";
 
 export function createProviderStartupComposition({
   config,
@@ -72,18 +70,18 @@ export function createProviderStartupComposition({
   async function attachCodexThread({ sendRpc: request = sendRpc } = {}) {
     const threadId = getThreadId();
     if (threadId) {
-      let resumed = false;
       try {
-        const result = await request("thread/resume", {
+        // Cold startup may load history, never resurrect provider execution.
+        // Only a newly submitted input may load a Thread for a new turn.
+        const result = await request("thread/read", {
           threadId,
-          ...codexThreadSandboxSettings(config.codexSandboxMode),
+          includeTurns: false,
         });
         if (!isWorkspaceThread(result.thread ?? {})) {
           const error = new Error("saved thread belongs to another project");
           error.code = "HUB_THREAD_WRONG_PROJECT";
           throw error;
         }
-        resumed = true;
         selectionStore.setTitle(await resolveResumedCodexThreadTitle(threadId, result.thread));
         applyCodexThreadSettings(threadId, result);
         await saveState();
@@ -94,25 +92,8 @@ export function createProviderStartupComposition({
         }).catch((error) => logger.warn?.("Cannot reconcile Codex thread subscriptions:", error.message));
         return true;
       } catch (error) {
-        logger.error("Cannot resume saved thread:", error.message);
-        if (resumed || (!needsThreadResume(error) && error.code !== "HUB_THREAD_WRONG_PROJECT")) {
-          // Successful resume followed by naming failure is not missing-Thread
-          // evidence and cannot authorize a replacement Thread.
-          return false;
-        }
-        const savedActiveRun = taskRuns.forTask({
-          provider: "codex",
-          projectRoot: getProjectRoot(),
-          threadId,
-        });
-        if (savedActiveRun) {
-          logger.error(`Keeping active task ${threadId}; recovery will inspect its saved turn.`);
-          return false;
-        }
-        // An idle executable replacement must not create/replace a user Thread.
-        // The next ordinary command retains the canonical resume/admission path.
-        if (request !== sendRpc) return false;
-        selectionStore.setThread(null, { provider: "codex" });
+        logger.error("Cannot read saved thread:", error.message);
+        return false;
       }
     }
     if (request !== sendRpc) return false;
