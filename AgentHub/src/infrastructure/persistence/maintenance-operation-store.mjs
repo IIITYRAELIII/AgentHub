@@ -199,9 +199,14 @@ export class MaintenanceOperationStore {
     `).get(String(kind ?? ""), String(streamId ?? ""), String(threadId ?? ""))));
   }
 
-  activeForReadonly({ kind, streamId, threadId } = {}) {
+  activeForReadonly({ kind, streamId, threadId, allowMissingTable = false } = {}) {
     const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
     try {
+      if (allowMissingTable) {
+        const schema = database.prepare("SELECT type FROM sqlite_schema WHERE name = 'maintenance_operations'").get();
+        if (!schema) return null;
+        if (schema.type !== "table") throw new Error("Invalid maintenance operation schema type");
+      }
       return operationFromRow(database.prepare(`
         SELECT operation_json FROM maintenance_operations
         WHERE kind = ? AND stream_id = ? AND thread_id = ?

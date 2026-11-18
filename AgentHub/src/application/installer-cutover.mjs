@@ -7,7 +7,7 @@ export function installerCutoverOperation(store, dataDir) {
   const root = path.resolve(dataDir, "..");
   const key = value => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
   const operation = store.activeForReadonly({ kind: "restart",
-    streamId: "agent-hub-installer", threadId: key(root) });
+    streamId: "agent-hub-installer", threadId: key(root), allowMissingTable: true });
   const binding = operation?.metadata?.autonomousInstaller;
   if (!binding || key(binding.runtimeRoot) !== key(root)
     || !["wait", "force"].includes(binding.mode)) return null;

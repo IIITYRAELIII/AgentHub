@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { installerCutoverOperation, installerCutoverSnapshot } from "../../src/application/installer-cutover.mjs";
 import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
+import { DatabaseSync } from "node:sqlite";
 
 function coordinatorPorts() {
   return { taskRuns: { forTask: () => null }, providers: { call: async () => {} },
@@ -72,4 +73,24 @@ test("wait snapshot retains unknown execution and pending admission instead of d
   assert.deepEqual([snapshot().activeCount, snapshot().unknownCount, snapshot().pendingAdmission], [2, 1, true]);
   release(); await pending;
   assert.equal(snapshot().pendingAdmission, false);
+});
+
+test("fresh runtime SQLite without maintenance schema is readonly absence, malformed schema still refuses", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-cutover-fresh-"));
+  try {
+    const dataDir = path.join(root, "data"); await mkdir(dataDir);
+    const file = path.join(dataDir, "runtime.sqlite");
+    const database = new DatabaseSync(file);
+    try {
+      database.exec("CREATE TABLE runtime_marker(value); INSERT INTO runtime_marker VALUES(71)");
+      const store = new MaintenanceOperationStore({ dataDir });
+      assert.equal(installerCutoverOperation(store, dataDir), null);
+      assert.equal(database.prepare("SELECT count(*) AS count FROM sqlite_schema WHERE name='maintenance_operations'").get().count, 0);
+      assert.equal(database.prepare("SELECT value FROM runtime_marker").get().value, 71);
+      database.exec("CREATE TABLE maintenance_operations(broken)");
+      assert.throws(() => installerCutoverOperation(store, dataDir));
+      database.exec("DROP TABLE maintenance_operations; CREATE VIEW maintenance_operations AS SELECT 1 AS broken");
+      assert.throws(() => installerCutoverOperation(store, dataDir), /schema type/);
+    } finally { database.close(); }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
