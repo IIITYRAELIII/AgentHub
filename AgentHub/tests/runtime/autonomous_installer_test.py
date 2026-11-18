@@ -33,6 +33,56 @@ def foreign_layout(root, entries):
 
 @unittest.skipUnless(os.name == "nt", "Windows recipient installer")
 class AutonomousInstallerTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node SQLite process fixture')
+    def test_owner_backup_persists_creator_intent_before_real_sqlite_copy_and_seals_storage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); root=base/'Hub'; (root/'data').mkdir(parents=True)
+            cache=base/'owned'; cache.mkdir(); (cache/'verified').mkdir()
+            (root/'config.json').write_text('{"marker":"durable-user-data"}',encoding='utf-8')
+            with closing(sqlite3.connect(root/'data/sample.sqlite')) as db:
+                db.execute('CREATE TABLE sample(value)'); db.execute('INSERT INTO sample VALUES(71)'); db.commit()
+            pkg=base/'library'; pkg.mkdir()
+            # Reuse actual maintained modules by a junction, not copied implementations.
+            subprocess.run([shutil.which('node'),'-e',"require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')",
+                str(SOURCE.parents[1]),str(pkg/'runtime')],check=True,capture_output=True,creationflags=0x08000000)
+            owner=cache/'installer-owner.mjs'; owner.write_text(installer.OWNER_MODULE,encoding='utf-8')
+            worker=cache/'install_release.py'; shutil.copyfile(SOURCE,worker)
+            identity=dict(pid=os.getpid(),outsideAllJobs=True,**installer.process_identity(installer.native_api()[2].GetCurrentProcess()))
+            request=dict(runtimeRoot=str(root),runtimeIdentity=installer._directory_identity(root),operationId='creator-original',
+                archive=str(base/'borrowed.zip'),release=None,installerSha256=installer.file_hash(worker))
+            installer._write_record(cache/'request.json',request); installer._write_record(cache/'worker-started.json',identity)
+            payload=cache/'verified/body'; payload.write_bytes(b'verified payload fixture')
+            installer._write_record(cache/'verified/package-manifest.json',dict(schema=1,repository='IIITYRAELIII/AgentHub',releaseId='new',
+                files=[dict(path='body',bytes=payload.stat().st_size,sha256=installer.file_hash(payload))]))
+            binding=dict(runtimeRoot=str(root),releaseId='new',workerPid=os.getpid(),installerSha256=request['installerSha256'],
+                archiveSha256='a'*64,packageManifestSha256=installer.file_hash(cache/'verified/package-manifest.json'),
+                storageScope=dict(cache=installer._directory_identity(cache),worker=identity,requestSha256=installer.file_hash(cache/'request.json')))
+            def run(action,value):
+                input_file=cache/('input-'+action+'.json'); installer._write_record(input_file,value)
+                result=subprocess.run([shutil.which('node'),str(owner),str(pkg),str(root),'creator-original',action,str(input_file)],
+                    capture_output=True,encoding='utf-8',timeout=30,creationflags=0x08000000)
+                self.assertEqual(result.returncode,0,result.stderr)
+                return json.loads(result.stdout)
+            run('create',binding)
+            copied=run('backup',dict(destination=str(cache/'backup'),python=sys.executable,installer=str(worker)))
+            attempt=copied['metadata']['autonomousBackupAttempt']; snapshot=copied['metadata']['autonomousBackup']
+            self.assertEqual(attempt['root']['ino'],str((cache/'backup').stat().st_ino))
+            self.assertIn('data'+os.sep+'sample.sqlite',[f['path'] for f in attempt['files']])
+            self.assertIn('ok',[f.get('integrity') for f in snapshot['files']])
+            # Public maintained library seals the actual producer output; no dispatch
+            # acknowledgement is needed after caller death when scope is bound.
+            script="""import {pathToFileURL} from 'node:url';
+const [source,root,cache]=process.argv.slice(1);
+const {MaintenanceOperationStore}=await import(pathToFileURL(source+'/src/infrastructure/persistence/maintenance-operation-store.mjs'));
+const {sealAutonomousInstallerStorage}=await import(pathToFileURL(source+'/src/infrastructure/persistence/autonomous-installer-storage.mjs'));
+const op=new MaintenanceOperationStore({dataDir:root+'/data'}).getReadonly('creator-original');
+console.log(JSON.stringify(await sealAutonomousInstallerStorage({runtimeRoot:root,operation:op,cache})));"""
+            result=subprocess.run([shutil.which('node'),'--input-type=module','-e',script,str(SOURCE.parents[1]),str(root),str(cache)],
+                capture_output=True,encoding='utf-8',timeout=30,creationflags=0x08000000)
+            self.assertEqual(result.returncode,0,result.stderr)
+            evidence=json.loads(result.stdout); self.assertEqual(len(evidence['artifacts']),1)
+            self.assertGreaterEqual(len(evidence['backup']['retentionFiles']),3)
+
     def test_flat_continuation_avoids_real_sqlite_backup_path_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             base=Path(temp); root=base/'hub'; root.mkdir()

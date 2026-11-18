@@ -155,11 +155,25 @@ export class MaintenanceOperationStore {
     try {
       const rows = database.prepare(`SELECT operation_id, operation_json FROM maintenance_operations
         WHERE kind='restart' AND operation_id > ? AND CASE WHEN json_valid(operation_json)
-          THEN json_type(operation_json, '$.metadata.packageBackup') IS NOT NULL ELSE 1 END
+          THEN (json_type(operation_json, '$.metadata.packageBackup') IS NOT NULL
+            OR json_type(operation_json, '$.metadata.autonomousInstaller') IS NOT NULL) ELSE 1 END
         ORDER BY operation_id LIMIT ?`).all(after, count + 1);
       const page = rows.slice(0, count);
       return { items: page.map(row => operationFromRow(row) ?? { operationId: row.operation_id, invalid: true }),
         cursor: page.at(-1)?.operation_id ?? after, done: rows.length <= count };
+    } finally { database.close(); }
+  }
+
+  listInstallerStorageEvidenceReadonly({ after = "", limit = 32 } = {}) {
+    const count = Math.min(32, Math.max(1, Math.trunc(limit) || 32));
+    const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
+    try {
+      const rows = database.prepare(`SELECT operation_id, operation_json FROM maintenance_operations
+        WHERE kind='storage-retention' AND stream_id='agent-hub-runtime'
+          AND CASE WHEN json_valid(operation_json) THEN json_type(operation_json, '$.metadata.installerStorageEvidence') IS NOT NULL ELSE 0 END
+          AND operation_id > ? ORDER BY operation_id LIMIT ?`).all(after, count + 1);
+      const page = rows.slice(0, count);
+      return { items: page.map(operationFromRow).filter(Boolean), cursor: page.at(-1)?.operation_id ?? after, done: rows.length <= count };
     } finally { database.close(); }
   }
 

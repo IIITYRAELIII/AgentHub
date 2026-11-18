@@ -1424,6 +1424,25 @@ if(action==='previous') {
 const {MaintenanceOperationStore} = await load('src/infrastructure/persistence/maintenance-operation-store.mjs');
 const store = new MaintenanceOperationStore({dataDir:path.join(root,'data')});
 let op = store.get(id); const value = input ? JSON.parse(await fs.readFile(input,'utf8')) : {};
+async function storageCheckpoint() {
+  let storage;
+  try { storage = await load('src/infrastructure/persistence/autonomous-installer-storage.mjs'); }
+  catch(error) { if(error.code==='ERR_MODULE_NOT_FOUND') return {autonomousStorageUnavailable:true}; throw error; }
+  try {
+    return {autonomousStorage:await storage.sealAutonomousInstallerStorage({runtimeRoot:root,operation:op,cache:path.dirname(process.argv[1])})};
+  } catch(error) {
+    // Failure to prove cleanup never changes the update/recovery outcome.
+    return {autonomousStorageUnavailable:true};
+  }
+}
+async function storageWake() {
+  try {
+    const storage=await load('src/infrastructure/persistence/autonomous-installer-storage.mjs');
+    const {withStorageRetentionLease}=await load('src/composition/storage-retention-composition.mjs');
+    await withStorageRetentionLease(path.join(root,'data'),()=>storage.wakeInstallerRetention(store));
+  }
+  catch { /* Periodic owner discovery retains its normal fallback cadence. */ }
+}
 async function assertReadyEndpoint(health, releaseId, hostPid, hostCreated) {
   if(!health?.live || !health?.ready || health.process?.releaseId!==releaseId)
     throw Error('Expected live Ready release');
@@ -1456,8 +1475,16 @@ if(action==='create') {
 } else if(action==='backup') {
   const {backupStoppedRuntime}=await load('src/infrastructure/persistence/runtime-maintenance-backup.mjs');
   const proof=await backupStoppedRuntime({runtimeRoot:root,destination:value.destination,
+    onCreated:async scope=>{
+      const {installerBackupIntent}=await load('src/infrastructure/persistence/autonomous-installer-storage.mjs');
+      const attempt=await installerBackupIntent(scope);
+      const saved=store.transition(id,{metadata:{autonomousBackupAttempt:attempt}},{expectedRevision:op.revision});
+      if(!saved.applied) throw Error('Backup creation checkpoint refused'); op=saved.operation;
+    },
     assertStopped:async()=>execFileSync(value.python,[value.installer,'--assert-stopped',root],{windowsHide:true,stdio:'pipe'})});
-  const changed=store.transition(id,{phase:'installer-backed-up',metadata:{autonomousBackup:proof}},{expectedRevision:op.revision});
+  const {sealRuntimeUpdateBackup}=await load('src/infrastructure/persistence/runtime-update-backup-retention.mjs');
+  const sealed=await sealRuntimeUpdateBackup(proof);
+  const changed=store.transition(id,{phase:'installer-backed-up',metadata:{autonomousBackup:sealed}},{expectedRevision:op.revision});
   if(!changed.applied) throw Error('Original backup checkpoint refused'); op=changed.operation;
 } else if(action==='restore') {
   const {createHash}=await import('node:crypto');
@@ -1477,9 +1504,10 @@ if(action==='create') {
     || health.process.releaseId!==value.previous.releaseId) throw Error('Previous Ready identity changed');
   await assertReadyEndpoint(health,value.previous.releaseId,value.oldProcesses[0].pid,value.oldProcesses[0].created);
   const changed=store.transition(id,{status:'failed',outcome:'rolled-back',phase:'previous-ready',
-    metadata:{autonomousRecovery:{releaseId:value.previous.releaseId,pid:health.process.pid,
+    metadata:{...await storageCheckpoint(),autonomousRecovery:{releaseId:value.previous.releaseId,pid:health.process.pid,
       hostPid:value.oldProcesses[0].pid,preservedRunning:true}}},{expectedRevision:op.revision});
   if(!changed.applied) throw Error('Previous Ready checkpoint refused'); op=changed.operation;
+  await storageWake();
 } else if(action==='ready' || action==='recovered') {
   const {waitForRuntimeReplacement}=await load('src/runtime/publication-readiness.mjs');
   const {processIsAlive}=await load('src/infrastructure/process/process-liveness.mjs');
@@ -1498,9 +1526,10 @@ if(action==='create') {
   const recovered=action==='recovered';
   const unresolved=recovered && value.retirementUnknown===true;
   const changed=store.transition(id,{status:unresolved?'reconciling':recovered?'failed':'succeeded',outcome:unresolved?'unknown':recovered?'rolled-back':'succeeded',phase:recovered?'previous-ready':'ready',
-    metadata:{[recovered?'autonomousRecovery':'autonomousReady']:{releaseId:value.releaseId,pid:lock.pid,hostPid:value.hostPid,
+    metadata:{...await storageCheckpoint(),[recovered?'autonomousRecovery':'autonomousReady']:{releaseId:value.releaseId,pid:lock.pid,hostPid:value.hostPid,
       ...(unresolved?{retirementUnknown:true}: {})}}},{expectedRevision:op.revision});
   if(!changed.applied) throw Error('Original Ready checkpoint refused'); op=changed.operation;
+  await storageWake();
 } else if(action==='unknown') {
   if(op && !['succeeded','failed'].includes(op.status)) op=store.transition(id,{status:'reconciling',outcome:'unknown',
     phase:'installer-recovery-required',metadata:{autonomousError:value}},{expectedRevision:op.revision}).operation;
@@ -1577,7 +1606,10 @@ def autonomous_worker(request_file):
         previous = owner("previous")
         _write_record(cache/"previous.json",previous)
         binding = dict(runtimeRoot=str(root),archiveSha256=file_hash(archive),releaseId=descriptor["releaseId"],previous=previous,
-                       installerSha256=request["installerSha256"],workerPid=os.getpid())
+                       installerSha256=request["installerSha256"],workerPid=os.getpid(),
+                       packageManifestSha256=file_hash(package/"package-manifest.json"),
+                       storageScope=dict(cache=_directory_identity(cache),worker=dict(pid=os.getpid(),outsideAllJobs=True,**process_identity(k.GetCurrentProcess())),
+                                         requestSha256=file_hash(request_file)))
         old = read_update_original(root,request["operationId"])
         if request.get("resumePartial"):
             if old != request["resumePartial"]["original"]: raise RuntimeError("Original changed before partial-stop continuation")

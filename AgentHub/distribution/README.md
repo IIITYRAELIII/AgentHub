@@ -173,3 +173,39 @@ The preserved public 2.1.7 archive/old installer are inputs, not files this Task
 overwrites. Deliver the new installer as a separately hashed artifact until the
 distribution owner updates normal download entrypoints. Historical cooperative
 package callers and versioned offline installer bytes retain their own protocol.
+
+## Installer storage lifecycle
+
+New packages record autonomous backup/storage evidence for the existing
+after-ready retention owner (ADR-HUB-471). All update backups share the existing
+limit of five, including protected recovery copies. Proven unused extracted
+payloads and owned downloads retire after terminal disposition and creator exit;
+borrowed ZIPs and compact original receipts stay. UNKNOWN is not cleanup consent.
+Progress/partial native deletion resumes on the same canonical storage child.
+
+The maintained application JSON CLI supports addressed migration. Feed one JSON
+object on stdin to `node runtime-maintenance.mjs installer-storage-register`:
+`runtimeRoot`, `operationId`, `cache`, `expectedOriginalSha256` (SHA256 of the
+canonical owner's JSON representation). It verifies terminal disposition,
+request/worker/script, archive/descriptor and physical ownership. It registers
+proof only; it does not delete or rewrite that source original. Old successful
+backups with a canonical directory reference also migrate automatically.
+
+For an explicitly accepted legacy partial root with no historical creation
+proof, supply `runtimeRoot` and `custody` instead: `previewFile`, `previewSha256`,
+`successorOperationId`, `decisionId`. The preview binds the whole failed original,
+target/root, file/directory identities and full hashes, zero effects and retired
+worker. This requires a real delivery-owner custody decision; it is not a scan.
+`custody.inspectOnly=true` verifies it without creating a receipt. Keep the
+preview outside the candidate directory. Automatic discovery never adopts it.
+
+`installer-storage-preview` takes `runtimeRoot` and optional `after`; it returns
+up to three candidate/eligible binding pairs without deleting. After integration,
+ordinary installed startup performs cleanup through the existing service. An
+addressed finite `installer-storage-cleanup` input supplies `runtimeRoot` and
+`approved:[{ownerId,candidate,binding}]` from that preview. Repeat the SAME binding
+for admitted partial progress/readback, not a new filesystem preview over an
+already partially deleted tree. Normal readiness/busy/lease fences still apply;
+an older live runtime without authenticated busy evidence safely defers this
+foreground call. The updated runtime's ordinary background path needs no manual
+command. Root owns actual local cleanup and public delivery.

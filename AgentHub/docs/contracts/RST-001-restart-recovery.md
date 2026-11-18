@@ -711,6 +711,25 @@ lock or start any runtime.
 
 ### Update backup retention (ADR-HUB-383)
 
+ADR-HUB-471 extends this SAME owner to autonomousInstaller/autonomousBackup.
+Autonomous and package backups share the existing five slots. Authenticated
+previous-ready rollback without unresolved retirement permits disposed-artifact
+cleanup; active/UNKNOWN resources stay protected. Before-copy physical namespace
+and planned names bind future partial backups. Whole exact descriptor/hash proof
+binds owned extracted payloads and downloads; borrowed inputs remain excluded.
+Retired creator, physical ancestry and native final-entry deletion are required.
+Original updates/history and compact receipts are preserved.
+
+Historical canonical complete backups can locate only their exact producer
+cache for verified migration into a NEW canonical storage child. A historical
+unrecorded partial requires explicit current delivery-owner custody, an exact
+current identity/hash preview, whole disposed original and a named verified
+successor/current pointer. That addressed route is never automatic adoption of
+unknown directories. It records contemporary custody rather than old creation
+proof. New files/root/current drift refuse. Remove it after those admitted legacy
+roots are retired. These bounded extensions supersede the older exclusions below
+only for positively bound installer artifacts, not arbitrary scratch/archives.
+
 The existing after-ready StorageRetentionService automatically converges to at
 most five confirmed update backups across their original scratch roots. Discovery
 uses bounded read-only pages of canonical restart originals, never a disk scan.
