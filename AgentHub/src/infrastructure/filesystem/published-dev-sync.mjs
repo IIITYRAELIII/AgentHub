@@ -74,7 +74,7 @@ export async function synchronizePublishedDev({ root, sourceRoot, devRoot, devBr
   }
   await afterDelivery();
   return { status: delivery ? "already_synchronized" : "synchronized", integrated: true,
-    repositoryRoot: sourceRoot, projectRoot: devRoot, branch: devBranch,
+    repositoryRoot: identity.repositoryRoot ?? sourceRoot, projectRoot: devRoot, branch: devBranch,
     devHeadBefore: identity.devCommit, mainCommit: identity.publishedRevision,
     headCommit: composition.head, tree: composition.tree, nativeRoot: composition.root };
 }

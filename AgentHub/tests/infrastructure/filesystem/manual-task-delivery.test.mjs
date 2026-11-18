@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +14,8 @@ import { HubMcpService } from "../../../src/application/hub-mcp-service.mjs";
 import { DesktopControlServer, readDesktopControlEndpoint, desktopControlEndpointFile, desktopControlSecretFile } from "../../../src/infrastructure/process/desktop-control.mjs";
 import { runtimeStatus } from "../../../src/runtime/runtime-manager.mjs";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
+import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+import { runtimeHostSourceHash } from "../../../src/infrastructure/process/runtime-host-source-identity.mjs";
 
 const sha = b => createHash("sha256").update(b).digest("hex");
 async function fixture(t) {
@@ -37,10 +39,10 @@ async function fixture(t) {
   await git(["update-ref", "refs/remotes/origin/main", base]);
   let observed = { pid: 1, running: true, ready: true, current: "manual", runningRelease: "manual", restartRequired: false };
   const ports = { verifyInstalled: async () => true, status: async () => ({ ...observed }) };
-  const install = async revision => {
+  const install = async (revision, sourceGit = git) => {
     const release = path.join(runtimeRoot, "releases/manual");
     await mkdir(release, { recursive: true });
-    const body = Buffer.from(await git(["show", `${revision}:AgentHub/app.mjs`], { rawOutput: true }));
+    const body = Buffer.from(await sourceGit(["show", `${revision}:AgentHub/app.mjs`], { rawOutput: true }));
     await writeFile(path.join(release, "app.mjs"), body);
     const raw = JSON.stringify({ releaseId: "manual", publicationRevision: revision,
       files: [{ path: "app.mjs", bytes: body.length, sha256: sha(body) }] });
@@ -402,4 +404,161 @@ test("read-only preview reconciliation refuses a real confirmed UNKNOWN even wit
   assert.equal(f.catalog.mcpOperation(original.request_id).status, "unknown");
   assert.equal(f.board.task(task.id).status, "open");
   assert.equal(await readFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "utf8"), "unsaved source\n");
+});
+
+
+async function standalonePublication(f, dataDir, { hostCRLF = false } = {}) {
+  const remote = path.join(f.root, "origin.git");
+  await f.git(["init", "--bare", "--initial-branch=main", remote]);
+  await f.git(["remote", "add", "origin", remote]);
+  await f.git(["push", "origin", "main"]);
+  const managedRoot = path.join(dataDir, "release-repositories");
+  const root = path.join(managedRoot, taskRepositoryKey(f.repo), "repository");
+  await mkdir(path.dirname(root), { recursive: true });
+  await f.git(["clone", "--no-local", "--no-hardlinks", remote, root]);
+  const git = (args, options = {}) => runTaskGitCommand(args, { ...options, cwd: root });
+  await git(["config", "core.autocrlf", "false"]);
+  const markerFile = path.join(root, ".git/agent-hub-release-clone.json");
+  const marker = { schemaVersion: 1, kind: "agent-hub-owned-release-clone", managedRoot,
+    primaryRoot: f.repo, primaryGitCommonDir: path.join(f.repo, ".git"),
+    releaseRoot: root, releaseGitCommonDir: path.join(root, ".git") };
+  await writeFile(markerFile, JSON.stringify(marker));
+  await writeFile(path.join(root, "AgentHub/app.mjs"), "export const version = 'published-standalone';\n");
+  if (hostCRLF) {
+    await mkdir(path.join(root, "AgentHub/RuntimeHost"), { recursive: true });
+    await mkdir(path.join(root, "AgentHub/VSCodeExtension/media"), { recursive: true });
+    await writeFile(path.join(root, ".gitattributes"), "*.cs text eol=crlf\n");
+    for (const file of ["AgentHub.RuntimeHost.cs", "AgentHub.IconBuilder.cs", "app.manifest"]) {
+      await writeFile(path.join(root, "AgentHub/RuntimeHost", file), "fixture Host source\nsecond line\n");
+    }
+    await writeFile(path.join(root, "AgentHub/VSCodeExtension/media/agent-hub-mark.png"), Buffer.from([137, 80, 78, 71, 0, 13, 10]));
+  }
+  const revision = await f.commit(root);
+  await git(["push", "origin", "main"]);
+  let delivery = await f.install(revision, git);
+  if (hostCRLF) {
+    for (const file of ["AgentHub.RuntimeHost.cs", "AgentHub.IconBuilder.cs"]) {
+      await unlink(path.join(root, "AgentHub/RuntimeHost", file));
+    }
+    await git(["checkout-index", "--force", "-u", "--all"]);
+    assert.equal(await git(["status", "--porcelain=v1"]), "");
+    assert.ok((await readFile(path.join(root, "AgentHub/RuntimeHost/AgentHub.RuntimeHost.cs"))).includes(Buffer.from("\r\n")));
+    const hash = Buffer.from(await runtimeHostSourceHash(path.join(root, "AgentHub")) + "\n");
+    const installed = path.join(f.runtimeRoot, "releases/manual");
+    await writeFile(path.join(installed, "AgentHub.RuntimeHost.source.sha256"), hash);
+    const manifest = JSON.parse(await readFile(path.join(installed, "runtime-manifest.json"), "utf8"));
+    manifest.files.push({ path: "AgentHub.RuntimeHost.source.sha256", bytes: hash.length, sha256: sha(hash) });
+    const raw = JSON.stringify(manifest);
+    await writeFile(path.join(installed, "runtime-manifest.json"), raw);
+    delivery = { ...delivery, manifestSha256: sha(raw) };
+  }
+  return { root, git, remote, revision, delivery, markerFile, marker };
+}
+
+test("manual completion proves the owned published standalone without changing protected primary or retained Task source", async t => {
+  const f = await publicFixture(t), published = await standalonePublication(f, f.taskGit.dataDir);
+  const wip = path.join(f.managed.projectRoot, "WIP/evidence.txt");
+  await mkdir(path.dirname(wip), { recursive: true }); await writeFile(wip, "keep original evidence");
+  const primary = async () => ({ head: await f.git(["rev-parse", "HEAD"]),
+    index: sha(await readFile(path.join(f.repo, ".git/index"))),
+    status: await f.git(["status", "--porcelain=v1"]), main: await f.git(["rev-parse", "main"]),
+    origin: await f.git(["rev-parse", "origin/main"]) });
+  const before = await primary();
+  await assert.rejects(f.read({ input: published.delivery }), /exact main\/origin/u);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "done-standalone", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "done-standalone", gitReferences: [{ projectRoot: f.repo,
+    branch: f.managed.branch, resultCommit: f.base }] });
+  const args = { taskId: f.task.id, completionMode: "manual_delivery", manualDelivery: published.delivery };
+  const preview = await f.lifecycle.complete({ ...args, operationId: "standalone-preview" });
+  assert.equal(preview.preview.manualDelivery[0].repositoryRoot, f.repo);
+  assert.equal(preview.preview.manualDelivery[0].delivery.publishedRepository.root, published.root);
+  assert.deepEqual(preview.preview.deleting, []);
+  const result = await f.lifecycle.complete({ ...args, operationId: "standalone-close", confirmCleanup: true,
+    expectedCleanupToken: preview.cleanupToken, originalArguments: { task_id: f.task.id, request_id: "standalone-close",
+      completion_mode: "manual_delivery", manual_delivery: published.delivery,
+      confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken } });
+  assert.equal(result.status, "done");
+  assert.equal(await readFile(wip, "utf8"), "keep original evidence");
+  assert.deepEqual(await primary(), before);
+  assert.equal((await f.taskGit.describe(f.task.id))[0].headCommit, f.base);
+});
+
+test("manual standalone compiled Host proof retains exact permitted checkout line endings", async t => {
+  const f = await publicFixture(t), published = await standalonePublication(f, f.taskGit.dataDir, { hostCRLF: true });
+  const git = published.git;
+  await assert.rejects(f.read({ input: published.delivery, git }), /compiled Host source differs/u);
+  const read = () => f.taskGit.withTaskLock(f.task.id, lease => f.taskGit.manualDeliveryPreviewOwned({
+    task: { ...f.task, gitReferences: [{ projectRoot: f.repo, resultCommit: f.base }] }, input: published.delivery, lease }));
+  assert.equal((await read()).manualDelivery[0].delivery.revision, published.revision);
+  const hashPath = path.join(f.runtimeRoot, "releases/manual/AgentHub.RuntimeHost.source.sha256");
+  const original = await readFile(hashPath);
+  await writeFile(hashPath, Buffer.from("0".repeat(64) + "\n"));
+  await assert.rejects(read(), /compiled Host source differs/u);
+  await writeFile(hashPath, original);
+  await writeFile(path.join(published.root, "AgentHub/RuntimeHost/AgentHub.RuntimeHost.cs"), "different Host input\n");
+  await assert.rejects(read(), /main\/origin\/current/u);
+});
+
+test("manual standalone authority refuses foreign markers/remotes, stale tracking and proof drift", async t => {
+  const f = await publicFixture(t), published = await standalonePublication(f, f.taskGit.dataDir);
+  const read = () => f.taskGit.withTaskLock(f.task.id, lease => f.taskGit.manualDeliveryPreviewOwned({
+    task: { ...f.task, gitReferences: [{ projectRoot: f.repo, resultCommit: f.base }] }, input: published.delivery, lease }));
+  for (const wrong of [{ primaryRoot: f.root }, { primaryGitCommonDir: f.root },
+    { releaseRoot: f.repo }, { managedRoot: f.root }, { kind: "foreign" }]) {
+    await writeFile(published.markerFile, JSON.stringify({ ...published.marker, ...wrong }));
+    await assert.rejects(read(), /registered primary/u);
+  }
+  await writeFile(published.markerFile, JSON.stringify(published.marker));
+  await published.git(["remote", "set-url", "origin", f.repo]);
+  await assert.rejects(read(), /origin differs/u);
+  await published.git(["remote", "set-url", "origin", published.remote]);
+  await published.git(["update-ref", "refs/remotes/origin/main", f.base]);
+  await assert.rejects(read(), /main\/origin/u);
+  await published.git(["update-ref", "refs/remotes/origin/main", published.revision]);
+  await f.git(["--git-dir", published.remote, "update-ref", "refs/heads/main", f.base]);
+  await assert.rejects(read(), /current remote/u);
+  await f.git(["--git-dir", published.remote, "update-ref", "refs/heads/main", published.revision]);
+  const original = f.taskGit.readManualDelivery;
+  f.taskGit.readManualDelivery = async args => {
+    const proof = await original(args);
+    await writeFile(published.markerFile, JSON.stringify({ ...published.marker, primaryRoot: f.root }));
+    return proof;
+  };
+  await assert.rejects(read(), /registered primary/u);
+  await writeFile(published.markerFile, JSON.stringify(published.marker));
+  f.taskGit.readManualDelivery = original;
+  await assert.rejects(f.taskGit.withTaskLock(f.task.id, lease => f.taskGit.manualDeliveryPreviewOwned({
+    task: { ...f.task, gitReferences: [{ projectRoot: f.repo, resultCommit: f.base }] }, input: f.input, lease })), /main\/origin/u);
+});
+
+test("manual standalone sync merges disjoint object stores through existing isolated owner and preserves primary and later dev", async t => {
+  const f = await fixture(t), dataDir = path.join(f.root, "data");
+  const service = new TaskGitWorkspaceService({ dataDir, runtimeRoot: f.runtimeRoot, recordTiming: () => {},
+    readPublication: async () => { throw Error("No fabricated publication history"); },
+    readManualDelivery: args => readManualTaskDelivery({ ...args, ...f.ports }) });
+  const dev = await service.prepareDev(f.repo);
+  await writeFile(path.join(dev.projectRoot, "AgentHub/app.mjs"), "export const version = 'later-dev';\n");
+  await writeFile(path.join(dev.projectRoot, "later.txt"), "retain Task work\n");
+  const devCommit = await f.commit(dev.projectRoot);
+  const published = await standalonePublication(f, dataDir);
+  await assert.rejects(f.git(["cat-file", "-e", `${published.revision}^{commit}`]));
+  await assert.rejects(published.git(["cat-file", "-e", `${devCommit}^{commit}`]));
+  const indexBefore = sha(await readFile(path.join(f.repo, ".git/index")));
+  const args = { projectRoot: f.repo, publishedRevision: published.revision, manualSync: {
+    operationId: "standalone-main-to-dev", workspaceId: "workspace", expectedDevCommit: devCommit, delivery: published.delivery } };
+  const conflict = await service.synchronizeMainIntoDev(args);
+  assert.equal(conflict.status, "review_required"); assert.equal(await f.git(["rev-parse", "dev"]), devCommit);
+  await writeFile(path.join(conflict.nativeConflictRoot, "AgentHub/app.mjs"),
+    "export const version = 'published-standalone';\nexport const later = 'later-dev';\n");
+  const resolved = await f.commit(conflict.nativeConflictRoot);
+  const result = await service.synchronizeMainIntoDev(args);
+  assert.equal(result.integrated, true); assert.equal(result.headCommit, resolved); assert.equal(result.repositoryRoot, f.repo);
+  await runTaskGitCommand(["merge-base", "--is-ancestor", devCommit, resolved], { cwd: dev.projectRoot });
+  await runTaskGitCommand(["merge-base", "--is-ancestor", published.revision, resolved], { cwd: dev.projectRoot });
+  assert.equal(await readFile(path.join(dev.projectRoot, "later.txt"), "utf8"), "retain Task work\n");
+  assert.equal(await f.git(["rev-parse", "HEAD"]), f.base);
+  assert.equal(await f.git(["rev-parse", "main"]), f.base);
+  assert.equal(await f.git(["rev-parse", "origin/main"]), f.base);
+  assert.equal(sha(await readFile(path.join(f.repo, ".git/index"))), indexBefore);
+  assert.equal((await service.synchronizeMainIntoDev(args)).headCommit, resolved);
 });

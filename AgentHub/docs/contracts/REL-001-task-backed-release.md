@@ -9,10 +9,20 @@ closing. Ready requires the existing authenticated live desktop control owner,
 matching PID/release and a stable endpoint, not a retained Ready lock alone.
 Preview/confirmation uses existing Task CAS. All Task Git artifacts,
 ignored WIP and dependency receipts are preserved. Cleanup is separate.
+When the registered primary remains behind an already published main, the
+configured Hub-owned standalone clone is the read-only delivery authority.
+Its existing marker must bind this primary/common directory and managed layout;
+its clean main/HEAD/origin and actual origin main must match the installed
+revision. A foreign remote/root, stale tracking, or changing identity refuses.
+Proof and confirmation retain that binding while primary HEAD/index/tree stay
+unchanged. Without an existing clone, the retained primary-only proof remains.
 The explicit main-to-dev service may bind the same proof to its existing
 isolated native sync journal and expected dev revision. Normal conflict
 resolution and fresh delivery fences precede dev CAS. Historical publication
 and UNKNOWN receipts retain their meaning; no release generation is made.
+Distinct dev and published object closures are combined by the existing owned
+object store and invocation-only math view, not by fetching into primary or
+altering its refs. The normal isolated journal still owns resolution and dev CAS.
 The native sync math binds every best merge base for both retained publication
 and verified manual policies, including criss-cross histories. It rejects a
 changed set rather than selecting one convenient base.

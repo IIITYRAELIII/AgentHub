@@ -23,7 +23,7 @@ import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
 import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, assertNativeMergeGraph, assertNativeMergedResults, nativeMergeBaseFields } from "./native-release-merge.mjs";
 import { synchronizePublishedDev } from "./published-dev-sync.mjs";
-import { readManualTaskDelivery } from "./manual-task-delivery.mjs";
+import { readManualTaskDelivery, readManualPublishedRepository } from "./manual-task-delivery.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { OwnedNativeObjectStore, nativeObjectStorageDescriptor } from "./owned-native-object-store.mjs";
 import { MaintenanceOperationStore } from "../persistence/maintenance-operation-store.mjs";
@@ -2696,20 +2696,27 @@ export class TaskGitWorkspaceService {
     this.#assertAvailable("synchronizeMainIntoDev");
     const expectedMainCommit = exactCommitId(publishedRevision, "published revision");
     const repoRoot = await repositoryRoot(projectRoot);
-    return this.#withClearDevLock(repoRoot, null, async (lease) => {
+    const synchronize = releaseLease => this.#withClearDevLock(repoRoot, null, async (lease) => {
       const currentLocalMain = await localMainCommit(repoRoot);
       if (manualSync) {
-        if (publishedSync || validatePublishedSync || currentLocalMain !== expectedMainCommit) throw Error("Manual sync authority differs");
-        const read = () => this.measureOperation("manual-delivery-proof", () => this.readManualDelivery({
-          runtimeRoot: this.runtimeRoot, input: manualSync.delivery,
-          git: (args, options = {}) => runGit(args, { ...options, cwd: repoRoot }) }));
+        if (publishedSync || validatePublishedSync) throw Error("Manual sync authority differs");
+        const read = async () => {
+          await releaseLease.assertOwned();
+          return this.#readManualDeliveryOwned(repoRoot, manualSync.delivery, [], lease);
+        };
         const delivery = await read();
         if (delivery.revision !== expectedMainCommit) throw Error("Manual sync revision differs from installed delivery");
-        return this.#synchronizePublishedMainOwned({ repoRoot, expectedMainCommit, currentLocalMain,
+        const sync = mathRoot => this.#synchronizePublishedMainOwned({ repoRoot, mathRoot, expectedMainCommit, currentLocalMain,
           publishedSync: manualSync, manualDelivery: delivery, lease,
           validatePublishedSync: async () => {
             if (JSON.stringify(await read()) !== JSON.stringify(delivery)) throw Error("Manual sync delivery changed");
           } });
+        if (samePath(delivery.publishedRepository.root, repoRoot)) return sync(repoRoot);
+        const objects = this.createNativeObjectStore({ sourceRoot: repoRoot, lease });
+        return objects.withInputMath({ sources: [
+            { sourceRoot: repoRoot, inputs: [exactCommitId(manualSync.expectedDevCommit, "expected dev revision")] },
+            { sourceRoot: delivery.publishedRepository.root, inputs: [expectedMainCommit] },
+        ] }, ({ repository }) => sync(repository));
       }
       let verifySynchronization = null;
       if (currentLocalMain !== expectedMainCommit) {
@@ -2745,9 +2752,11 @@ export class TaskGitWorkspaceService {
         lease,
       });
     }, { publishedSyncRecovery: !!(publishedSync || manualSync) });
+    return manualSync ? withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${taskRepositoryKey(repoRoot)}`)],
+      synchronize, { signal: taskOperationExecution()?.signal }) : synchronize(null);
   }
 
-  async #synchronizePublishedMainOwned({ repoRoot, expectedMainCommit, currentLocalMain,
+  async #synchronizePublishedMainOwned({ repoRoot, mathRoot = repoRoot, expectedMainCommit, currentLocalMain,
     publishedSync, validatePublishedSync, verifySynchronization, manualDelivery = null, lease }) {
     if (typeof validatePublishedSync !== "function" || !publishedSync.operationId
         || !publishedSync.workspaceId || !manualDelivery && (!Number.isSafeInteger(publishedSync.generation)
@@ -2772,7 +2781,7 @@ export class TaskGitWorkspaceService {
     if (!manualDelivery && (!publication?.generation || entry?.revision !== expectedMainCommit)) throw new Error("Published sync publication changed");
     const publicationIdentity = manualDelivery ? JSON.stringify(manualDelivery) : JSON.stringify({ generation: publication.generation, entry });
     const mergeBases = nativeMergeBaseFields(await this.#runOwned(
-      ["merge-base", "--all", devCommit, expectedMainCommit], { cwd: repoRoot, lease }));
+      ["merge-base", "--all", devCommit, expectedMainCommit], { cwd: mathRoot, lease, guardRepositoryRoot: repoRoot }));
     const identity = { policy: manualDelivery ? "manual-main-dev-sync-v1" : "published-main-dev-sync-v1", operationId: publishedSync.operationId,
       workspaceId: publishedSync.workspaceId, ...(manualDelivery ? { manualDelivery } : {
         generation: publishedSync.generation, candidateIdentity: publishedSync.candidateIdentity, tasks: publishedSync.tasks }),
@@ -2805,13 +2814,15 @@ export class TaskGitWorkspaceService {
           || await directoryIdentity(devRoot) !== devDirectory || await directoryIdentity(commonDir) !== commonDirectory) {
         throw new Error("Published sync publication, main or directory identity changed");
       }
-      const remote = await this.#runOwned(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], { cwd: repoRoot, lease });
-      await this.#runOwned(["merge-base", "--is-ancestor", expectedMainCommit, remote], { cwd: repoRoot, lease });
-      await this.#runOwned(["merge-base", "--is-ancestor", currentLocalMain, expectedMainCommit], { cwd: repoRoot, lease });
+      if (!manualDelivery?.publishedRepository || samePath(manualDelivery.publishedRepository.root, repoRoot)) {
+        const remote = await this.#runOwned(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], { cwd: repoRoot, lease });
+        await this.#runOwned(["merge-base", "--is-ancestor", expectedMainCommit, remote], { cwd: repoRoot, lease });
+      }
+      await this.#runOwned(["merge-base", "--is-ancestor", currentLocalMain, expectedMainCommit], { cwd: mathRoot, lease, guardRepositoryRoot: repoRoot });
     };
     return this.withOperationTrace({ operationId: publishedSync.operationId }, () =>
       measureTaskOperation("published-dev-sync", () => synchronizePublishedDev({
-        root, sourceRoot: repoRoot, devRoot, devBranch: this.devBranch, identity, readJson, writeJson,
+        root, sourceRoot: mathRoot, devRoot, devBranch: this.devBranch, identity, readJson, writeJson,
         fence,
         gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
           guardRepositoryRoot: repoRoot, timeoutMs: 300_000 }),
@@ -6576,6 +6587,34 @@ export class TaskGitWorkspaceService {
     return state;
   }
 
+  async #readManualDeliveryOwned(repoRoot, input, resultCommits, lease) {
+    return this.measureOperation("manual-delivery-proof", async () => {
+      // One process-tree guard owns one child at a time. The reader can request
+      // independent facts together; drain this invocation's children on refusal.
+      let gitTail = Promise.resolve();
+      const gitAt = (cwd, args, options = {}) => {
+        const next = gitTail.then(() => this.#runOwned(args, { ...options, cwd, lease,
+          guardRepositoryRoot: repoRoot }));
+        gitTail = next.catch(() => {});
+        return next;
+      };
+      const inspect = () => readManualPublishedRepository({ dataDir: this.dataDir,
+        repositoryRoot: repoRoot, revision: input?.revision, gitAt });
+      try {
+        await lease.assertOwned();
+        const publishedRepository = await inspect();
+        const delivery = await this.readManualDelivery({ runtimeRoot: this.runtimeRoot, input, resultCommits,
+          ...(!samePath(publishedRepository.root, repoRoot) ? { hostSourceRoot: path.join(publishedRepository.root, "AgentHub") } : {}),
+          git: (args, options) => gitAt(publishedRepository.root, args, options) });
+        if (JSON.stringify(await inspect()) !== JSON.stringify(publishedRepository)) {
+          throw Error("Manual published repository changed during verification");
+        }
+        await lease.assertOwned();
+        return { ...delivery, publishedRepository };
+      } finally { await gitTail; }
+    });
+  }
+
   async manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories = [] }) {
     await requiredGuardLease(lease).assertOwned();
     const references = task.gitReferences ?? [];
@@ -6598,9 +6637,11 @@ export class TaskGitWorkspaceService {
     for (const root of roots) {
       const results = references.filter(r => samePath(r.projectRoot, root)).map(r => r.resultCommit);
       const owned = workspaces.filter(w => samePath(w.repositoryRoot, root));
-      const delivery = await this.measureOperation("manual-delivery-proof", () => this.readManualDelivery({ runtimeRoot: this.runtimeRoot, input,
-        resultCommits: [...new Set([...results, ...owned.map(w => w.headCommit)])],
-        git: (args, options = {}) => runGit(args, { ...options, cwd: root }) }));
+      const delivery = await withInterprocessLocks([
+        path.join(this.dataDir, "locks", `release-git-${taskRepositoryKey(root)}`),
+      ], releaseLease => this.#readManualDeliveryOwned(root, input,
+        [...new Set([...results, ...owned.map(w => w.headCommit)])], combinedLease(lease, releaseLease)),
+      { signal: taskOperationExecution()?.signal });
       deliveries.push({ repositoryRoot: root, delivery, ...(!references.length ? { sourceKind: "owned-managed-source-without-test-ref" } : {}) });
     }
     for (const w of workspaces) w.ignoredPaths = String(await runGit([

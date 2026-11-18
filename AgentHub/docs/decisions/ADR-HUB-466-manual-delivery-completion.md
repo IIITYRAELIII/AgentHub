@@ -99,3 +99,41 @@ resolved and reviewed. Dev remains unchanged. After review, the owner repeats
 the exact same inputs; changed main/origin/runtime, expected dev or directory
 identity refuses. UNKNOWN uses the same journal and effect readback. This
 service input does not create a release tool or a public synchronization API.
+
+## Published standalone authority after a later manual installation
+
+The actual 2.1.9-r2 installation and owned release clone use commit 43d272db,
+while the protected registered primary remains at 1038b7d9 and lacks the new
+commit object. Its old origin tracking is not current remote publication proof.
+The existing primary-bound reader therefore refuses before completion, and
+the old sync cannot compute both input histories in either repository alone.
+
+The Task owner discovers the existing release-repositories layout/clone marker
+from configured dataDir and the registered repository key. It holds the existing
+release-git lease (before dev lease for sync), checks physical directory/marker
+bindings, matching primary/release origins, clean main checkout and exact
+main/origin plus fresh ls-remote origin main. It repeats this binding around
+the existing full installed source/Host/authenticated Ready verifier. No path
+is added to user inputs and no checkpoint/publication history is manufactured.
+An existing invalid/stale/foreign clone refuses rather than falling back to the
+old primary. The historical primary-only form remains for repositories with no
+managed clone. Git children requested concurrently by the reader are serialized
+only within its process-tree guard and joined before a refusal returns.
+
+For sync, the existing owned immutable-object store imports the exact dev closure
+from registered primary and exact published closure from the verified clone.
+Its existing lease-held invocation math view combines those objects. All native
+merge/base-set checks run there; the resulting isolated capture is self-contained.
+The normal sync journal and original operation identity, expected dev CAS,
+primary main/directory pin and repeated installation/origin proof remain.
+Only the existing dev delivery owner writes dev after resolution. Primary and
+published clone HEAD/index/tree/refs are retained. No raw primary repair, fake
+Test or new release pipeline is involved.
+
+The actual standalone checkout has CRLF-only Host C# source, while its Git blob
+uses LF. The old raw-Git-only Host build hash refused this legitimate installed
+package. The discovered clean clone supplies the compiled Host inputs: every
+physical input must first match its exact published Git blob through the existing
+sourceMatches line-ending/binary policy; their exact build hash must then equal
+the installed manifest-bound Host source hash. No hash/Host verification is
+skipped and no Git source code is executed as a verifier.
