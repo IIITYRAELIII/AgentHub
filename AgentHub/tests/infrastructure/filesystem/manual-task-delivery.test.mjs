@@ -127,11 +127,12 @@ async function reviewedSyncFixture(t) {
   // Only recipient transport is controlled. Authentication, origin content hash
   // and durable inter-Stream receipt are the actual public MCP owner, not a
   // callback claiming that a native review is valid.
-  hub.setStreamMessenger(async input => ({ accepted: true, id: input.clientUserMessageId, provider: "codex" }));
-  const send = async (binding, requestId, sender = "reviewer") => {
+  hub.setStreamMessenger(async input => ({ accepted: true, id: input.clientUserMessageId, provider: input.provider }));
+  const send = async (binding, requestId, sender = "reviewer", recipient = "operator") => {
     const text = `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>`;
-    const result = await hub.call("hub_stream_message_send", { context_token: hub.contextToken({ provider: "codex", threadId: sender }),
-      request_id: requestId, stream_id: streams.operator.id, mode: "steer", text, confirm_send: true });
+    const thread = catalog.activeThread(streams[sender].id);
+    const result = await hub.call("hub_stream_message_send", { context_token: hub.contextToken(thread),
+      request_id: requestId, stream_id: streams[recipient].id, mode: "steer", text, confirm_send: true });
     assert.equal(result.delivery.accepted, true);
     assert.equal(catalog.mcpOperation(requestId).status, "succeeded");
     return { requestId, text };
@@ -211,6 +212,20 @@ test("manual sync refuses authored/forged/stale/foreign review and an additional
   const f = await reviewedSyncFixture(t), binding = await f.binding(), original = await readFile(f.journalFile);
   const authored = await f.send(binding, "authored", "author");
   await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: authored }), /independent authority/);
+  for (const [name, settings] of [["foreignReviewer", { model: "claude-sonnet-4-5" }], ["foreignOperator", { releaseManager: true }]]) {
+    f.streams[name] = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId: binding.workspaceId, name, settings }));
+    await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: name, streamId: f.streams[name].id }));
+  }
+  const foreign = await f.send(binding, "genuine-foreign-provider", "foreignReviewer", "foreignOperator");
+  assert.equal(f.catalog.mcpOperation(foreign.requestId).provider, "claude");
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: foreign }), /independent authority/);
+  assert.deepEqual(await readFile(f.journalFile), original);
+  assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
+  // Provider equality follows the canonical current executor, not a Codex
+  // constant or its historical claim. Same-provider Claude is valid too.
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: "author-claude", streamId: f.streams.author.id }));
+  await verifyManualDevResolutionReview({ dataDir: f.dataDir, review: foreign, binding });
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "author-returned", streamId: f.streams.author.id }));
   const review = await f.send(binding, "independent");
   await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.reviewer.id, { model: "gpt-6-astra" }));
   await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /independent authority/);
@@ -258,6 +273,11 @@ test("manual sync rechecks genuine review authority before dev CAS and resumes t
   assert.deepEqual(journal.manualCompatibilityReview.review, review);
   await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.operator.id, { releaseManager: true }));
   f.service.runCommand = run;
+  // A stored proof must also re-read current executor authority on reopen.
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: "author-provider-drift", streamId: f.streams.author.id }));
+  await assert.rejects(f.service.synchronizeMainIntoDev(f.args), /independent authority/);
+  assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "author-provider-restored", streamId: f.streams.author.id }));
   assert.equal((await f.service.synchronizeMainIntoDev(f.args)).headCommit, f.commit);
   assert.equal(await readFile(path.join(f.dev.projectRoot, "later.txt"), "utf8"), "later Task remains\n");
 });

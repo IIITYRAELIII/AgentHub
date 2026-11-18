@@ -49,6 +49,9 @@ and Task stores read-only: the original MCP receipt must be successful, have
 accepted the message, bind its exact content hash and independent non-Astra
 same-provider sender to the current RM receiver and owning Task. No caller
 approval callback, scalar flag, new registry or new signature scheme is used.
+Provider equality is read from the owning Task's current executor Stream and
+active Thread, not inferred only from the reviewer and RM or a historical claim.
+This current executor binding is rechecked when a stored proof is reopened.
 
 The evidence binds the original manual identity/delivery, native namespace,
 raw original journal hash, issued index/stages, all best bases and parents,
