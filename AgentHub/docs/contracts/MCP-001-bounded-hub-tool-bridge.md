@@ -5,6 +5,13 @@ revision/release/manifest hash and the configured installation root. Existing
 authenticated mutation, original receipt, preview token and Task CAS remain
 owners. It closes a verified Done card while preserving its artifacts; WIP
 cleanup and publication history remain separate (ADR-HUB-466).
+Exact `retained_repositories` pins preserve unrepresented historical worktrees
+without claiming them delivered. RM Done may accept the same `manual_delivery`
+proof plus exact Task/status CAS for owned source without a Test reference.
+The original Test history is unchanged. `manual_preview_arguments` on existing
+reconciliation binds the exact old read-only manual Complete preview hash;
+only that form may be classified without a lifecycle mutation. A confirmed
+Complete cannot use preview classification or an absence-only inference.
 
 Release-only tools and their HTTP/CLI adapters are removed by ADR-HUB-463.
 No `hub_release_*` request is admitted. Historical receipts are preserved; no

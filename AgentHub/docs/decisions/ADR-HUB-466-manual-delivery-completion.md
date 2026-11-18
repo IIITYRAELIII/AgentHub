@@ -35,6 +35,28 @@ checkout; a normal reviewed resolution is consumed under the unchanged binding
 and fresh delivery checks. Partial delivery stays with its original journal.
 No generation, publication receipt, orchestrator or implicit adoption is added.
 
+The actual manual main/dev history has multiple best merge bases. The retained
+native virtual-base check accepts the manual policy as well as the historical
+publication policy, preserving the complete sorted base set and all original
+dev/result/operation bindings. No old identity is rewritten.
+
+Two actual completion forms also require explicit support. A canonical Task
+result may supersede a historical repository which must remain intact. The RM
+can supply exact `retained_repositories` managed-path/head pins for only those
+unrepresented repositories; they are recorded as retained, never published.
+Canonical results/current source heads cannot be excluded through this input.
+A manually delivered Task without a Test ref instead proves all owned managed
+heads against the actual installation. RM `hub_task_status_update` Done with
+`manual_delivery` and exact Task/status CAS uses the existing workflow journal,
+preserving empty Test refs. Complete still requires Done and its own preview.
+
+An old failed read-only manual Complete preview can have an UNKNOWN MCP receipt.
+Reconciliation may classify only its exact hash-bound original business form,
+with no confirm flag/token or other effect inputs. The read-only contract is
+positive evidence of no business mutation; missing lifecycle rows alone are
+not proof. Confirmed Complete originals continue to require their admitted
+lifecycle/outcome evidence and cannot use this classification.
+
 ## Validation
 
 `node --test tests/infrastructure/filesystem/manual-task-delivery.test.mjs`
