@@ -22,6 +22,10 @@ A live PID with a different birth retires the recorded worker only; denied or
 unavailable native lifetime proof retains it. Python's Windows volume identity
 uses its low Win32 volume-serial DWORD for comparison with Node/native deletion;
 the complete file index still agrees. Original Python evidence is preserved.
+PID reuse requires the birth pinned by canonical storageScope or the explicit
+current custody preview. A live legacy PID with only mutable cache birth records
+is conservatively retained; no timestamp or changed transport record proves its
+retirement. Positive process absence remains sufficient.
 
 Owned extracted package files require the exact package descriptor digest and
 whole declared hashes. The release downloader's own ZIP is a separate candidate;

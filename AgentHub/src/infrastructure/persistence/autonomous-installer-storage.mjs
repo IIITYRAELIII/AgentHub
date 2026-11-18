@@ -92,6 +92,10 @@ export async function wakeInstallerRetention(store) {
 export async function installerWorkerRetired(evidence) {
   if (!Number.isSafeInteger(evidence?.worker?.pid) || evidence.worker.pid <= 0) return false;
   if (!processIsAlive(evidence.worker.pid)) return true;
+  // Legacy mutable transport records did not pin birth on the canonical
+  // original. A mismatching cached birth must not retire a possibly live
+  // creator. New canonical scope / explicit current custody can bind it.
+  if (evidence.workerBirthBound !== true) return false;
   try { return await queryInstallerWorkerRetired(evidence.worker); } catch { return false; }
 }
 
@@ -119,6 +123,7 @@ export async function sealAutonomousInstallerStorage({ runtimeRoot, operation, c
   if (!(binding.workerPid === worker.pid && binding.installerSha256 === request.installerSha256) && !continuation)
     throw Error("installer-storage-worker-unbound");
   const evidence = { schema: 1, operationId: operation.operationId, runtime, cache: cacheRoot, worker,
+    workerBirthBound: Boolean(binding.storageScope?.worker),
     requestSha256: (await packageFile(path.join(cache, "request.json"))).sha256,
     installerSha256: request.installerSha256, borrowedArchive: request.archive ?? null, artifacts: [] };
   if (requireRetired && !await installerWorkerRetired(evidence)) throw Error("installer-storage-worker-live");
@@ -228,7 +233,7 @@ export async function registerLegacyInstallerCustody({ runtimeRoot, store, previ
   const backupInput = JSON.parse(await readFile(path.join(cache, "input-backup.json"), "utf8"));
   if (!["pid", "created", "image", "outsideAllJobs"].every(key => worker[key] === preview.retiredWorker?.[key])
     || request.operationId !== operation.operationId || !equalPath(request.runtimeRoot, runtime.file)
-    || !equalPath(backupInput.destination, target) || !await installerWorkerRetired({ worker }))
+    || !equalPath(backupInput.destination, target) || !await installerWorkerRetired({ worker, workerBirthBound: true }))
     throw Error("installer-custody-worker-unproven");
   for (const record of [...preview.directories, ...preview.files]) {
     if (record.relative !== "." && !safe(record.relative)) throw Error("installer-custody-invalid-path");
@@ -240,7 +245,7 @@ export async function registerLegacyInstallerCustody({ runtimeRoot, store, previ
   const snapshot = await tree(target, allowed, { root });
   const directories = preview.directories.filter(record => record.relative !== ".").map(record => path.normalize(record.relative));
   if (!isDeepStrictEqual([...snapshot.directories].sort(), directories.sort())) throw Error("installer-custody-directory-changed");
-  const evidence = { schema: 1, operationId: operation.operationId, runtime, cache: await installerDirectory(cache), worker,
+  const evidence = { schema: 1, operationId: operation.operationId, runtime, cache: await installerDirectory(cache), worker, workerBirthBound: true,
     custody: { kind: "explicit-legacy-partial-v1", decisionId, previewSha256, successorOperationId,
       successorSha256: installerStorageDigest(successor), currentSha256: pointer.sha256 },
     artifacts: [{ kind: "partial-backup", snapshot }] };

@@ -10,7 +10,7 @@ import { MaintenanceOperationStore } from "../../../src/infrastructure/persisten
 import { backupStoppedRuntime } from "../../../src/infrastructure/persistence/runtime-maintenance-backup.mjs";
 import { packageFile } from "../../../src/infrastructure/filesystem/runtime-package-target.mjs";
 import { installerDirectory, installerBackupIntent, installerStorageDigest, sealAutonomousInstallerStorage,
-  registerInstallerStorageEvidence } from "../../../src/infrastructure/persistence/autonomous-installer-storage.mjs";
+  registerInstallerStorageEvidence, installerWorkerRetired } from "../../../src/infrastructure/persistence/autonomous-installer-storage.mjs";
 import { registerLegacyInstallerCustody } from "../../../src/infrastructure/persistence/autonomous-installer-storage.mjs";
 import { RuntimeUpdateBackupRetention, sealRuntimeUpdateBackup } from "../../../src/infrastructure/persistence/runtime-update-backup-retention.mjs";
 import { StorageRetentionService } from "../../../src/application/storage-retention-service.mjs";
@@ -165,6 +165,9 @@ test("native worker proof distinguishes its retained birth from PID reuse withou
   const created = result.stdout.trim();
   assert.equal(await queryInstallerWorkerRetired({ pid: process.pid, created }), false);
   assert.equal(await queryInstallerWorkerRetired({ pid: process.pid, created: String(BigInt(created) - 1n) }), true);
+  assert.equal(await installerWorkerRetired({ worker: { pid: process.pid, created: String(BigInt(created) - 1n) }, workerBirthBound: false }), false,
+    "a changed mutable legacy birth is not canonical retirement authority");
+  assert.equal(await installerWorkerRetired({ worker: { pid: process.pid, created }, workerBirthBound: true }), false);
 });
 
 test("old successful original is automatically adopted from its actual ZIP and Python file identities", async t => {
