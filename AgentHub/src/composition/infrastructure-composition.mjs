@@ -428,6 +428,7 @@ export async function createHubInfrastructure({
     maxFiles: config.logMaxFiles, mirror: process.stdout.isTTY || process.stderr.isTTY,
   });
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
+    runtimeRoot: runtimeCommandRoot,
     contourExternalEffects, recordTiming: recordTaskTiming,
     readClaimCustodyNamespace: taskId => workspaceCatalogStore.claimCustodyNamespaceForTask(taskId) });
   const releaseGitWorkspaces = new TaskIntegrationGitService({ dataDir: config.dataDir, contourExternalEffects,

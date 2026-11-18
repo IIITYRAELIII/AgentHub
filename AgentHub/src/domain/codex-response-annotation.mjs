@@ -153,3 +153,13 @@ export function codexAssistantResponseProjection(value, references = []) {
 export function visibleCodexAssistantText(value) {
   return codexAssistantResponseProjection(value).text;
 }
+
+// Read-surface presentation only. Keep the canonical reasoning and its source
+// hashes intact; both live previews and addressed trace pages use this parser.
+export function assistantTraceAnnotationPresentation(group) {
+  const text = String(group?.reasoning ?? "");
+  const projection = codexAssistantResponseProjection(text);
+  return projection.text === text && !projection.responseAnnotationReferences.length
+    ? group
+    : { ...group, responseAnnotationPresentation: projection };
+}

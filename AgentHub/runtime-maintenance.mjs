@@ -5,6 +5,11 @@ import { runtimeStatus, verifyInstalledRuntime, installPreparedRuntime } from ".
 import { MaintenanceOperationStore } from "./src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { loadProjects } from "./src/infrastructure/filesystem/config.mjs";
 import { installReadyPackage } from "./src/runtime/ready-package-installation.mjs";
+import { registerInstallerStorageEvidence, registerLegacyInstallerCustody } from "./src/infrastructure/persistence/autonomous-installer-storage.mjs";
+import { RuntimeUpdateBackupRetention } from "./src/infrastructure/persistence/runtime-update-backup-retention.mjs";
+import { withStorageRetentionLease } from "./src/composition/storage-retention-composition.mjs";
+import { StorageRetentionService } from "./src/application/storage-retention-service.mjs";
+import { callDesktopControl } from "./src/infrastructure/process/desktop-control.mjs";
 
 // Application maintenance protocol, separate from release orchestration. The
 // application remains the sole owner of its pointer, installation and database.
@@ -24,6 +29,32 @@ export async function runtimeMaintenance(action, input) {
   if (action === "maintenance-read") {
     if (typeof input.operationId !== "string" || !input.operationId) throw new TypeError("Maintenance original is required");
     return new MaintenanceOperationStore({ dataDir: path.join(input.runtimeRoot, "data") }).getReadonly(input.operationId);
+  }
+  if (action === "installer-storage-register") {
+    const store = new MaintenanceOperationStore({ dataDir: path.join(input.runtimeRoot, "data") });
+    if (input.custody?.inspectOnly) return registerLegacyInstallerCustody({ ...input, ...input.custody, store });
+    return withStorageRetentionLease(store.dataDir ?? path.join(input.runtimeRoot, "data"),
+      () => input.custody ? registerLegacyInstallerCustody({ ...input, ...input.custody, store }) : registerInstallerStorageEvidence({ ...input, store }));
+  }
+  if (action === "installer-storage-preview") {
+    const store = new MaintenanceOperationStore({ dataDir: path.join(input.runtimeRoot, "data") });
+    const owner = new RuntimeUpdateBackupRetention({ runtimeRoot: input.runtimeRoot, store });
+    const page = await owner.list({ after: input.after ?? null, limit: 3 });
+    const previews = [];
+    for (const candidate of page.items) previews.push({ ownerId: owner.id, candidate, ...await owner.preview({ candidate }) });
+    return { ...page, previews, status: owner.status() };
+  }
+  if (action === "installer-storage-cleanup") {
+    const dataDir = path.join(input.runtimeRoot, "data"), store = new MaintenanceOperationStore({ dataDir });
+    const owner = new RuntimeUpdateBackupRetention({ runtimeRoot: input.runtimeRoot, store });
+    const service = new StorageRetentionService({ store, owners: [owner],
+      readContext: async () => {
+        const health = await callDesktopControl("runtime-health", {}, { runtimeRoot: input.runtimeRoot, timeoutMs: 5000 });
+        const pointer = JSON.parse(await readFile(path.join(input.runtimeRoot, "current.json"), "utf8"));
+        return { ready: health.live === true && health.ready === true && health.process?.releaseId === pointer.current,
+          busy: health.diagnostics?.storageRetention?.busy !== false, releaseId: pointer.current, isolated: false };
+      }, withLease: fn => withStorageRetentionLease(dataDir, fn) });
+    return { result: await service.runApproved(input.approved), status: service.status() };
   }
   throw new Error("Unsupported application maintenance action");
 }
