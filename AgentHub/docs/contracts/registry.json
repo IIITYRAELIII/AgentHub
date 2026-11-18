@@ -518,12 +518,9 @@
         "src/infrastructure/process/frozen-release-publication.mjs",
         "src/infrastructure/process/bootstrap-release-plan-control.mjs",
         "src/infrastructure/persistence/publication-*.mjs",
-        "src/infrastructure/persistence/test-file-checkpoint.mjs",
-        "src/infrastructure/persistence/test-input-fingerprint.mjs",
         "src/runtime/*publication*.mjs",
         "docs/decisions/ADR-0073-durable-release-operation.md",
         "docs/testing/release-operation-acceptance-matrix.md",
-        "test-suite.mjs",
         "tests/test-cache-inputs.json",
         "publish-all.mjs",
         "publish-changed.mjs",
@@ -675,7 +672,9 @@
         "src/domain/legacy-task-publication-*.mjs",
         "tests/application/tasks-without-release.test.mjs",
         "src/infrastructure/filesystem/manual-task-delivery.mjs",
-        "tests/infrastructure/filesystem/manual-task-delivery.test.mjs"
+        "tests/infrastructure/filesystem/manual-task-delivery.test.mjs",
+        "src/domain/native-resolution-input.mjs",
+        "src/infrastructure/persistence/manual-dev-resolution-review.mjs"
       ]
     },
     {

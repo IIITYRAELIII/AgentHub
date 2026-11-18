@@ -8,7 +8,8 @@ function unknown(message, cause) {
 // The existing native merge journal is also the delivery intent. No Task result,
 // publication receipt or second approval ledger is created by this owner.
 export async function synchronizePublishedDev({ root, sourceRoot, devRoot, devBranch, identity,
-  gitAt, readJson, writeJson, fence, beforeDelivery, afterDelivery }) {
+  gitAt, readJson, writeJson, fence, beforeDelivery, afterDelivery,
+  nativeResolutionReview = null, verifyManualReview = null }) {
   const git = (args, options) => gitAt(devRoot, args, options);
   const file = path.join(root, "merge.json");
   const previous = await readJson(file);
@@ -37,7 +38,7 @@ export async function synchronizePublishedDev({ root, sourceRoot, devRoot, devBr
     tasks: [{ taskId: `published:${identity.operationId}`,
       ...(Object.hasOwn(identity, "mergeBases") ? { mergeBases: identity.mergeBases } : { baseCommit: identity.mergeBase }),
       resultCommit: identity.publishedRevision }], identity, gitAt, readJson, writeJson,
-    deliveredHead: delivery?.commit ?? null });
+    deliveredHead: delivery?.commit ?? null, nativeResolutionReview, verifyManualReview });
   if (delivery && (delivery.commit !== composition.head || delivery.tree !== composition.tree)) {
     throw unknown("Published dev synchronization delivered binding changed");
   }

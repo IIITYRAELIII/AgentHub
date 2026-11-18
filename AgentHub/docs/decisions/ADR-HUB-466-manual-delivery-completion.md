@@ -35,6 +35,38 @@ checkout; a normal reviewed resolution is consumed under the unchanged binding
 and fresh delivery checks. Partial delivery stays with its original journal.
 No generation, publication receipt, orchestrator or implicit adoption is added.
 
+## Explicit reviewed manual-native compatibility
+
+The removed generic native-review gate left a recovery-only argument reader;
+it supplied no review input to manual-main-dev-sync-v1. Step-level owned
+resolution can preserve legitimate compatibility while the full selected
+consumer correctly refuses unaccounted automatic-path deltas. A step PASS is
+not full-content acceptance.
+
+Reuse the original native-merge-review-v1 inter-Stream message format for this
+explicit manual compatibility case only. Task Git reads the existing catalog
+and Task stores read-only: the original MCP receipt must be successful, have
+accepted the message, bind its exact content hash and independent non-Astra
+same-provider sender to the current RM receiver and owning Task. No caller
+approval callback, scalar flag, new registry or new signature scheme is used.
+
+The evidence binds the original manual identity/delivery, native namespace,
+raw original journal hash, issued index/stages, all best bases and parents,
+canonical automatic tree/inventory, candidate commit/tree, binary diff hash
+and every full before/after entry. The service accepts that separate evidence
+without changing manualSync business arguments or identity. The existing native
+journal stores the original review pair/binding before continuation and carries
+it through the full selected-content consumer and reopen. The consumer recomputes
+the same binding and reauthenticates its genuine receipt; omission cannot erase
+stored authority, and changing the candidate, context, entry or review refuses.
+Delivery fences recheck current authority before normal dev CAS/readback.
+
+Ordinary conflict-only sync/Test/Await keeps its existing behavior without a
+review requirement. The full proof still rejects arbitrary extra code, missing
+selected content, stale/foreign inputs and unaccepted additional changes.
+Compatibility acceptance does not publish the source or change an UNKNOWN
+effect disposition. The Root/application owner alone consumes the same original.
+
 The actual manual main/dev history has multiple best merge bases. The retained
 native virtual-base check accepts the manual policy as well as the historical
 publication policy, preserving the complete sorted base set and all original

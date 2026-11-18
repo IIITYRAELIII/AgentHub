@@ -23,6 +23,21 @@ and UNKNOWN receipts retain their meaning; no release generation is made.
 Distinct dev and published object closures are combined by the existing owned
 object store and invocation-only math view, not by fetching into primary or
 altering its refs. The normal isolated journal still owns resolution and dev CAS.
+When the issued manual merge needs additional Task compatibility beyond its
+automatic/conflict composition, the same service can receive a separate exact
+`nativeResolutionReview` (`requestId`, original `text`). Its existing
+`native-merge-review-v1` envelope must be a successful authenticated independent
+inter-Stream receipt to the current RM; author text or an imported artifact is
+not authority. No review is required for ordinary conflict-only merges.
+The bound operation/delivery/identity, all bases, original journal and issued
+stages, canonical automatic inventory, exact candidate/tree and complete
+before/after changes are recomputed. The full selected-content consumer accepts
+only that exact reviewed delta. Foreign/stale/changed/unaccepted input refuses.
+The same native journal retains this input before normal continuation; reopen
+cannot lose it by omitting an optional argument. Its real receipt is rechecked
+through full validation and delivery fences. Business identity and original
+manualSync arguments remain unchanged. No release worker, new approval ledger,
+path allowlist or fake publication evidence is introduced (ADR-HUB-466).
 The native sync math binds every best merge base for both retained publication
 and verified manual policies, including criss-cross histories. It rejects a
 changed set rather than selecting one convenient base.

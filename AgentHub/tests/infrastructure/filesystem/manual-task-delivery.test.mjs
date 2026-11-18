@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { readManualTaskDelivery } from "../../../src/infrastructure/filesystem/manual-task-delivery.mjs";
+import { createManualDevResolutionBinding, assertNativeMergedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
+import { verifyManualDevResolutionReview } from "../../../src/infrastructure/persistence/manual-dev-resolution-review.mjs";
 import { TaskGitWorkspaceService, runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
@@ -101,6 +103,163 @@ test("manual delivery verifies actual Git containment and rejects source/manifes
   await assert.rejects(f.read({ verifyInstalled: async () => {
     await writeFile(path.join(f.runtimeRoot, "current.json"), '{"current":"other"}'); return true;
   } }), /changed during/u);
+});
+
+async function reviewedSyncFixture(t) {
+  const f = await fixture(t), dataDir = path.join(f.root, "reviewed-data");
+  const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(dataDir, "journal.sqlite") }); await catalog.load();
+  const raw = new TaskBoardStore({ databaseFile: path.join(dataDir, "journal.sqlite") });
+  f.beforeCleanup.push(() => { raw.close(); catalog.close(); });
+  const workspace = await catalog.runMutation(() => catalog.createWorkspace({ name: "Manual sync", settings: {
+    workingDirectory: f.repo, releaseWorkflowEnabled: true,
+  } }));
+  const streams = {};
+  for (const [name, settings] of [["author", {}], ["reviewer", { model: "gpt-6.1-sol" }], ["operator", { releaseManager: true }]]) {
+    streams[name] = await catalog.runMutation(() => catalog.createStream({ workspaceId: workspace.id, name, settings }));
+    await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: name, streamId: streams[name].id }));
+  }
+  const task = raw.create({ text: "Retain Task compatibility", bucket: "workspace", workspaceId: workspace.id });
+  raw.claim(task.id, { workspaceId: workspace.id, streamId: streams.author.id, provider: "codex", threadId: "author",
+    turnId: "author-turn", operationId: "own-task" });
+  const board = new TaskBoardService({ store: raw, workspaceCatalog: catalog });
+  const hub = new HubMcpService({ workspaceCatalog: catalog, taskBoard: board, workLog: { threadTurns: () => [] },
+    attachmentDirectory: f.root, secret: "private-review-fixture", reconcilePendingOnStartup: false });
+  // Only recipient transport is controlled. Authentication, origin content hash
+  // and durable inter-Stream receipt are the actual public MCP owner, not a
+  // callback claiming that a native review is valid.
+  hub.setStreamMessenger(async input => ({ accepted: true, id: input.clientUserMessageId, provider: "codex" }));
+  const send = async (binding, requestId, sender = "reviewer") => {
+    const text = `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>`;
+    const result = await hub.call("hub_stream_message_send", { context_token: hub.contextToken({ provider: "codex", threadId: sender }),
+      request_id: requestId, stream_id: streams.operator.id, mode: "steer", text, confirm_send: true });
+    assert.equal(result.delivery.accepted, true);
+    assert.equal(catalog.mcpOperation(requestId).status, "succeeded");
+    return { requestId, text };
+  };
+  const service = new TaskGitWorkspaceService({ dataDir, runtimeRoot: f.runtimeRoot, recordTiming: () => {},
+    readManualDelivery: args => readManualTaskDelivery({ ...args, ...f.ports }) });
+  const dev = await service.prepareDev(f.repo);
+  await writeFile(path.join(dev.projectRoot, "left.txt"), "left Task\n");
+  const left = await f.commit(dev.projectRoot);
+  await writeFile(path.join(f.repo, "right.txt"), "published side\n");
+  const right = await f.commit();
+  const merge = (cwd, revision) => runTaskGitCommand(["-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid",
+    "merge", "--no-ff", "-m", "real criss-cross context", revision], { cwd });
+  await merge(dev.projectRoot, right); await merge(f.repo, left);
+  await writeFile(path.join(dev.projectRoot, "AgentHub/app.mjs"), "export const version = 'later-dev';\n");
+  await writeFile(path.join(dev.projectRoot, "later.txt"), "later Task remains\n");
+  const oldDev = await f.commit(dev.projectRoot);
+  await writeFile(path.join(f.repo, "AgentHub/app.mjs"), "export const version = 'published';\n");
+  const main = await f.commit(); await f.git(["update-ref", "refs/remotes/origin/main", main]);
+  assert.deepEqual((await f.git(["merge-base", "--all", oldDev, main])).split("\n").sort(), [left, right].sort());
+  const delivery = await f.install(main);
+  const args = { projectRoot: f.repo, publishedRevision: main, manualSync: {
+    operationId: "same-manual-sync", workspaceId: workspace.id, expectedDevCommit: oldDev, delivery } };
+  const issued = await service.synchronizeMainIntoDev(args), native = issued.nativeConflictRoot;
+  assert.equal(issued.status, "review_required");
+  await writeFile(path.join(native, "AgentHub/app.mjs"), "export const version = 'published';\nexport const later = 'later-dev';\n");
+  await writeFile(path.join(native, "compatibility.mjs"), "export const retainedTaskOwner = true;\n");
+  const commit = await f.commit(native), journalFile = path.join(native, "../merge.json");
+  const git = (a, opts) => runTaskGitCommand(a, { ...opts, cwd: native });
+  const binding = async () => {
+    const bytes = await readFile(journalFile), journal = JSON.parse(bytes);
+    return createManualDevResolutionBinding({ git, root: path.dirname(native), identity: journal.identity,
+      commit: await git(["rev-parse", "HEAD"]), taskId: task.id, originalJournalSha256: sha(bytes) });
+  };
+  return { ...f, dataDir, service, args, native, oldDev, dev, main, commit, journalFile, nativeGit: git, binding, send, catalog, task, streams };
+}
+
+test("manual sync authenticates exact independent review at the full consumer and retains it through SAME CAS recovery", async t => {
+  const f = await reviewedSyncFixture(t);
+  // The original full production selected consumer refuses the extra native
+  // compatibility contribution. This is not a fabricated private-export error.
+  await assert.rejects(f.service.synchronizeMainIntoDev(f.args), error => error.code === "RELEASE_SELECTED_CONTENT_MISSING");
+  assert.equal(await f.nativeGit(["rev-parse", "HEAD"]), f.commit);
+  assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
+  const binding = await f.binding(), review = await f.send(binding, "real-review");
+  const before = await readFile(f.journalFile), run = f.service.runCommand;
+  let lost = false;
+  f.service.runCommand = async (args, options) => {
+    const value = await run(args, options);
+    if (!lost && args[0] === "update-ref" && args[1] === "refs/heads/dev") {
+      lost = true; throw Object.assign(Error("lost reviewed sync CAS reply"), { processTreeStopped: true });
+    }
+    return value;
+  };
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), error => error.code === "PUBLISHED_DEV_SYNC_UNKNOWN");
+  assert.equal(lost, true);
+  const journal = JSON.parse(await readFile(f.journalFile));
+  assert.deepEqual(journal.manualCompatibilityReview, { review, binding });
+  assert.deepEqual(journal.identity, JSON.parse(before).identity);
+  f.service.runCommand = run;
+  // Omission cannot drop stored authority: the real read-only receipt verifier
+  // and full content consumer run again before same-original readback.
+  const result = await f.service.synchronizeMainIntoDev(f.args);
+  assert.equal(result.integrated, true); assert.equal(result.headCommit, f.commit);
+  assert.equal(await readFile(path.join(f.dev.projectRoot, "later.txt"), "utf8"), "later Task remains\n");
+  assert.equal(await readFile(path.join(f.dev.projectRoot, "compatibility.mjs"), "utf8"), "export const retainedTaskOwner = true;\n");
+  assert.equal(await f.git(["rev-parse", "main"]), f.main);
+  assert.equal(await f.git(["status", "--porcelain"]), "");
+  await assertNativeMergedResults({ git: f.nativeGit, baseCommit: journal.identity.devCommit,
+    tasks: [{ taskId: `published:${journal.identity.operationId}`, mergeBases: journal.identity.mergeBases, resultCommit: f.main }],
+    merges: journal.merges, head: f.commit, tree: binding.tree, identity: journal.identity,
+    manualCompatibilityReview: journal.manualCompatibilityReview, root: path.dirname(f.native),
+    verifyManualReview: (review, binding) => verifyManualDevResolutionReview({ dataDir: f.dataDir, review, binding }) });
+});
+
+test("manual sync refuses authored/forged/stale/foreign review and an additional delta before any dev promotion", async t => {
+  const f = await reviewedSyncFixture(t), binding = await f.binding(), original = await readFile(f.journalFile);
+  const authored = await f.send(binding, "authored", "author");
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: authored }), /independent authority/);
+  const review = await f.send(binding, "independent");
+  await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.reviewer.id, { model: "gpt-6-astra" }));
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /independent authority/);
+  await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.reviewer.id, { model: "gpt-6.1-sol" }));
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args,
+    nativeResolutionReview: { ...review, requestId: "not-admitted" } }), /independent authority/);
+  let variant = 0;
+  for (const patch of [{ tree: "a".repeat(40) }, { identityHash: "b".repeat(64) }, { nativeRoot: path.join(f.root, "foreign") },
+    { originalJournalSha256: "c".repeat(64) }, { changes: [] }]) {
+    const text = `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding: { ...binding, ...patch } })}</native-merge-review>`;
+    await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: { requestId: review.requestId, text } }));
+    const signedForeign = await f.send({ ...binding, ...patch }, `signed-other-context-${variant++}`);
+    await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: signedForeign }));
+    assert.deepEqual(await readFile(f.journalFile), original);
+  }
+  await writeFile(f.journalFile, Buffer.concat([original, Buffer.from("\n")]));
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /original capture changed/);
+  await writeFile(f.journalFile, original);
+  await writeFile(path.join(f.native, "not-reviewed.txt"), "must not be accepted\n");
+  await runTaskGitCommand(["add", "not-reviewed.txt"], { cwd: f.native });
+  await runTaskGitCommand(["-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "--amend", "--no-edit"], { cwd: f.native });
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /binding changed/);
+  assert.deepEqual(await readFile(f.journalFile), original);
+  assert.equal(await runTaskGitCommand(["rev-parse", "dev"], { cwd: f.repo }), f.oldDev);
+  assert.equal(await f.git(["rev-parse", "main"]), f.main);
+});
+
+test("manual sync rechecks genuine review authority before dev CAS and resumes the retained SAME proof", async t => {
+  const f = await reviewedSyncFixture(t), review = await f.send(await f.binding(), "delivery-review");
+  const run = f.service.runCommand;
+  let changed = false;
+  f.service.runCommand = async (args, options) => {
+    const value = await run(args, options);
+    if (!changed && args[0] === "fetch" && options.cwd === f.dev.projectRoot) {
+      changed = true;
+      await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.operator.id, { releaseManager: false }));
+    }
+    return value;
+  };
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /independent authority/);
+  assert.equal(changed, true);
+  assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
+  assert.equal(await f.git(["rev-parse", "main"]), f.main);
+  const journal = JSON.parse(await readFile(f.journalFile));
+  assert.deepEqual(journal.manualCompatibilityReview.review, review);
+  await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.operator.id, { releaseManager: true }));
+  f.service.runCommand = run;
+  assert.equal((await f.service.synchronizeMainIntoDev(f.args)).headCommit, f.commit);
+  assert.equal(await readFile(path.join(f.dev.projectRoot, "later.txt"), "utf8"), "later Task remains\n");
 });
 
 test("manual delivery requires authenticated live control matching the Ready PID/release and stable endpoint", async t => {

@@ -49,6 +49,7 @@ import {
   readTrustedSystemBootIdentity,
 } from "../process/system-boot-identity.mjs";
 import { publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
+import { verifyManualDevResolutionReview } from "../persistence/manual-dev-resolution-review.mjs";
 import { parseGitHubRemote, sourceOnlyGitPublication } from "../persistence/github-publication-baseline.mjs";
 import { readNativePublishedSelectedComposition, readOwnGitPublicationOrigin, readPublishedReleaseServiceGeneration } from "../persistence/task-publication-history.mjs";
 import {
@@ -57,6 +58,7 @@ import {
   TaskGitHistoryRejectedError,
   taskBranchName,
   taskRepositoryKey,
+  taskGitIdentityHash,
 } from "../../domain/task-git-reference.mjs";
 import {
   exactCrLfToLfNormalization,
@@ -2692,10 +2694,11 @@ export class TaskGitWorkspaceService {
   }
 
   async synchronizeMainIntoDev({ projectRoot, publishedRevision = null,
-    publishedSync = null, validatePublishedSync = null, manualSync = null } = {}) {
+    publishedSync = null, validatePublishedSync = null, manualSync = null, nativeResolutionReview = null } = {}) {
     this.#assertAvailable("synchronizeMainIntoDev");
     const expectedMainCommit = exactCommitId(publishedRevision, "published revision");
     const repoRoot = await repositoryRoot(projectRoot);
+    if (nativeResolutionReview && !manualSync) throw Error("Native compatibility review requires its original manual sync");
     const synchronize = releaseLease => this.#withClearDevLock(repoRoot, null, async (lease) => {
       const currentLocalMain = await localMainCommit(repoRoot);
       if (manualSync) {
@@ -2707,7 +2710,7 @@ export class TaskGitWorkspaceService {
         const delivery = await read();
         if (delivery.revision !== expectedMainCommit) throw Error("Manual sync revision differs from installed delivery");
         const sync = mathRoot => this.#synchronizePublishedMainOwned({ repoRoot, mathRoot, expectedMainCommit, currentLocalMain,
-          publishedSync: manualSync, manualDelivery: delivery, lease,
+          publishedSync: manualSync, manualDelivery: delivery, lease, nativeResolutionReview,
           validatePublishedSync: async () => {
             if (JSON.stringify(await read()) !== JSON.stringify(delivery)) throw Error("Manual sync delivery changed");
           } });
@@ -2757,7 +2760,7 @@ export class TaskGitWorkspaceService {
   }
 
   async #synchronizePublishedMainOwned({ repoRoot, mathRoot = repoRoot, expectedMainCommit, currentLocalMain,
-    publishedSync, validatePublishedSync, verifySynchronization, manualDelivery = null, lease }) {
+    publishedSync, validatePublishedSync, verifySynchronization, manualDelivery = null, lease, nativeResolutionReview = null }) {
     if (typeof validatePublishedSync !== "function" || !publishedSync.operationId
         || !publishedSync.workspaceId || !manualDelivery && (!Number.isSafeInteger(publishedSync.generation)
         || publishedSync.generation < 1 || !/^[a-f0-9]{64}$/u.test(publishedSync.candidateIdentity)
@@ -2806,6 +2809,13 @@ export class TaskGitWorkspaceService {
     const fence = async () => {
       await lease.assertOwned();
       await validatePublishedSync();
+      const retainedReview = manualDelivery && (await readJson(path.join(root, "merge.json")))?.manualCompatibilityReview;
+      if (retainedReview) {
+        if (!manualDelivery || retainedReview.binding?.identityHash !== taskGitIdentityHash(identity)
+            || retainedReview.binding?.nativeRoot !== path.resolve(root)) throw Error("Manual review delivery context changed");
+        await this.measureOperation("native:review-receipt", () => verifyManualDevResolutionReview({ dataDir: this.dataDir,
+          review: retainedReview.review, binding: retainedReview.binding }));
+      }
       await verifySynchronization?.();
       const current = manualDelivery ? null : await this.readPublication();
       const currentEntry = publicationStateRepositories(current ?? {}).find(item => samePath(item.root, repoRoot));
@@ -2823,6 +2833,9 @@ export class TaskGitWorkspaceService {
     return this.withOperationTrace({ operationId: publishedSync.operationId }, () =>
       measureTaskOperation("published-dev-sync", () => synchronizePublishedDev({
         root, sourceRoot: mathRoot, devRoot, devBranch: this.devBranch, identity, readJson, writeJson,
+        nativeResolutionReview,
+        verifyManualReview: (review, binding) => this.measureOperation("native:review-receipt", () =>
+          verifyManualDevResolutionReview({ dataDir: this.dataDir, review, binding })),
         fence,
         gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
           guardRepositoryRoot: repoRoot, timeoutMs: 300_000 }),
