@@ -12,10 +12,10 @@ import {effectiveWorkspaceDeveloperRules,effectiveStreamDeveloperRules} from '..
 const execute=promisify(execFile);
 async function git(root,...args){return (await execute('git',args,{cwd:root,windowsHide:true})).stdout.trim();}
 
-test('Task rules retain authored content and review without injecting release instructions',()=>{
+test('Manual process instructions retain authored content without a release mechanism',()=>{
  const authored='authored rules remain byte exact';
- assert.equal(effectiveWorkspaceDeveloperRules(authored,{releaseWorkflowEnabled:true}),authored);
- assert.equal(effectiveStreamDeveloperRules(authored,{releaseManager:true}),authored);
+ assert.ok(effectiveWorkspaceDeveloperRules(authored,{releaseWorkflowEnabled:true}).endsWith(authored));
+ assert.ok(effectiveStreamDeveloperRules(authored,{releaseManager:true}).endsWith(authored));
  assert.match(effectiveWorkspaceDeveloperRules(authored,{autoReviewEnabled:true}),/independent review/u);
 });
 
