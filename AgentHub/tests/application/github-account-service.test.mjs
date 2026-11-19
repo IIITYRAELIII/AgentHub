@@ -221,7 +221,8 @@ test("two separate Stream processes and internal Hub snapshot share profile, pre
   } finally { if (prior === undefined) delete process.env.AGENT_HUB_GITHUB_DIRECTORY; else process.env.AGENT_HUB_GITHUB_DIRECTORY = prior; }
   assert.equal(await git("show", "-s", "--format=%an <%ae>", "HEAD"), "Connected User <connected@example.invalid>");
   assert.equal(await git("cat-file", "commit", historical), historicalObject);
-  assert.equal(await git("config", "--global", "--list", "--show-origin"), globalBefore);
+  assert.ok(await git("config", "--global", "--list", "--show-origin") === globalBefore,
+    "Global Git configuration changed; values are intentionally omitted from diagnostics");
   assert.equal(await git("config", "--local", "user.name"), "Repository Owner");
   // Existing persistent provider env reads the updated file, without restart.
   await f.service.disconnect();
