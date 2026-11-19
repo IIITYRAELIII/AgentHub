@@ -281,6 +281,8 @@ const serverStateDot = document.querySelector("[data-server-state-dot]");
 const serverFacts = document.querySelector("[data-server-facts]");
 const serverComponents = document.querySelector("[data-server-components]");
 const serverAccounts = document.querySelector("[data-server-accounts]");
+const githubAccountPanel = document.querySelector("[data-github-account]");
+let githubLocalAccess = false;
 const serverConfig = document.querySelector("[data-server-config]");
 
 const dialog = document.querySelector("[data-text-dialog]");
@@ -11164,6 +11166,7 @@ function renderServerStatus(payload = {}) {
     component.note ? el("small", { text: component.note }) : null,
   ].filter(Boolean))) : [el("span", { class: "setting-empty", text: "Компоненты не определены" })]));
   renderServerAccounts(payload.accounts);
+  window.AgentHubGitHubAccountPanel?.render(githubAccountPanel, payload.githubAccount, emit, githubLocalAccess);
   /* Одно название вроде «Очередь входящих» ничего не объясняет, поэтому у
      плитки есть пояснение под значением и та же строка в подсказке. */
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
@@ -12302,6 +12305,15 @@ const AgentHub = {
   setServerStatus(payload) {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
+  },
+  setGitHubAccount(payload, error = "") {
+    if (payload) lastServerPayload = { ...(lastServerPayload ?? {}), githubAccount: payload };
+    window.AgentHubGitHubAccountPanel?.finish(githubAccountPanel, error);
+    window.AgentHubGitHubAccountPanel?.render(githubAccountPanel, lastServerPayload?.githubAccount, emit, githubLocalAccess);
+  },
+  setGitHubLocalAccess(value) {
+    githubLocalAccess = value === true;
+    window.AgentHubGitHubAccountPanel?.render(githubAccountPanel, lastServerPayload?.githubAccount, emit, githubLocalAccess);
   },
   /** Попытка и ссылка входа из локального ответа на запуск; снапшот их не содержит. */
   setProviderLoginUrl(provider, { attemptId = null, authUrl = null } = {}) {

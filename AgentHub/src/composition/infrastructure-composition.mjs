@@ -63,6 +63,9 @@ import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnost
 import { readPublicationState } from "../infrastructure/persistence/publication-state.mjs";
 import { createCommandTraceComposition, measureStartupBeforeTrace } from "./command-trace-composition.mjs";
 import { createPersistenceMutationCapabilities } from "./persistence-mutation-composition.mjs";
+import { GitHubAccountService } from "../application/github-account-service.mjs";
+import { prepareGitHubAgentTools } from "../infrastructure/process/github-agent-tools.mjs";
+import { withoutGithubAccountEnvironment } from "../infrastructure/filesystem/github-git-profile.mjs";
 
 const execFileAsync = promisify(execFile);
 const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
@@ -238,6 +241,7 @@ export async function createHubInfrastructure({
   });
   const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFile: instanceLockFile });
   await startupStep("instance-lock", () => instanceGuard.acquire());
+  let githubAccount;
   const sqliteRecoveryCoordinator = new SharedSqliteRecoveryCoordinator({
     databaseFile: journalDatabaseFile,
     instanceId: instanceGuard.instanceToken,
@@ -248,6 +252,17 @@ export async function createHubInfrastructure({
   let miniAppServer = null;
   let publicMiniAppServer = null;
   try {
+    // A child Hub owns its configured data root, not its launching agent's
+    // account. Consume our public include only; other Git inputs retain guards.
+    const environment = withoutGithubAccountEnvironment(process.env);
+    for (const key of Object.keys(process.env)) if (!(key in environment)) delete process.env[key];
+    Object.assign(process.env, environment);
+    githubAccount = new GitHubAccountService({ directory: path.join(config.dataDir, "github-account") });
+    await githubAccount.initialize();
+    await prepareGitHubAgentTools(githubAccount.vault.directory);
+    // One Hub process owns one data root. This public process locator is consumed
+    // by internal Git and provider spawn; it contains no credential or identity.
+    process.env.AGENT_HUB_GITHUB_DIRECTORY = githubAccount.vault.directory;
     // The same HTTP owner serves its startup shell/health while infrastructure
     // safety is pending. It opens no journal and accepts no business intake.
     agentHubRuntimeHealth.begin({ operations: [
@@ -612,6 +627,7 @@ export async function createHubInfrastructure({
   agentHubRuntimeHealth.completeOperation("infrastructure");
   return {
     trustedDeviceStore,
+    githubAccount,
     contourExternalEffects,
     codexRolloutContextSanitizer,
     workLogUsageStore,

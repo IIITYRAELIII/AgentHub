@@ -16986,3 +16986,7 @@ html:not([data-surface="mobile"]) .statistics-account-panel
 .statistics-aside .statistics-preferences-grid {
   grid-template-columns: minmax(0, 1fr);
 }
+.github-account { margin-top: 12px; min-width: 0; }
+.github-account small { overflow-wrap: anywhere; }
+.github-account label { display: grid; gap: 6px; min-width: 0; }
+.github-account input { width: 100%; min-width: 0; box-sizing: border-box; }

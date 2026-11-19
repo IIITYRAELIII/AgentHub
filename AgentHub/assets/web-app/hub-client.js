@@ -5402,6 +5402,31 @@ agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async ()
   applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Вход отменён");
 }));
+// Local control only, no durable command receipt or draft persistence for PATs.
+// Reuse the existing protected-local-session owner before collecting/submitting
+// a credential; remote command relays must never receive a token-bearing body.
+void localSessionReady.then(() => hasLocalWorkspaceFileAccess()).then(
+  allowed => agentHub.setGitHubLocalAccess(allowed),
+  () => agentHub.setGitHubLocalAccess(false),
+);
+agentHub.on("server:github-connect", ({ token }) => runAction(async () => {
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("connect-github-account", { token });
+    agentHub.setGitHubAccount(result?.githubAccount);
+  } catch (error) {
+    agentHub.setGitHubAccount(null, error.message);
+  }
+}));
+agentHub.on("server:github-disconnect", () => runAction(async () => {
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("disconnect-github-account", {});
+    agentHub.setGitHubAccount(result?.githubAccount);
+  } catch (error) {
+    agentHub.setGitHubAccount(null, error.message);
+  }
+}));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {
   /* Страница сохраняет всю карточку разом, поэтому принимаем и набор правок,
      и одиночную настройку. */

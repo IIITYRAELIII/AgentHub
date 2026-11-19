@@ -4,16 +4,25 @@ import { lstat } from "node:fs/promises";
 import path from "node:path";
 
 import gitInvocationPolicy from "./git-invocation-policy.json" with { type: "json" };
+import { githubProfileFile } from "./github-git-profile.mjs";
 
 // Arguments only: existing callers retain process, environment and custody ownership.
 // Native Git subcommands inherit command-scoped config, including index-pack.
 export function ownedGitArguments(args, { platform = process.platform, executable = "git" } = {}) {
-  if (platform !== "win32" || !/(?:^|[\\/])git(?:\.exe)?$/iu.test(executable)) return args;
+  if (!/(?:^|[\\/])git(?:\.exe)?$/iu.test(executable)) return args;
   const prefix = gitInvocationPolicy.win32;
   let command = 0;
   while (args[command]?.startsWith("-")) {
     command += ["-c", "-C", "--config-env", "--git-dir", "--work-tree", "--namespace", "--super-prefix"].includes(args[command]) ? 2 : 1;
   }
+  const profile = githubProfileFile(process.env);
+  // Last command-level include overrides the historical internal synthetic
+  // user defaults, without touching any user's global/repository Git config.
+  if (profile) {
+    args = [...args.slice(0, command), "-c", `include.path=${profile}`, ...args.slice(command)];
+    command += 2;
+  }
+  if (platform !== "win32") return args;
   // Git clears client command configuration when starting another repository's
   // upload-pack. Configure our newly created clone before its first fetch, so
   // its later owned server can read packs too; never copy source configuration.

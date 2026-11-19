@@ -1,5 +1,30 @@
 # REL-001 — Task Git integration
 
+## Connected GitHub account (ADR-HUB-254)
+
+The Hub owns one optional GitHub connection for its managed Git work. Protected
+local control verifies the account before saving its credential under current-user
+Windows DPAPI and the existing private-directory ACL. No credential enters a Task,
+command receipt, agent instruction, provider environment or ordinary diagnostic.
+The shared public profile contains only name/email and a generation-bound credential
+helper locator. GitHub permissions remain those of the user's access token.
+
+Internal commit/merge/commit-tree writers and both provider launch paths consume
+that same profile for new work. A persistent provider reads the latest atomic profile
+on each Git invocation; reconnect does not restart a turn. GitHub HTTPS credentials
+go only to Git's credential pipe; the gh launcher supplies its token only to its own
+GitHub CLI child and redacts accidental token output. Foreign hosts receive no Hub
+credential. HTTP 401/rejected credentials require reconnect; permission refusals are
+not retried publicly or treated as successful authentication.
+
+Global Git configuration, existing keys, original commit objects/authors/hashes,
+Task ownership/CAS and native content/history guards are unchanged. New synthetic
+archive anchors bind their Git identity once to the original archive receipt, so
+retry cannot change an already-created anchor after account reconnection. With no
+connection the previous Git defaults remain; this is not a server-side authorship
+enforcement or signature policy. Offline historical source projection is not a new
+interactive writer and must not re-attribute historical work to the current account.
+
 ## Verified manual delivery (ADR-HUB-466)
 
 RM Task Complete may explicitly verify a real manual installation instead of

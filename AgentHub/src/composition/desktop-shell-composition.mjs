@@ -592,6 +592,8 @@ export function createDesktopShellComposition({
       setAutostart: (params) => serverControlController.setAutostart(params),
       updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
       startProviderLogin: (params) => serverControlController.startProviderLogin(params),
+      connectGitHub: (params) => serverControlController.connectGitHub(params),
+      disconnectGitHub: () => serverControlController.disconnectGitHub(),
       submitProviderLoginCode: (params) => serverControlController.submitProviderLoginCode(params),
       cancelProviderLogin: (params) => serverControlController.cancelProviderLogin(params),
       readPreTurnInstructions: () => serverControlController.readPreTurnInstructions(),

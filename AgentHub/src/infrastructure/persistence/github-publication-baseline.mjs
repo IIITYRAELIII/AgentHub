@@ -1,4 +1,5 @@
 import path from "node:path";
+import { githubAccountFetch } from "../network/github-account-request.mjs";
 import { gitOutput, publicationStateRepositories, readPublicationState, writePublicationState } from "./publication-state.mjs";
 import { withPublicationLock } from "../process/publication-lock.mjs";
 
@@ -49,7 +50,7 @@ export function githubBaselineRequest(input = {}) {
 }
 
 async function defaultGithubApi(pathname) {
-  const response = await fetch(`https://api.github.com${pathname}`, {
+  const response = await githubAccountFetch(`https://api.github.com${pathname}`, {
     headers: { "Accept": "application/vnd.github+json", "User-Agent": "AgentHub-release-baseline" },
   });
   if (!response.ok) throw new Error(`GitHub API ${pathname} failed: ${response.status}`);

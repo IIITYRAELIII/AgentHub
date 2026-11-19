@@ -1,5 +1,13 @@
 # UI-001 — Canonical message projection
 
+The Server accounts panel projects the shared GitHub account's public identity and
+connected/disconnected/expired state. Connect, reconnect and disconnect use protected
+local control; remote clients cannot submit credentials. The password field stays in
+page memory until explicit submission and is cleared immediately on submission.
+Snapshot refresh does not erase an unsent input. Credentials are never persisted as
+a client draft, command receipt or shared snapshot. A failed request is displayed
+without reflecting the submitted token. See ADR-HUB-254.
+
 ## Addressed queue receipts and deferred Task presentation
 
 The recent receipt window is a bounded projection, not cancellation authority.

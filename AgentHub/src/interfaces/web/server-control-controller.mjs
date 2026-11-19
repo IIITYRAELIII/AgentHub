@@ -34,6 +34,7 @@ export class ServerControlController {
     persistConfiguration = updateServerConfiguration,
     createPageSnapshot = serverPageSnapshot,
     providerLogin = null,
+    githubAccount = null,
   } = {}) {
     if (!config) throw new TypeError("config is required");
     if (typeof desktopSnapshot !== "function") throw new TypeError("desktopSnapshot is required");
@@ -59,6 +60,7 @@ export class ServerControlController {
     this.persistConfiguration = persistConfiguration;
     this.createPageSnapshot = createPageSnapshot;
     this.providerLogin = providerLogin;
+    this.githubAccount = githubAccount;
   }
 
   async snapshot({ activeCount = this.activeCount(), restart = null } = {}) {
@@ -73,12 +75,23 @@ export class ServerControlController {
       restart: restart ?? this.restartState(),
       autostart: await this.readAutostart({ shortcutPath: this.shortcutPath }),
       accounts: this.providerLogin?.snapshot() ?? [],
+      githubAccount: await this.githubAccount?.snapshot() ?? { status: "unavailable", account: null },
     });
   }
 
   #requireProviderLogin() {
     if (!this.providerLogin) throw new Error("Вход в аккаунт недоступен в этой версии");
     return this.providerLogin;
+  }
+
+  async connectGitHub(params) {
+    if (!this.githubAccount) throw new Error("Подключение GitHub недоступно");
+    return { accepted: true, githubAccount: await this.githubAccount.connect(params?.token) };
+  }
+
+  async disconnectGitHub() {
+    if (!this.githubAccount) throw new Error("Подключение GitHub недоступно");
+    return { accepted: true, githubAccount: await this.githubAccount.disconnect() };
   }
 
   /** Starts the official provider sign-in; the page opens the returned link. */

@@ -137,6 +137,7 @@ export function createRuntimeOrchestrationComposition({
     workLogUsageStore,
     rateLimitHistoryStore,
     providerTurnTelemetryStore,
+    githubAccount,
     fileTransferService,
     taskReadStateStore,
     runtimeStateStore,
@@ -275,6 +276,7 @@ export function createRuntimeOrchestrationComposition({
     storageRetention,
     testContourJournalSync,
     providerLogin,
+    githubAccount,
   });
 
   ports.taskInteraction.bind(createTaskInteractionWiring({
@@ -379,6 +381,7 @@ export function createRuntimeOrchestrationComposition({
       failedUpdateStore,
       stopCodexAppServerTree,
       providerLogin,
+      githubAccount,
       miniAppLifecycle,
       desktopAttachments,
       desktopControlServer,

@@ -17,6 +17,21 @@ async function fixture(t) {
   return { base, root, data, destination: path.join(base, "backup") };
 }
 
+test("stopped backup includes encrypted GitHub account and connection/profile state", async t => {
+  const f = await fixture(t), account = path.join(f.data, "github-account");
+  await mkdir(account);
+  const entries = { "account.json": '{"secret":"synthetic-ciphertext-only"}',
+    "gitconfig": '[user]\nname = Connected User\nemail = connected@example.invalid\n',
+    "rejected-original.json": '{"id":"original-connection"}' };
+  for (const [name, value] of Object.entries(entries)) await writeFile(path.join(account, name), value);
+  const result = await owner.backupStoppedRuntime({ runtimeRoot: f.root, destination: f.destination, assertStopped: async () => {} });
+  assert.equal(result.retained.some(entry => entry.path === path.join("data", "github-account")), false);
+  for (const [name, value] of Object.entries(entries)) {
+    assert.equal(await readFile(path.join(f.destination, "data", "github-account", name), "utf8"), value);
+    assert.equal(await readFile(path.join(account, name), "utf8"), value);
+  }
+});
+
 test("declared backup preserves real Git WIP and dependency junctions in place while snapshotting custody and UNKNOWN", async (t) => {
   const f = await fixture(t);
   const repo = path.join(f.data, "task-worktrees", "task", "repo");

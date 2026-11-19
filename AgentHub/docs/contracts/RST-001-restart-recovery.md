@@ -296,6 +296,13 @@ before readiness, with the existing replacement deadline unchanged.
 
 ## Identity and owner
 
+The optional GitHub account owner pauses credential mutation intake at actual
+cutover and joins admitted validation/writes before instance release or stopped
+backup. Failed-cutover recovery resumes that same service; final shutdown disposes
+it. It never cancels provider turns. Its encrypted account/profile directory is
+part of the existing durable-state backup scope, retaining credentials and rejected
+connection identities across update/rollback without plaintext export (ADR-HUB-254).
+
 Provider sign-in admission pauses with reversible timer cutover and resumes with
 the restored runtime. Pending attempts retain their identity and local state
 through an early failed restart. Before provider transport closes, the existing
