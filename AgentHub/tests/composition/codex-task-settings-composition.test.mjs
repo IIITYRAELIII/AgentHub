@@ -66,7 +66,7 @@ test("Codex task settings persist accepted provider settings before snapshot sav
   assert.deepEqual(events, ["rpc", "remember", "save"]);
 });
 
-test("Codex task settings resume an unloaded thread before persisting the requested model", async () => {
+test("Codex task settings report an unloaded thread without resuming old execution or saving false success", async () => {
   const events = [];
   let attempts = 0;
   const composition = createCodexTaskSettingsComposition(dependencies({
@@ -79,13 +79,9 @@ test("Codex task settings resume an unloaded thread before persisting the reques
     resumeCodexThread: async ({ threadId }) => events.push(`resume:${threadId}`),
   }));
 
-  await composition.updateActiveCodexThreadSettings();
+  await assert.rejects(composition.updateActiveCodexThreadSettings(), /thread not found/);
 
   assert.deepEqual(events, [
     "thread/settings/update:fake-codex",
-    "resume:thread-1",
-    "thread/settings/update:fake-codex",
-    "remember",
-    "save",
   ]);
 });

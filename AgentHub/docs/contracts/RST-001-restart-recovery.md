@@ -347,20 +347,25 @@ Provider recovery read, reconnect or reattach failure is likewise unknown: a
 generic recovery exception and a local `interrupted` bookkeeping decision do
 not create provider terminal evidence or release the manual session. Only the
 provider/process completion owner may commit the exact terminal outcome.
-The narrowly scoped ADR-0125 recovery interruption uses that same cancellation
-and terminal owner after fresh provider/native inactivity and exact interrupt
-rejection; a startup/read exception or idle status alone still cannot release.
+The ADR-HUB-470 user override removes automatic provider-turn recovery effects.
+The existing cancellation/terminal owner settles an exact interrupted original
+after fresh provider/native inactivity before and after its exact snapshot;
+a startup/read exception or idle status alone still cannot release.
 ADR-HUB-392 extends its eligibility to an exact retained `inProgress` original
 only when its accepted/observed provider-start and positive Hub ownership agree.
 Ordinary UNKNOWN observation retries that owner's prechecks without a new timer;
 live/unknown evidence does not permanently suppress a later authoritative check.
-An accepted or uncertain interrupt is not repeated, and no ACK releases admission.
+Automatic settlement never sends an interrupt or resume; no ACK releases admission.
 A live external/current turn in the same Thread still blocks recovery.
 For a canonically accepted exact Hub-owned original, recovery reads fresh Thread
 metadata and its exact rollout snapshot without requiring paginated full history.
 An exact UNKNOWN snapshot grants eligibility only; missing/foreign snapshots,
 live/unknown provider or native activity still cannot settle or release the run.
 The existing tracer records the original recovery read start/outcome without payload.
+Fresh `notLoaded` metadata also permits this guarded recovery for an exact
+retained accepted Hub-owned original (ADR-HUB-470). Not being loaded in this
+App Server is not evidence of inactivity elsewhere or a terminal outcome.
+Unknown/error metadata and missing acceptance keep the original fenced.
 
 After a trusted later system boot, the existing canonical managed lifecycle has
 a separate local-only disposition (ADR-HUB-392). Only an exact Hub-owned accepted
@@ -377,7 +382,9 @@ released. No provider terminal, command settlement, history rewrite or provider
 interrupt follows. Retained original input and exact turn lookup survive reopen,
 including loss of the following runtime snapshot save. A changed registry/identity,
 same boot, unavailable proof or failed disposition write retains ownership.
-The same recovery entrypoint invokes it; there is no second reconciler or timer.
+These historical local-only dispositions remain readable. New automatic startup
+does not create them: exact interrupted runs use the canonical terminal owner
+and the fresh stopped-process proof above. There is no second reconciler or timer.
 Queue wake rechecks fresh external/current authority and cannot send concurrently
 to a live newer desktop writer. Payload-free proof/persistence trace spans reuse
 the original command identity and existing durable trace owner.
@@ -517,9 +524,9 @@ the original command identity and existing durable trace owner.
 - An exact Codex turn whose rollout has only `task_started` remains unknown
   across reconnect and restart, even after the promptless grace period or an
   App Server `interrupted` projection. The original run and queue lane remain
-  owned unless the separately proven local-only reboot disposition above releases
-  old Hub admission. UNKNOWN provider outcome remains; no terminal, interruption
-  or new provider effect is fabricated.
+  owned until the exact terminal or the fresh native/provider stopped proof
+  above permits canonical interrupted completion. Age and a local marker do not
+  grant it. No prompt replay, automatic old-turn resume or rollback is performed.
 - Before provider discovery finishes, the initial catalog resolves retained
   Threads against existing visible Workspace/Stream bindings read-only. It does
   not expose an unbound historical Thread as a synthetic Stream. Discovery
@@ -857,6 +864,24 @@ security context are explicit v1 bounds; other layouts/authority refuse.
 ## Retained source after completed generation retirement (ADR-HUB-385)
 
 ### Autonomous explicitly requested recipient update (ADR-HUB-467)
+
+The common recipient entry permanently offers "Дождаться текущих ходов"
+(`--mode wait`) and "Завершить все ходы" (`--mode force`). The selected mode is
+part of the immutable request and maintenance binding through independent
+worker dispatch. There is no version-specific wrapper or implicit wait-to-force
+transition. Without an explicit CLI mode an interactive entry offers both
+buttons; cancellation and noninteractive missing choice admit no dispatch.
+
+Wait requires a live authenticated selected runtime with the fenced-drain
+protocol. Its original closes new provider admission, while the same existing
+run owner accounts for current runs and in-flight admissions. The worker waits
+for exact-process, same-original positive idle. Unknown activity, changed
+identity or unavailable protocol refuses before native retirement; this refusal
+does not restore or stop the old Hub. Old versions lacking fenced drain retain
+the separately explicit force option. They are not reported as safely drained.
+Force uses the existing selected native handles and remains independent of old
+API availability. Neither mode resumes/replays an old provider turn. History,
+queued inputs, native/foreign guards, backup/rollback and real Ready remain.
 
 The standalone recipient installer supersedes the legacy Enter/manual-stop
 window above. The requested update explicitly permits force stopping the

@@ -1,9 +1,7 @@
-"""Thin stdlib bootstrap for a versioned, checksum-pinned ready Hub package.
+"""Standalone verified Hub replacement, with explicit wait-current/force modes.
 
-No Git, npm, build or provider operation. Ordinary install/rollback never starts
-Hub. Explicit package-update delegates original-bound retirement, backup,
-install and readiness to the existing native maintenance owner.
-Copy only this file and its installation guide to Utilities at managed cutover.
+The independent worker owns retirement, backup, installation and checked Ready.
+No provider turn is resumed or replayed by this installer.
 """
 from __future__ import annotations
 
@@ -1405,6 +1403,51 @@ def assert_launched(root, pid, created, web=None):
     finally: k.CloseHandle(handle)
 
 
+INSTALL_MODES = {"wait": "Дождаться текущих ходов", "force": "Завершить все ходы"}
+
+
+def choose_install_mode(value, chooser=None):
+    if value is not None:
+        if value not in INSTALL_MODES: raise ValueError("Unknown installation mode")
+        return value
+    if chooser is not None:
+        value = chooser()
+        if value not in INSTALL_MODES: raise ValueError("Installation mode was not selected")
+        return value
+    if not sys.stdin.isatty():
+        raise ValueError("Choose --mode wait (Дождаться текущих ходов) or --mode force (Завершить все ходы)")
+    import tkinter as tk
+    window = tk.Tk(); window.title("Обновление Agent Hub")
+    selected = []
+    tk.Label(window, text="Как остановить выбранную установку перед обновлением?", padx=24, pady=16).pack()
+    def select(mode):
+        selected.append(mode); window.destroy()
+    for mode, label in INSTALL_MODES.items():
+        tk.Button(window, text=label, command=lambda mode=mode: select(mode), width=38, pady=8).pack(padx=24, pady=6)
+    window.mainloop()
+    if not selected: raise ValueError("Installation mode was not selected; update not dispatched")
+    return selected[0]
+
+
+def wait_for_current_turns(probe, operation_id, expected, record=lambda value: None, delay=time.sleep):
+    """Observe the existing run/admission owner; never infer idle from failure."""
+    while True:
+        health = probe()
+        state = health.get("installerCutover") or {}
+        if (not health.get("live") or not health.get("ready") or health.get("process") != expected
+                or state.get("protocol") != 1 or state.get("operationId") != operation_id
+                or state.get("mode") != "wait" or state.get("admissionClosed") is not True):
+            raise RuntimeError("Cannot confirm waiting installation identity/admission; no force stop authorized")
+        counts = [state.get("activeCount"), state.get("unknownCount")]
+        if any(type(count) is not int or count < 0 for count in counts) or type(state.get("pendingAdmission")) is not bool:
+            raise RuntimeError("Current turn state is unavailable; select force explicitly if interruption is wanted")
+        record(state)
+        if state["unknownCount"]:
+            raise RuntimeError("Current turn activity is unknown; wait cannot become force")
+        if not state["activeCount"] and not state["pendingAdmission"]: return state
+        delay(1)
+
+
 OWNER_MODULE = r'''
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -1466,9 +1509,26 @@ async function assertReadyEndpoint(health, releaseId, hostPid, hostCreated) {
   }
   execFileSync(value.python,args,{windowsHide:true,stdio:'pipe'});
 }
-if(action==='create') {
-  if(!op) op=await mutate(()=>store.create({operationId:id,kind:'restart',streamId:'agent-hub-installer',threadId:root,
-    status:'running',phase:'installer-stopping',metadata:{autonomousInstaller:value}}));
+if(action==='wait-probe') {
+  const {callDesktopControl}=await load('src/infrastructure/process/desktop-control.mjs');
+  console.log(JSON.stringify(await callDesktopControl('runtime-health',{}, {runtimeRoot:root,timeoutMs:5000})));
+  process.exit(0);
+} else if(action==='wait-failed') {
+  if(!op || op.phase!=='installer-waiting' || op.metadata?.autonomousInstaller?.mode!=='wait')
+    throw Error('Not a pre-stop waiting original');
+  const changed=await mutate(()=>store.transition(id,{status:'failed',outcome:'wait-refused',phase:'installer-wait-refused',
+    metadata:{autonomousWaitError:value}},{expectedRevision:op.revision}));
+  if(!changed.applied) throw Error('Waiting refusal checkpoint changed'); op=changed.operation;
+} else if(action==='wait-complete') {
+  if(!op || op.phase!=='installer-waiting' || op.metadata?.autonomousInstaller?.mode!=='wait')
+    throw Error('Not a waiting original');
+  const changed=await mutate(()=>store.transition(id,{phase:'installer-stopping',metadata:{autonomousWait:value}},
+    {expectedRevision:op.revision}));
+  if(!changed.applied) throw Error('Waiting checkpoint changed'); op=changed.operation;
+} else if(action==='create') {
+  if(!op) op=await mutate(()=>store.create({operationId:id,kind:'restart',streamId:'agent-hub-installer',
+    threadId:value.mode && process.platform==='win32'?root.toLowerCase():root,
+    status:'running',phase:value.mode==='wait'?'installer-waiting':'installer-stopping',metadata:{autonomousInstaller:value}}));
 } else if(action==='resume-prestop' || action==='resume-partialstop') {
   const {isDeepStrictEqual}=await import('node:util');
   if(!isDeepStrictEqual(op,value.expectedOriginal)) throw Error('Original changed before resume CAS');
@@ -1571,6 +1631,7 @@ def autonomous_worker(request_file):
     mutex = k.CreateMutexW(None, False, "Local\\AgentHubInstaller-"+hashlib.sha256(str(root).lower().encode()).hexdigest())
     if not mutex: raise c.WinError(c.get_last_error())
     acquired = False; admitted = False; previous = None; install_started = False; descriptor = None
+    waiting = False
     retirement_scope = {}
     environment = clean_installer_environment()
     log = (cache/"worker.log").open("a", encoding="utf-8")
@@ -1614,7 +1675,22 @@ def autonomous_worker(request_file):
         (cache/"installer-owner.mjs").write_text(OWNER_MODULE,encoding="utf-8")
         previous = owner("previous")
         _write_record(cache/"previous.json",previous)
+        mode = request["mode"]
+        if mode not in INSTALL_MODES: raise ValueError("Missing explicit installation mode")
+        wait_process = None
+        if mode == "wait":
+            # Old APIs cannot promise a fenced drain. Never silently fall back
+            # to force; keep the old Hub running and offer the explicit mode.
+            support = owner("wait-probe")
+            if (not support.get("live") or not support.get("ready")
+                    or support.get("installerCutover",{}).get("protocol") != 1):
+                raise RuntimeError("This Hub cannot confirm wait-current mode; choose --mode force explicitly")
+            wait_process = support.get("process")
+            proof = ready_process_proof(root,previous)
+            if not wait_process or wait_process.get("pid") != proof[1]["pid"]:
+                raise RuntimeError("Waiting endpoint is not the selected native Hub")
         binding = dict(runtimeRoot=str(root),archiveSha256=file_hash(archive),releaseId=descriptor["releaseId"],previous=previous,
+                       mode=mode,
                        installerSha256=request["installerSha256"],workerPid=os.getpid(),
                        packageManifestSha256=file_hash(package/"package-manifest.json"),
                        storageScope=dict(cache=_directory_identity(cache),worker=dict(pid=os.getpid(),outsideAllJobs=True,**process_identity(k.GetCurrentProcess())),
@@ -1637,6 +1713,14 @@ def autonomous_worker(request_file):
         else:
             op = owner("create",binding)
             if op["metadata"].get("autonomousInstaller") != binding: raise RuntimeError("Original installer binding differs")
+        if mode == "wait":
+            waiting = True; stage("waiting-current-turns")
+            settled = wait_for_current_turns(lambda: owner("wait-probe"),request["operationId"],wait_process,
+                record=lambda state: stop_trace(dict(stage="waiting-current-turns",state=state)))
+            proof = ready_process_proof(root,previous)
+            if proof[1]["pid"] != wait_process["pid"]: raise RuntimeError("Waiting Hub changed before stop")
+            owner("wait-complete",dict(process=wait_process,state=settled,oldProcesses=proof))
+            waiting = False
         admitted = True; stage("stopping-selected-runtime")
         stopped = stop_selected(root,trace=stop_trace,capture=stop_capture,scope=retirement_scope); _write_record(cache/"retired.json",dict(processes=stopped))
         stage("backing-up-durable-state")
@@ -1658,6 +1742,9 @@ def autonomous_worker(request_file):
         _write_record(cache/"result.json",ready); stage("ready")
     except BaseException as error:
         stage("error "+type(error).__name__+": "+str(error))
+        if waiting:
+            # A failed observation is not permission to kill/restore a live Hub.
+            owner("wait-failed",dict(code=type(error).__name__,diagnostic=str(error)[:1000]))
         if admitted and previous:
             # The synchronous installer child is already joined. Retire only
             # this selected installation, restore verified prior code through
@@ -1726,6 +1813,8 @@ def autonomous_main():
     parser.add_argument("--sha256"); parser.add_argument("--runtime-root",type=Path,required=True)
     parser.add_argument("--scratch-root",type=Path,required=True)
     parser.add_argument("--operation-id"); parser.add_argument("--prepare-update",action="store_true")
+    parser.add_argument("--mode",choices=INSTALL_MODES,
+                        help="wait: Дождаться текущих ходов; force: Завершить все ходы")
     parser.add_argument("--update-status",action="store_true")
     parser.add_argument("--resume-prestop",action="store_true",help="Continue the exact published pre-stop refusal, retaining its UNKNOWN history")
     parser.add_argument("--resume-partialstop",action="store_true",help="Continue the bound d148 partial-stop failure after previous Ready is restored")
@@ -1734,12 +1823,17 @@ def autonomous_main():
     if args.inspect_package: return historical_main()
     if os.name!="nt": raise RuntimeError("This installer requires Windows")
     root=args.runtime_root.resolve(strict=True); _plain_chain(root)
+    if args.update_status and args.operation_id:
+        print(json.dumps(original_status(args.operation_id,read_update_original(root,args.operation_id)))); return
+    mode = choose_install_mode(args.mode)
+    if (args.resume_prestop or args.resume_partialstop) and mode != "force":
+        parser.error("Historical stop continuation requires explicit --mode force")
     scratch=args.scratch_root.resolve(); scratch.mkdir(parents=True,exist_ok=True); _plain_chain(scratch)
     if scratch.is_relative_to(root) or root.is_relative_to(scratch): raise ValueError("Installer scratch must be outside the selected runtime")
     if args.archive and (not args.sha256 or not re.fullmatch('[0-9a-f]{64}',args.sha256)): parser.error("--archive requires exact --sha256")
     selection=dict(runtimeRoot=str(root),runtimeIdentity=_directory_identity(root),release=args.release,
                    archive=str(args.archive.resolve(strict=True)) if args.archive else None,sha256=args.sha256,
-                   installerSha256=file_hash(Path(__file__).resolve()))
+                   installerSha256=file_hash(Path(__file__).resolve()),mode=mode)
     op=args.operation_id or 'install-'+hashlib.sha256(json.dumps(selection,sort_keys=True).encode()).hexdigest()[:32]
     if not re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,127}',op): parser.error("Invalid original operation ID")
     selection['operationId']=op

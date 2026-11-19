@@ -5,6 +5,7 @@ import { ProviderCancellationService } from "../../../src/providers/provider-tur
 import { CodexAppServerTransport } from "../../../src/providers/codex/codex-app-server-transport.mjs";
 import { markProviderTurnRequested, markProviderTurnAccepted, markProviderFirstEvent } from "../../../src/domain/task-runs.mjs";
 import { TaskObserverController } from "../../../src/application/task-observer-controller.mjs";
+import { resolveCodexTaskActivity } from "../../../src/providers/codex/codex-runtime-owner.mjs";
 
 test("metadata recovery records a failed provider read without releasing the original", async () => {
   const spans = [];
@@ -61,7 +62,6 @@ test("retained active rollout eligibility does not bypass current authority fenc
   for (const variant of [
     { threadState: "active" }, { activity: "active" }, { activity: "unknown" },
     { activity: "new-live-after" }, { acceptance: "external" }, { acceptance: "foreign" },
-    { interrupt: "accepted" }, { interrupt: "unknown" },
   ]) {
     const f = metadataRecoveryFixture({ snapshotMode: "active", ...variant });
     await f.recovery.recover(f.run, { reconcileOnly: true }).catch(() => {});
@@ -136,7 +136,7 @@ function fixture(overrides = {}, recoveryOverrides = {}) {
 test("startup reconciles a provider-rejected inactive original through the cancellation owner", async () => {
   const f = fixture();
   await f.recovery.recover(f.run);
-  assert.deepEqual(f.calls, ["fresh-activity", "interrupt-original", "fresh-activity",
+  assert.deepEqual(f.calls, ["fresh-activity", "fresh-activity",
     ["commit", "interrupted", "Retained partial answer"]]);
   assert.equal(f.current(), null);
 });
@@ -151,9 +151,9 @@ test("active or unknown process authority never sends an automatic interrupt", a
 });
 
 test("a transport failure never becomes an automatic recovery terminal", async () => {
-  const f = fixture({ interruptCodex: async () => { throw new Error("transport lost"); } });
+  const f = fixture({ taskExternalActivity: async () => { throw new Error("transport lost"); } });
   await f.recovery.recover(f.run);
-  assert.deepEqual(f.calls, ["fresh-activity", "observe"]);
+  assert.deepEqual(f.calls, ["observe"]);
   assert.equal(f.current(), f.run);
 });
 
@@ -180,25 +180,25 @@ test("replacement during the provider check cannot be completed or interrupted",
   assert.deepEqual(f.calls, ["observe"]);
 });
 
-test("concurrent recovery shares one exact interrupt and one terminal commit", async () => {
+test("concurrent read-only settlement shares one terminal commit and no interrupt", async () => {
   const f = fixture();
   await Promise.all([f.recovery.recover(f.run), f.recovery.recover(f.run)]);
-  assert.equal(f.calls.filter(x => x === "interrupt-original").length, 1);
+  assert.equal(f.calls.filter(x => x === "interrupt-original").length, 0);
   assert.equal(f.calls.filter(x => Array.isArray(x) && x[0] === "commit").length, 1);
 });
 
-test("an accepted interrupt waits for its real terminal event", async () => {
+test("read-only settlement never dispatches even an available Stop", async () => {
   const f = fixture({ interruptCodex: async () => {} });
   await f.recovery.recover(f.run);
-  assert.deepEqual(f.calls, ["fresh-activity", "observe"]);
-  assert.equal(f.current(), f.run);
+  assert.deepEqual(f.calls, ["fresh-activity", "fresh-activity", ["commit", "interrupted", "Retained partial answer"]]);
+  assert.equal(f.current(), null);
 });
 
 test("activity starting again after the exact snapshot preserves admission", async () => {
   let checks = 0;
   const f = fixture({ taskExternalActivity: async () => ({ state: ++checks === 1 ? "inactive" : "active" }) });
   await f.recovery.recover(f.run);
-  assert.deepEqual(f.calls, ["interrupt-original", "observe"]);
+  assert.deepEqual(f.calls, ["observe"]);
   assert.equal(f.current(), f.run);
 });
 
@@ -238,14 +238,14 @@ function retainedInProgressThread(run) {
   ] } };
 }
 
-test("reconnect reconciles the accepted inProgress original only after fresh inactivity and exact interrupt rejection", async () => {
+test("reconnect reconciles the accepted inProgress original only after two fresh inactivity checks without interruption", async () => {
   let f;
   f = fixture({}, { readThread: async (_id, { applySnapshot }) => applySnapshot(retainedInProgressThread(f.run)) });
   f.run.executionOwner = "hub";
   f.run.providerStart = { state: "observed", turnId: f.run.turnId };
   const originalId = f.run.clientUserMessageId;
   await f.recovery.recover(f.run);
-  assert.deepEqual(f.calls, ["fresh-activity", "interrupt-original", "fresh-activity",
+  assert.deepEqual(f.calls, ["fresh-activity", "fresh-activity",
     ["commit", "interrupted", "Retained partial answer"]]);
   assert.equal(f.current(), null);
   assert.equal(f.run.clientUserMessageId, originalId);
@@ -259,7 +259,7 @@ test("an inconclusive recovery read does not permanently suppress later authorit
   known = true;
   await f.recovery.recover(f.run);
   assert.equal(f.current(), null);
-  assert.equal(f.calls.filter(x => x === "interrupt-original").length, 1);
+  assert.equal(f.calls.filter(x => x === "interrupt-original").length, 0);
 });
 
 test("retained inProgress recovery preserves live, external, unknown and mismatched acceptance owners", async () => {
@@ -276,7 +276,7 @@ test("retained inProgress recovery preserves live, external, unknown and mismatc
   }
 });
 
-test("repeated observation cannot repeat an accepted or ambiguous recovery interrupt", async () => {
+test("repeated observation does not invoke available interruption callbacks", async () => {
   for (const accepted of [true, false]) {
     let attempts = 0;
     const f = fixture({ interruptCodex: async () => {
@@ -285,9 +285,9 @@ test("repeated observation cannot repeat an accepted or ambiguous recovery inter
     } });
     await f.recovery.recover(f.run);
     await f.recovery.recover(f.run);
-    assert.equal(attempts, 1);
-    assert.equal(f.current(), f.run);
-    assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), false);
+    assert.equal(attempts, 0);
+    assert.equal(f.current(), null);
+    assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), true);
   }
 });
 
@@ -334,7 +334,7 @@ test("reviewer canonical accepted-before-first-event original is eligible withou
   assert.equal(providerTurnAcceptance(f.run).accepted, true);
   await f.recovery.recover(f.run, { reconcileOnly: true });
   assert.equal(f.current(), null, "A real accepted original must reach the existing guarded interruption owner");
-  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 0);
 });
 
 test("reviewer same canonical first event gives the existing observed positive control", async () => {
@@ -350,7 +350,7 @@ test("reviewer same canonical first event gives the existing observed positive c
   assert.equal(providerTurnAcceptance(f.run).accepted, true);
   await f.recovery.recover(f.run, { reconcileOnly: true });
   assert.equal(f.current(), null);
-  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 0);
 });
 
 test("canonical accepted-before-first-event recovery retains original guards", async () => {
@@ -373,7 +373,7 @@ test("canonical accepted-before-first-event recovery retains original guards", a
 });
 
 function metadataRecoveryFixture({ threadState = "idle", activity = "inactive", snapshotMode = "exact",
-  trace = null, acceptance = "accepted", interrupt = "rejected" } = {}) {
+  trace = null, acceptance = "accepted", interrupt = "rejected", nativeEvidence = false } = {}) {
   const requests = [];
   const transport = new CodexAppServerTransport({ spawnProcess: () => assert.fail("No real provider process") });
   transport.request = async (method, params) => {
@@ -389,8 +389,16 @@ function metadataRecoveryFixture({ threadState = "idle", activity = "inactive", 
       assert.equal(options.forceFresh, true);
       assert.equal(transport.threadHydrations.size, 0, "Thread lane must be released before cancellation checks");
       f.calls.push("fresh-activity");
-      return { state: activity === "new-live-after" && ++checks > 1 ? "active"
-        : activity === "new-live-after" ? "inactive" : activity };
+      const state = activity === "new-live-after" && ++checks > 1 ? "active"
+        : activity === "new-live-after" ? "inactive" : activity;
+      if (!nativeEvidence) return { state };
+      return resolveCodexTaskActivity({ threadStatus: { type: threadState } }, {
+        forceFresh: true, platform: "win32", rolloutPath: "fixture-native-evidence",
+        probe: async () => {
+          if (state === "unknown") throw new Error("controlled unavailable native evidence");
+          return { rootProcessIds: state === "active" ? [40] : [], processes: [] };
+        },
+      });
     },
     ...(interrupt === "rejected" ? {} : { interruptCodex: async () => {
       f.calls.push("interrupt-original");
@@ -422,7 +430,7 @@ test("retained exact recovery does not require full Thread history before guarde
     assert.equal(f.current(), null, readError?.message ?? "Exact original must reach canonical recovery");
     assert.equal(readError, null);
     assert.deepEqual(f.requests.map(x => x.method), ["thread/read"]);
-    assert.deepEqual(f.calls, ["fresh-activity", "interrupt-original", "fresh-activity",
+    assert.deepEqual(f.calls, ["fresh-activity", "fresh-activity",
       ["commit", "interrupted", "Retained partial answer"]]);
     assert.equal(f.transport.threadHydrations.size, 0);
     assert.equal(f.run.clientUserMessageId, "message-original");
@@ -433,7 +441,7 @@ test("metadata-only recovery keeps exact snapshot, live Thread and interrupt fen
   for (const variant of [
     { threadState: "active" }, { activity: "active" }, { activity: "unknown" },
     { activity: "new-live-after" }, { snapshotMode: "missing" }, { snapshotMode: "foreign" },
-    { acceptance: "foreign" }, { acceptance: "external" }, { interrupt: "accepted" }, { interrupt: "unknown" },
+    { acceptance: "foreign" }, { acceptance: "external" },
   ]) {
     const f = metadataRecoveryFixture(variant);
     await f.recovery.recover(f.run, { reconcileOnly: true }).catch(() => {});
@@ -513,12 +521,12 @@ test("reviewer metadata recovery retains guarded reconciliation for a dangling a
   assert.equal(snapshot.active, true, "A retained task_started marker is still active in the canonical exact rollout snapshot");
   assert.equal(snapshot.completed, false);
   await f.recovery.recover(f.run, { reconcileOnly: true });
-  assert.equal(f.current(), null, "Fresh provider/native inactivity plus exact interrupt rejection must still reach the existing terminal owner");
-  assert.deepEqual(f.calls.slice(0, 3), ["fresh-activity", "interrupt-original", "fresh-activity"]);
-  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+  assert.equal(f.current(), null, "Fresh provider/native inactivity before and after the exact snapshot must still reach the existing terminal owner");
+  assert.deepEqual(f.calls.slice(0, 2), ["fresh-activity", "fresh-activity"]);
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 0);
 });
 
-test("ordinary observation recovers the retained original after a newer external turn finishes", async () => {
+for (const recoveredThreadState of ["idle", "notLoaded"]) test(`ordinary observation recovers the retained original after a newer external turn finishes (${recoveredThreadState})`, async () => {
   const { CodexTaskSnapshotService, codexTurnSnapshot } = await import("../../../src/providers/codex/codex-task-snapshot-service.mjs");
   const { codexRolloutTurnState, parseCodexRolloutActivity } = await import("../../../src/providers/codex/codex-rollout-activity.mjs");
   const row = (type, turn_id) => JSON.stringify({ type: "event_msg", payload: { type, turn_id } });
@@ -554,15 +562,55 @@ test("ordinary observation recovers the retained original after a newer external
   assert.equal(f.current(), f.run);
   assert.equal(f.calls.includes("interrupt-original"), false);
   rows.push(row("task_complete", "turn-newer"));
-  thread.status = { type: "idle" };
+  thread.status = { type: recoveredThreadState };
   const snapshot = await snapshots.read(f.run);
   assert.equal(snapshot.turnId, "turn-original");
   assert.equal(snapshot.active, true, "Unclosed task_started remains a retained marker");
   assert.equal(snapshot.completed, false);
   await observer.poll(f.run);
   assert.equal(f.current(), null, "Ordinary observer must re-enter the same guarded recovery owner");
-  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 1);
+  assert.equal(f.calls.filter(value => value === "interrupt-original").length, 0);
   assert.deepEqual(f.calls.at(-1).slice(0, 2), ["commit", "interrupted"]);
   assert.equal(f.run.turnId, "turn-original");
   assert.equal(f.run.clientUserMessageId, "message-original");
+});
+
+test("notLoaded accepted original enters guarded recovery at startup and ordinary reconciliation", async () => {
+  for (const reconcileOnly of [false, true]) {
+    for (const snapshotMode of ["exact", "active"]) {
+      const f = metadataRecoveryFixture({ threadState: "notLoaded", snapshotMode, nativeEvidence: true });
+      await f.recovery.recover(f.run, { reconcileOnly });
+      assert.equal(f.current(), null);
+      assert.deepEqual(f.requests.map(x => x.method), ["thread/read"]);
+      assert.deepEqual(f.calls, ["fresh-activity", "fresh-activity",
+        ["commit", "interrupted", "Retained partial answer"]]);
+      assert.equal(f.transport.threadHydrations.size, 0);
+    }
+  }
+});
+
+test("notLoaded is eligibility only and never bypasses original ownership or inactivity proof", async () => {
+  for (const variant of [
+    { activity: "active" }, { activity: "unknown" }, { activity: "new-live-after" },
+    { snapshotMode: "missing" }, { snapshotMode: "foreign" },
+    { acceptance: "foreign" }, { acceptance: "external" },
+    { threadState: "systemError" }, { threadState: "unknown" },
+  ]) {
+    const f = metadataRecoveryFixture({ threadState: "notLoaded", snapshotMode: "active", nativeEvidence: true, ...variant });
+    await f.recovery.recover(f.run, { reconcileOnly: true }).catch(() => {});
+    assert.equal(f.current(), f.run, JSON.stringify(variant));
+    assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === "commit"), false);
+    if (["active", "unknown"].includes(variant.activity) || variant.snapshotMode
+      || variant.acceptance || variant.threadState) assert.equal(f.calls.includes("interrupt-original"), false);
+  }
+  for (const mode of ["observer", "missing-command", "unconfirmed", "missing-acceptance"]) {
+    const f = metadataRecoveryFixture({ threadState: "notLoaded", snapshotMode: "active" });
+    if (mode === "observer") f.run.observer = true;
+    if (mode === "missing-command") delete f.run.clientUserMessageId;
+    if (mode === "unconfirmed") f.run.providerStart.state = "unconfirmed";
+    if (mode === "missing-acceptance") delete f.run.providerStart;
+    await f.recovery.recover(f.run, { reconcileOnly: true }).catch(() => {});
+    assert.equal(f.current(), f.run, mode);
+    assert.equal(f.calls.includes("interrupt-original"), false, mode);
+  }
 });

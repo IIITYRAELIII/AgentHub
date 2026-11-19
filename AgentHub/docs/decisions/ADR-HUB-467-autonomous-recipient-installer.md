@@ -1,5 +1,42 @@
 # ADR-HUB-467: autonomous recipient installer
 
+## Permanent installer modes (18 November 2026)
+
+The user replaces unconditional force with two explicit choices in the common
+recipient source: "Дождаться текущих ходов" / `--mode wait`, and
+"Завершить все ходы" / `--mode force`. All future package assets consume this
+same source. The first delivery version does not gate this behavior. The
+interactive picker has two buttons and a cancelling close; background callers
+must supply a mode. Choice enters the deterministic operation input, retained
+request, original metadata and outside-Job worker before stopping.
+
+An admitted autonomous original is a stopping intent, unlike a merely scheduled
+ordinary restart. The existing RunCoordinator admission barrier reads that
+original. Accepted new input stays in the existing durable queue. Current
+completion can proceed, but cannot start post-turn model maintenance. The
+authenticated health reply reports only the existing run/admission/maintenance
+owners and same original, not a second health store or provider probe.
+
+Wait is safe only on a runtime implementing this fenced-drain protocol. The
+worker first binds its actual selected native Host/Node, then waits for the same
+authenticated process and original to report zero current work and no pending
+admission. Unknown is a refusal, not running or idle. Failure before retirement
+preserves the old running installation; no automatic recovery kill follows a
+failed read. An old runtime without that protocol cannot promise safe wait.
+Its supported choice is explicit force, never automatic escalation. This
+capability boundary lasts while such versions remain supported update sources.
+
+Force retains the original selected-process and foreign/PID/birth guards and
+does not require the old API. Old provider work is never replayed by either
+mode. The normal startup run owner, separately updated in HUB-470, accounts for
+positively stopped old executions. A provider auth error alone is not exit proof.
+
+The reported unfinished historical package-bootstrap original is not waived by
+these modes. Its original proof/disposition remains separate; a screenshot of
+an error is not enough to settle its unknown native effects.
+
+## Preserved autonomous replacement invariants
+
 The explicitly requested update authorizes forced termination of the selected
 installation, including its active work. This supersedes the interactive legacy
 window for the standalone recipient installer. It does not authorize stopping a
