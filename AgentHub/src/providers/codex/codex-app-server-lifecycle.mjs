@@ -28,6 +28,7 @@ export class CodexAppServerLifecycle {
     this.transport = new CodexAppServerTransport({
       spawnProcess: (args) => this.#spawn(args),
       stopProcessTree: dependencies.stopProcessTree,
+      createProcessTreeCustody: dependencies.createProcessTreeCustody,
       onMessage: dependencies.onMessage,
       onExit: (event) => this.#handleExit(event),
       onTimeout: (event) => this.#handleTimeout(event),

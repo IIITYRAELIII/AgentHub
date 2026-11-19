@@ -460,6 +460,95 @@ test("CodexAppServerTransport retains the exact owner when process-tree stop is 
   assert.equal(child.killed, false);
 });
 
+test("CodexAppServerTransport retires its exact native job instead of walking current parents", async () => {
+  const child = fakeChild({ pid: 733 });
+  const events = [];
+  let closeFlight = null;
+  const { transport } = await startedTransport({
+    child,
+    createProcessTreeCustody: (pid) => {
+      events.push(["bind", pid]);
+      return {
+        start: async () => { events.push(["start", pid]); return true; },
+        close: () => {
+          closeFlight ??= Promise.resolve().then(() => { events.push(["close", pid]); return true; });
+          return closeFlight;
+        },
+        diagnostics: () => ({ rootPid: pid, state: "ready" }),
+      };
+    },
+    stopProcessTree: async () => assert.fail("native job custody owns retirement"),
+  });
+
+  assert.deepEqual(transport.diagnostics().processTreeCustody, { rootPid: 733, state: "ready" });
+  await transport.stop();
+  assert.deepEqual(events, [["bind", 733], ["start", 733], ["close", 733]]);
+  assert.equal(transport.running, false);
+});
+
+test("CodexAppServerTransport retires native job custody before reporting an unexpected root exit", async () => {
+  const child = fakeChild({ pid: 734 });
+  const events = [];
+  let closeFlight = null;
+  const { transport } = await startedTransport({
+    child,
+    createProcessTreeCustody: () => ({
+      start: async () => true,
+      close: () => {
+        closeFlight ??= Promise.resolve().then(() => { events.push("retire-job"); return true; });
+        return closeFlight;
+      },
+    }),
+    onExit: () => events.push("report-exit"),
+  });
+
+  child.emit("exit", 17, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["retire-job", "report-exit"]);
+  assert.equal(transport.running, false);
+});
+
+test("CodexAppServerTransport refuses startup when exact native custody cannot bind", async () => {
+  const child = fakeChild({ pid: 735 });
+  const events = [];
+  const transport = new CodexAppServerTransport({
+    spawnProcess: async () => child,
+    createProcessTreeCustody: () => ({
+      start: async () => { throw Object.assign(new Error("job bind failed"), { code: "CUSTODY_BIND_FAILED" }); },
+      close: async () => { events.push("retire-job"); return true; },
+    }),
+    stopProcessTree: async () => assert.fail("the custody object owns its partial startup cleanup"),
+    onMessage: () => {},
+    onStderr: () => {},
+  });
+
+  await assert.rejects(transport.start(), (error) => {
+    assert.equal(error.code, "CUSTODY_BIND_FAILED");
+    return true;
+  });
+  assert.deepEqual(events, ["retire-job"]);
+  assert.equal(transport.running, false);
+});
+
+test("CodexAppServerTransport stops the uninitialized root when failed custody cannot retire it", async () => {
+  const child = fakeChild({ pid: 736 });
+  const stopped = [];
+  const transport = new CodexAppServerTransport({
+    spawnProcess: async () => child,
+    createProcessTreeCustody: () => ({
+      start: async () => { throw new Error("job bind failed"); },
+      close: async () => { throw new Error("job helper failed"); },
+    }),
+    stopProcessTree: async (pid, options) => { stopped.push([pid, options]); return true; },
+    onMessage: () => {},
+    onStderr: () => {},
+  });
+
+  await assert.rejects(transport.start(), /job bind failed/u);
+  assert.deepEqual(stopped, [[736, { requireTreeConfirmation: true }]]);
+  assert.equal(transport.running, false);
+});
+
 test("CodexAppServerTransport accepts an exit race without targeting another process", async () => {
   const child = fakeChild({ pid: 811 });
   const stopped = [];

@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { createCodexAppServerJobCustody } from "../infrastructure/process/codex-app-server-job-custody.mjs";
 import { CodexExecutableUpdateService } from "../infrastructure/process/codex-executable-update-service.mjs";
 import { unavailableLocalMcpOverrides } from "../infrastructure/process/local-mcp-preflight.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
@@ -64,6 +65,8 @@ export function createCodexLifecycleComposition({
     executableArgs: config.codexExecutableArgs,
     projectRoot: runtimeDependencies.getActiveProjectRoot,
     stopProcessTree: runtimeDependencies.stopProcessTree,
+    createProcessTreeCustody: runtimeDependencies.createCodexProcessTreeCustody
+      ?? ((pid) => createCodexAppServerJobCustody(pid)),
     onMessage: runtimeDependencies.handleMessage,
     rpcTimeoutMs,
     isStopping: runtimeDependencies.isStopping,
