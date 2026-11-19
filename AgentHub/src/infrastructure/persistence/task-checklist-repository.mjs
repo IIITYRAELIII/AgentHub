@@ -5,6 +5,7 @@ import {
   normalizedTaskChecklistOperation,
   normalizedTaskChecklistText,
   normalizedReleaseReference,
+  manualDeliveryReferenceSourceBinding,
 } from "../../domain/task-checklist.mjs";
 import { normalizedTaskGitReferences } from "../../domain/task-git-reference.mjs";
 import { taskPresentation } from "../../domain/task-board-task.mjs";
@@ -345,6 +346,36 @@ function checklistItem(database, taskId, itemId) {
   return row;
 }
 
+export function manualDeliveryReleaseReferenceEvidence(database, { taskId, reference }) {
+  const ref = normalizedReleaseReference(reference), original = ref.manualDelivery;
+  const task = database.prepare(`SELECT id, workspace_id, workflow_status, CAST(row_revision AS TEXT) revision
+    FROM hub_board_tasks WHERE id = ?`).get(taskId);
+  if (!original || !task || task.workflow_status !== "done" || task.revision !== ref.taskRevision) {
+    throw Error("Manual release reference Task/status/revision changed");
+  }
+  const refs = database.prepare("SELECT 1 FROM hub_task_git_references WHERE task_id = ? LIMIT 1").get(taskId);
+  const row = database.prepare(`SELECT * FROM hub_task_lifecycle_outcomes
+    WHERE operation_id = ? AND task_id = ? AND kind = 'workflow'`).get(original.requestId, taskId);
+  const receipt = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(original.requestId);
+  let outcome, result;
+  try { outcome = JSON.parse(row?.result_json ?? "null"); result = JSON.parse(receipt?.result_json ?? "null"); }
+  catch { throw Error("Manual release reference canonical receipt is corrupt"); }
+  const accepted = outcome?.task, receiptTask = result?.task ?? result;
+  const proof = outcome?.evidence?.manualDelivery;
+  if (refs || !row || receipt?.status !== "succeeded" || receipt.receipt_state !== "succeeded"
+      || receipt.tool_name !== "hub_task_status_update" || receipt.arguments_hash !== original.argumentsHash
+      || receipt.workspace_id !== task.workspace_id || accepted?.id !== taskId
+      || accepted.workspaceId !== task.workspace_id || accepted.workflowStatus !== "done"
+      || !Number.isSafeInteger(accepted.revision) || accepted.revision > Number(task.revision)
+      || !Array.isArray(accepted.gitReferences) || accepted.gitReferences.length
+      || receiptTask?.id !== taskId || receiptTask.workflowStatus !== "done" || receiptTask.revision !== accepted.revision
+      || outcome?.evidence?.outcome !== "verified_manual_delivery" || proof?.taskId !== taskId) {
+    throw Error("Manual release reference requires its successful canonical manual Done receipt");
+  }
+  manualDeliveryReferenceSourceBinding(proof);
+  return proof;
+}
+
 function assertLinkAllowed(database, taskId, linkedTaskId, itemId, releaseReference = null) {
   if (taskId === linkedTaskId) throw new Error("Task нельзя связать с самой собой");
   const parent = database.prepare("SELECT workspace_id, status, workflow_status FROM hub_board_tasks WHERE id = ?").get(taskId);
@@ -376,6 +407,10 @@ function assertLinkAllowed(database, taskId, linkedTaskId, itemId, releaseRefere
   if (cycle) throw new Error("Связь создаёт цикл Task");
   if (releaseReference) {
     if (parent.status === "done" || parent.workflow_status === "done") throw new Error("Archived release Task cannot be changed");
+    if (releaseReference.manualDelivery) {
+      manualDeliveryReleaseReferenceEvidence(database, { taskId: linkedTaskId, reference: releaseReference });
+      return;
+    }
     const target = database.prepare(`SELECT workflow_status, CAST(row_revision AS TEXT) AS revision
       FROM hub_board_tasks WHERE id = ?`).get(linkedTaskId);
     if (!["awaiting_implementation", "done"].includes(target.workflow_status)

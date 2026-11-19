@@ -12,6 +12,7 @@ import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { TaskGitHistoryRejectedError, normalizedInitialNativeTest, normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
 import { nativeTestMetadataDrift, sameTaskWorkflowState } from "../domain/native-test-terminal-recovery.mjs";
 import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
+import { taskGitIdentityHash } from "../domain/task-git-reference.mjs";
 
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
@@ -192,6 +193,21 @@ export class TaskLifecycleService {
     } catch (persistenceError) {
       throw new TaskLifecyclePersistenceError(error, persistenceError);
     }
+  }
+
+  async withManualDeliveryReleaseReference({ taskId, reference, operationId }, operation) {
+    requiredMethod(this.taskBoard, "manualDeliveryReleaseReference");
+    requiredMethod(this.taskGitWorkspaces, "verifyManualDeliveryReferenceSourceOwned");
+    const run = () => this.#withLock(taskId, async lease => {
+      const read = () => this.taskBoard.manualDeliveryReleaseReference({ taskId, reference });
+      const accepted = read();
+      await this.taskGitWorkspaces.verifyManualDeliveryReferenceSourceOwned({ task: this.#task(taskId), accepted, lease });
+      await this.#assertOwned(lease);
+      if (taskGitIdentityHash(read()) !== taskGitIdentityHash(accepted)) throw Error("Manual release reference outcome changed");
+      return operation(); // Existing short checklist transaction rechecks canonical evidence and CAS.
+    });
+    return this.taskGitWorkspaces.withOperationTrace
+      ? this.taskGitWorkspaces.withOperationTrace({ operationId, taskId }, run) : run();
   }
 
   async updateWorkflowStatus(options = {}) {

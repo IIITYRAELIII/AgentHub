@@ -47,6 +47,7 @@ import {
   quarantineTaskChecklistEvent,
   taskChecklistProjectionMap,
   taskChecklistRequestOutcome,
+  manualDeliveryReleaseReferenceEvidence,
 } from "./task-checklist-repository.mjs";
 
 const NOTES_COLUMN_ID = "notes";
@@ -1687,6 +1688,10 @@ export class TaskBoardStore {
         detailsRevision: this.#taskDetailsRevision(database, row, history.get(row.id) ?? { count: 0, revision: 0 }),
       }));
     });
+  }
+
+  manualDeliveryReleaseReference({ taskId, reference }) {
+    return this.#withDatabase(database => manualDeliveryReleaseReferenceEvidence(database, { taskId, reference }));
   }
 
   updateChecklist({

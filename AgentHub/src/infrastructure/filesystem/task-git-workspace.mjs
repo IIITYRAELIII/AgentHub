@@ -24,6 +24,7 @@ import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1
 import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, assertNativeMergeGraph, assertNativeMergedResults, nativeMergeBaseFields } from "./native-release-merge.mjs";
 import { synchronizePublishedDev } from "./published-dev-sync.mjs";
 import { readManualTaskDelivery, readManualPublishedRepository } from "./manual-task-delivery.mjs";
+import { manualDeliveryReferenceSourceBinding } from "../../domain/task-checklist.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { OwnedNativeObjectStore, nativeObjectStorageDescriptor } from "./owned-native-object-store.mjs";
 import { MaintenanceOperationStore } from "../persistence/maintenance-operation-store.mjs";
@@ -6625,6 +6626,26 @@ export class TaskGitWorkspaceService {
         await lease.assertOwned();
         return { ...delivery, publishedRepository };
       } finally { await gitTail; }
+    });
+  }
+
+  async verifyManualDeliveryReferenceSourceOwned({ task, accepted, lease }) {
+    return this.measureOperation("manual-release-reference-source", async () => {
+      await requiredGuardLease(lease).assertOwned();
+      if (task.id !== accepted?.taskId) throw Error("Manual release reference source Task changed");
+      const expected = manualDeliveryReferenceSourceBinding(accepted);
+      const workspaces = await this.describe(task.id);
+      for (const w of workspaces) {
+        if (!samePath(await this.managedRepositoryRoot(w.projectRoot, { taskId: task.id, taskNumber: task.taskNumber }), w.repositoryRoot)) {
+          throw Error("Manual release reference source ownership changed");
+        }
+      }
+      const current = manualDeliveryReferenceSourceBinding({ ...accepted, workspaces,
+        gitReferences: task.gitReferences ?? [], dirty: workspaces.some(w => w.dirty) });
+      if (taskGitIdentityHash(current) !== taskGitIdentityHash(expected)) {
+        throw Error("Manual release reference current source or delivery changed");
+      }
+      await requiredGuardLease(lease).assertOwned();
     });
   }
 

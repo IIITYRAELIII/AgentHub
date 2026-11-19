@@ -531,6 +531,99 @@ test("manual Done and Complete verify delivered owned source without manufacturi
   assert.equal(await readFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "utf8"), "export const version = 'own-delivered-change';\n");
 });
 
+test("release membership accepts only canonical manual Done without Test refs and preserves archived decomposition", async t => {
+  const f = await publicFixture(t);
+  await writeFile(path.join(f.repo, "already-published.txt"), "published context\n");
+  const published = await f.commit(); await f.git(["update-ref", "refs/remotes/origin/main", published]);
+  const delivery = await f.install(published);
+  const create = text => f.raw.create({ text, workspaceId: f.task.workspaceId, bucket: "workspace" });
+  const old = create("Old release"), parent = create("Delivered release");
+  const add = (task, id) => f.board.updateChecklist({ id: task.id, operation: "add", text: "Delivered member",
+    expectedRevision: task.revision, requestId: id });
+  const oldItem = await add(old, "old-owner-item");
+  await f.board.updateChecklist({ id: old.id, operation: "link", itemId: oldItem.itemId, linkedTaskId: f.task.id,
+    expectedRevision: oldItem.task.revision, requestId: "old-owner-link" });
+  f.raw.complete(old.id);
+  const before = f.board.task(f.task.id);
+  const done = await f.call("hub_task_status_update", { request_id: "manual-member-done", task_id: f.task.id,
+    status: "done", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus });
+  assert.equal(done.workflowStatus, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
+  // Capture the archive after Done's legitimate linked-Task projection change.
+  const archived = f.board.task(old.id);
+  const receipt = f.catalog.mcpOperation("manual-member-done"); assert.equal(receipt.status, "succeeded");
+  const item = await add(parent, "manual-member-item"), child = f.board.task(f.task.id);
+  const reference = { taskRevision: child.revision, manualDelivery: {
+    requestId: receipt.requestId, argumentsHash: receipt.argumentsHash } };
+  const { createPersistenceMutationCapabilities } = await import("../../../src/composition/persistence-mutation-composition.mjs");
+  const owners = createPersistenceMutationCapabilities({ rawWorkspaceCatalogStore: f.catalog, rawTaskBoardStore: f.raw });
+  f.board.store = owners.taskBoardStore;
+  f.board.workspaceCatalog = owners.workspaceCatalogStore;
+  f.lifecycle.workspaceCatalog = owners.workspaceCatalogStore;
+  f.hub.workspaceCatalog = owners.workspaceCatalogStore;
+  const input = { task_id: parent.id, expected_task_revision: item.task.revision, operation: "link",
+    item_id: item.itemId, linked_task_id: child.id, release_reference: reference };
+  const rejects = async (id, patch, pattern) => {
+    await assert.rejects(f.call("hub_task_checklist_update", { ...input, ...patch, request_id: id }), pattern);
+    assert.equal(f.board.task(parent.id).revision, item.task.revision);
+  };
+  await rejects("missing-manual-receipt", { release_reference: { ...reference,
+    manualDelivery: { ...reference.manualDelivery, requestId: "not-a-manual-Done" } } }, /canonical manual Done/u);
+  await rejects("wrong-manual-hash", { release_reference: { ...reference,
+    manualDelivery: { ...reference.manualDelivery, argumentsHash: "f".repeat(64) } } }, /canonical manual Done/u);
+  await rejects("stale-manual-child", { release_reference: { ...reference, taskRevision: child.revision + 1 } }, /revision/u);
+  await rejects("empty-refs-not-proof", { release_reference: { taskRevision: child.revision, gitReferences: [] } }, /Git references/u);
+  const analysis = create("Analysis Done"); f.raw.setWorkflowStatus(analysis.id, "done");
+  await rejects("analysis-not-manual", { linked_task_id: analysis.id,
+    release_reference: { ...reference, taskRevision: f.board.task(analysis.id).revision } }, /canonical manual Done/u);
+  const foreignWorkspace = await f.catalog.runMutation(() => f.catalog.createWorkspace({ name: "Foreign", settings: { releaseWorkflowEnabled: true } }));
+  const foreign = f.raw.create({ text: "Foreign release", bucket: "workspace", workspaceId: foreignWorkspace.id });
+  const foreignItem = await add(foreign, "foreign-manual-item");
+  await rejects("foreign-manual-parent", { task_id: foreign.id, expected_task_revision: foreignItem.task.revision,
+    item_id: foreignItem.itemId }, /Release Manager/u);
+  const archivedParent = create("Archived target release"), archivedItem = await add(archivedParent, "archived-target-item");
+  f.raw.complete(archivedParent.id);
+  await rejects("archived-manual-parent", { task_id: archivedParent.id, item_id: archivedItem.itemId,
+    expected_task_revision: f.board.task(archivedParent.id).revision }, /Archived release/u);
+  const submitted = { ...input, request_id: "manual-member-link",
+    context_token: f.hub.contextToken({ provider: "codex", threadId: "rm" }) };
+  // Association uses already accepted publication evidence; a later runtime
+  // state is not new authority and cannot erase that historical Done receipt.
+  f.setStatus({ ready: false });
+  await f.hub.submitTaskOperation("hub_task_checklist_update", submitted);
+  const receiptResult = await f.hub.joinSubmittedTaskOperation(submitted);
+  f.setStatus({ ready: true });
+  assert.equal(receiptResult.taskOperation.status, "succeeded");
+  const linked = receiptResult.result;
+  assert.equal(linked.task.checklist[0].linkedTaskId, child.id);
+  assert.deepEqual(linked.task.checklist[0].releaseReference, { ...reference, taskRevision: String(child.revision) });
+  assert.deepEqual(f.board.task(old.id), archived);
+  assert.deepEqual(f.board.task(child.id), child);
+  const reopened = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite"), readOnly: true });
+  try { assert.deepEqual(reopened.task(parent.id).checklist, f.board.task(parent.id).checklist); }
+  finally { reopened.close(); }
+  const replay = await f.call("hub_task_checklist_update", { ...input, request_id: "manual-member-link" });
+  assert.deepEqual(replay.task.checklist, linked.task.checklist);
+  const closeArgs = { task_id: child.id, completion_mode: "manual_delivery", manual_delivery: delivery };
+  const closePreview = await f.call("hub_task_complete", { ...closeArgs, request_id: "manual-member-close-preview" });
+  await f.call("hub_task_complete", { ...closeArgs, request_id: "manual-member-close", confirm_cleanup: true,
+    expected_cleanup_token: closePreview.cleanupToken });
+  const closedChild = f.board.task(child.id);
+  assert.equal(closedChild.status, "done"); assert.equal(closedChild.workflowStatus, "done");
+  const closedParent = create("Reference after closure"), closedItem = await add(closedParent, "closed-member-item");
+  await f.call("hub_task_checklist_update", { ...input, task_id: closedParent.id, item_id: closedItem.itemId,
+    expected_task_revision: closedItem.task.revision, request_id: "closed-member-link",
+    release_reference: { ...reference, taskRevision: closedChild.revision } });
+  assert.deepEqual(f.board.task(child.id), closedChild);
+  const second = create("Another release"), secondItem = await add(second, "another-manual-item");
+  await runTaskGitCommand(["merge", "--ff-only", published], { cwd: f.managed.projectRoot });
+  await assert.rejects(f.call("hub_task_checklist_update", { ...input, task_id: second.id,
+    item_id: secondItem.itemId, expected_task_revision: secondItem.task.revision, request_id: "changed-manual-source",
+    release_reference: { ...reference, taskRevision: closedChild.revision } }), /current source or delivery changed/u);
+  assert.equal(f.board.task(second.id).revision, secondItem.task.revision);
+  assert.equal(f.board.task(child.id).revision, closedChild.revision);
+  assert.deepEqual(f.board.task(child.id).gitReferences, []);
+});
+
 test("manual completion pins and preserves an unrepresented legacy repository and reconciles only its hash-bound read-only preview", async t => {
   const f = await publicFixture(t);
   const legacy = path.join(f.root, "legacy"); await mkdir(legacy);

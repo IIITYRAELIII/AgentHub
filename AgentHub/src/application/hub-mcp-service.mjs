@@ -701,8 +701,12 @@ export class HubMcpService {
         before_item_id: { type: "string" },
         linked_task_id: { type: "string" },
         release_reference: { type: "object", description: "Release Manager-only membership reference; preserves decomposition ownership.",
-          additionalProperties: false, required: ["taskRevision", "gitReferences"], properties: {
+          additionalProperties: false, required: ["taskRevision"],
+          oneOf: [{ required: ["gitReferences"] }, { required: ["manualDelivery"] }], properties: {
             taskRevision: { type: "integer", minimum: 1 },
+            manualDelivery: { type: "object", additionalProperties: false, required: ["requestId", "argumentsHash"], properties: {
+              requestId: { type: "string", minLength: 1, maxLength: 200 }, argumentsHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            } },
             gitReferences: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
               required: ["projectRoot", "branch", "resultCommit"], properties: {
                 projectRoot: { type: "string" }, branch: { type: "string" }, resultCommit: { type: "string" },
@@ -1634,7 +1638,13 @@ export class HubMcpService {
     const payload = this.#taskChecklistPayload(context, {
       taskId, expectedRevision, operation, itemId, text, completed, beforeItemId, linkedTaskId, releaseReference, requestId,
     });
-    return this.#taskChecklistResult(await this.taskBoard.updateChecklist(payload));
+    const mutate = async () => this.#taskChecklistResult(await this.taskBoard.updateChecklist(payload));
+    if (payload.releaseReference?.manualDelivery) {
+      if (typeof this.taskLifecycle.withManualDeliveryReleaseReference !== "function") throw Error("Manual release reference owner is unavailable");
+      return this.taskLifecycle.withManualDeliveryReleaseReference({ taskId: payload.linkedTaskId,
+        reference: payload.releaseReference, operationId: requestId }, mutate);
+    }
+    return mutate();
   }
 
   #taskChecklistPayload(context, {

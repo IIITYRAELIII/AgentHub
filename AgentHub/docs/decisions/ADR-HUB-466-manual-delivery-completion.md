@@ -10,6 +10,19 @@ receipts also outlive Git clean status and must not be discarded to close a card
 
 ## Decision
 
+The existing native checklist release-reference relation also supports a real
+manual Done without Test refs. Its alternative input names the original Done
+request ID and argument hash with the fresh member revision. The existing Task
+owner reads that successful canonical MCP receipt and workflow outcome, verifies
+the current clean owned source, then the existing short
+checklist transaction rechecks the same receipt, Done state, empty refs and CAS.
+Only its exact accepted managed heads/publication tuple count as membership;
+analysis Done or an empty Git array alone does not. The unique decomposition
+owner, archived rows, original receipt identities and ordinary Git-ref form stay
+intact. The outcome retains the actual publication evidence already checked at
+Done; later runtime/publication state need not stay at that historical release.
+This uses the existing relation and outcome tables, with no new ledger.
+
 The existing RM-only Task Complete surface has explicit `manual_delivery` mode.
 Revision, release ID and raw manifest hash are pinned; the runtime root comes
 from the configured installation owner. The reader uses the existing installed

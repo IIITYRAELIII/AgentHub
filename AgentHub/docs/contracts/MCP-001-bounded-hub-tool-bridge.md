@@ -538,6 +538,16 @@ decomposition owner and all archived rows. The existing request hash includes
 this binding only when supplied; old receipt identities remain unchanged.
 No alternate CLI, historical UNKNOWN replay, publication or absorption credit is
 introduced. Desktop checklist mutations cannot author or change this RM relation.
+For an already canonical manual Done without Test refs, the same reference may
+instead name `manualDelivery: { requestId, argumentsHash }` with the fresh Task
+revision. The existing successful status-operation receipt and workflow outcome
+must prove verified manual delivery of that Task's exact owned source. The Task
+owner freshly verifies unchanged clean managed heads under its lock before the
+short checklist transaction rechecks the receipt, Done state,
+empty refs, revision and Workspace. Empty refs or analysis Done alone never supply
+membership authority. The accepted outcome retains its actual publication proof;
+a later runtime or publication does not have to remain that historical release.
+The ordinary full-Git-reference form stays unchanged.
 
 Checklist event delivery is an internally managed effect (ADR-0029): its
 single-flight durable outbox drain invokes delivery outside SQL retry and queues
