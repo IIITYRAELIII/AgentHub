@@ -2,7 +2,8 @@ import { lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat } from "
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
-import { measureTaskOperation, measureTaskOperationAwait } from "./task-operation-timing.mjs";
+import { measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming,
+  taskOperationTimingIdentity } from "./task-operation-timing.mjs";
 import { prepareWindowsLockDirectoryPublisher } from "./windows-lock-directory-publication.mjs";
 import { taskOperationExecution } from "./task-operation-interruption-context.mjs";
 
@@ -99,13 +100,20 @@ async function acquireInProcessLock(lockPath, signal) {
   const turn = new Promise((resolve) => { releaseTurn = resolve; });
   state.tail = previous.then(() => turn);
   state.pending += 1;
-  try { await abortable(previous, signal); }
+  try {
+    const resourceKey = createHash("sha256").update(lockPath).digest("hex");
+    recordTaskOperationTiming("lock-local-wait", { resourceKey, holder: state.holder ?? null,
+      processId: process.pid, processInstanceId: PROCESS_INSTANCE_ID });
+    await measureTaskOperation("lock-local-acquire", () => abortable(previous, signal), { resourceKey });
+    state.holder = taskOperationTimingIdentity();
+  }
   catch (error) { state.pending -= 1; releaseTurn(); if (!state.pending) inProcessLocks.delete(lockPath); throw error; }
   let released = false;
   return () => {
     if (released) return;
     released = true;
     state.pending -= 1;
+    state.holder = null;
     releaseTurn();
     if (state.pending === 0 && inProcessLocks.get(lockPath) === state) {
       inProcessLocks.delete(lockPath);
@@ -522,6 +530,7 @@ async function acquire(lockPath, {
 } = {}, publisher = null) {
   const deadline = Date.now() + timeoutMs;
   const token = tokenFactory();
+  let observedContention = false;
   for (;;) {
     signal?.throwIfAborted();
     try {
@@ -538,6 +547,22 @@ async function acquire(lockPath, {
         continue;
       }
       const owner = await readOwner(lockPath);
+      if (!observedContention && taskOperationTimingIdentity()) {
+        observedContention = true;
+        const native = owner && !owner.unresolved && publisher?.inspectProcess
+          ? await publisher.inspectProcess(owner.pid) : null;
+        const current = await readOwner(lockPath);
+        const stable = owner && !owner.unresolved && current && !current.unresolved
+          && sameOwnerIdentity(owner, current);
+        recordTaskOperationTiming("lock-native-holder", {
+          resourceKey: createHash("sha256").update(lockPath).digest("hex"),
+          ownerIdHash: stable ? createHash("sha256").update(`${lockPath}:${owner.token}`).digest("hex") : null,
+          processId: stable ? owner.pid : null,
+          processInstanceId: stable ? owner.processInstanceId : null,
+          native: stable ? native : null,
+          stable: Boolean(stable),
+        }, { critical: true });
+      }
       const info = owner ? null : await stat(lockPath).catch(() => null);
       const ageMs = owner
         ? Date.now() - Number(owner.createdAt ?? 0)
@@ -653,6 +678,11 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
       options.onAcquired?.({
         waitMs: Math.max(0, performance.now() - waitStartedAt),
         lockCount: lockPaths.length,
+        owners: acquired.map(record => ({
+          resourceKey: createHash("sha256").update(record.lockPath).digest("hex"),
+          ownerIdHash: createHash("sha256").update(`${record.lockPath}:${record.token}`).digest("hex"),
+          processId: process.pid, processInstanceId: PROCESS_INSTANCE_ID,
+        })),
       });
     } catch {
       // Lock diagnostics are advisory and cannot change the protected operation.

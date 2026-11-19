@@ -8,6 +8,14 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Web.Script.Serialization;
 public static class AgentHubReleaseLockPublisher {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetProcessTimes(IntPtr process, out long birth, out long exit, out long kernel, out long user);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool MoveFileExW(string source, string destination, uint flags);
@@ -154,5 +162,38 @@ public static class AgentHubReleaseLockPublisher {
             return result;
         }
 
-private static int Main(string[] args) { return PublishLockDirectoryMode(args); }
+        private static int InspectLockProcess()
+        {
+            try
+            {
+                string input = Console.ReadLine();
+                var serializer = new JavaScriptSerializer();
+                var request = serializer.DeserializeObject(input) as Dictionary<string, object>;
+                if (request == null || request.Count != 2 || Convert.ToInt32(request["protocol"]) != 1)
+                    throw new InvalidOperationException();
+                uint processId = Convert.ToUInt32(request["processId"]);
+                IntPtr handle = OpenProcess(0x101000, false, processId);
+                if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+                try
+                {
+                    long birth, exit, kernel, user;
+                    if (!GetProcessTimes(handle, out birth, out exit, out kernel, out user))
+                        throw new Win32Exception(Marshal.GetLastWin32Error());
+                    uint state = WaitForSingleObject(handle, 0);
+                    if (state != 0 && state != 258) throw new InvalidOperationException();
+                    Console.WriteLine(serializer.Serialize(new Dictionary<string, object> {
+                        { "protocol", 1 }, { "status", "observed" }, { "processId", processId },
+                        { "birthFileTime", birth.ToString() }, { "alive", state == 258 }
+                    }));
+                }
+                finally { CloseHandle(handle); }
+                return 0;
+            }
+            catch { Console.WriteLine("{\"protocol\":1,\"status\":\"unavailable\"}"); return 2; }
+        }
+
+private static int Main(string[] args) {
+    return args.Length == 1 && args[0] == "--inspect-lock-process"
+        ? InspectLockProcess() : PublishLockDirectoryMode(args);
+}
 }

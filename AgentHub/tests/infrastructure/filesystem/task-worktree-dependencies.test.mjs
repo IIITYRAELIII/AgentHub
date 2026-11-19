@@ -17,6 +17,8 @@ import process from "node:process";
 import test from "node:test";
 
 import { prepareTaskWorktreeDependencies } from "../../../src/infrastructure/filesystem/task-worktree-dependencies.mjs";
+import { withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
+import { reuseTaskDependencyInputs } from "../../../src/infrastructure/filesystem/task-dependency-inputs.mjs";
 
 const NPM_CI_ARGS = ["ci", "--include=dev", "--include=optional", "--no-audit", "--no-fund"];
 
@@ -1006,4 +1008,83 @@ test("compatible Task dependency inputs install once and own local cache without
   assert.equal(failedInstalls, 1);
   context.diagnostic(JSON.stringify({ tasks: 2, packagePayloadB: 65536,
     compatibleInstalls: 1, copiedPackageBytes: 0, sharedPayloadLinks: 3, changedInputInstalls: 1 }));
+});
+
+test("shared dependency proof reads each unchanged physical payload once per lease and rechecks later changes", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-shared-proof-"));
+  context.after(() => rmTree(parent));
+  const root = path.join(parent, "task");
+  await writeNpmProject(root, { dependencies: { tiny: "1.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "1.0.0", resolved: "https://registry.example.invalid/tiny.tgz", integrity: "sha512-fixture" } } });
+  const lease = { assertOwned: async () => {} };
+  const events = [];
+  let sharedRoot;
+  let installs = 0;
+  const input = { projectRoot: root, lockfiles: [path.join(root, "package-lock.json")], lease,
+    sharedDependencies: (key, operation) => {
+      sharedRoot = path.join(parent, "inputs", key);
+      return operation({ root: sharedRoot, lease });
+    },
+    runNpm: async (_args, { cwd }) => {
+      installs += 1;
+      await materializeLockedState(cwd);
+      await writeFile(path.join(cwd, "node_modules/tiny/payload.bin"), Buffer.alloc(64 * 1024, 42));
+    } };
+  await prepareTaskWorktreeDependencies(input);
+  await withTaskOperationTiming({ operationId: "repeat-shared", taskId: "task", record: event => events.push(event) },
+    () => prepareTaskWorktreeDependencies(input));
+  const inventories = events.filter(event => event.stage === "dependency-inventory-result");
+  assert.equal(inventories.length, 2);
+  assert.ok(inventories[0].payloadReads > 0);
+  assert.equal(inventories[1].payloadReads, 0);
+  assert.equal(inventories[1].reusedPayloads, inventories[0].payloadReads);
+  assert.equal(installs, 1);
+  assert.equal((await lstat(path.join(sharedRoot, "node_modules/tiny/payload.bin"))).ino,
+    (await lstat(path.join(root, "node_modules/tiny/payload.bin"))).ino);
+  const payload = path.join(root, "node_modules/tiny/payload.bin");
+  const { chmod } = await import("node:fs/promises");
+  await chmod(payload, 0o644);
+  await writeFile(payload, Buffer.alloc(64 * 1024, 43));
+  await assert.rejects(prepareTaskWorktreeDependencies(input), /custody changed/u);
+  assert.equal(installs, 1);
+});
+
+test("shared owner delegates only its exact already-combined lease and preserves every fresh resource fence", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-delegated-deps-"));
+  context.after(() => rmTree(parent));
+  const root = path.join(parent, "task");
+  await writeNpmProject(root);
+  let outerChecks = 0;
+  let sharedChecks = 0;
+  let failShared = false;
+  const lease = { async assertOwned() { outerChecks += 1; } };
+  const sharedLease = { async assertOwned() {
+    await lease.assertOwned();
+    sharedChecks += 1;
+    if (failShared) throw new Error("shared lease lost");
+  } };
+  const sharedRoot = key => path.join(parent, "inputs", key);
+  const [prepared] = await prepareTaskWorktreeDependencies({ projectRoot: root,
+    lockfiles: [path.join(root, "package-lock.json")], lease,
+    sharedDependencies: (key, operation) => operation({ root: sharedRoot(key), lease: sharedLease, coveredLease: lease }),
+    runNpm: async (_args, { cwd }) => materializeLockedState(cwd) });
+  const input = { packageRoot: root, fingerprint: prepared.fingerprint,
+    manifestContent: await readFile(path.join(root, "package.json")),
+    lockfileContent: await readFile(path.join(root, "package-lock.json")), lease,
+    limits: { maxEntriesPerDirectory: 5000, maxTotalDirectoryEntries: 50000 },
+    prepare: () => assert.fail("existing shared input must not reinstall") };
+  for (const covered of [lease, {}]) {
+    outerChecks = 0;
+    sharedChecks = 0;
+    await reuseTaskDependencyInputs({ ...input, withOwner: (key, operation) => operation({
+      root: sharedRoot(key), lease: sharedLease, coveredLease: covered,
+    }) });
+    assert.ok(sharedChecks > 0);
+    assert.equal(outerChecks, sharedChecks * (covered === lease ? 1 : 2));
+  }
+  failShared = true;
+  await assert.rejects(reuseTaskDependencyInputs({ ...input, withOwner: (key, operation) => operation({
+    root: sharedRoot(key), lease: sharedLease, coveredLease: lease,
+  }) }), /shared lease lost/u);
+  assert.equal((await lstat(path.join(root, "node_modules"))).isDirectory(), true);
 });

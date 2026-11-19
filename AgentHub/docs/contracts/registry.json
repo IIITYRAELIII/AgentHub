@@ -337,6 +337,12 @@
       "title": "Local command latency",
       "document": "PERF-001-local-latency.md",
       "paths": [
+        "src/infrastructure/filesystem/task-dependency-inputs.mjs",
+        "src/infrastructure/filesystem/task-worktree-dependencies.mjs",
+        "src/infrastructure/filesystem/task-git-workspace.mjs",
+        "src/infrastructure/process/task-operation-timing.mjs",
+        "src/infrastructure/process/interprocess-lock.mjs",
+        "src/application/hub-mcp-service.mjs",
         "docs/decisions/ADR-HUB-409-startup-journal-work.md",
         "tests/runtime/startup-journal-cost.test.mjs",
         "docs/decisions/ADR-HUB-297-startup-inspection-phases.md",

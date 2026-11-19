@@ -5,11 +5,78 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { createTaskOperationTimingBatchRecorder, measureTaskOperation, measureTaskOperationAwait,
-  withTaskOperationTiming } from "../../src/infrastructure/process/task-operation-timing.mjs";
+  withTaskOperationTiming, recordTaskOperationTiming } from "../../src/infrastructure/process/task-operation-timing.mjs";
 import { TaskGitWorkspaceService, runTaskGitCommand } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { createTaskOperationTimingLogRecorder } from "../../src/infrastructure/persistence/task-operation-timing-log.mjs";
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+
+test("detail checkpoints share the bound while terminal and binding remain visible", async () => {
+  const events = [];
+  await withTaskOperationTiming({ operationId: "bounded-claim", taskId: "task", record: event => events.push(event) }, async () => {
+    for (let index = 0; index < 600; index += 1) {
+      recordTaskOperationTiming("dependency-inventory-result", { entries: index }, { detail: true });
+    }
+    for (let index = 0; index < 20; index += 1) {
+      recordTaskOperationTiming("lock-native-holder", { processId: index }, { critical: true });
+    }
+    await measureTaskOperation("task-binding", () => true);
+  });
+  assert.equal(events.filter(event => event.stage === "dependency-inventory-result").length, 512);
+  assert.equal(events.find(event => event.stage === "trace-summary").suppressedDetailSpans, 92);
+  assert.equal(events.filter(event => event.stage === "lock-native-holder").length, 16);
+  assert.ok(events.some(event => event.stage === "task-binding" && event.phase === "end"));
+  assert.ok(events.some(event => event.stage === "workflow" && event.phase === "end"));
+});
+
+test("operation progress projects the existing timing log and remains non-authoritative after reopen", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-claim-progress-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const logFile = path.join(root, "timing.log");
+  const options = { logFile, maxBytes: 1024 * 1024, maxFiles: 1, maxEvents: 1 };
+  const record = createTaskOperationTimingLogRecorder(options);
+  const identity = { operationId: "progress-original", taskId: "task" };
+  const entered = deferred(), release = deferred();
+  const pending = withTaskOperationTiming({ ...identity, record }, () => measureTaskOperation("dependency-project", async () => {
+    entered.resolve(); await release.promise;
+  }));
+  await entered.promise;
+  assert.equal(record.readProgress(identity).stage, "dependency-project");
+  assert.equal(record.readProgress(identity).live, true);
+  assert.equal(record.readProgress({ ...identity, taskId: "foreign" }), null);
+  const restored = createTaskOperationTimingLogRecorder(options);
+  await restored.restore();
+  assert.equal(restored.readProgress(identity).stage, "dependency-project");
+  assert.equal(restored.readProgress(identity).live, false);
+  assert.equal(restored.readProgress(identity).canonicalOutcome, null);
+  release.resolve();
+  await pending;
+  assert.equal(record.readProgress(identity).phase, "end");
+  assert.equal(record.readProgress(identity).canonicalOutcome, null);
+});
+
+test("a Task lock waiter names the active in-process original without changing ownership", async context => {
+  const { withInterprocessLocks } = await import("../../src/infrastructure/process/interprocess-lock.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-claim-holder-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const events = [], entered = deferred(), release = deferred();
+  const first = withTaskOperationTiming({ operationId: "holder", taskId: "first", record: event => events.push(event) },
+    () => withInterprocessLocks([path.join(root, "resource")], async () => { entered.resolve(); await release.promise; }));
+  await entered.promise;
+  const second = withTaskOperationTiming({ operationId: "waiter", taskId: "second", record: event => events.push(event) },
+    () => withInterprocessLocks([path.join(root, "resource")], async () => true));
+  for (let index = 0; index < 100 && !events.some(event => event.stage === "lock-local-wait" && event.operationId === "waiter"); index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  const observation = events.find(event => event.stage === "lock-local-wait" && event.operationId === "waiter");
+  release.resolve();
+  await Promise.all([first, second]);
+  assert.equal(observation?.holder?.operationId, "holder");
+  assert.equal(observation.holder.taskId, "first");
+  assert.equal(observation.processId, process.pid);
+  assert.ok(/^[a-f0-9]{64}$/u.test(observation.resourceKey));
+  assert.ok(events.some(event => event.stage === "lock-local-acquire" && event.operationId === "waiter" && event.phase === "end"));
+});
 
 test("concurrent operations retain identity, original errors and bounded diagnostics", async () => {
   const events = [], gate = deferred(), started = deferred();
