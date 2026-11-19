@@ -10,7 +10,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair } from "jose";
 
-import { fileTransferPolicy, transferFilename, transferRange } from "../../src/domain/file-transfer.mjs";
+import { fileTransferPolicy, transferFilename, transferRange, TRANSFER_BLOCK_BYTES } from "../../src/domain/file-transfer.mjs";
 import { FileTransferService } from "../../src/infrastructure/filesystem/file-transfer-service.mjs";
 import { FileTransferStore } from "../../src/infrastructure/persistence/file-transfer-store.mjs";
 
@@ -106,6 +106,30 @@ async function createClaimedTransfer(value, { owner, name, bytes }) {
     secret, session, shareId, source };
 }
 
+async function downloadIssuedShare(service, share) {
+  const [, kid, shareId, secret] = /#v1\.([^.]+)\.([^.]+)\.(.+)$/u.exec(share.url);
+  const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
+  const publicJwk = await exportJWK(publicKey);
+  const jkt = await calculateJwkThumbprint(publicJwk, "sha256");
+  const challenge = await service.createClaimChallenge({ kid, shareId, secret,
+    claimId: randomBytes(32).toString("base64url"), publicJwk });
+  const claimProof = await proof(challenge.payload, privateKey, jkt, "agenthub-transfer-claim+jws");
+  const session = await service.claim({ kid, shareId, secret, payload: challenge.payload,
+    proof: claimProof, publicJwk });
+  const plan = await service.createPlan({ credential: session.credential,
+    requestId: randomBytes(32).toString("base64url"), start: 0, end: share.size - 1 });
+  const planProof = await proof(plan.payload, privateKey, jkt, "agenthub-transfer-download+jws");
+  const request = await service.activatePlan({ credential: session.credential,
+    payload: plan.payload, proof: planProof, ipHash: `ip:${shareId}` });
+  const chunks = [];
+  const finalize = await service.streamPlan(request, {
+    write(chunk) { chunks.push(Buffer.from(chunk)); return true; },
+    waitForDrain: async () => {},
+  });
+  await finalize(true);
+  return Buffer.concat(chunks);
+}
+
 test("file transfer preparation creates an immutable managed snapshot and explicit share", async (t) => {
   const value = await fixture();
   t.after(async () => { await value.service.close(); await rm(value.root, { recursive: true, force: true }); });
@@ -124,10 +148,6 @@ test("file transfer preparation creates an immutable managed snapshot and explic
   assert.equal(ready.sha256, createHash("sha256").update(bytes).digest("hex"));
   assert.deepEqual(await readFile(value.service.artifactPath(preparing.id)), bytes);
 
-  await writeFile(source, Buffer.from("changed source"));
-  assert.deepEqual(await readFile(value.service.artifactPath(preparing.id)), bytes,
-    "the managed snapshot must not follow later source changes");
-
   const share = await value.service.createShare({ owner: "device:one", artifactId: preparing.id,
     requestId: "share-1", ttlMs: 3_600_000 });
   assert.equal(share.state, "ready");
@@ -140,6 +160,12 @@ test("file transfer preparation creates an immutable managed snapshot and explic
   const ownerStatus = await value.service.ownerStatus("device:one", source);
   assert.deepEqual(ownerStatus.share, share,
     "create must return the same complete persisted view and capability as owner status");
+  await writeFile(source, Buffer.from("changed source"));
+  assert.deepEqual(await readFile(value.service.artifactPath(preparing.id)), bytes,
+    "the managed snapshot must not follow later source changes");
+  const staleStatus = await value.service.ownerStatus("device:one", source);
+  assert.equal(staleStatus.artifact, null, "changed source identity must not project an old ready snapshot");
+  assert.equal(staleStatus.share, null, "changed source identity must not project an old share as current");
   const [, , kid, shareId, secret] = /^https:\/\/[^/]+\/transfer\/#(v1)\.([^.]+)\.([^.]+)\.(.+)$/u.exec(share.url);
   const inspected = await value.service.inspect({ kid, shareId, secret });
   assert.equal(inspected.name, "пример.bin");
@@ -151,6 +177,135 @@ test("file transfer preparation creates an immutable managed snapshot and explic
     assert.equal((await readFile(path.join(value.dataDir, name))).includes(Buffer.from(secret)), false,
       `raw capability must not be stored in ${name}`);
   }
+});
+
+test("same-path same-size replacement creates one new snapshot while the old share keeps its bytes", async (t) => {
+  const value = await fixture();
+  const services = [value.service];
+  t.after(async () => {
+    await Promise.all(services.map((service) => service.close().catch(() => {})));
+    await rm(value.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+  const owner = "device:replacement";
+  const source = path.join(value.workspace, "same-path.bin");
+  const bytesA = Buffer.alloc(2 * TRANSFER_BLOCK_BYTES, 0x41);
+  const bytesB = Buffer.alloc(bytesA.length, 0x42);
+  await writeFile(source, bytesA);
+  const artifactA = await value.service.prepare({ owner, sourcePath: source, requestId: "prepare-a" });
+  await value.service.waitForPreparation(artifactA.id);
+  const shareA = await value.service.createShare({ owner, artifactId: artifactA.id,
+    requestId: "share-a", ttlMs: 3_600_000 });
+
+  await writeFile(source, bytesB);
+  const stale = await value.service.ownerStatus(owner, source);
+  assert.equal(stale.artifact, null);
+  assert.equal(stale.share, null);
+  await assert.rejects(value.service.createShare({ owner, sourcePath: source, artifactId: artifactA.id,
+    requestId: "share-stale-a", ttlMs: 3_600_000 }), /transfer-source-changed/u,
+  "backend share creation must reject a stale artifact even if a client cached its id");
+
+  const secondStore = new FileTransferStore({ dataDir: value.dataDir, policy: value.policy,
+    instanceId: "replacement-concurrent" });
+  const second = new FileTransferService({ dataDir: value.dataDir, roots: [value.workspace],
+    store: secondStore, policy: value.policy,
+    keyring: { currentKid: "test-v1", keys: { "test-v1": value.key } } });
+  services.push(second);
+  const [left, right] = await Promise.all([
+    value.service.prepare({ owner, sourcePath: source, requestId: "prepare-b-left" }),
+    second.prepare({ owner, sourcePath: source, requestId: "prepare-b-right" }),
+  ]);
+  assert.equal(left.id, right.id, "concurrent creates for one physical source version must converge");
+  assert.notEqual(left.id, artifactA.id);
+  await Promise.all([value.service.waitForPreparation(left.id), second.waitForPreparation(left.id)]);
+  const artifactB = await value.service.status(owner, left.id);
+  assert.equal(artifactB.state, "ready");
+  assert.equal(artifactB.sha256, createHash("sha256").update(bytesB).digest("hex"));
+  assert.deepEqual(await readFile(value.service.artifactPath(artifactB.id)), bytesB);
+
+  await value.service.close();
+  await second.close();
+  const restartedStore = new FileTransferStore({ dataDir: value.dataDir, policy: value.policy,
+    instanceId: "replacement-restarted" });
+  const restarted = new FileTransferService({ dataDir: value.dataDir, roots: [value.workspace],
+    store: restartedStore, policy: value.policy,
+    keyring: { currentKid: "test-v1", keys: { "test-v1": value.key } } });
+  services.push(restarted);
+  const afterRestart = await restarted.ownerStatus(owner, source);
+  assert.equal(afterRestart.artifact.id, artifactB.id);
+  const reused = await restarted.prepare({ owner, sourcePath: source, requestId: "prepare-b-reuse" });
+  assert.equal(reused.id, artifactB.id, "unchanged source may reuse its persisted ready snapshot");
+  const shareB = await restarted.createShare({ owner, artifactId: artifactB.id,
+    requestId: "share-b", ttlMs: 3_600_000 });
+
+  const downloadedA = await downloadIssuedShare(restarted, shareA);
+  const downloadedB = await downloadIssuedShare(restarted, shareB);
+  assert.deepEqual(downloadedA, bytesA, "the old capability remains bound to immutable A bytes");
+  assert.deepEqual(downloadedB, bytesB, "the new capability downloads replacement B bytes");
+  assert.equal(createHash("sha256").update(downloadedA).digest("hex"), shareA.sha256);
+  assert.equal(createHash("sha256").update(downloadedB).digest("hex"), shareB.sha256);
+});
+
+test("same-size replacement during preparation fails closed without publishing mixed bytes", async (t) => {
+  const value = await fixture();
+  t.after(async () => { await value.service.close(); await rm(value.root, { recursive: true, force: true }); });
+  const owner = "device:preparation-replacement";
+  const source = path.join(value.workspace, "preparation-race.bin");
+  const bytesA = Buffer.alloc(129 * TRANSFER_BLOCK_BYTES, 0x61);
+  const bytesB = Buffer.alloc(bytesA.length, 0x62);
+  await writeFile(source, bytesA);
+  const addBlocks = value.store.addBlocks.bind(value.store);
+  let replaced = false;
+  value.store.addBlocks = async (...args) => {
+    if (!replaced) {
+      replaced = true;
+      await writeFile(source, bytesB);
+    }
+    return addBlocks(...args);
+  };
+  const artifact = await value.service.prepare({ owner, sourcePath: source, requestId: "prepare-race" });
+  await assert.rejects(value.service.waitForPreparation(artifact.id), /transfer-source-changed/u);
+  assert.equal(replaced, true);
+  assert.equal((await value.service.status(owner, artifact.id)).state, "failed");
+  await assert.rejects(readFile(value.service.artifactPath(artifact.id)), { code: "ENOENT" });
+
+  const replacement = await value.service.prepare({ owner, sourcePath: source, requestId: "prepare-after-race" });
+  await value.service.waitForPreparation(replacement.id);
+  assert.notEqual(replacement.id, artifact.id);
+  assert.deepEqual(await readFile(value.service.artifactPath(replacement.id)), bytesB);
+});
+
+test("legacy ready artifacts without source identity migrate fail-closed and are never reused", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-transfer-identity-migration-"));
+  const databasePath = path.join(root, "runtime.sqlite");
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`CREATE TABLE transfer_artifacts (
+    id TEXT PRIMARY KEY, owner TEXT NOT NULL, source_key TEXT NOT NULL, request_id TEXT NOT NULL,
+    name TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>0), sha256 TEXT, identity_json TEXT,
+    state TEXT NOT NULL CHECK(state IN ('preparing','publishing','ready','failed','deleting','deleted')),
+    prepared_bytes INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+    pid INTEGER NOT NULL, instance_id TEXT NOT NULL, UNIQUE(owner,request_id));`);
+  legacy.prepare(`INSERT INTO transfer_artifacts
+    (id,owner,source_key,request_id,name,size,sha256,identity_json,state,prepared_bytes,created_at,expires_at,pid,instance_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "device:legacy",
+    "source:legacy", "legacy-request", "legacy.bin", 1, createHash("sha256").update("a").digest("hex"),
+    "{}", "ready", 1, Date.now(), Date.now() + 86_400_000, process.pid, "legacy-instance");
+  legacy.close();
+
+  const policy = fileTransferPolicy({ enabled: true, publicBaseUrl: "https://files.example.test" });
+  const store = new FileTransferStore({ dataDir: root, policy, instanceId: "migration-instance" });
+  t.after(async () => { await store.close(); await rm(root, { recursive: true, force: true }); });
+  await store.initialize();
+  const sourceIdentity = { dev: "1", ino: "2", size: 1, mtimeNs: "3", ctimeNs: "4" };
+  assert.equal(await store.ownerFile("device:legacy", ["source:legacy"], sourceIdentity), null,
+    "unknown legacy identity must not project stale ready state");
+  const replacement = await store.reserve({ owner: "device:legacy", sourceKey: "source:legacy",
+    sourceIdentity, requestId: "replacement-request", name: "legacy.bin", size: 1,
+    availableBytes: 2 * 1024 ** 3 });
+  assert.notEqual(replacement.id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+  const migrated = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    assert.equal(migrated.prepare("SELECT count(*) n FROM pragma_table_info('transfer_artifacts') WHERE name='source_identity_json'").get().n, 1);
+  } finally { migrated.close(); }
 });
 
 test("atomic PoP claim has exactly one winner across independent store connections", async (t) => {

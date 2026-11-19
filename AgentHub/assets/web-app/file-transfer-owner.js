@@ -259,26 +259,21 @@
     const revision = ++owner.revision;
     stopPolling();
     setActions();
-    const priorArtifact = snapshot.artifact?.state === "ready" ? snapshot.artifact : null;
     const intent = owner.pendingCreate ?? {
-      requestId: requestId(), ttlMs: selectedTtl, artifactId: priorArtifact?.id ?? null,
+      requestId: requestId(), prepareRequestId: requestId(), ttlMs: selectedTtl, artifactId: null,
     };
     owner.pendingCreate = intent;
     try {
-      if (!priorArtifact) {
-        const prepared = await owner.request("prepare", { path: owner.path, requestId: requestId() });
-        if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
-        intent.artifactId = prepared.artifact.id;
-        snapshot.artifact = prepared.artifact;
+      const prepared = await owner.request("prepare", { path: owner.path, requestId: intent.prepareRequestId });
+      if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
+      intent.artifactId = prepared.artifact.id;
+      snapshot.artifact = prepared.artifact;
+      if (prepared.artifact.state !== "ready") {
         renderPreparing(snapshot.artifact);
         return;
       }
-      if (intent.artifactId !== priorArtifact.id) {
-        renderUnknown();
-        return;
-      }
       const created = await owner.request("create", {
-        artifactId: intent.artifactId, requestId: intent.requestId, ttlMs: intent.ttlMs,
+        path: owner.path, artifactId: intent.artifactId, requestId: intent.requestId, ttlMs: intent.ttlMs,
       });
       if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
       owner.pendingCreate = null;

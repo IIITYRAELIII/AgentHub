@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS transfer_instances (
 );
 CREATE TABLE IF NOT EXISTS transfer_artifacts (
   id TEXT PRIMARY KEY, owner TEXT NOT NULL, source_key TEXT NOT NULL, request_id TEXT NOT NULL,
-  name TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>0), sha256 TEXT, identity_json TEXT,
+  source_identity_json TEXT, name TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>0), sha256 TEXT, identity_json TEXT,
   state TEXT NOT NULL CHECK(state IN ('preparing','publishing','ready','failed','deleting','deleted')),
   prepared_bytes INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
   pid INTEGER NOT NULL, instance_id TEXT NOT NULL, UNIQUE(owner,request_id)
@@ -89,11 +89,6 @@ CREATE TRIGGER IF NOT EXISTS transfer_audit_no_delete BEFORE DELETE ON transfer_
 CREATE TABLE IF NOT EXISTS transfer_rate (
   key TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL
 );
-CREATE TRIGGER IF NOT EXISTS transfer_artifact_immutable BEFORE UPDATE ON transfer_artifacts
-  WHEN OLD.state='ready' AND (NEW.id IS NOT OLD.id OR NEW.owner IS NOT OLD.owner OR NEW.name IS NOT OLD.name
-    OR NEW.size IS NOT OLD.size OR NEW.sha256 IS NOT OLD.sha256 OR NEW.identity_json IS NOT OLD.identity_json
-    OR NEW.source_key IS NOT OLD.source_key OR NEW.request_id IS NOT OLD.request_id)
-  BEGIN SELECT RAISE(ABORT,'transfer artifact immutable'); END;
 CREATE TRIGGER IF NOT EXISTS transfer_no_share_reopen BEFORE UPDATE ON transfer_shares
   WHEN (OLD.state!='ready' AND NEW.state='ready')
     OR (OLD.state IN ('completed','ambiguous_terminal','revoked','expired','failed') AND NEW.state!=OLD.state)
@@ -101,6 +96,15 @@ CREATE TRIGGER IF NOT EXISTS transfer_no_share_reopen BEFORE UPDATE ON transfer_
     OR NEW.kid IS NOT OLD.kid OR NEW.owner IS NOT OLD.owner OR NEW.request_hash IS NOT OLD.request_hash
     OR NEW.expires_at IS NOT OLD.expires_at
   BEGIN SELECT RAISE(ABORT,'transfer share cannot reopen or change identity'); END;
+`;
+
+const ARTIFACT_IMMUTABLE_TRIGGER = `
+CREATE TRIGGER transfer_artifact_immutable BEFORE UPDATE ON transfer_artifacts
+  WHEN OLD.state='ready' AND (NEW.id IS NOT OLD.id OR NEW.owner IS NOT OLD.owner OR NEW.name IS NOT OLD.name
+    OR NEW.size IS NOT OLD.size OR NEW.sha256 IS NOT OLD.sha256 OR NEW.identity_json IS NOT OLD.identity_json
+    OR NEW.source_key IS NOT OLD.source_key OR NEW.source_identity_json IS NOT OLD.source_identity_json
+    OR NEW.request_id IS NOT OLD.request_id)
+  BEGIN SELECT RAISE(ABORT,'transfer artifact immutable'); END;
 `;
 
 function artifactView(row) {
@@ -123,6 +127,25 @@ function exactText(left, right) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+function sourceIdentityJson(value, { optional = false } = {}) {
+  if (value == null && optional) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw transferError("transfer-invalid-source", 400);
+  }
+  const normalized = {
+    dev: String(value.dev ?? ""),
+    ino: String(value.ino ?? ""),
+    size: Number(value.size),
+    mtimeNs: String(value.mtimeNs ?? ""),
+    ctimeNs: String(value.ctimeNs ?? ""),
+  };
+  if (!normalized.dev || !normalized.ino || !Number.isSafeInteger(normalized.size) || normalized.size < 1
+    || !/^-?\d+$/u.test(normalized.mtimeNs) || !/^-?\d+$/u.test(normalized.ctimeNs)) {
+    throw transferError("transfer-invalid-source", 400);
+  }
+  return JSON.stringify(normalized);
+}
+
 /** Only synchronous SQLite work enters these short transactions. */
 export class FileTransferStore {
   #dataDir; #database; #initializing; #queue = new AsyncSqliteMutationQueue();
@@ -143,6 +166,12 @@ export class FileTransferStore {
           db.exec("BEGIN IMMEDIATE");
           try {
             db.exec(SCHEMA);
+            const artifactColumns = new Set(db.prepare("PRAGMA table_info(transfer_artifacts)").all().map((column) => column.name));
+            if (!artifactColumns.has("source_identity_json")) {
+              db.exec("ALTER TABLE transfer_artifacts ADD COLUMN source_identity_json TEXT");
+            }
+            db.exec("DROP TRIGGER IF EXISTS transfer_artifact_immutable");
+            db.exec(ARTIFACT_IMMUTABLE_TRIGGER);
             db.prepare("INSERT OR IGNORE INTO transfer_meta VALUES ('health_id',?)").run(randomBytes(32).toString("hex"));
             const now = Math.trunc(this.#now());
             db.prepare("INSERT INTO transfer_instances(id,pid,started_at,heartbeat_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET pid=excluded.pid,heartbeat_at=excluded.heartbeat_at")
@@ -190,10 +219,12 @@ export class FileTransferStore {
     await this.initialize();
     return this.#database.prepare("SELECT value FROM transfer_meta WHERE key='health_id'").get().value;
   }
-  reserve({ owner, sourceKey, sourceAliases = [sourceKey], sourceKids = [], requestId, name, size, availableBytes }) {
+  reserve({ owner, sourceKey, sourceAliases = [sourceKey], sourceKids = [], sourceIdentity = null,
+    requestId, name, size, availableBytes }) {
     return this.#tx((db, now) => {
       const aliases = Array.isArray(sourceAliases) ? sourceAliases.map(String) : [];
       const kids = Array.isArray(sourceKids) ? sourceKids.map(String) : [];
+      const sourceIdentityValue = sourceIdentityJson(sourceIdentity, { optional: true });
       if (!aliases.length || aliases.length > 32 || kids.length > 32
         || !aliases.some((alias) => exactText(alias, sourceKey))) {
         throw transferError("transfer-invalid-source", 400);
@@ -209,10 +240,21 @@ export class FileTransferStore {
           }
           throw transferError("transfer-request-conflict", 409);
         }
-        if (existing.name !== name || existing.size !== size) throw transferError("transfer-request-conflict", 409);
+        if (existing.name !== name || existing.size !== size
+          || existing.source_identity_json !== sourceIdentityValue) {
+          throw transferError("transfer-request-conflict", 409);
+        }
         return artifactView(existing);
       }
       this.#recoverPreparations(db, now);
+      if (sourceIdentityValue !== null) {
+        const placeholders = aliases.map(() => "?").join(",");
+        const reusable = db.prepare(`SELECT * FROM transfer_artifacts
+          WHERE owner=? AND source_key IN (${placeholders}) AND source_identity_json=? AND name=? AND size=?
+            AND state IN ('preparing','publishing','ready') ORDER BY created_at DESC LIMIT 1`)
+          .get(owner, ...aliases, sourceIdentityValue, name, size);
+        if (reusable) return artifactView(reusable);
+      }
       const total = db.prepare("SELECT coalesce(sum(size),0) bytes,count(*) count FROM transfer_artifacts WHERE state!='deleted'").get();
       const mine = db.prepare("SELECT coalesce(sum(size),0) bytes,count(*) count FROM transfer_artifacts WHERE owner=? AND state!='deleted'").get(owner);
       const preparing = db.prepare("SELECT count(*) n FROM transfer_artifacts WHERE state IN ('preparing','publishing')").get().n;
@@ -226,8 +268,9 @@ export class FileTransferStore {
         throw transferError("transfer-storage-quota", 429);
       }
       const id = randomUUID();
-      db.prepare("INSERT INTO transfer_artifacts(id,owner,source_key,request_id,name,size,state,created_at,expires_at,pid,instance_id) VALUES(?,?,?,?,?,?,'preparing',?,?,?,?)")
-        .run(id, owner, sourceKey, requestId, name, size, now, now + this.#policy.preparationTtlMs, process.pid, this.#instanceId);
+      db.prepare("INSERT INTO transfer_artifacts(id,owner,source_key,source_identity_json,request_id,name,size,state,created_at,expires_at,pid,instance_id) VALUES(?,?,?,?,?,?,?,'preparing',?,?,?,?)")
+        .run(id, owner, sourceKey, sourceIdentityValue, requestId, name, size, now,
+          now + this.#policy.preparationTtlMs, process.pid, this.#instanceId);
       this.#audit(db, now, "preparing", { artifactId: id });
       return artifactView({ ...db.prepare("SELECT * FROM transfer_artifacts WHERE id=?").get(id), reserved: 1 });
     });
@@ -287,14 +330,16 @@ export class FileTransferStore {
       return artifactView(row);
     });
   }
-  ownerFile(owner, sourceKeys) {
+  ownerFile(owner, sourceKeys, sourceIdentity) {
     return this.#tx((db, now) => {
       const keys = Array.isArray(sourceKeys) ? sourceKeys.map(String) : [];
       if (!keys.length || keys.length > 32) throw transferError("transfer-invalid-source", 400);
+      const sourceIdentityValue = sourceIdentityJson(sourceIdentity);
       this.#recoverPreparations(db, now);
       const placeholders = keys.map(() => "?").join(",");
-      const artifact = db.prepare(`SELECT * FROM transfer_artifacts WHERE owner=? AND source_key IN (${placeholders}) AND state!='deleted' ORDER BY created_at DESC LIMIT 1`)
-        .get(owner, ...keys);
+      const artifact = db.prepare(`SELECT * FROM transfer_artifacts WHERE owner=? AND source_key IN (${placeholders})
+        AND source_identity_json=? AND state!='deleted' ORDER BY created_at DESC LIMIT 1`)
+        .get(owner, ...keys, sourceIdentityValue);
       if (!artifact) return null;
       let share = db.prepare("SELECT t.*,s.bytes_served,s.first_byte_at FROM transfer_shares t LEFT JOIN transfer_sessions s ON s.share_id=t.id WHERE t.artifact_id=? ORDER BY t.created_at DESC LIMIT 1")
         .get(artifact.id);
@@ -314,9 +359,16 @@ export class FileTransferStore {
       };
     });
   }
-  create({ owner, artifactId, requestId, kid, secretHash, ttlMs }) {
+  create({ owner, artifactId, requestId, kid, secretHash, ttlMs,
+    sourceAliases = null, sourceIdentity = null }) {
     return this.#tx((db, now) => {
       if (!TRANSFER_TTLS.includes(ttlMs)) throw transferError("transfer-invalid-expiry", 400);
+      const aliases = sourceAliases === null ? null : sourceAliases.map(String);
+      const sourceIdentityValue = sourceIdentity === null ? null : sourceIdentityJson(sourceIdentity);
+      if ((aliases === null) !== (sourceIdentityValue === null)
+        || (aliases !== null && (!aliases.length || aliases.length > 32))) {
+        throw transferError("transfer-invalid-source", 400);
+      }
       const requestHash = transferHash(JSON.stringify(["agenthub-transfer-create-v1", owner, artifactId,
         requestId, ttlMs]));
       const persistedView = (shareId) => {
@@ -338,6 +390,10 @@ export class FileTransferStore {
       }
       const artifact = db.prepare("SELECT * FROM transfer_artifacts WHERE id=? AND owner=? AND state='ready' AND expires_at>?").get(artifactId, owner, now);
       if (!artifact) throw transferError("transfer-artifact-unavailable", 409);
+      if (aliases && (!aliases.some((alias) => exactText(alias, artifact.source_key))
+        || artifact.source_identity_json !== sourceIdentityValue)) {
+        throw transferError("transfer-source-changed", 409);
+      }
       const shares = db.prepare("SELECT count(*) n FROM transfer_shares WHERE owner=? AND created_at>?").get(owner, now - 86_400_000).n;
       if (shares >= 64) throw transferError("transfer-share-quota", 429);
       const id = randomUUID();

@@ -125,7 +125,8 @@ test("owner dialog performs no publication before explicit create and renders a 
     await page.addScriptTag({ content: ownerSource });
     await page.evaluate(() => {
       const state = {
-        artifact: null,
+        artifact: { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", state: "ready",
+          preparedBytes: 700 * 1024 * 1024, size: 700 * 1024 * 1024 },
         share: null,
         file: { name: "Очень-длинное-имя-данных-🧪-2026.bin", size: 700 * 1024 * 1024 },
         ttlOptions: [3_600_000, 86_400_000],

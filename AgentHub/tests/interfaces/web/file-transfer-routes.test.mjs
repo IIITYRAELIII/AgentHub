@@ -440,10 +440,11 @@ test("owner mutations require authenticated server identity and CSRF", async () 
         "Sec-Fetch-Site": "same-origin",
         "X-Agent-Hub-Transfer-CSRF": "1",
       },
-      body: JSON.stringify({ artifactId, requestId, ttlMs: 3_600_000 }),
+      body: JSON.stringify({ path: "D:/work/report.bin", artifactId, requestId, ttlMs: 3_600_000 }),
     });
     assert.equal(created.status, 201);
     assert.deepEqual(await created.json(), { ok: true, share: canonicalShare });
-    assert.deepEqual(calls.at(-1), ["create", { owner: "local", artifactId, requestId, ttlMs: 3_600_000 }]);
+    assert.deepEqual(calls.at(-1), ["create", { owner: "local", sourcePath: "D:/work/report.bin",
+      artifactId, requestId, ttlMs: 3_600_000 }]);
   });
 });

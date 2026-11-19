@@ -392,10 +392,11 @@ export class FileTransferRoutes {
         return true;
       }
       if (action === "create") {
-        exactShape(body, ["artifactId", "requestId", "ttlMs"]);
+        exactShape(body, ["path", "artifactId", "requestId", "ttlMs"]);
         if (!TRANSFER_ID.test(String(body.artifactId)) || !REQUEST_ID.test(String(body.requestId))
           || !TRANSFER_TTLS.includes(body.ttlMs)) throw transferError("transfer-invalid-request", 400);
-        json(response, 201, { ok: true, share: await this.#service.createShare({ owner, ...body }) });
+        json(response, 201, { ok: true, share: await this.#service.createShare({ owner, sourcePath: body.path,
+          artifactId: body.artifactId, requestId: body.requestId, ttlMs: body.ttlMs }) });
         return true;
       }
       if (action === "revoke") {
