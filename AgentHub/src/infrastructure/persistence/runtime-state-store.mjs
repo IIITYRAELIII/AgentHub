@@ -1,4 +1,4 @@
-import { observeRuntimeWorkerMemory } from "../../application/runtime-worker-memory.mjs";
+import { observeRuntimeWorkerMemory } from "../../domain/runtime-worker-memory.mjs";
 import { renameSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";

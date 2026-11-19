@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { performance } from 'node:perf_hooks';
 import { claimCustodyFixture } from '../fixtures/claim-custody-public-fixture.mjs';
 import { createCommandTraceComposition } from '../../src/composition/command-trace-composition.mjs';
 import { TaskLifecycleService } from '../../src/application/task-lifecycle-service.mjs';
@@ -257,4 +259,116 @@ test('reviewer completion diagnostic lookup failure cannot retain an active invo
   assert.equal(observed?.code,'MCP_COMPLETION_PERSISTENCE_FAILED');
   assert.equal(observed.cause,original);
   assert.equal(observed.errors[1],persistence);
+});
+
+const failureTimingStages = ['task-operation-before-error', 'task-operation-failure-settlement',
+  'task-operation-failure-diagnostic'];
+async function reopenedFailureTimings(f) {
+  await f.trace.close();
+  const trace = createCommandTraceComposition({ databaseFile: path.join(f.root, 'trace.sqlite') });
+  f.traces.push(trace); await trace.initialize();
+  const spans = await trace.service.readCommandTimeline(f.args.request_id);
+  return { trace, spans, timings: spans.filter(span => failureTimingStages.includes(span.stage)) };
+}
+
+test('failure timings survive actual SQLite receipt and diagnostic refusal and same-ID reopen never repeats work',
+  { timeout: 20_000 }, async t => {
+    const f = await setup(t);
+    const writer = new DatabaseSync(path.join(f.root, 'hub.sqlite'));
+    const contender = new DatabaseSync(path.join(f.root, 'hub.sqlite'));
+    contender.exec('PRAGMA busy_timeout = 0');
+    let prepares = 0, original;
+    f.workspaces.prepareOwned = async () => {
+      prepares++;
+      writer.exec('BEGIN IMMEDIATE');
+      try { contender.exec('BEGIN IMMEDIATE'); }
+      catch (error) { original = error; throw error; }
+      assert.fail('the real second SQLite writer must refuse');
+    };
+    try {
+      await f.hub.submitTaskOperation('hub_task_claim', f.args); await f.done.promise;
+      assert.equal(original.code, 'ERR_SQLITE_ERROR');
+      const result = await f.get();
+      assert.equal(result.taskOperation.status, 'pending');
+      assert.equal(result.taskOperation.active, false);
+      assert.equal(result.taskOperation.execution.state, 'unresolved');
+      assert.equal(result.taskOperation.completionFailure, undefined);
+    } finally { writer.exec('ROLLBACK'); writer.close(); contender.close(); }
+    const { trace, spans, timings } = await reopenedFailureTimings(f);
+    assert.deepEqual(timings.map(span => span.stage), failureTimingStages);
+    for (const span of timings) {
+      assert.equal(span.commandId, f.args.request_id);
+      assert.equal(span.outcome, 'failed');
+      assert.ok(Number.isFinite(span.monotonicDurationMs) && span.monotonicDurationMs > 0);
+      assert.equal(span.metadata.errorCode, 'ERR_SQLITE_ERROR');
+      assert.match(span.metadata.errorSha256, /^[a-f0-9]{64}$/u);
+    }
+    assert.equal(timings[2].metadata.diagnosticSaved, false);
+    const fallback = spans.find(span => span.stage === 'task-operation-completion-failure');
+    assert.equal(fallback.metadata.diagnosticSaved, false);
+    assert.equal(fallback.metadata.effectCompleted, false);
+    assert.ok(!JSON.stringify(spans).includes('database is locked'));
+    const opened = await f.open(), peer = f.service(opened, false);
+    const token = peer.contextToken({ provider: 'codex', threadId: `${f.successor.id}-thread` });
+    await peer.submitTaskOperation('hub_task_claim', { ...f.args, context_token: token });
+    assert.equal(prepares, 1);
+    assert.equal((await f.get(peer, token)).taskOperation.status, 'pending');
+    assert.deepEqual(await trace.service.readCommandTimeline(f.args.request_id), spans);
+    t.diagnostic(JSON.stringify(timings.map(({ stage, outcome, monotonicDurationMs }) => ({ stage, outcome, monotonicDurationMs }))));
+  });
+
+test('failure timings distinguish successful diagnostic persistence after failed settlement and ignore a failed trace sink', async t => {
+  const f = await setup(t); let prepares = 0;
+  const observed = [];
+  const trace = f.hub.recordCommandTrace;
+  f.hub.recordCommandTrace = span => { observed.push(span); return trace(span); };
+  let executionAt, executionEndedAt;
+  f.workspaces.prepareOwned = async () => {
+    prepares++; executionAt = performance.now();
+    await new Promise(resolve => setImmediate(resolve)); executionEndedAt = performance.now();
+    throw Object.assign(new Error('private original exception'), { code: 'FIXTURE_WORK' });
+  };
+  f.rawCatalog.markMcpOperationUnknown = () => { throw Object.assign(new Error('private receipt exception'), { code: 'ERR_SQLITE_ERROR' }); };
+  await assert.rejects(f.hub.call('hub_task_claim', f.args), error => {
+    assert.equal(error.code, 'MCP_COMPLETION_PERSISTENCE_FAILED'); return true;
+  });
+  const { spans, timings } = await reopenedFailureTimings(f);
+  assert.deepEqual(timings.map(span => span.stage), failureTimingStages);
+  assert.deepEqual(timings.map(span => span.outcome), ['failed', 'failed', 'succeeded']);
+  assert.ok(timings[0].monotonicDurationMs >= executionEndedAt - executionAt);
+  assert.equal(timings[2].metadata.diagnosticSaved, true);
+  assert.ok(timings.every(span => span.monotonicDurationMs > 0));
+  assert.ok(!JSON.stringify(spans).includes('private original exception'));
+  const calls = observed.length;
+  await f.hub.submitTaskOperation('hub_task_claim', f.args);
+  assert.equal(observed.length, calls); assert.equal(prepares, 1);
+  const failed = await setup(t);
+  const fallback = failed.hub.recordCommandTrace;
+  failed.hub.recordCommandTrace = span => {
+    if (span.stage === failureTimingStages[0]) throw new Error('trace unavailable');
+    return failureTimingStages.includes(span.stage) ? Promise.reject(new Error('trace unavailable')) : fallback(span);
+  };
+  const original = new Error('original must survive');
+  failed.workspaces.prepareOwned = async () => { throw original; };
+  await assert.rejects(failed.hub.call('hub_task_claim', failed.args), error => error === original);
+  assert.equal((await failed.get()).taskOperation.status, 'unknown');
+});
+
+test('successful failure settlement is measured without inventing a diagnostic attempt', async t => {
+  const f = await setup(t);
+  const original = new Error('controlled work failure');
+  f.workspaces.prepareOwned = async () => { throw original; };
+  await assert.rejects(f.hub.call('hub_task_claim', f.args), error => error === original);
+  const { timings } = await reopenedFailureTimings(f);
+  assert.deepEqual(timings.map(span => span.stage), failureTimingStages.slice(0, 2));
+  assert.deepEqual(timings.map(span => span.outcome), ['failed', 'succeeded']);
+  assert.ok(timings.every(span => span.monotonicDurationMs > 0));
+  assert.equal((await f.get()).taskOperation.status, 'unknown');
+});
+
+test('successful work creates no additional failure timing spans', async t => {
+  const f = await setup(t);
+  await f.hub.submitTaskOperation('hub_task_claim', f.args); await f.done.promise;
+  assert.equal((await f.get()).taskOperation.status, 'succeeded');
+  assert.deepEqual((await reopenedFailureTimings(f)).timings, []);
 });

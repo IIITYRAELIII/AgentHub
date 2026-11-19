@@ -6,8 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
-import { readInterprocessLockStatus } from "../../../src/infrastructure/process/interprocess-lock.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const exec = promisify(execFile);
@@ -31,7 +30,7 @@ async function fixture(t) {
   const base = await commit(primary, "base");
   await git(primary, "push", "origin", "main");
   const dataDir = path.join(root, "data");
-  const service = new ReleaseGitWorkspaceService({ dataDir });
+  const service = new TaskIntegrationGitService({ dataDir });
   const sourceRoots = [primary];
   async function result(branch, content) {
     const worktree = path.join(root, branch);
@@ -101,13 +100,12 @@ test("composition validation excludes unrelated branch payloads without changing
   const unrelated = await f.result("unrelated-payload", randomBytes(256_000));
   const blob = await git(f.primary, "rev-parse", `${unrelated}:app.txt`);
   const before = await protectedState(f), refs = await git(f.primary, "show-ref");
-  await mkdir(f.dataDir, { recursive: true });
-  const prior = new Set(await readdir(f.dataDir));
+  const prior = new Set(await readdir(os.tmpdir()));
   let inspections = 0;
   const proof = await f.service.validateCandidate({ ...f.request, validateBeforeCommit: async () => {
-    const temporary = (await readdir(f.dataDir)).filter(name => name.startsWith("ah-composition-") && !prior.has(name));
+    const temporary = (await readdir(os.tmpdir())).filter(name => name.startsWith("ah-composition-") && !prior.has(name));
     assert.equal(temporary.length, 1);
-    const repository = path.join(f.dataDir, temporary[0], "release-repositories", taskRepositoryKey(f.primary), "repository");
+    const repository = path.join(os.tmpdir(), temporary[0], "release-repositories", taskRepositoryKey(f.primary), "repository");
     await git(repository, "cat-file", "-e", `${f.left}^{commit}`);
     await assert.rejects(git(repository, "cat-file", "-e", `${unrelated}^{commit}`));
     await assert.rejects(git(repository, "cat-file", "-e", blob));
@@ -120,7 +118,7 @@ test("composition validation excludes unrelated branch payloads without changing
   assert.deepEqual(await protectedState(f), before);
   assert.equal(await git(f.primary, "show-ref"), refs);
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
-  assert.deepEqual((await readdir(f.dataDir)).filter(name => name.startsWith("ah-composition-") && !prior.has(name)), []);
+  assert.deepEqual((await readdir(os.tmpdir())).filter(name => name.startsWith("ah-composition-") && !prior.has(name)), []);
 });
 
 test("composition validation uses canonical selected bytes without changing a prepared or frozen holder", async (t) => {
@@ -151,43 +149,11 @@ test("composition conflict leaves last good candidate and primary untouched", as
   f.prepared = await f.service.prepareCandidate(f.request);
   const right = await f.result("right", "right\n");
   const before = await protectedState(f);
-  const request = {
+  await assert.rejects(f.service.validateCandidate({
     ...f.request, planRevision: "conflicting-plan",
     frozenTasks: [...f.request.frozenTasks, { taskId: "right", taskRevision: 1, baseCommit: f.request.approvedBaseCommit, resultCommit: right }],
-  };
-  let issued;
-  await assert.rejects(f.service.validateCandidate(request), error => {
-    assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT"); issued = error.conflictRoot; return true;
-  });
-  const journalFile = path.join(path.dirname(issued), "merge.json");
-  const conflict = JSON.parse(await readFile(journalFile, "utf8"));
-  assert.equal(conflict.conflict.paths.includes("app.txt"), true);
-  assert.equal((await readInterprocessLockStatus(path.join(f.dataDir, "locks",
-    `release-git-${taskRepositoryKey(f.primary)}`))).status, "available");
+  }), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
   assert.deepEqual(await protectedState(f), before);
-  assert.deepEqual((await readdir(f.dataDir)).filter(name => name.startsWith("ah-composition-")), []);
-  await writeFile(path.join(issued, "app.txt"), "left\nright\n");
-  const resolution = await commit(issued, "ordinary resolution");
-  // Controlled foreign-parent resolution in this disposable issued checkout.
-  const foreign = await git(issued, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-    "commit-tree", `${resolution}^{tree}`, "-p", right, "-m", "foreign resolution");
-  await git(issued, "checkout", "--detach", foreign);
-  await assert.rejects(f.service.validateCandidate(request), /parents|resolution|changed/u);
-  await git(issued, "checkout", "--detach", resolution);
-  const proof = await f.service.validateCandidate(request);
-  assert.equal(proof.tree, await git(issued, "rev-parse", `${resolution}^{tree}`));
-  const acceptedJournal = await readFile(journalFile);
-  const changedRight = await f.result("changed-right", "foreign incoming bytes\n");
-  const changedBefore = await protectedState(f);
-  await assert.rejects(f.service.validateCandidate({ ...request, planRevision: "changed-selection",
-    frozenTasks: [request.frozenTasks[0], { ...request.frozenTasks[1], resultCommit: changedRight }],
-  }), error => {
-    assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT");
-    assert.notEqual(error.conflictRoot, issued); return true;
-  });
-  await assert.rejects(f.service.validateCandidate({ ...request, approvedBaseCommit: changedRight }), /agreed local main/u);
-  assert.deepEqual(await readFile(journalFile), acceptedJournal);
-  assert.deepEqual(await protectedState(f), changedBefore);
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
 });
 

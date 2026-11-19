@@ -4,13 +4,13 @@ import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { nextRuntimeReleaseVersion } from "../../../src/infrastructure/filesystem/runtime-release-version.mjs";
+import { nextRuntimeReleaseVersion, buildArtifact } from "../../helpers/external-release-recipe.fixture.mjs";
 import { captureRuntimeReleaseBinding, readRuntimePointer, writeRuntimePointer } from "../../../src/infrastructure/filesystem/runtime-installation-custody.mjs";
 import { runtimePointerTransition } from "../../../src/infrastructure/filesystem/runtime-release-retention-policy.mjs";
 import { RuntimeReleaseRetention } from "../../../src/infrastructure/filesystem/runtime-release-retention.mjs";
 import { StorageRetentionService } from "../../../src/application/storage-retention-service.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
-import { buildArtifact } from "../../../src/infrastructure/process/publication-artifacts.mjs";
+
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const native = { skip: process.platform !== "win32" };

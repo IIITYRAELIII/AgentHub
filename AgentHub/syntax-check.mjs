@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import vm from "node:vm";
+import { fileURLToPath } from "node:url";
 
 const SKIPPED_DIRECTORIES = new Set(["data", "node_modules"]);
 const CONTRACT_ID_PATTERN = /^(?:SYS|MSG|TURN|UI|RST|PERF|REL|MCP|USG|UPD|SEC)-\d{3}$/u;
@@ -35,7 +36,7 @@ async function verifyContractRegistry(root) {
   return registry.contracts.length;
 }
 
-async function verifyAgentHubChangelogContracts(root) {
+export async function verifyAgentHubChangelogContracts(root) {
   const changelog = await readFile(path.join(root, "..", "CHANGELOG.md"), "utf8");
   const boundary = "## 2026-08-25 — Контракты Agent Hub фиксируют принятые решения";
   const boundaryIndex = changelog.indexOf(boundary);
@@ -45,7 +46,7 @@ async function verifyAgentHubChangelogContracts(root) {
   const sections = governed.split(/(?=^## )/mu).filter((section) => section.includes("`agent-hub`"));
   for (const section of sections) {
     const heading = section.match(/^## .+$/mu)?.[0] ?? "unknown Agent Hub changelog entry";
-    if (!/^- `Контракты`: (?:`(?:SYS|MSG|TURN|UI|RST|PERF|REL|MCP|USG|UPD)-\d{3}`(?:,\s*`(?:SYS|MSG|TURN|UI|RST|PERF|REL|MCP|USG|UPD)-\d{3}`)*|`none`)/mu.test(section)) {
+    if (!/^- `Контракты`(?:[ \t]*:[ \t]+|[ \t]+—[ \t]+)(?:`(?:SYS|MSG|TURN|UI|RST|PERF|REL|MCP|USG|UPD)-\d{3}`(?:,\s*`(?:SYS|MSG|TURN|UI|RST|PERF|REL|MCP|USG|UPD)-\d{3}`)*|`none`)/mu.test(section)) {
       throw new Error(`${heading} has no valid Контракты field`);
     }
   }
@@ -66,16 +67,21 @@ async function moduleFiles(directory) {
   return files;
 }
 
-const root = import.meta.dirname;
-const contractCount = await verifyContractRegistry(root);
-const governedChangelogCount = await verifyAgentHubChangelogContracts(root);
-if (process.argv.includes("--contracts-only")) {
-  console.log(`Contracts OK: ${contractCount}; changelog entries: ${governedChangelogCount}`);
-  process.exit(0);
+export async function checkSyntax(root = import.meta.dirname, { contractsOnly = false } = {}) {
+  const contractCount = await verifyContractRegistry(root);
+  const governedChangelogCount = await verifyAgentHubChangelogContracts(root);
+  if (contractsOnly) {
+    console.log(`Contracts OK: ${contractCount}; changelog entries: ${governedChangelogCount}`);
+    return;
+  }
+  const files = await moduleFiles(root);
+  for (const file of files) {
+    const source = await readFile(file, "utf8");
+    new vm.SourceTextModule(source, { identifier: file });
+  }
+  console.log(`Syntax OK: ${files.length} modules; contracts: ${contractCount}; changelog entries: ${governedChangelogCount}`);
 }
-const files = await moduleFiles(root);
-for (const file of files) {
-  const source = await readFile(file, "utf8");
-  new vm.SourceTextModule(source, { identifier: file });
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await checkSyntax(import.meta.dirname, { contractsOnly: process.argv.includes("--contracts-only") });
 }
-console.log(`Syntax OK: ${files.length} modules; contracts: ${contractCount}; changelog entries: ${governedChangelogCount}`);

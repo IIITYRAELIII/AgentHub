@@ -52,7 +52,8 @@ async function setup(page) {
   await page.exposeFunction("rotationDesktopControl", async (message) => {
     state.calls.push({ kind: message.action, ...message.params });
     try {
-      const result = message.action === "open-task" ? await service.openTask(message.params)
+      const result = message.action === "select-task" ? await service.select(message.params)
+        : message.action === "open-task" ? await service.openTask(message.params)
         : message.action === "open-turn" ? await service.openTurn(message.params)
         : await service.taskHistory(message.params);
       return { type: "agenthub:control-result", id: message.id, ok: true, result };
@@ -61,7 +62,7 @@ async function setup(page) {
   await page.evaluate(() => {
     const original = window.__agentHubVscode.postMessage;
     window.__agentHubVscode.postMessage = (message) => {
-      if (!["open-task", "open-turn", "task-history"].includes(message.action)) return original(message);
+      if (!["select-task", "open-task", "open-turn", "task-history"].includes(message.action)) return original(message);
       void window.rotationDesktopControl(message).then((data) => {
         window.dispatchEvent(new MessageEvent("message", { data }));
         window.__rotationResponses ??= [];
@@ -233,7 +234,7 @@ for (const oldFirst of [true, false]) test(`production Desktop → representativ
     await page.locator('.stream-tab[data-stream-task-id="stream-a"]').click();
     await page.getByText("Fresh rotated answer", { exact: true }).waitFor();
     assert.equal(await page.getByText("Fresh rotated answer", { exact: true }).count(), 1);
-    assert.equal(state.calls.filter((call) => call.kind === "open-task" && call.streamId === "stream-a").at(-1).threadId, "thread-new");
+    assert.equal(state.calls.filter((call) => call.kind === "select-task" && call.streamId === "stream-a").at(-1).threadId, "thread-new");
     assert.deepEqual(diagnostics, []);
   } finally { await page.close(); await browser.close(); }
 });

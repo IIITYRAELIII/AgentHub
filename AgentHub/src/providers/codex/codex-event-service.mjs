@@ -4,6 +4,7 @@ import {
   appendCodexAgentMessageDelta,
   completeCodexAgentMessage,
   hydrateCodexAgentMessages,
+  codexAgentMessageSourceText,
   startCodexAgentMessage,
 } from "./codex-agent-message-reducer.mjs";
 import {
@@ -14,6 +15,17 @@ import {
   markProviderTurnContent,
   markProviderTurnEvent,
 } from "../../domain/task-runs.mjs";
+
+function upsertCommentaryBlock(dependencies, run, item, sourceItemId) {
+  const block = {
+    id: item.id,
+    sourceItemId,
+    kind: "commentary",
+    text: codexAgentMessageSourceText(item),
+  };
+  if (item.responseAnnotationTarget) block.responseAnnotationTarget = item.responseAnnotationTarget;
+  dependencies.upsertReasoningBlock(run, block);
+}
 
 function startsProviderResponse(method) {
   return String(method ?? "").startsWith("item/")
@@ -117,12 +129,24 @@ export class CodexEventService {
     }
     if (id !== undefined && method) d.logError?.(`Codex server request received: ${method}`);
     const eventTurnId = params.turn?.id ?? params.turnId ?? null;
-    const run = d.forEvent({
+    let run = d.forEvent({
       turnId: eventTurnId,
       threadId: params.threadId,
       provider: "codex",
-      allowThreadFallback: method === "turn/started",
+      allowThreadFallback: false,
     });
+    if (!run && method === "turn/started" && eventTurnId) {
+      const commandId = String(params.clientUserMessageId ?? params.turn?.clientUserMessageId ?? "").trim();
+      if (commandId) {
+        const pending = d.forEvent({ turnId: eventTurnId, threadId: params.threadId,
+          provider: "codex", allowThreadFallback: true });
+        if (pending?.status === "running" && !pending.turnId
+          && pending.providerStart?.state === "requesting"
+          && pending.clientUserMessageId === commandId) run = pending;
+      }
+      // A late task_started from a stopped turn cannot adopt a new unbound
+      // input by Thread alone. The new RPC receipt/exact command readback can.
+    }
     if (run && eventTurnId && eventTurnId === run.turnId && run.status === "running") {
       if (method === "error") {
         // Structured provider retry evidence, never inferred from error text or age.
@@ -277,7 +301,7 @@ export class CodexEventService {
         hydrationReplay: params.agentHubHydrationReplay === true,
       });
       if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
-        d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.itemId ?? "", kind: "commentary", text: item.text });
+        upsertCommentaryBlock(d, run, item, params.itemId ?? "");
       }
       if (delta && params.agentHubHydrationReplay !== true) {
         const reasoning = ["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""));
@@ -323,7 +347,7 @@ export class CodexEventService {
       if (run) {
         const item = startCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
         if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
-          d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.item?.id ?? "", kind: "commentary", text: item.text });
+          upsertCommentaryBlock(d, run, item, params.item?.id ?? "");
         }
         d.startLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, false));
@@ -345,7 +369,7 @@ export class CodexEventService {
       if (run) {
         const item = completeCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
         if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
-          d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.item?.id ?? "", kind: "commentary", text: item.text });
+          upsertCommentaryBlock(d, run, item, params.item?.id ?? "");
         }
         d.completeLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, true));

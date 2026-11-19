@@ -12,7 +12,6 @@ import { readClaimCustodyFence, readClaimCustodySuccessor, configureClaimCustody
 import { claimAdmissionNoEffectEvidence } from "../../domain/task-board-task.mjs";
 
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
-import { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash } from "../../domain/release-preparation.mjs";
 
 import {
   EXPERIMENTS_SYSTEM_KEY,
@@ -31,12 +30,8 @@ import {
   RELEASE_WORKFLOW_SETTING,
   releaseWorkflowEnabled,
   workspaceSettingsWithReleaseWorkflow,
-} from "../../domain/workspace-release-workflow.mjs";
+} from "../../domain/workspace-task-workflow.mjs";
 import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
-import {
-  withReleaseManagerReleasePrimaryWorkspaceRule,
-  withReleasePrimaryWorkspaceRule,
-} from "../../domain/release-primary-workspace-policy.mjs";
 
 const SCHEMA_VERSION = 15;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
@@ -1120,8 +1115,7 @@ export class WorkspaceCatalogStore {
       && INTERSTREAM_MESSAGE_TOOLS.has(operation.toolName)
       && !operation.interstreamContentHash
     ) throw new Error("MCP interstream operation has no admitted content hash");
-    const resultJson = operation?.toolName === "hub_release_prepare"
-      ? JSON.stringify(result ?? null) : compactMcpOperationResult(result);
+    const resultJson = compactMcpOperationResult(result);
     const updated = this.#database.prepare(`
       UPDATE hub_mcp_operations
       SET status = 'succeeded', receipt_state = 'succeeded', result_json = ?, error_text = '', completed_at_ms = ?
@@ -1133,31 +1127,9 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
-  recoverCompactedCleanupPreview(requestId, { argumentsHash, expectedResult, expectedReceipt = null, result, validate } = {}) {
+  recoverCompactedCleanupPreview(requestId, { argumentsHash, expectedResult, result, validate } = {}) {
     return this.#transaction(() => {
       const row = this.mcpOperation(requestId);
-      if (expectedReceipt) {
-        if (row?.status === "succeeded" && row.argumentsHash === argumentsHash
-            && cleanupConfirmationOriginal(row, false)?.absorbed_into_task_id
-            && row.result?.previewRecovery?.kind === "fresh-cleanup-preview-from-unknown-original-v1"
-            && JSON.stringify(row.result.previewRecovery.previousReceipt) === JSON.stringify(expectedReceipt)) return row;
-        const original = cleanupConfirmationOriginal(row, false);
-        if (row?.status !== "unknown" || row.argumentsHash !== argumentsHash || !original?.absorbed_into_task_id
-            || JSON.stringify({ ...row, replayed: undefined }) !== JSON.stringify(expectedReceipt)
-            || !cleanupConfirmationCapsule(result) || result.task.id !== row.taskExecution.taskId
-            || result.absorption?.taskId !== original.absorbed_into_task_id
-            || result.previewRecovery?.kind !== "fresh-cleanup-preview-from-unknown-original-v1"
-            || JSON.stringify(result.previewRecovery.previousReceipt) !== JSON.stringify(expectedReceipt)) {
-          throw new Error("Unknown combined preview original changed");
-        }
-        if (typeof validate !== "function" || validate()?.then) throw new TypeError("Cleanup readback validator must be synchronous");
-        const changed = this.#database.prepare(`UPDATE hub_mcp_operations
-          SET status='succeeded',receipt_state='succeeded',result_json=?,error_text='',completed_at_ms=?
-          WHERE request_id=? AND receipt_state='unknown' AND arguments_hash=? AND task_execution_json=?`)
-          .run(compactMcpOperationResult(result), this.#nowMs(), requestId, argumentsHash, JSON.stringify(row.taskExecution));
-        if (Number(changed.changes) !== 1) throw new Error("Unknown combined preview CAS changed");
-        return this.mcpOperation(requestId);
-      }
       if (row?.status === "succeeded" && row.argumentsHash === argumentsHash && cleanupConfirmationOriginal(row, false)
           && row.result?.previewRecovery?.kind === "fresh-cleanup-preview-from-compacted-original-v1"
           && JSON.stringify(row.result.previewRecovery.previousReceipt?.result) === JSON.stringify(expectedResult)) return row;
@@ -1499,47 +1471,6 @@ export class WorkspaceCatalogStore {
     }
   }
 
-  checkpointMcpPreparation(requestId, { identity, expectedRevision, state, resume = false } = {}) {
-    const id = safeIdentifier(requestId, "MCP request id");
-    return this.#transaction(() => {
-      const row = this.#database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(id);
-      const current = mcpOperationFromRow(row);
-      if (!current || current.toolName !== "hub_release_prepare" || current.operationStatus !== "pending"
-          || ["workspaceId", "streamId", "provider", "threadId", "argumentsHash"].some(key => (
-            current[key] !== identity?.[key]
-          )) || (current.preparationState?.revision ?? 0) !== expectedRevision) {
-        throw new Error("Original preparation identity/revision CAS changed");
-      }
-      if (resume ? !["pending", "unknown"].includes(current.receiptState)
-        : !["pending", "reconciling"].includes(current.receiptState)) {
-        throw new Error("Original preparation receipt cannot checkpoint");
-      }
-      if (resume && !["checking", "paused"].includes(current.preparationState?.phase)) {
-        throw new Error("Original preparation has no proven resumable owner stage");
-      }
-      if (state?.schemaVersion !== 1 || state.revision !== expectedRevision + 1
-          || !["checking", "paused", "composing", "terminal-intent"].includes(state.phase)
-          || typeof state.ownerId !== "string" || !state.ownerId) {
-        throw new Error("Invalid preparation owner checkpoint");
-      }
-      const prior = current.preparationState;
-      const allowed = resume ? ["checking"] : prior == null ? ["checking"]
-        : { checking: ["paused", "composing"], composing: ["terminal-intent"] }[prior.phase] ?? [];
-      if (!allowed.includes(state.phase) || prior && !resume && prior.ownerId !== state.ownerId
-          || prior && (JSON.stringify(prior.envelope) !== JSON.stringify(state.envelope)
-            || prior.sourceRoot !== state.sourceRoot || prior.sourceRootIdentity !== state.sourceRootIdentity)) {
-        throw new Error("Preparation checkpoint owner/transition changed");
-      }
-      const updated = this.#database.prepare(`UPDATE hub_mcp_operations
-        SET preparation_state_json = ?, receipt_state = ?
-        WHERE request_id = ? AND arguments_hash = ? AND receipt_state = ?
-          AND preparation_state_json IS ?`).run(JSON.stringify(state), resume ? "reconciling" : current.receiptState,
-        id, identity.argumentsHash, row.receipt_state, row.preparation_state_json);
-      if (Number(updated.changes) !== 1) throw new Error("Original preparation checkpoint CAS failed");
-      return this.mcpOperation(id);
-    });
-  }
-
   preparationIsolationAuthority(projectRoot) {
     const rows = this.#database.prepare(`SELECT request_id, arguments_hash, preparation_state_json FROM hub_mcp_operations
       WHERE json_extract(preparation_state_json, '$.kind') = 'original-preparation-forward-v1'
@@ -1553,74 +1484,6 @@ export class WorkspaceCatalogStore {
 
   // Append only to the EXISTING original's preparation column. In particular,
   // never convert legacy UNKNOWN to reconciling/success or erase its error.
-  checkpointMcpPreparationForward(requestId, { identity, expectedRevision, legacyHash, state,
-    transfer = false, validate = null } = {}) {
-    const id = safeIdentifier(requestId, "MCP request id");
-    return this.#transaction(() => {
-      const row = this.#database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(id);
-      const current = mcpOperationFromRow(row), prior = current?.preparationState;
-      if (!current || current.toolName !== "hub_release_prepare" || current.status !== "unknown"
-          || current.operationStatus !== "pending" || current.receiptState !== "unknown"
-          || ["workspaceId", "streamId", "provider", "threadId", "argumentsHash"].some(key => current[key] !== identity?.[key])
-          || preparationLegacyHash(current) !== legacyHash
-          || (prior?.revision ?? 0) !== expectedRevision) throw new Error("Forward preparation original/revision CAS changed");
-      if (state?.kind !== FORWARD_PREPARATION || state.schemaVersion !== 2
-          || state.revision !== expectedRevision + 1 || !state.ownerId
-          || !Number.isSafeInteger(state.epoch) || state.epoch < 1
-          || !["checking", "composing", "blocked", "completed"].includes(state.phase)
-          || !Array.isArray(state.events)
-          || JSON.stringify(state.legacy) !== JSON.stringify(preparationLegacyIdentity(current))) {
-        throw new Error("Invalid forward preparation checkpoint");
-      }
-      if (prior ? prior.kind !== FORWARD_PREPARATION || prior.phase === "completed"
-          || JSON.stringify(state.events.slice(0, -1)) !== JSON.stringify(prior.events)
-          || state.events.length !== prior.events.length + 1
-          || JSON.stringify(state.originalPreparation) !== JSON.stringify(prior.originalPreparation)
-          || state.sourceRoot !== prior.sourceRoot || state.sourceRootIdentity !== prior.sourceRootIdentity
-          || JSON.stringify(state.isolation ?? null) !== JSON.stringify(prior.isolation ?? null)
-          || (transfer ? state.epoch !== prior.epoch + 1 || state.phase !== "checking"
-            : state.epoch !== prior.epoch || state.ownerId !== prior.ownerId)
-        : !transfer || state.epoch !== 1 || state.phase !== "checking" || state.events.length !== 1) {
-        throw new Error("Forward preparation owner/history transition changed");
-      }
-      if (transfer || state.phase === "completed") {
-        if (typeof validate !== "function") throw new TypeError("Forward terminal row validator is required");
-        const checked = validate();
-        if (checked?.then) throw new TypeError("Forward terminal row validator must be synchronous");
-      }
-      const updated = this.#database.prepare(`UPDATE hub_mcp_operations SET preparation_state_json = ?
-        WHERE request_id = ? AND status = 'pending' AND receipt_state = 'unknown'
-          AND preparation_state_json IS ?`).run(JSON.stringify(state), id, row.preparation_state_json);
-      if (Number(updated.changes) !== 1) throw new Error("Forward preparation checkpoint CAS failed");
-      return this.mcpOperation(id);
-    });
-  }
-
-  settleMcpPreparationFailure(requestId, { identity, ownerId, expectedRevision, error, definite = false } = {}) {
-    const id = safeIdentifier(requestId, "MCP request id");
-    return this.#transaction(() => {
-      const row = this.#database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(id);
-      const current = mcpOperationFromRow(row);
-      if (!current || current.toolName !== "hub_release_prepare" || current.operationStatus !== "pending"
-          || !["pending", "reconciling"].includes(current.receiptState)
-          || typeof ownerId !== "string" || !ownerId || !Number.isSafeInteger(expectedRevision)
-          || current.preparationState?.ownerId !== ownerId || current.preparationState.revision !== expectedRevision
-          || ["workspaceId", "streamId", "provider", "threadId", "argumentsHash"].some(key => (
-            current[key] !== identity?.[key]
-          ))) return current;
-      const receiptState = definite === true ? "failed" : "unknown";
-      const updated = this.#database.prepare(`UPDATE hub_mcp_operations
-        SET status = ?, receipt_state = ?, error_text = ?, completed_at_ms = ?
-        WHERE request_id = ? AND status = 'pending' AND arguments_hash = ?
-          AND receipt_state = ? AND preparation_state_json IS ?`).run(
-        definite === true ? "failed" : "pending", receiptState,
-        String(error?.message ?? error ?? "preparation outcome is unknown").slice(0, 4000), this.#nowMs(),
-        id, identity.argumentsHash, row.receipt_state, row.preparation_state_json);
-      if (Number(updated.changes) !== 1) throw new Error("Original preparation failure owner CAS changed");
-      return this.mcpOperation(id);
-    });
-  }
-
   bindTaskOperationExecution(requestId, binding) {
     assertNoPendingTaskInterruption(this.#database, binding.taskId);
     const row = this.mcpOperation(requestId);
@@ -1890,12 +1753,7 @@ export class WorkspaceCatalogStore {
     if (!stream) return { workspace: null, stream: null };
     const rawStreamRules = this.#developerRules("stream", stream.id);
     const workspace = this.workspace(stream.workspaceId);
-    const streamContent = releaseWorkflowEnabled(workspace?.settings)
-      ? withReleaseManagerReleasePrimaryWorkspaceRule(
-        effectiveStreamDeveloperRules(rawStreamRules?.content ?? "", stream.settings),
-        stream.settings,
-      )
-      : (rawStreamRules?.content ?? "");
+    const streamContent = effectiveStreamDeveloperRules(rawStreamRules?.content ?? "", stream.settings);
     return {
       workspace: this.#effectiveWorkspaceDeveloperRules(stream.workspaceId),
       stream: streamContent ? {
@@ -1911,10 +1769,7 @@ export class WorkspaceCatalogStore {
   #effectiveWorkspaceDeveloperRules(workspaceId) {
     const stored = this.#developerRules("workspace", workspaceId);
     const settings = this.workspace(workspaceId)?.settings;
-    const content = withReleasePrimaryWorkspaceRule(
-      effectiveWorkspaceDeveloperRules(stored?.content ?? "", settings),
-      settings,
-    );
+    const content = effectiveWorkspaceDeveloperRules(stored?.content ?? "", settings);
     if (!content) return stored;
     return {
       scopeType: "workspace",

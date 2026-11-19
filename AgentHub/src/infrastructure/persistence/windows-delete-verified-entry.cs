@@ -10,6 +10,37 @@ using Microsoft.Win32.SafeHandles;
 // FileDispositionInfo (Microsoft Learn, fileapi.h). The open handle, not the
 // caller's earlier pathname, is the authority for the destructive syscall.
 public static class AgentHubVerifiedEntryDeletion {
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool GetProcessTimes(IntPtr handle, out long created, out long exited, out long kernel, out long user);
+  [DllImport("kernel32.dll")]
+  private static extern bool CloseHandle(IntPtr handle);
+
+  // Read-only lifetime proof. PID reuse retires the recorded creator, never
+  // grants authority over the unrelated new process. Access denied is unknown.
+  public static bool ProcessRetired(int pid, string expectedBirth) {
+    IntPtr handle = OpenProcess(0x00101000, false, pid);
+    if (handle == IntPtr.Zero) {
+      int code = Marshal.GetLastWin32Error();
+      if (code == 87) return true;
+      throw new IOException("Installer worker query unavailable: " + code);
+    }
+    try {
+      uint state = WaitForSingleObject(handle, 0);
+      if (state == 0) return true;
+      if (state != 258) throw new IOException("Installer worker wait unavailable");
+      long created, exited, kernel, user;
+      if (!GetProcessTimes(handle, out created, out exited, out kernel, out user)) {
+        if (WaitForSingleObject(handle, 0) == 0) return true;
+        throw new IOException("Installer worker birth unavailable");
+      }
+      return created.ToString(CultureInfo.InvariantCulture) != expectedBirth || WaitForSingleObject(handle, 0) == 0;
+    } finally { CloseHandle(handle); }
+  }
+
   [StructLayout(LayoutKind.Sequential)]
   private struct FILETIME { public uint Low; public uint High; }
 

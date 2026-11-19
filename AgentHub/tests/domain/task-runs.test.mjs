@@ -16,7 +16,6 @@ import {
   TaskDismissalRegistry,
   TaskRunRegistry,
   serializableTaskRun,
-  shouldAutoObserveTask,
   shouldDeliverObservedCompletion,
   taskRunIsActive,
   taskOccupancyIdentity,
@@ -210,63 +209,6 @@ test("task run factories initialize managed and observed lifecycle state", () =>
   assert.equal(observed.observedInitialResponseText, "часть");
   assert.equal(observed.progressStage, "Работаю");
   assert.equal(observed.startedAt, "2026-07-30T10:15:00.000Z");
-});
-
-test("selected external task is observed automatically only while its turn is active", () => {
-  const task = {
-    provider: "codex",
-    projectRoot: "C:\\Projects\\Main",
-    threadId: "thread-1",
-  };
-  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true } }), false);
-  assert.equal(shouldAutoObserveTask({
-    task: { ...task, provider: "claude" },
-    snapshot: { active: true },
-  }), true);
-  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: false } }), false);
-  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true }, existingRun: {} }), false);
-  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true }, dismissed: true }), false);
-  assert.equal(shouldAutoObserveTask({
-    task,
-    snapshot: { active: true, turnId: "managed-turn" },
-    lastSeenTurnId: "managed-turn",
-  }), false);
-  assert.equal(shouldAutoObserveTask({
-    task,
-    snapshot: { active: true, turnId: "new-external-turn", prompt: "Внешний вопрос" },
-    lastSeenTurnId: "managed-turn",
-  }), true);
-  assert.equal(shouldAutoObserveTask({
-    task,
-    snapshot: { active: true, turnId: "compaction-turn" },
-  }), false);
-  assert.equal(shouldAutoObserveTask({
-    task,
-    snapshot: {
-      active: true,
-      turnId: "probe-turn",
-      prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
-      clientUserMessageId: "agent-hub-context-probe:test",
-    },
-  }), true);
-  assert.equal(shouldAutoObserveTask({
-    task,
-    snapshot: {
-      active: true,
-      turnId: "manual-probe-text-turn",
-      prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
-    },
-  }), true);
-  assert.equal(shouldAutoObserveTask({
-    task,
-    selectedTask: { ...task, threadId: "thread-2" },
-    snapshot: { active: true, turnId: "new-external-turn", prompt: "Внешний вопрос" },
-  }), false);
-  assert.equal(shouldAutoObserveTask({
-    task: { ...task, streamId: "stream-1" },
-    selectedTask: { ...task, streamId: "stream-1", threadId: "thread-2" },
-    snapshot: { active: true, turnId: "new-external-turn", prompt: "Внешний вопрос" },
-  }), false);
 });
 
 function run(overrides = {}) {

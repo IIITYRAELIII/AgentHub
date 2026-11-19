@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { releaseTaskNetProjections } from "../../../src/infrastructure/filesystem/release-task-net-projection.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 
 const exec = promisify(execFile);
 
@@ -66,7 +66,7 @@ test("one exact automatic integration keeps its order without first-parent bagga
   ];
   const proofs = await releaseTaskNetProjections({ tasks, baseCommit: base, git });
   assert.equal(proofs.get("task")?.orderPreserving, true);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(root, "data") });
   const candidate = await service.prepareCandidate({
     projectRoot: primary, approvedBaseCommit: base, planRevision: "single-net", frozenTasks: tasks,
   });

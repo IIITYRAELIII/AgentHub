@@ -27,18 +27,21 @@ Original-command worker traces retain numeric read/batch/revision measurements,
 including completed phases on callback failure. Synthetic work counts and local
 timings are not production speedup or a changed readiness/ACK contract.
 
-The startup shell can listen after instance ownership while SQLite integrity is
+The startup shell can listen after instance ownership while data preparation is
 pending, using the existing MiniAppServer and browser health polling. The same
 server's later activation keeps its address and auth. Time to listener, first
 HTTP response and actual startup-screen display are distinct from completed
-integrity, business availability and Ready; none substitutes for another.
+data preparation, business availability and Ready; none substitutes for another.
 
-Startup SQLite inspection keeps its full detached DB/WAL integrity check while
-executing synchronous inspection outside the caller event loop. Existing
+Ordinary startup does not copy DB/WAL or run an integrity inspection. Existing
+storage owners open the data and propagate real opening errors; an ordinary
+failure does not quarantine or replace the database. Only an already persisted
+recovery marker/intent continues the existing recovery protocol (ADR-HUB-439).
+That special path retains its detached DB/WAL check outside the caller event loop. Existing
 original-startup phases distinguish DB/WAL copy bytes, query round trip, worker
 open/check/close and cleanup. These bounded numeric phases contain no paths or
-content; logging failure cannot alter recovery. Full required work still gates
-readiness, and event-loop isolation alone does not prove earlier web availability.
+content; logging failure cannot alter recovery. Actual store opening and any
+saved recovery still gate readiness; tiny fixture timing is not production SLO evidence.
 
 ## SQLite capture deadline coverage
 
@@ -166,6 +169,15 @@ activities are explicit projection metadata, not deletion from the transcript.
 Append copies only the groups it mutates. Serialized rollout-cache budgets are
 32 MiB ordinary and 16 MiB active; these are not total process-heap limits.
 Desktop paged history clones only each selected cached turn.
+
+The same rollout cache retains native phase/item data for at most eight latest
+assistant items, retaining paired raw and projected text under the existing
+200,000-character live-preview bound per representation. Those bytes participate
+in its serialized cache budget. Full terminal
+content and explicit trace-source reads retain their existing boundaries.
+Each retained item also carries one record position and append-generation token
+from that cache. A rewrite or cache reconstruction starts a new token. These
+small scalar fields participate in the same budget and require no extra read.
 
 Explicit “All stages” reads use the existing history owner and rollout worker,
 without provider calls, history writes or automatic polling. They stream a fixed
@@ -445,18 +457,9 @@ the Task Git snapshot and `dev` integration outside provider admission and
 terminal-delivery latency. Await prepares PreRelease before committing acceptance
 under the existing Workspace Await and Task ownership boundaries. A failed
 preparation leaves the Task in Test (ADR-0055). It does not run release tests,
-builds or deployment. Active release generations never delay later Task work or
-Await acceptance.
+builds or deployment. There is no release worker/generation workload (ADR-HUB-463).
 
-`hub_release_run` measures and persists only bounded admission before returning
-its ACK. Candidate composition, validation, Git/network publication, deployment
-and finalization run after the response under the durable operation owner. Short
-SQLite and identity CAS sections do not enclose tests, child processes, network
-requests or repository publication. Queue/lease time, stage duration, retries,
-waiting reason and per-target effect are separate measurements; transport timeout
-is not operation latency and cannot create a second operation.
-
-Release validation admits independent files against a target of 40% of total
+The standalone test runner admits independent files against a target of 40% of total
 machine CPU capacity and 40% of physical RAM for the whole test process tree,
 including Git, browsers and helpers. Other applications reduce available
 headroom. Admission retains one-core and estimated resident-memory demand until
@@ -731,6 +734,12 @@ Thread. Recovery commits only the addressed turn positions and their history
 search documents through the existing asynchronous SQLite mutation owner.
 Already repaired pages remain read-only; stale cached or delayed history cannot
 replace the durable `terminal-ledger` authority.
+The persisted user-recovery version includes attachment recovery. Version-1
+pages receive one bounded upgrade through the same owner. Version-2 pages do
+not repeat terminal payload reads or enter the mutation lane solely for recovery.
+This attachment upgrade does not invalidate the completed global Journal
+terminal-history backfill. Recent startup recovery and old-page repair retain
+their own bounded recovery version instead of rewriting unopened Threads.
 
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has

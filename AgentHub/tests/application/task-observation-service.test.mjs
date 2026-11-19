@@ -507,7 +507,7 @@ test("TaskObservationService retains unconfirmed Codex activity without deliveri
   assert.equal(state.events.some(([kind]) => kind === "complete" || kind === "finish-progress"), false);
 });
 
-test("ordinary observation retries canonical recovery for its exact managed UNKNOWN without dismissing it", async () => {
+test("current-process UNKNOWN observation preserves identity without invoking old-run recovery", async () => {
   const state = fixture({ snapshot: { turnId: "turn-original", activityUnknown: true, status: "unknown", answer: "" } });
   const run = { provider: "codex", observer: false, executionOwner: "hub", threadId: "thread-original",
     turnId: "turn-original", clientUserMessageId: "message-original" };
@@ -518,7 +518,7 @@ test("ordinary observation retries canonical recovery for its exact managed UNKN
     recovered.push(value);
   };
   await state.service.poll(run);
-  assert.deepEqual(recovered, [run]);
+  assert.deepEqual(recovered, []);
   assert.equal(state.currentRun(), run);
   assert.equal(state.completed.length, 0);
   assert.equal(run.activityUnknown, true);

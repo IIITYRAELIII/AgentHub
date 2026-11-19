@@ -15,6 +15,59 @@ function memoryCheckpoint() {
   };
 }
 
+test("active file progress separates execution, prior checkpoint wait and its own write before terminal timing", async () => {
+  const firstWrite = Promise.withResolvers(), releaseFirstWrite = Promise.withResolvers();
+  const releaseSecond = Promise.withResolvers(), secondQueued = Promise.withResolvers();
+  const events = [], terminals = [];
+  let writes = 0;
+  const checkpoint = memoryCheckpoint();
+  const write = checkpoint.write;
+  checkpoint.write = async value => {
+    if (++writes === 1) { firstWrite.resolve(); await releaseFirstWrite.promise; }
+    await write(value);
+  };
+  const operation = runCheckpointedTestFiles(["first", "second"], {
+    suite: "unit", identity: "addressed-original", checkpoint, concurrency: 2,
+    execution: async () => ({ parallel: true }), log() {}, onFile: value => terminals.push(value),
+    onProgress: value => {
+      events.push(value);
+      if (value.file === "second" && value.phase === "checkpoint-queued") secondQueued.resolve();
+    },
+    run: async (file, observe) => {
+      observe("child-closed", { pid: file === "first" ? 123 : 456, arguments: "private arguments" });
+      observe("cleanup");
+      if (file === "second") await releaseSecond.promise;
+      observe("cleanup-finished");
+    },
+  });
+  try {
+    await firstWrite.promise;
+    releaseSecond.resolve();
+    await secondQueued.promise;
+    assert.equal(terminals.length, 0, "blocked persistence is not a completed file");
+    assert.equal(events.some(event => event.file === "second" && event.phase === "checkpoint-writing"), false);
+    assert.ok(events.every(event => event.identity === "addressed-original" && event.invocationId === events[0].invocationId));
+    assert.equal(JSON.stringify(events).includes("private arguments"), false);
+  } finally { releaseSecond.resolve(); releaseFirstWrite.resolve(); await operation; }
+  assert.deepEqual(events.filter(event => event.file === "second").map(event => event.phase),
+    ["execution", "child-closed", "cleanup", "cleanup-finished", "checkpoint-queued", "checkpoint-writing", "finished"]);
+  assert.equal(terminals.length, 2);
+  assert.equal(events.findLast(event => event.file === "second").pid, 456, "checkpoint waiting retains the already observed child identity");
+  assert.deepEqual(Object.keys(checkpoint.value().suites.unit.completedFingerprints).sort(), ["first", "second"]);
+});
+
+test("progress sink failure never changes successful evidence or the original test failure", async () => {
+  const original = new Error("actual test failure");
+  const checkpoint = memoryCheckpoint();
+  await assert.rejects(runCheckpointedTestFiles(["good", "bad"], {
+    suite: "unit", identity: "original", checkpoint, log() {},
+    onProgress() { throw new Error("diagnostic sink unavailable"); },
+    run: async file => { if (file === "bad") throw original; },
+  }), error => error.errors[0] === original);
+  assert.equal(checkpoint.value().suites.unit.completedFingerprints.good, "unchanged");
+  assert.deepEqual(checkpoint.value().suites.unit.failedFiles, ["bad"]);
+});
+
 test("failed file reports bounded owner facts before a running sibling and preserves its exact error", async () => {
   let releaseSibling, reportFailure;
   const sibling = new Promise(resolve => { releaseSibling = resolve; });

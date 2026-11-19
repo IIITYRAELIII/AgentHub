@@ -10,7 +10,6 @@ import { TaskRunRegistry, createManagedTaskRun, serializableTaskRun, markProvide
   markProviderTurnAccepted, localExecutionIdentity } from "../../src/domain/task-runs.mjs";
 import { ProviderRunTerminalStore } from "../../src/infrastructure/persistence/provider-run-terminal-store.mjs";
 import { restorePersistedTaskRun } from "../../src/composition/runtime-state-restoration-composition.mjs";
-import { CodexRecoveryService } from "../../src/providers/provider-recovery-services.mjs";
 import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
 import { createHubRuntimeSnapshot, restoreHubRuntimeSnapshot } from "../../src/application/hub-runtime-state-coordinator.mjs";
 import { TaskSelectionStore } from "../../src/application/task-selection-store.mjs";
@@ -360,7 +359,7 @@ test("local execution retirement ignores forged snapshot release flags without l
   assert.throws(() => f.store.recordLocalExecutionRetirement({
     identity: localExecutionIdentity(f.saved),
     proof: { kind: "system-restart-after-local-execution", source: "pid-reused" },
-  }), /boot proof/u);
+  }), /local lifecycle proof/u);
   assert.equal(f.store.getLocalExecutionRetirement(localExecutionIdentity(f.saved)), null);
 });
 
@@ -448,58 +447,6 @@ test("local execution retirement refuses missing foreign ambiguous and supersede
     if (replacement) assert.equal(f.taskRuns.forTask(replacement), replacement);
     else assert.equal(f.taskRuns.forEvent({ turnId: f.saved.turnId }), f.run, variant);
   }
-});
-
-test("local execution retirement precedes provider reads and current writer still fences new input", async t => {
-  const f = await localRetirementFixture(t);
-  let reads = 0;
-  let interrupts = 0;
-  const noEffect = async () => {};
-  const recovery = new CodexRecoveryService({
-    retireLocalExecutionAfterReboot: run => f.service.retireLocalExecutionAfterReboot(run),
-    transportRunning: () => true, readTaskSnapshot: noEffect, startTransport: noEffect,
-    initialize: noEffect, isCodex: () => true, finishInterrupted: noEffect,
-    readThread: async () => { reads += 1; }, autoApprove: () => false,
-    restartRequested: () => false, finishProgress: noEffect, completeRun: noEffect,
-    recoveredAnswer: () => "", setProgressStage: noEffect, launchTurn: async () => { interrupts += 1; },
-    reindexRun: noEffect, scheduleObservedRun: noEffect, startTyping: noEffect, saveState: noEffect,
-    telegram: noEffect, consumeTracker: noEffect, finalizeDelivery: noEffect,
-  });
-  await recovery.recover(f.run, { reconcileOnly: true });
-  assert.equal(reads, 0, "No Thread/history hydration or current provider interrupt");
-  assert.equal(interrupts, 0);
-  let activity = "active";
-  let starts = 0;
-  const deferred = [];
-  const coordinator = new RunCoordinator({
-    taskRuns: f.taskRuns, providers: { call: async () => assert.fail("Retirement cannot authorize a steer to the external writer") },
-    externalActivity: async () => ({ state: activity, executionOwner: "desktop" }),
-    repositoryConflict: async () => null,
-    deferInput: async (_input, _files, options) => {
-      deferred.push(options); return { item: { id: "queued-same-original" }, duplicate: false };
-    },
-    beginRun: async () => { starts += 1; return { id: "next-run" }; },
-    launchTurn: noEffect, rollbackAdmission: noEffect,
-  });
-  const target = { ...f.run, clientUserMessageId: "next-command" };
-  assert.equal((await coordinator.deferredOccupancy(target)).occupied, true);
-  await coordinator.start("next original", [], { target });
-  await assert.rejects(coordinator.steer({ input: "explicit current action", target,
-    clientUserMessageId: "next-steer-command" }), /another Codex runtime owns the writer/u);
-  await assert.rejects(coordinator.steer({ input: "old exact action", target: {
-    ...target, steerTargetRunId: f.run.id, steerTargetTurnId: f.run.turnId,
-  }, clientUserMessageId: "old-exact-command" }), /targeted managed turn is no longer active/u);
-  activity = "unknown";
-  await coordinator.start("next original", [], { target });
-  await assert.rejects(coordinator.steer({ input: "ambiguous external action", target,
-    clientUserMessageId: "unknown-steer-command" }), /another Codex runtime owns the writer/u);
-  assert.equal(starts, 0);
-  assert.deepEqual(deferred.map(value => value.conflictKind), ["task-running", "activity-unknown"]);
-  activity = "inactive";
-  assert.equal((await coordinator.deferredOccupancy(target)).occupied, false);
-  assert.equal((await coordinator.start("next original", [], { target })).started, true);
-  assert.equal(starts, 1);
-  assert.equal(f.taskRuns.forEvent({ turnId: f.run.turnId }), f.run);
 });
 
 test("admission propagates the exact diff fence failure and original command context before provider launch", async () => {

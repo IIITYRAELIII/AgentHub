@@ -2361,8 +2361,8 @@ test("known dev sibling context is preview-only while unrelated dev work is pres
   await git(root, "clone", "--bare", "--no-local", root, origin);
   await git(root, "remote", "add", "origin", origin);
   const main = await git(root, "rev-parse", "main");
-  const { ReleaseGitWorkspaceService } = await import("../../../src/infrastructure/filesystem/release-git-workspace.mjs");
-  const release = new ReleaseGitWorkspaceService({ dataDir: path.join(dataDir, "publication") });
+  const { TaskIntegrationGitService } = await import("../../../src/infrastructure/filesystem/task-integration-git.mjs");
+  const release = new TaskIntegrationGitService({ dataDir: path.join(dataDir, "publication") });
   await assert.rejects(release.prepareCandidate({
     projectRoot: root, workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     planRevision: "a".repeat(64), approvedBaseCommit: main,

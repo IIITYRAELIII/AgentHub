@@ -5,6 +5,8 @@ const context = new AsyncLocalStorage();
 const MAX_DETAIL_SPANS = 512;
 // Fixed diagnostic classes only; no argv, paths or caller-provided stage labels.
 const AGGREGATE_STAGES = new Set(["git-child", "owned-command", "lease-assert", "process-guard",
+  "dependency-project", "dependency-inventory", "dependency-full-proof", "dependency-npm",
+  "dependency-installed-lock-proof", "lock-local-acquire", "task-binding", "mcp:receipt",
   "native-retire:owned-setup", "native-retire:current", "native-retire:source-pins", "native-retire:archive-read",
   "native-retire:archive-lease-wait", "native-retire:archive-intake", "native-retire:archive-verification", "native-retire:native-call",
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
@@ -39,6 +41,8 @@ function emit(state, event) {
   const started = performance.now();
   try {
     const result = state.record({ component: "task-operation-timing", operationId: state.operationId,
+      ...(state.releaseOperationId ? { releaseOperationId: state.releaseOperationId, processId: process.pid,
+        ...(state.ownerEpoch === undefined ? {} : { ownerEpoch: state.ownerEpoch }) } : {}),
       traceId: state.traceId,
       ...(state.generation === undefined ? {} : { generation: state.generation }),
       taskId: state.taskId, at: new Date().toISOString(), ...event });
@@ -108,6 +112,8 @@ export function createTaskOperationTimingBatchRecorder(writeBatch, { maxEvents =
         // This second, bounded diagnostic write reports the cost of the final
         // summary batch. Its own latency is the one explicitly unmeasured tail.
         writeBatch([{ component: event.component, operationId: event.operationId,
+          ...(event.releaseOperationId ? { releaseOperationId: event.releaseOperationId, processId: event.processId,
+            ...(event.ownerEpoch === undefined ? {} : { ownerEpoch: event.ownerEpoch }) } : {}),
           traceId: event.traceId, taskId: event.taskId,
           ...(event.generation === undefined ? {} : { generation: event.generation }), at: new Date().toISOString(),
           stage: "timing-sink-final", phase: "checkpoint", finalBatchWriteMs,
@@ -149,16 +155,32 @@ export async function measureTaskOperation(stage, operation, { detail = false, .
   }
 }
 
-export function recordTaskOperationTiming(stage, metadata = {}) {
-  emit(context.getStore(), { stage, phase: "checkpoint", ...metadata });
+export function recordTaskOperationTiming(stage, metadata = {}, { detail = false, critical = false } = {}) {
+  const state = context.getStore();
+  if (state && critical && state.criticalCheckpoints++ >= 16) {
+    state.suppressed += 1;
+    return;
+  }
+  if (state && detail && state.details++ >= MAX_DETAIL_SPANS) {
+    state.suppressed += 1;
+    return;
+  }
+  emit(state, { stage, phase: "checkpoint", ...metadata });
 }
 
-export function withTaskOperationTiming({ operationId, taskId, generation, record }, operation) {
+export function taskOperationTimingIdentity() {
+  const state = context.getStore();
+  return state ? { operationId: state.operationId, taskId: state.taskId, traceId: state.traceId } : null;
+}
+
+export function withTaskOperationTiming({ operationId, taskId, generation, releaseOperationId, ownerEpoch, record }, operation) {
   if (!operationId || typeof record !== "function") return operation();
   const state = { operationId: String(operationId).slice(0, 512), taskId: String(taskId ?? "").slice(0, 160),
+    ...(releaseOperationId ? { releaseOperationId: String(releaseOperationId).slice(0, 200),
+      ...(Number.isSafeInteger(ownerEpoch) ? { ownerEpoch } : {}) } : {}),
     ...(Number.isSafeInteger(generation) && generation > 0 ? { generation } : {}),
     traceId: ++nextTraceId,
-    record, sequence: 0, details: 0, suppressed: 0, closed: false, aggregates: new Map(),
+    record, sequence: 0, details: 0, criticalCheckpoints: 0, suppressed: 0, closed: false, aggregates: new Map(),
     synchronousRecordMs: 0, maxSynchronousRecordMs: 0 };
   return context.run(state, async () => {
     const loopDelay = monitorEventLoopDelay({ resolution: 20 });

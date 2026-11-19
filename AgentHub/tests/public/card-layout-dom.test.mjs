@@ -97,13 +97,27 @@ function openStreamCard() {
   }
   // Роли выключены, пока карточка не привязана к Stream (app.js: disabled = !task?.streamId).
   // Проверяется раскладка и работа включённого переключателя, поэтому фикстура его включает.
-  for (const role of ["[data-dialog-stream-release-manager]", "[data-dialog-stream-team-lead]"]) {
+  for (const role of ["[data-dialog-stream-task-acceptance]", "[data-dialog-stream-team-lead]"]) {
     dialog.querySelector(role).disabled = false;
   }
 }
 
 const right = (element) => Math.round(element.getBoundingClientRect().right);
 const left = (element) => Math.round(element.getBoundingClientRect().left);
+
+function openManagedRoleCard() {
+  window.AgentHub.setWorkspaces([{ id: "role-workspace", name: "Role Workspace", settings: {} }],
+    ["workspace:role-workspace", "notes"]);
+  window.AgentHub.setTasks([{ id: "role-task", workspaceId: "role-workspace", workspaceName: "Role Workspace",
+    streamId: "role-stream", streamName: "Executor", streamOrdinal: 1, provider: "codex", agentLabel: "Codex",
+    selected: true, status: "ready", statusLabel: "Готов", running: false, unread: false,
+    streamSettings: {}, messages: [] }]);
+  window.AgentHub.openStream("role-workspace", "role-stream");
+  window.AgentHub.showSelectedTask();
+  // Use the application action so the mobile controller opens its own dialog
+  // portal. showModal under the desktop chat holder is hidden on mobile.
+  document.querySelector("[data-dialog-settings-toggle]").click();
+}
 
 test("переключатели карточки Stream стоят на одной вертикали", async () => {
   const { chromium } = await import("playwright");
@@ -160,58 +174,84 @@ for (const width of [1440, 390]) test(`переключатель роли ос�
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await openFixture(page);
-    await page.evaluate(openStreamCard);
-    const releaseManager = page.locator("[data-dialog-stream-release-manager]");
-    assert.equal(await page.locator(".stream-release-manager-setting .switch-text").textContent(), "Релиз-менеджер");
+    await page.evaluate(openManagedRoleCard);
+    assert.equal(page.url(), "http://agent-hub.test/");
+    assert.equal(await page.title(), "Agent Hub");
+    const releaseManager = page.locator("[data-dialog-stream-task-acceptance]");
+    assert.equal(await page.locator(".stream-task-acceptance-setting .switch-text").textContent(), "Релиз-менеджер");
     assert.equal(await releaseManager.isChecked(), false);
 
-    await page.locator(".stream-release-manager-setting .switch-track").click();
+    assert.equal(await page.locator(".stream-task-acceptance-setting .switch-track").isVisible(), true,
+      JSON.stringify(await page.locator(".stream-task-acceptance-setting").evaluate(element => {
+        const result = [];
+        for (let node = element; node; node = node.parentElement) {
+          const style = getComputedStyle(node), rect = node.getBoundingClientRect();
+          result.push({ tag: node.tagName, className: node.className, hidden: node.hidden,
+            display: style.display, width: rect.width, height: rect.height });
+        }
+        return result;
+      })));
+
+    await page.locator(".stream-task-acceptance-setting .switch-track").click();
     assert.equal(await releaseManager.isChecked(), true, "клик по тумблеру не переключил роль");
 
-    await page.locator(".stream-release-manager-setting .switch-text").click();
+    await page.locator(".stream-task-acceptance-setting .switch-text").click();
     assert.equal(await releaseManager.isChecked(), false, "клик по подписи не переключил роль");
 
-    await page.locator(".stream-release-manager-setting .stream-role-help").click();
+    await page.locator(".stream-task-acceptance-setting .stream-role-help").click();
     assert.equal(await releaseManager.isChecked(), false, "знак вопроса переключил роль");
-    assert.equal(await page.locator("#stream-release-manager-note").isVisible(), true,
+    assert.equal(await page.locator("#stream-task-acceptance-note").isVisible(), true,
       "знак вопроса не открыл пояснение роли");
-    const instructions = await page.locator("#stream-release-manager-note").textContent();
-    assert.match(instructions, /связанный чек-лист/u);
-    assert.match(instructions, /сохранив карточки и историю/u);
+    const instructions = await page.locator("#stream-task-acceptance-note").textContent();
+    assert.match(instructions, /установи именно из него/u);
+    assert.match(instructions, /правь прямо в PreRelease|пакетом прямо в PreRelease/u);
+    assert.match(instructions, /GitHub Release/u);
+    assert.match(instructions, /только если этого требуют правила Workspace/u);
+    assert.match(instructions, /после уже опубликованного выпуска относятся к следующему/u);
+    assert.doesNotMatch(instructions, /hub_release_|останови работу исполнителей|заморозь включённые|релизный конвейер/iu);
     assert.doesNotMatch(instructions, /архитектор|Architect/iu);
     assert.deepEqual(errors, []);
     if (process.env.AGENT_HUB_QA_SCREENSHOT_DIR) {
       await mkdir(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, { recursive: true });
-      await page.screenshot({ path: path.join(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, `release-manager-${width}.png`) });
+      await page.screenshot({ path: path.join(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, `task-acceptance-${width}.png`) });
     }
   } finally {
     await browser.close();
   }
 });
 
-test("переключатель релизного процесса Workspace кликается и выровнен по правому краю", async () => {
+test("переключатель веток задач Workspace кликается и выровнен по правому краю", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);
   try {
     const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
     await openFixture(page);
     await page.evaluate(() => document.querySelector("[data-workspace-card-modal]").showModal());
-    const release = page.locator("[data-workspace-release-workflow]");
+    const release = page.locator("[data-workspace-task-workflow]");
     assert.equal(await release.isChecked(), false);
+    assert.equal(await page.locator(".workspace-task-workflow-switch .switch-text").textContent(), "Релизный процесс");
+    await page.getByLabel("Что включает релизный процесс", { exact: true }).click();
+    const tooltip = page.locator("[data-workspace-task-workflow-tooltip]");
+    assert.equal(await tooltip.isVisible(), true);
+    assert.match(await tooltip.innerText(), /36 символов/u);
+    assert.match(await tooltip.innerText(), /ВСЕ задачи Workspace/u);
+    assert.match(await tooltip.innerText(), /только если этого требуют правила Workspace/u);
+    assert.match(await tooltip.innerText(), /после уже опубликованного выпуска относятся к следующему/u);
+    await page.getByLabel("Что включает релизный процесс", { exact: true }).click();
 
-    await page.locator(".workspace-release-workflow-switch .switch-track").click();
-    assert.equal(await release.isChecked(), true, "клик по тумблеру не включил релизный процесс");
+    await page.locator(".workspace-task-workflow-switch .switch-track").click();
+    assert.equal(await release.isChecked(), true, "клик по тумблеру не включил ветки задач");
 
-    await page.locator(".workspace-release-workflow-switch .switch-text").click();
-    assert.equal(await release.isChecked(), false, "клик по подписи не выключил релизный процесс");
+    await page.locator(".workspace-task-workflow-switch .switch-text").click();
+    assert.equal(await release.isChecked(), false, "клик по подписи не выключил ветки задач");
 
     const aligned = await page.evaluate(() => {
       const fields = document.querySelector(".workspace-card-fields");
-      const track = fields.querySelector(".workspace-release-workflow-switch .switch-track");
+      const track = fields.querySelector(".workspace-task-workflow-switch .switch-track");
       const reference = fields.querySelector("[data-workspace-card-name]");
       return Math.round(track.getBoundingClientRect().right) === Math.round(reference.getBoundingClientRect().right);
     });
-    assert.equal(aligned, true, "тумблер релизного процесса не дошёл до правого края карточки");
+    assert.equal(aligned, true, "тумблер веток задач не дошёл до правого края карточки");
   } finally {
     await browser.close();
   }
@@ -256,11 +296,11 @@ for (const width of [1440, 390]) {
       };
       await openWorkspace();
       const review = page.locator("[data-workspace-auto-review]");
-      const release = page.locator("[data-workspace-release-workflow]");
+      const release = page.locator("[data-workspace-task-workflow]");
       assert.equal(await review.isChecked(), false);
       assert.equal(await page.locator("[data-workspace-card-modal]").isVisible(), true);
       assert.equal(await page.locator(".workspace-auto-review-setting").evaluate((node) =>
-        Boolean(node.previousElementSibling?.querySelector("[data-workspace-release-workflow]"))), true);
+        Boolean(node.previousElementSibling?.querySelector("[data-workspace-task-workflow]"))), true);
       await page.locator(".workspace-auto-review-switch .switch-track").click();
       assert.equal(await review.isChecked(), true);
       assert.equal(await release.isChecked(), false);

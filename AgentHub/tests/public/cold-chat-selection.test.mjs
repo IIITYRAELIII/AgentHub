@@ -38,6 +38,10 @@ for (const [shape, mobile] of [["ordinary", false], ["heavy", false], ["ordinary
         const initial = await service.snapshot();
         page = await browser.newPage({ viewport: mobile ? { width: 390, height: 844 }
           : { width: 1440, height: 1000 } });
+        const traceBatches = [];
+        page.on("request", request => {
+          if (request.url().endsWith("/api/command-trace/client-events")) traceBatches.push(request.postDataJSON());
+        });
         page.setDefaultTimeout(5000);
         const assetOverrides = process.env.AGENT_HUB_TEST_CLIENT_ASSET
           ? { "hub-client.js": await readFile(process.env.AGENT_HUB_TEST_CLIENT_ASSET, "utf8") } : {};
@@ -66,7 +70,8 @@ for (const [shape, mobile] of [["ordinary", false], ["heavy", false], ["ordinary
           const { action, params } = route.request().postDataJSON();
           if (action === "select-task" && params?.streamId === "stream-a") return reply(route, initial);
           if (params?.streamId !== "stream-b") return route.fallback();
-          measurements.requests.push({ action, bytes: route.request().postDataBuffer().length });
+          measurements.requests.push({ action, bytes: route.request().postDataBuffer().length,
+            clientTraceId: params.clientTraceId ?? null, observedAtMs: performance.now() });
           if (action === "select-task" || action === "open-task") {
             await selection;
             measurements.selectionReleased = true;
@@ -119,7 +124,46 @@ for (const [shape, mobile] of [["ordinary", false], ["heavy", false], ["ordinary
         stage = "read-clear";
         await page.waitForFunction(() => !document.querySelector('[data-stream-task-id="stream-b"]').hasAttribute("data-answer-ready"));
         measurements.clearMs = performance.now() - started;
+        await page.evaluate(async () => {
+          const trace = window.AgentHubCommandTrace;
+          while (trace.diagnostics().pending || trace.diagnostics().flushing) {
+            await trace.flush();
+            if (trace.diagnostics().failedBatches) throw new Error("fixture trace reporter failed");
+            if (trace.diagnostics().flushing) await new Promise(requestAnimationFrame);
+          }
+        });
+        const selectionRequest = measurements.requests.find(value => value.action === "select-task");
+        const historyRequest = measurements.requests.find(value => value.action === "task-history");
+        assert.ok(selectionRequest?.clientTraceId);
+        assert.equal(historyRequest.clientTraceId, selectionRequest.clientTraceId,
+          "independent history and ordered selection retain one navigation trace identity");
+        const joined = traceBatches.flatMap(batch => batch.events).filter(event => event.commandId === selectionRequest.clientTraceId);
+        const applied = joined.find(event => event.metadata?.action === "history-page-apply" && event.outcome === "succeeded");
+        assert.ok(applied, "the original navigation identity joins actual history application work");
+        assert.ok(applied.monotonicDurationMs >= 0);
+        const paint = joined.find(event => event.commandId === selectionRequest.clientTraceId
+          && event.metadata?.action === "history-page-paint" && event.outcome === "succeeded");
+        assert.ok(paint, `the exact navigation trace must join a confirmed visible page paint: ${JSON.stringify({
+          commandId: selectionRequest.clientTraceId,
+          paints: traceBatches.flatMap(batch => batch.events).filter(event => event.metadata?.action === "history-page-paint")
+            .map(event => ({ commandId: event.commandId, outcome: event.outcome, metadata: event.metadata })),
+          reporter: await page.evaluate(() => window.AgentHubCommandTrace.diagnostics()),
+        })}`);
+        assert.ok(paint.observedAtMs >= applied.observedAtMs);
+        assert.ok(joined.some(event => event.metadata?.action === "task-history" && event.outcome === "succeeded"));
+        assert.ok(joined.some(event => event.metadata?.action === "select-task" && event.outcome === "started"));
+        assert.equal(joined.some(event => event.metadata?.action === "select-task" && event.outcome === "succeeded"), false);
+        measurements.traceJoin = { commandId: selectionRequest.clientTraceId, paintMs: paint.monotonicDurationMs,
+          applyWorkMs: applied.monotonicDurationMs,
+          stages: joined.map(event => ({ stage: event.stage, action: event.metadata?.action, outcome: event.outcome,
+            observedAtMs: event.observedAtMs ?? event.timing?.clientAckAtMs, startedAtMs: event.metadata?.startedAtMs,
+            durationMs: event.monotonicDurationMs })),
+          snapshotApplication: "Cold history is applied with skipSnapshot; the independent selection reply remains held.",
+          loadedAssetMarker: paint.metadata.clientAssetRevision, paintedStream: paint.metadata.streamId,
+          selectionReplyStillHeld: !measurements.selectionReleased,
+          qualification: "Actual loaded fixture client/DOM; selection transport is deliberately held. Not production queue/SQLite latency." };
         measurements.historyResponseBytes = Buffer.byteLength(JSON.stringify(history));
+        measurements.driverTimingQualification = "fullExchangeMs/clearMs include Playwright driver waits; traceJoin uses the executing browser clock. Spans overlap and are not additive.";
         const afterUsage = process.resourceUsage();
         const afterMetrics = await performanceSession.send("Performance.getMetrics");
         const metric = (value, name) => value.metrics.find(item => item.name === name)?.value ?? null;

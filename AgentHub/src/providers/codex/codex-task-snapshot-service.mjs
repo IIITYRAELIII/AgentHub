@@ -1,3 +1,5 @@
+import { preserveRunActivityAnnotationTargets } from "../../domain/run-activity.mjs";
+import { preferredResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
 import {
   codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
@@ -5,6 +7,7 @@ import {
   codexTurnHasExplicitFinalAnswer,
 } from "../../application/task-history.mjs";
 import { codexTurnAnswer } from "./codex-turn-answers.mjs";
+import { codexAgentMessageRevision, observeCodexAgentMessage } from "./codex-agent-message-reducer.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
 import {
@@ -61,9 +64,8 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
   const hasExplicitFinalAnswer = codexTurnHasExplicitFinalAnswer(turn);
   const waitingOnApproval = codexThreadWaitingOnApproval(threadStatus);
   const exchange = codexThreadHistory([turn]).at(-1);
-  const responseAnnotationReferences = (exchange?.messages ?? [])
-    .findLast((message) => message?.role === "agent")
-    ?.responseAnnotationReferences ?? [];
+  const responseMessage = (exchange?.messages ?? []).findLast((message) => message?.role === "agent");
+  const responseAnnotationReferences = responseMessage?.responseAnnotationReferences ?? [];
   const turnMessages = (exchange?.messages ?? [])
     .filter((message) => message.role === "user" || message.kind === "subagent")
     .map((message) => ({ ...message }));
@@ -80,6 +82,7 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
     clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
     userMessages: turnMessages,
     responseAnnotationReferences: structuredClone(responseAnnotationReferences),
+    responseItemId: responseMessage?.itemId ?? null,
     activities: exchange?.activities ?? [],
     activityGroups: exchange?.activityGroups ?? [],
     startedAt: codexTurnStartedAt(turn),
@@ -152,6 +155,7 @@ export class CodexTaskSnapshotService {
 
   async read(run, { threadResult = null, fresh = false } = {}) {
     const d = this.#d;
+    const responseObservationRevision = codexAgentMessageRevision(run);
     if (run.observer !== true && !String(run.turnId ?? "").trim()) return null;
     if (d.readRecordingTurn) {
       if (!String(run.turnId ?? "").trim()) return null;
@@ -197,6 +201,7 @@ export class CodexTaskSnapshotService {
           turnId: state.turnId, rolloutPath, agentHubPid: d.agentHubPid(), capturedOwner,
         });
         return this.#rolloutSnapshot(state, activity, {
+          responseObservationRevision,
           active,
           completed: state.completed,
           activityUnknown: interrupted || (!active && !state.completed),
@@ -245,6 +250,7 @@ export class CodexTaskSnapshotService {
         })
         : d.hubOwner();
       return this.#rolloutSnapshot(state, activity, {
+        responseObservationRevision,
         active: state.active,
         completed: state.completed,
         activityUnknown: !state.active && !state.completed,
@@ -372,17 +378,31 @@ export class CodexTaskSnapshotService {
       run.turnId = snapshot.turnId;
       this.#d.reindexRun(run);
     }
+    const observedItem = snapshot?.active && snapshot.responseItem?.id && run.turnId === snapshot.turnId
+      ? snapshot.responseItem : null;
+    if (observedItem) {
+      observeCodexAgentMessage(run, { turnId: snapshot.turnId, item: observedItem,
+        expectedRevision: snapshot.responseObservationRevision });
+      run.responseText = codexTurnAnswer({ items: run.responseItems });
+    }
     if (snapshot?.model) run.model = this.#d.modelLabel(snapshot.model);
     if (snapshot?.reasoningEffort) {
       run.reasoning = this.#d.reasoningLabels?.[snapshot.reasoningEffort]
         ?? snapshot.reasoningEffort;
     }
-    if (Array.isArray(snapshot?.responseAnnotationReferences)) {
-      run.responseAnnotationReferences = structuredClone(snapshot.responseAnnotationReferences);
+    if (!observedItem && Array.isArray(snapshot?.responseAnnotationReferences)) {
+      const matchingItems = run.turnId === snapshot.turnId && snapshot.responseItemId
+        ? (run.responseItems ?? []).filter(item => item.id === snapshot.responseItemId && item.turnId === run.turnId)
+        : [];
+      run.responseAnnotationReferences = snapshot.responseAnnotationReferences.map(reference => {
+        const target = preferredResponseAnnotationTarget(matchingItems.length === 1
+          ? matchingItems[0].responseAnnotationTarget : null, reference.target);
+        return structuredClone(target ? { ...reference, target } : reference);
+      });
     }
     if (Array.isArray(snapshot?.activityGroups) && snapshot.activityGroups.length) {
       const existingActivities = new Map((run.activities ?? []).map((activity) => [activity.id, activity]));
-      run.activityGroups = snapshot.activityGroups.map((group) => ({
+      run.activityGroups = preserveRunActivityAnnotationTargets(run, snapshot.activityGroups, snapshot).map((group) => ({
         ...group,
         activities: (group.activities ?? []).map((activity) => (
           existingActivities.has(activity.id)
@@ -403,6 +423,9 @@ export class CodexTaskSnapshotService {
     const rootUser = state.userMessages.find((message) => message?.role !== "agent");
     return {
       answer: overrides.active ? state.latestAnswer : state.finalAnswer,
+      ...(overrides.active && state.responseItem
+        ? { responseItem: structuredClone(state.responseItem),
+          responseObservationRevision: overrides.responseObservationRevision } : {}),
       userMessageSnapshotAuthority: activity.userMessageSnapshotAuthorityByTurnId?.[state.turnId]
         ?? activity.userMessageSnapshotAuthority
         ?? "incremental",
@@ -412,6 +435,7 @@ export class CodexTaskSnapshotService {
       clientUserMessageId: rootUser?.clientUserMessageId ?? null,
       userMessages: state.userMessages,
       responseAnnotationReferences: structuredClone(state.responseAnnotationReferences ?? []),
+      responseItemId: state.responseItem?.id ?? null,
       activityGroups: structuredClone(activity.activityGroups?.[state.turnId] ?? []),
       startedAt: state.startedAt,
       completedAt: state.completedAt,

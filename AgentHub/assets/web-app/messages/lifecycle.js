@@ -992,6 +992,7 @@ function mergeLiveUserMessages(messages, {
       turnId,
       itemId: String(message.itemId ?? `live-${role}-${index}`),
       clientUserMessageId: resolvedClientUserMessageId,
+      ...(message?.sourceOccurrenceId ? { sourceOccurrenceId: String(message.sourceOccurrenceId) } : {}),
       turnUserSlot,
       role,
       author,
@@ -1733,7 +1734,205 @@ function hubErrorMessage(error) {
   return translations.get(message.toLowerCase()) ?? message;
 }
 
+// Pure history projection shared by the complete client and unit callers.
+// Ownership, state and transport remain in hub-client; ports are its existing
+// canonical projection/author/attachment helpers, not another history owner.
+function createHistoryMessageProjection({
+  historicalMessagesForDisplay, canonicalProjectionState, conversationMessageAuthor,
+  attachmentViews, focusedTurnTaskThreadId, focusedTurnAlreadyVisible,
+  normalizedResponseAnnotationReferences,
+}) {
+  return function historyMessages(history, focusedTurn = null) {
+  const messages = [];
+  const userSubmittedAt = (message, turn, isRoot) => message.submittedAt ?? message.time
+    ?? (isRoot ? turn.submittedAt ?? turn.startedAt : null) ?? null;
+  const historyStart = Number.isSafeInteger(Number(history?.start))
+    ? Number(history.start)
+    : 0;
+  for (const [itemIndex, item] of (history?.items ?? []).entries()) {
+    const itemProvider = String(item?.provider ?? history.provider ?? "");
+    const itemThreadId = String(item?.threadId ?? history.threadId ?? "");
+    const visible = historicalMessagesForDisplay(item);
+    const rootUserIndex = visible.findIndex((message) => message.role === "user");
+    const traceMessageIndex = visible.findLastIndex((message) => (
+      message?.role === "agent" && message?.kind !== "subagent"
+    ));
+    for (const [messageIndex, message] of visible.entries()) messages.push({
+      id: `${itemProvider}:${itemThreadId}:${item.id}:${message.itemId}:${message.role}`,
+      provider: itemProvider,
+      threadId: itemThreadId,
+      turnId: item.id,
+      itemId: String(message.itemId ?? ""),
+      messageKey: String(message.messageKey ?? ""),
+      sourceAlias: String(message.sourceAlias ?? ""),
+      semanticSlot: String(message.semanticSlot ?? ""),
+      pinEligible: message.pinEligible === true,
+      clientUserMessageId: String(message.clientUserMessageId ?? ""),
+      turnUserSlot: String(message.turnUserSlot ?? ""),
+      role: message.role,
+      operationKind: String(item.operationKind ?? "user-turn"),
+      ...(item.operationKindMigrationGuard
+        ? { operationKindMigrationGuard: String(item.operationKindMigrationGuard) }
+        : {}),
+      projectionAuthority: "canonical",
+      projectionState: canonicalProjectionState({
+        status: item.status,
+        terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
+        running: item.active === true,
+        operationKind: "user-turn",
+      }),
+      terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
+      ...(item.completed === true && !Number(item.terminalRevision)
+        ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
+        : {}),
+      ...(message.kind ? { kind: message.kind } : {}),
+      ...(message.origin ? { origin: message.origin } : {}),
+      ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
+      ...(message.model ? { model: message.model } : {}),
+      author: conversationMessageAuthor(message, itemProvider),
+      text: message.text,
+      ...(message.role === "user" ? {
+        responseAnnotations: message.responseAnnotations,
+        responseAnnotationRequest: message.responseAnnotationRequest,
+      } : message.role === "agent" ? {
+        responseAnnotationReferences: normalizedResponseAnnotationReferences(
+          message.responseAnnotationReferences,
+        ),
+      } : {}),
+      activities: messageIndex === traceMessageIndex && Array.isArray(item.activities)
+        ? item.activities
+        : [],
+      activityGroups: messageIndex === traceMessageIndex && Array.isArray(item.activityGroups)
+        ? item.activityGroups
+        : [],
+      ...(message.role === "user" ? {
+        submittedAt: userSubmittedAt(message, item, message.turnUserSlot === "root"
+          || (!message.turnUserSlot && messageIndex === rootUserIndex)),
+        startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? item.startedAt ?? null : null),
+      } : {}),
+      time: message.role === "user"
+        ? userSubmittedAt(message, item, message.turnUserSlot === "root"
+          || (!message.turnUserSlot && messageIndex === rootUserIndex))
+        : message.time ?? item.completedAt ?? null,
+      ...(messageIndex === traceMessageIndex ? {
+        turnStartedAt: item.startedAt ?? null,
+        turnCompletedAt: item.completedAt ?? null,
+      } : {}),
+      historyOrder: (historyStart + itemIndex) * 1_000 + messageIndex,
+      attachments: attachmentViews(message.attachments),
+    });
+  }
+  if (focusedTurn && Array.isArray(focusedTurn.messages)) {
+    const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
+    const focusedTraceItemId = String(focusedTurn.messages.findLast((message) => (
+      message?.role === "agent" && message?.kind !== "subagent"
+    ))?.itemId ?? "");
+    const parentAgentAlreadyVisible = messages.some((message) => (
+      message.provider === focusedTurn.provider
+      && message.threadId === focusedThreadId
+      && message.turnId === focusedTurn.turnId
+      && message.role === "agent"
+      && message.kind !== "subagent"
+    ));
+    for (const [index, message] of focusedTurn.messages.entries()) {
+      const itemId = String(message?.itemId ?? "").trim();
+      if (!itemId || messages.some((candidate) => (
+        candidate.provider === focusedTurn.provider
+        && candidate.threadId === focusedThreadId
+        && candidate.turnId === focusedTurn.turnId
+        && candidate.itemId === itemId
+      )) || (parentAgentAlreadyVisible
+        && message.role === "agent"
+        && message.kind !== "subagent")) continue;
+      messages.push({
+        id: `${focusedTurn.provider}:${focusedThreadId}:${focusedTurn.turnId}:${itemId}:${message.role}`,
+        provider: focusedTurn.provider,
+        threadId: focusedThreadId,
+        turnId: focusedTurn.turnId,
+        itemId,
+        messageKey: String(message.messageKey ?? ""),
+        sourceAlias: String(message.sourceAlias ?? ""),
+        semanticSlot: String(message.semanticSlot ?? ""),
+        pinEligible: message.pinEligible === true,
+        role: message.role,
+        ...(message.kind ? { kind: message.kind } : {}),
+        ...(message.origin ? { origin: message.origin } : {}),
+        ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
+        ...(message.model ? { model: message.model } : {}),
+        author: conversationMessageAuthor(message, focusedTurn.provider),
+        text: message.text,
+        ...(message.role === "agent" ? {
+          responseAnnotationReferences: normalizedResponseAnnotationReferences(
+            message.responseAnnotationReferences,
+          ),
+        } : {}),
+        activities: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activities)
+          ? focusedTurn.activities
+          : [],
+        activityGroups: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activityGroups)
+          ? focusedTurn.activityGroups
+          : [],
+        ...(message.role === "user" ? {
+          submittedAt: userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
+            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user"))),
+          startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? focusedTurn.startedAt ?? null : null),
+        } : {}),
+        time: message.role === "user"
+          ? userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
+            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user")))
+          : message.time ?? focusedTurn.completedAt ?? focusedTurn.startedAt ?? null,
+        ...(itemId === focusedTraceItemId ? {
+          turnStartedAt: focusedTurn.startedAt ?? null,
+          turnCompletedAt: focusedTurn.completedAt ?? null,
+        } : {}),
+        attachments: attachmentViews(message.attachments),
+      });
+    }
+  }
+  if (focusedTurn && !focusedTurnAlreadyVisible(history, messages, focusedTurn)) {
+    const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
+    if (focusedTurn.prompt) messages.push({
+      id: `${focusedTurn.turnId}:prompt`,
+      provider: focusedTurn.provider,
+      threadId: focusedThreadId,
+      turnId: focusedTurn.turnId,
+      itemId: `${focusedTurn.turnId}:focused:user`,
+      role: "user",
+      turnUserSlot: "root",
+      ...(focusedTurn.promptOrigin ? { kind: "interstream", origin: focusedTurn.promptOrigin } : {}),
+      author: focusedTurn.promptAuthor || "Вы",
+      text: focusedTurn.prompt,
+      responseAnnotations: focusedTurn.promptAnnotations,
+      responseAnnotationRequest: focusedTurn.promptRequest,
+      submittedAt: focusedTurn.submittedAt ?? focusedTurn.startedAt,
+      startedAt: focusedTurn.startedAt,
+      time: focusedTurn.submittedAt ?? focusedTurn.startedAt,
+    });
+    messages.push({
+      id: `${focusedTurn.turnId}:answer`,
+      provider: focusedTurn.provider,
+      threadId: focusedThreadId,
+      turnId: focusedTurn.turnId,
+      itemId: `${focusedTurn.turnId}:focused:agent`,
+      role: "agent",
+      author: focusedTurn.provider === "claude" ? "Claude" : "Codex",
+      text: focusedTurn.answer || focusedTurn.title || "Ход завершён",
+      responseAnnotationReferences: normalizedResponseAnnotationReferences(
+        focusedTurn.responseAnnotationReferences,
+      ),
+      activities: Array.isArray(focusedTurn.activities) ? focusedTurn.activities : [],
+      activityGroups: Array.isArray(focusedTurn.activityGroups) ? focusedTurn.activityGroups : [],
+      time: focusedTurn.completedAt,
+      turnStartedAt: focusedTurn.startedAt ?? null,
+      turnCompletedAt: focusedTurn.completedAt ?? null,
+    });
+  }
+  return messages;
+};
+}
+
 globalThis.AgentHubMessageLifecycle = Object.freeze({
+  createHistoryMessageProjection,
   activeRunSubmissionTiming,
   authoritativeActiveRunMessageReceipts,
   activeRunMessageReceipts,

@@ -40,9 +40,15 @@ export class TaskObserverController {
       // Snapshot мог читаться дольше, чем переключалась/завершалась задача.
       // Устаревший результат нельзя применять к уже удалённому run.
       if (!this.canObserve(run)) return;
-      if (snapshot?.activityUnknown) {
+      // A nonterminal marker cannot turn a current UNKNOWN run into confirmed
+      // activity. Previous-process runs never enter this observation owner.
+      const retainedUnknown = run.provider === "codex" && run.observer !== true
+        && run.activityUnknown === true && Boolean(run.turnId)
+        && snapshot?.turnId === run.turnId
+        && snapshot.completed !== true && snapshot.running !== true;
+      if (snapshot?.activityUnknown || retainedUnknown) {
         run.activityUnknown = true;
-        await this.onUnknown(run, snapshot);
+        await this.onUnknown(run, retainedUnknown ? { ...snapshot, activityUnknown: true } : snapshot);
         this.schedule(run);
         return;
       }

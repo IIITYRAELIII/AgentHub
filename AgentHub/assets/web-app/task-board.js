@@ -1840,9 +1840,17 @@
             hub_task_complete: "Закрытие задачи", hub_task_delete: "Удаление задачи" })[operation.toolName] ?? "Операция задачи";
       const phase = operation.cancellation ? "остановка запрошена"
         : operation.status === "unknown" ? "результат неизвестен" : "выполняется или ожидает";
+      const stage = ({ workflow: "подготовка", lock: "получение блокировки",
+        "lock-local-acquire": "ожидание ресурса", "prepare-task": "рабочая копия",
+        "prepare-dev": "проверка Git", "sparse-worktree": "состав рабочей копии",
+        "dependency-project": "зависимости проекта", "dependency-inventory": "проверка файлов зависимостей",
+        "dependency-full-proof": "полная проверка установки", "dependency-installed-lock-proof": "проверка lockfile",
+        "dependency-npm": "установка зависимостей", "task-binding": "назначение исполнителя",
+        "mcp:receipt": "сохранение результата" })[operation.progress?.stage];
+      const diagnostic = stage ? `; ${operation.progress.live ? "этап" : "последний известный этап"}: ${stage}` : "";
       actions.push(node("span", { role: "status", text: stopped
         ? "Операция прервана. Уже выполненные действия сохранены."
-        : `${label}: ${phase}` }));
+        : `${label}: ${phase}${diagnostic}` }));
       if (!stopped && operation.canCancel !== false) actions.push(node("button", { type: "button", class: "board-task-quiet",
         text: operation.cancellation ? "Проверить остановку" : "Прервать операцию",
         onclick: () => emit("operation-cancel", { id: task.id,

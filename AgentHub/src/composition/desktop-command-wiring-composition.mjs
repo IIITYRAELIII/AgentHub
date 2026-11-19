@@ -25,8 +25,6 @@ export function createWorkspaceActions(services) {
     updateWorkspaceDeveloperRules: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.updateWorkspaceDeveloperRules(params),
     ),
-    readWorkspaceReleasePlan: (params) => services.workspaceCatalogService.releasePlan(params),
-    completeWorkspaceRelease: (params) => services.workspaceCatalogService.completeRelease(params),
     createWorkspace: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.createWorkspace(params),
       { resultKey: "createdWorkspace" },

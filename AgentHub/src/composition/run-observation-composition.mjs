@@ -2,8 +2,6 @@ import { createContourClaudeAuthority } from "../runtime/test-contour-runtime-ef
 import { ClaudeRunController } from "../providers/claude/claude-run-controller.mjs";
 import { ClaudeTurnLauncher } from "../providers/claude/claude-turn-launcher.mjs";
 import { TaskObservationService } from "../application/task-observation-service.mjs";
-import { SelectedTaskWatchService } from "../application/selected-task-watch-service.mjs";
-import { RunRecoveryCoordinator } from "../application/run-recovery-coordinator.mjs";
 import { resolveHubDeveloperInstructions } from "./hub-developer-instructions-composition.mjs";
 
 export function createRunObservationComposition({
@@ -48,7 +46,6 @@ export function createRunObservationComposition({
   dismissedExternalTasks,
   lastSeenTaskTurnIds,
   runtimeTimers,
-  selectedTaskWatchIntervalMs,
   selectedTask,
   selectedTasks,
   chatId,
@@ -60,7 +57,6 @@ export function createRunObservationComposition({
   const claudeRunController = new ClaudeRunController({
     dataDir,
     processAuthority: recordingContourRoot ? createContourClaudeAuthority({ root: recordingContourRoot, dataDir }) : null,
-    onRecoveryUnavailable: (run) => runRecovery.finishInterrupted(run),
     pollIntervalMs: claudeOutputPollIntervalMs,
     isCurrentRun: (run) => taskRuns.forTask(run) === run,
     isStopping,
@@ -68,9 +64,6 @@ export function createRunObservationComposition({
     onComplete: finishClaudeRun,
     onPersist: saveState,
     onActive: startTyping,
-    onReconnect: (run, alive) => taskProgress.setStage(run, alive
-      ? "Переподключился к выполняющемуся ходу Claude."
-      : "Дочитываю прерванный ход Claude…"),
   });
 
   const taskObserver = new TaskObservationService({
@@ -126,47 +119,9 @@ export function createRunObservationComposition({
     logWarning,
   });
 
-  const runRecovery = new RunRecoveryCoordinator({
-    taskRuns,
-    providers: agentProviders,
-    runCoordinator,
-    observer: taskObserver,
-    progress: taskProgress,
-    startTyping,
-    saveState,
-    safeDeliver: safelyDeliverRunMessage,
-    sendRunMessage,
-    completeRun: (run) => managedRunLifecycle.complete(run),
-    logError,
-  });
-
-  const selectedTaskWatch = new SelectedTaskWatchService({
-    providers: agentProviders,
-    taskRuns,
-    dismissedTasks: dismissedExternalTasks,
-    lastSeenTurnIds: lastSeenTaskTurnIds,
-    timers: runtimeTimers,
-    intervalMs: selectedTaskWatchIntervalMs,
-    isStopping,
-    selectedTask,
-    selectedTasks,
-    chatId,
-    activeTaskTitle,
-    rememberLastTaskMessage,
-    createObservedRun: (...args) => taskObserver.create(...args),
-    scheduleObservedRun: (...args) => taskObserver.schedule(...args),
-    saveState,
-    shouldWatchTask: (task) => workspaceCatalogStore.thread({
-      provider: task.provider,
-      threadId: task.threadId,
-    })?.detachedAtMs == null,
-  });
-
   return {
     claudeRunController,
     taskObserver,
     claudeTurnLauncher,
-    runRecovery,
-    selectedTaskWatch,
   };
 }

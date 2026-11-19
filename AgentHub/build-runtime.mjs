@@ -2,8 +2,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareRuntime } from "./src/runtime/runtime-manager.mjs";
 
-// Minimal application-owned self-build interface. No Task service, publication,
-// install, activation, provider process or workflow state is opened here.
+// Development compatibility interface. prepareRuntime delegates to the explicit
+// external independent builder; this entry owns no application build algorithm or release.
 export async function buildRuntime(args, { prepare = prepareRuntime } = {}) {
   const options = {};
   for (let i = 0; i < args.length; i += 2) {

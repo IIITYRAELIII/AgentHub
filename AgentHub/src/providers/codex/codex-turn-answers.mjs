@@ -15,6 +15,13 @@ export function codexTurnAnswer(turn) {
     .trim();
 }
 
+export function codexRolloutLatestAnswer(activity, turnId) {
+  const item = activity?.latestAgentMessages?.[turnId];
+  return item
+    ? codexTurnAnswer({ items: [item] })
+    : String(activity?.latestMessages?.[turnId] ?? "").trim();
+}
+
 export function lastCompletedCodexAnswer(turns) {
   const completed = (Array.isArray(turns) ? turns : [])
     .findLast((turn) => turn?.status === "completed" && codexFinalTurnAnswer(turn));

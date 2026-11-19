@@ -596,6 +596,19 @@ function resumeInterruptedTurns() {
 function handleRequest(message) {
   const { id, method, params = {} } = message;
   state.requestCounts[method] = Number(state.requestCounts[method] ?? 0) + 1;
+  if (state.oldTurnProbe && (params.threadId === state.oldTurnProbe.threadId
+    || state.oldTurnProbe.threadIds?.includes(params.threadId))) {
+    state.oldTurnProbe.requests ??= [];
+    state.oldTurnProbe.requests.push({ method, threadId: params.threadId, includeTurns: params.includeTurns ?? null,
+      turnId: params.turnId ?? null, at: Date.now() });
+    save();
+    if (method === "thread/read" && !existsSync(state.oldTurnProbe.newInputReadyFile ?? "")) {
+      const mode = state.oldTurnProbe.modes?.[params.threadId] ?? state.oldTurnProbe.mode;
+      if (mode === "never") return;
+      return send({ id, error: { message: mode === "error"
+        ? "synthetic old provider read failed" : `thread not loaded: ${params.threadId}` } });
+    }
+  }
   if (method === "model/list") {
     reply(id, { data: params.cursor ? [] : [
       { model: "gpt-6-astra", displayName: "GPT-6 Astra" },
@@ -840,6 +853,13 @@ function handleRequest(message) {
   }
   if (method === "turn/start") {
     try {
+      if (state.oldTurnProbe) {
+        state.oldTurnProbe.newInput = { clientUserMessageId: params.clientUserMessageId,
+          attachmentTypes: (params.input ?? []).filter(item => item.type !== "text").map(item => item.type) };
+        state.oldTurnProbe.newInputs ??= [];
+        state.oldTurnProbe.newInputs.push({ ...state.oldTurnProbe.newInput, threadId: params.threadId });
+        save();
+      }
       const thread = threadById(params.threadId);
       if (thread?.turns.at(-1)?.status === "inProgress"
         && thread.turns.at(-1).prompt.startsWith("[orphan-approval]")) {

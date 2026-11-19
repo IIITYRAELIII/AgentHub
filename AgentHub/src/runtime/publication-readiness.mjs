@@ -1,6 +1,6 @@
 import { callDesktopControl, readDesktopControlEndpoint } from "../infrastructure/process/desktop-control.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
-import { publicationRuntimeStatus } from "./runtime-publication-start.mjs";
+import { runtimeStatus } from "./runtime-manager.mjs";
 
 export async function waitForRuntimeReplacement({
   previousEndpointId = null,
@@ -8,7 +8,7 @@ export async function waitForRuntimeReplacement({
   expectedReleaseId,
   timeoutMs = 90_000,
   readEndpoint = readDesktopControlEndpoint,
-  readStatus = publicationRuntimeStatus,
+  readStatus = options => runtimeStatus({ ...options, requireProcessEvidence: true }),
   probe = callDesktopControl,
   delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   now = Date.now,

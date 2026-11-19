@@ -1,0 +1,75 @@
+import assert from 'node:assert/strict';
+import {execFile} from 'node:child_process';
+import {mkdir,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {promisify} from 'node:util';
+import test from 'node:test';
+import {openTaskAwaitCutoverRuntime} from '../../task-await-cutover.mjs';
+import {WorkspaceCatalogStore} from '../../src/infrastructure/persistence/workspace-catalog-store.mjs';
+import {TaskBoardStore} from '../../src/infrastructure/persistence/task-board-store.mjs';
+import {effectiveWorkspaceDeveloperRules,effectiveStreamDeveloperRules} from '../../src/domain/workspace-task-workflow.mjs';
+const execute=promisify(execFile);
+async function git(root,...args){return (await execute('git',args,{cwd:root,windowsHide:true})).stdout.trim();}
+
+test('Manual process instructions retain authored content without a release mechanism',()=>{
+ const authored='authored rules remain byte exact';
+ assert.ok(effectiveWorkspaceDeveloperRules(authored,{releaseWorkflowEnabled:true}).endsWith(authored));
+ assert.ok(effectiveStreamDeveloperRules(authored,{releaseManager:true}).endsWith(authored));
+ assert.match(effectiveWorkspaceDeveloperRules(authored,{autoReviewEnabled:true}),/independent review/u);
+});
+
+test('Tasks keep CRUD, checklist, managed claim, native Test and Await without a release owner',async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'tasks-without-release-'));
+ const primary=path.join(root,'primary'),dataDir=path.join(root,'data');
+ await mkdir(primary);await mkdir(dataDir);
+ const previous={LOCALAPPDATA:process.env.LOCALAPPDATA,XDG_STATE_HOME:process.env.XDG_STATE_HOME};
+ process.env.LOCALAPPDATA=path.join(root,'state');process.env.XDG_STATE_HOME=process.env.LOCALAPPDATA;
+ let runtime,catalog,store;
+ t.after(async()=>{await runtime?.close();store?.close();catalog?.close();
+  for(const [k,v] of Object.entries(previous)){if(v===undefined)delete process.env[k];else process.env[k]=v;}
+  await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:50});});
+ await git(primary,'init','--initial-branch=main');
+ await writeFile(path.join(primary,'base.txt'),'base\n');await git(primary,'add','.');
+ await git(primary,'-c','user.name=Fixture','-c','user.email=fixture@local.invalid','commit','-m','base');
+ const base=await git(primary,'rev-parse','HEAD');
+ await git(root,'init','--bare','--initial-branch=main',path.join(root,'origin.git'));
+ await git(primary,'remote','add','origin',path.join(root,'origin.git'));await git(primary,'push','origin','main');
+ await mkdir(path.join(process.env.LOCALAPPDATA,'AgentHub'),{recursive:true});
+ await writeFile(path.join(process.env.LOCALAPPDATA,'AgentHub/publication-state.json'),JSON.stringify({generation:'fixture',repositories:[{root:primary,revision:base}]}));
+ const databaseFile=path.join(dataDir,'journal.sqlite');
+ catalog=new WorkspaceCatalogStore({databaseFile});await catalog.load();store=new TaskBoardStore({databaseFile});
+ const workspace=catalog.createWorkspace({name:'Task fixture',settings:{workingDirectory:primary,releaseWorkflowEnabled:true}});
+ const stream=catalog.createStream({workspaceId:workspace.id,name:'Task acceptance',settings:{workingDirectory:primary,releaseManager:true}});
+ catalog.bindThread({provider:'codex',threadId:'fixture',streamId:stream.id});
+ runtime=await openTaskAwaitCutoverRuntime({config:{dataDir,taskBoard:{autoPlaceConfidence:0.8}}});
+ const {service,taskBoard}=runtime;
+ service.setActiveRuns(()=>[{id:'fixture-run',provider:'codex',threadId:'fixture',turnId:'fixture-turn',streamId:stream.id,status:'running',projectRoot:primary}]);
+ const token=service.contextToken({provider:'codex',threadId:'fixture',streamId:stream.id});
+ const call=(name,args)=>service.call(name,{context_token:token,...args});
+ assert.equal(service.tools().some(tool=>tool.name.startsWith('hub_release_')),false);
+ assert.equal(Object.hasOwn(service,'releaseOperations'),false);
+ await assert.rejects(call('hub_release_run',{request_id:'removed-release'}),/unknown|unsupported/iu);
+ const created=await call('hub_task_create',{request_id:'create',title:'Task result',description:'retained user requirements'});
+ assert.deepEqual(await call('hub_task_create',{request_id:'create',title:'Task result',description:'retained user requirements'}),JSON.parse(JSON.stringify(created)));
+ await call('hub_task_update',{request_id:'edit',task_id:created.id,title:'Task result edited'});
+ let current=taskBoard.task(created.id);
+ await call('hub_task_checklist_update',{request_id:'checklist',task_id:created.id,expected_task_revision:current.revision,operation:'add',text:'retained item'});
+ const claimed=await call('hub_task_claim',{request_id:'claim',task_id:created.id,dependency_mode:'skip'});
+ const managed=claimed.gitWorkspace.projectRoot;
+ await writeFile(path.join(managed,'task.txt'),'own task result\n');await git(managed,'add','.');
+ await git(managed,'-c','user.name=Fixture','-c','user.email=fixture@local.invalid','commit','-m','task result');
+ const result=await git(managed,'rev-parse','HEAD');
+ current=taskBoard.task(created.id);
+ await call('hub_task_status_update',{request_id:'test',task_id:created.id,status:'testing',expected_task_revision:current.revision,expected_workflow_status:current.workflowStatus});
+ current=taskBoard.task(created.id);assert.equal(current.gitReferences[0].resultCommit,result);
+ assert.equal(await git(primary,'show','dev:task.txt'),'own task result');
+ await call('hub_task_status_update',{request_id:'await',task_id:created.id,status:'awaiting_implementation',expected_task_revision:current.revision,expected_workflow_status:'testing'});
+ const accepted=taskBoard.task(created.id);assert.equal(accepted.workflowStatus,'awaiting_implementation');
+ assert.equal(accepted.checklist[0].text,'retained item');assert.match(accepted.description,/retained user requirements/u);
+ const candidate=await service.releasePreflight.releaseGitWorkspaces.frozenCandidate(primary);
+ assert.equal(candidate.manifest.tasks[0].resultCommit,result);
+ assert.equal(await readFile(path.join(candidate.releaseRoot,'task.txt'),'utf8'),'own task result\n');
+ assert.equal(await git(primary,'rev-parse','HEAD'),base);
+ assert.equal(await git(primary,'status','--porcelain=v1','--untracked-files=all'),'');
+});

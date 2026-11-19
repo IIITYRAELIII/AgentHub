@@ -72,10 +72,24 @@ recovery evidence. Once that complete proof exists, the terminal payload is the
 authoritative complete user projection; independent external occurrences in it
 remain distinct, and stale read-model aliases are replaced rather than guessed.
 
+Terminal user recovery preserves attachments under that same exact command
+binding. An explicit accepted receipt attachment list, including an empty list,
+is authoritative for its own command. Legacy payload root attachments apply only
+to the payload's exact root client identity. Recovery version 2 repairs retained
+version-1 projections when their page opens, persists the attachment descriptors
+with the user message, and keeps completed pages read-only across reopen and
+receipt-cache eviction. Missing or conflicting evidence leaves the old row intact.
+
 The durable command ledger owns acceptance and dispatch state. UI cards,
 in-memory receipts and runtime snapshots are projections.
 
 A scheduled restart does not reserve admission or pause queued/steer delivery.
+An explicitly admitted autonomous installation is a separate stopping intent:
+its existing maintenance original closes provider admission in both selected
+installer modes. New inputs retain their original durable queue identity and
+attachments. Existing runs may finish; pending admission is joined before the
+wait mode reports idle. Completion does not launch new post-turn automation.
+An uncertain current run never becomes proof of idle. See ADR-HUB-467.
 Only the runtime's actual stopping fence retains new commands for the replacement,
 durably and under their original IDs; storage acceptance is not provider start.
 The restart owner checks in-flight admission and active work synchronously before

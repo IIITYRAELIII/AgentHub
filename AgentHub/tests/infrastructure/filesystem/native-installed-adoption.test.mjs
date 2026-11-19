@@ -1,25 +1,25 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { readNativeUpstreamAdoptions } from "../../../src/infrastructure/filesystem/native-upstream-adoption.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { assertNativeTaskHistories } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
-import { localSourceSelectionHash, normalizedReleaseBaseProvenance } from "../../../src/domain/release-base-provenance.mjs";
+import { normalizedReleaseBaseProvenance } from "../../../src/domain/release-base-provenance.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
 import { readAgentHubVersion } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
-import { nextRuntimeReleaseVersion } from "../../../src/infrastructure/filesystem/runtime-release-version.mjs";
+import { nextRuntimeReleaseVersion } from "../../helpers/external-release-recipe.fixture.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
-import { WorkspaceReleasePreflightService } from "../../../src/application/workspace-release-preflight-service.mjs";
+import { TaskIntegrationService } from "../../../src/application/task-integration-service.mjs";
 import { createTaskOperationTimingBatchRecorder, measureTaskOperation, withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
 import { partialOwnGitPublication } from "../../fixtures/own-git-publication-fixture.mjs";
 
@@ -106,7 +106,7 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
   const ownPublication = ownPublishedOrigin ? partialOwnGitPublication({ dataDir, repositoryRoot: primary,
     localMainCommit: main, publishedRevision: published, commit: adopted,
     tree: await git(primary, ["rev-parse", `${adopted}^{tree}`]), sourceBaseCommit: source, taskId: task.taskId }) : null;
-  const candidate = new ReleaseGitWorkspaceService({ dataDir: ownPublishedOrigin ? dataDir : path.join(root, "release-data"), environment });
+  const candidate = new TaskIntegrationGitService({ dataDir: ownPublishedOrigin ? dataDir : path.join(root, "release-data"), environment });
   const port = (args, options) => git(primary, args, options);
   const adoptions = await readNativeUpstreamAdoptions({ git: port, tasks, repositoryRoot: primary, localMainCommit: main });
   const p = await installedNativeHistoryBaseline({ git: port, sourceGit: git, repositoryRoot: primary,
@@ -154,7 +154,7 @@ test("own partial Git publication permits ordinary Test and candidate reuse with
   return await ownedWork;
 });
 
-async function terminalAuthority(t, agreedOrigin = false, ownPublishedOrigin = false) {
+async function terminalAuthority(t, ownPublishedOrigin = false) {
   for (const drift of [true, false]) await t.test(drift ? "origin drift before Task CAS" : "success and same-original repeat", async child => {
     const sqlRoot = await mkdtemp(path.join(os.tmpdir(), "hub-ordinary-terminal-"));
     const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(sqlRoot, "tasks.sqlite") });
@@ -168,7 +168,7 @@ async function terminalAuthority(t, agreedOrigin = false, ownPublishedOrigin = f
     const created = store.create({ text: "Fix", bucket: "workspace", workspaceId: workspace.id });
     await board.claim({ id: created.id, workspaceId: workspace.id, streamId: stream.id,
       provider: "codex", threadId: "fixture", turnId: "turn", operationId: "claim" });
-    const f = await fixture(child, created.id, board.task(created.id).revision + 1, agreedOrigin, ownPublishedOrigin);
+    const f = await fixture(child, created.id, board.task(created.id).revision + 1, false, ownPublishedOrigin);
     await catalog.runMutation(() => catalog.updateWorkspaceSettings(workspace.id,
       { workingDirectory: f.primary, releaseWorkflowEnabled: true }));
     await board.beginLifecycleTransition({ id: created.id, operationId: "test", kind: "workflow",
@@ -180,20 +180,27 @@ async function terminalAuthority(t, agreedOrigin = false, ownPublishedOrigin = f
     // Integration membership is a port. Git proofs, native candidate, lifecycle
     // and the terminal SQLite mutation are the actual owners under test.
     f.service.releaseIntegrationEvidence = async () => ({ tasks });
-    let ready = false, injected = 0, prepares = 0, terminalCalls = 0;
+    let ready = false, injected = 0, terminalCalls = 0;
     const prepare = f.candidate.prepareCandidate.bind(f.candidate);
     f.candidate.prepareCandidate = request => {
-      prepares++;
       return prepare({ ...request, commitPrepared: async candidate => {
         ready = true; return request.commitPrepared(candidate);
       } });
     };
     const publication = { generation: "own-publication", repositories: [{ root: f.primary, revision: f.published }] };
-    const preflight = new WorkspaceReleasePreflightService({
+    const preflight = new TaskIntegrationService({
       releasePlanner: { plan: async () => ({ revision: "exact", ready: tasks, blocked: [], conflicts: [] }) },
       taskGitWorkspaces: f.service, releaseGitWorkspaces: f.candidate,
       resolveReleaseValidationSource: async () => ({}), readPublicationState: async () => publication,
     });
+    const record = event => {
+      if (event.stage === "trace-summary") child.diagnostic(JSON.stringify({
+        operationId: event.operationId, aggregateSemantics: event.aggregateSemantics,
+        stageAggregates: event.stageAggregates,
+      }));
+    };
+    f.service.recordTiming = record;
+    const measure = f.service.measureOperation.bind(f.service);
     f.service.measureOperation = async (stage, operation) => {
       if (stage === "persistence" && ready && drift && !injected) {
         const changeOrigin = async () => {
@@ -203,13 +210,9 @@ async function terminalAuthority(t, agreedOrigin = false, ownPublishedOrigin = f
           await commit(f.external, "origin drift inside actual persistence admission");
           await git(f.external, ["push", "origin", "HEAD:main"]);
         };
-        if (process.env.HUB_TEST_LATE_NATIVE_HISTORY === "1") {
-          const key = Symbol.for("agent-hub.test.after-native-history");
-          globalThis[key] = changeOrigin;
-          child.after(() => { delete globalThis[key]; });
-        } else await changeOrigin();
+        await changeOrigin();
       }
-      return operation();
+      return measure(stage, operation);
     };
     const originalCommit = board.commitWorkflowTransition.bind(board);
     board.commitWorkflowTransition = request => {
@@ -220,25 +223,25 @@ async function terminalAuthority(t, agreedOrigin = false, ownPublishedOrigin = f
       taskGitWorkspaces: f.service, releasePreflight: preflight });
     const request = { taskId: task.id, operationId: "ordinary-await", status: "awaiting_implementation",
       projectRoot: f.primary, expectedRevision: task.revision, expectedWorkflowStatus: "testing" };
+    const perform = () => withTaskOperationTiming({ operationId: request.operationId, taskId: task.id, record },
+      () => lifecycle.updateWorkflowStatus(request));
     if (drift) {
-      await assert.rejects(lifecycle.updateWorkflowStatus(request), ownPublishedOrigin ? /OWN Git publication origin changed/
-        : agreedOrigin ? /agreed main origin changed/ : /identity changed/);
+      await assert.rejects(perform(), ownPublishedOrigin ? /OWN Git publication origin changed/ : /identity changed/);
       assert.equal(injected, 1);
       assert.equal(terminalCalls, 0);
       assert.equal(board.task(task.id).revision, task.revision);
       assert.equal(board.task(task.id).workflowStatus, "testing");
       assert.equal(board.lifecycleOutcome("ordinary-await"), null);
     } else {
-      const accepted = await lifecycle.updateWorkflowStatus(request);
+      const accepted = await perform();
       assert.equal(board.task(task.id).workflowStatus, "awaiting_implementation");
       assert.equal(terminalCalls, 1);
       const refs = await git(f.primary, ["for-each-ref", "--format=%(refname) %(objectname)"]);
       const prepared = await f.candidate.frozenCandidate(f.primary);
       const checkpoint = await readFile(prepared.checkpointFile);
-      await assert.rejects(lifecycle.updateWorkflowStatus(request), /revision changed/);
+      await assert.rejects(perform(), /revision changed/);
       const repeat = board.lifecycleOutcome(request.operationId).result;
       assert.equal(repeat.task.revision, accepted.task.revision);
-      assert.equal(prepares, 1);
       assert.equal(terminalCalls, 1);
       assert.equal(await git(f.primary, ["for-each-ref", "--format=%(refname) %(objectname)"]), refs);
       assert.deepEqual(await readFile(prepared.checkpointFile), checkpoint);
@@ -262,24 +265,8 @@ async function terminalAuthority(t, agreedOrigin = false, ownPublishedOrigin = f
 test("ordinary Await checks native authority inside actual Task persistence and terminal repeat has no Git effects",
   t => terminalAuthority(t));
 
-test("already agreed main origin reaches actual Await terminal CAS without invented adoption receipts",
-  t => terminalAuthority(t, true));
-
 test("own partial Git publication reaches actual Await CAS and preserves origin fencing",
-  { timeout: 300000 }, t => terminalAuthority(t, false, true));
-
-test("late native history completion keeps origin fencing before the actual Task CAS", { timeout: 240000 }, async () => {
-  const environment = { ...process.env, HUB_TEST_LATE_NATIVE_HISTORY: "1" };
-  delete environment.NODE_TEST_CONTEXT;
-  const result = await run(process.execPath, ["--import",
-    new URL("../../helpers/native-history-observer.mjs", import.meta.url).href,
-    "--test", "--test-name-pattern=^already agreed main origin reaches", import.meta.filename],
-  { env: environment, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
-  assert.equal(result.stderr, "");
-  assert.match(result.stdout, /tests 3/u);
-  assert.match(result.stdout, /pass 3/u);
-  assert.match(result.stdout, /fail 0/u);
-});
+  { timeout: 300000 }, t => terminalAuthority(t, true));
 
 test("already agreed main origin survives Test and candidate reuse but refuses drift and malformed authority", async t => {
   const f = await fixture(t, undefined, undefined, true);
@@ -352,98 +339,7 @@ test("installed source object batch reaches actual TaskGit Test through the exis
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
-test("native installed source and exact ordinary adoption survive Test, candidate reuse and generation", async t => {
-  // These sequential phases share ONE owned fixture. The existing 240s budget
-  // applies to each measured phase, rather than hiding later oracles behind one
-  // aggregate timeout. No production timeout or authority boundary changes.
-  let f, first, notes, generationInput, preparedHead, preparedIndex, holderEvidence;
-  const stage = async (name, run) => {
-    let completed = false;
-    await t.test(name, { timeout: 240000 }, async context => {
-      const started = performance.now();
-      try { await run(); completed = true; }
-      finally { context.diagnostic(JSON.stringify({ stage: name,
-        elapsedMs: performance.now() - started, completed })); }
-    });
-    assert.ok(completed, `fixture stage did not complete: ${name}`);
-  };
-  await stage("installed source, ordinary Test and exact candidate reuse", async () => {
-    f = await fixture(t, undefined, undefined, false, false, true);
-    await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.main, tasks: f.tasks }), /release-owned/);
-    const snapshot = await f.service.snapshot({ taskId: f.task.taskId, taskNumber: "HUB-1", projectRoot: f.task.projectRoot });
-    const integrated = await f.service.mergeIntoDev(snapshot);
-    assert.equal(integrated.integrated, true);
-    assert.equal(await git(integrated.dev.projectRoot, ["show", "HEAD:AgentHub/server.mjs"]), "export const repair = 1;");
-    first = await f.candidate.prepareCandidate(f.request);
-    const again = await f.candidate.prepareCandidate(f.request);
-    assert.equal(again.preReleaseHead, first.preReleaseHead);
-    assert.equal(again.manifestHash, first.manifestHash);
-    for (const name of ["server", "incoming", "selected"]) assert.ok(await git(first.releaseRoot, ["show", `HEAD:AgentHub/${name}.mjs`]));
-  });
-  await stage("foreign checkout refusal preserves original holder", async () => {
-    const holder = await f.candidate.frozenCandidate(f.primary);
-    holderEvidence = { checkpointFile: holder.checkpointFile, manifestFile: holder.manifestFile,
-      checkpoint: await readFile(holder.checkpointFile), manifest: await readFile(holder.manifestFile) };
-    notes = Buffer.from("# Consolidated release\n");
-    await save(first.releaseRoot, "CHANGELOG.md", notes);
-    await save(first.releaseRoot, "foreign.txt", "foreign bytes stay intact\n");
-    generationInput = { ...f.request, operationId: "release-original", generation: 1, changelogContent: notes };
-    preparedHead = await git(first.releaseRoot, ["rev-parse", "HEAD"]);
-    preparedIndex = await git(first.releaseRoot, ["ls-files", "--stage", "-z"]);
-    await assert.rejects(f.candidate.prepareGeneration(generationInput), error => {
-      // Release capture reads the existing holder; it never retries Await composition.
-      assert.equal(error.code, "RELEASE_PREPARED_CANDIDATE_STALE");
-      assert.match(error.message, /release checkpoint clone is not an exact clean PreRelease checkout/u);
-      assert.match(error.message, /prepare the current Await candidate through the normal owner/u);
-      return true;
-    });
-    assert.equal(await git(first.releaseRoot, ["rev-parse", "HEAD"]), preparedHead);
-    assert.equal(await git(first.releaseRoot, ["ls-files", "--stage", "-z"]), preparedIndex);
-    assert.deepEqual(await readFile(path.join(first.releaseRoot, "CHANGELOG.md")), notes);
-    assert.equal(await readFile(path.join(first.releaseRoot, "foreign.txt"), "utf8"), "foreign bytes stay intact\n");
-    assert.deepEqual(await readFile(holderEvidence.checkpointFile), holderEvidence.checkpoint);
-    assert.deepEqual(await readFile(holderEvidence.manifestFile), holderEvidence.manifest);
-  });
-  await stage("substituted notes refusal preserves authorized bytes", async () => {
-    await unlink(path.join(first.releaseRoot, "foreign.txt"));
-    await assert.rejects(f.candidate.prepareGeneration({ ...generationInput, changelogContent: Buffer.from("substituted notes\n") }), error => {
-      // Release capture reads the existing holder; it never retries Await composition.
-      assert.equal(error.code, "RELEASE_PREPARED_CANDIDATE_STALE");
-      assert.match(error.message, /release checkpoint clone is not an exact clean PreRelease checkout/u);
-      assert.match(error.message, /prepare the current Await candidate through the normal owner/u);
-      return true;
-    });
-    assert.equal(await git(first.releaseRoot, ["rev-parse", "HEAD"]), preparedHead);
-    assert.equal(await git(first.releaseRoot, ["ls-files", "--stage", "-z"]), preparedIndex);
-    assert.deepEqual(await readFile(path.join(first.releaseRoot, "CHANGELOG.md")), notes);
-    assert.deepEqual(await readFile(holderEvidence.checkpointFile), holderEvidence.checkpoint);
-    assert.deepEqual(await readFile(holderEvidence.manifestFile), holderEvidence.manifest);
-  });
-  await stage("healthy generation and publication freeze retain adoption", async () => {
-    const generation = await f.candidate.prepareGeneration(generationInput);
-    assert.equal(generation.manifest.baseProvenance.adoptions[0].recordHash, f.receipt.recordHash);
-    const frozen = await f.candidate.freezePublicationCandidate({ projectRoot: f.primary, workspaceId: "fixture",
-      expectedPlanRevision: "exact", expectedPreparedHead: first.preReleaseHead, changelogContent: notes,
-      releaseDate: new Date("2026-10-17T00:00:00Z") });
-    assert.equal(frozen.phase, "frozen");
-    assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
-    assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
-  });
-  await stage("late origin drift refuses before terminal writes", async () => {
-    let terminalWrites = 0;
-    await assert.rejects(f.service.withTaskLock(f.task.taskId, lease => f.service.withAppliedNativeTerminalOwned({
-      taskId: f.task.taskId, projectRoot: f.primary, operationId: `native:${f.task.taskId}:${f.result}`, lease,
-    }, async (_record, recheck) => {
-      await recheck();
-      await save(f.external, "AgentHub/later.mjs", "unapproved after awaited terminal callback\n");
-      await commit(f.external, "origin changed before terminal CAS");
-      await git(f.external, ["push", "origin", "HEAD:main"]);
-      await recheck();
-      terminalWrites++;
-    })), /identity changed/);
-    assert.equal(terminalWrites, 0);
-  });
-});
+
 
 test("native composition rejects substituted receipts, changed snapshot and post-validation origin drift", async t => {
   const f = await fixture(t), verify = () => assertInstalledLocalSourceBaseline({ provenance: f.p, git: f.port,

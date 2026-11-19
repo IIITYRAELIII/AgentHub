@@ -22,7 +22,10 @@ import { withPublicationLock } from "../../src/infrastructure/process/publicatio
 
 test("isolated file failure retains the actual owned Node close receipt after cleanup", async () => {
   let observed;
-  await assert.rejects(runIsolatedTestCommand(process.execPath, ["-e", "process.exit(3)"]), error => {
+  const progress = [];
+  await assert.rejects(runIsolatedTestCommand(process.execPath, ["-e", "process.exit(3)"], {
+    onProgress: (phase, facts) => progress.push({ phase, pid: facts?.pid }),
+  }), error => {
     observed = error;
     return true;
   });
@@ -33,6 +36,14 @@ test("isolated file failure retains the actual owned Node close receipt after cl
   assert.ok(Date.parse(observed.testChild.requestedAt) <= Date.parse(observed.testChild.spawnedAt));
   assert.ok(Date.parse(observed.testChild.spawnedAt) <= Date.parse(observed.testChild.exitedAt));
   assert.ok(Date.parse(observed.testChild.exitedAt) <= Date.parse(observed.testChild.closedAt));
+  const phases = progress.map(event => event.phase);
+  for (const phase of ["child-starting", "child-exited", "child-closed", "cleanup", "cleanup-finished"]) {
+    assert.ok(phases.includes(phase), `missing actual child boundary: ${phase}`);
+  }
+  assert.ok(phases.indexOf("child-exited") < phases.indexOf("child-closed"));
+  assert.ok(phases.indexOf("child-closed") < phases.indexOf("cleanup"));
+  assert.ok(phases.indexOf("cleanup") < phases.indexOf("cleanup-finished"));
+  assert.ok(progress.every(event => event.pid === observed.testChild.pid));
   await assert.rejects(access(observed.testRoot), { code: "ENOENT" });
 });
 
@@ -401,7 +412,6 @@ test("every default-lock validation suite uses a fixture root while the publishe
       "tests/infrastructure/persistence/local-publication-receipt-baseline.test.mjs",
       "tests/application/request-safe-restart.test.mjs",
       "tests/public/release-candidate-contour.test.mjs",
-      "tests/public/publish-all.test.mjs",
       "tests/runtime/runtime-publication-completion.test.mjs",
     ];
     await withPublicationLock(async () => {

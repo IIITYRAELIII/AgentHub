@@ -94,10 +94,7 @@ export async function nativeReuseCandidates({ root, identity, context, readLegac
     // One already prepared, hash-bound capture may predate this implementation.
     // Only its existing owning checkpoint reader can supply the missing scope;
     // never stamp/enrich an old journal or trust an arbitrary historical tree.
-    // A shorter current capture must not hide the canonical prepared prefix.
-    // Its legacy binding still verifies the full old candidate and exact Git
-    // steps; lookup alone grants no prefix or conflict-afterimage authority.
-    if (historical.length && typeof readLegacyBinding === "function") {
+    if (!candidates.some(candidate => !candidate.conflictOnly) && historical.length && typeof readLegacyBinding === "function") {
       const binding = await readLegacyBinding();
       const candidate = binding && historical.find(c => c.root === binding.root && c.hash === binding.journalHash
         && taskGitIdentityHash(c.state.identity) === binding.identityHash && c.state.head === binding.head

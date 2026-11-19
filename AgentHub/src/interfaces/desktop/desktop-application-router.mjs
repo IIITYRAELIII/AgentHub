@@ -8,8 +8,7 @@ const MUTATION_ACTIONS = Object.freeze([
   "resolve-approval", "deferred-input", "restart-server", "restart-package", "resume-package", "retry-startup", "set-autostart",
   "update-server-configuration", "update-root-agents", "update-global-pre-turn-instructions", "compact-context", "create-device-pairing",
   "revoke-device", "submit-bug-report",
-  "rename-workspace", "update-workspace-settings", "move-workspace-to-folder", "rename-workspace-folder", "update-workspace-rules", "complete-workspace-release", "create-workspace", "archive-workspace", "restore-workspace", "delete-archived-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
-  "release-operation-run", "release-operation-continue",
+  "rename-workspace", "update-workspace-settings", "move-workspace-to-folder", "rename-workspace-folder", "update-workspace-rules", "create-workspace", "archive-workspace", "restore-workspace", "delete-archived-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
   "archive-stream", "update-stream-settings", "update-stream-rules", "move-stream",
   "board-task-create", "board-task-ingest", "board-task-update", "board-task-checklist", "board-task-checklist-linked-action", "board-task-attachment-add", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-start", "board-task-operation-cancel", "board-column-move", "board-column-comment",
@@ -75,18 +74,6 @@ export function createDesktopApplicationRouter({
     "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
     "messagePinSet", "messagePinsClear",
   ]) requiredFunction(handlers[name], name);
-
-  const releaseOperationUnavailable = () => {
-    const error = new Error("ReleaseOperation is unavailable in this runtime");
-    error.code = "RELEASE_OPERATION_UNAVAILABLE";
-    throw error;
-  };
-  const releaseOperationRun = typeof handlers.releaseOperationRun === "function"
-    ? handlers.releaseOperationRun : releaseOperationUnavailable;
-  const releaseOperationGet = typeof handlers.releaseOperationGet === "function"
-    ? handlers.releaseOperationGet : releaseOperationUnavailable;
-  const releaseOperationContinue = typeof handlers.releaseOperationContinue === "function"
-    ? handlers.releaseOperationContinue : releaseOperationUnavailable;
 
   const dispatch = (type, params, context, target) => commands.dispatch(
     type,
@@ -174,11 +161,6 @@ export function createDesktopApplicationRouter({
       "move-workspace-to-folder": (params, context) => dispatch("workspace.folder.move", params, context),
       "rename-workspace-folder": (params, context) => dispatch("workspace.folder.rename", params, context),
       "update-workspace-rules": (params, context) => dispatch("workspace.developer-rules.update", params, context),
-      "read-workspace-release-plan": (params, context) => dispatch("workspace.release-plan.read", params, context),
-      "complete-workspace-release": (params, context) => dispatch("workspace.release.complete", params, context),
-      "release-operation-run": releaseOperationRun,
-      "release-operation-get": releaseOperationGet,
-      "release-operation-continue": releaseOperationContinue,
       "create-workspace": (params, context) => dispatch("workspace.create", params, context),
       "archive-workspace": (params, context) => dispatch("workspace.archive", params, context),
       "restore-workspace": (params, context) => dispatch("workspace.restore", params, context),

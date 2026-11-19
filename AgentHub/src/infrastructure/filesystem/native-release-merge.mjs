@@ -8,7 +8,7 @@ import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorp
 import { nativeReuseContext, nativeReuseCandidates, verifiedNativePrefix, retainedNativeConflict } from "./native-merge-reuse.mjs";
 import { measureTaskOperation } from "../process/task-operation-timing.mjs";
 
-// Internal Git sequencing of ReleaseGitWorkspaceService. This has no Task,
+// Internal Git sequencing of TaskIntegrationGitService. This has no Task,
 // publication or ref-promotion authority. The application retains those leases.
 export const NATIVE_RELEASE_POLICY = "main-selected-git-merge-v1";
 
@@ -24,7 +24,7 @@ export function nativeMergeBaseFields(output) {
 async function publishedVirtualReplay({ git, identity, baseCommit, tasks }) {
   if (!Object.hasOwn(identity, "mergeBases") && !tasks.some(task => Object.hasOwn(task, "mergeBases"))) return false;
   const task = tasks[0];
-  if (identity.policy !== "published-main-dev-sync-v1" || tasks.length !== 1
+  if (!["published-main-dev-sync-v1", "manual-main-dev-sync-v1"].includes(identity.policy) || tasks.length !== 1
       || identity.devCommit !== baseCommit || task.taskId !== `published:${identity.operationId}`
       || task.resultCommit !== identity.publishedRevision || Object.hasOwn(identity, "mergeBase")
       || Object.hasOwn(task, "baseCommit") || !Array.isArray(identity.mergeBases)
@@ -122,24 +122,6 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     // Fresh admission is supplied only by TaskLifecycle under both Task leases.
     // Release preparation uses the sealed descriptor from the committed Test.
     const absorbed = selected.selectedComposition?.absorptionInput ?? task.nativeAbsorptionInput;
-    const ordinarySides = [];
-    for (const history of selected.ordinaryAbsorptions ?? []) {
-      if (history.baseCommit !== (task.baseCommit || baseCommit)
-          || await maybe(git, ["merge-base", "--is-ancestor", history.testedCommit, task.resultCommit]) === null
-          || await maybe(git, ["merge-base", "--is-ancestor", history.absorptionCommit, history.testedCommit]) === null
-          || String(await git(["show", "-s", "--format=%P", history.absorptionCommit]))
-            !== `${history.survivorParentCommit} ${history.sourceCommit}`
-          || String(await git(["rev-parse", `${history.sourceCommit}^{tree}`])) !== history.sourceTree
-          || await maybe(git, ["merge-base", "--is-ancestor", history.baseCommit, history.sourceCommit]) === null) {
-        throw failure(`Task ${task.taskId} ordinary absorbed history differs from canonical closure`);
-      }
-      const sourceRows = String(await git(["rev-list", "--first-parent", "--parents", "--max-count=4097",
-        history.sourceCommit, `^${baseCommit}`])).split(/\r?\n/u).filter(Boolean);
-      if (sourceRows.length > 4096 || sourceRows.some(row => row.split(" ").length !== 2)) {
-        throw failure(`Task ${task.taskId} ordinary absorbed source requires explicit historical migration`);
-      }
-      ordinarySides.push({ commit: history.absorptionCommit, source: history.sourceCommit });
-    }
     let authorizedSide = null;
     if (absorbed) {
       const binding = normalizedSelectedAbsorption(absorbed);
@@ -177,7 +159,6 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
           if (await maybe(git, ["merge-base", "--is-ancestor", side, b]) !== null) { contained = true; break; }
         }
         if (!owned.has(side) && !(authorizedSide?.commit === commit && authorizedSide.source === side)
-            && !ordinarySides.some(bound => bound.commit === commit && bound.source === side)
             && !contained) {
           throw failure(`Task ${task.taskId} contains an unselected merge side; migrate it explicitly`,
             "RELEASE_NATIVE_HISTORY_REQUIRED", { taskId: task.taskId, sideCommit: side });
@@ -443,13 +424,13 @@ async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
       || String(await git(["rev-parse", `${publication.commit}^{tree}`])) !== publication.tree) {
     throw failure("Native Test published content authority changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
-  // A repeated Test can share its earlier own result with dev. Keep replaying
-  // the FULL own delta from the sealed publication, not from that later result:
-  // a lost earlier own addition must still refuse. Multiple/foreign bases keep
-  // their prior policy and receive no inferred publication authority.
-  const commonBase = String(await git(["merge-base", "--all", baseCommit, task.resultCommit]));
-  if (commonBase !== publication.commit && (!/^[a-f0-9]{40}$/u.test(commonBase)
-      || await maybe(git, ["merge-base", "--is-ancestor", publication.commit, commonBase]) === null)) return null;
+  // A repeated Test can already contain the exact selected result. Its unique
+  // base is then that result, but only the same sealed publication inside it
+  // supplies the replay boundary; the full own delta still has to survive.
+  // Other histories, including multiple bases, keep their existing policy.
+  const mergeBase = String(await git(["merge-base", "--all", baseCommit, task.resultCommit]));
+  if (mergeBase !== publication.commit && (mergeBase !== task.resultCommit
+      || await maybe(git, ["merge-base", "--is-ancestor", publication.commit, task.resultCommit]) === null)) return null;
   if (await maybe(git, ["merge-base", "--is-ancestor", task.baseCommit || baseCommit, publication.commit]) === null) {
     throw failure("Native Test published content base is outside its agreed history", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
@@ -478,12 +459,77 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
   return additions > 0 && retained();
 }
 
+// A later selected automatic edit can change a file whose earlier owned
+// resolution already proved its combined content. Re-prove that content at
+// every subsequent native step; an ancestor or an old path stamp is not proof.
+async function retainsOrderedResolution({ git, baseCommit, merges, resolutions, head, file }) {
+  const prior = resolutions.findLast(item => item.conflictPaths.includes(file));
+  if (!prior) return false;
+  const index = merges.findIndex(step => step.commit === prior.commit
+    && step.resultCommit === prior.binding.parents[1]);
+  if (index < 0 || index === merges.length - 1) return false;
+  const entry = async revision => new Map(await entries(git,
+    ["--literal-pathspecs", "ls-tree", "--full-tree", "-z", revision, "--", file])).get(file);
+  let retained = prior.commit;
+  let before = await entry(retained);
+  for (const step of merges.slice(index + 1)) {
+    const after = await entry(step.commit);
+    if (after !== before) {
+      // New credit is confined to the exact clean automatic text entry. A
+      // changed mode/type, binary payload or unbound resolution keeps refusal.
+      if (!/^100(?:644|755) blob [a-f0-9]{40}$/u.test(before ?? "")
+          || before.split(" ")[0] !== after?.split(" ")[0]) return false;
+      const actual = resolutions.find(item => item.commit === step.commit
+        && item.binding.parents[0] === retained && item.binding.parents[1] === step.resultCommit);
+      if (!actual || actual.conflictPaths.includes(file)
+          || await entry(actual.binding.automaticTree) !== after) return false;
+      const delta = String(await git(["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv",
+        "--numstat", retained, step.commit, "--", file], { rawOutput: true }));
+      if (/^-\t-\t/mu.test(delta)) return false;
+      const replay = String(await git(["merge-tree", "--write-tree", "--name-only", "-z",
+        `--merge-base=${baseCommit}`, step.commit, retained], { acceptableExitCodes: [1] })).split("\0");
+      const replayTree = replay.shift();
+      if (!/^[a-f0-9]{40}$/u.test(replayTree)) return false;
+      const boundary = replay.indexOf("");
+      if (replay.slice(0, boundary < 0 ? replay.length : boundary).includes(file)) return false;
+      if (await entry(replayTree) !== after
+          && !await repeatsRetainedContent(git, step.commit, replayTree, file)) return false;
+    }
+    retained = step.commit;
+    before = after;
+  }
+  return retained === head;
+}
+
 // Reachability alone does not prove content. Reproduce each selected delta, but
 // retain the actual automatic context and verified conflict resolutions instead
 // of requiring a message to authorize that same Git evidence.
-export async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
+async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
   const virtualReplay = await publishedVirtualReplay({ git, identity, baseCommit, tasks });
   const publishedBase = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
+  // The existing replay helper validates the original publication identity even
+  // when its unique-base rule supplies no new replay lower boundary.
+  const publication = identity.policy === "native-dev-merge-v1"
+    ? identity.nativeHistoryAuthority?.publishedMetadata : null;
+  const commonBases = publication
+    ? String(await git(["merge-base", "--all", baseCommit, tasks[0].resultCommit])).split(/\r?\n/u) : [];
+  let inheritedPublication = commonBases.includes(publication?.commit);
+  if (publication && !inheritedPublication && commonBases.length) {
+    // Dependency tips can replace the publication itself as the real common
+    // bases. Only all of those exact tips containing the same sealed publication
+    // extend the existing automatic-absence proof, never the replay boundary.
+    inheritedPublication = true;
+    for (const commonBase of commonBases) {
+      if (await maybe(git, ["merge-base", "--is-ancestor", publication.commit, commonBase]) === null) {
+        inheritedPublication = false;
+        break;
+      }
+    }
+  }
+  const inherited = publication
+    && inheritedPublication
+    && await maybe(git, ["merge-base", "--is-ancestor", tasks[0].baseCommit || baseCommit, publication.commit]) !== null
+    ? new Map(await entries(git, ["ls-tree", "-r", "-z", publication.commit])) : new Map();
   const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit
     && Array.isArray(identity.tasks) && taskGitIdentityHash(identity.tasks) === taskGitIdentityHash(tasks);
   const target = new Map(await entries(git, ["ls-tree", "-r", "-z", head]));
@@ -500,6 +546,8 @@ export async function assertSelectedContent({ git, baseCommit, tasks, head, reso
     const actual = merged ? new Map(await entries(git, ["ls-tree", "-r", "-z",
       (String(await git(["merge-tree", "--write-tree", "--name-only", "-z", prefix, task.resultCommit],
         { acceptableExitCodes: [1] })).split("\0"))[0]])) : new Map();
+    const source = inherited.size
+      ? new Map(await entries(git, ["ls-tree", "-r", "-z", task.resultCommit])) : new Map();
     let replayBase = publishedBase || task.baseCommit || baseCommit;
     // The captured composition already owns its complete baseline tree. If
     // that exact baseline lies inside this selected history, replay only the
@@ -524,6 +572,15 @@ export async function assertSelectedContent({ git, baseCommit, tasks, head, reso
     for (const file of new Set([...expected.keys(), ...target.keys()])) {
       if (expected.get(file) === target.get(file) || resolvedPaths.has(file)
           || actual.get(file) === target.get(file) && actual.has(file)) continue;
+      // Absence is automatic evidence only for a whole unchanged published
+      // entry. Own earlier/new edits and an already-contained result cannot
+      // acquire deletion credit from an empty or unrelated automatic map.
+      if (merged && !actual.has(file) && !target.has(file)
+          && inherited.has(file) && source.get(file) === inherited.get(file)) continue;
+      if (capturedComposition && await retainsOrderedResolution({ git, baseCommit, merges, resolutions, head, file })) {
+        resolvedPaths.add(file);
+        continue;
+      }
       if ((!conflicts.has(file) || await changesCleanConflictContext(git, replayTree, head, file, replayBefore, task.resultCommit))
           && !await repeatsRetainedContent(git, head, replayTree, file)) missing.push(file);
     }

@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 
 const exec = promisify(execFile);
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -26,7 +26,7 @@ async function fixture(t, format = "sha1") {
   await writeFile(path.join(root, "tracked.txt"), "original\n");
   await git(root, ["add", "."]);
   await git(root, ["commit", "-m", "base"]);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(parent, "data") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(parent, "data") });
   return { parent, root, service };
 }
 

@@ -79,10 +79,10 @@ const localWebSecret = config.miniApp.enabled
   ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))
   : "";
 const { value: {
-  trustedDeviceStore, taskLifecycle, taskGitWorkspaces, releaseGitWorkspaces, releaseOperations,
+  trustedDeviceStore, taskLifecycle, taskGitWorkspaces, releaseGitWorkspaces,
   contourExternalEffects,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, taskReleasePlanner, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
+  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, taskReleasePlanner, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
   miniAppServer,
   publicMiniAppServer,
   attachmentDirectory,
@@ -175,7 +175,6 @@ const {
   importCodexAssistantAttachments,
   startClaudeTurn, steerClaudeTurn,
   stopClaudeRunProcess,
-  attachClaudeRunAfterRestart,
   handleCodexMessage,
   completedCodexAnswer,
   applyCodexObservedSnapshot,
@@ -271,7 +270,7 @@ const providerApplication = await createProviderApplicationComposition({
   },
   infrastructure: {
     runJournal,
-    taskBoard, taskGitWorkspaces, releaseGitWorkspaces, releaseOperations,
+    taskBoard, taskGitWorkspaces, releaseGitWorkspaces,
     contourExternalEffects,
     turnEndNotifications,
     workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
@@ -314,7 +313,6 @@ const providerApplication = await createProviderApplicationComposition({
     bindRunMessage,
     completedCodexAnswer,
     persistClaudeRunHistory,
-    attachClaudeRunAfterRestart,
     readCodexTaskSnapshot,
     resolvedExplicitSkillNames,
     taskExternalActivity,
@@ -360,7 +358,6 @@ const providerApplication = await createProviderApplicationComposition({
     forwardBundleController: () => forwardBundleController,
     startTyping: (...args) => startTyping(...args),
     telegram: (...args) => telegram(...args),
-    runRecovery: () => runRecovery,
     runCoordinator: () => runCoordinator,
     formatPermissionsApproval,
   },
@@ -520,7 +517,6 @@ const clientRuntime = await createClientRuntimeComposition({
     stopProcessTree,
     taskProgress: () => taskProgress,
     telegramDeliveryService: () => telegramDeliveryService,
-    runRecovery: () => runRecovery,
     approvalProtocol,
   },
   ports: {
@@ -586,7 +582,7 @@ const interactionShell = createInteractionShellPhase({
   infrastructure: {
     trustedDeviceStore, workLogUsageStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
     hubMcpService,
-    taskReleasePlanner, workspaceReleaseService,
+    taskReleasePlanner,
     taskLifecycle,
     attachmentDirectory,
     usdRubRateStore, runtimeStateStore, taskReadStateStore, rateLimitHistoryStore, commandTraceService, runJournal,
@@ -651,7 +647,6 @@ const executionBootstrap = createExecutionBootstrapPhase({
 const {
   claudeRunController,
   taskObserver,
-  runRecovery,
   forwardBundleController,
   startAgentHub,
   shutdownAgentHub,

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
-import { AUTO_REVIEW_DEVELOPER_RULES, TEAM_LEAD_DEVELOPER_RULES } from "../../../src/domain/workspace-release-workflow.mjs";
+import { AUTO_REVIEW_DEVELOPER_RULES, TEAM_LEAD_DEVELOPER_RULES } from "../../../src/domain/workspace-task-workflow.mjs";
 
 test("auto-review persists independently and reaches all Stream contexts across restart and rotation", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub-auto-review-"));

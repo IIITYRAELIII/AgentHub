@@ -7,7 +7,6 @@ import { readClaimCustodyFence, configureClaimCustodyBindingFences, configureCla
   claimCustodySqlConnection, captureClaimCustodySqlAuthorities } from "./claim-custody-fence.mjs";
 import { claimCustodyState, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { nativeTestMetadataDrift } from "../../domain/native-test-terminal-recovery.mjs";
-import { mcpArgumentsHash } from "../../domain/mcp-arguments-hash.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { configureTaskTurnProjection } from "./task-turn-projection.mjs";
@@ -23,6 +22,7 @@ import {
   TASK_WORKFLOW_STATUSES,
   TaskLifecycleBeginRejectedError,
   workflowAdmissionNoEffectEvidence,
+  ordinaryAwaitOriginalArguments,
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
 import {
@@ -33,8 +33,7 @@ import { normalizedTaskGitReferences, taskBranchName, normalizedInitialNativeTes
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
 import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError,
-  normalizedSelectedAbsorption, selectedAbsorptionHandoff, assertSelectedAbsorptionTasks,
-  normalizedOrdinaryAbsorptions } from "../../domain/task-selected-composition.mjs";
+  normalizedSelectedAbsorption, selectedAbsorptionHandoff, assertSelectedAbsorptionTasks } from "../../domain/task-selected-composition.mjs";
 import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
 import { taskProjectRoot } from "../../domain/task-project-root.mjs";
 import {
@@ -2548,12 +2547,15 @@ export class TaskBoardStore {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(taskId, ...identity, kind, baselineJson, timestamp);
       assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, String(workspaceId));
+      // A new fenced binding advances CAS even for the same assigned Stream.
+      // The ordinary revision trigger skips an explicitly advanced revision.
       database.prepare(`
         UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = CASE WHEN workflow_status IN ('testing', 'awaiting_implementation', 'blocked') THEN workflow_status ELSE 'in_progress' END,
           workspace_id = ?, stream_id = ?, placement_source = 'manual',
-          started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?
+          started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?,
+          row_revision = row_revision + ?
         WHERE id = ?
-      `).run(String(workspaceId), String(streamId), timestamp, timestamp, taskId);
+      `).run(String(workspaceId), String(streamId), timestamp, timestamp, forwardCustodyRequestId ? 1 : 0, taskId);
       const result = this.#taskWithRelease(
         database,
         database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId),
@@ -2732,30 +2734,11 @@ export class TaskBoardStore {
     return priorResults;
   }
 
-  returnedNativeTestPriorResult(taskId, { absorption = false } = {}) {
+  returnedNativeTestPriorResult(taskId) {
     return this.#withDatabase(database => {
       const task = this.#taskWithRelease(database, this.#taskRow(database, taskId));
       const [prior] = this.#selectedAbsorptionPriorResults(database, [task], this.now());
       if (!prior) throw new Error("Returned native Test has no exact normal return result");
-      if (absorption) {
-        const tested = this.lifecycleOutcome(prior.testOperationId)?.result;
-        const returned = this.lifecycleOutcome(prior.returnOperationId)?.result;
-        const ref = task.gitReferences[0];
-        const laterTest = database.prepare(`SELECT operation_id FROM hub_task_lifecycle_outcomes
-          WHERE task_id=? AND kind='workflow'
-            AND json_extract(result_json,'$.task.workflowStatus')='testing'
-            AND json_extract(result_json,'$.evidence.outcome')='integrated'
-            AND json_extract(result_json,'$.task.revision')>? LIMIT 1`).get(task.id, prior.returnRevision);
-        if (!["new", "in_progress", "blocked"].includes(task.workflowStatus) || laterTest
-            || tested?.evidence.outcome !== "integrated"
-            || [tested?.task, returned?.task, returned?.priorTask].some(value =>
-              value?.gitReferences?.length !== 1 || value.gitReferences[0].branch !== ref.branch)
-            || !/^[0-9a-f]{40}$/u.test(tested?.evidence.devHeadCommit ?? "")) {
-          throw selectedCompositionRequiredError("ordinary absorbed source return or Test boundary changed");
-        }
-        return { ...prior, taskRevision: task.revision, branch: ref.branch,
-          devCommit: tested.evidence.devHeadCommit };
-      }
       return prior;
     });
   }
@@ -3060,7 +3043,6 @@ export class TaskBoardStore {
         }
         if (evidence?.absorbedInto) {
           const absorbed = evidence.absorbedInto;
-          this.#assertOrdinaryClosureAuthority(database, operation, absorbed);
           const targetTask = this.#taskRow(database, absorbed.taskId);
           const targetActive = database.prepare(
             "SELECT operation_id FROM hub_task_lifecycle_transitions WHERE task_id = ? AND phase IN ('pending_git', 'cleanup')",
@@ -3152,56 +3134,6 @@ export class TaskBoardStore {
     });
   }
 
-  absorptionRetainedSource({ taskId, projectRoot } = {}) {
-    return this.#withDatabase(database => {
-      const current = this.#taskWithRelease(database, this.#taskRow(database, taskId));
-      const refs = current.gitReferences ?? [];
-      // This is a narrowly recorded repository replacement, not a filter on
-      // unreferenced folders. Ordinary multi-repository contributions stay active.
-      if (refs.length !== 1 || !sameResolvedPath(refs[0].projectRoot, projectRoot)) return null;
-      const equalRefs = (a, b) => a?.length === b?.length && a.every((ref, i) =>
-        sameResolvedPath(ref.projectRoot, b[i].projectRoot) && ref.branch === b[i].branch
-        && ref.resultCommit === b[i].resultCommit);
-      const rows = database.prepare(`SELECT operation_id,result_json,completed_at_ms FROM hub_task_lifecycle_outcomes
-        WHERE task_id=? AND kind='workflow' AND json_extract(result_json,'$.task.workflowStatus')='testing'
-          AND json_extract(result_json,'$.evidence.outcome')='integrated'
-        ORDER BY completed_at_ms DESC,operation_id DESC LIMIT 65`).all(taskId);
-      if (rows.length > 64) throw new Error("Absorption source Test history exceeds bounded lookup");
-      for (const row of rows) {
-        const value = JSON.parse(row.result_json), prior = value.priorTask, tested = value.task;
-        if (tested?.id !== taskId || tested.workspaceId !== current.workspaceId
-            || tested.revision > current.revision || tested.revision !== prior?.revision + 1
-            || prior.id !== taskId || prior.workspaceId !== current.workspaceId
-            || !["new", "in_progress", "blocked"].includes(prior.workflowStatus)
-            || !equalRefs(tested.gitReferences, refs) || value.evidence.resultCommit !== refs[0].resultCommit) continue;
-        const historical = (prior.gitReferences ?? []).filter(ref => !sameResolvedPath(ref.projectRoot, projectRoot));
-        if (!historical.length) continue;
-        const workspace = value.evidence.response?.gitWorkspace;
-        if (!workspace?.projectRoot || workspace.branch !== refs[0].branch || workspace.headCommit !== refs[0].resultCommit) continue;
-        const claims = database.prepare(`SELECT m.request_id,m.result_json,b.baseline_json FROM hub_task_turn_bindings b
-          JOIN hub_mcp_operations m ON m.request_id=b.operation_id
-          WHERE b.task_id=? AND b.operation_kind='claim' AND m.tool_name='hub_task_claim'
-            AND m.status='succeeded' AND m.receipt_state='succeeded' AND m.workspace_id=? AND m.stream_id=?
-            AND m.provider=b.provider AND m.provider_thread_id=b.provider_thread_id
-            AND m.completed_at_ms<=? ORDER BY m.completed_at_ms DESC,m.request_id DESC LIMIT 65`)
-          .all(taskId, current.workspaceId, current.streamId, row.completed_at_ms);
-        if (claims.length > 64) throw new Error("Absorption source claim history exceeds bounded lookup");
-        for (const claim of claims) {
-          const result = JSON.parse(claim.result_json), baseline = JSON.parse(claim.baseline_json);
-          if (result?.id !== taskId || !baseline?.repoRoot || !result.gitWorkspace?.projectRoot
-              || !sameResolvedPath(baseline.repoRoot, projectRoot)
-              || !baseline.tree || result.gitWorkspace.baseCommit !== baseline.tree || workspace.baseCommit !== baseline.tree
-              || !sameResolvedPath(result.gitWorkspace?.projectRoot, workspace.projectRoot)
-              || result.gitWorkspace?.branch !== refs[0].branch
-              || !equalRefs(result.gitReferences, prior.gitReferences)) continue;
-          return { taskId, taskRevision: current.revision, claimOperationId: claim.request_id,
-            testOperationId: row.operation_id, currentReferences: refs, references: historical };
-        }
-      }
-      return null;
-    });
-  }
-
   committedNativeTestForDev({ workspaceId, devCommit } = {}) {
     return this.#withDatabase(database => {
       const rows = database.prepare(`SELECT operation_id FROM hub_task_lifecycle_outcomes
@@ -3253,156 +3185,71 @@ export class TaskBoardStore {
     });
   }
 
+  recordUnadmittedAwaitRefusal({ taskId, receipt, projectRoot, lockAdmission = null } = {}) {
+    return this.#withDatabase(database => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const row = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(receipt?.requestId);
+        const current = this.#taskRow(database, taskId);
+        const args = ordinaryAwaitOriginalArguments(receipt);
+        const fresh = ["pending", "reconciling"].includes(row?.receipt_state)
+          && lockAdmission?.kind === "release-await-lock-admission-v1"
+          && lockAdmission.workspaceId === receipt.workspaceId;
+        if (!row || !args || args.task_id !== taskId || row.status !== "pending"
+            || !(row.receipt_state === "unknown" || fresh)
+            || row.tool_name !== receipt.toolName || row.workspace_id !== receipt.workspaceId
+            || row.stream_id !== receipt.streamId || row.provider !== receipt.provider || row.provider_thread_id !== receipt.threadId
+            || row.arguments_hash !== receipt.argumentsHash || Number(row.created_at_ms) !== receipt.createdAtMs
+            || (row.completed_at_ms == null ? null : Number(row.completed_at_ms)) !== receipt.completedAtMs
+            || String(row.error_text ?? "") !== String(receipt.error ?? "") || row.result_json != null
+            || row.task_execution_json !== JSON.stringify(receipt.taskExecution)
+            || row.preparation_state_json || row.claim_custody_json || row.interstream_content_hash
+            || current.workspace_id !== receipt.workspaceId || Number(current.row_revision) !== args.expected_task_revision
+            || current.workflow_status !== "testing" || current.status === "done"
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_transitions WHERE operation_id = ?").get(receipt.requestId)
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(receipt.requestId)
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_transitions WHERE task_id = ? AND phase IN ('pending_git','cleanup')").get(taskId)) {
+          throw new Error("Unadmitted Await original, lifecycle or Task CAS changed");
+        }
+        assertNoPendingTaskInterruption(database, taskId);
+        const workspace = database.prepare("SELECT settings_json FROM hub_workspaces WHERE id = ?").get(current.workspace_id);
+        const stream = current.stream_id
+          ? database.prepare("SELECT settings_json FROM hub_streams WHERE id = ? AND workspace_id = ?").get(current.stream_id, current.workspace_id) : null;
+        const configuredRoot = workspace && taskProjectRoot({ workspace: { settings: parsedSettings(workspace.settings_json) },
+          stream: stream ? { settings: parsedSettings(stream.settings_json) } : null });
+        if (!configuredRoot || !projectRoot || !sameResolvedPath(configuredRoot, projectRoot)
+            || parsedSettings(workspace.settings_json).releaseWorkflowEnabled !== true) {
+          throw new Error("Unadmitted Await repository or Workspace changed");
+        }
+        const noEffect = { version: 1, code: "WORKFLOW_AWAIT_NOT_ADMITTED", taskId, projectRoot,
+          targetWorkflowStatus: args.status, expectedRevision: args.expected_task_revision, expectedWorkflowStatus: "testing",
+          observedRevision: Number(current.row_revision), observedWorkflowStatus: current.workflow_status,
+          ...Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName",
+            "argumentsHash", "createdAtMs"].map(key => [key, receipt[key]])),
+          admissionFence: { kind: "lifecycle-outcome-before-await-admission-v1", ownerId: receipt.taskExecution.ownerId,
+            origin: fresh ? "lock-acquire-refusal" : "reconciliation-boundary" },
+          lockAdmission: fresh ? structuredClone(lockAdmission) : null,
+          previousReceipt: structuredClone(receipt),
+        };
+        const outcome = { operationId: receipt.requestId, taskId, kind: "workflow", result: { noEffect } };
+        if (!workflowAdmissionNoEffectEvidence(outcome, receipt)) throw new Error("Unadmitted Await proof identity differs");
+        // The existing BEGIN owner checks this outcome in the same SQLite
+        // transaction before any Git effect. A late original either committed
+        // its transition first (and we refused above), or can no longer begin.
+        database.prepare(`INSERT INTO hub_task_lifecycle_outcomes
+          (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, ?)`)
+          .run(receipt.requestId, taskId, JSON.stringify(outcome.result), this.now());
+        database.exec("COMMIT");
+        return outcome;
+      } catch (error) { database.exec("ROLLBACK"); throw error; }
+    });
+  }
+
   // The committed Test outcome is authoritative even if a filesystem receipt
   // disappears. Read the existing outcome owner; never infer ordinary protocol
   // from the absence of an optional field in downstream release objects.
-  selectedCompositionForRelease({ taskId, projectRoot, resultCommit, ordinaryAbsorption = null } = {}) {
-    return this.#withDatabase(database => {
-      const selected = this.#selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit });
-      const history = [];
-      // Canonical completed closures, not caller descriptors or inferred Git
-      // reachability, keep this authority available to later ordinary Await.
-      const rows = database.prepare(`SELECT operation_id,task_id,result_json FROM hub_task_lifecycle_outcomes
-        WHERE kind='complete' AND json_extract(result_json,'$.evidence.absorbedInto.taskId')=?
-        AND json_type(result_json,'$.evidence.absorbedInto.ordinaryAbsorptions')='array'
-        ORDER BY completed_at_ms,operation_id LIMIT 65`).all(taskId);
-      if (rows.length > 64) throw selectedCompositionRequiredError("ordinary closure history exceeds bounded lookup");
-      for (const row of rows) {
-        const completed = JSON.parse(row.result_json);
-        const source = this.#taskWithRelease(database, this.#taskRow(database, row.task_id));
-        if (source.status !== "done" || source.id !== completed.result?.id
-            || source.revision !== completed.result.revision) {
-          throw selectedCompositionRequiredError("ordinary absorbed source is no longer closed");
-        }
-        for (const proof of normalizedOrdinaryAbsorptions(completed.evidence.absorbedInto.ordinaryAbsorptions, taskId)) {
-          if (!sameResolvedPath(proof.repositoryRoot, projectRoot)) continue;
-          const fresh = this.#ordinaryAbsorptionProof(database, { taskId, projectRoot,
-            resultCommit: proof.testedCommit, sourceTaskId: source.id, sourceTaskRevision: proof.sourceTaskRevision,
-            targetTaskRevision: proof.taskRevision, operationId: row.operation_id, repository: {
-              ordinaryMerge: Object.fromEntries(["baseCommit", "sourceCommit", "sourceTree", "survivorParentCommit",
-                "absorptionCommit", "testedCommit"].map(key => [key, proof[key]])),
-              returnedSource: proof.authority.returnedSource,
-            }, completed: true });
-          if (JSON.stringify(fresh) !== JSON.stringify(proof)) {
-            throw selectedCompositionRequiredError("ordinary closure canonical authority changed");
-          }
-          history.push(proof);
-        }
-      }
-      if (ordinaryAbsorption) history.push(this.#ordinaryAbsorptionProof(database, {
-        taskId, projectRoot, resultCommit, ...ordinaryAbsorption,
-      }));
-      return history.length ? { ...selected, resultCommit,
-        ordinaryAbsorptions: normalizedOrdinaryAbsorptions(history, taskId) } : selected;
-    });
-  }
-
-  #ordinaryAbsorptionProof(database, { taskId, projectRoot, resultCommit, sourceTaskId,
-    sourceTaskRevision, targetTaskRevision, operationId, repository, completed = false }) {
-    const reject = reason => { throw selectedCompositionRequiredError(`ordinary absorption ${reason}`); };
-    const hash = value => createHash("sha256").update(value).digest("hex");
-    const source = this.#taskWithRelease(database, this.#taskRow(database, sourceTaskId));
-    const target = this.#taskWithRelease(database, this.#taskRow(database, taskId));
-    const readOutcome = id => database.prepare("SELECT * FROM hub_task_lifecycle_outcomes WHERE operation_id=? AND kind='workflow'").get(id);
-    const receipt = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id=?").get(operationId);
-    const execution = receipt?.task_execution_json ? JSON.parse(receipt.task_execution_json) : null;
-    if (!receipt || receipt.tool_name !== "hub_task_complete" || receipt.workspace_id !== source.workspaceId
-        || receipt.stream_id !== source.streamId || source.streamId !== target.streamId
-        || execution?.protocol !== "task-operation-interruption-v1" || execution.version !== 1
-        || execution.taskWorkspaceId !== source.workspaceId
-        || execution.taskId !== source.id || execution?.arguments?.task_id !== source.id
-        || execution.arguments.absorbed_into_task_id !== target.id || execution.cancellation
-        || mcpArgumentsHash(execution.arguments) !== receipt.arguments_hash
-        || (completed && (receipt.status !== "succeeded" || receipt.receipt_state !== "succeeded"))) reject("actor or original changed");
-    if (source.id === target.id || source.workspaceId !== target.workspaceId || !source.streamId
-        || source.revision !== sourceTaskRevision + (completed ? 1 : 0) || target.revision < targetTaskRevision
-        || (!completed && (target.revision !== targetTaskRevision || source.status === "done" || target.status === "done"
-          || !["testing", "awaiting_implementation"].includes(target.workflowStatus)))
-        || !["in_progress", "new", "blocked"].includes(source.workflowStatus)) reject("current Task boundary changed");
-    const link = target.checklist.find(item => item.linkedTaskId === source.id);
-    if (!link || (!completed && link.completed) || source.checklistParent?.task?.id !== target.id
-        || source.checklistParent.itemId !== link.id) reject("requirement link changed");
-    const currentPrior = this.returnedNativeTestPriorResult(source.id, { absorption: true });
-    // The canonical archive CAS increments the row revision once. Keep the
-    // original pre-archive authority identity, while checking that exact effect.
-    const prior = completed ? { ...currentPrior, taskRevision: sourceTaskRevision } : currentPrior;
-    if (JSON.stringify(prior) !== JSON.stringify(repository?.returnedSource)) reject("returned source changed");
-    const sourceTest = readOutcome(prior.testOperationId);
-    const rows = database.prepare(`SELECT * FROM hub_task_lifecycle_outcomes WHERE task_id=? AND kind='workflow'
-      AND json_extract(result_json,'$.task.workflowStatus')='testing'
-      AND json_extract(result_json,'$.evidence.outcome')='integrated'
-      AND json_extract(result_json,'$.evidence.resultCommit')=?
-      AND json_extract(result_json,'$.task.revision')<=? ORDER BY completed_at_ms DESC,operation_id DESC LIMIT 65`)
-      .all(taskId, resultCommit, targetTaskRevision);
-    if (rows.length > 64) reject("Test lookup exceeds bound");
-    const targetTest = rows.find(row => {
-      const task = JSON.parse(row.result_json).task;
-      return task?.gitReferences?.some(ref => sameResolvedPath(ref.projectRoot, projectRoot) && ref.resultCommit === resultCommit);
-    });
-    const sourceReturn = readOutcome(prior.returnOperationId);
-    if (!targetTest || !sourceTest || !sourceReturn
-        || targetTest.completed_at_ms < sourceReturn.completed_at_ms) reject("Test result missing or predates return");
-    const testedTarget = JSON.parse(targetTest.result_json).task;
-    const targetRef = testedTarget.gitReferences.find(ref => sameResolvedPath(ref.projectRoot, projectRoot));
-    if (!completed && (target.gitReferences.length !== testedTarget.gitReferences.length
-        || target.gitReferences.some((ref, i) => JSON.stringify(ref) !== JSON.stringify(testedTarget.gitReferences[i])))) reject("current survivor result changed");
-    if (repository?.ordinaryMerge?.testedCommit !== resultCommit || prior.projectRoot !== projectRoot
-        || source.gitReferences.length !== 1 || source.gitReferences[0].branch !== prior.branch
-        || !targetRef || testedTarget.streamId !== target.streamId) reject("repository binding changed");
-    const actor = { workspaceId: receipt.workspace_id, streamId: receipt.stream_id,
-      provider: receipt.provider, threadId: receipt.provider_thread_id };
-    const publicOutcome = (id, tool, expectedTaskId = source.id, status = null) => {
-      const r = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id=?").get(id);
-      const capture = r?.task_execution_json ? JSON.parse(r.task_execution_json) : null;
-      if (!r || r.tool_name !== tool || r.status !== "succeeded" || r.receipt_state !== "succeeded"
-          || r.workspace_id !== actor.workspaceId || r.stream_id !== actor.streamId
-          || r.provider !== actor.provider || r.provider_thread_id !== actor.threadId
-          || capture?.protocol !== "task-operation-interruption-v1" || capture.version !== 1
-          || capture.taskWorkspaceId !== actor.workspaceId || capture.taskId !== expectedTaskId
-          || capture.arguments?.task_id !== expectedTaskId || capture.cancellation
-          || (status && capture.arguments.status !== status)
-          || mcpArgumentsHash(capture.arguments) !== r.arguments_hash) reject("foreign or unfinished owner receipt");
-      return { operationId: id, argumentsHash: r.arguments_hash };
-    };
-    const claims = database.prepare(`SELECT m.request_id,m.result_json,b.baseline_json,b.claimed_at_ms
-      FROM hub_task_turn_bindings b JOIN hub_mcp_operations m ON m.request_id=b.operation_id
-      WHERE b.task_id=? AND b.operation_kind='claim' AND m.tool_name='hub_task_claim'
-        AND m.status='succeeded' AND m.receipt_state='succeeded'
-      ORDER BY b.claimed_at_ms DESC,m.request_id DESC LIMIT 2`).all(source.id);
-    const claim = claims[0], claimResult = claim ? JSON.parse(claim.result_json) : null;
-    const baseline = claim ? JSON.parse(claim.baseline_json) : null;
-    if (!claim || claim.claimed_at_ms > sourceTest.completed_at_ms || claimResult?.id !== source.id
-        || !sameResolvedPath(baseline?.repoRoot ?? "", projectRoot) || !baseline?.tree
-        || claimResult.gitWorkspace?.baseCommit !== baseline.tree
-        || claimResult.gitWorkspace?.branch !== prior.branch) reject("canonical claim changed or source reopened");
-    const authority = { actor, returnedSource: prior,
-      claim: { ...publicOutcome(claim.request_id, "hub_task_claim"), resultHash: hash(claim.result_json), baselineHash: hash(claim.baseline_json) },
-      sourceTest: publicOutcome(prior.testOperationId, "hub_task_status_update", source.id, "testing"),
-      sourceReturn: publicOutcome(prior.returnOperationId, "hub_task_status_update", source.id,
-        JSON.parse(sourceReturn.result_json).task.workflowStatus),
-      targetTest: { ...publicOutcome(targetTest.operation_id, "hub_task_status_update", target.id, "testing"), outcomeHash: hash(targetTest.result_json) },
-      sourceMetadataHash: hash(JSON.stringify({ description: source.description, references: source.gitReferences,
-        checklistParent: { taskId: source.checklistParent?.task?.id, itemId: source.checklistParent?.itemId },
-        revision: sourceTaskRevision })),
-      targetMetadataHash: hash(JSON.stringify({ description: testedTarget.description, references: testedTarget.gitReferences,
-        revision: testedTarget.revision })), checklistItemId: link.id };
-    const proof = { kind: "ordinary-task-absorption-v1", sourceTaskId: source.id, sourceTaskRevision,
-      taskId, taskRevision: targetTaskRevision, repositoryRoot: projectRoot,
-      ...repository.ordinaryMerge, authority, authorityHash: hash(JSON.stringify(authority)) };
-    return normalizedOrdinaryAbsorptions([proof], taskId)[0];
-  }
-
-  #assertOrdinaryClosureAuthority(database, operationId, absorbed) {
-    for (const proof of absorbed?.ordinaryAbsorptions ?? []) {
-      const repository = absorbed.repositories?.find(repo => sameResolvedPath(repo.projectRoot, proof.repositoryRoot));
-      const fresh = this.#ordinaryAbsorptionProof(database, { taskId: absorbed.taskId,
-        projectRoot: proof.repositoryRoot, resultCommit: proof.testedCommit,
-        sourceTaskId: proof.sourceTaskId, sourceTaskRevision: proof.sourceTaskRevision,
-        targetTaskRevision: proof.taskRevision, operationId, repository });
-      if (JSON.stringify(fresh) !== JSON.stringify(proof)) {
-        throw selectedCompositionRequiredError("ordinary absorption authority changed before archive CAS");
-      }
-    }
+  selectedCompositionForRelease({ taskId, projectRoot, resultCommit } = {}) {
+    return this.#withDatabase(database => this.#selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit }));
   }
 
   #selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit }) {
@@ -3822,7 +3669,6 @@ export class TaskBoardStore {
         if (Number(current.row_revision) !== Number(transition.expected_task_revision)) {
           throw new Error("Task changed while cleanup was running");
         }
-        this.#assertOrdinaryClosureAuthority(database, operation, JSON.parse(transition.evidence_json ?? "{}").absorbedInto);
         let result;
         if (deleteTask) {
           result = { deleted: true, task: taskFromRow(current) };
@@ -4122,37 +3968,6 @@ export class TaskBoardStore {
     });
   }
 
-  recordReleaseFinalizationStage(workspaceId, { planRevision, stage, projectRoot, receipt }) {
-    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
-    return this.#withDatabase((database) => {
-      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
-      const pending = value ? JSON.parse(value) : null;
-      if (!pending || pending.version !== 2 || pending.planRevision !== planRevision) {
-        throw new Error("release finalization revision conflict");
-      }
-      if (!receipt || typeof receipt.completed !== "boolean" || !receipt.result) {
-        throw new Error("release finalization requires a stage receipt");
-      }
-      let holder;
-      let field;
-      if (stage === "await") {
-        holder = pending;
-        field = "awaitResult";
-      } else if (["primary", "dev"].includes(stage)) {
-        holder = pending.repositories.find((repository) => repository.projectRoot === projectRoot);
-        field = stage;
-      }
-      if (!holder) throw new Error("unknown release finalization stage or repository");
-      if (holder[field]?.completed) return false;
-      holder[field] = receipt;
-      const updated = database.prepare(`
-        UPDATE hub_board_settings SET value = ?, updated_at_ms = ? WHERE key = ? AND value = ?
-      `).run(JSON.stringify(pending), this.now(), key, value);
-      if (!Number(updated.changes)) throw new Error("release finalization checkpoint changed");
-      return true;
-    });
-  }
-
   clearAwaitRebuildPending(workspaceId, expectedPlanRevision = null) {
     const key = `release_await_rebuild_pending:${String(workspaceId)}`;
     return this.#withDatabase((database) => {
@@ -4177,187 +3992,6 @@ export class TaskBoardStore {
         `).run(JSON.stringify({ version: 2, completed: true, completedOutcomes }), this.now(), key, value).changes) > 0;
       }
       return Number(database.prepare("DELETE FROM hub_board_settings WHERE key = ? AND value = ?").run(key, value).changes) > 0;
-    });
-  }
-
-  completeRelease(workspaceId, {
-    expectedPlanRevision = null, plan = null, verificationEvidence = null, awaitRebuild = null,
-  } = {}) {
-    const expected = String(expectedPlanRevision ?? "").trim();
-    return this.#withDatabase((database) => {
-      database.exec("BEGIN IMMEDIATE");
-      try {
-      if (this.awaitRebuildPending(workspaceId)) {
-        throw new Error("release finalization is still pending");
-      }
-      const tasks = this.releaseTasks(workspaceId);
-      const awaiting = tasks.filter((task) => task.status !== "done"
-        && task.workflowStatus === "awaiting_implementation");
-      const doneAudit = tasks.filter((task) => task.status !== "done" && task.workflowStatus === "done");
-      const releaseRevision = taskReleasePlanRevision(workspaceId, awaiting);
-      const legacyRevision = taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit], { legacy: true });
-      const legacy = expected !== releaseRevision && expected === legacyRevision;
-      const currentRevision = legacy ? legacyRevision : releaseRevision;
-      if (!expected || currentRevision !== expected || plan?.revision !== expected) {
-        throw new Error("release plan revision conflict; verify the current release plan again");
-      }
-      if (!plan.candidates.length) throw new Error("release has no awaiting Task candidates");
-      if (taskReleasePlanRevision(workspaceId, plan.candidates) !== releaseRevision) {
-        throw new Error("release Task results or membership changed before closure");
-      }
-      if (!verificationEvidence || typeof verificationEvidence !== "object") {
-        throw new Error("release completion requires durable publication evidence");
-      }
-      const rebuildPlanRevision = String(awaitRebuild?.planRevision ?? "").trim();
-      const fallbackProjectRoots = Array.isArray(awaitRebuild?.fallbackProjectRoots)
-        ? awaitRebuild.fallbackProjectRoots.map((root) => String(root).trim()).filter(Boolean)
-        : [];
-      if (rebuildPlanRevision !== expected || !fallbackProjectRoots.length) {
-        throw new Error("release completion requires durable Await rebuild evidence");
-      }
-      const previousValue = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?")
-        .get(`release_await_rebuild_pending:${String(workspaceId)}`)?.value;
-      const completedOutcomes = previousValue ? JSON.parse(previousValue).completedOutcomes ?? [] : [];
-      const pending = { planRevision: rebuildPlanRevision, fallbackProjectRoots };
-      if (awaitRebuild.version === 2) {
-        const expectedRepositories = verificationEvidence.publication?.repositories ?? [];
-        if (!expectedRepositories.length || !Array.isArray(awaitRebuild.repositories)
-          || awaitRebuild.repositories.length !== expectedRepositories.length
-          || awaitRebuild.repositories.some((repository, index) => (
-            repository.projectRoot !== expectedRepositories[index].root
-            || repository.publishedRevision !== expectedRepositories[index].revision
-            || !repository.publishedRevision
-          ))) throw new Error("release finalization requires exact verified repositories");
-        Object.assign(pending, {
-          version: 2,
-          completedOutcomes,
-          repositories: awaitRebuild.repositories.map(({ projectRoot, publishedRevision }) => ({
-            projectRoot, publishedRevision, primary: null, dev: null,
-          })),
-          awaitResult: null,
-        });
-      }
-      const timestamp = this.now();
-      const released = [];
-      for (const task of plan.candidates) {
-        const current = database.prepare(`
-          SELECT row_revision, release_revision, workflow_status FROM hub_board_tasks WHERE id = ?
-        `).get(task.id);
-        if (!current
-           || (legacy && Number(current.row_revision) !== task.revision)
-           || Number(current.release_revision) !== (task.releaseRevision ?? task.revision)
-          || current.workflow_status !== "awaiting_implementation") {
-          throw new Error(`release Task revision changed: ${task.id}`);
-        }
-        const result = database.prepare(`
-          UPDATE hub_board_tasks SET workflow_status = 'done', status = 'done',
-            completed_at_ms = ?, updated_at_ms = ?
-          WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation'
-        `).run(timestamp, timestamp, task.id, Number(current.row_revision));
-        if (!Number(result.changes)) throw new Error(`release Task disappeared: ${task.id}`);
-        released.push({ id: task.id, revision: Number(current.row_revision),
-          releaseRevision: Number(current.release_revision), gitReferences: task.gitReferences });
-      }
-      const result = {
-        workspaceId: String(workspaceId),
-        released,
-        verificationEvidence,
-      };
-      database.prepare(`
-        INSERT INTO hub_board_settings (key, value, updated_at_ms)
-        VALUES (?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.updated_at_ms
-      `).run(
-        `release_await_rebuild_pending:${String(workspaceId)}`,
-        JSON.stringify(pending),
-        timestamp,
-      );
-      database.exec("COMMIT");
-      return result;
-      } catch (error) {
-        database.exec("ROLLBACK");
-        throw error;
-      }
-    });
-  }
-
-  completeReleaseOperation(workspaceId, {
-    operationId, generation, selectedResults = [], publicationEffects = {},
-  } = {}) {
-    const releaseOperationId = String(operationId ?? "").trim();
-    const generationNumber = Number(generation);
-    if (!releaseOperationId || !Number.isSafeInteger(generationNumber) || generationNumber < 1) {
-      throw new Error("release operation finalization requires exact operation and generation");
-    }
-    if (!Array.isArray(selectedResults) || !selectedResults.length) {
-      throw new Error("release operation finalization requires selected results");
-    }
-    const key = `release_operation_finalized:${releaseOperationId}:${generationNumber}`;
-    return this.#withDatabase((database) => {
-      database.exec("BEGIN IMMEDIATE");
-      try {
-        const existing = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
-        if (existing) {
-          database.exec("ROLLBACK");
-          return { ...JSON.parse(existing), alreadyFinalized: true };
-        }
-        const timestamp = this.now();
-        const deliveries = [];
-        for (const selected of selectedResults) {
-          const taskId = String(selected?.taskId ?? "").trim();
-          const resultCommit = String(selected?.resultCommit ?? "").trim();
-          const task = database.prepare(`
-            SELECT workspace_id, row_revision, release_revision, workflow_status, status
-            FROM hub_board_tasks WHERE id = ?
-          `).get(taskId);
-          if (!task || String(task.workspace_id ?? "") !== String(workspaceId)) {
-            throw new Error(`release operation Task is missing from its Workspace: ${taskId}`);
-          }
-          const references = database.prepare(`
-            SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
-            FROM hub_task_git_references WHERE task_id = ? ORDER BY project_root
-          `).all(taskId);
-          const currentResult = references.some((reference) => reference.resultCommit === resultCommit);
-          const closesCurrent = currentResult
-            && task.workflow_status === "awaiting_implementation"
-            && task.status !== "done";
-          if (closesCurrent) {
-            const updated = database.prepare(`
-              UPDATE hub_board_tasks SET workflow_status = 'done', status = 'done',
-                completed_at_ms = ?, updated_at_ms = ?
-              WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation'
-            `).run(timestamp, timestamp, taskId, Number(task.row_revision));
-            if (Number(updated.changes) !== 1) throw new Error(`release operation Task CAS changed: ${taskId}`);
-          }
-          deliveries.push({
-            taskId,
-            resultCommit,
-            delivered: true,
-            closedCurrentTask: closesCurrent,
-            currentWorkflowStatus: closesCurrent ? "done" : task.workflow_status,
-            currentResult,
-            taskRevision: Number(task.row_revision),
-            releaseRevision: Number(task.release_revision),
-          });
-        }
-        const result = {
-          schemaVersion: 1,
-          workspaceId: String(workspaceId),
-          operationId: releaseOperationId,
-          generation: generationNumber,
-          deliveries,
-          publicationEffects: structuredClone(publicationEffects),
-          completedAtMs: timestamp,
-        };
-        database.prepare(`
-          INSERT INTO hub_board_settings (key, value, updated_at_ms) VALUES (?, ?, ?)
-        `).run(key, JSON.stringify(result), timestamp);
-        database.exec("COMMIT");
-        return result;
-      } catch (error) {
-        try { database.exec("ROLLBACK"); } catch {}
-        throw error;
-      }
     });
   }
 

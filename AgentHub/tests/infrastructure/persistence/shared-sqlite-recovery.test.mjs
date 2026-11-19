@@ -11,10 +11,13 @@ import {
   writeAtomicJson,
 } from "../../../src/infrastructure/persistence/shared-sqlite-recovery.mjs";
 
+import { seedSqliteRecoveryIntent } from "../../helpers/sqlite-recovery-intent.fixture.mjs";
+
 async function fixture(name) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), `${name}-`));
   const databaseFile = path.join(root, "journal.sqlite");
   await fs.writeFile(databaseFile, "not a sqlite database", "utf8");
+  await seedSqliteRecoveryIntent(databaseFile);
   return { root, databaseFile };
 }
 
@@ -150,6 +153,7 @@ test("inspection reads committed WAL while the previous runtime keeps SHM open",
   const originals = [databaseFile, `${databaseFile}-wal`, `${databaseFile}-shm`];
   const before = await Promise.all(originals.map((file) => fs.readFile(file)));
   assert.ok(before[1].length > 32, "committed row must still be in WAL");
+  await seedSqliteRecoveryIntent(databaseFile);
   let inspected = false;
   const fileSystem = {
     ...fs,
@@ -186,6 +190,7 @@ test("inspection cleanup retries transient Windows directory races", async () =>
   const database = new DatabaseSync(databaseFile);
   database.exec("CREATE TABLE sample (id INTEGER PRIMARY KEY)");
   database.close();
+  await seedSqliteRecoveryIntent(databaseFile);
   const removals = [];
   const fileSystem = {
     ...fs,

@@ -17,7 +17,8 @@ import { assertPackageFiles, capturePackageRuntime, packageBindingDigest, packag
   packageFile, packageDirectory, verifyPublicPackageTarget } from "../infrastructure/filesystem/runtime-package-target.mjs";
 import { waitForReplacementLock, directWindowsLauncherInvocation } from "./runtime-restart.mjs";
 import { waitForRuntimeReplacement } from "./publication-readiness.mjs";
-import { runtimeManifestMatchesPackage } from "../domain/runtime-package-identity.mjs";
+import { runtimeManifestMatchesPackage, packageHandoffBinding, packageRestartInput, packageResumeInput } from "../domain/runtime-package-identity.mjs";
+import { assertOldPackageCurrent } from "../infrastructure/filesystem/runtime-package-current.mjs";
 import { assertAgentHubUpgrade } from "../domain/agent-hub-version.mjs";
 import { callDesktopControl } from "../infrastructure/process/desktop-control.mjs";
 import { runtimeStatus } from "./runtime-manager.mjs";
@@ -35,21 +36,14 @@ function assertRetainedPackageRequest(input, evidence, root, existing) {
       && existing.metadata?.packageHandoff?.binding?.runtimeRoot === root)) throw new Error("Original package update input changed");
 }
 
-export function packageHandoffBinding(operation) {
-  const envelope = operation?.metadata?.packageHandoff;
-  if (!envelope || envelope.schema !== 1 || !envelope.binding
-    || packageBindingDigest(envelope.binding) !== envelope.sha256
-    || envelope.binding.operationId !== operation.operationId || operation.kind !== "restart") {
-    throw new Error("Restart has no exact admitted package binding");
-  }
-  return envelope.binding;
-}
+export { packageHandoffBinding };
 
 function packageIntakeReadback(operation, retainedPackage) {
   const result = { operationId: operation.operationId, status: operation.status,
     phase: operation.phase, outcome: operation.outcome, retainedPackage, effectsReplayed: false };
   if (["requested", "blocked", "running"].includes(operation.status) && operation.outcome === null
-    && operation.metadata?.packageInputSha256) {
+    && operation.metadata?.packageInputSha256 && (!operation.metadata.packageIncoming
+      || operation.metadata.packageIncoming.native && operation.metadata.packageIncoming.outsideAllJobs === true)) {
     packageHandoffBinding(operation);
     result.handoff = { action: "yield_current_turn", reason: "public_package_restart",
       operationId: operation.operationId };
@@ -57,31 +51,7 @@ function packageIntakeReadback(operation, retainedPackage) {
   return result;
 }
 
-export function packageRestartInput(input) {
-  const keys = ["operationId", "tag", "archive", "descriptor", "installer"];
-  if (!input || Object.keys(input).some((key) => !keys.includes(key))
-    || keys.some((key) => typeof input[key] !== "string" || !input[key])) {
-    throw new Error("Package restart requires only its exact original and public asset paths");
-  }
-  return { operationId: input.operationId, tag: input.tag,
-    archive: path.resolve(input.archive), descriptor: path.resolve(input.descriptor), installer: path.resolve(input.installer) };
-}
-
-export function packageResumeInput(value) {
-  if (!value || Object.keys(value).sort().join(",") !== "expectedBindingSha256,expectedCurrent,expectedRevision,input"
-    || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1
-    || !/^[a-f0-9]{64}$/u.test(value.expectedBindingSha256 ?? "")) throw new Error("Package continuation requires its exact failed revision and binding");
-  const old = value.expectedCurrent;
-  if (!old || Object.keys(old).sort().join(",") !== "currentSha256,instanceSha256,manifestSha256,pid,releaseId"
-    || !Number.isSafeInteger(old.pid) || old.pid < 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(old.releaseId ?? "")
-    || ["currentSha256", "instanceSha256", "manifestSha256"].some(key => !/^[a-f0-9]{64}$/u.test(old[key] ?? ""))) {
-    throw new Error("Package continuation requires exact fresh current identity");
-  }
-  return { input: packageRestartInput(value.input), expectedRevision: value.expectedRevision,
-    expectedBindingSha256: value.expectedBindingSha256,
-    expectedCurrent: { releaseId: old.releaseId, pid: old.pid, currentSha256: old.currentSha256,
-      instanceSha256: old.instanceSha256, manifestSha256: old.manifestSha256 } };
-}
+export { packageRestartInput, packageResumeInput };
 
 export async function preparePackageRestart(input, { dataDir, environment = process.env,
   verifyTarget = verifyPublicPackageTarget, captureCurrent = capturePackageRuntime,
@@ -94,7 +64,7 @@ export async function preparePackageRestart(input, { dataDir, environment = proc
   }
   const target = await verifyTarget(input);
   const current = await captureCurrent(environment.AGENT_HUB_RUNTIME_ROOT, dataDir,
-    { hostPid: Number(environment.AGENT_HUB_HOST_PID) });
+    { hostPid: Number(environment.AGENT_HUB_HOST_PID), verifyReady: waitForRuntimeReplacement });
   if (current.old.releaseId === target.releaseId) throw new Error("Target is already the running release");
   await preflightRuntimeBackupScope({ runtimeRoot: current.runtimeRoot });
   // The verified public installer already belongs to the retained external
@@ -125,7 +95,8 @@ export async function preparePackageRestart(input, { dataDir, environment = proc
   if ((await packageFile(hostCopy)).sha256 !== current.old.launcher.sha256) {
     throw new Error("Copied handoff Host differs from the admitted current Host");
   }
-  const binding = { operationId: input.operationId, ...current, target, scratchRoot, hostCopy, scratch };
+  const binding = { operationId: input.operationId, ...current, target, scratchRoot, hostCopy, scratch,
+    stopPolicy: { schema: 1, gracefulMs: 120_000, forcedMs: 45_000 } };
   return { schema: 1, binding, sha256: packageBindingDigest(binding) };
 }
 
@@ -138,24 +109,7 @@ export async function packageCheckpoint(store, operationId, phase, metadata = {}
   }, { requestId: operationId });
 }
 
-export async function assertOldPackageCurrent(binding, { requireInstance = false } = {}) {
-  const root = binding.runtimeRoot;
-  if (!binding.roots || packageBindingDigest(await packageDirectory(root)) !== packageBindingDigest(binding.roots.runtime)
-    || packageBindingDigest(await packageDirectory(binding.dataDir)) !== packageBindingDigest(binding.roots.data)
-    || await realpath(root) !== root
-    || packageDigest(await readFile(path.join(root, "current.json"))) !== binding.old.currentSha256
-    || packageDigest(await readFile(path.join(root, "releases", binding.old.releaseId,
-      "runtime-manifest.json"))) !== binding.old.manifestSha256) {
-    throw new Error("Admitted old runtime identity changed");
-  }
-  if (requireInstance) {
-    const lock = JSON.parse(await readFile(path.join(binding.dataDir, "bot.lock"), "utf8"));
-    if (lock.pid !== binding.old.pid || lock.releaseId !== binding.old.releaseId
-      || packageDigest(lock.instanceToken ?? "") !== binding.old.instanceSha256) {
-      throw new Error("Admitted old instance changed");
-    }
-  }
-}
+export { assertOldPackageCurrent };
 
 // Use the installer's existing domain policy on its exact inspected manifest.
 // This is repeated while admission is open, before the stopping fence. The
@@ -210,7 +164,7 @@ async function confirmLegacyStop() {
 
 export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, readMetadata,
   control = callDesktopControl, confirmManualStop = confirmLegacyStop,
-  ownershipTimeoutMs = 120_000, now = Date.now, wait = delay } = {}) {
+  ownershipTimeoutMs = 120_000, now = Date.now, wait = delay, reconcileOnly = false } = {}) {
   const inputEvidence = await packageFile(requestFile);
   if (inputEvidence.bytes > 65536) throw new Error("Package update request exceeds budget");
   const input = JSON.parse(await readFile(inputEvidence.file, "utf8"));
@@ -220,9 +174,14 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
   const root = await realpath(input.runtimeRoot), payload = await realpath(path.join(input.packageRoot, "runtime"));
   const store = new MaintenanceOperationStore({ dataDir: path.join(root, "data") });
   const existing = store.getReadonly(input.operationId);
+  if (reconcileOnly && !existing) throw new Error("Incoming reconciliation requires the existing original");
   if (existing) {
     assertRetainedPackageRequest(input, inputEvidence, root, existing);
-    return packageIntakeReadback(existing, path.dirname(inputEvidence.file));
+    // A recorded bridge intent is never another permission to spawn. Its
+    // independent native owner is reconciled through this same original.
+    if (terminal(existing) || existing.metadata.packageIncoming) {
+      return packageIntakeReadback(existing, path.dirname(inputEvidence.file));
+    }
   }
   const scratchRoot = path.dirname(inputEvidence.file);
   if (root === scratchRoot || root.startsWith(`${scratchRoot}${path.sep}`)
@@ -267,10 +226,32 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
       archive: input.archive, descriptor: input.descriptor, installer: input.installer });
     // Once dispatched, failure/timeout is UNKNOWN. It never falls through to a
     // manual bootstrap or a second original; the same restart owns readback.
-    const result = await control("restart-package", business, { runtimeRoot: root, timeoutMs: 120000 });
+    let result = { waiting: true, accepted: true };
+    if (!existing) {
+      try { result = await control("restart-package", business, { runtimeRoot: root, timeoutMs: 120000 }); }
+      catch (error) {
+        // Lost transport acceptance is resolved only against the exact original
+        // and input below. No record means the original outcome stays unknown.
+        const retained = store.getReadonly(input.operationId);
+        if (!retained) throw error;
+        assertRetainedPackageRequest(input, inputEvidence, root, retained);
+      }
+    }
     const original = store.getReadonly(input.operationId);
     assertRetainedPackageRequest(input, inputEvidence, root, original);
-    return { ...packageIntakeReadback(original, scratchRoot), status: "accepted-graceful",
+    let admissionError;
+    try {
+      await admitIncomingPackageContinuation({ store, original, input, inputEvidence, target,
+        host, spawnImpl, ownershipTimeoutMs, now, wait });
+    } catch (error) { admissionError = error; }
+    const current = store.getReadonly(input.operationId);
+    assertRetainedPackageRequest(input, inputEvidence, root, current);
+    if (packageBindingDigest(packageHandoffBinding(current)) !== packageBindingDigest(packageHandoffBinding(original))) {
+      throw new Error("Original binding changed during incoming admission");
+    }
+    if (terminal(current)) return packageIntakeReadback(current, scratchRoot);
+    if (admissionError) throw admissionError;
+    return { ...packageIntakeReadback(current, scratchRoot), status: "accepted-graceful",
       originalStatus: original.status, waiting: result.waiting === true, accepted: result.accepted === true };
   }
   await confirmManualStop();
@@ -310,6 +291,124 @@ export async function startPackageBootstrap(requestFile, { spawnImpl = spawn, re
     await wait(100);
   }
   throw new Error("Package bootstrap admission is unknown; do not replay the original");
+}
+
+async function admitIncomingPackageContinuation({ store, original, input, inputEvidence,
+  target, host, spawnImpl, ownershipTimeoutMs, now, wait }) {
+  const binding = packageHandoffBinding(original);
+  if (terminal(original) || original.metadata.packageIncoming) throw new Error("Incoming continuation requires original readback");
+  await preflightPackageRestart(original);
+  if (["releaseId", "sourceCommit", "version", "packageManifestSha256"].some(key => binding.target[key] !== target[key])) {
+    throw new Error("Incoming continuation target differs from the original");
+  }
+  const entry = await packageFile(path.join(input.packageRoot, "runtime/src/runtime/runtime-package-handoff.mjs"));
+  const intent = { schema: 1, bindingSha256: packageBindingDigest(binding), input: inputEvidence,
+    packageRoot: await realpath(input.packageRoot), host, entry,
+    runtimeManifest: target.runtimeManifest, target: { releaseId: target.releaseId,
+      sourceCommit: target.sourceCommit, version: target.version, packageManifestSha256: target.packageManifestSha256 },
+    stopPolicy: { schema: 1, gracefulMs: 120_000, forcedMs: 45_000 } };
+  await store.runRestartMutation(() => {
+    const current = store.getReadonly(original.operationId);
+    if (current.revision !== original.revision || current.metadata.packageIncoming || terminal(current)
+      || packageBindingDigest(packageHandoffBinding(current)) !== intent.bindingSha256) throw new Error("Original changed before incoming admission");
+    store.transition(original.operationId, { metadata: { packageIncoming: { intent, sha256: packageBindingDigest(intent) } } },
+      { expectedRevision: current.revision });
+  }, { requestId: original.operationId });
+  const child = spawnImpl(host.file, ["--package-observe", binding.runtimeRoot, intent.packageRoot,
+    original.operationId, String(binding.old.pid), String(binding.old.hostPid)], {
+    cwd: path.dirname(host.file), detached: true, stdio: "ignore", windowsHide: true,
+    env: { ...process.env, AGENT_HUB_PACKAGE_LAUNCHER_PID: "", AGENT_HUB_RESTART_OPERATION_ID: original.operationId },
+  });
+  let failure;
+  child.once("error", error => { failure = error; });
+  child.once("exit", code => { if (code !== 0) failure = new Error(`Incoming package bridge refused (${code})`); });
+  child.unref();
+  const deadline = now() + ownershipTimeoutMs;
+  while (now() < deadline) {
+    const current = store.getReadonly(original.operationId), incoming = current?.metadata?.packageIncoming;
+    if (incoming?.sha256 !== packageBindingDigest(intent)
+      || packageBindingDigest(packageHandoffBinding(current)) !== intent.bindingSha256) throw new Error("Incoming package intent changed");
+    if (terminal(current)) return;
+    if (incoming.native?.launcherPid === child.pid) return incoming.native;
+    if (failure) throw failure;
+    await wait(100);
+  }
+  throw new Error("Incoming package admission is unknown; retain the original");
+}
+
+async function incomingPackageStage(stage, store, current, binding, native, environment) {
+  const incoming = current.metadata.packageIncoming, intent = incoming?.intent;
+  if (!intent || incoming.sha256 !== packageBindingDigest(intent) || intent.schema !== 1
+    || intent.bindingSha256 !== packageBindingDigest(binding)
+    || await realpath(environment.AGENT_HUB_PACKAGE_BOOTSTRAP_ROOT ?? "") !== intent.packageRoot) {
+    throw new Error("Incoming package continuation authority changed");
+  }
+  for (const file of [intent.input, intent.host, intent.entry, intent.runtimeManifest]) {
+    if (packageBindingDigest(await packageFile(file.file)) !== packageBindingDigest(file)) throw new Error("Incoming package continuation bytes changed");
+  }
+  await verifyRuntimeManifest(path.join(intent.packageRoot, "runtime"), intent.target.releaseId);
+  if (stage === "observe-arm") {
+    if (incoming.native || terminal(current) || environment.AGENT_HUB_PACKAGE_OWNER_OUTSIDE_JOBS !== "1") throw new Error("Incoming native admission requires independent-owner readback");
+    await preflightPackageRestart(current);
+    await assertOldPackageCurrent(binding, { requireInstance: true });
+    await packageCheckpoint(store, current.operationId, current.phase, {
+      packageIncoming: { ...incoming, native, outsideAllJobs: true, armedAt: new Date().toISOString() },
+    });
+    return { status: "incoming-armed", operationId: current.operationId };
+  }
+  if (packageBindingDigest(incoming.native) !== packageBindingDigest(native)) throw new Error("Incoming native identity changed");
+  if (stage === "observe") {
+    // The old controller retains ordinary turn drain and its original native
+    // attempt. This observer neither takes its gate nor resubmits that attempt.
+    let readPendingRecorded = false;
+    for (;;) {
+      if (await access(path.join(binding.runtimeRoot, ".agent-hub-release-acceptance.closed")).then(() => true, error => {
+        if (error.code === "ENOENT") return false; throw error;
+      })) throw new Error("Closed acceptance forbids incoming package continuation");
+      try { current = store.getReadonly(current.operationId); }
+      catch (error) {
+        if (![5, 6, 1546].includes(error.errcode)) throw error;
+        // A WAL/SHM or writer-reservation observation failure establishes no
+        // original outcome. Keep observing; never open a second SQLite writer
+        // alongside the old native backup to manufacture readable evidence.
+        if (!readPendingRecorded) console.log("AGENT_HUB_PACKAGE_READ_PENDING");
+        readPendingRecorded = true;
+        await delay(100);
+        continue;
+      }
+      if (packageBindingDigest(packageHandoffBinding(current)) !== intent.bindingSha256
+        || current.metadata.packageIncoming?.sha256 !== incoming.sha256) throw new Error("Observed package original changed");
+      if (terminal(current)) { console.log("AGENT_HUB_PACKAGE_DONE"); return { status: "already-terminal" }; }
+      const old = current.metadata.packageNative;
+      if (old) {
+        for (const [pid, started] of [[old.hostPid, old.hostStarted], [old.launcherPid, null]]) {
+          if (!Number.isSafeInteger(pid) || pid <= 0 || pid === native.hostPid || pid === native.launcherPid) throw new Error("Foreign old native identity");
+          await nativeReply(`AGENT_HUB_PACKAGE_JOIN ${pid} ${started ?? "absent"}`, "AGENT_HUB_PACKAGE_JOINED");
+        }
+        return { status: "old-native-joined" };
+      }
+      await delay(100);
+    }
+  }
+  if (stage !== "observe-recover") throw new Error("Unknown incoming package stage");
+  if (terminal(current)) { console.log("AGENT_HUB_PACKAGE_DONE"); return { status: "already-terminal" }; }
+  if (!["package-armed", "package-writers-closed", "package-force-stopping", "package-reconciling"].includes(current.phase)
+    || current.metadata.packageBackup || current.metadata.packageLaunchSha256 || current.metadata.packageLaunchAdmission
+    || (current.phase === "package-reconciling" && !["package-armed", "package-writers-closed", "package-force-stopping"].includes(current.metadata.packageFailurePhase))) {
+    throw new Error("Old package attempt requires authoritative reconciliation");
+  }
+  const old = current.metadata.packageNative;
+  if (!old || old.oldNodePid !== binding.old.pid || old.oldHostPid !== binding.old.hostPid
+    || environment.AGENT_HUB_PACKAGE_OLD_NATIVE_JOINED !== "1") throw new Error("Old native join is not proven");
+  await preflightPackageRestart(current);
+  await assertOldPackageCurrent(binding);
+  const recovery = { schema: 1, incomingSha256: incoming.sha256, native,
+    priorRevision: current.revision, priorSha256: packageBindingDigest(current), prior: current,
+    at: new Date().toISOString(), effects: "retained_unknown" };
+  await packageCheckpoint(store, current.operationId, "package-armed", {
+    packageIncoming: { ...incoming, recovery },
+  });
+  return { status: "incoming-recovery-admitted", operationId: current.operationId };
 }
 
 // Read-only creation of an explicit continuation request. The caller retains
@@ -424,6 +523,7 @@ async function armPackageBootstrap(store, current, root, environment) {
   await assertPackageFiles(bootstrap.target);
   const captured = await capturePackageRuntime(root, path.join(root, "data"), {
     pid: Number(environment.AGENT_HUB_PACKAGE_OLD_NODE_PID), hostPid: Number(environment.AGENT_HUB_PACKAGE_OLD_HOST_PID),
+    verifyReady: waitForRuntimeReplacement,
   });
   for (const field of ["pid", "releaseId", "currentSha256", "manifestSha256", "instanceSha256"]) {
     if (captured.old[field] !== bootstrap.old[field]) throw new Error("Old runtime drifted before package admission");
@@ -473,6 +573,43 @@ export async function verifyInstalledPackage(binding) {
 
 // Effect ports default to the existing installer, Host and ready owners. Tests
 // can replace these ports, not the durable original's eligibility/state machine.
+export async function waitForPackageReplacement({ store, binding, replacement,
+  admissionTimeoutMs = 120_000, readinessTimeoutMs = 120_000,
+  now = Date.now, wait = delay, waitLock = waitForReplacementLock,
+  verifyReady = waitForRuntimeReplacement } = {}) {
+  if (!Number.isSafeInteger(replacement?.pid) || replacement.pid <= 0) throw new Error("Exact replacement Host identity is unavailable");
+  const original = store.getReadonly(binding.operationId), originalBinding = packageHandoffBinding(original);
+  const restoring = original.metadata.packageCurrentRecovery?.releaseId === originalBinding.old.releaseId
+    && binding.target.releaseId === originalBinding.old.releaseId
+    && packageBindingDigest({ ...binding, target: originalBinding.target }) === packageBindingDigest(originalBinding);
+  if (!restoring && packageBindingDigest(originalBinding) !== packageBindingDigest(binding)) throw new Error("Readiness original binding changed");
+  const deadline = now() + admissionTimeoutMs;
+  let admission;
+  while (now() < deadline) {
+    const current = store.getReadonly(binding.operationId);
+    if (packageBindingDigest(packageHandoffBinding(current)) !== packageBindingDigest(originalBinding)) throw new Error("Readiness original binding changed");
+    admission = current.metadata.packageLaunchAdmission;
+    if (admission) {
+      if (admission.hostPid !== replacement.pid || !/^\d+$/u.test(admission.hostStarted ?? "")) {
+        throw new Error("Ready runtime is not the exact admitted replacement Host");
+      }
+      break;
+    }
+    await wait(100);
+  }
+  if (!admission) throw new Error("Exact package Host admission is unknown");
+  // Manifest verification belongs to Host admission. Node's independent Ready
+  // budget starts only after that exact Host has admitted this original.
+  const lock = await waitLock({ lockFile: path.join(binding.dataDir, "bot.lock"),
+    currentPid: binding.old.pid, expectedReleaseId: binding.target.releaseId,
+    expectedOperationId: binding.operationId, timeoutMs: readinessTimeoutMs });
+  if (!lock) throw new Error("Exact package replacement readiness is unknown");
+  await verifyReady({ runtimeRoot: binding.runtimeRoot, expectedReleaseId: binding.target.releaseId });
+  const confirmed = store.getReadonly(binding.operationId)?.metadata?.packageLaunchAdmission;
+  if (packageBindingDigest(confirmed) !== packageBindingDigest(admission)) throw new Error("Replacement Host admission changed during readiness");
+  return { pid: lock.pid, instanceSha256: packageDigest(lock.instanceToken) };
+}
+
 export async function continuePackageRestart({ store, operationId, assertRetired,
   install = async (binding) => execute("python", [binding.target.installer.file,
     "--archive", binding.target.archive.file, "--sha256", binding.target.archive.sha256,
@@ -488,19 +625,8 @@ export async function continuePackageRestart({ store, operationId, assertRetired
     child.unref();
     return { pid: child.pid };
   },
-  ready = async (binding, replacement) => {
-    const lock = await waitForReplacementLock({ lockFile: path.join(binding.dataDir, "bot.lock"),
-      currentPid: binding.old.pid, expectedReleaseId: binding.target.releaseId,
-      expectedOperationId: operationId, timeoutMs: 120_000 });
-    if (!lock) throw new Error("Exact package replacement readiness is unknown");
-    await waitForRuntimeReplacement({ runtimeRoot: binding.runtimeRoot,
-      expectedReleaseId: binding.target.releaseId });
-    const admission = store.getReadonly(operationId)?.metadata?.packageLaunchAdmission;
-    if (!Number.isSafeInteger(replacement?.pid) || admission?.hostPid !== replacement.pid) {
-      throw new Error("Ready runtime is not the exact admitted replacement Host");
-    }
-    return { pid: lock.pid, instanceSha256: packageDigest(lock.instanceToken) };
-  }, validateFiles = assertPackageFiles, validateOld = assertOldPackageCurrent } = {}) {
+  ready = (binding, replacement) => waitForPackageReplacement({ store, binding, replacement }),
+  validateFiles = assertPackageFiles, validateOld = assertOldPackageCurrent } = {}) {
   const current = store.getReadonly(operationId);
   const binding = packageHandoffBinding(current);
   if (current.phase !== "package-writers-closed" || terminal(current)) {
@@ -596,6 +722,7 @@ export async function packageHostMain(args, environment = process.env) {
     return owner.recoverPackageBackup(args[1]);
   }
   if (args.length === 2 && args[0] === "bootstrap-start") return startPackageBootstrap(args[1]);
+  if (args.length === 2 && args[0] === "bootstrap-reconcile") return startPackageBootstrap(args[1], { reconcileOnly: true });
   if (args.length === 4 && args[0] === "resume-input") return packageContinuationRequest(args[1], args[2], args[3]);
   if (args.length === 3 && args[0] === "resume") return resumePackageBootstrap(args[1], args[2]);
   if (args.length === 3 && args[0] === "read") {
@@ -638,18 +765,39 @@ export async function packageHostMain(args, environment = process.env) {
     } else await verifyInstalledPackage(binding);
     await packageCheckpoint(store, current.operationId, current.phase, {
       packageLaunchAdmission: { hostPid: process.ppid,
-        hostStarted: environment.AGENT_HUB_PACKAGE_BOOTSTRAP_HOST_STARTED },
+        hostStarted: environment.AGENT_HUB_PACKAGE_BOOTSTRAP_HOST_STARTED,
+        outsideInheritedJobs: environment.AGENT_HUB_PACKAGE_REPLACEMENT_OUTSIDE_JOBS === "1" },
     });
     return { status: "admitted-original", operationId: current.operationId };
   }
   const [stage, root, operationId] = args;
-  if (args.length !== 3 || !["arm", "continue", "recover-backup"].includes(stage)) throw new Error("Unknown package Host stage");
+  if (args.length !== 3 || !["arm", "continue", "force-stop", "retired", "recover-backup", "observe-arm", "observe", "observe-recover", "failed"].includes(stage)) throw new Error("Unknown package Host stage");
   const store = new MaintenanceOperationStore({ dataDir: path.join(await realpath(root), "data") });
   let current = store.getReadonly(operationId);
   if (stage === "arm" && current?.metadata?.packageBootstrap) return armPackageBootstrap(store, current, await realpath(root), environment);
   const binding = packageHandoffBinding(current);
   if (binding.runtimeRoot !== await realpath(root)) throw new Error("Package Host root changed");
   const native = nativeContext(binding, environment);
+  if (["observe-arm", "observe", "observe-recover"].includes(stage)) {
+    return incomingPackageStage(stage, store, current, binding, native, environment);
+  }
+  const incoming = current.metadata.packageIncoming;
+  const recoveringIncoming = incoming?.recovery && incoming.recovery.incomingSha256 === incoming.sha256
+    && packageBindingDigest(incoming?.recovery?.native) === packageBindingDigest(native);
+  const admittedNative = recoveringIncoming ? incoming.native : current.metadata.packageNative;
+  if (stage === "failed") {
+    if (terminal(current)) return { status: current.status };
+    if (packageBindingDigest(admittedNative) !== packageBindingDigest(native)) throw new Error("Failed native owner changed");
+    return store.runRestartMutation(() => {
+      const latest = store.getReadonly(operationId);
+      if (terminal(latest)) return { status: latest.status };
+      return store.transition(operationId, { status: "reconciling", phase: "package-reconciling", outcome: "unknown",
+        metadata: { packageFailurePhase: latest.metadata.packageFailurePhase ?? latest.phase,
+          packageNativeFailure: { schema: 1, native, at: new Date().toISOString(), outcome: "retained_unknown",
+            message: String(environment.AGENT_HUB_PACKAGE_NATIVE_FAILURE ?? "").slice(0, 1_000) } } },
+      { expectedRevision: latest.revision }).operation;
+    }, { requestId: operationId });
+  }
   if (stage === "recover-backup") {
     const owner = await import("./runtime-package-backup-recovery.mjs");
     return owner.settlePackageBackupRecoveryStage(store, operationId, native, environment, async () => {
@@ -663,7 +811,29 @@ export async function packageHostMain(args, environment = process.env) {
     await packageCheckpoint(store, operationId, "package-armed", { packageNative: native });
     return { status: "armed", operationId };
   }
-  if (JSON.stringify(current.metadata.packageNative) !== JSON.stringify(native)
+  if (["force-stop", "retired"].includes(stage)) {
+    if (JSON.stringify(admittedNative) !== JSON.stringify(native)
+        || !["package-armed", "package-writers-closed", "package-force-stopping"].includes(current.phase)
+        || current.metadata.packageBackup || current.metadata.packageLaunchSha256) throw new Error("Package retirement original changed");
+    if (stage === "force-stop") {
+      const policy = recoveringIncoming ? incoming.intent.stopPolicy : binding.stopPolicy;
+      if (policy?.schema !== 1 || policy.gracefulMs !== 120_000
+          || policy.forcedMs !== 45_000) throw new Error("Original package has no bounded forced-stop authority");
+      await packageCheckpoint(store, operationId, "package-force-stopping", {
+        packageForcedStop: { schema: 1, native, bindingSha256: packageBindingDigest(binding),
+          at: new Date().toISOString(), priorWorkEffects: "retained_unknown" },
+      });
+      return { status: "force-stop-admitted", operationId };
+    }
+    await nativeReply("AGENT_HUB_PACKAGE_CHECK_STOPPED", "AGENT_HUB_PACKAGE_STOPPED");
+    await assertPackageRuntimeStopped(binding);
+    await packageCheckpoint(store, operationId, "package-writers-closed", {
+      packageRetirement: { schema: 1, native, bindingSha256: packageBindingDigest(binding),
+        forced: Boolean(current.metadata.packageForcedStop), at: new Date().toISOString() },
+    });
+    return { status: "retired", operationId };
+  }
+  if (JSON.stringify(admittedNative) !== JSON.stringify(native)
     || environment.AGENT_HUB_PACKAGE_COHORT_RETIRED !== "1") throw new Error("Old cohort retirement is not proven");
   if (binding.legacyManualStop && current.phase === "package-manual-stop") {
     current = await packageCheckpoint(store, operationId, "package-writers-closed", { legacyUserStopped: true });

@@ -9,7 +9,6 @@ import {
   describeCodexItem,
 } from "../../../src/providers/codex/codex-task-snapshot-service.mjs";
 import { codexRolloutTurnState, readCodexRolloutActivity } from "../../../src/providers/codex/codex-rollout-activity.mjs";
-import { CodexRecoveryService } from "../../../src/providers/provider-recovery-services.mjs";
 
 test("active commentary stays in its trace and never becomes an answer or final", () => {
   const snapshot = codexTurnSnapshot({
@@ -153,33 +152,6 @@ test("cold exact snapshot recovers an old terminal beyond 16 MiB while another t
     assert.equal(completed?.completed, true);
     assert.equal(completed?.status, "completed");
     assert.equal(completed?.answer, "Точный финал");
-    const recoveryEvents = [];
-    const recovery = new CodexRecoveryService({
-      transportRunning: () => true,
-      readTaskSnapshot: (run, options) => service.read(run, options),
-      startTransport: async () => {}, initialize: async () => {}, isCodex: () => true,
-      finishInterrupted: async () => assert.fail("Cold terminal cannot be inferred as interruption"),
-      readThread: async (_threadId, { applySnapshot }) => applySnapshot({
-        thread: { path: file, status: { type: "idle" },
-          turns: [{ id: laterTurnId, status: "interrupted", items: [] }] },
-      }),
-      autoApprove: () => false, restartRequested: () => false,
-      finishProgress: async () => recoveryEvents.push("finish"),
-      completeRun: async () => assert.fail("Only terminal owner may complete"),
-      recoveredAnswer: () => "", setProgressStage: () => recoveryEvents.push("unknown"),
-      launchTurn: async () => assert.fail("Recovery cannot resend the input"), reindexRun: () => {},
-      scheduleObservedRun: () => recoveryEvents.push("observe"), startTyping: () => {},
-      saveState: async () => recoveryEvents.push("save"), telegram: async () => {},
-      consumeTracker: () => null,
-      finalizeDelivery: async (_run, terminal) => recoveryEvents.push([
-        "terminal", terminal.turnId, terminal.status, terminal.answer,
-      ]),
-      turnTokenUsage: new Map(),
-    });
-    await recovery.recover({ provider: "codex", threadId: "thread-1", turnId: completedTurnId,
-      status: "running", responseText: "", progressMessageIds: [] });
-    assert.deepEqual(recoveryEvents, ["finish",
-      ["terminal", completedTurnId, "completed", "Точный финал"]]);
     for (const _ of [0, 1]) {
       const pending = await service.read({ provider: "codex", threadId: "thread-1",
         turnId: pendingTurnId, observer: false });

@@ -10,7 +10,6 @@ import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { readCodexRolloutActivity } from "../providers/codex/codex-rollout-activity.mjs";
 import { markProgressHeartbeat, PROGRESS_STALLED_AFTER_MS } from "../runtime/progress-heartbeat.mjs";
-import { publicationAwareReadiness } from "../runtime/runtime-publication-completion.mjs";
 import { delay } from "./runtime-timers-composition.mjs";
 import { createAgentHubBootstrapComposition } from "./agent-hub-bootstrap-composition.mjs";
 import { createRuntimeOrchestrationComposition } from "./runtime-orchestration-composition.mjs";
@@ -33,7 +32,6 @@ export function createExecutionBootstrapPhase({
   const runtime = createRuntimeOrchestrationComposition({
     config,
     constants: {
-      selectedTaskWatchIntervalMs: 2_000,
       terminalAuditIntervalMs: 30_000,
       externalPollIntervalMs: 1_500,
       managedPollIntervalMs: 5_000,
@@ -367,7 +365,6 @@ export function createExecutionBootstrapPhase({
       signal?.throwIfAborted();
       return measure("startup-pricing-backfill", () => api.backfillWorkLogPricingMetadata(threads, { signal, propagateErrors: true }));
     },
-    recoverRuns: (...args) => runtime.runRecovery.recoverAll(...args),
     retryTerminalProjections: () => api.retryPendingTurnEndProjections({ recoverProjecting: true }),
     retryNotifications: api.retryPendingTurnEndNotifications,
     restoreBackgroundJobs: () => provider.backgroundJobs.restore(),
@@ -377,10 +374,7 @@ export function createExecutionBootstrapPhase({
     }),
     hasPendingRestart: () => Boolean(selection.hostState.restartRequest),
     finalizeRestart: api.finalizeRestartMessage,
-    markReady: publicationAwareReadiness({
-      markReady: () => infrastructure.instanceGuard.markReady(),
-      runtimeRoot: runtimeCommandRoot,
-    }),
+    markReady: () => infrastructure.instanceGuard.markReady(),
     readyMessage: () => (
       `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${selection.providerTitle()}; project: ${selection.selectedProjectRoot()}`
     ),

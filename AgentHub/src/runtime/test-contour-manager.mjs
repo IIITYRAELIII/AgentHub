@@ -28,7 +28,6 @@ import {
   samePath,
 } from "../infrastructure/filesystem/config.mjs";
 import { prepareTaskContourSource } from "../infrastructure/filesystem/task-git-workspace.mjs";
-import { assertReleaseCandidateContourSource } from "../infrastructure/filesystem/release-git-workspace.mjs";
 import {
   defaultRuntimeRoot,
   defaultTestContourRoot,
@@ -75,7 +74,6 @@ export const TEST_CONTOUR_MODELS = Object.freeze([
 ]);
 export const TEST_CONTOUR_COMPONENT = "testContour";
 export const TEST_CONTOUR_DEV_SOURCE = "dev";
-export const TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE = "release-candidate";
 export const TEST_CONTOUR_PORT = 8877;
 export const RECORDING_COHORT_MANAGER_VERSION = 1;
 export const TEST_CONTOUR_WEB_HOST = "localhost";
@@ -821,23 +819,8 @@ export async function resolveTestContourSource({
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
   sourceKind = TEST_CONTOUR_DEV_SOURCE,
   prepareSource = prepareTaskContourSource,
-  validateReleaseSource = assertReleaseCandidateContourSource,
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
-  if (sourceKind === TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE) {
-    const source = await validateReleaseSource({ sourceRoot });
-    if (source.kind !== TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE
-        || source.branch !== "main"
-        || !String(source.headCommit ?? "").trim()) {
-      throw new Error("release candidate contour must use the exact clean main HEAD");
-    }
-    return {
-      kind: TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
-      branch: "main",
-      headCommit: String(source.headCommit).trim(),
-      sourceRoot: canonicalPath(source.sourceRoot),
-    };
-  }
   if (sourceKind !== TEST_CONTOUR_DEV_SOURCE) {
     throw new Error(`Unknown Test Contour source kind: ${sourceKind}`);
   }
@@ -866,7 +849,6 @@ export async function prepareTestContourCandidate({
   port = TEST_CONTOUR_PORT,
   deploy = deployRuntime,
   prepareSource = prepareTaskContourSource,
-  validateReleaseSource = assertReleaseCandidateContourSource,
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   const marker = await ensureMarker(isolatedRoot);
@@ -875,26 +857,14 @@ export async function prepareTestContourCandidate({
     sourceRoot,
     sourceKind,
     prepareSource,
-    validateReleaseSource,
   });
-  const expectedBranch = sourceKind === TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE ? "main" : "dev";
+  const expectedBranch = "dev";
   if (resolvedSource.kind !== sourceKind
       || resolvedSource.branch !== expectedBranch
       || !String(resolvedSource.headCommit ?? "").trim()) {
     throw new Error(`Test Contour candidate must use the exact ${expectedBranch} HEAD`);
   }
   const candidateSourceRoot = canonicalPath(resolvedSource.sourceRoot);
-  const revalidateReleaseSource = async () => {
-    if (sourceKind !== TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE) return;
-    const current = await validateReleaseSource({ sourceRoot: candidateSourceRoot });
-    if (current.kind !== resolvedSource.kind
-        || current.branch !== resolvedSource.branch
-        || String(current.headCommit).trim() !== resolvedSource.headCommit
-        || !samePath(current.sourceRoot, candidateSourceRoot)) {
-      throw new Error("release candidate contour source identity changed during preparation");
-    }
-  };
-  await revalidateReleaseSource();
   const paths = testContourPaths(isolatedRoot);
   const existingConfig = await readJson(paths.configFile);
   if (existingConfig && existingConfig.usageSyncServerUrl !== "") {
@@ -905,7 +875,7 @@ export async function prepareTestContourCandidate({
     sourceRoot: candidateSourceRoot,
     runtimeRoot: isolatedRoot,
     beforeManifest: async ({ stagingRoot }) => {
-      await revalidateReleaseSource();
+
       if (operation) await assertTestContourOperationOwner(isolatedRoot, operation);
       await markTestContourWebApp(stagingRoot);
     },
@@ -914,7 +884,7 @@ export async function prepareTestContourCandidate({
     writePointer: async () => {},
     protectPointer: async () => {},
   });
-  await revalidateReleaseSource();
+
   return {
     root: isolatedRoot,
     releaseId: deployed.releaseId,
@@ -1642,7 +1612,6 @@ async function refreshTestContourUnlocked({
   sourceKind = TEST_CONTOUR_DEV_SOURCE,
   forceFreshCandidate = false,
   prepareSource = prepareTaskContourSource,
-  validateReleaseSource = assertReleaseCandidateContourSource,
   prepareCandidate = prepareTestContourCandidate,
   stopRuntime = stopTestContourUnlocked,
   launchCandidate = launchTestContourCandidate,
@@ -1658,7 +1627,6 @@ async function refreshTestContourUnlocked({
     sourceRoot,
     sourceKind,
     prepareSource,
-    validateReleaseSource,
   });
   const currentStatus = await readTestContourStatus({ root });
   const currentOperation = currentStatus.operation;
@@ -1705,8 +1673,7 @@ async function refreshTestContourUnlocked({
       operation,
       port,
       model,
-      validateReleaseSource,
-    });
+      });
     if (recording || adoption) await recordingManagerEntry(candidate.sourceRoot);
     const previousReleaseId = currentStatus.state?.releaseId
       ?? String((await readJson(runtimeLayout(root).currentFile, {}))?.current ?? "").trim()

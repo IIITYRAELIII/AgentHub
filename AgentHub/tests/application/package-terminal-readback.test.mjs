@@ -31,7 +31,8 @@ test("definitive failed package original remains readback-only through service a
   await writeFile(bootstrapFile, JSON.stringify({ schema: 1, runtimeRoot: root, packageRoot, ...input }));
   assert.deepEqual(await startPackageBootstrap(bootstrapFile, { control: forbidden, spawnImpl: forbidden,
     readMetadata: forbidden, confirmManualStop: forbidden }), {
-    operationId: input.operationId, status: "failed", phase: "failed", effectsReplayed: false,
+    operationId: input.operationId, status: "failed", phase: "failed", outcome: "failed",
+    retainedPackage: path.dirname(bootstrapFile), effectsReplayed: false,
   });
   const transition = store.transition(input.operationId, { status: "requested", phase: "requested" }, { expectedRevision: prior.revision });
   assert.equal(transition.applied, false); assert.equal(transition.reason, "terminal");
