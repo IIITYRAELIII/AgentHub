@@ -19,6 +19,106 @@ import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 const noop = async () => {};
 const gate = () => { let release; const promise = new Promise((r) => { release = r; }); return { promise, release }; };
 
+test("browser send intent crosses Desktop intake and resolves the current Stream once", { timeout: 60_000 }, async (t) => {
+  const { launchBrowser, openFixture, snapshot } = await import("../public/composer-production.fixture.mjs");
+  const browser = await launchBrowser();
+  try {
+    for (const scenario of ["new", "idle", "rotated", "known-reject", "unknown", "explicit-queue"]) {
+      await t.test(scenario, async (t) => {
+        const f = await fixture(t);
+        Object.assign(f.target, { streamId: "stream-a", threadId: "thread-a" });
+        f.state.threadId = "thread-a";
+        const oldRun = f.active();
+        const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+        try {
+          const initial = snapshot();
+          initial.tasks[0].running = true;
+          const errors = await openFixture(page, { fixtureSnapshot: initial });
+          const requests = [];
+          let item, attempts = 0;
+          await page.exposeFunction("currentStreamSend", async (params) => {
+            requests.push(params);
+            if (["new", "idle", "rotated"].includes(scenario)) f.taskRuns.remove(oldRun);
+            if (scenario === "rotated") f.state.threadId = "thread-B";
+            if (["new", "rotated"].includes(scenario)) f.active("B");
+            if (["known-reject", "unknown"].includes(scenario)) f.state.provider = async () => {
+              attempts++;
+              if (scenario === "known-reject") f.taskRuns.remove(oldRun);
+              throw Object.assign(new Error(scenario === "unknown" ? "reply lost" : "Active turn not steerable"), {
+                deliveryOutcome: scenario === "unknown" ? "unknown" : "rejected",
+              });
+            };
+            const result = await f.desktop.sendMessage(params);
+            item = f.deferred.get(result.id);
+            await f.process(item);
+            if (scenario === "known-reject") {
+              f.state.provider = null; f.active("B"); await f.process(item);
+            }
+            return result;
+          });
+          await page.evaluate(() => {
+            const bridge = window.__agentHubVscode;
+            const post = bridge.postMessage.bind(bridge);
+            window.__currentStreamDelivery = { replies: 0, errors: [] };
+            bridge.postMessage = (message) => {
+              if (message.action !== "send-message") return post(message);
+              window.currentStreamSend(message.params).then((result) => {
+                window.dispatchEvent(new MessageEvent("message", { data: {
+                  type: "agenthub:control-result", id: message.id, ok: true, result,
+                } }));
+                window.__currentStreamDelivery.replies++;
+              }, (error) => {
+                window.__currentStreamDelivery.errors.push(error.message);
+                window.dispatchEvent(new MessageEvent("message", { data: {
+                  type: "agenthub:control-result", id: message.id, ok: false, error: error.message,
+                } }));
+              });
+            };
+          });
+          await page.locator("[data-composer-input]").fill("Current Stream command");
+          if (scenario === "explicit-queue") await page.locator("[data-composer-send]").click();
+          else await page.locator("[data-composer-input]").press("Meta+Enter");
+          await page.waitForFunction(() => window.__currentStreamDelivery.replies === 1
+            || window.__currentStreamDelivery.errors.length > 0);
+          assert.deepEqual(await page.evaluate(() => window.__currentStreamDelivery.errors), []);
+          assert.equal(requests.length, 1);
+          const params = requests[0], id = params.clientUserMessageId;
+          assert.equal(params.streamId, "stream-a");
+          assert.equal(params.followUpMode, scenario === "explicit-queue" ? "queue" : "steer");
+          assert.equal(params.expectedTurnId, undefined);
+          assert.equal(params.steerTargetTurnId, undefined);
+          assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
+          if (scenario === "unknown") {
+            assert.equal(attempts, 1); assert.equal(f.command(id).state, "dispatching");
+            f.taskRuns.remove(oldRun); f.state.threadId = "thread-B"; f.active("B");
+            await f.reopen(); item = f.deferred.get(item.id);
+            await f.process(item); assert.equal(attempts, 1); assert.equal(f.effects.length, 0);
+            f.state.readback = { id: "turn-A" }; await f.process(item);
+            assert.equal(f.deferred.size, 0); assert.equal(attempts, 1);
+            assert.equal(f.receipts.get({ clientUserMessageId: id }).result.turnId, "turn-A");
+          } else {
+            if (scenario === "explicit-queue") {
+              assert.equal(f.effects.length, 0);
+              f.taskRuns.remove(oldRun); await f.process(item);
+            }
+            assert.equal(f.effects.length, 1);
+            const effect = f.effects[0];
+            assert.equal(effect.id, id);
+            assert.equal(effect.operation, ["idle", "explicit-queue"].includes(scenario) ? "start" : "steer");
+            assert.equal(effect.target.threadId, f.state.threadId);
+            if (effect.operation === "steer") assert.equal(effect.target.steerTargetTurnId, "turn-B");
+            if (scenario === "known-reject") assert.equal(attempts, 1);
+          }
+          const before = f.effects.length;
+          await f.desktop.sendMessage(params);
+          assert.equal(f.effects.length, before, "same accepted browser identity cannot create another effect");
+          assert.deepEqual(errors, []);
+        } finally { await page.close(); }
+      });
+    }
+  } finally { await browser.close(); }
+});
+
 async function fixture(t, { desktopWiring = false } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub-stream-routing-"));
   let store = new RuntimeStateStore({ dataDir: directory });
@@ -114,7 +214,7 @@ async function fixture(t, { desktopWiring = false } = {}) {
     return c;
   };
   controller = compose();
-  const desktop = createDesktopMessageController({ resolveTarget: async () => target, attachmentPaths: async (files) => files,
+  const desktop = createDesktopMessageController({ resolveTarget: async () => target, attachmentPaths: async (files = []) => files,
     describeAttachments, receipts, persistReceipts: save, runCoordinator: coordinator, durableIntake: true });
   const active = (name = "A", threadId = state.threadId) => taskRuns.add({ ...target, threadId,
     id: name, turnId: `turn-${name}`, status: "running", executionOwner: "hub" });
