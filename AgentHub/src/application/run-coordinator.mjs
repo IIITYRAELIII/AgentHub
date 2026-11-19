@@ -928,7 +928,4 @@ export class RunCoordinator {
     return this.providers.call(run.provider, "completeObservedRun", run, snapshot);
   }
 
-  recoverProviderRun(run, context = {}) {
-    return this.providers.call(run.provider, "recoverRun", run, context);
-  }
 }

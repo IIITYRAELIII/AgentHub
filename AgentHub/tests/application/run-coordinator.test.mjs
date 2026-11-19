@@ -1193,14 +1193,12 @@ test("RunCoordinator starts a provider session before its external thread id exi
   assert.equal(f.calls.find(([name]) => name === "begin")[2].threadId, null);
 });
 
-test("RunCoordinator owns provider completion and recovery dispatch", async () => {
+test("RunCoordinator owns ordinary provider completion dispatch", async () => {
   const f = fixture();
   await f.coordinator.completeManaged(f.run, { answer: "done" });
   await f.coordinator.completeObserved(f.run, { completed: true });
-  await f.coordinator.recoverProviderRun(f.run, { snapshot: true });
   assert.deepEqual(f.calls.filter(([name]) => name === "provider").map((call) => call[2]), [
     "completeManagedRun",
     "completeObservedRun",
-    "recoverRun",
   ]);
 });

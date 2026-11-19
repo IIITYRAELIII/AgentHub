@@ -411,7 +411,6 @@ export class CodexTurnService {
 
 export class ProviderCancellationService {
   #d;
-  #recoveryAttempts = new WeakMap();
 
   constructor(dependencies = {}) {
     for (const name of [
@@ -434,32 +433,6 @@ export class ProviderCancellationService {
         stopRequested: false,
       };
     }
-  }
-
-  recoverCodex(run) {
-    if (this.#recoveryAttempts.has(run)) return this.#recoveryAttempts.get(run);
-    const identity = { id: run.id, provider: run.provider, clientUserMessageId: run.clientUserMessageId,
-      threadId: run.threadId, turnId: run.turnId };
-    const current = () => this.#d.runForTask(run) === run
-      && Object.keys(identity).every(key => run[key] === identity[key]);
-    const pending = (async () => {
-      if (run.observer || !identity.turnId || !current()) return false;
-      try {
-        const activity = await this.#recoveryStep(run, "recovery-activity-before",
-          () => this.#d.taskExternalActivity(run, { forceFresh: true }));
-        if (activity.state !== "inactive" || !current()) return false;
-        // Settlement is read-only until the canonical terminal commit. Never
-        // resume, interrupt or replay an old turn to establish that it ended.
-        return await this.#reconcileInactiveCodexRun(run, { identity });
-      } catch (error) {
-        this.#d.logError?.(`Cannot recover inactive Codex task ${identity.threadId}:`, error.message);
-        return false;
-      }
-    })().finally(() => {
-      if (this.#recoveryAttempts.get(run) === pending) this.#recoveryAttempts.delete(run);
-    });
-    this.#recoveryAttempts.set(run, pending);
-    return pending;
   }
 
   async #recoveryStep(run, stage, operation) {

@@ -22,7 +22,7 @@ test("failed replacement restores the previous bot before marking it ready", asy
     markReady: async () => events.push("ready"),
   });
   assert.deepEqual(events, [
-    "lock", "command", "stopping:false", "provider", "runs", "message", "failed:launcher failed", "clear", "state", "ready", "timers",
+    "lock", "command", "stopping:false", "provider", "message", "failed:launcher failed", "clear", "state", "ready", "timers",
   ]);
 });
 

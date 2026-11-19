@@ -60,7 +60,6 @@ export function createProviderRuntimeWiring({
   saveState,
   isStopping,
   runtimeTimers,
-  selectedTaskWatchIntervalMs,
   attachmentImporter,
   terminalAuditIntervalMs = 30_000,
   terminalAuditEnabled = true,
@@ -90,8 +89,6 @@ export function createProviderRuntimeWiring({
     claudeRunController,
     taskObserver,
     claudeTurnLauncher,
-    runRecovery,
-    selectedTaskWatch,
   } = createRunObservationComposition({
     ...observation,
     handleClaudeStreamEvent,
@@ -115,10 +112,6 @@ export function createProviderRuntimeWiring({
     const stopped = await claudeRunController.stop(run);
     if (!stopped) logger.error(`Cannot stop Claude process tree ${pid}`);
     return stopped;
-  }
-
-  async function attachClaudeRunAfterRestart(run) {
-    await claudeRunController.attachAfterRestart(run);
   }
 
   async function handleCodexMessage(message) {
@@ -155,15 +148,12 @@ export function createProviderRuntimeWiring({
   return {
     claudeRunController,
     taskObserver,
-    runRecovery,
-    selectedTaskWatch,
     persistManagedRunHistory,
     persistClaudeRunHistory,
     importCodexAssistantAttachments,
     startClaudeTurn,
     steerClaudeTurn,
     stopClaudeRunProcess,
-    attachClaudeRunAfterRestart,
     handleCodexMessage,
     completedCodexAnswer,
     applyCodexObservedSnapshot,

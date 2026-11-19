@@ -14,7 +14,7 @@ export function createAgentHubDeferredPorts() {
   ]);
   const providerRuntime = createDeferredCompositionPort("provider runtime wiring", [
     "persistManagedRunHistory", "persistClaudeRunHistory", "startClaudeTurn", "steerClaudeTurn",
-    "stopClaudeRunProcess", "attachClaudeRunAfterRestart", "handleCodexMessage",
+    "stopClaudeRunProcess", "handleCodexMessage",
     "completedCodexAnswer", "applyCodexObservedSnapshot", "applyCodexActiveSnapshot",
     "readCodexTaskSnapshot", "scheduleCodexTerminalAudit", "importCodexAssistantAttachments",
   ]);

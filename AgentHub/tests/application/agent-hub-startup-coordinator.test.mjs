@@ -58,25 +58,16 @@ test("actual automatic initialize heals its startup failure without replaying co
   assert.deepEqual(calls.slice(before.length), ["backfill"]);
 });
 
-test("automatic initialize cannot erase an unrelated recovery failure", async () => {
-  let running = false;
-  const { service, health } = coordinator({ telegramEnabled: false,
-    waitForever: async () => {},
-    initializeProvider: async () => { throw new Error("old provider unavailable"); },
-    providerIsRunning: () => running,
-    recoverRuns: async () => { throw new Error("original recovery persistence failure"); },
+test("old-run recovery is absent even when its former port throws", async () => {
+  let recoveries = 0;
+  const { service, health } = coordinator({
+    recoverRuns: async () => { recoveries++; throw new Error("old recovery must never run"); },
   });
-  await service.start(); running = true; service.providerInitialized();
-  assert.equal(health.snapshot().ready, false);
-  assert.equal(health.snapshot().startup.operations.find(operation => operation.id === "runs").error, "original recovery persistence failure");
-  assert.equal(health.snapshot().capabilities.find(capability => capability.name === "provider").error, "original recovery persistence failure");
-  const failure = service.captureRunRecoveryFailure();
-  service.runsRecovered({ ...failure, completedAtMs: failure.completedAtMs + 1 });
-  assert.equal(health.snapshot().ready, false);
-  // Only the matching successful canonical recovery can settle its own failure.
-  service.runsRecovered(failure);
-  assert.equal(health.snapshot().ready, true);
+  await service.start();
   await service.waitForBackgroundWork();
+  assert.equal(recoveries, 0);
+  assert.equal(health.snapshot().ready, true);
+  assert.equal(health.snapshot().startup.operations.some(row => row.id === "runs"), false);
 });
 
 test("failed provider retries once without repeating completed startup work", async () => {
@@ -141,7 +132,6 @@ test("startup preserves control, recovery and readiness order", async () => {
     "mcp",
     "sanitize",
     "provider",
-    "recover",
     "projections",
     "notifications",
     "jobs",
@@ -165,7 +155,6 @@ test("startup preserves control, recovery and readiness order", async () => {
       { id: "history", state: "completed" },
       { id: "provider", state: "completed" },
       { id: "provider-metadata", state: "completed" },
-      { id: "runs", state: "completed" },
       { id: "notifications", state: "completed" },
       { id: "background-jobs", state: "completed" },
       { id: "timers", state: "completed" },
@@ -184,7 +173,6 @@ test("startup isolates recoverable failures and still marks ready", async () => 
     startMiniApp: async () => { throw new Error("mini"); },
     initializeProvider: async () => { throw new Error("provider"); },
     providerIsRunning: () => false,
-    recoverRuns: async () => { throw new Error("runs"); },
     restoreBackgroundJobs: async () => { throw new Error("jobs"); },
     registerTelegramCommands: async () => { throw new Error("commands"); },
   });
@@ -207,14 +195,12 @@ test("startup isolates recoverable failures and still marks ready", async () => 
   });
   assert.deepEqual(
     startup.operations.filter(({ state }) => state === "failed").map(({ id }) => id),
-    ["web", "provider", "runs", "background-jobs", "telegram"],
+    ["web", "provider", "background-jobs", "telegram"],
   );
-  assert.ok(calls.some((value) => value.includes("активные потоки: runs")));
   assert.ok(calls.some((value) => value.includes("медиа-задачи: jobs")));
   assert.deepEqual(captured, [
     ["mini", "web"],
     ["provider", "provider"],
-    ["runs", "runs"],
     ["jobs", "background-jobs"],
     ["commands", "telegram"],
   ]);
@@ -262,7 +248,7 @@ test("core-only startup restores runs but skips Telegram-only work", async () =>
     waitForever: async () => calls.push("wait"),
   });
   await service.start();
-  assert.equal(calls.includes("recover"), true);
+  assert.equal(calls.includes("recover"), false);
   assert.equal(calls.includes("projections"), true);
   assert.equal(calls.includes("notifications"), false);
   assert.equal(calls.includes("commands"), false);
@@ -359,27 +345,19 @@ test("optional metadata failure and retry never reset readiness", async () => {
 });
 
 
-test("startup trace exposes an unresolved mandatory recovery before readiness", async () => {
+test("Ready and existing startup trace do not depend on a never-resolving old-run recovery port", async () => {
   const records = [];
-  let release;
-  let enter;
-  const entered = new Promise((resolve) => { enter = resolve; });
+  let recoveries = 0;
   const { service, health } = coordinator({
-    recoverRuns: () => { enter(); return new Promise((resolve) => { release = resolve; }); },
+    recoverRuns: () => { recoveries++; return new Promise(() => {}); },
     commandTrace: new CommandTraceService({ store: {
-      appendBestEffort: (span) => { records.push(span); return true; },
-    }, metadata: { instanceId: "runtime-1" } }),
-    startupTraceId: "startup-1",
+      appendBestEffort: span => { records.push(span); return true; },
+    }, metadata: { instanceId: "runtime-1" } }), startupTraceId: "startup-1",
   });
-  const started = service.start();
-  await entered;
-  const recovery = records.filter((record) => record.stage === "startup-runs");
-  assert.deepEqual(recovery.map((record) => record.outcome), ["started"]);
-  assert.equal(recovery[0].commandId, "startup:startup-1");
-  assert.equal(recovery[0].metadata.instanceId, "runtime-1");
-  assert.equal(health.snapshot().ready, false);
-  release();
-  await started;
+  await service.start();
   await service.waitForBackgroundWork();
-  assert.deepEqual(records.filter((record) => record.stage === "startup-runs").map((record) => record.outcome), ["started", "succeeded"]);
+  assert.equal(recoveries, 0);
+  assert.equal(health.snapshot().ready, true);
+  assert.equal(records.some(record => record.stage === "startup-runs"), false);
+  assert.ok(records.some(record => record.stage === "startup-readiness" && record.outcome === "succeeded"));
 });
