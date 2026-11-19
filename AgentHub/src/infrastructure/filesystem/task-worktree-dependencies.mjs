@@ -6,6 +6,7 @@ import process from "node:process";
 import { reuseTaskDependencyInputs, retainSharedTaskDependencies } from "./task-dependency-inputs.mjs";
 
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 
 const MARKER_NAME = ".agent-hub-task-dependencies.json";
 const FAILURE_MARKER_NAME = ".agent-hub-task-dependencies-failure.json";
@@ -647,6 +648,10 @@ function invalidInstalledState() {
 }
 
 async function validateInstalledState(options) {
+  return measureTaskOperation("dependency-full-proof", () => validateInstalledStateTraced(options), { detail: true });
+}
+
+async function validateInstalledStateTraced(options) {
   try {
     const fingerprint = await installedStateFingerprint(options);
     return fingerprint
@@ -716,6 +721,12 @@ async function hasProjectNpmConfiguration(packageRoot, projectRoot) {
 }
 
 async function prepareNpmProject({
+  ...options
+}) {
+  return measureTaskOperation("dependency-project", () => prepareNpmProjectTraced(options), { detail: true });
+}
+
+async function prepareNpmProjectTraced({
   projectRoot,
   resolvedProjectRoot,
   lockfile,
@@ -816,12 +827,14 @@ async function prepareNpmProject({
       readMarker(packageRoot, MARKER_NAME, { fileSystem }),
       readMarker(packageRoot, FAILURE_MARKER_NAME, { fileSystem }),
     ]);
-    const installedLockSha256 = await installedLockHash(packageRoot, limits, fileSystem);
+    const installedLockSha256 = await measureTaskOperation("dependency-installed-lock-proof",
+      () => installedLockHash(packageRoot, limits, fileSystem), { detail: true });
     if (!verify && !failureMarker && installedLockSha256
       && successMarker?.installedLockSha256 === installedLockSha256
       && successMarker?.policy === INSTALL_POLICY
       && successMarker.lockfileSha256 === fingerprint && /^[a-f0-9]{64}$/u.test(successMarker.installedStateSha256 ?? "")) {
       await assertLeaseOwned(lease);
+      recordTaskOperationTiming("dependency-fast-proof", { reused: true }, { detail: true });
       return { manager: "npm", project: relativeProject, lockfile: "package-lock.json", prepared: false, fingerprint };
     }
     validation = await validateInstalledState({
@@ -868,7 +881,8 @@ async function prepareNpmProject({
     throw new Error("Task dependency installation requires an owned external-process runner");
   }
   await assertLeaseOwned(lease);
-  await runNpm([...NPM_CI_ARGS], { cwd: packageRoot, lease, signal: lease?.signal ?? null });
+  await measureTaskOperation("dependency-npm", () => runNpm([...NPM_CI_ARGS],
+    { cwd: packageRoot, lease, signal: lease?.signal ?? null }), { detail: true });
   await assertLeaseOwned(lease);
   if (!await assertLocalNodeModules(packageRoot, resolvedPackageRoot)) {
     await assertLeaseOwned(lease);

@@ -393,6 +393,36 @@ function claimOnlyTaskGit(overrides = {}) {
   return service;
 }
 
+test("claim timing includes preparation binding and receipt under the original request and never repeats its effect", async context => {
+  const state = await fixture(context);
+  const events = [];
+  state.taskGitWorkspaces.withOperationTrace = (identity, operation) => withTaskOperationTiming({
+    ...identity, record: event => events.push(event),
+  }, operation);
+  const request = { context_token: state.token, request_id: "claim-timing-original", task_id: "task-current" };
+  const first = await state.service.call("hub_task_claim", request);
+  const preparationCount = state.taskGitPrepareCalls.length;
+  const repeated = await state.service.call("hub_task_claim", request);
+  assert.equal(first.streamId, repeated.streamId);
+  assert.equal(state.taskGitPrepareCalls.length, preparationCount);
+  assert.ok(events.every(event => event.operationId === request.request_id && event.taskId === request.task_id));
+  assert.ok(events.some(event => event.stage === "task-binding" && event.phase === "end" && event.outcome === "ok"));
+  assert.ok(events.some(event => event.stage === "mcp:receipt" && event.phase === "end" && event.outcome === "ok"));
+  assert.equal(events.at(-1).stage, "trace-summary");
+  state.taskGitWorkspaces.readOperationProgress = ({ operationId, taskId }) => {
+    assert.equal(operationId, request.request_id);
+    assert.equal(taskId, request.task_id);
+    return { stage: "dependency-project", phase: "running", live: false, canonicalOutcome: null };
+  };
+  const readback = await state.service.call("hub_task_operation_get", {
+    context_token: state.token, operation_request_id: request.request_id, task_id: request.task_id,
+    expected_arguments_hash: state.operations.get(request.request_id).argumentsHash,
+  });
+  assert.equal(readback.taskOperation.status, "succeeded");
+  assert.equal(readback.taskOperation.progress.stage, "dependency-project");
+  assert.equal(readback.taskOperation.progress.canonicalOutcome, null);
+});
+
 
 
 

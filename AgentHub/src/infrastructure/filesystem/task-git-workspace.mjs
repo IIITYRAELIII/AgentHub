@@ -204,11 +204,13 @@ function gitCommandKind(args, commandLabel) {
 function withInterprocessLocks(paths, operation, options = {}) {
   const lockKind = paths.some(value => path.basename(value).startsWith("task-git-dev-"))
     ? "repository" : paths.some(value => path.basename(value).startsWith("task-dependencies-"))
-      ? "dependencies" : "task";
+      ? "dependencies" : paths.some(value => path.basename(value).startsWith("repository-deps-"))
+        ? "shared-dependencies" : "task";
   return measureTaskOperation("lock", () => acquireInterprocessLocks(paths, operation, {
     ...options,
     onAcquired: (event) => {
-      recordTaskOperationTiming("lock-acquired", { lockKind, waitMs: event.waitMs, lockCount: event.lockCount });
+      recordTaskOperationTiming("lock-acquired", { lockKind, waitMs: event.waitMs, lockCount: event.lockCount,
+        owners: event.owners });
       options.onAcquired?.(event);
     },
   }), { lockKind });
@@ -275,6 +277,10 @@ function runTaskGitCommandUntraced(args, {
     const abort = () => terminate("was fenced");
     signal?.addEventListener?.("abort", abort, { once: true });
     const timer = timeoutMs == null ? null : setTimeout(() => terminate("timed out"), timeoutMs);
+    child.on("spawn", () => recordTaskOperationTiming("child-spawn", {
+      processId: Number.isSafeInteger(child.pid) ? child.pid : null,
+      command: gitCommandKind(args, commandLabel),
+    }, { detail: true }));
     child.stdout?.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
@@ -284,6 +290,11 @@ function runTaskGitCommandUntraced(args, {
     });
     child.on("close", (code) => {
       childClosed = true;
+      recordTaskOperationTiming("child-close", {
+        processId: Number.isSafeInteger(child.pid) ? child.pid : null,
+        exitCode: Number.isInteger(code) ? code : null, terminated: Boolean(termination),
+        command: gitCommandKind(args, commandLabel),
+      }, { detail: true });
       clearTimeout(timer);
       if (stopTimer) clearTimeout(stopTimer);
       const stdoutBytes = Buffer.concat(stdout);
@@ -660,6 +671,10 @@ export class TaskGitWorkspaceService {
 
   withOperationTrace(identity, operation) {
     return withTaskOperationTiming({ ...identity, record: this.recordTiming }, operation);
+  }
+
+  readOperationProgress(identity) {
+    return this.recordTiming.readProgress?.(identity) ?? null;
   }
 
   measureOperation(stage, operation) {
@@ -1432,7 +1447,7 @@ export class TaskGitWorkspaceService {
         const lease = { ...owner, beginProcessTreeGuard: context => owner.beginProcessTreeGuard({
           ...context, repositoryRoot: canonicalPath(sourceRoot),
         }) };
-        return operation({ root, lease });
+        return operation({ root, lease, coveredLease: outerLease });
       }, { signal: taskOperationExecution()?.signal });
     };
   }

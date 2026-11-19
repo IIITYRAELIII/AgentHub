@@ -48,7 +48,7 @@ export class DesktopTaskBoardController {
     try { if (id) task = this.taskBoard.card(id); }
     catch (error) { if (!operation?.taskOperation?.terminal) throw error; }
     if (!operation && !task) task = this.taskBoard.card(id);
-    return { task, taskOperations: id ? this.hubMcpService?.taskOperationInterruption?.list(id) ?? [] : [],
+    return { task, taskOperations: id ? this.hubMcpService?.listTaskOperations?.(id) ?? [] : [],
       ...(operation ? { operation } : {}) };
   }
 

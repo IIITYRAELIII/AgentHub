@@ -130,6 +130,27 @@ async function prepare() {
   return {
     provenance: structuredClone(provenance),
     shutdown,
+    async inspectProcess(processId) {
+      if (closed || !Number.isSafeInteger(processId) || processId < 1) return null;
+      const operation = (async () => {
+        await verifyBinary();
+        const result = await new Promise(resolve => {
+          const child = execFile(binary, ["--inspect-lock-process"], {
+            windowsHide: true, encoding: "utf8", maxBuffer: 4096, timeout: 1000,
+          }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
+          child.stdin.on("error", () => {});
+          child.stdin.end(JSON.stringify({ protocol: 1, processId }) + "\n");
+        });
+        await verifyBinary();
+        if (result.error || result.stderr) return null;
+        const value = JSON.parse(result.stdout);
+        return value.protocol === 1 && value.status === "observed" && value.processId === processId
+          && /^[0-9]{1,20}$/u.test(value.birthFileTime) && typeof value.alive === "boolean"
+          ? { processId, birthFileTime: value.birthFileTime, alive: value.alive } : null;
+      })().catch(() => null);
+      active.add(operation);
+      try { return await operation; } finally { active.delete(operation); }
+    },
     async publish(readyPath, canonicalPath) {
       if (closed) throw failure("Lock publisher is closed", "WINDOWS_LOCK_PUBLISHER_CLOSED");
       const ready = path.resolve(readyPath), canonical = path.resolve(canonicalPath);

@@ -975,11 +975,13 @@ export class HubMcpService {
     const terminal = ["succeeded", "failed"].includes(row.status);
     const execution = { state: terminal ? "terminal" : active ? "active" : row.status === "unknown" ? "unknown" : "unresolved",
       authority: active ? "local-invocation" : terminal || row.status === "unknown" ? "durable-receipt" : "not-observed-here" };
+    const progress = this.taskGitWorkspaces?.readOperationProgress?.({ operationId: id, taskId: boundTask }) ?? null;
     return { taskOperation: {
       version: 1, requestId: id, toolName: row.toolName, argumentsHash: row.argumentsHash,
       workspaceId: row.workspaceId, streamId: row.streamId, provider: row.provider, threadId: row.threadId,
       ...(row.actorKind ? { actorKind: row.actorKind } : {}),
       taskId: boundTask ?? null, status: row.status, terminal, active, execution,
+      ...(progress ? { progress } : {}),
       ...(row.taskExecution?.completionFailure ? { completionFailure: row.taskExecution.completionFailure } : {}),
       canCancel: INTERRUPTIBLE_TASK_TOOLS.has(row.toolName) && !terminal && cancellation?.phase !== "stopped",
       phase: cancellation?.phase ?? lifecycle?.phase ?? (terminal ? row.status : active ? "executing" : "not-observed-here"),
@@ -992,6 +994,13 @@ export class HubMcpService {
   readDesktopTaskOperation(task, operationId, expectedHash) {
     return this.#taskOperationReadback({ actorKind: "authenticated-user" }, {
       operation_request_id: operationId, expected_arguments_hash: expectedHash, task_id: task.id,
+    });
+  }
+
+  listTaskOperations(taskId) {
+    return (this.taskOperationInterruption?.list(taskId) ?? []).map(operation => {
+      const progress = this.taskGitWorkspaces?.readOperationProgress?.({ operationId: operation.requestId, taskId }) ?? null;
+      return progress ? { ...operation, progress } : operation;
     });
   }
 
@@ -1077,21 +1086,41 @@ export class HubMcpService {
     return Promise.race([admission, completion]);
   }
 
+  #recordFailureTiming(requestId, stage, startedAt, outcome, error = null, metadata = {}) {
+    try {
+      const durationMs = Math.max(0, performance.now() - startedAt);
+      const identity = error ? completionError(error) : null;
+      const pending = this.recordCommandTrace({ commandId: requestId, transport: "task-operation", stage,
+        outcome, monotonicDurationMs: durationMs, metadata: { ...metadata,
+          ...(identity ? { errorCode: identity.code,
+            errorSha256: createHash("sha256").update(JSON.stringify(identity)).digest("hex") } : {}) } });
+      pending?.catch?.(() => {});
+    } catch { /* Failure-path measurements cannot replace the original errors or receipt. */ }
+  }
+
   async #preserveCompletionFailure(started, ownerId, failure) {
     let saved = false;
     const diagnostic = { version: 1, kind: "mcp-completion-failure-v1", effects: "retained_unknown",
       originalError: completionError(failure.originalError), persistenceError: completionError(failure.persistenceError),
       effectCompleted: failure.effectCompleted === true };
+    const diagnosticStartedAt = performance.now();
+    let diagnosticOutcome = "unavailable", diagnosticError = null;
     try {
       if (typeof this.workspaceCatalog.recordMcpOperationCompletionFailure === "function") {
+        diagnosticOutcome = "failed";
         const receipt = await this.workspaceCatalog.recordMcpOperationCompletionFailure(started.requestId, {
           identity: { ...Object.fromEntries(["workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash", "createdAtMs"]
             .map(key => [key, started[key]])), actorKind: started.actorKind ?? "provider" }, ownerId, diagnostic,
         });
-        if (["succeeded", "failed"].includes(receipt?.status)) return;
+        if (["succeeded", "failed"].includes(receipt?.status)) { diagnosticOutcome = "terminal-winner"; return; }
         saved = Boolean(receipt?.taskExecution?.completionFailure);
+        diagnosticOutcome = saved ? "succeeded" : "not-saved";
       }
-    } catch { /* The trace below still records both bounded error identities. No retry or effect authority. */ }
+    } catch (error) { diagnosticError = error; }
+    finally {
+      this.#recordFailureTiming(started.requestId, "task-operation-failure-diagnostic", diagnosticStartedAt,
+        diagnosticOutcome, diagnosticError, { diagnosticSaved: saved });
+    }
     try {
       const errorHash = error => createHash("sha256").update(JSON.stringify(error)).digest("hex");
       const pending = this.recordCommandTrace({ commandId: started.requestId, transport: "task-operation",
@@ -1290,7 +1319,7 @@ export class HubMcpService {
         return this.#tasks(context, args);
       case "hub_task_get":
         return { ...compactTask(this.#taskById(args.task_id)),
-          taskOperations: this.taskOperationInterruption?.list(args.task_id) ?? [] };
+          taskOperations: this.listTaskOperations(args.task_id) };
       case "hub_task_create":
         return this.#createTask(context, args);
       case "hub_task_update":
@@ -1948,7 +1977,7 @@ export class HubMcpService {
   async #writeClaim(context, task, active, operationId, gitWorkspace, forwardCustodyRequestId = null, validateCustodyAdmission = null) {
     this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
-    const claimed = await this.taskBoard.claim({
+    const claimed = await this.measureOperation("task-binding", () => this.taskBoard.claim({
       id: task.id,
       workspaceId: context.workspaceId,
       streamId: context.streamId,
@@ -1962,7 +1991,7 @@ export class HubMcpService {
         validateCustodyAdmission(true);
         this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
       } : null,
-    });
+    }));
     return {
       ...compactTask(claimed),
       claimedTurnId: active.turnId,
@@ -2916,9 +2945,10 @@ export class HubMcpService {
       await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
       throw reason;
     }
-    const pending = (async () => {
+    const execute = async () => {
       let effectCompleted = false;
       let completionFailure = null;
+      const executionStartedAt = performance.now();
       try {
         if (started.replayed && checklistMutation) {
           const reconciled = await this.#reconcileTaskChecklist(context, args);
@@ -2958,9 +2988,11 @@ export class HubMcpService {
         } else if (custodyConsume && started.status === "unknown") {
           await this.workspaceCatalog.completeUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
             result, reconciliation: { kind: "forward-claim-binding-reuse-v1", fenceRequestId: args.forward_custody_request_id } });
-        } else await this.workspaceCatalog.completeMcpOperation(requestId, result);
+        } else await this.measureOperation("mcp:receipt", () => this.workspaceCatalog.completeMcpOperation(requestId, result));
         return result;
       } catch (error) {
+        this.#recordFailureTiming(requestId, "task-operation-before-error", executionStartedAt,
+          "failed", error, { effectCompleted });
         const completionPersistenceFailure = persistenceError => {
           completionFailure ??= { originalError: error, persistenceError, effectCompleted };
           return Object.assign(new AggregateError([error, persistenceError],
@@ -2972,8 +3004,14 @@ export class HubMcpService {
           catch (persistenceError) { throw completionPersistenceFailure(persistenceError); }
         };
         const persist = async action => {
+          const settlementStartedAt = performance.now();
+          let settlementError = null;
           try { return await action(); }
-          catch (persistenceError) { throw completionPersistenceFailure(persistenceError); }
+          catch (persistenceError) { settlementError = persistenceError; throw completionPersistenceFailure(persistenceError); }
+          finally {
+            this.#recordFailureTiming(requestId, "task-operation-failure-settlement", settlementStartedAt,
+              settlementError ? "failed" : "succeeded", settlementError);
+          }
         };
         if (error instanceof TaskLifecyclePersistenceError) {
           completionFailure = { originalError: error.cause, persistenceError: error.errors[1], effectCompleted };
@@ -3077,7 +3115,10 @@ export class HubMcpService {
           }
         } finally { this.#pendingMutations.delete(requestId); }
       }
-    })();
+    };
+    const pending = toolName === "hub_task_claim" && this.taskGitWorkspaces?.withOperationTrace
+      ? this.taskGitWorkspaces.withOperationTrace({ operationId: requestId, taskId: args.task_id }, execute)
+      : execute();
     this.#pendingMutations.set(requestId, pending);
     onAdmission?.(started);
     return pending;
