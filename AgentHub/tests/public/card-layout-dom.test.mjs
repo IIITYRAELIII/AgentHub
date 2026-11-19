@@ -178,7 +178,7 @@ for (const width of [1440, 390]) test(`переключатель роли ос�
     assert.equal(page.url(), "http://agent-hub.test/");
     assert.equal(await page.title(), "Agent Hub");
     const releaseManager = page.locator("[data-dialog-stream-task-acceptance]");
-    assert.equal(await page.locator(".stream-task-acceptance-setting .switch-text").textContent(), "Приёмка задач");
+    assert.equal(await page.locator(".stream-task-acceptance-setting .switch-text").textContent(), "Релиз-менеджер");
     assert.equal(await releaseManager.isChecked(), false);
 
     assert.equal(await page.locator(".stream-task-acceptance-setting .switch-track").isVisible(), true,
@@ -203,9 +203,12 @@ for (const width of [1440, 390]) test(`переключатель роли ос�
     assert.equal(await page.locator("#stream-task-acceptance-note").isVisible(), true,
       "знак вопроса не открыл пояснение роли");
     const instructions = await page.locator("#stream-task-acceptance-note").textContent();
-    assert.match(instructions, /Приёмка результатов задач/u);
-    assert.match(instructions, /ветками и историей/u);
-    assert.doesNotMatch(instructions, /freeze|releaseCandidates|публикаци/iu);
+    assert.match(instructions, /установи именно из него/u);
+    assert.match(instructions, /правь прямо в PreRelease|пакетом прямо в PreRelease/u);
+    assert.match(instructions, /GitHub Release/u);
+    assert.match(instructions, /только если этого требуют правила Workspace/u);
+    assert.match(instructions, /после уже опубликованного выпуска относятся к следующему/u);
+    assert.doesNotMatch(instructions, /hub_release_|останови работу исполнителей|заморозь включённые|релизный конвейер/iu);
     assert.doesNotMatch(instructions, /архитектор|Architect/iu);
     assert.deepEqual(errors, []);
     if (process.env.AGENT_HUB_QA_SCREENSHOT_DIR) {
@@ -226,6 +229,15 @@ test("переключатель веток задач Workspace кликает�
     await page.evaluate(() => document.querySelector("[data-workspace-card-modal]").showModal());
     const release = page.locator("[data-workspace-task-workflow]");
     assert.equal(await release.isChecked(), false);
+    assert.equal(await page.locator(".workspace-task-workflow-switch .switch-text").textContent(), "Релизный процесс");
+    await page.getByLabel("Что включает релизный процесс", { exact: true }).click();
+    const tooltip = page.locator("[data-workspace-task-workflow-tooltip]");
+    assert.equal(await tooltip.isVisible(), true);
+    assert.match(await tooltip.innerText(), /36 символов/u);
+    assert.match(await tooltip.innerText(), /ВСЕ задачи Workspace/u);
+    assert.match(await tooltip.innerText(), /только если этого требуют правила Workspace/u);
+    assert.match(await tooltip.innerText(), /после уже опубликованного выпуска относятся к следующему/u);
+    await page.getByLabel("Что включает релизный процесс", { exact: true }).click();
 
     await page.locator(".workspace-task-workflow-switch .switch-track").click();
     assert.equal(await release.isChecked(), true, "клик по тумблеру не включил ветки задач");
