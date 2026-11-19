@@ -165,6 +165,8 @@
       "title": "Workspace cards and permanent archive",
       "document": "SYS-002-workspace-lifecycle.md",
       "paths": [
+        "docs/decisions/ADR-HUB-447-local-file-location.md",
+        "tests/public/local-file-links.test.mjs",
         "docs/decisions/ADR-0073-durable-thread-naming.md",
         "src/domain/workspace-stream-identity.mjs",
         "src/composition/agent-hub-composition.mjs",
