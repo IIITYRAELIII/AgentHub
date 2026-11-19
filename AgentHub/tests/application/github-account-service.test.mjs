@@ -336,6 +336,71 @@ test("late rejected old credential cannot clear a newer connection's rejection",
   assert.equal((await f.service.snapshot()).status, "connected");
 });
 
+async function ghContentFixture(t) {
+  const f = await fixture(t);
+  await f.service.connect(token);
+  await writeFile(path.join(f.directory, "tools.json"), JSON.stringify({ gh: process.execPath }));
+  const script = path.join(f.directory, "gh-content.cjs");
+  await writeFile(script, "if(!process.env.GH_TOKEN?.startsWith('github_pat_SYNTHETIC'))process.exit(7);process.stdout.write(JSON.stringify(process.argv.slice(2)));");
+  let starts = 0;
+  return { starts: () => starts, run: async (args, environment = process.env) => {
+    const stdin = new PassThrough(), stdout = new PassThrough(), stderr = new PassThrough();
+    let output = "";
+    stdin.end(); stdout.on("data", chunk => { output += chunk; }); stderr.resume();
+    const code = await runGitHubCli(args, { directory: f.directory, vault: f.vault, environment, stdin, stdout, stderr,
+      spawnProcess: (executable, actualArgs, options) => { starts++; return spawn(executable, [script, ...actualArgs], options); } });
+    return { code, args: JSON.parse(output) };
+  } };
+}
+
+test("gh content URLs remain exact body, notes, title, formatting and query payloads", async t => {
+  const f = await ghContentFixture(t);
+  const commands = [
+    ["issue", "create", "--repo", "owner/repo", "--body", "https://example.org/docs", "--title", "foreign.ghe.com/owner/repo"],
+    ["issue", "create", "--repo=github.com/owner/repo", "--body=https://example.org/docs"],
+    ["issue", "create", "-Rowner/repo", "-b", "https://example.org/docs", "-t", "https://example.org/title"],
+    ["issue", "create", "--body", "--hostname", "--repo", "owner/repo"],
+    ["release", "create", "v-fixture", "--repo", "owner/repo", "--notes", "https://example.org/notes", "--title", "foreign.ghe.com/owner/repo"],
+    ["release", "create", "-d", "-p", "v-fixture", "--repo=owner/repo", "--notes=https://example.org/notes"],
+    ["release", "new", "v-fixture", "-R", "owner/repo", "-n", "https://example.org/notes", "-F", "foreign.ghe.com/notes/file"],
+    ["release", "edit", "v-fixture", "--notes", "--repo=foreign.ghe.com/owner/repo", "--repo", "owner/repo"],
+    ["issue", "comment", "https://github.com/owner/repo/issues/1", "--body", "https://example.org/docs"],
+    ["pr", "review", "https://github.com/owner/repo/pull/1", "--comment", "--body", "https://example.org/docs"],
+    ["api", "--raw-field", "body=https://example.org/docs", "--method", "POST", "repos/owner/repo/issues"],
+    ["api", "https://api.github.com/user", "--template", "https://example.org/format"],
+    ["search", "issues", "https://example.org/docs"],
+    ["repo", "create", "owner/repo", "--description", "https://example.org/docs", "--homepage", "https://example.org"],
+    ["repo", "view", "--json", "name", "https://github.com/owner/repo"],
+  ];
+  for (const args of commands) {
+    const result = await f.run(args);
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.args, args);
+  }
+  assert.equal(f.starts(), commands.length);
+});
+
+test("gh destination host controls still reject actual foreign selectors and positional resources before spawn", async t => {
+  const f = await ghContentFixture(t);
+  for (const args of [
+    ["api", "--hostname", "foreign.invalid", "user"],
+    ["api", "--hostname=foreign.invalid", "user"],
+    ["issue", "create", "--body", "https://example.org/docs", "--repo", "foreign.ghe.com/owner/repo"],
+    ["issue", "create", "-Rforeign.ghe.com/owner/repo", "-b", "https://example.org/docs"],
+    ["release", "create", "-d", "-p", "--hostname", "foreign.invalid", "v-fixture"],
+    ["repo", "view", "--web", "foreign.ghe.com/owner/repo"],
+    ["repo", "clone", "https://foreign.invalid/owner/repo"],
+    ["issue", "view", "https://foreign.invalid/owner/repo/issues/1"],
+    ["pr", "review", "-a", "https://foreign.invalid/owner/repo/pull/1"],
+    ["pr", "review", "--comment", "https://foreign.invalid/owner/repo/pull/1"],
+    ["repo", "view", "--repo=foreign.ghe.com/owner/repo"],
+    ["api", "--field", "body=ordinary", "https://foreign.invalid/user"],
+  ]) await assert.rejects(f.run(args), /limited to github.com/u);
+  await assert.rejects(f.run(["api", "user"], { ...process.env, GH_HOST: "foreign.invalid" }), /limited to github.com/u);
+  await assert.rejects(f.run(["issue", "list"], { ...process.env, GH_REPO: "foreign.ghe.com/owner/repo" }), /limited to github.com/u);
+  assert.equal(f.starts(), 0);
+});
+
 test("test/child runtime isolation removes only the inherited Hub account include and gh path", () => {
   const directory = path.join(os.tmpdir(), "isolated-hub-account");
   const original = { PATH: path.join(os.tmpdir(), "ordinary-tools"), GIT_CONFIG_COUNT: "1",

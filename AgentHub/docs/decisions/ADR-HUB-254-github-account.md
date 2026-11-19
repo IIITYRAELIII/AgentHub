@@ -46,6 +46,10 @@ bound; stale helpers cannot use a new token with an old profile, or clear a newe
 connection's rejected state. A 401/rejected credential exposes reconnect state.
 A 403 remains a permission refusal, not proof of expiry or permission to switch
 accounts. API requests never redirect an Authorization header to another host.
+The gh boundary checks host/repository selectors and the command's positional
+repository or API/resource address. Body, notes, title, formatting and query
+values remain opaque content, including external links; they are not destinations
+for the connected account. Short flags are interpreted in their command context.
 
 Actual runtime cutover pauses this owner's intake and drains admitted credential
 validation/writes before backup/instance release. Reversible restart recovery resumes
