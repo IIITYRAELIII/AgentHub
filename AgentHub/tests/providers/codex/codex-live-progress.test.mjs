@@ -63,6 +63,26 @@ test("a retained start, missing exact native turn and interrupted projection rem
   }
 });
 
+test("idle, missing and foreign native Thread metadata cannot confirm a retained inProgress turn", async () => {
+  for (const metadata of [
+    { id: "thread-a", status: { type: "idle" } },
+    { id: "thread-a", status: { type: "notLoaded" } },
+    { id: "thread-a" },
+    { status: { type: "active" } },
+    { id: "foreign-thread", status: { type: "active" } },
+  ]) {
+    const f = currentLiveProgress({ readThread: async () => ({ thread: {
+      ...metadata, path: "controlled-rollout", turns: [{ id: "turn-live", status: "inProgress", items: [] }],
+    } }) });
+    f.run.activityUnknown = true;
+    await f.poll();
+    assert.equal(f.project().running, false);
+    assert.equal(f.run.activityUnknown, true);
+    assert.equal(f.taskRuns.forTask(f.run), f.run);
+    assert.equal(f.completed.length, 0);
+  }
+});
+
 test("read failure stays unknown and an exact terminal cannot be resurrected by a later read", async () => {
   const f = currentLiveProgress();
   f.fail(); await f.poll(); await f.poll();

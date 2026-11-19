@@ -507,7 +507,9 @@ measure local disposition and Ready/new input without message content.
   distinct from local lifecycle disposition.
   An existing current Codex run may regain its running display only after its
   ordinary observer freshly confirms that same native turn as in progress and
-  its exact rollout remains nonterminal. A retained start marker, absent or
+  its exact rollout remains nonterminal. The same fresh native Thread has its
+  exact requested ID and active status; idle, missing or foreign Thread metadata
+  cannot confirm a retained in-progress row. A retained start marker, absent or
   interrupted native turn, failed read or changed identity
   cannot clear uncertainty. This never creates or rebinds a run (ADR-HUB-373).
 - Before provider discovery finishes, the initial catalog resolves retained

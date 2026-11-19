@@ -299,8 +299,10 @@ export class CodexTaskSnapshotService {
         : d.hubOwner(),
     };
     if (activity.activeTurnIds.includes(turn.id)) {
+      const nativeCurrentActive = result.thread?.id === run.threadId
+        && result.thread?.status?.type === "active" && turn.status === "inProgress";
       return { ...snapshot, completed: false, active: true,
-        ...(confirmCurrentActivity && turn.status !== "inProgress" ? { activityUnknown: true } : {}),
+        ...(confirmCurrentActivity && !nativeCurrentActive ? { activityUnknown: true } : {}),
         stage: d.describeItem(turn.items?.at(-1), false) };
     }
     if (!rolloutState.completed) {

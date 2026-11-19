@@ -8,6 +8,9 @@ through ordinary newly launched turn observation after ADR-HUB-476.
 Use the provider snapshot's `active` contract. Only while the existing managed
 run is uncertain, its ordinary read requests fresh native turn data and requires
 that exact turn to remain `inProgress` alongside its exact nonterminal rollout.
+The fresh native Thread must itself have the exact requested ID and `active`
+status. A retained in-progress row within an idle, missing or foreign Thread
+is not positive activity evidence.
 A retained start marker, missing turn, interrupted projection or read error
 cannot clear uncertainty. This replaces the lightweight read for that poll;
 the existing transport requests only its latest turn page (one native turn),
