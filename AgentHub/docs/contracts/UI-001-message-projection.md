@@ -29,6 +29,10 @@ retires stale queued intake membership even when its wait reason is retained
 and canonical history has not arrived. Explicit identity conflicts cannot
 consume another command's wait. Unresolved intake ACKs, unknown outcomes and
 manual pause retain their existing queue guards, including after reload.
+The original send ACK can arrive after that exact confirmation. Its local queue
+membership is derived after the existing canonical entity reducer, so an older
+intake result cannot restore a saved card while the entity remains accepted or
+terminal. Equal text with a different command identity keeps its own wait.
 
 The Task card's operation action exposes explicit interruption of a bound
 claim/workflow attempt, including pending and UNKNOWN. It reaches the same

@@ -3954,13 +3954,6 @@ function sendUserMessage(request, frozenParams = null) {
     receive: (result) => {
       const projection = queueHistoryReceiptProjection(result);
       const projectionStarted = commandTrace.now();
-      if (projection.ownsDeferredQueue) {
-        optimisticDeferredClientUserMessageIds.add(request.requestId);
-        deferredClientUserMessageIds.add(request.requestId);
-      } else {
-        optimisticDeferredClientUserMessageIds.delete(request.requestId);
-        deferredClientUserMessageIds.delete(request.requestId);
-      }
       agentHub.completeSend(request.requestId, { outcome: "accepted", taskId: request.taskId });
       updateOutgoing(request.taskId, request.requestId, {
         provider: identity?.provider ?? "",
@@ -3984,8 +3977,23 @@ function sendUserMessage(request, frozenParams = null) {
           ? deliveryPatch("relaying")
           : deliveryPatch(projection.deliveryState ?? "rejected", projection)),
       });
+      // Snapshot/history may confirm this exact command before its original
+      // intake ACK arrives. Queue membership follows the reduced entity too:
+      // a late ACK cannot revive a wait already absorbed by provider acceptance.
+      const ownsDeferredQueue = projection.ownsDeferredQueue && messageAwaitsProviderAcceptance(
+        outgoingMessages(request.taskId).get(request.requestId),
+      );
+      if (ownsDeferredQueue) {
+        optimisticDeferredClientUserMessageIds.add(request.requestId);
+        deferredClientUserMessageIds.add(request.requestId);
+      } else {
+        optimisticDeferredClientUserMessageIds.delete(request.requestId);
+        deferredClientUserMessageIds.delete(request.requestId);
+      }
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
-      commandTrace.afterPaint("ui-render", "message-ack-projection", projectionStarted, request.requestId);
+      commandTrace.afterPaint("ui-render", "message-ack-projection", projectionStarted, request.requestId, {
+        render: ownsDeferredQueue ? "queued" : "conversation",
+      });
     },
     synchronize: async (result) => {
       if (result?.snapshot) applySnapshot(result.snapshot);
