@@ -505,6 +505,11 @@ measure local disposition and Ready/new input without message content.
   records are retained-only and create neither running/UNKNOWN occupancy nor a
   Stop target for a newly admitted input. Real provider terminal evidence remains
   distinct from local lifecycle disposition.
+  An existing current Codex run may regain its running display only after its
+  ordinary observer freshly confirms that same native turn as in progress and
+  its exact rollout remains nonterminal. A retained start marker, absent or
+  interrupted native turn, failed read or changed identity
+  cannot clear uncertainty. This never creates or rebinds a run (ADR-HUB-373).
 - Before provider discovery finishes, the initial catalog resolves retained
   Threads against existing visible Workspace/Stream bindings read-only. It does
   not expose an unbound historical Thread as a synthetic Stream. Discovery

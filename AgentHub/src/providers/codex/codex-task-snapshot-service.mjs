@@ -216,9 +216,14 @@ export class CodexTaskSnapshotService {
       }
     }
 
+    // Only an existing current managed execution can reach this read. After
+    // uncertainty, confirm its exact native turn freshly: a retained rollout
+    // task_started marker alone must not restore a running display.
+    const confirmCurrentActivity = run.observer !== true && run.activityUnknown === true;
     const result = threadResult ?? await d.readThread(run.threadId, {
-      fresh,
-      includeTurns: false,
+      fresh: fresh || confirmCurrentActivity,
+      includeTurns: confirmCurrentActivity,
+      ...(confirmCurrentActivity ? { turnLimit: 1, turnPageSize: 1 } : {}),
       priority: "interactive",
     });
     const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
@@ -253,7 +258,7 @@ export class CodexTaskSnapshotService {
         responseObservationRevision,
         active: state.active,
         completed: state.completed,
-        activityUnknown: !state.active && !state.completed,
+        activityUnknown: (!state.active || confirmCurrentActivity) && !state.completed,
         status: state.completed ? state.terminalStatus : state.active ? "inProgress" : "unknown",
         stage: state.active
           ? "Выполняется следующий этап…"
@@ -294,7 +299,9 @@ export class CodexTaskSnapshotService {
         : d.hubOwner(),
     };
     if (activity.activeTurnIds.includes(turn.id)) {
-      return { ...snapshot, completed: false, active: true, stage: d.describeItem(turn.items?.at(-1), false) };
+      return { ...snapshot, completed: false, active: true,
+        ...(confirmCurrentActivity && turn.status !== "inProgress" ? { activityUnknown: true } : {}),
+        stage: d.describeItem(turn.items?.at(-1), false) };
     }
     if (!rolloutState.completed) {
       return {
