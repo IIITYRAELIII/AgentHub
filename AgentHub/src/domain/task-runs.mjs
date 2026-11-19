@@ -544,6 +544,23 @@ export function persistedLocalExecutionIdentity(run) {
   if (!run || !["codex", "claude"].includes(run.provider)
     || !["running", "finishing"].includes(run.status)
     || typeof run.id !== "string" || !run.id || run.id.length > 512) return null;
+  const retirement = run.localExecutionRetirement;
+  if (retirement?.proof?.kind === "previous-hub-local-execution") {
+    // Late exact provider telemetry may enrich acceptance times. It cannot
+    // redefine the previous process's already committed local custody.
+    const original = retirement.identity;
+    const binding = { runId: run.id, provider: run.provider,
+      threadId: run.threadId ?? null, turnId: run.turnId ?? null,
+      commandId: run.clientUserMessageId ?? null, streamId: run.streamId ?? null,
+      startedAt: run.startedAt ?? null };
+    if (!validLocalExecutionRetirement(retirement)
+      || Object.keys(binding).some(key => binding[key] !== original?.[key])) {
+      throw new Error("local execution retirement identity changed");
+    }
+    // This snapshot hint still requires exact full-key lifecycle-store
+    // readback; neither runId alone nor the serialized proof grants release.
+    return structuredClone(original);
+  }
   return localExecutionIdentity(run) ?? {
     runId: run.id, provider: run.provider,
     threadId: run.threadId ?? null, turnId: run.turnId ?? null,

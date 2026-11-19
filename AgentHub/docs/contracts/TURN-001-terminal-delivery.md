@@ -78,6 +78,10 @@ terminal.
   explicitly on disposition persistence failure rather than overwriting saved
   state with empty defaults. Historical later-system-boot dispositions retain
   their existing interpretation.
+  The saved local disposition preserves its full original custody identity across
+  late acceptance telemetry and subsequent snapshots; mutable provider acceptance
+  times do not replace it. All run/provider/Thread/turn/command/Stream/start bindings
+  still match and the canonical lifecycle store verifies the complete original key.
 - Retained old records survive subsequent snapshots/cold starts and cannot
   reacquire the active registry index. Late exact provider events may contribute
   genuine terminal evidence through the existing terminal owner; they cannot

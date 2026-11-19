@@ -25,6 +25,10 @@ remain retained. Historical boot dispositions retain their original validator.
 Failed disposition persistence fails startup explicitly without rewriting the
 snapshot as empty defaults. A current-process run has no restored provenance;
 changed identities and current registry replacements cannot use old custody.
+Late provider acceptance telemetry retains the full original local-custody key
+in that existing disposition. Snapshot restoration binds its run/provider/Thread/
+turn/command/Stream/start fields and verifies the complete key against the canonical
+lifecycle row; changing telemetry dates does not replace or weaken that key.
 
 No provider lookup, resume, interrupt, old prompt launch, native process stop or
 fabricated provider terminal is needed for this local transition. Independently
