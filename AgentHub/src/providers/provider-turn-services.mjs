@@ -1,6 +1,7 @@
 import { unlink } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { buildCodexApplicationContext, buildCodexCollaborationMode } from "./codex/codex-settings.mjs";
+import { assertCodexModelAvailable } from "../domain/agent-runtime-settings.mjs";
 import {
   activeTurnMissing,
   interruptCodexTurnWithRecovery,
@@ -166,6 +167,7 @@ export class CodexTurnService {
     run.mcpCalls = [];
     run.toolMetricsKnown = true;
     try {
+      assertCodexModelAvailable(run.modelId);
       const namedTitle = await d.ensureThreadNamed?.({ provider: "codex", threadId: run.threadId });
       if (namedTitle) run.taskTitle = namedTitle;
       const developerInstructions = await d.developerInstructions({
@@ -205,7 +207,6 @@ export class CodexTurnService {
           ...params,
           ...codexThreadSandboxSettings(d.sandboxMode()),
         }),
-        rollback: (params) => d.sendRpc("thread/rollback", params),
       });
       const turnId = String(result?.turn?.id ?? result?.turnId ?? "").trim();
       if (!turnId) throw turnNotMaterializedError("");
@@ -318,6 +319,7 @@ export class CodexTurnService {
         error = unconfirmedTurnStartError(error);
       }
       await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
+      if (!ambiguousTurnStart(error)) rememberProviderRunTerminalStatus(run, "failed");
       await d.finishProgress(run, `Ошибка запуска: ${error.message}`);
       await d.completeRun(run);
       throw error;
@@ -325,6 +327,7 @@ export class CodexTurnService {
   }
 
   async steer({ run, target, input, clientUserMessageId }) {
+    assertCodexModelAvailable(run?.modelId ?? target?.modelId ?? target?.model);
     let turnId = await this.#registeredTurnId(target, run) ?? await this.#exactTurnId(target);
     if (!turnId) throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди");
     let request = {
@@ -364,10 +367,6 @@ export class CodexTurnService {
     return steerCodexTurnWithRecovery({
       threadId: target.threadId,
       steer: () => this.#d.sendRpc("turn/steer", request),
-      resume: ({ threadId }) => this.#d.sendRpc("thread/resume", {
-        threadId,
-        ...codexThreadSandboxSettings(this.#d.sandboxMode()),
-      }),
     });
   }
 
@@ -387,10 +386,6 @@ export class CodexTurnService {
       threadId: run.threadId,
       turnId: run.turnId,
       interrupt: (params) => this.#d.sendRpc("turn/interrupt", params),
-      resume: ({ threadId }) => this.#d.sendRpc("thread/resume", {
-        threadId,
-        ...codexThreadSandboxSettings(this.#d.sandboxMode()),
-      }),
     });
   }
 
@@ -443,37 +438,25 @@ export class ProviderCancellationService {
 
   recoverCodex(run) {
     if (this.#recoveryAttempts.has(run)) return this.#recoveryAttempts.get(run);
-    const identity = { threadId: run.threadId, turnId: run.turnId };
+    const identity = { id: run.id, provider: run.provider, clientUserMessageId: run.clientUserMessageId,
+      threadId: run.threadId, turnId: run.turnId };
     const current = () => this.#d.runForTask(run) === run
-      && run.threadId === identity.threadId && run.turnId === identity.turnId;
-    let attempted = false;
+      && Object.keys(identity).every(key => run[key] === identity[key]);
     const pending = (async () => {
       if (run.observer || !identity.turnId || !current()) return false;
       try {
         const activity = await this.#recoveryStep(run, "recovery-activity-before",
           () => this.#d.taskExternalActivity(run, { forceFresh: true }));
         if (activity.state !== "inactive" || !current()) return false;
-        try {
-          attempted = true;
-          await this.#recoveryStep(run, "recovery-interrupt", () => this.#d.interruptCodex(run));
-          // An accepted interrupt still needs its exact terminal event.
-          return false;
-        } catch (error) {
-          if (!activeTurnMissing(error) || !current()) return false;
-          // A definite rejection is a non-effect. A later observation may retry
-          // the unchanged original if its snapshot/persistence is unavailable.
-          attempted = false;
-        }
+        // Settlement is read-only until the canonical terminal commit. Never
+        // resume, interrupt or replay an old turn to establish that it ended.
         return await this.#reconcileInactiveCodexRun(run, { identity });
       } catch (error) {
         this.#d.logError?.(`Cannot recover inactive Codex task ${identity.threadId}:`, error.message);
         return false;
       }
     })().finally(() => {
-      // UNKNOWN/live prechecks must not cache a settled false forever. Retain
-      // an accepted/ambiguous interrupt fence: ACK is not terminal, and polling
-      // cannot repeat that external effect.
-      if (!attempted && this.#recoveryAttempts.get(run) === pending) this.#recoveryAttempts.delete(run);
+      if (this.#recoveryAttempts.get(run) === pending) this.#recoveryAttempts.delete(run);
     });
     this.#recoveryAttempts.set(run, pending);
     return pending;
@@ -543,7 +526,7 @@ export class ProviderCancellationService {
   async #reconcileInactiveCodexRun(run, { identity = null } = {}) {
     const d = this.#d;
     const current = () => d.runForTask(run) === run && (!identity
-      || (run.threadId === identity.threadId && run.turnId === identity.turnId));
+      || Object.keys(identity).every(key => run[key] === identity[key]));
     if (identity && !current()) return false;
     if (d.runForTask(run) !== run) return true;
     if (["finishing", "completed"].includes(run.status)) {

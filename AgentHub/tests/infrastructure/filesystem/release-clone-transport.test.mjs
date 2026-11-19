@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 
 const execute = promisify(execFile);
 const git = async (cwd, ...args) => String((await execute("git", args, { cwd, windowsHide: true })).stdout).trim();
@@ -37,7 +37,7 @@ test("ordinary release clone preserves source hooks and clone protection through
   // The unchanged Git executable refuses a direct local clone. Do not turn
   // protection off to make the product path pass this regression.
   await assert.rejects(git(root, "clone", "--no-local", "--no-checkout", primary, path.join(root, "direct")), /core\.hooksPath/u);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data"),
+  const service = new TaskIntegrationGitService({ dataDir: path.join(root, "data"),
     environment: { ...process.env, LOCALAPPDATA: root, XDG_STATE_HOME: root } });
   const input = { projectRoot: primary, planRevision: "fixture", workspaceId: "fixture", approvedBaseCommit: base,
     frozenTasks: [{ taskId: "selected", taskRevision: 1, baseCommit: base, resultCommit }] };

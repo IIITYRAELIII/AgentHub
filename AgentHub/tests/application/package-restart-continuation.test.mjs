@@ -12,6 +12,7 @@ import { inspectRuntimeBackupScope } from "../../src/infrastructure/persistence/
 import { withInterprocessLocks } from "../../src/infrastructure/process/interprocess-lock.mjs";
 import { prepareWindowsLockDirectoryPublisher } from "../../src/infrastructure/process/windows-lock-directory-publication.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
+import { assertOldPackageCurrent } from "../../src/infrastructure/filesystem/runtime-package-current.mjs";
 import { RestartRequestService } from "../../src/application/restart-request-service.mjs";
 import { packageBindingDigest, packageDigest, packageDirectory, packageFile } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
 
@@ -50,6 +51,7 @@ async function fixture(t, mutate = () => {}, options = {}) {
   const prior = store.create(row);
   let prepared = envelope(await capture("fresh")), request = null, preparations = 0, saves = 0, schedules = 0;
   const service = new RestartRequestService({ operationStore: store, currentTarget: () => ({}),
+    assertOldPackageCurrent,
     preparePackage: async () => { preparations++; return structuredClone(prepared); },
     getRequest: () => request, setRequest: value => { request = value; },
     blockingWorkCount: () => 1, currentChatId: () => null, updateOffset: () => 17,
@@ -263,4 +265,12 @@ test("reviewer direct restart wiring pre-stop invocation must drain before same-
       /has not drained/u);
     assert.deepEqual(f.store.getReadonly(f.input.operationId),failed);
   } finally {finish.resolve(); await active;}
+});
+
+
+test("package continuation requires its explicit current verification port before preparing or admitting", async t => {
+  const f = await fixture(t, () => {}, { assertOldPackageCurrent: undefined });
+  await assert.rejects(f.service.resumePackage(f.resume), /current verification ports are required/u);
+  assert.deepEqual(f.counts, { preparations: 0, saves: 0, schedules: 0 });
+  assert.deepEqual(f.store.getReadonly(f.input.operationId), f.prior);
 });

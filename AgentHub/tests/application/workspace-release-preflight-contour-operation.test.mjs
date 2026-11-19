@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
+import { TaskIntegrationService } from "../../src/application/task-integration-service.mjs";
 
 function fixture() {
   const root = path.resolve("fixture-repository");
@@ -16,7 +16,7 @@ function fixture() {
     reads: 0,
   };
   const forbidden = () => assert.fail("preflight must not prepare dev, compose PreRelease or access the rolling contour");
-  const service = new WorkspaceReleasePreflightService({
+  const service = new TaskIntegrationService({
     releasePlanner: { plan: async () => state.plan },
     taskGitWorkspaces: { assertExplicitUpstreamAdoption: async () => {},
       releaseIntegrationEvidence: forbidden, prepareDev: forbidden, verifyReleaseResultsInDev: forbidden },

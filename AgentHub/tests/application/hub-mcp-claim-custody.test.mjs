@@ -160,12 +160,16 @@ for (const boundary of ["before-plan", "before-fence", "after-receipt"]) {
     f.retire();
     if (boundary === "before-fence") await assert.rejects(f.hub.call("hub_task_operation_reconcile", f.fence(plan)), /crash/);
     await f.hub.call("hub_task_operation_reconcile", f.fence(plan));
+    let committed;
     if (boundary === "after-receipt") {
       const complete = f.rawCatalog.completeMcpOperation.bind(f.rawCatalog);
       f.rawCatalog.completeMcpOperation = (...args) => { const result = complete(...args); if (fault) { fault = false; throw new Error("lost reply after receipt commit"); } return result; };
-      await assert.rejects(f.hub.call("hub_task_claim", f.consume), /effect completed/);
+      committed = await f.hub.call("hub_task_claim", f.consume);
+      assert.equal(f.catalog.mcpOperation(f.consume.request_id).status, "succeeded");
+      assert.equal(fault, false, "the controlled exception occurred after the terminal commit");
     }
     const result = await f.hub.call("hub_task_claim", f.consume);
+    if (committed) assert.deepEqual(result, committed, "same-ID replay reads the exact committed result");
     assert.equal(result.revision, f.prior.revision + 1);
     assert.equal(result.streamId, f.successor.id); assert.equal(f.prepares(), 0);
     assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);

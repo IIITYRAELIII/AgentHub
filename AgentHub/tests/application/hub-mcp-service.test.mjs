@@ -4,12 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import test from "node:test";
-import { createHash } from "node:crypto";
+
 import { DatabaseSync } from "node:sqlite";
-import { createReleaseOperation } from "../../src/domain/release-operation.mjs";
-import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
-import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
-import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
+
+
+
+
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { measureTaskOperation, withTaskOperationTiming } from "../../src/infrastructure/process/task-operation-timing.mjs";
@@ -17,7 +17,7 @@ import { TaskIntegrationConflictError, TaskIntegrationRejectedError, TaskAwaitIn
 import { ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../../src/domain/task-board-task.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
-import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+
 import { TASK_TITLE_MAX_LENGTH, TaskDependencyPendingError } from "../../src/domain/task-board-task.mjs";
 import { incomingLedgerRecord } from "../../src/application/work-log-usage-projection.mjs";
 import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
@@ -293,7 +293,7 @@ test("release notifications persist creation, intake and provider dispatch under
   } finally { await traceStore.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("release notifications retain exact pending steer through reconnect and refuse a completed or rotated target", async t => {
+test("release notifications retain one message through reconnect and reach the current turn or ordinary idle send", async t => {
   for (const rotated of [false, true]) {
     const f = await releaseDeliveryFixture(t);
     const ack = await f.deliver();
@@ -301,10 +301,15 @@ test("release notifications retain exact pending steer through reconnect and ref
     f.reopen();
     f.setRun(rotated ? { ...f.active, id: "later-run", threadId: "later-thread", turnId: "later-turn" } : null);
     await f.controller.process(ack.id);
-    assert.equal(f.providerCalls.length, 0);
-    assert.equal(f.store.pending.get(ack.id).lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
-    assert.equal(f.store.pending.get(ack.id).clientUserMessageId, ack.clientUserMessageId);
-    assert.equal(f.store.pending.get(ack.id).steerTargetTurnId, "event-turn");
+    assert.equal(f.providerCalls.length, 1);
+    assert.equal(f.providerCalls[0].id, ack.clientUserMessageId);
+    assert.equal(f.providerCalls[0].method, rotated ? "steerTurn" : "startTurn");
+    assert.equal(f.ledger().get(ack.clientUserMessageId).result.turnId, rotated ? "later-turn" : "idle-turn");
+    assert.equal(f.store.size, 0);
+    await f.deliver();
+    f.reopen();
+    await f.controller.process(ack.id);
+    assert.equal(f.providerCalls.length, 1, "a reconnect/repeated event keeps the original delivery, not another send");
   }
 });
 
@@ -388,8 +393,8 @@ function claimOnlyTaskGit(overrides = {}) {
   return service;
 }
 
-import { readPreparationSourceClosure, ReleasePreparationRejectedError } from "../../src/application/release-preparation-admission.mjs";
-import { preparationEnvelope } from "../helpers/release-preparation-envelope.mjs";
+
+
 
 async function fixture(context, {
   releaseWorkflowEnabled = false,
@@ -947,136 +952,11 @@ test("release reference MCP preserves archived ownership and requires exact RM W
   assert.equal(props.release_reference.additionalProperties, false);
 });
 
-async function preparationFixture(t) {
-  let ledger;
-  const setup = await fixture(t, { releaseWorkflowEnabled: true,
-    beforeRemoveDirectory: async () => ledger?.close(),
-  });
-  ledger = new WorkspaceCatalogStore({ databaseFile: path.join(setup.projectRoot, "preparation.sqlite") });
-  await ledger.load();
-  ledger.createWorkspace({ id: "workspace-1", name: "Preparation fixture" });
-  ledger.createStream({ id: "stream-1", workspaceId: "workspace-1" });
-  // Exercise the actual receipt/checkpoint CAS instead of maintaining a second
-  // preparation state machine in the general-purpose catalog double.
-  for (const method of ["beginMcpOperation", "completeMcpOperation", "failMcpOperation",
-    "markMcpOperationUnknown", "mcpOperation", "checkpointMcpPreparation", "settleMcpPreparationFailure"]) {
-    setup.workspaceCatalog[method] = ledger[method].bind(ledger);
-  }
-  setup.operations = {
-    get: ledger.mcpOperation.bind(ledger),
-    get size() { return ledger.mcpOperations("workspace-1").length; },
-  };
-  const envelope = preparationEnvelope(setup.projectRoot);
-  envelope.sourceClosureHash = (await readPreparationSourceClosure()).hash;
-  setup.tasks.get("task-current").workflowStatus = "awaiting_implementation";
-  let calls = 0;
-  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ ownPreparation, validate, beforeCompose, commitPrepared, requestId }) => {
-    calls += 1;
-    assert.equal(setup.operations.get(requestId).status, "pending", "intake precedes composer");
-    await ownPreparation();
-    await validate();
-    await beforeCompose();
-    return commitPrepared({ planRevision: envelope.planRevision, taskIds: ["task-current"],
-      releaseCandidates: [{ repositoryRoot: setup.projectRoot, preReleaseHead: "8".repeat(40),
-        tree: envelope.repositories[0].approvedTree, baseCommit: envelope.repositories[0].approvedBaseCommit,
-        manifestHash: "9".repeat(64), manifest: { preflightRequestId: requestId } }] });
-  };
-  return { ...setup, envelope, calls: () => calls,
-    args: { context_token: setup.token, request_id: "prepare-original", preparation: envelope } };
-}
 
-test("preparation-only genuine RM admission persists exact terminal and duplicate original does not compose again", async (t) => {
-  const setup = await preparationFixture(t);
-  const before = structuredClone(setup.tasks.get("task-current"));
-  const first = await setup.service.call("hub_release_prepare", setup.args);
-  assert.equal(first.requestId, "prepare-original");
-  assert.equal(first.kind, "preparation-only");
-  assert.deepEqual(await setup.service.call("hub_release_prepare", setup.args), first);
-  assert.equal(setup.calls(), 1);
-  assert.deepEqual(setup.tasks.get("task-current"), before);
-  assert.equal(setup.releaseCalls.length, 0);
-  const receipt = await setup.service.call("hub_release_prepare_get", { context_token: setup.token,
-    preparation_request_id: first.requestId, expected_arguments_hash: first.argumentsHash });
-  assert.equal(receipt.status, "succeeded");
-  assert.deepEqual(receipt.result, first);
-  await assert.rejects(setup.service.call("hub_release_prepare", { ...setup.args,
-    preparation: { ...setup.envelope, planRevision: "changed" } }), /another operation/);
-  assert.equal(setup.calls(), 1);
-});
 
-test("preparation-only non-RM and forged caller refuse before receipt or effects", async (t) => {
-  const setup = await preparationFixture(t);
-  const nonRM = setup.service.contextToken({ provider: "codex", threadId: "thread-2" });
-  await assert.rejects(setup.service.call("hub_release_prepare", { ...setup.args, context_token: nonRM }), /Release Manager/);
-  await assert.rejects(setup.service.call("hub_release_prepare", { ...setup.args, context_token: "forged" }));
-  assert.equal(setup.operations.size, 0);
-  assert.equal(setup.calls(), 0);
-});
 
-for (const stale of ["row", "source"]) test(`preparation-only stale ${stale} pins refuse without composer`, async (t) => {
-  const setup = await preparationFixture(t);
-  if (stale === "row") setup.tasks.get("task-current").revision += 1;
-  else setup.envelope.sourceClosureHash = "0".repeat(64);
-  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), { code: "RELEASE_PREPARATION_REJECTED" });
-  assert.equal(setup.operations.get("prepare-original").status, "failed");
-  assert.equal(setup.calls(), 0);
-});
 
-test("preparation-only response loss after durable terminal reads original without current checkpoint inference", async (t) => {
-  const setup = await preparationFixture(t);
-  const compose = setup.service.releasePreflight.prepareCurrentAwaitSet;
-  setup.service.releasePreflight.prepareCurrentAwaitSet = async (request) => {
-    await compose(request);
-    throw new Error("transport response lost");
-  };
-  const result = await setup.service.call("hub_release_prepare", setup.args);
-  assert.equal(setup.operations.get("prepare-original").status, "succeeded");
-  assert.deepEqual(await setup.service.call("hub_release_prepare", setup.args), result);
-  assert.equal(setup.calls(), 1);
-  await assert.rejects(setup.service.call("hub_release_prepare_get", { context_token: setup.token,
-    preparation_request_id: "prepare-original", expected_arguments_hash: "0".repeat(64) }), /identity/);
-});
 
-test("preparation-only ambiguous terminal write preserves UNKNOWN and exact readback cannot replay", async (t) => {
-  const setup = await preparationFixture(t);
-  setup.workspaceCatalog.completeMcpOperation = () => { throw new Error("durable write outcome unavailable"); };
-  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
-  const original = setup.operations.get("prepare-original");
-  assert.equal(original.status, "unknown");
-  const receipt = await setup.service.call("hub_release_prepare_get", { context_token: setup.token,
-    preparation_request_id: original.requestId, expected_arguments_hash: original.argumentsHash });
-  assert.equal(receipt.status, "unknown");
-  assert.equal(receipt.result, null);
-  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), /unknown/);
-  assert.equal(setup.calls(), 1);
-});
-
-test("preparation-only original tracing survives rejection without arguments or secrets", async (t) => {
-  const setup = await preparationFixture(t);
-  const spans = [];
-  setup.service.taskGitWorkspaces.withOperationTrace = (identity, operation) => (
-    withTaskOperationTiming({ ...identity, record: (span) => spans.push(span) }, operation)
-  );
-  setup.envelope.sourceClosureHash = "0".repeat(64);
-  await assert.rejects(setup.service.call("hub_release_prepare", setup.args));
-  assert.ok(spans.some((span) => span.stage === "mcp:admission" && span.phase === "end"));
-  assert.ok(spans.some((span) => span.stage === "preparation:pins" && span.outcome === "error"));
-  assert.ok(spans.some((span) => span.stage === "trace-summary"));
-  assert.ok(spans.every((span) => span.operationId === "prepare-original"));
-  assert.equal(JSON.stringify(spans).includes(setup.token), false);
-  assert.equal(JSON.stringify(spans).includes("sourceClosureHash"), false);
-});
-
-test("preparation-only final row CAS refusal is definitive before terminal receipt", async (t) => {
-  const setup = await preparationFixture(t);
-  const original = setup.workspaceCatalog.completeMcpOperation;
-  setup.workspaceCatalog.completeMcpOperation = (...args) => {
-    setup.tasks.get("task-current").revision += 1;
-    return original(...args);
-  };
-  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), ReleasePreparationRejectedError);
-  assert.equal(setup.operations.get("prepare-original").status, "failed");
-});
 
 test("MCP admission timing injection retains one context and original receipt", async t => {
   const { service, token, operations } = await fixture(t, { measureOperation: measureTaskOperation });
@@ -2161,243 +2041,22 @@ test("HubMcpService sends attributed messages to another current-Workspace Strea
   assert.equal(result.source.model, "Sol");
 });
 
-test("HubMcpService exposes cursor events and one durable release operation owner", async (context) => {
-  const calls = [];
-  const snapshots = new Map();
-  const releaseOperations = {
-    start: ({ resolveAuthorization, ...input }) => {
-      input.authorization = resolveAuthorization(null);
-      calls.push(["start", input]);
-      const operationId = "release-operation-1";
-      snapshots.set(operationId, { operation: { operationId, workspaceId: input.workspaceId, state: "compose", revision: 1 } });
-      return { accepted: true, created: true, operationId, state: "compose", revision: 1 };
-    },
-    get: (operationId) => snapshots.get(operationId),
-    continue: (operationId) => {
-      calls.push(["continue", operationId]);
-      return { accepted: true, operationId, state: "publish", revision: 2 };
-    },
-    setEventDelivery() {},
-  };
-  const { service, token, taskBoard, tasks } = await fixture(context, { releaseOperations });
-  tasks.get("task-current").workflowStatus = "awaiting_implementation";
-  taskBoard.releaseTasks = () => [tasks.get("task-current")];
-  const events = await service.call("hub_events_list", { context_token: token, after_sequence: 4 });
-  assert.equal(events.events[0].sequence, 5);
-  assert.equal(events.nextSequence, 5);
-  const ack = await service.call("hub_release_run", {
-    context_token: token,
-    request_id: "release-1",
-    task_ids: ["task-current"],
-    validation_mode: "full",
-    approved_targets: [
-      { targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" },
-      { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: "D:/repo" },
-    ],
-  });
-  assert.equal(ack.operationId, "release-operation-1");
-  assert.equal(calls[0][1].authorization.validationMode, "full");
-  assert.equal(calls[0][1].authorization.runtimeInstallation, "public-package-v1");
-  assert.deepEqual(calls[0][1].authorization.taskIds, ["task-current"]);
-  assert.equal(Object.hasOwn(calls[0][1].authorization, "releaseMetadata"), false);
-  const snapshot = await service.call("hub_release_get", {
-    context_token: token, operation_id: ack.operationId,
-  });
-  assert.equal(snapshot.operation.state, "compose");
-  const continued = await service.call("hub_release_continue", {
-    context_token: token, request_id: "release-continue-1", operation_id: ack.operationId,
-  });
-  assert.equal(continued.state, "publish");
-  assert.deepEqual(calls[1], ["continue", ack.operationId]);
-  const tools = service.tools().map((tool) => tool.name);
-  assert.equal(tools.includes("hub_release_preflight"), false);
-  assert.equal(tools.includes("hub_release_complete"), false);
-});
 
-test("HubMcpService forwards original-addressed reviewed-main recovery through the same authenticated continuation", async context => {
-  const calls = [];
-  const { service, token } = await fixture(context, { releaseOperations: {
-    get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "failed", revision: 699 } }),
-    continue: async (...args) => {
-      calls.push([args[0], Object.fromEntries(Object.entries(args[1]).filter(([, value]) => value !== undefined))]);
-      return { accepted: true, operationId: args[0] };
-    },
-    setEventDelivery() {},
-  } });
-  const reviewedMain = { expectedRevision: 699, approvedRepositories: [{ projectRoot: "D:/repo",
-    approvedLocalMainCommit: "a".repeat(40), approvedOriginMainCommit: "a".repeat(40) }] };
-  const input = { context_token: token, request_id: "original-main-rebind", operation_id: "original", reviewed_main: reviewedMain };
-  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
-  assert.deepEqual(calls, [["original", { requestId: input.request_id, reviewedMain }]]);
-});
 
-test("public first compose continuation advertises generation zero and keeps its failed receipt", async context => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "release-first-compose-public-"));
-  context.after(() => rm(root, { recursive: true, force: true }));
-  const store = new ReleaseOperationStore({ dataDir: root });
-  const scheduled = [];
-  let recoveries = 0;
-  const forbidden = async () => assert.fail("changed membership must wait before validation or publication");
-  const operations = new ReleaseOperationService({ store, schedule: callback => scheduled.push(callback),
-    processAlive: pid => pid === process.pid,
-    compose: async () => { throw new Error("first frozen readback failed"); },
-    inspectFirstCompose: async () => [{ repositoryRoot: "D:/repo", commit: "frozen", tree: "tree",
-      manifestHash: "manifest", releaseVersion: "2.1.5", runtimeReleaseVersion: "2.1.5+build.29901174" }],
-    recoverFirstCompose: async ({ validateBeforeCommit }) => {
-      await validateBeforeCommit(); recoveries++;
-      return { repositoryBases: [{ repositoryRoot: "D:/repo", baseCommit: "base" }],
-        selectedResults: [{ taskId: "task-current", resultCommit: "result", acceptanceRevision: 1 }],
-        candidates: [{ repositoryRoot: "D:/repo", releaseRoot: "D:/frozen", commit: "frozen", tree: "tree", manifestHash: "manifest" }] };
-    },
-    reservePublication: ({ recompose }) => recompose(),
-    validate: forbidden, publishTarget: forbidden, readTarget: forbidden, finalize: forbidden,
-  });
-  const { service, token, taskBoard, tasks } = await fixture(context, { releaseOperations: operations });
-  tasks.get("task-current").workflowStatus = "awaiting_implementation";
-  taskBoard.releaseTasks = () => [tasks.get("task-current")];
-  const schema = service.tools().find(tool => tool.name === "hub_release_continue").inputSchema;
-  assert.equal(schema.properties.expected_generation.minimum, 0);
-  const ack = await service.call("hub_release_run", { context_token: token, request_id: "public-first-compose",
-    task_ids: ["task-current"], validation_mode: "full",
-    approved_targets: [
-      { targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" },
-      { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: "D:/repo" },
-    ] });
-  scheduled.shift()();
-  const failed = await operations.drain(ack.operationId);
-  assert.equal(failed.operation.state, "failed");
-  const first = structuredClone(failed.receipts[0]);
-  const args = { context_token: token, operation_id: ack.operationId, request_id: "public-first-continue",
-    expected_revision: failed.operation.revision, expected_generation: 0 };
-  assert.equal((await service.call("hub_release_continue", args)).accepted, true);
-  assert.equal((await service.call("hub_release_continue", args)).accepted, true);
-  assert.equal(scheduled.length, 1, "same request does not admit another worker");
-  scheduled.shift()();
-  const recovered = await operations.drain(ack.operationId);
-  assert.equal(recoveries, 1);
-  assert.equal(recovered.operation.currentGeneration, 1);
-  assert.equal(recovered.operation.waitReason.code, "release_inputs_changed");
-  assert.deepEqual(recovered.receipts.find(receipt => receipt.attempt === 1), first);
-  assert.equal(recovered.receipts.find(receipt => receipt.attempt === 2).status, "applied");
-  const ordinary = await service.call("hub_release_continue", { context_token: token,
-    operation_id: ack.operationId, request_id: "public-first-unamended" });
-  assert.equal(ordinary.reason, "test-selection-required");
-  assert.equal(scheduled.length, 0);
-});
 
-test("manual public version reaches the same durable release admission and survives original readback", async context => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "release-manual-version-"));
-  context.after(() => rm(root, { recursive: true, force: true }));
-  const store = new ReleaseOperationStore({ dataDir: root });
-  const forbidden = async () => assert.fail("admission must not run publication inline");
-  const operations = new ReleaseOperationService({ store, schedule: () => {}, processAlive: () => true,
-    compose: forbidden, validate: forbidden, publishTarget: forbidden, readTarget: forbidden, finalize: forbidden });
-  const { service, token, taskBoard, tasks } = await fixture(context, { releaseOperations: operations });
-  tasks.get("task-current").workflowStatus = "awaiting_implementation";
-  taskBoard.releaseTasks = () => [tasks.get("task-current")];
-  const schema = service.tools().find(tool => tool.name === "hub_release_run").inputSchema;
-  assert.equal(schema.required.includes("release_version"), false);
-  assert.equal(new RegExp(schema.properties.release_version.pattern, "u").test("3.7.9"), true);
-  const args = { context_token: token, request_id: "manual-version-original", task_ids: ["task-current"],
-    validation_mode: "full", release_version: "3.7.9",
-    approved_targets: [
-      { targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" },
-      { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: "D:/repo" },
-    ] };
-  const ack = await service.call("hub_release_run", args);
-  const original = store.get(ack.operationId);
-  assert.equal(original.authorization.releaseVersion, "3.7.9");
-  assert.equal((await service.call("hub_release_run", args)).operationId, ack.operationId);
-  await assert.rejects(service.call("hub_release_run", { ...args, release_version: "4.8.10" }), /request_id was already used for another operation/u);
-  const reopened = new ReleaseOperationStore({ dataDir: root });
-  assert.deepEqual(reopened.get(ack.operationId).authorization, original.authorization);
-  const readback = await service.call("hub_release_get", { context_token: token, operation_id: ack.operationId });
-  assert.equal(readback.operation.authorization.releaseVersion, "3.7.9");
-  assert.equal(readback.operation.currentGeneration, 0);
-});
 
-test("HubMcpService carries exact release metadata through the domain and byte-checking composition owner", async (context) => {
-  let admitted;
-  const { service, token, projectRoot, taskBoard, tasks } = await fixture(context, { releaseOperations: {
-    start: ({ resolveAuthorization, ...input }) => {
-      admitted = createReleaseOperation({ ...input, authorization: resolveAuthorization(null), operationId: input.requestId,
-        runnerVersion: "test", createdAt: "2026-10-18T00:00:00.000Z" });
-      return { accepted: true, operationId: admitted.operationId };
-    },
-    get() {}, continue() {}, setEventDelivery() {},
-  } });
-  tasks.get("task-current").workflowStatus = "awaiting_implementation";
-  taskBoard.releaseTasks = () => [tasks.get("task-current")];
-  const bytes = Buffer.from("release notes\r\n", "utf8");
-  const sourcePath = path.join(projectRoot, "CHANGELOG.md");
-  await writeFile(sourcePath, bytes);
-  const releaseMetadata = {
-    sourcePath, byteLength: bytes.length,
-    rawSha256: createHash("sha256").update(bytes).digest("hex"),
-    canonicalSha256: createHash("sha256").update("release notes\n").digest("hex"),
-  };
-  const args = {
-    context_token: token, request_id: "release-metadata", task_ids: ["task-current"],
-    validation_mode: "full", approved_targets: [
-      { targetId: "production", kind: "agent-hub-publication", repositoryRoot: projectRoot },
-      { targetId: "agent-hub-github-release", kind: "agent-hub-publication", environment: "github-release", repositoryRoot: projectRoot },
-    ],
-    release_metadata: releaseMetadata,
-  };
-  const schema = service.tools().find((item) => item.name === "hub_release_run").inputSchema;
-  await service.call("hub_release_run", args);
-  assert.deepEqual(admitted.authorization.releaseMetadata, releaseMetadata);
-  assert.deepEqual(schema.properties.release_metadata.required,
-    ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"]);
-  assert.equal(schema.required.includes("release_metadata"), false);
-  assert.equal(admitted.streamId, "stream-1");
-  assert.equal(admitted.threadId, "thread-1");
-  let preparations = 0;
-  const adapter = new WorkspaceReleaseOperationAdapter({
-    releasePreflight: {
-      prepareOperationGeneration: async ({ changelogContent }) => {
-        preparations += 1;
-        assert.deepEqual(changelogContent, bytes);
-        return { releaseCandidates: [], planRevision: "plan" };
-      },
-      validateOperationGeneration() {}, operationSelection() {}, withAwaitTransition() {},
-    },
-    publication: { publish: () => assert.fail("composition cannot publish"), readback() {} },
-    finalization: { finalize: () => assert.fail("composition cannot finalize") },
-  });
-  await adapter.compose({ operation: admitted, generation: 1 });
-  await writeFile(sourcePath, Buffer.from("RELEASE notes\r\n")); // same length, different digest
-  await assert.rejects(adapter.compose({ operation: admitted, generation: 2 }), /metadata artifact identity changed/u);
-  assert.equal(preparations, 1);
-  await assert.rejects(service.call("hub_release_run", {
-    ...args, request_id: "release-malformed-metadata",
-    release_metadata: { ...releaseMetadata, rawSha256: "invalid" },
-  }), /release metadata digest is invalid/u);
-});
 
-test("HubMcpService restricts release execution to Release Manager Streams", async (context) => {
-  const { service, token, workspaceCatalog } = await fixture(context, { releaseOperations: {
-    start: () => assert.fail("unauthorized caller must not start"), get() {}, continue() {}, setEventDelivery() {},
-  } });
-  const hierarchy = workspaceCatalog.hierarchy;
-  workspaceCatalog.hierarchy = () => hierarchy().map((workspace) => ({
-    ...workspace,
-    streams: workspace.streams.map((stream) => ({
-      ...stream,
-      settings: { ...stream.settings, releaseManager: false },
-    })),
-  }));
-  await assert.rejects(() => service.call("hub_release_run", {
-    context_token: token,
-    request_id: "release-forbidden",
-    task_ids: ["task-current"], validation_mode: "full",
-    approved_targets: [{ targetId: "production", kind: "agent-hub-publication" }],
-  }), /requires a Release Manager Stream|release execution requires/u);
-});
+
+
+
+
+
+
 
 test("Release Manager reconciliation forwards one exact unknown operation and requires confirmation", async (context) => {
   const calls = [];
-  const omittedNativeArguments = { initialNativeTest: undefined, nativeResolutionReview: undefined,
+  const omittedNativeArguments = { expectedArgumentsHash: undefined, runtimeWitness: undefined,
+    initialNativeTest: undefined, nativeResolutionReview: undefined,
     selectedBundlePath: undefined, selectedBundleSha256: undefined, selectedPublishedResolution: undefined,
     selectedAbsorptionHandoff: undefined, selectedProofCommit: undefined, selectedPreviewRequestId: undefined,
     expectedSelectedPreviewHash: undefined };
@@ -2510,6 +2169,14 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
     request_id: "reconcile-command-non-releaseManager",
   }), /requires a Release Manager Stream/u);
   assert.equal(calls.length, 3);
+  const witness = { sourcePath: "D:/isolated/native-witness.json", rawSha256: "d".repeat(64) };
+  assert.deepEqual(await service.call("hub_task_operation_reconcile", {
+    ...ordinaryCasArgs, request_id: "reconcile-command-exact-witness",
+    expected_arguments_hash: "c".repeat(64), runtime_witness: witness,
+  }), { resolved: true, outcome: "succeeded" });
+  assert.deepEqual(calls[3], { ...calls[2], expectedArgumentsHash: "c".repeat(64), runtimeWitness: witness });
+  assert.equal(calls.length, 4);
+
 });
 
 test("HubMcpService binds the current turn to its dedicated Task worktree", async (context) => {
@@ -2535,7 +2202,7 @@ test("HubMcpService binds the current turn to its dedicated Task worktree", asyn
 
   const tools = service.tools();
   assert.equal(tools.some((tool) => tool.name === "hub_task_release_freeze"), false);
-  assert.equal(tools.some((tool) => tool.name === "hub_release_run"), true);
+  assert.equal(tools.some((tool) => tool.name === "hub_release_run"), false);
   assert.equal(tools.some((tool) => tool.name === "hub_release_preflight"), false);
 });
 
@@ -2577,12 +2244,20 @@ test("claim forwards an explicit user dependency exception and complete forwards
   assert.equal(result.cleanupToken, "preview");
   const schema = service.tools().find((tool) => tool.name === "hub_task_complete").inputSchema;
   assert.deepEqual(schema.properties.absorption_mode.enum, ["published_duplicate"]);
-  assert.deepEqual(schema.properties.completion_mode.enum, ["published_release_service", "published_delivery", "operational"]);
+  assert.deepEqual(schema.properties.completion_mode.enum, ["published_release_service", "published_delivery", "operational", "manual_delivery"]);
   await service.call("hub_task_complete", { context_token: token,
     request_id: "release-service-preview", task_id: "task-current",
     completion_mode: "published_release_service" });
   assert.equal(received.completionMode, "published_release_service");
+  const manual = { revision: "a".repeat(40), releaseId: "manual", manifestSha256: "b".repeat(64) };
+  await service.call("hub_task_complete", { context_token: token, request_id: "manual-preview",
+    task_id: "task-current", completion_mode: "manual_delivery", manual_delivery: manual });
+  assert.deepEqual(received.manualDelivery, manual);
+  assert.equal(received.completionMode, "manual_delivery");
   const otherToken = service.contextToken({ provider: "codex", threadId: "thread-2" });
+  await assert.rejects(service.call("hub_task_complete", { context_token: otherToken,
+    request_id: "manual-non-manager", task_id: "task-current", completion_mode: "manual_delivery",
+    manual_delivery: manual }), /requires a Release Manager Stream/u);
   await assert.rejects(service.call("hub_task_complete", {
     context_token: otherToken,
     request_id: "absorb-published-non-manager",
@@ -2923,9 +2598,6 @@ test("HubMcpService performs standard reads and writes across Workspace boundari
     context_token: token, request_id: "foreign-message", stream_id: "stream-3",
     text: "Cross Workspace message", mode: "steer", confirm_send: true,
   });
-  const plan = await service.call("hub_release_plan_get", {
-    context_token: token, workspace_id: "workspace-2",
-  });
   const events = await service.call("hub_events_list", {
     context_token: token, workspace_id: "workspace-2", after_sequence: 2,
   });
@@ -2938,8 +2610,6 @@ test("HubMcpService performs standard reads and writes across Workspace boundari
   assert.equal(taskLaunchCalls.at(-1).workspaceId, "workspace-2");
   assert.equal(sent.target.workspaceId, "workspace-2");
   assert.equal(sentMessages.at(-1).params.streamId, "stream-3");
-  assert.equal(plan.workspaceId, "workspace-2");
-  assert.equal(releasePlanWorkspaceIds.at(-1), "workspace-2");
   assert.equal(events.workspaceId, "workspace-2");
   assert.equal(operations.get("foreign-workspace-rules").workspaceId, "workspace-1");
   assert.equal(operations.get("foreign-workspace-rules").streamId, "stream-1");
@@ -2953,26 +2623,7 @@ test("HubMcpService performs standard reads and writes across Workspace boundari
   }), /outside the selected Workspace/u);
 });
 
-test("release plan reads each dev ref once without preparing shared worktrees", async (context) => {
-  const calls = [];
-  const { service, token } = await fixture(context, {
-    taskGitWorkspacesFactory: async () => claimOnlyTaskGit({
-      readDev: async (projectRoot) => {
-        calls.push(projectRoot);
-        return { repositoryRoot: projectRoot, projectRoot: null, branch: "dev", headCommit: "a".repeat(40) };
-      },
-      prepareDev: async () => { throw new Error("read command attempted dev preparation"); },
-    }),
-  });
-  service.releasePlanner.plan = async () => ({ ready: [
-    { projectRoot: "D:/repo" }, { projectRoot: "D:/repo" },
-  ] });
-  const plan = await service.call("hub_release_plan_get", { context_token: token });
-  assert.deepEqual(calls, ["D:/repo"]);
-  assert.deepEqual(plan.devIntegration.repositories, [{
-    projectRoot: "D:/repo", branch: "dev", headCommit: "a".repeat(40), worktreeRoot: null,
-  }]);
-});
+
 
 test("hub_stream_history projects active content and deterministic lifecycle states", async (context) => {
   const { service, token, historyRecordsByThread } = await fixture(context);
@@ -3481,28 +3132,4 @@ test("HubMcpService exposes unconfirmed managed ownership as unknown and keeps t
   assert.equal(active.runs[0].activityUnknown, true);
   const streams = await service.call("hub_parallel_streams_list", { context_token: token });
   assert.equal(streams.streams.find(s => s.id === "stream-1").available, false);
-});
-
-test("HubMcpService forwards amended release notes with the same original selection/CAS and durable receipt", async context => {
-  const calls = [];
-  const { service, token } = await fixture(context, { releaseOperations: {
-    get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "waiting", revision: 699 } }),
-    continue: async (...args) => { calls.push(args); return { accepted: true, operationId: args[0] }; },
-    setEventDelivery() {},
-  } });
-  const metadata = { sourcePath: "new-consolidated-notes.md", byteLength: 42, rawSha256: "a".repeat(64), canonicalSha256: "b".repeat(64) };
-  const input = { context_token: token, request_id: "same-original-new-notes", operation_id: "original",
-    expected_revision: 699, expected_generation: 14, test_selection: { mode: "none", ids: [] },
-    task_ids: ["task-current"], release_metadata: metadata };
-  const schema = service.tools().find(item => item.name === "hub_release_continue").inputSchema;
-  assert.deepEqual(schema.properties.release_metadata.required, ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"]);
-  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
-  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
-  assert.equal(calls.length, 1, "same original MCP receipt does not schedule another continuation");
-  assert.equal(calls[0][0], "original");
-  assert.deepEqual(calls[0][1].releaseMetadata, metadata);
-  assert.deepEqual(calls[0][1].testSelection, input.test_selection);
-  assert.deepEqual(calls[0][1].taskIds, input.task_ids);
-  assert.equal(calls[0][1].expectedRevision, 699);
-  assert.equal(calls[0][1].expectedGeneration, 14);
 });

@@ -23,11 +23,12 @@ import {
 } from "../../domain/stream-message-pin.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 12;
+const TASK_SCHEMA_VERSION = 13;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "5";
 const TERMINAL_HISTORY_BACKFILL_VERSION = "4";
+const TERMINAL_USER_RECOVERY_VERSION = 2;
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -81,6 +82,18 @@ function cleanResponseAnnotations(annotations) {
 
 function cleanResponseAnnotationReferences(references) {
   return normalizedCodexResponseAnnotationReferences(references);
+}
+
+function storedResponseAnnotationReferences(value) {
+  try {
+    const parsed = JSON.parse(String(value));
+    const explicit = parsed?.version === 1 && Array.isArray(parsed.references);
+    const references = cleanResponseAnnotationReferences(explicit ? parsed.references : parsed);
+    // Old rows wrote [] for both missing and empty metadata. Keep that legacy
+    // enrichment boundary; new explicit empty pairs use the existing column's
+    // versioned JSON form, without a startup rewrite or another state owner.
+    return explicit || references.length ? references : null;
+  } catch { return null; }
 }
 
 function cleanActivities(activities) {
@@ -191,6 +204,10 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         ...(item?.userMessageAuthority === "terminal-ledger"
           ? { userMessageAuthority: "terminal-ledger" }
           : {}),
+        ...(item?.userMessageAuthority === "terminal-ledger"
+          && item?.userMessageRecoveryVersion === TERMINAL_USER_RECOVERY_VERSION
+          ? { userMessageRecoveryVersion: TERMINAL_USER_RECOVERY_VERSION }
+          : {}),
         ...(item?.userMessageSnapshotAuthority === "complete" && !messagesTruncated
           ? { userMessageSnapshotAuthority: "complete" }
           : {}),
@@ -257,7 +274,7 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
             ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
             ...(message?.time ? { time: cleanText(message.time, 80) } : {}),
             responseAnnotations: cleanResponseAnnotations(message?.responseAnnotations),
-            ...(cleanResponseAnnotationReferences(message?.responseAnnotationReferences).length
+            ...(Array.isArray(message?.responseAnnotationReferences)
               ? {
                 responseAnnotationReferences: cleanResponseAnnotationReferences(
                   message.responseAnnotationReferences,
@@ -322,6 +339,7 @@ function preserveTerminalHistory(terminals, history) {
         promptRequest: terminal.promptRequest,
         attachments: terminal.attachments,
         userMessageAuthority: "terminal-ledger",
+        userMessageRecoveryVersion: terminal.userMessageRecoveryVersion,
         messages: [
           ...(Array.isArray(terminal.messages) ? terminal.messages : [])
             .filter((message) => message?.role === "user")
@@ -381,14 +399,12 @@ function preserveDurableResponseAnnotationReferences(existingHistory, incomingHi
           String(turn?.id ?? "").trim(),
           message,
         );
-        const responseAnnotationReferences = cleanResponseAnnotationReferences(
-          message?.responseAnnotationReferences,
-        ).length
+        const responseAnnotationReferences = Array.isArray(message?.responseAnnotationReferences)
           ? message.responseAnnotationReferences
           : terminalSource?.responseAnnotationReferences;
         return {
           ...message,
-          ...(cleanResponseAnnotationReferences(responseAnnotationReferences).length
+          ...(Array.isArray(responseAnnotationReferences)
             ? { responseAnnotationReferences }
             : {}),
         };
@@ -587,19 +603,37 @@ function recoverTerminalTurnMessages(turn, terminalPayload, ledgerStatement, ide
     .map((message) => String(message?.clientUserMessageId ?? "").trim())
     .filter(Boolean);
   if (!ids.length || new Set(ids).size !== ids.length) return turn;
+  const ledgerRows = new Map(ids.map((id) => [id, ledgerStatement.get(id)]));
   if (!ids.every((clientUserMessageId) => exactLedgerTerminalBinding(
-    ledgerStatement.get(clientUserMessageId),
+    ledgerRows.get(clientUserMessageId),
     { provider, threadId, turnId, runId, clientUserMessageId },
   ))) return turn;
 
   const currentMessages = Array.isArray(turn?.messages) ? turn.messages : [];
   const currentAgents = currentMessages.filter((message) => message?.role !== "user");
+  const recoveredUsers = authoritativeUsers.map((message) => {
+    const id = String(message?.clientUserMessageId ?? "").trim();
+    if (!id) return structuredClone(message);
+    const receipt = parseJsonObject(ledgerRows.get(id)?.receipt_json);
+    const receiptResult = parseJsonObject(receipt.result);
+    const current = currentMessages.find((item) => item.role === "user"
+      && String(item.clientUserMessageId ?? "").trim() === id);
+    const rootAttachments = id === String(history.clientUserMessageId ?? "").trim()
+      ? history.messageAttachments : [];
+    let attachments = receiptResult.attachments;
+    if (!Array.isArray(attachments)) {
+      attachments = [message.attachments, current?.attachments, rootAttachments]
+        .find((value) => Array.isArray(value) && value.length) ?? [];
+    }
+    return { ...structuredClone(message), attachments: cleanAttachments(attachments) };
+  });
   return {
     ...turn,
     userMessageAuthority: "terminal-ledger",
+    userMessageRecoveryVersion: TERMINAL_USER_RECOVERY_VERSION,
     ...(String(history.promptPreview ?? "").trim() ? { prompt: history.promptPreview } : {}),
     messages: [
-      ...authoritativeUsers.map((message) => structuredClone(message)),
+      ...recoveredUsers,
       ...currentAgents.map((message) => structuredClone(message)),
     ],
   };
@@ -755,6 +789,7 @@ function configure(database) {
       activities_json TEXT NOT NULL,
       activity_groups_json TEXT NOT NULL DEFAULT '[]',
       user_message_authority TEXT NOT NULL DEFAULT '',
+      user_message_recovery_version INTEGER NOT NULL DEFAULT 0,
       user_message_snapshot_authority TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (provider, thread_id, position),
       FOREIGN KEY (provider, thread_id)
@@ -870,6 +905,9 @@ function configure(database) {
   }
   if (!turnColumns.has("user_message_authority")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_authority TEXT NOT NULL DEFAULT ''");
+  }
+  if (!turnColumns.has("user_message_recovery_version")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_recovery_version INTEGER NOT NULL DEFAULT 0");
   }
   if (!turnColumns.has("user_message_snapshot_authority")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_snapshot_authority TEXT NOT NULL DEFAULT ''");
@@ -1306,9 +1344,7 @@ export class LocalTaskSyncStore {
       const key = `${row.provider}\0${row.thread_id}\0${Number(row.turn_position)}`;
       const turnMessages = messagesByTurn.get(key) ?? [];
       const origin = parseInterstreamOrigin(row.origin_json);
-      const responseAnnotationReferences = cleanResponseAnnotationReferences(
-        parseJsonArray(row.response_annotation_references_json),
-      );
+      const responseAnnotationReferences = storedResponseAnnotationReferences(row.response_annotation_references_json);
       turnMessages.push({
         itemId: String(row.item_id ?? ""),
         ...(row.client_user_message_id
@@ -1330,7 +1366,7 @@ export class LocalTaskSyncStore {
         ...(row.phase ? { phase: String(row.phase) } : {}),
         ...(row.time ? { time: String(row.time) } : {}),
         responseAnnotations: cleanResponseAnnotations(parseJsonArray(row.response_annotations_json)),
-        ...(responseAnnotationReferences.length
+        ...(Array.isArray(responseAnnotationReferences)
           ? { responseAnnotationReferences }
           : {}),
         ...(row.response_annotation_request
@@ -1353,6 +1389,10 @@ export class LocalTaskSyncStore {
         completed: Number(row.completed) === 1,
         ...(row.user_message_authority === "terminal-ledger"
           ? { userMessageAuthority: "terminal-ledger" }
+          : {}),
+        ...(row.user_message_authority === "terminal-ledger"
+          && Number(row.user_message_recovery_version) === TERMINAL_USER_RECOVERY_VERSION
+          ? { userMessageRecoveryVersion: TERMINAL_USER_RECOVERY_VERSION }
           : {}),
         ...(row.user_message_snapshot_authority === "complete"
           ? { userMessageSnapshotAuthority: "complete" }
@@ -1621,7 +1661,8 @@ export class LocalTaskSyncStore {
             WHERE provider = ? AND thread_id = ? AND id = ?
           `).all(provider, threadId, turnId);
           if (rows.length !== 1 || Number(rows[0].completed) !== 1
-            || Number(rows[0].active) === 1 || rows[0].user_message_authority === "terminal-ledger") continue;
+            || Number(rows[0].active) === 1
+            || Number(rows[0].user_message_recovery_version) === TERMINAL_USER_RECOVERY_VERSION) continue;
           const [turn] = this.#hydrateHistoryRows(rows);
           const nextTurn = recoverTerminalTurnMessages(
             turn, terminalPayload, ledger, { provider, threadId, turnId },
@@ -1745,8 +1786,8 @@ export class LocalTaskSyncStore {
         completed, started_at, completed_at, prompt_author, prompt_origin_json,
         prompt_annotations_json, prompt_request,
         attachments_json, activities_json, activity_groups_json, user_message_authority,
-        user_message_snapshot_authority
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_message_snapshot_authority, user_message_recovery_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
@@ -1781,6 +1822,7 @@ export class LocalTaskSyncStore {
         JSON.stringify(turn.activityGroups ?? []),
         turn.userMessageAuthority ?? "",
         turn.userMessageSnapshotAuthority ?? "",
+        turn.userMessageRecoveryVersion ?? 0,
       );
       turn.messages.forEach((message, messagePosition) => {
         insertMessage.run(
@@ -1802,7 +1844,8 @@ export class LocalTaskSyncStore {
           JSON.stringify(message.origin ?? {}),
           JSON.stringify(message.responseAnnotations),
           message.responseAnnotationRequest ?? "",
-          JSON.stringify(message.responseAnnotationReferences ?? []),
+          JSON.stringify(Array.isArray(message.responseAnnotationReferences) && !message.responseAnnotationReferences.length
+            ? { version: 1, references: [] } : message.responseAnnotationReferences ?? []),
           JSON.stringify(message.attachments),
           message.role === "user" ? userDisplayText(message.userDisplay, {
             provider, threadId, clientUserMessageId: message.clientUserMessageId,
@@ -2550,7 +2593,7 @@ export class LocalTaskSyncStore {
     const page = this.historyPage(references, options);
     const candidates = page.items.filter(({ turn }) => (
       turn.completed === true && turn.active !== true
-      && turn.userMessageAuthority !== "terminal-ledger"
+      && turn.userMessageRecoveryVersion !== TERMINAL_USER_RECOVERY_VERSION
     )).map(({ provider, threadId, turn }) => ({ provider, threadId, turnId: turn.id }));
     if (!candidates.length) return page;
     await this.#mutations.run(() => this.#transaction(() => (

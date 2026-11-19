@@ -269,10 +269,6 @@ export class DesktopTaskBoardController {
     return { ...await this.snapshot({ refresh: true }), lifecycleResult: result };
   }
 
-  retryTriage(params) {
-    return this.#mutate(() => this.taskBoard.retryTriage(params));
-  }
-
   async start(params, context = {}) {
     const result = await this.taskLauncher.start({
       ...params,

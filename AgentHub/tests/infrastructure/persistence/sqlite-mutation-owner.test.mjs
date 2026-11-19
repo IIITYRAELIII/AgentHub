@@ -10,15 +10,12 @@ import { createStreamAgentSettingsService } from "../../../src/application/strea
 import { StreamHandoffService } from "../../../src/application/stream-handoff-service.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { HubMcpService } from "../../../src/application/hub-mcp-service.mjs";
-import { WorkspaceReleaseService } from "../../../src/application/workspace-release-service.mjs";
-import { ReleaseOperationFinalization } from "../../../src/application/release-operation-finalization.mjs";
-import { taskReleasePlan } from "../../../src/domain/task-release-snapshot.mjs";
+
+
+
 import { ProviderTaskCatalogBuilder } from "../../../src/providers/provider-task-catalog-builder.mjs";
 import { CodexSparkTaskClassifier } from "../../../src/providers/codex/codex-spark-task-classifier.mjs";
-import {
-  isTaskBoardMutationOwner,
-  isWorkspaceCatalogMutationOwner,
-} from "../../../src/application/sqlite-mutation-owner.mjs";
+import { isWorkspaceCatalogMutationOwner } from "../../../src/application/sqlite-mutation-owner.mjs";
 import { createPersistenceMutationCapabilities } from "../../../src/composition/persistence-mutation-composition.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
@@ -123,6 +120,7 @@ test("catalog assignment and provider rebind use the mandatory Workspace owner",
   assert.equal(entries.filter((entry) => entry.threadId === "catalog-thread").length, 1);
 
   const classifier = new CodexSparkTaskClassifier({
+    model: "gpt-6-sol",
     projectRoot: root,
     workspaceCatalog: workspaceOwner,
     streamId: stream.id,
@@ -256,74 +254,7 @@ test("legacy Git adoption reaches immutable CAS audit through the production Tas
   inspected.close();
 });
 
-test("composed release completion retries through the mandatory Task owner without duplicate effect", async (context) => {
-  const { databaseFile, rawTasks, taskOwner, taskBoard, workspace } = await fixture(context);
-  assert.equal(isTaskBoardMutationOwner(taskOwner), true);
-  const task = await taskBoard.create({
-    text: "release contention", source: "test", bucket: "workspace", workspaceId: workspace.id,
-  });
-  await taskBoard.recordTaskGitReference({
-    taskId: task.id,
-    projectRoot: "D:/repo",
-    branch: "HUB-159",
-    resultSnapshot: { repoRoot: "D:/repo", tree: "a".repeat(40) },
-  });
-  await taskBoard.setWorkflowStatus({ id: task.id, status: "awaiting_implementation" });
-  const candidate = {
-    ...taskBoard.task(task.id),
-    changedFiles: [{ projectRoot: "D:/repo", path: "AgentHub/result.mjs", operation: "modified" }],
-    gitError: null,
-  };
-  const plan = taskReleasePlan(workspace.id, [candidate]);
-  const identities = [];
-  const originalRunMutation = rawTasks.runMutation.bind(rawTasks);
-  rawTasks.runMutation = (operation, options) => {
-    identities.push(options?.requestId);
-    return originalRunMutation(operation, options);
-  };
-  const release = new WorkspaceReleaseService({
-    store: taskOwner,
-    releasePlanner: { plan: async () => plan },
-    releaseGitWorkspaces: {
-      frozenCandidate: async () => ({
-        planRevision: plan.revision, manifestHash: "manifest", baseCommit: "base", preReleaseHead: "published",
-      }),
-      synchronizePublishedPrimary: async () => ({ status: "already_current" }),
-    },
-    taskGitWorkspaces: {
-      synchronizeMainIntoDev: async () => ({ status: "already_current", integrated: true }),
-    },
-    releasePreflight: {
-      withAwaitTransition: async (_workspaceId, operation) => operation(),
-      prepareAwaitSet: async (options) => {
-        const result = { releaseCandidates: [] };
-        if (options.commitPrepared) await options.commitPrepared(result);
-        return result;
-      },
-    },
-    verifyPublication: async () => ({
-      repositories: [{
-        root: "D:/repo", revision: "published", planRevision: plan.revision,
-        manifestHash: "manifest", baseCommit: "base", preReleaseHead: "published",
-      }],
-      agentHubPublication: { generation: "generation-release-owner" },
-    }),
-  });
-  const completed = await underContention(databaseFile, () => release.completeRelease({
-    workspaceId: workspace.id,
-    expectedRepositories: [{ projectRoot: "D:/repo", revision: "published" }],
-    expectedPlanRevision: plan.revision,
-    deploymentVerified: true,
-    verificationSummary: "contention verified",
-  }));
-  assert.deepEqual(completed.released.map((item) => item.id), [task.id]);
-  assert.equal(taskBoard.task(task.id).workflowStatus, "done");
-  assert.equal(taskBoard.snapshot().filter((item) => item.id === task.id).length, 1);
-  const completionIdentities = identities.filter((value) => String(value).startsWith("task:completeRelease:"));
-  assert.equal(completionIdentities.length, 1);
-  assert.equal(new Set(completionIdentities).size, 1);
-  assert.ok(rawTasks.mutationDiagnostics().retries > 0);
-});
+
 
 test("composed checklist writes share the canonical Task owner and exact retry identity", async (context) => {
   const { databaseFile, rawTasks, taskOwner, taskBoard, workspace } = await fixture(context);
@@ -438,68 +369,7 @@ test("public MCP checklist success has a durable receipt and exact replay after 
   } finally { reopened.close(); }
 });
 
-test("durable release finalization uses the production Task mutation owner under contention", async (context) => {
-  const { root, databaseFile, rawTasks, taskOwner, taskBoard, workspace } = await fixture(context);
-  const accepted = await taskBoard.create({
-    text: "Published current result", source: "test", bucket: "workspace", workspaceId: workspace.id,
-  });
-  const corrected = await taskBoard.create({
-    text: "Later independent correction", source: "test", bucket: "workspace", workspaceId: workspace.id,
-  });
-  const unselected = await taskBoard.create({
-    text: "Unselected accepted result", source: "test", bucket: "workspace", workspaceId: workspace.id,
-  });
-  for (const [task, result] of [[accepted, "a"], [corrected, "b"], [unselected, "c"]]) {
-    await taskBoard.recordTaskGitReference({ taskId: task.id, projectRoot: root, branch: task.taskNumber,
-      resultSnapshot: { repoRoot: root, tree: result.repeat(40) } });
-  }
-  await taskBoard.setWorkflowStatus({ id: accepted.id, status: "awaiting_implementation" });
-  await taskBoard.setWorkflowStatus({ id: unselected.id, status: "awaiting_implementation" });
-  const correctionBefore = taskBoard.task(corrected.id);
-  const unselectedBefore = taskBoard.task(unselected.id);
-  const identities = [];
-  const runMutation = rawTasks.runMutation.bind(rawTasks);
-  rawTasks.runMutation = (operation, options) => {
-    identities.push(options);
-    return runMutation(operation, options);
-  };
-  const finalizer = new ReleaseOperationFinalization({
-    taskBoard,
-    releaseGitWorkspaces: { verifyPublishedPrimary: async () => ({ status: "preserved" }) },
-    taskGitWorkspaces: { synchronizeMainIntoDev: async () => ({ integrated: true }) },
-  });
-  const operation = { operationId: "production-owner-release", workspaceId: workspace.id,
-    authorization: { approvedTargets: [{ targetId: "production" }] },
-    publicationEffects: { targets: { production: { status: "applied", revision: "published" } } } };
-  const generation = { generation: 1, candidates: [{ repositoryRoot: root, commit: "published", planRevision: "plan" }],
-    selectedResults: [{ taskId: accepted.id, resultCommit: "a".repeat(40) },
-      { taskId: corrected.id, resultCommit: "a".repeat(40) }] };
-  await assert.rejects(() => finalizer.finalize({
-    operation: { ...operation, publicationEffects: { targets: {} } }, generation,
-  }), /missing target effects/u);
-  assert.equal(identities.length, 0);
-  const first = await underContention(databaseFile, () => finalizer.finalize({ operation, generation }));
-  assert.equal(first.status, "completed");
-  assert.equal(first.tasks.deliveries[0].closedCurrentTask, true);
-  assert.equal(first.tasks.deliveries[1].closedCurrentTask, false);
-  assert.equal(taskBoard.task(accepted.id).workflowStatus, "done");
-  assert.equal(taskBoard.task(accepted.id).status, "done");
-  assert.deepEqual(taskBoard.task(corrected.id), correctionBefore);
-  assert.deepEqual(taskBoard.task(unselected.id), unselectedBefore);
-  const acceptedAfter = taskBoard.task(accepted.id);
-  const replay = await finalizer.finalize({ operation, generation });
-  assert.equal(replay.tasks.alreadyFinalized, true);
-  assert.deepEqual(replay.tasks.deliveries, first.tasks.deliveries);
-  assert.deepEqual(taskBoard.task(accepted.id), acceptedAfter);
-  assert.deepEqual(taskBoard.task(corrected.id), correctionBefore);
-  assert.deepEqual(taskBoard.task(unselected.id), unselectedBefore);
-  const completions = identities.filter((value) => value.method === "completeReleaseOperation");
-  assert.equal(completions.length, 2);
-  assert.equal(new Set(completions.map((value) => value.requestId)).size, 1);
-  assert.ok(rawTasks.mutationDiagnostics().retries > 0);
-  assert.equal(isTaskBoardMutationOwner(taskOwner), true);
-  assert.equal(taskOwner.runMutation, undefined);
-});
+
 
 test("ordinary SQL owner still rejects an asynchronous callback", async (context) => {
   const { rawTasks } = await fixture(context);

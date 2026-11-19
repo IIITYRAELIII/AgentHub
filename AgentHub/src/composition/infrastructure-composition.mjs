@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
+import { isRetiredCodexModel } from "../domain/agent-runtime-settings.mjs";
 import { createContourExternalEffects } from "../infrastructure/filesystem/test-contour-external-effects.mjs";
 import { reconcileContourAwareStartupGit, refreshContourAwareExchangeRate } from "../application/contour-effect-operations.mjs";
-import { access, mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { homedir } from "node:os";
@@ -16,16 +17,14 @@ import { McpAdmissionCoordinator } from "../application/mcp-admission-coordinato
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
-import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
-import { WorkspaceReleasePreflightService } from "../application/workspace-release-preflight-service.mjs";
-import { createReleaseOperationServices } from "./release-operation-composition.mjs";
-import { importLegacyReleaseOperations } from "../infrastructure/persistence/release-operation-legacy-import.mjs";
+import { TaskCompositionPlanService } from "../application/task-composition-plan-service.mjs";
+import { TaskIntegrationService } from "../application/task-integration-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
 import { FileTransferService } from "../infrastructure/filesystem/file-transfer-service.mjs";
 import { TaskGitWorkspaceService } from "../infrastructure/filesystem/task-git-workspace.mjs";
-import { ReleaseGitWorkspaceService } from "../infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../infrastructure/filesystem/task-integration-git.mjs";
 import { AttachmentThumbnailService } from "../infrastructure/media/attachment-thumbnail-service.mjs";
 import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
@@ -33,7 +32,6 @@ import { migrateMessageBindings } from "../infrastructure/persistence/message-bi
 import { RateLimitHistoryStore } from "../infrastructure/persistence/rate-limit-history.mjs";
 import { ProviderTurnTelemetryStore } from "../infrastructure/persistence/provider-turn-telemetry-store.mjs";
 import { FileTransferStore } from "../infrastructure/persistence/file-transfer-store.mjs";
-import { ReleaseOperationStore } from "../infrastructure/persistence/release-operation-store.mjs";
 import { PreTurnInstructionStore } from "../infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { installRotatingConsole } from "../infrastructure/persistence/rotating-log.mjs";
 import { createTaskOperationTimingLogRecorder } from "../infrastructure/persistence/task-operation-timing-log.mjs";
@@ -51,25 +49,15 @@ import { defaultUsageSyncServerUrl } from "../domain/default-usage-sync-server.m
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
-import { createRepositoryProductionValidationAdapter } from "../infrastructure/process/repository-production-validation.mjs";
-import {
-  copyWindowsFileObject,
-  revealWindowsFile,
-} from "../infrastructure/process/windows-file-clipboard.mjs";
+import { copyWindowsFileObject, revealWindowsFile } from "../infrastructure/process/windows-file-clipboard.mjs";
 import { MiniAppServer } from "../interfaces/web/mini-app-server.mjs";
 import { HubMcpServer } from "../interfaces/mcp/hub-mcp-server.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { TrustedDeviceRegistry } from "../interfaces/web/trusted-device-access.mjs";
 import { CodexRolloutContextSanitizer } from "../providers/codex/codex-rollout-context.mjs";
-import {
-  CodexSparkTaskClassifier,
-  ensureDashBotStream,
-} from "../providers/codex/codex-spark-task-classifier.mjs";
-import {
-  CodexTerraVoiceTranscriber,
-  ensureDashBotTerraStream,
-} from "../providers/codex/codex-terra-voice-transcriber.mjs";
+import { CodexSparkTaskClassifier, ensureDashBotStream } from "../providers/codex/codex-spark-task-classifier.mjs";
+import { CodexTerraVoiceTranscriber, ensureDashBotTerraStream } from "../providers/codex/codex-terra-voice-transcriber.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 import { readPublicationState } from "../infrastructure/persistence/publication-state.mjs";
@@ -111,40 +99,6 @@ function testContourRuntimeIdentity(environment = process.env) {
   return identity;
 }
 
-export function createReleaseCorrectionRequester({ taskBoard, taskLifecycle } = {}) {
-  if (typeof taskBoard?.task !== "function") throw new TypeError("taskBoard.task is required");
-  if (typeof taskLifecycle?.updateWorkflowStatus !== "function") {
-    throw new TypeError("taskLifecycle.updateWorkflowStatus is required");
-  }
-  return async ({ operation, error }) => {
-    const taskId = String(error?.taskId ?? "").trim();
-    if (!taskId || !operation.authorization.taskIds.includes(taskId)) {
-      throw new Error("release correction does not identify an authorized selected Task");
-    }
-    const operationId = `release-${operation.operationId}-correction-${taskId}-${String(error.resultCommit).slice(0, 12)}`;
-    const task = taskBoard.task(taskId);
-    if (!task) throw new Error("selected correction Task no longer exists");
-    if (task.workflowStatus === "in_progress") return { operationId, task };
-    if (task.workflowStatus !== "awaiting_implementation") {
-      throw new Error("selected correction Task is no longer awaiting its accepted result");
-    }
-    const result = await taskLifecycle.updateWorkflowStatus({
-      taskId,
-      status: "in_progress",
-      operationId,
-      expectedRevision: task.revision,
-      expectedWorkflowStatus: task.workflowStatus,
-      operationEvidence: {
-        releaseCorrection: {
-          releaseOperationId: operation.operationId,
-          priorResultCommit: error.priorResultCommit,
-          rejectedResultCommit: error.resultCommit,
-        },
-      },
-    });
-    return { operationId, task: result.task };
-  };
-}
 
 export async function recoverTaskBoardStartup(taskBoard) {
   try {
@@ -239,21 +193,6 @@ function usageSyncRuntimeHomeIds(identityStore) {
   };
 }
 
-export async function resolveReleaseValidationSource(repositories) {
-  for (const repository of repositories) {
-    const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
-    try {
-      await access(path.join(sourceRoot, "publish-changed.mjs"));
-      return { kind: "workspace-release-pipeline", ...repository, sourceRoot };
-    } catch {}
-  }
-  return {
-    kind: "external-validation-required",
-    repositories,
-    reason: "release preflight requires an explicit repository-owned production validation gate for non-AgentHub repositories",
-  };
-}
-
 export async function createHubInfrastructure({
   config,
   agentHubRoot,
@@ -312,7 +251,7 @@ export async function createHubInfrastructure({
     // The same HTTP owner serves its startup shell/health while infrastructure
     // safety is pending. It opens no journal and accepts no business intake.
     agentHubRuntimeHealth.begin({ operations: [
-      { id: "database", label: "Проверка базы данных" },
+      { id: "database", label: "Подготовка данных" },
       { id: "infrastructure", label: "Загрузка инфраструктуры" },
     ] });
     agentHubRuntimeHealth.startOperation("database");
@@ -369,7 +308,8 @@ export async function createHubInfrastructure({
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
   });
   await startupStep("pre-turn-guide", () => preTurnInstructions.loadGuide());
-  const dashBotStream = config.taskBoard.triageEnabled
+  const triageEnabled = config.taskBoard.triageEnabled && !isRetiredCodexModel(config.taskBoard.triageModel ?? "gpt-5.3-codex-spark");
+  const dashBotStream = triageEnabled
     ? await startupStep("dashbot-stream", () => rawWorkspaceCatalogStore.runMutation(() => ensureDashBotStream(rawWorkspaceCatalogStore, {
       model: config.taskBoard.triageModel,
       projectRoot: config.projectRoot,
@@ -399,7 +339,7 @@ export async function createHubInfrastructure({
     workspaceCatalog: workspaceCatalogStore,
     streamId: dashBotTerraStream.id,
   });
-  const taskClassifier = config.taskBoard.triageEnabled
+  const taskClassifier = triageEnabled
     ? new CodexSparkTaskClassifier({
       requestedExecutable: config.codexExecutable,
       executableArgs: config.codexExecutableArgs,
@@ -488,9 +428,10 @@ export async function createHubInfrastructure({
     maxFiles: config.logMaxFiles, mirror: process.stdout.isTTY || process.stderr.isTTY,
   });
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
+    runtimeRoot: runtimeCommandRoot,
     contourExternalEffects, recordTiming: recordTaskTiming,
     readClaimCustodyNamespace: taskId => workspaceCatalogStore.claimCustodyNamespaceForTask(taskId) });
-  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects,
+  const releaseGitWorkspaces = new TaskIntegrationGitService({ dataDir: config.dataDir, contourExternalEffects,
     readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
     readPreparationOriginal: id => workspaceCatalogStore.mcpOperation(id) });
   const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
@@ -515,18 +456,13 @@ export async function createHubInfrastructure({
   for (const repository of taskGitReconciliation.repositories.filter((item) => item.status === "blocked")) {
     console.warn(`Task Git repository requires manual reconciliation: ${repository.reason}`);
   }
-  const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
-  const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
+  const taskReleasePlanner = new TaskCompositionPlanService({ taskBoard, taskGitWorkspaces });
+  const workspaceReleasePreflight = new TaskIntegrationService({
     measureOperation: measureTaskOperation,
     releasePlanner: taskReleasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,
-    resolveReleaseValidationSource,
     readPublicationState,
-    validateProductionCandidate: createRepositoryProductionValidationAdapter({
-      policies: config.releaseValidation?.repositories ?? [],
-      dataDir: path.join(config.dataDir, "release-validation"),
-    }),
   });
   const taskLifecycle = new TaskLifecycleService({
     taskBoard,
@@ -534,33 +470,6 @@ export async function createHubInfrastructure({
     taskGitWorkspaces,
     releasePreflight: workspaceReleasePreflight,
   });
-  const workspaceReleaseService = {
-    completeRelease() {
-      const error = new Error("legacy release completion was removed; use the durable ReleaseOperation owner");
-      error.code = "RELEASE_OPERATION_REQUIRED";
-      throw error;
-    },
-  };
-  const releaseOperationStore = new ReleaseOperationStore({ dataDir: config.dataDir });
-  await startupStep("release-operation-legacy-import", () => importLegacyReleaseOperations({
-    store: releaseOperationStore,
-    dataDir: config.dataDir,
-    runnerVersion: AGENT_HUB_VERSION,
-    reportDiagnostic: diagnostic => console.warn("Historical release entry unavailable", diagnostic),
-  }));
-  const { operations: releaseOperations, commands: releaseOperationCommands } = createReleaseOperationServices({
-    recordCommandTrace: span => commandTrace?.service?.recordBestEffort?.(span) ?? false,
-    store: releaseOperationStore,
-    dataDir: config.dataDir,
-    runtimeRoot: runtimeCommandRoot,
-    releasePreflight: workspaceReleasePreflight,
-    taskBoard, taskLifecycle,
-    workspaceCatalog: workspaceCatalogStore,
-    taskGitWorkspaces, releaseGitWorkspaces,
-    requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle }),
-    runnerVersion: AGENT_HUB_VERSION,
-  });
-  releaseOperations.recover();
   const hubMcpService = new HubMcpService({
     claimCustodyRuntime: createClaimCustodyRuntime({ dataDir: config.dataDir }),
     measureOperation: measureTaskOperation,
@@ -571,10 +480,7 @@ export async function createHubInfrastructure({
     workLog: workLogUsageStore,
     attachmentDirectory,
     secret: hubMcpSecret,
-    releasePlanner: taskReleasePlanner,
     releasePreflight: workspaceReleasePreflight,
-    releaseCompleter: workspaceReleaseService,
-    releaseOperations,
     taskGitWorkspaces,
     releaseGitWorkspaces,
   });
@@ -714,9 +620,6 @@ export async function createHubInfrastructure({
     workspaceCatalogStore,
     taskReleasePlanner,
     workspaceReleasePreflight,
-    workspaceReleaseService,
-    releaseOperations,
-    releaseOperationCommands,
     streamHandoff,
     preTurnInstructions,
     taskBoard,

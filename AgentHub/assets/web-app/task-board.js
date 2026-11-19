@@ -1859,12 +1859,6 @@
       }));
     }
     if (task.status !== "done") actions.push(destinationSelect(task));
-    if (task.status !== "done" && task.triageStatus === "failed") {
-      actions.push(node("button", {
-        type: "button", class: "board-task-quiet", text: "Повторить Spark",
-        onclick: () => emit("retry-triage", { id: task.id }),
-      }));
-    }
     if (task.status !== "done") {
       actions.push(node("button", {
         type: "button", class: "board-task-quiet", text: "Закрыть задачу",

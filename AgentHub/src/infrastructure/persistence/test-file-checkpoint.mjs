@@ -141,7 +141,16 @@ export async function runCheckpointedTestFiles(files, {
   execution = async () => ({ parallel: false, shared: [] }),
   admission = null,
   onFile = () => {},
+  onProgress = () => {},
 } = {}) {
+  const invocationId = randomUUID();
+  const progress = (item, phase, details = {}) => {
+    if (Number.isSafeInteger(details?.pid) && details.pid > 0) item.pid = details.pid;
+    const event = { invocationId, identity, file: item.file, suite: item.suiteName,
+      phase, observedAt: now(), startedAt: item.startedAt,
+      ...(item.pid ? { pid: item.pid } : {}) };
+    try { onProgress(event)?.catch?.(() => {}); } catch { /* Diagnostics never change test outcomes. */ }
+  };
   const saved = checkpoint && identity ? await checkpoint.read() : null;
   // Legacy hashes omitted IO inputs and toolchains, so never upgrade them into
   // successful evidence. Release identity is metadata; v2 hashes own reuse.
@@ -194,7 +203,7 @@ export async function runCheckpointedTestFiles(files, {
 
   let persist = Promise.resolve();
   let persistenceError = null;
-  const persistState = () => {
+  const persistState = (item = null) => {
     for (const [name, value] of suites) {
       state.suites[name] = {
         completedFingerprints: value.completedFingerprints,
@@ -211,8 +220,13 @@ export async function runCheckpointedTestFiles(files, {
     state.updatedAt = new Date(now()).toISOString();
     if (checkpoint && identity) {
       const snapshot = structuredClone(state);
+      if (item) progress(item, "checkpoint-queued");
       persist = persist
-        .then(() => persistenceError ? undefined : checkpoint.write(snapshot))
+        .then(async () => {
+          if (persistenceError) return;
+          if (item) progress(item, "checkpoint-writing");
+          await checkpoint.write(snapshot);
+        })
         .catch((error) => { persistenceError ??= error; });
     }
     return persist;
@@ -229,8 +243,10 @@ export async function runCheckpointedTestFiles(files, {
   const executeOne = async (item) => {
     let error = null;
     const startedAt = now();
+    item.startedAt = startedAt;
+    progress(item, "execution");
     try {
-      await run(item.file);
+      await run(item.file, (phase, details) => progress(item, phase, details));
       suites.get(item.suiteName).failedFiles.delete(item.file);
       if (item.currentFingerprint) {
         const { completedFingerprints, completedAt } = suites.get(item.suiteName);
@@ -245,11 +261,12 @@ export async function runCheckpointedTestFiles(files, {
       active.delete(item);
       admission?.finished();
       const finishedAt = now();
-      await persistState();
+      await persistState(item);
       onFile({ file: item.file, suite: item.suiteName, waitMs: startedAt - item.queuedAt,
         runMs: finishedAt - startedAt, outcome: error ? "failed" : "passed", reason: item.reason,
         ...(error ? { failure: testFailureFacts(error) } : {}),
       });
+      progress(item, "finished");
     }
     return error;
   };

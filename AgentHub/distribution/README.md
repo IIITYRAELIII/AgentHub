@@ -1,30 +1,80 @@
-# Source and distribution boundary
+# Independent package and installation boundary
 
-Affected isolated recovery checks reuse `whole_update.mjs <artifacts.json>
-<new-output> downgrade|poststop-recovery`. The first requires a lower target
-build and verifies rejection before stopping; the second requires a legitimate
-newer target and observes a real installer filesystem refusal followed by the
-same verified current becoming Ready. The original update remains FAILED.
-Neither mode is production update/retry authority or public TLS acceptance.
+The application release mechanism is removed (ADR-HUB-463). There is no
+release run/continue/get API, release worker, operation generation, freeze,
+automatic publication/recovery or automatic Task finalization. No replacement
+orchestrator is introduced. Archived receipts, frozen artifacts and SQLite
+history remain under their original identities and are not replayed/deleted.
 
-This is preparation for a repository cutover, not permission to retarget an
-existing release operation. The registered release owner still composes,
-validates, prepares and publishes the exact accepted source. The package builder
-consumes its already prepared immutable runtime; it does not build, deploy,
-restart, push Git, change Task results or publish a second release.
+Tasks keep CRUD/history/checklists, managed claim/branches, Test in dev, Await
+in PreRelease, native conflict continuation and existing content/authority/CAS
+guards. Task Await is acceptance into PreRelease, not installation or Done.
 
-The standalone repository keeps `AgentHub/` as its source directory. This retains
-the accepted `AgentHub/package.json` release metadata paths. Its root contains
-the public README, license, contribution/security guidance and Hub-only
-release notes. Historical `TelegramIntegration/` paths remain only where they
-actually existed in the extracted development history.
+## Manual delivery order
 
-Files under `opensource/` are reviewed draft root overlays, not an automatic
-publish operation. `release-notes.example.md` becomes root `CHANGELOG.md` only in
-the independent export. Its template name deliberately respects the managed Task
-rule excluding files named CHANGELOG.md. MIT scope and the real private reporting
-channel are documented in the reviewed public root overlays. Those source
-approvals do not accept a runtime package.
+Finish and independently review the change in the existing PreRelease. The
+delivery owner sets the agreed version and one consolidated notes entry,
+builds an installer from that exact source, installs **from the installer** and
+checks the installed application. Correct and recheck failures if needed.
+Only the verified result is manually merged into main and pushed. Building
+from another source checkout or merely copying files is not installation proof.
+
+The source checkout is not a runtime. Personal data/configuration, archives,
+dependencies and build outputs stay outside Git. No additional delivery clone
+is required by the application. Version changes and publication are manual
+delivery-owner actions; executors do not independently bump Task versions.
+
+## Existing standalone build and ZIP
+
+Use the explicitly pinned external build package, its exact content digest and
+the clean candidate commit/tree. See [building.md](../docs/building.md).
+The existing path is `src/build.mjs:buildPinnedCandidate` →
+`src/runtime-build.mjs:prepareRuntime` → `python/build_package.py`.
+The builder compiles RuntimeHost/native companions, installs production lock
+dependencies in the new build body and verifies the runtime manifest. It does
+not need Hub MCP, release API, operation/generation/freeze or a release recipe.
+
+The returned prepared runtime directory is a build artifact, not a release
+operation receipt. Package it with the existing independent Python entry:
+
+```powershell
+python <tool-root>/python/build_package.py --prepared-runtime <runtime-directory> --license <LICENSE> --notices <THIRD_PARTY_NOTICES> --source-commit <exact-OID> --output <package-output> --recipient-root <tool-root>/recipient
+```
+
+Keep the ZIP, descriptor/checksums and versioned recipient installer together.
+Verify the actual output paths and SHA256 before installation. The tool's
+`recipient` directory contains its own `install_release.py`, `install-prepared.mjs`
+and configuration example. No release-side PREPARED.json is required.
+
+## Install from the archive
+
+The recipient needs Python >=3.10 and Node >=22.5/SQLite, not Git/npm or the
+source checkout. Use the versioned installer shipped with the exact package:
+
+```powershell
+python <recipient>/install_release.py --archive <archive.zip> --sha256 <archive-SHA256> --runtime-root <existing-runtime> --scratch-root <private-scratch> --mode force
+```
+
+For a first installation, provide the selected `--project-root` as required by
+the existing installer. Existing configuration/data are preserved. Scratch is
+private and on the intended volume; archives and extracted package roots are
+verified before runtime effects. `--inspect-package` verifies/extracts without
+installing. `--prepare-update`, `--update-status` and an original `--operation-id`
+address the existing **maintenance** owner, not the removed release operation.
+Unknown maintenance outcomes retain the same original identity until readback.
+
+Installation flows through `recipient/install-prepared.mjs` → packaged
+`runtime/runtime-maintenance.mjs package-install`. It retains RuntimeHost,
+restart/drain, backup/rollback, readiness/readback, immutable runtime identity,
+configuration validation and original maintenance receipts. `current.json`,
+`releases/<runtimeID>`, runtime manifests, the installation `publication-lock`
+and its Windows native lock-publisher companion remain necessary. They do not
+grant GitHub publication or release workflow authority.
+
+Check the installed runtime's exact package/source/version, live+Ready identity
+and maintenance result. A successful ZIP build, pointer write, subprocess exit
+or HTTP reply alone is not a complete installed/readiness proof. Never stop an
+unrelated process or delete user data to make an update pass.
 
 ## Offline history extraction
 
@@ -58,411 +108,124 @@ There is no clone, alternate object store, network or push in the extractor.
 Only independently reviewed, sanitized history may later be pushed to the new
 repository. A source audit pin is not a release acceptance.
 
-## Version identity
+## Historical compatibility
 
-The first installer targets the corrected public **2.0.1** release. The immutable runtime/artifact version
-is `2.0.1+build.N`, with the real allocated N, not a display counter. Runtime
-manifest `version` and `publicVersion` are `2.0.1`; `releaseVersion` is the
-artifact identity, `buildNumber` is N and `versionScheme` is `semver-build-v1`.
-Inner package inventory, outer descriptor and saved PACKAGED inputs agree on
-all these fields. The original nine-field PREPARED receipt remains unchanged:
-its `version` and CLI `--version` are the artifact identity.
+Task Git may read historical published source/base/selected-composition facts
+through `task-publication-history.mjs`. These are read-only archived evidence,
+not a new release store, writer or worker. Historical SQLite tables, old runtime
+retention records and user-authored rules are preserved. No startup release
+continuation, publication finalizer, progress server or release-specific Task
+completion is installed or launched.
 
-Public GitHub tag/installer `--release` is `2.0.1`, **not** `2.0.1+build.N`.
-A published tag cannot be overwritten with another N. The release owner binds
-that public tag to frozen source/build/manifest and asset digests. Stable
-`latest` discovery still refuses beta/rc releases. Prerelease grammar and
-precedence are supported in isolated identity/update checks, not implicitly
-selected by the stable channel.
+The old external-tool environment variable names remain for immutable package
+pin compatibility. Tool updates are separate from application installation and
+must not advance a pin used by an active build. No recipe/orchestrator API is
+loaded by runtime-manager preparation. Standalone Worker tools remain separate
+from the manual desktop package installation.
+# Autonomous recipient installer
 
-The existing allocator reads retained runtime manifests and verified Android
-codes, with an epoch-minute floor, under its installation lease. A frozen N
-is reused on retries; a competing allocation refuses before preparation. There
-is no package-side allocation or new counter. Unknown/foreign/partial retained
-metadata refuses rather than being deleted. Legacy calendar receipts keep their
-original identity. Ordinary verified updates permit calendar → 2.0.1, then
-nondecreasing semantic precedence and increasing N. Exact reinstall is reusable;
-explicit rollback uses the verified previous pointer. Config, data and enrollment
-remain untouched by this version migration.
+Every future installer asset uses the common `distribution/install_release.py`.
+Choose "Дождаться текущих ходов" (`--mode wait`) or "Завершить все ходы"
+(`--mode force`). Without the flag, an interactive run opens the two-button
+picker. Background callers must pass the explicit mode; closing the picker
+does not start an update.
 
-## Ready packages
+Wait closes new provider admission through the existing maintenance original
+and preserves new inputs in the durable queue while current work finishes. It
+requires a runtime supporting fenced drain. An old API without that capability,
+unknown activity or changed process refuses before stopping; choose force
+explicitly if interruption is wanted. Wait never escalates itself. Force works
+without the old API, retains native ownership guards and interrupts selected
+work. Neither mode resumes old provider turns. The interrupted turn's terminal
+accounting belongs to the existing startup owner, while history and queued
+input remain retained.
 
-For the first standalone source only, after its exact source/history review and
-public push, use the existing baseline owner on the clean standalone main:
+`install_release.py` is the single-file recipient entry. It needs Windows,
+Python and Node.js with `node:sqlite` (22.5 or newer). It verifies the public
+package, escapes the calling Hub Job, force stops only the selected installation,
+backs up durable state, installs and starts the new version, and checks real
+Ready. A failed replacement restores verified prior code and checks old Ready.
+The update authorizes interruption of active work in that installation.
 
-```powershell
-npm run release:policy -- github-baseline preview --project-root <standalone-repo> --owner IIITYRAELIII --repo AgentHub --source-only true --target-commit <reviewed-public-main> --source-tree <reviewed-public-tree> --request-id <stable-registration-id>
-```
+Example: `python install_release.py --release <version> --runtime-root <Hub-directory> --scratch-root <separate-directory> --mode force`.
+Offline input uses `--archive <ZIP> --sha256 <exact-digest>` instead of `--release`.
+An explicitly requested `--resume-partialstop --operation-id <same-original>`
+continues the exact retained d148 partial-stop revision3, or its pinned a297
+revision5 descendant-parent refusal, after verified previous Ready is restored.
+Revision5 retains and revalidates the whole revision3 history plus the retired
+a297 worker and its exact input. The same archive/runtime/scratch arguments are required.
+The whole prior UNKNOWN and its earlier history are saved by the existing CAS.
+Continuation transport directories stay directly under the supplied scratch
+root, keyed by original and installer bytes. Prior directories remain linked
+through the retained input and canonical whole-row history. They are not nested
+again: repeated path growth can prevent SQLite from creating backup sidecars.
+Fresh retirement uses retained-handle exit proof, batch process capture and the
+existing stop budget. Timing and captured target identities are retained with
+the worker evidence. This bounded compatibility ends when those originals are
+disposed.
 
-The corresponding `enable` action with the same exact values adds only an absent
-repository-scoped source baseline; repeat is read-only and conflicting existing
-evidence refuses. It does not invent a GitHub Release or installed runtime.
-Then use ordinary Task claim/Test/Await and the original frozen release owner
-in that repository. Old Utilities claims, refs, Tasks and receipts remain under
-their original repository identity. Additional source registration is preparation
-for the first package; actual source retirement/update-origin cutover still waits
-for public download, fresh install, update and rollback acceptance.
+An exited child which disappeared before native capture does not require a
+parent effect binding. Live children still require the native original parent
+and birth. Native rundown errors remain pending until that same retained handle
+signals; a live denied handle never grants stopped backup or installation.
+Recovery keeps those original handles across the failed stopping pass.
 
-The tracked offline packaging checkpoint is the normal interface for the release
-owner after canonical preparation:
+Ready also verifies the configured local web capability and TCP listener owner
+against the authenticated Node and its launched Host. Headless configuration
+remains supported. A slow startup is observed while the exact Host remains live;
+elapsed time alone no longer triggers rollback. Host exit or an explicit startup
+capability failure follows the existing previous-version recovery path.
+The existing maintenance SQLite queue retries only the same checkpoint while
+another writer owns the database. A contended Ready write waits for persistence;
+it does not repeat launch, replace the original identity or trigger rollback.
+Its persistence retries and wait are recorded in the original installer timing.
 
-```powershell
-node <release-tool>/bin/release.mjs package --prepared-receipt <owner-prepared.json> --receipt-sha256 <receipt-sha256> --source-commit <exact-reviewed-export-OID> --version <frozen-artifact-version> --license <confirmed-LICENSE> --notices <actual-shipped-notices> --output-root <private-build-root> --recipient-root <candidate/AgentHub/distribution>
-```
+An explicitly requested `--resume-prestop --operation-id <same-original>` can
+continue only the positively verified published8c09 pre-stop foreign refusal;
+it preserves the old UNKNOWN/history and never replays backup/install/launch.
+Keep the reported retained directory: it contains progress, backup and the
+original result. Dispatch is not completion. Repeat the same command to read the
+same original without restarting effects. Never reuse an old skipped operation
+ID for a new installation attempt. `--prepare-update` uses this same autonomous
+entry; no Enter or manual process termination is involved.
 
-The existing release/build owner supplies those arguments from its saved exact
-release input, not by editing a per-version script. It creates the hash-pinned
-receipt with exactly these fields: `schema: 1`, `phase: "PREPARED"`, original
-`operationId`, positive integer `generation`, `sourceCommit`, `releaseId`,
-`version`, absolute `releaseRoot` and original `manifestSha256`. `version` must
-equal the manifest's `releaseVersion` (or its legacy `version` if absent); the
-stage neither allocates a suffix nor patches a manifest. A receipt is an input
-identity, not new acceptance or authority to publish its source.
+The preserved public 2.1.7 archive/old installer are inputs, not files this Task
+overwrites. Deliver the new installer as a separately hashed artifact until the
+distribution owner updates normal download entrypoints. Historical cooperative
+package callers and versioned offline installer bytes retain their own protocol.
 
-`build_release.py` uses the existing packager and recipient archive verifier. It
-verifies the manifest's complete declared runtime payload on every invocation,
-binds license/notices and packaging-tool hashes, and writes an exclusive
-`<output-root>/<version>/intent.json` before artifacts. Its only public asset
-directory is `assets/`, containing exactly `AgentHub-win32-x64.zip`, its `.json`,
-the versioned `install_release.py` and `SHA256SUMS`. The checksums list the first
-three files. Private original receipt, intent, failure and result metadata stay
-outside `assets/`; never upload the whole checkpoint directory.
+## Installer storage lifecycle
 
-A successful checkpoint persists `result.json` with `phase: "PACKAGED"`, original
-operation/generation/source/version/manifest identity under `inputs`, an
-`inputIdentity` SHA-256 and the four exact asset names/sizes/hashes. Calling the
-same command revalidates the prepared input and saved package/inner inventory,
-then returns that exact saved result without another pack, version allocation or
-publication. A different input/tool/license/notice, changed artifact, foreign
-file, missing result or partial pair refuses and preserves the original files.
-Even a complete ZIP without the committed result is not completion; inspect the
-original failed/unknown checkpoint through its owning release operation. This
-tool does not delete or silently rebuild it. Its file writes are exclusive and
-flushed; this is not a notarization, filesystem snapshot or independent signature.
+New packages record autonomous backup/storage evidence for the existing
+after-ready retention owner (ADR-HUB-471). All update backups share the existing
+limit of five, including protected recovery copies. Proven unused extracted
+payloads and owned downloads retire after terminal disposition and creator exit;
+borrowed ZIPs and compact original receipts stay. UNKNOWN is not cleanup consent.
+Progress/partial native deletion resumes on the same canonical storage child.
 
-Runtime preparation and publication remain existing release-owner stages. The
-existing `createPublicationArtifactSteps` owner accepts an optional
-`runtimePublication: { operationId, generation, sourceCommit, version }` copied
-from the exact frozen release input. Its runtime artifact identity includes all
-four fields. `prepareRuntime` checks `expectedReleaseVersion` against the canonical
-next suffix under the existing installation lease before copying, Host compilation
-or locked dependency installation. A mismatch refuses; it never changes a manifest
-or allocates an arbitrary version. Publication version and artifact version are
-distinct inputs and must not be silently relabeled.
+The maintained application JSON CLI supports addressed migration. Feed one JSON
+object on stdin to `node runtime-maintenance.mjs installer-storage-register`:
+`runtimeRoot`, `operationId`, `cache`, `expectedOriginalSha256` (SHA256 of the
+canonical owner's JSON representation). It verifies terminal disposition,
+request/worker/script, archive/descriptor and physical ownership. It registers
+proof only; it does not delete or rewrite that source original. Old successful
+backups with a canonical directory reference also migrate automatically.
 
-For newly frozen generations, the existing release freeze records the public
-semantic version and the canonical next `runtimeReleaseVersion` separately in
-the same immutable manifest and freeze intent. It reads the configured runtime's
-existing release metadata; it does not reserve a suffix or prepare a runtime.
-The canonical publication runner passes that exact version, original operation,
-generation and frozen commit to the artifact owner. A later competing allocation
-therefore causes an explicit mismatch under the installation lease. Repeating a
-freeze or resuming its prepared artifact retains the original version. Historical
-generations without this field keep their original artifact identity and do not
-acquire a newly invented PREPARED receipt.
+For an explicitly accepted legacy partial root with no historical creation
+proof, supply `runtimeRoot` and `custody` instead: `previewFile`, `previewSha256`,
+`successorOperationId`, `decisionId`. The preview binds the whole failed original,
+target/root, file/directory identities and full hashes, zero effects and retired
+worker. This requires a real delivery-owner custody decision; it is not a scan.
+`custody.inspectOnly=true` verifies it without creating a receipt. Keep the
+preview outside the candidate directory. Automatic discovery never adopts it.
 
-After normal preparation, `artifacts.preparedRuntimeReceipt(identity)` verifies
-the original artifact, full runtime and frozen source/version, then returns
-`{ receipt, receiptFile, receiptSha256 }`. The exact nine-field JSON is retained in
-that artifact's immutable payload. New receipts use the physical configured
-runtime root, retaining ordinary descendants and the original artifact namespace
-identity. The distribution caller likewise resolves only its execution root;
-root path/device/inode drift refuses. Python still rejects descendant reparse
-paths. An old alias-bearing receipt is preserved and can require a corrected
-later generation; do not rewrite its JSON or merely replace its CLI path.
-Pass its file and hash to `build_release.py`
-above. A completed artifact, or a verified prepared body whose build reply was
-lost, is reused before another preparation/allocation. Partial bodies without a
-manifest and changed original inputs refuse and remain available for inspection.
-This is an existing-checkpoint adapter, not another preparation or approval ledger.
-
-The original release owner can explicitly authorize an `agent-hub-publication`
-target with environment `github-release`. Its ordinary frozen runner prepares
-the runtime, invokes this packaging checkpoint, publishes Git, then uploads the
-exact four assets to its own digest-bound draft and publishes that GitHub Release.
-The target must use the registered standalone public repository. It does not
-install or restart the publisher, deploy Worker/Android or install VS Code.
-Normal targets retain their installed-runtime behavior. Original generation,
-version, source, journal and tests selection remain authoritative; there is no
-manual receipt, asset upload or alternate publication CLI.
-
-The manual GitHub workflow runs source and VS Code tests. It does not package
-release artifacts or establish publication readiness. When an approved Hub
-publication includes Android, the existing release stage supplies the frozen
-`-ArtifactVersion`; the source-check workflow does not allocate or invent one.
-
-This implementation still requires exact source/current-context review and the
-ordinary standalone candidate lifecycle. Its existence does not prove that a
-product archive was built or publicly downloaded. Actual product download, fresh
-install, update, rollback and managed cutover remain separate completion evidence.
-
-The publisher's prepared runtime is an input, not a trigger for another build:
-
-```powershell
-python <release-tool>/python/build_package.py --prepared-runtime <verified-release-directory> --source-commit <reviewed-exported-commit> --license <confirmed-license-file> --notices <complete-notices-file> --output <new-versioned-zip> --recipient-root <candidate/AgentHub/distribution>
-```
-
-The resulting ZIP and its adjacent checksum JSON are new artifact identities.
-The original prepared manifest and receipt are preserved. Only its copied public
-manifest drops the private machine `sourceRoot`; it retains the original manifest
-SHA-256 and identifies the exported source separately. This new package still
-needs the release owner's normal validation and public artifact acceptance.
-Its source commit must equal the prepared manifest's publicationRevision. An old
-Utilities artifact cannot be relabeled with a rewritten AgentHub OID: after the
-reviewed source cutover, the existing release owner must prepare the runtime from
-the accepted standalone source. Repository/selection authority remains with that
-owner; the packager does not manufacture a new adoption or receipt.
-
-For discovery, publish the owner-accepted ready ZIP under the fixed asset name
-`AgentHub-win32-x64.zip`, plus its adjacent `AgentHub-win32-x64.zip.json`, in the
-same stable GitHub release. The builder emits the descriptor with exact package,
-source, manifest and outer checksum identities. Its `publicApproval: false` is
-preparation metadata, not an approval flag to flip: only the existing release
-owner's reviewed publication admits assets. This tool does not upload a release.
-
-The recipient can select an exact stable tag (or explicitly `latest`):
-
-```powershell
-python install_release.py --release <exact-stable-tag> --runtime-root <private-runtime-directory> --scratch-root <separate-private-temporary-directory>
-```
-
-For a first installation, add `--project-root <selected-project-directory>` to
-initialize a valid nonempty project selection through the same configuration
-owner used at startup. Existing private configuration is preserved. This option
-belongs to the first install command. Configure the desired provider and account
-before starting the installed Host. Installer completion alone does not prove Ready.
-
-The fixed anonymous API origin is `IIITYRAELIII/AgentHub`; Utilities is never an
-update origin. No token or GitHub CLI is read. One bounded release response pins
-both versioned asset URLs, GitHub SHA-256 digests and sizes. Missing digests,
-duplicate assets, unpublished/prerelease metadata, cross-repository URLs and
-descriptor/ZIP/inner-manifest disagreement refuse before Node execution. The
-descriptor and ZIP are independently hashed against that response; this is not
-an author signature or immutable-release guarantee. Additional `--sha256` pins
-the chosen ZIP even when using discovery. API redirects are refused; asset
-redirects retain the existing canonical HTTPS host restrictions.
-
-Alternatively the recipient supplies an exact version/checksum:
-
-```powershell
-python install_release.py --url https://github.com/IIITYRAELIII/AgentHub/releases/download/<version>/<package>.zip --sha256 <published-sha256> --runtime-root <private-runtime-directory> --scratch-root <separate-private-temporary-directory>
-```
-
-Use `--archive <local-zip>` instead of `--url` for offline installation. Run the
-same command with `--rollback` to select the verified previous runtime through
-the existing installation owner. Neither command starts or restarts Hub. Runtime
-and temporary roots must be separate; stop all writers through the existing owner
-before update. The bootstrap refuses a live/unknown runtime process and holds the
-existing publication lock. It does not establish a new stop-all-writers protocol.
-
-Focused preparation checks, with `AGENT_HUB_TEST_TEMP` on the intended volume:
-
-```powershell
-python -m unittest discover -s AgentHub/distribution -p package_test.py -v
-python -B -m unittest discover -s <release-tool>/tests -p test_build_release.py -v
-python -m unittest discover -s AgentHub/distribution -p semantic_package_test.py -v
-python -m unittest discover -s AgentHub/distribution -p release_source_test.py -v
-python -m unittest discover -s AgentHub/distribution -p installed_package_test.py -v
-```
-
-The latter uses the real native host builder, manifest verification and runtime
-installation owner with synthetic application/state bytes. It is not product,
-provider, production data migration or public download acceptance.
-It invokes the same packaging CLI twice for each actual native prepared fixture,
-proves saved result and all artifact bytes/mtimes stay unchanged, then uses the
-resulting package for install/update/rollback. The dedicated checkpoint suite
-also exercises real package integrity, cutpoints and reparse refusal. These
-tests do not promise bitwise reproducibility of independent full product builds
-or replace the required real public download and installer acceptance.
-
-The package must contain a verified prepared runtime, its production dependencies
-and native RuntimeHost, plus license/notices and safe first-run configuration.
-It must not contain Git, development tests, Bugs, local data/config, diagnostics,
-the author's `sourceRoot`, provider credentials or a user profile. Node.js runtime
-is required to run Hub; npm, Git, a compiler and a source checkout are not required
-on the recipient machine. Voice/Android/Cloudflare build dependencies are optional
-and are not silently bundled.
-
-The future Utilities tree retains only a brief public AgentHub link in its
-existing inventory/documentation. It contains no Hub source directory, installer
-copy or release assets. The reviewed `install_release.py`, ready packages and
-[installation guide](INSTALL.md) live in standalone AgentHub. This supersedes
-the earlier two-file Utilities bootstrap proposal.
-
-`utilities-entry.json` records that future link-only metadata handoff, with an
-empty Utilities file-copy list. `utilities-README.md` is the short link text for
-the existing inventory, not another retained AgentHub folder. Neither file
-applies Git, updater, uninstall or deletion effects. No source directory is
-removed until the exact public download, fresh install, existing-user update,
-rollback and managed source/origin migration have passed and S2 owns the cutover.
-Original Tasks/WIP/receipts/history and private consent evidence stay preserved.
-
-The current `UPDATER/imports.json` has no AgentHub import registration. Existing
-`agent-hub`, `tool:agent-hub`, `app:agent-hub`, `runtime:agent-hub` decisions and
-optional component choices remain historical participant consent, not uninstall
-instructions. Do not delete them or manufacture another acceptance/update owner.
-At cutover retire source-build guidance from the current inventory; standalone
-versioned AgentHub assets remain the update origin. Removing Utilities sources
-must not delete/stop the installed runtime, config, data, sync URL/auth/cursors
-or disable standalone updates. Old CHANGELOG entries remain historical records.
-
-The native installation test invokes a copy of the standalone installer from a
-source-free recipient directory. It checks fresh install/repeat, then removes an
-owned synthetic legacy Utilities source folder and checks update/live refusal/
-rollback with the same runtime and unchanged participant choices/config/data.
-Only transport is synthetic; no actual Utilities source removal or public
-download acceptance follows from this fixture. No graphical Setup.exe is added.
-
-## Updating an installed Hub from a public package
-
-Download the release's canonical `install_release.py` asset and verify its
-published digest. Use an explicit stable version, one retained private scratch
-directory outside the runtime, and one original operation ID:
-
-```powershell
-python install_release.py --release <exact-stable-version> --prepare-update --operation-id <original-update-id> --runtime-root <installed-runtime-root> --scratch-root <separate-private-scratch>
-```
-
-This requires Windows x64, Python, Node with `node:sqlite`, a same-user interactive
-desktop shell and the standard `<runtime-root>/data` layout. It downloads/verifies
-the exact canonical ZIP/descriptor, verifies the installer against the same
-public metadata, and retains the package. No npm, compiler, source rebuild or
-new publication runs on the recipient. Custom external data roots or different
-elevation/security contexts refuse; do not relocate data to bypass the check.
-
-For **public 2.0.4 without package handoff**, first finish active work. Keep Hub
-running while arming from a separate terminal outside its process Job. Confirm
-the displayed one-time manual step. Only after `awaiting-user-stop` reports the
-exact old Host/Node PIDs and release, stop that old Hub cohort yourself within
-the reported 120-second window. Closing an unrelated window is not proof of
-stopping Hub. Do not introduce new work, start another Hub or log in/out during
-this window. The updater does **not** terminate any process. A manual forced
-stop is crash-consistent, not graceful; uncommitted work may remain UNKNOWN.
-
-The native continuation holds original process/Job handles, waits for every old
-Job member to disappear and rechecks before each effect. Unknown/foreign/live
-writers stop the operation. It then backs up regular config/data using SQLite's
-backup API with writer reservations and integrity checks, runs the verified
-stopped-only installer and launches the exact target once. It does not copy live
-WAL files, restore data, replay unknown work or silently roll back. Backup size
-and verification determine downtime; 45 seconds is only the Job-accounting
-observation bound, not a downtime promise. Keep enough private free space for
-the unpacked package and all runtime data/config plus backup.
-
-After this one-time upgrade, a capable installed Hub advertises its real package
-restart protocol. The SAME command submits its ordinary graceful restart request:
-active work finishes normally before the existing stopping fence, all writers
-close, then native retirement/backup/install/start occur. A lost authenticated
-request never falls back to manual stop or creates another original.
-
-Read the original after interruption or a lost result:
-
-```powershell
-python install_release.py --release <same-exact-version> --update-status --operation-id <same-original-update-id> --runtime-root <same-runtime-root> --scratch-root <same-private-scratch>
-```
-
-This reads only status/phase/outcome. `succeeded` requires the replacement's exact
-ready/original settlement, not merely install exit0. An absent original or
-incomplete pre-admission download is unknown, not success. Transport never
-launches again automatically. New `public-update-preparation-v1` receipts permit
-an explicit repetition of the SAME `--prepare-update` command only before any
-request/dispatch fence, with the same runtime, original ID, exact tag, installer,
-additional checksum and private scratch. The installer must freshly confirm
-canonical original absence; a read failure or any existing original is not
-absence. Exact canonical asset URLs, sizes and digests are pinned before body
-download and cannot change on continuation. Failed bytes remain in their original
-attempt; an exclusive sibling inside that SAME cache performs fresh verification.
-There is no automatic network retry, timeout increase or TLS downgrade.
-
-Historical caches without this receipt remain readback-only, including an empty
-descriptor left by an earlier installer. They cannot be adopted or repaired by
-this command. A saved request or dispatch fence is also readback-only even when
-the canonical original is still absent: a crash/lost reply never grants another
-launch. A different version with the same ID refuses. Preserve the original
-scratch; a different scratch is not a recovery route for an ambiguous dispatch.
-Do not delete receipts/cache/backup to make a retry pass. If install/start failed,
-the current pointer, verified manifests, exact live process evidence and original
-must first be inspected. Any explicit code-only rollback uses the existing
-stopped installer `--rollback`; it does not restore a database or settle UNKNOWN.
-Do not start manually across an unresolved package-original admission fence.
-
-The interrupted-preparation controls are in `update_transport_test.py`. They
-exercise real package/asset verification, filesystem ownership, serialization and
-read-only SQLite; HTTPS and the final subprocess boundary are controlled. They
-do not establish the cause of intermittent public TLS/header/body stalls or prove
-an actual online update. That acceptance still belongs to the release owner.
-
-Release HTTPS reads use the same certificate-validating stdlib transport and
-redirect policies without asking the peer for `Connection: close`. Each response
-is still closed locally after its bounded framed read, including failures; there
-is no connection pool, retry or alternate transport. Paired public API controls
-isolated the early-close request header as a reproducible interoperability
-trigger, including stalls with the same header in a separate TLS stack. This
-does not identify the responsible remote/intermediate component or prove a
-public update. `release_https_test.py` checks complete HTTP framing, local closure,
-redirect/size/error refusal and unchanged certificate-failure propagation.
-
-The focused `package_update_test.py` uses the actual immutable public 2.0.4
-native Host and a literal local application, controlled HTTPS metadata, real
-SQLite/control/backup/installer and exact replacement readiness. Its own natural
-fixture stop represents the manual user action; it is not an old product stop
-callback. It never stops the real App or Hub. Product/provider/public-download
-acceptance remains separate from this bounded fixture.
-
-## Existing identities and cutover
-
-### Private whole-application update check
-
-Prepare immutable full artifacts with `prepare-whole-update.mjs`, supplying an
-exact clean private source commit and an already verified dependency runtime.
-Lock equality and the entire dependency manifest are checked before reuse.
-Then run `node distribution/whole_update.mjs <artifacts.json> <new-output-root>`.
-The new root is exclusive. The check exercises real Hub composition, authenticated
-Desktop IPC, owned active work, restart/drain, backup, native Host, installer,
-startup and exact Ready, with retained raw results. It never launches the real
-production root or reads its config/secrets. External provider/Telegram and
-canonical-shaped metadata/assets use controlled local peers; no public TLS or
-real account reliability is inferred.
-
-Eligible pre-intent failures can be continued explicitly through the existing
-installed owner: `node <installed-handoff-entry> resume-input <retained-request>
-<failed-revision> <binding-sha>` prints a fresh exact input document. Retain that
-document and submit `node <installed-handoff-entry> resume <retained-request>
-<continuation-document>`. An identical repeated document reads back the original;
-it does not prepare/install/start again. Ordinary installer repetition remains
-readback-only. In addition to typed pre-stop evidence, protocol-v1 first failed
-revision2 can use its positive create/intent/terminal revision topology, with
-the exact old row/binding retained and fresh current/public/native guards. It
-does not create a historical typed proof or claim global NO_EFFECT. Later or
-unproven historical failures, UNKNOWN,
-changed public bytes/current/CAS/roots and prior native effects refuse. Never
-edit a receipt, cache or terminal row to manufacture eligibility.
-
-- Existing Task refs/worktrees, audit receipts and frozen generations stay in the
-  old repository identity. A new Git OID is a mapping, never an old publication.
-- Original frozen operations retain their original Utilities source, generation,
-  receipts and effects. They are not resumed by this tooling.
-- The first standalone product must be the release owner's reviewed accepted
-  composition. Neither rolling dev/main nor a source-only mechanism carrier is
-  a substitute. Preserve incoming and local results through ordinary composition.
-- Additional first-source baseline registration above may precede the first
-  archive solely for ordinary candidate preparation. Managed source retirement
-  and installed update-origin cutover follow mapping/assets/consumer acceptance.
-  Keep the old repository available for original-operation reconciliation and
-  active Tasks; their existing identities are not rewritten by registration.
-- The C-to-D runtime migration has priority and does not depend on this extraction.
-  Migration scratch and export candidates must remain separate from runtime.
-- Automatic report discovery/publication requires the existing Utilities
-  inventory/team-setup markers, not `AgentHub/package.json`. Standalone source
-  and an explicit source-repository argument refuse before Git publication.
-  Link-only Utilities remains eligible after source removal. The operator must retain
-  its private destination: markers identify layout, not remote visibility.
-
-## Current preparation limits
-
-The audited source history and preserved WIP branch are published in the public
-AgentHub repository, with confirmed scoped grants and an enabled private
-vulnerability channel. The ready Windows product release, exact final selected
-composition/prepared standalone runtime, actual public download acceptance and
-managed Utilities source-tree replacement remain separate delivery stages.
-No source audit, repair runtime or synthetic installer test substitutes for them.
+`installer-storage-preview` takes `runtimeRoot` and optional `after`; it returns
+up to three candidate/eligible binding pairs without deleting. After integration,
+ordinary installed startup performs cleanup through the existing service. An
+addressed finite `installer-storage-cleanup` input supplies `runtimeRoot` and
+`approved:[{ownerId,candidate,binding}]` from that preview. Repeat the SAME binding
+for admitted partial progress/readback, not a new filesystem preview over an
+already partially deleted tree. Normal readiness/busy/lease fences still apply;
+an older live runtime without authenticated busy evidence safely defers this
+foreground call. The updated runtime's ordinary background path needs no manual
+command. Root owns actual local cleanup and public delivery.

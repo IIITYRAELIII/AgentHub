@@ -179,7 +179,15 @@ test("recording full Hub shell restores the same paused command across restart",
         }
         observation.lastSuccess = { observedAt: new Date().toISOString(), apiVersion: snapshot?.apiVersion ?? null,
           hasExactThread: Boolean(snapshot?.collectionDeltas?.conversations?.reset?.some(task => task.threadId === threadId)) };
-        const providerStarted = await stat(path.join(f.prepared.recording.root, "recording-provider.sqlite")).then(() => true, () => false);
+        let providerStarted = false;
+        // File creation precedes SQLite schema readiness. Cold startup no
+        // longer resumes a saved Thread merely to force provider hydration.
+        let recordingDatabase;
+        try {
+          recordingDatabase = new DatabaseSync(path.join(f.prepared.recording.root, "recording-provider.sqlite"), { readOnly: true });
+          providerStarted = Boolean(recordingDatabase.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='commands'").get());
+        } catch { /* The isolated provider has not initialized yet. */ }
+        finally { recordingDatabase?.close(); }
         if (providerStarted && snapshot.collectionDeltas?.conversations?.reset?.some((task) => task.threadId === threadId)) break;
         await delay(100);
       }

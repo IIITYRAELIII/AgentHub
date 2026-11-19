@@ -1,25 +1,27 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { readdir, readFile } from "node:fs/promises";
+
 import path from "node:path";
 import test from "node:test";
 
 import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
-import { WorkspaceReleaseService } from "../../src/application/workspace-release-service.mjs";
-import {
-  isTaskBoardMutationOwner,
-  isWorkspaceCatalogMutationOwner,
-} from "../../src/application/sqlite-mutation-owner.mjs";
-import { TaskBoardService } from "../../src/application/task-board-service.mjs";
-import { createPersistenceMutationCapabilities } from "../../src/composition/persistence-mutation-composition.mjs";
-import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
-import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+
+
+
+
+
+
 
 // This file checks package/import topology and real SQLite capabilities.
 // Runtime behavior is exercised by the owning service suites and phase composition
 // scenarios, not by counting constructor names or matching callback source text.
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
-const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler", "WIP"]);
+// Dependency custody can retain the same installed package beside node_modules.
+// It remains third-party input, not a maintained application source layer.
+const IGNORED_DIRECTORIES = new Set(["node_modules", ".agent-hub-dependency-retained", "build", "dist", ".wrangler", "WIP"]);
 const SOURCE_LAYERS = new Set([
   "application",
   "composition",
@@ -128,13 +130,25 @@ test("production modules never depend on the Agent Hub composition root", async 
   assert.deepEqual(offenders, []);
 });
 
-test("Agent Hub executable entrypoint contains bootstrap only", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-main.mjs"), "utf8");
-  const imports = relativeImports(source);
-  assert.deepEqual(imports, ["./agent-hub-server.mjs"]);
-  assert.equal(source.includes("startAgentHub()"), true);
-  assert.equal(source.includes("shutdownAgentHub("), true);
-  assert.doesNotMatch(source, /TelegramClient|AgentProviderRegistry|TaskRunRegistry|loadConfig/u);
+test("Agent Hub executable bootstrap starts once and routes signals and failures to its shutdown owner", async () => {
+  for (const mode of ["success", "failure"]) {
+    const { stdout, stderr } = await promisify(execFile)(process.execPath,
+      [fileURLToPath(new URL("../fixtures/bootstrap-entry-observation.mjs", import.meta.url)), mode],
+      { windowsHide: true });
+    assert.equal(stderr, "");
+    const observed = JSON.parse(stdout);
+    assert.deepEqual(observed.fatalOptions, [
+      { sameShutdown: true, exitAfterShutdown: false },
+      { sameShutdown: true, exitAfterShutdown: true },
+    ]);
+    assert.deepEqual(observed.events, [
+      ["start"],
+      ...(mode === "failure" ? [["fatal", "startup failed", "startup", true], ["shutdown", "startup failed"]] : []),
+      ["shutdown", "SIGINT"], ["shutdown", "SIGTERM"],
+      ["fatal", "unhandled rejection", "rejection", false], ["shutdown", "unhandled rejection"],
+      ["fatal", "uncaught exception", "exception", false], ["shutdown", "uncaught exception"],
+    ]);
+  }
 });
 
 test("unit tests live under the mirrored tests tree instead of the package root", async () => {
@@ -225,60 +239,4 @@ test("src modules obey the architectural dependency matrix", async () => {
     }
   }
   assert.deepEqual(violations, []);
-});
-
-
-
-
-test("production persistence composition exposes only branded fail-closed capabilities", async (context) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-composed-capabilities-"));
-  const databaseFile = path.join(root, "hub.sqlite");
-  const rawWorkspaceCatalogStore = new WorkspaceCatalogStore({ databaseFile });
-  await rawWorkspaceCatalogStore.load();
-  const workspace = await rawWorkspaceCatalogStore.runMutation(() => (
-    rawWorkspaceCatalogStore.createWorkspace({ name: "Composition" })
-  ));
-  const rawTaskBoardStore = new TaskBoardStore({ databaseFile });
-  context.after(async () => {
-    rawTaskBoardStore.close();
-    rawWorkspaceCatalogStore.close();
-    await rm(root, { recursive: true, force: true });
-  });
-
-  const { workspaceCatalogStore, taskBoardStore } = createPersistenceMutationCapabilities({
-    rawWorkspaceCatalogStore,
-    rawTaskBoardStore,
-  });
-  assert.equal(isWorkspaceCatalogMutationOwner(workspaceCatalogStore), true);
-  assert.equal(isTaskBoardMutationOwner(taskBoardStore), true);
-  assert.equal(workspaceCatalogStore.runMutation, undefined);
-  assert.equal(taskBoardStore.transaction, undefined);
-  assert.throws(() => workspaceCatalogStore.load, /not classified for production access/u);
-
-  const taskBoard = new TaskBoardService({ store: taskBoardStore, workspaceCatalog: workspaceCatalogStore });
-  const task = await taskBoard.create({
-    text: "composed capability", source: "test", bucket: "workspace", workspaceId: workspace.id,
-  });
-  assert.equal(taskBoard.task(task.id).id, task.id);
-
-  const releaseDependencies = {
-    releasePlanner: { plan: async () => ({}) },
-    releaseGitWorkspaces: {
-      frozenCandidate: async () => ({}),
-      synchronizePublishedPrimary: async () => ({}),
-    },
-    taskGitWorkspaces: { synchronizeMainIntoDev: async () => ({}) },
-    releasePreflight: {
-      prepareAwaitSet: async () => ({}),
-      withAwaitTransition: async (_workspaceId, operation) => operation(),
-    },
-    verifyPublication: async () => ({}),
-  };
-  assert.throws(
-    () => new WorkspaceReleaseService({ store: rawTaskBoardStore, ...releaseDependencies }),
-    /requires the Task mutation owner facade/u,
-  );
-  assert.doesNotThrow(
-    () => new WorkspaceReleaseService({ store: taskBoardStore, ...releaseDependencies }),
-  );
 });

@@ -7,8 +7,8 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { artifactVersion, artifactVersionIdentity, assertAgentHubUpgrade, compareSemanticVersions,
   displayArtifactVersion, manifestVersionIdentity, semanticVersion } from "../../src/domain/agent-hub-version.mjs";
-import { nextRuntimeReleaseVersion } from "../../src/infrastructure/filesystem/runtime-release-version.mjs";
-import { inspectAgentHubReleaseVersion, nextAgentHubPublicVersion } from "../../src/infrastructure/filesystem/release-version.mjs";
+import { nextRuntimeReleaseVersion, inspectAgentHubReleaseVersion, nextAgentHubPublicVersion } from "../helpers/external-release-recipe.fixture.mjs";
+
 import { readAgentHubReleaseVersion } from "../../src/infrastructure/filesystem/agent-hub-package.mjs";
 
 const manifest = (version, build, releaseId = "fixture") => ({ releaseId, version,

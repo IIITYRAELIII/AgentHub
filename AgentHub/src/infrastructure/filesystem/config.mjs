@@ -1,4 +1,5 @@
 import { normalizeUsageSyncServerUrl } from "../../domain/default-usage-sync-server.mjs";
+import { isRetiredCodexModel } from "../../domain/agent-runtime-settings.mjs";
 import { createLegacyTeamUsageAccountPolicy } from "../../domain/team-usage-accounts.mjs";
 import { assertRecordingContourConfiguration } from "./test-contour-recording-environment.mjs";
 import { recordingContourProfile } from "./test-contour-recording-profile.mjs";
@@ -129,43 +130,11 @@ function taskBoardSettings(value) {
     throw new Error("taskBoard.autoPlaceConfidence must be between 0 and 1");
   }
   return {
-    triageEnabled: source.triageEnabled !== false,
+    triageEnabled: source.triageEnabled !== false && !isRetiredCodexModel(source.triageModel ?? "gpt-5.3-codex-spark"),
     triageModel: String(source.triageModel ?? "gpt-5.3-codex-spark").trim()
       || "gpt-5.3-codex-spark",
     autoPlaceConfidence: confidence,
     bugReportWorkspaceName: String(source.bugReportWorkspaceName ?? "").replace(/\s+/gu, " ").trim(),
-  };
-}
-
-function releaseValidationSettings(value, { configDirectory = process.cwd() } = {}) {
-  const raw = value ?? {};
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("releaseValidation must be an object");
-  }
-  const repositories = raw.repositories == null ? [] : raw.repositories;
-  if (!Array.isArray(repositories)) throw new Error("releaseValidation.repositories must be an array");
-  return {
-    repositories: repositories.map((repository, index) => {
-      if (!repository || typeof repository !== "object" || Array.isArray(repository)) {
-        throw new Error(`releaseValidation.repositories[${index}] must be an object`);
-      }
-      const projectRoot = String(repository.projectRoot ?? repository.root ?? "").trim();
-      if (!projectRoot) throw new Error(`releaseValidation.repositories[${index}].projectRoot is required`);
-      const check = repository.check ?? {};
-      if (!check || typeof check !== "object" || Array.isArray(check)) {
-        throw new Error(`releaseValidation.repositories[${index}].check must be an object`);
-      }
-      return {
-        ...repository,
-        projectRoot: path.resolve(configDirectory, projectRoot),
-        enabled: repository.enabled === true,
-        check: {
-          ...check,
-          commands: Array.isArray(check.commands) ? check.commands : [],
-          artifacts: Array.isArray(check.artifacts) ? check.artifacts : [],
-        },
-      };
-    }),
   };
 }
 
@@ -624,7 +593,6 @@ function loadCodexModels(raw) {
     { value: "gpt-6-luna", label: "GPT-6 Luna" },
     legacyShippedModels[1],
     legacyShippedModels[3],
-    legacyShippedModels[6],
   ];
   const defaultModels = shippedModels;
   const source = raw.codexModels ?? defaultModels;
@@ -846,7 +814,6 @@ export async function loadConfig() {
     }),
     contextAutomation: contextAutomationSettings(raw.contextAutomation),
     taskBoard: taskBoardSettings(raw.taskBoard),
-    releaseValidation: releaseValidationSettings(raw.releaseValidation, { configDirectory }),
     diagnostics: {
       sentry: sentrySettings(diagnosticsRaw.sentry, { projectRoot }),
     },

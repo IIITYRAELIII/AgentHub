@@ -56,6 +56,17 @@ test("durable exact history absorbs a late active snapshot, while the next real 
     await afterPaint(page);
     assert.equal(await page.locator("[data-chat-live]").evaluate((node) => node.hidden), true,
       "same exact completed turn cannot recreate an empty working card");
+    console.log(`terminal-indicator-DOM ${JSON.stringify(await page.evaluate(() => ({
+      selectedTask: document.querySelector("[data-chat-pane]")?.dataset.streamChatTaskId,
+      liveHidden: document.querySelector("[data-chat-live]")?.hidden,
+      indicators: [...document.querySelectorAll("[data-chat-pane] .chat-scroll-down")].map(node => ({
+        owner: node.closest("[data-stream-chat-task-id]")?.dataset.streamChatTaskId,
+        working: node.hasAttribute("data-working"), hidden: node.hidden,
+        label: node.querySelector(".chat-scroll-label")?.textContent,
+      })),
+      suppliedVersion: window.__agentHubFixture.snapshot.version,
+      suppliedTurn: window.__agentHubFixture.snapshot.tasks[0].run?.turnId,
+    })))}`);
     assert.equal(await page.locator("[data-chat-pane]").evaluate((node) => node.textContent.includes("Ход идёт")), false,
       "the selected composer also stops projecting the completed run");
 

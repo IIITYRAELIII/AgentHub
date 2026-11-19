@@ -4,6 +4,7 @@ import { StreamContextMaintenanceService } from "../application/stream-context-m
 import { UsageSyncAutoService } from "../application/usage-sync-auto-service.mjs";
 import { UsageSyncRemoteClient } from "../infrastructure/http/usage-sync-remote-client.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
+import { installerCutoverOperation } from "../application/installer-cutover.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
 import { ClaudeContextMaintenanceService } from "../providers/claude/claude-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
@@ -177,10 +178,10 @@ export async function createProviderApplicationComposition({
   const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
   const storageRetention = createStorageRetentionComposition({ config, store: maintenanceOperations,
     taskBoard: infrastructure.taskBoard, taskGitWorkspaces: infrastructure.taskGitWorkspaces,
-    releaseGitWorkspaces: infrastructure.releaseGitWorkspaces, releaseOperations: infrastructure.releaseOperations,
+    releaseGitWorkspaces: infrastructure.releaseGitWorkspaces,
     timers: runtimeTimers, readReady: () => agentHubRuntimeHealth.snapshot().ready,
     readBusy: () => runtimeData.taskRuns.size > 0, isStopping: () => hostState.stopping,
-    health: agentHubRuntimeHealth });
+    health: agentHubRuntimeHealth, trace: commandTraceService });
   agentHubRuntimeHealth.setDiagnosticSource("restart", () => {
     const settled = maintenanceOperations.latestSettledRestart();
     return settled ? { operationId: settled.operationId, status: settled.status,
@@ -349,9 +350,11 @@ export async function createProviderApplicationComposition({
     retargetClientSelections: (binding) => retargetTelegramClientSelections(hostState, binding),
     saveState: api.saveState,
     scheduleDeferred: (item, delayMs) => late.runCoordinator().scheduleDeferred(item, delayMs),
-    autoCompactEnabled: () => config.contextAutomation.autoCompactAfterTurn,
+    autoCompactEnabled: () => config.contextAutomation.autoCompactAfterTurn
+      && !installerCutoverOperation(maintenanceOperations, config.dataDir),
     autoCompactThreshold: () => config.contextAutomation.autoCompactThresholdPercent,
-    autoRotateEnabled: () => config.contextAutomation.autoRotateAfterCompaction,
+    autoRotateEnabled: () => config.contextAutomation.autoRotateAfterCompaction
+      && !installerCutoverOperation(maintenanceOperations, config.dataDir),
     autoRotateThreshold: () => config.contextAutomation.autoRotateThresholdPercent,
     commandTrace: commandTraceService,
   });

@@ -11,7 +11,7 @@ import {
   withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
-import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
+import { assistantTraceAnnotationPresentation, normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 import {
   canonicalizeUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -225,14 +225,13 @@ function mergeDurableMessages(hydratedMessages, durableMessages, turnId, hydrate
     const author = String(durable?.author ?? "").trim()
       || String(current?.author ?? "").trim();
     const responseAnnotationReferences = Array.isArray(durable?.responseAnnotationReferences)
-      && durable.responseAnnotationReferences.length
       ? durable.responseAnnotationReferences
       : current.responseAnnotationReferences;
     values[index] = {
       ...current,
       ...structuredClone(durable),
       ...(author ? { author } : {}),
-      ...(Array.isArray(responseAnnotationReferences) && responseAnnotationReferences.length
+      ...(Array.isArray(responseAnnotationReferences)
         ? { responseAnnotationReferences: structuredClone(responseAnnotationReferences) }
         : {}),
       time: current.time ?? durable?.time ?? null,
@@ -567,8 +566,9 @@ export function createDesktopTaskHistoryFactory({
       const source = threadBindings.find((thread) => thread.provider === provider
         && thread.threadId === selectedThreadId);
       if (!source) throw new Error("Trace Thread does not belong to the Stream");
+      const tracePage = await historyReader.refresh(source, { tracePage: params.tracePage });
       return { provider, threadId: selectedThreadId,
-        tracePage: await historyReader.refresh(source, { tracePage: params.tracePage }) };
+        tracePage: { ...tracePage, groups: tracePage.groups.map(assistantTraceAnnotationPresentation) } };
     }
     const history = [];
     let sourceRefreshFailed = false;
@@ -862,7 +862,7 @@ export function createDesktopTaskHistoryFactory({
           completedAt: item.completedAt ?? null,
           activities: Array.isArray(item.activities) ? item.activities : [],
           ...(Array.isArray(item.activityGroups) && item.activityGroups.length
-            ? { activityGroups: item.activityGroups }
+            ? { activityGroups: item.activityGroups.map(assistantTraceAnnotationPresentation) }
             : {}),
           messages: (() => {
             const sourceMessages = coalesceInterstreamRootAlias(

@@ -555,7 +555,7 @@ test("production pin navigation survives stale and fresh history until an explic
     const response = page.waitForResponse((candidate) => {
       if (!candidate.url().endsWith("/api/control")) return false;
       const body = candidate.request().postDataJSON();
-      return body?.action === "open-task" && body?.params?.streamId === "stream-1";
+      return body?.action === "select-task" && body?.params?.streamId === "stream-1";
     });
     await page.locator(".stream-tabs-track [data-stream-tab-id='stream-1']").evaluate((button) => button.click());
     await response;
@@ -599,7 +599,7 @@ test("production pin navigation survives stale and fresh history until an explic
       const freshHistoryResponse = page.waitForResponse((candidate) => {
         if (!candidate.url().endsWith("/api/control")) return false;
         const body = candidate.request().postDataJSON();
-        return body?.action === "open-task" && body?.params?.streamId === "stream-1";
+        return body?.action === "select-task" && body?.params?.streamId === "stream-1";
       });
       try {
         await Promise.all([

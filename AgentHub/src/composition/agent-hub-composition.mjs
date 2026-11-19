@@ -79,10 +79,10 @@ const localWebSecret = config.miniApp.enabled
   ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))
   : "";
 const { value: {
-  trustedDeviceStore, taskLifecycle, taskGitWorkspaces, releaseGitWorkspaces, releaseOperations,
+  trustedDeviceStore, taskLifecycle, taskGitWorkspaces, releaseGitWorkspaces,
   contourExternalEffects,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, taskReleasePlanner, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
+  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, taskReleasePlanner, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
   miniAppServer,
   publicMiniAppServer,
   attachmentDirectory,
@@ -271,7 +271,7 @@ const providerApplication = await createProviderApplicationComposition({
   },
   infrastructure: {
     runJournal,
-    taskBoard, taskGitWorkspaces, releaseGitWorkspaces, releaseOperations,
+    taskBoard, taskGitWorkspaces, releaseGitWorkspaces,
     contourExternalEffects,
     turnEndNotifications,
     workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
@@ -586,7 +586,7 @@ const interactionShell = createInteractionShellPhase({
   infrastructure: {
     trustedDeviceStore, workLogUsageStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
     hubMcpService,
-    taskReleasePlanner, workspaceReleaseService,
+    taskReleasePlanner,
     taskLifecycle,
     attachmentDirectory,
     usdRubRateStore, runtimeStateStore, taskReadStateStore, rateLimitHistoryStore, commandTraceService, runJournal,

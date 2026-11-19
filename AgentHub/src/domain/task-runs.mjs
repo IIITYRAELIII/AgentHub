@@ -461,6 +461,10 @@ export function createObservedTaskRun(value, snapshot = {}) {
       displayRequested: false,
     }),
     responseText: snapshot.answer ?? "",
+    ...(snapshot.responseItem?.id ? {
+      responseItemId: snapshot.responseItem.id,
+      responseItems: [structuredClone(snapshot.responseItem)],
+    } : {}),
     observedInitialResponseText: String(snapshot.answer ?? ""),
     observedResponseChanged: false,
     observerTimer: null,
@@ -760,6 +764,8 @@ export class TaskDismissalRegistry {
 }
 
 export function applyObservedResponseAnnotationReferences(run, snapshot) {
+  if (snapshot?.active && snapshot.responseItem?.id
+    && snapshot.turnId === run?.turnId) return;
   const snapshotTurnId = String(snapshot?.turnId ?? "").trim();
   if (snapshotTurnId && snapshotTurnId !== String(run?.turnId ?? "").trim()) {
     run.responseAnnotationReferences = [];

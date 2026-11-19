@@ -172,12 +172,15 @@ export async function preflightRuntimeBackupDestination({ runtimeRoot, destinati
   return { ...proof, destination: path.resolve(destination) };
 }
 
-export async function backupStoppedRuntime({ runtimeRoot, destination, assertStopped }) {
+export async function backupStoppedRuntime({ runtimeRoot, destination, assertStopped, onCreated = null }) {
   await assertStopped();
   const inventory = await inspectRuntimeBackupScope({ runtimeRoot });
   await preflightRuntimeBackupDestination({ runtimeRoot, destination });
   await mkdir(destination); // Exclusive: never overwrite a prior backup.
   await protectRuntimeDirectory(destination);
+  // Exclusive destination and planned names are checkpointed before copying.
+  // A caught partial backup can later be sealed without adopting foreign files.
+  await onCreated?.({ directory: destination, files: inventory.files });
   const reservations = [], records = [];
   let failure;
   try {

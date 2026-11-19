@@ -1,42 +1,18 @@
 import { TaskOperationInterruption, INTERRUPTIBLE_TASK_TOOLS, taskOperationInterrupted } from "./task-operation-interruption.mjs";
-import { createHash, createHmac, timingSafeEqual, randomUUID } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { TaskCleanupConfirmationRejectedError, cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../domain/task-cleanup-confirmation.mjs";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { preparedAwaitAuthorization } from "./release-operation-command-service.mjs";
 
-import {
-  MAX_ATTACHMENT_BYTES,
-  attachmentContentType,
-  attachmentMetadataFromId,
-  taskAttachmentDescriptors,
-  createAttachmentStorageName,
-} from "../domain/attachment-files.mjs";
-import {
-  createInterstreamOrigin,
-  createInterstreamMessage,
-  interstreamAuditContentHash,
-  interstreamDisplayText,
-} from "../domain/interstream-message.mjs";
+import { MAX_ATTACHMENT_BYTES, attachmentContentType, attachmentMetadataFromId, taskAttachmentDescriptors, createAttachmentStorageName } from "../domain/attachment-files.mjs";
+import { createInterstreamOrigin, createInterstreamMessage, interstreamAuditContentHash, interstreamDisplayText } from "../domain/interstream-message.mjs";
 import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../domain/claim-forward-custody.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import { normalizedReleaseReference } from "../domain/task-checklist.mjs";
-import {
-  normalizedTaskDescription,
-  normalizedTaskText,
-  normalizedTaskTitle,
-  normalizedTaskWorkflowStatus,
-  TASK_TITLE_MAX_LENGTH,
-  TaskDependencyPendingError,
-  TaskLifecycleBeginRejectedError,
-  TaskLifecycleNoEffectError,
-  TaskOperationReconciliationRefusedError,
-  workflowAdmissionNoEffectEvidence, claimAdmissionNoEffectEvidence, claimAdmissionRefusalError, TaskClaimExecutorBusyError,
-  ReleaseCandidateFrozenError,
-  TaskAbsorptionCompositionError,
-} from "../domain/task-board-task.mjs";
+import { normalizedTaskDescription, normalizedTaskText, normalizedTaskTitle, normalizedTaskWorkflowStatus, TASK_TITLE_MAX_LENGTH, TaskDependencyPendingError, TaskLifecycleBeginRejectedError, TaskLifecycleNoEffectError, TaskOperationReconciliationRefusedError, workflowAdmissionNoEffectEvidence, ordinaryAwaitOriginalArguments, claimAdmissionNoEffectEvidence, claimAdmissionRefusalError, TaskClaimExecutorBusyError, ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { taskRunIsActive } from "../domain/task-runs.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { TaskLifecycleService, TaskLifecyclePersistenceError, TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalDependencyError, TaskWithdrawalBusyError, TaskSquashTransferRejectedError } from "./task-lifecycle-service.mjs";
@@ -45,10 +21,6 @@ import { TaskIntegrationRejectedError } from "./task-lifecycle-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
 import { McpAdmissionContentionError } from "../domain/mcp-admission-contention.mjs";
 
-import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparationRejectedError,
-  validatePreparationEnvelope, preparationSourceRoot } from "./release-preparation-admission.mjs";
-import { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash,
-  validatePreparationForward, inspectPreparationForwardCustody } from "./release-preparation-forward.mjs";
 
 
 const CONTEXT_TOKEN_VERSION = 1;
@@ -61,7 +33,6 @@ const MUTATING_TOOLS = new Set([
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_task_operation_reconcile",
-  "hub_release_run", "hub_release_continue", "hub_release_prepare", "hub_release_prepare_resume",
 ]);
 
 // Only the synchronous input boundary below can produce this proof of no effects.
@@ -74,7 +45,7 @@ function completionError(error) {
 }
 
 function definiteMcpMutationFailure(error) {
-  return error instanceof TaskClaimCustodyRejectedError || error instanceof ReleasePreparationRejectedError || error instanceof TaskInputValidationError
+  return error instanceof TaskClaimCustodyRejectedError || error instanceof TaskInputValidationError
     || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
     || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
     || error instanceof TaskLifecycleBeginRejectedError || error instanceof TaskWithdrawalBusyError
@@ -493,8 +464,7 @@ export class HubMcpService {
   #startupReconciliation = Promise.resolve();
 
   constructor({
-    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
-    releaseOperations = null,
+    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePreflight,
     taskGitWorkspaces = null, taskLifecycle = null,
     taskOperationReconciliation = null, claimCustodyRuntime = null,
     measureOperation = async (_stage, operation) => operation(),
@@ -516,8 +486,6 @@ export class HubMcpService {
       requiredMethod(taskBoard, name);
     }
     requiredMethod(workLog, "threadTurns");
-    requiredMethod(releasePreflight, "preflight");
-    requiredMethod(releaseCompleter, "completeRelease");
     this.workspaceCatalog = typeof workspaceCatalog.runMutation === "function"
       ? createWorkspaceCatalogMutationOwner(workspaceCatalog)
       : workspaceCatalog;
@@ -528,9 +496,6 @@ export class HubMcpService {
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
     this.releasePreflight = releasePreflight;
-    this.releaseCompleter = releaseCompleter;
-    this.releasePlanner = releasePlanner;
-    this.releaseOperations = releaseOperations;
     this.recordCommandTrace = recordCommandTrace;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.claimCustodyRuntime = claimCustodyRuntime;
@@ -655,51 +620,7 @@ export class HubMcpService {
   setStreamMessenger(value) {
     if (typeof value !== "function") throw new TypeError("Stream messenger is required");
     this.#streamMessenger = value;
-    this.releaseOperations?.setEventDelivery?.(async (event) => {
-      const commandId = `release:${event.operationId}:${event.revision}:${event.eventKind}`;
-      const operationSpanId = randomUUID();
-      const metadata = { operationSpanId, operationId: event.operationId,
-        revision: event.revision, eventKind: event.eventKind };
-      const record = (span) => {
-        try { this.recordCommandTrace({ commandId, transport: "release-operation", ...span }); }
-        catch { /* Diagnostics cannot change event delivery or its original outcome. */ }
-      };
-      const createdAtMs = Date.parse(String(event.createdAt ?? ""));
-      if (Number.isSafeInteger(createdAtMs) && createdAtMs > 0) record({
-        stage: "release-event-created", outcome: "succeeded", observedAtMs: createdAtMs, metadata,
-      });
-      const started = performance.now();
-      record({ stage: "release-event-intake", outcome: "started", metadata });
-      try {
-        const result = await value({
-          streamId: event.streamId,
-          text: `<agent-hub-release-event>\n${JSON.stringify({
-            operationId: event.operationId,
-            revision: event.revision,
-            eventKind: event.eventKind,
-            ...event.payload,
-          })}\n</agent-hub-release-event>`,
-          clientUserMessageId: commandId,
-          followUpMode: "steer",
-        }, {
-          source: "release-operation",
-          clientId: `release:${event.operationId}`,
-          messageOrigin: { kind: "release-operation", sourceThreadId: event.threadId },
-        });
-        record({ stage: "release-event-intake", outcome: "succeeded",
-          monotonicDurationMs: performance.now() - started,
-          metadata: { ...metadata, intakeAccepted: result?.accepted === true,
-            providerAccepted: result?.providerAccepted === true || result?.steered === true,
-            steerPending: result?.steerPending === true, queued: result?.queued === true } });
-        return result;
-      } catch (error) {
-        const code = String(error?.code ?? "");
-        record({ stage: "release-event-intake", outcome: "unknown",
-          monotonicDurationMs: performance.now() - started,
-          metadata: { ...metadata, errorCode: /^[A-Z0-9_]{1,100}$/u.test(code) ? code : null } });
-        throw error;
-      }
-    });
+
   }
 
   tools() {
@@ -826,6 +747,9 @@ export class HubMcpService {
       }, ["task_id"]),
       tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails. Await also composes the accepted result into PreRelease before it commits: a composition conflict leaves the Task in Test with the last good candidate.", {
         task_id: { type: "string" },
+        manual_delivery: { type: "object", additionalProperties: false, required: ["revision", "releaseId", "manifestSha256"], description: "RM-only actual manual-delivery proof for Done with exact Task/status CAS; does not create a Test reference.", properties: {
+          revision: { type: "string", pattern: "^[a-f0-9]{40}$" }, releaseId: { type: "string" }, manifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        } },
         status: { type: "string", enum: ["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"] },
         expected_task_revision: { type: "integer", minimum: 1, description: "Optional exact current Task revision CAS." },
         expected_workflow_status: { type: "string", enum: ["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"], description: "Optional exact current workflow status CAS." },
@@ -861,6 +785,7 @@ export class HubMcpService {
       }, ["task_id", "operation_request_id", "request_id", "expected_arguments_hash", "expected_task_revision", "confirm_cancel"]),
       tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A real unresolved process guard requires trusted proof; exact pending withdrawal or squash state can reconcile without inventing one. An already terminal lifecycle settles its original receipt without Git replay.", {
         task_id: { type: "string" },
+        manual_preview_arguments: { type: "object", description: "Exact original business arguments for a read-only manual Complete preview; hash-bound classification, never a confirmed closure." },
         operation_request_id: { type: "string" },
         expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$", description: "Required for deterministic malformed-status settlement; binds the unchanged stored original arguments." },
         runtime_witness: { type: "object", description: "Existing trusted exact native retirement witness for a malformed original owned by a previous runtime." },
@@ -928,7 +853,14 @@ export class HubMcpService {
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
         absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
-        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational"], description: "Release Manager-only published service closure, exact direct-delivery cleanup, or completed operational zero-own-delta cleanup." },
+        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery"], description: "Release Manager-only closure. manual_delivery verifies the actual installation and exact main/origin while preserving all Task artifacts." },
+        retained_repositories: { type: "array", description: "Manual mode only: exact managed worktree/head pins for historical repositories no longer represented by the canonical Task result. Retained, not certified delivered or deleted.", items: { type: "object", additionalProperties: false, required: ["project_root", "head_commit"], properties: {
+          project_root: { type: "string" }, head_commit: { type: "string", pattern: "^[a-f0-9]{40}$" },
+        } } },
+        manual_delivery: { type: "object", additionalProperties: false, required: ["revision", "releaseId", "manifestSha256"], properties: {
+          revision: { type: "string", pattern: "^[a-f0-9]{40}$" }, releaseId: { type: "string" },
+          manifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        } },
         completed_operation_request_id: { type: "string", description: "Original canonical published-service closure supplying historical repository proof for its already closed zero-own-delta source." },
         published_delivery: { type: "object", properties: {
           runtimeRoot: { type: "string" }, publicationRunSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
@@ -951,106 +883,6 @@ export class HubMcpService {
         task_id: { type: "string" },
         local_path: { type: "string" },
       }, ["task_id", "local_path"]),
-      tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for any existing Workspace.", {
-        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
-      }),
-      tool("hub_release_prepare", "Release Manager-only preparation of the exact current accepted set. Binds fresh CAS, publication, source closure and reviewed tree; preserves Task transitions and original Await receipts. Does not validate, publish or install a release.", {
-        preparation: { type: "object", description: "Exact schemaVersion=1 preparation envelope defined by REL-001; unknown or missing fields fail closed." },
-      }, ["preparation"]),
-      tool("hub_release_prepare_get", "Read the exact original preparation receipt. Unknown remains unknown; current candidate state never settles an original.", {
-        preparation_request_id: { type: "string" },
-        expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
-      }, ["preparation_request_id", "expected_arguments_hash"]),
-      tool("hub_release_prepare_resume", "Continue the SAME preparation from its saved owner stage, or its already established isolated forward custody. The owner checks fresh leases, source, selection and actual Git; an untransferred legacy UNKNOWN cannot resume.", {
-        expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
-        expected_preparation_revision: { type: "integer", minimum: 0 },
-      }, ["expected_arguments_hash", "expected_preparation_revision"]),
-      tool("hub_release_run", "Authorize the whole current prepared Await/PreRelease set and return one durable release operation id. Optional task_ids asserts that entire membership; release captures the existing prepared candidate without recomposing Task branches.", {
-        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
-        release_version: { type: "string", pattern: "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$", description: "Optional complete public X.Y.Z version for this new release intent. Omit for automatic patch selection. A frozen retry retains its original version." },
-        task_ids: { type: "array", minItems: 1, items: { type: "string" } },
-        validation_mode: { type: "string", enum: ["focused", "full"] },
-        test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
-          mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
-        } },
-        release_metadata: {
-          type: "object",
-          description: "Exact prepared CHANGELOG artifact identity; the existing release owner verifies its bytes before composition.",
-          additionalProperties: false,
-          properties: {
-            sourcePath: { type: "string", minLength: 1 },
-            byteLength: { type: "integer", minimum: 1 },
-            rawSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
-            canonicalSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
-          },
-          required: ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"],
-        },
-        approved_targets: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              targetId: { type: "string" },
-              kind: { type: "string" },
-              repositoryRoot: { type: "string" },
-              environment: { type: "string" },
-              approvedLocalMainCommit: { type: "string" },
-              approvedOriginMainCommit: { type: "string" },
-            },
-            required: ["targetId", "kind"],
-          },
-        },
-      }, ["validation_mode", "approved_targets"]),
-      tool("hub_release_get", "Read one durable release operation, immutable candidate generations, step receipts and delivery events.", {
-        operation_id: { type: "string" },
-        operation_request_id: { type: "string", description: "Read the original run/continue command after a lost reply; never submit another mutation." },
-        original_arguments: { type: "object", description: "Exact original business arguments, required for original request readback." },
-      }),
-      tool("hub_release_continue", "Continue the same original release. Explicit task_scope=all_await uses the existing revision/generation and not-applied amendment owner; original authorization and historical receipts remain immutable.", {
-        operation_id: { type: "string" },
-        assets_publication: { type: "object", additionalProperties: false,
-          required: ["target", "inputIdentity", "preparedReceiptSha256", "packageResultSha256", "toolSha256"], properties: {
-            target: { type: "object", additionalProperties: false, required: ["targetId", "kind", "environment", "repositoryRoot"], properties: {
-              targetId: { type: "string", enum: ["agent-hub-github-release"] }, kind: { type: "string", enum: ["agent-hub-publication"] },
-              environment: { type: "string", enum: ["github-release"] }, repositoryRoot: { type: "string" },
-            } },
-            ...Object.fromEntries(["inputIdentity", "preparedReceiptSha256", "packageResultSha256", "toolSha256"]
-              .map(key => [key, { type: "string", pattern: "^[a-f0-9]{64}$" }])),
-          } },
-        published_dev_sync: { type: "object", additionalProperties: false,
-          description: "Exclusive published-finalization recovery. Prepares/applies only the original native dev synchronization; does not wake release work.",
-          required: ["projectRoot", "expectedDevCommit"], properties: {
-            projectRoot: { type: "string" }, expectedDevCommit: { type: "string", pattern: "^[a-f0-9]{40}$" },
-          } },
-        test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
-          mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
-        } },
-        release_metadata: {
-          type: "object",
-          description: "Exact prepared CHANGELOG artifact identity; the existing release owner verifies its bytes before composition.",
-          additionalProperties: false,
-          properties: {
-            sourcePath: { type: "string", minLength: 1 },
-            byteLength: { type: "integer", minimum: 1 },
-            rawSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
-            canonicalSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
-          },
-          required: ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"],
-        },
-        task_ids: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string" } },
-        task_scope: { type: "string", enum: ["all_await"], description: "Explicitly authorize the whole current prepared Await set for this same original release; task_ids, if supplied, is an exact membership assertion." },
-        expected_revision: { type: "integer", minimum: 1 },
-        expected_generation: { type: "integer", minimum: 0 },
-        reviewed_main: { type: "object", additionalProperties: false, required: ["expectedRevision", "approvedRepositories"], properties: {
-          expectedRevision: { type: "integer", minimum: 1 },
-          approvedRepositories: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false,
-            required: ["projectRoot", "approvedLocalMainCommit", "approvedOriginMainCommit"], properties: {
-              projectRoot: { type: "string" }, approvedLocalMainCommit: { type: "string" }, approvedOriginMainCommit: { type: "string" },
-            } } },
-        } },
-      }, ["operation_id"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         after_sequence: { type: "integer", minimum: 0, default: 0 },
@@ -1163,9 +995,19 @@ export class HubMcpService {
     });
   }
 
+  #ordinaryAwaitReconciliationContinuation(toolName, args, receipt) {
+    return toolName === "hub_task_operation_reconcile" && receipt?.status === "unknown"
+      && args.confirm_reconcile === true && args.expected_workflow_status === "testing"
+      && Number.isSafeInteger(args.expected_task_revision) && args.request_id !== args.operation_request_id
+      && Boolean(ordinaryAwaitOriginalArguments(this.workspaceCatalog.mcpOperation(args.operation_request_id)))
+      && Object.keys(args).every(key => ["context_token", "request_id", "task_id", "operation_request_id",
+        "expected_arguments_hash", "project_root", "confirm_reconcile", "expected_task_revision", "expected_workflow_status"].includes(key));
+  }
+
   async #submitTaskOperation(context, toolName, args, invoke) {
     const requestId = requiredText(args.request_id, "request id", 200);
     const existing = this.workspaceCatalog.mcpOperation(requestId);
+    let recoveringCleanup = false;
     if (existing) {
       if (existing.workspaceId !== context.workspaceId || existing.streamId !== context.streamId
         || existing.provider !== context.provider || existing.threadId !== context.auditThreadId
@@ -1173,10 +1015,20 @@ export class HubMcpService {
         || existing.toolName !== toolName || existing.argumentsHash !== argumentsHash(args)) {
         throw new Error("MCP request_id was already used for another operation");
       }
-      // Only the canonical interruption owner can continue its exact UNKNOWN
-      // cancellation. Other historical operations and any live worker are read-only.
-      if (toolName !== "hub_task_operation_cancel" || existing.status !== "unknown"
-        || this.#pendingMutations.has(requestId) || !this.taskOperationInterruption) {
+      // Only the existing addressed owners can continue their exact UNKNOWN.
+      // A fenced claim still passes the genuine run, lease and SQL guards.
+      const custodyContinuation = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id)
+        && existing.status === "unknown" && !this.#pendingMutations.has(requestId);
+      if (custodyContinuation) this.#claimCustodySuccessor(context, args);
+      // Keep cleanup recovery and the addressed reconciliation/interruption owners.
+      const cleanupRecovery = !this.#pendingMutations.has(requestId)
+        && ((existing.status === "succeeded" && cleanupConfirmationOriginal(existing, false)
+          && existing.result?.receiptCompacted === true && !existing.result.cleanupToken)
+          || (existing.status === "unknown" && cleanupConfirmationOriginal(existing, true)));
+      recoveringCleanup = Boolean(cleanupRecovery);
+      const continuation = toolName === "hub_task_operation_cancel" && this.taskOperationInterruption
+        || this.#ordinaryAwaitReconciliationContinuation(toolName, args, existing) || custodyContinuation;
+      if (!cleanupRecovery && (!continuation || existing.status !== "unknown" || this.#pendingMutations.has(requestId))) {
         return this.#taskOperationReadback(context, { operation_request_id: requestId, expected_arguments_hash: argumentsHash(args) });
       }
     }
@@ -1198,6 +1050,7 @@ export class HubMcpService {
     // The same #mutate Promise owns all work and persistence. Detaching the
     // transport waiter neither starts another worker nor replays an existing ID.
     const completion = invoke(onAdmission).then(() => record("task-operation-result", read()), error => {
+      if (recoveringCleanup && JSON.stringify(this.workspaceCatalog.mcpOperation(requestId)) === JSON.stringify(existing)) throw error;
       // The durable receipt, including a real UNKNOWN or cancellation, is the
       // result. A pre-admission failure has no receipt and still rejects.
       if (!this.workspaceCatalog.mcpOperation(requestId)) {
@@ -1288,33 +1141,6 @@ export class HubMcpService {
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
     const toolName = String(name ?? "");
-    if (["hub_release_prepare", "hub_release_prepare_get", "hub_release_prepare_resume"].includes(toolName)
-        && !this.#isReleaseManager(context)) {
-      throw new ReleasePreparationRejectedError("Candidate preparation requires a Release Manager Stream");
-    }
-    if (toolName === "hub_release_prepare") {
-      validatePreparationEnvelope(args.preparation);
-      if (Object.keys(args).some((key) => !["context_token", "request_id", "preparation"].includes(key))) {
-        throw new ReleasePreparationRejectedError("Unexpected preparation command argument");
-      }
-      const operation = () => this.#mutate(context, toolName, args, () => this.#prepareRelease(context, args));
-      return this.taskGitWorkspaces?.withOperationTrace
-        ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.request_id }, operation)
-        : operation();
-    }
-    if (toolName === "hub_release_prepare_get") {
-      const operation = () => this.measureOperation("preparation:original-readback",
-        () => this.#preparationReadback(context, args));
-      return this.taskGitWorkspaces?.withOperationTrace
-        ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.preparation_request_id }, operation)
-        : operation();
-    }
-    if (toolName === "hub_release_prepare_resume") {
-      const operation = () => this.#resumePreparation(context, args);
-      return this.taskGitWorkspaces?.withOperationTrace
-        ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.request_id }, operation)
-        : operation();
-    }
     if (MUTATING_TOOLS.has(toolName)) {
       // A declared successor ID already belongs to its exact actor/envelope.
       // Reject a foreign intake before it can occupy that ID in the MCP ledger.
@@ -1322,6 +1148,7 @@ export class HubMcpService {
         this.#claimCustodySuccessor(context, args);
       }
       const operation = (admissionReceipt) => this.#dispatch({ ...context, admissionReceipt }, toolName, args);
+
       return this.#mutate(context, toolName, args, operation, { onAdmission });
     }
     return this.#dispatch(context, toolName, args);
@@ -1330,135 +1157,6 @@ export class HubMcpService {
   // Local frozen-source consumer, like callTaskStatusCutover. Serialized MCP
   // arguments cannot manufacture the observer or silently upgrade old resume.
   // The existing default factory/store/preflight/Git owners remain unchanged.
-  async callPreparationForward(args, { inspectOriginalExecution } = {}) {
-    await this.#startupReconciliation;
-    const context = this.#authorize(args.context_token);
-    if (!this.#isReleaseManager(context)) throw new ReleasePreparationRejectedError("Forward preparation requires Release Manager authority");
-    if (Object.keys(args).some(key => !["context_token", "request_id", "expected_arguments_hash",
-      "expected_preparation_revision", "original_preparation", "preparation"].includes(key))
-        || !Number.isSafeInteger(args.expected_preparation_revision) || args.expected_preparation_revision < 0) {
-      throw new ReleasePreparationRejectedError("Invalid exact forward preparation command");
-    }
-    const originalRead = this.#preparationReadback(context, { preparation_request_id: args.request_id,
-      expected_arguments_hash: args.expected_arguments_hash });
-    const record = this.workspaceCatalog.mcpOperation(originalRead.requestId);
-    if (record.streamId !== context.streamId || record.provider !== context.provider || record.threadId !== context.auditThreadId) {
-      throw new ReleasePreparationRejectedError("Forward preparation original caller differs");
-    }
-    const { original, current: envelope } = validatePreparationForward({ record, requestId: args.request_id,
-      originalPreparation: args.original_preparation, preparation: args.preparation });
-    if (record.preparationState?.phase === "completed") return record.preparationState.result;
-    if ((record.preparationState?.revision ?? 0) !== args.expected_preparation_revision) {
-      throw new ReleasePreparationRejectedError("Forward preparation revision changed");
-    }
-    const identity = { workspaceId: context.workspaceId, streamId: context.streamId, provider: context.provider,
-      threadId: context.auditThreadId, argumentsHash: record.argumentsHash };
-    const legacyHash = preparationLegacyHash(record), legacy = preparationLegacyIdentity(record);
-    const ownerId = randomUUID(), sourceRoot = record.preparationState?.sourceRoot ?? preparationSourceRoot();
-    let state = record.preparationState ?? null, owned = false;
-    const checkRows = () => {
-      const row = this.workspaceCatalog.mcpOperation(args.request_id);
-      if (!this.#isReleaseManager(context) || preparationLegacyHash(row) !== legacyHash
-          || row.receiptState !== "unknown" || owned && (row.preparationState?.ownerId !== ownerId
-            || row.preparationState?.revision !== state.revision)) {
-        throw new ReleasePreparationRejectedError("Forward preparation original/current owner changed");
-      }
-      assertPreparationRows(envelope, this.taskBoard, context.workspaceId);
-    };
-    const validate = async () => {
-      checkRows();
-      const root = await lstat(sourceRoot);
-      if (!root.isDirectory() || root.isSymbolicLink()
-          || state?.sourceRootIdentity && state.sourceRootIdentity !== `${root.dev}:${root.ino}`
-          || (await readPreparationSourceClosure(sourceRoot)).hash !== envelope.sourceClosureHash) {
-        throw new ReleasePreparationRejectedError("Forward preparation source closure/custody changed");
-      }
-    };
-    const checkpoint = async (phase, details = {}, transfer = false) => {
-      const next = { ...state, schemaVersion: 2, kind: FORWARD_PREPARATION, legacy, originalPreparation: original,
-        envelope, sourceRoot, ownerId, revision: (state?.revision ?? 0) + 1,
-        epoch: transfer ? (state?.epoch ?? 0) + 1 : state.epoch, phase,
-        ...details, events: [...(state?.events ?? []), { phase, ownerId, at: new Date().toISOString(),
-          ...(transfer ? { envelope } : {}), ...details }] };
-      const row = await this.workspaceCatalog.checkpointMcpPreparationForward(args.request_id, {
-        identity, expectedRevision: state?.revision ?? 0, legacyHash, state: next, transfer,
-        ...(transfer || phase === "completed" ? { validate: checkRows } : {}) });
-      state = row.preparationState;
-    };
-    const run = async () => {
-      await validate();
-      try { return await this.releasePreflight.prepareCurrentAwaitSet({
-        workspaceId: context.workspaceId, envelope, requestId: args.request_id,
-        argumentsHash: record.argumentsHash, validate,
-        ownPreparation: async ({ devInventory }) => {
-          for (const repository of envelope.repositories) {
-            if (repository.localSourceBaseline?.historicalChangelog) {
-              await this.releasePreflight.releaseGitWorkspaces.validateLocalSourceBaseline({
-                projectRoot: repository.projectRoot, provenance: repository.localSourceBaseline,
-                planRevision: envelope.planRevision, tasks: envelope.tasks,
-                originalAuthority: { requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original },
-              });
-            }
-          }
-          const isolationPlan = await this.releasePreflight.releaseGitWorkspaces.planPreparationIsolation({
-            requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original,
-            preparation: envelope, devInventory, previousIsolation: state?.isolation ?? null });
-          const custody = await inspectPreparationForwardCustody(inspectOriginalExecution, {
-            requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original,
-            isolationPlan,
-            previousForward: state ? { ownerId: state.ownerId, epoch: state.epoch, phase: state.phase } : null });
-          const root = await lstat(sourceRoot);
-          await validate();
-          const isolation = custody.kind === "preparation-effects-isolated-v1" ? isolationPlan : null;
-          if (isolation && !state?.isolation && isolation.legacyOriginalEffect) {
-            throw new ReleasePreparationRejectedError(`Preserve same-original legacy candidate/promotion at ${isolation.targets.legacyCandidate.root}; exact owned import is required before isolation`);
-          }
-          if (isolation && !state?.isolation && isolation.legacyCheckpointHash !== envelope.repositories[0].checkpointHash) {
-            throw new ReleasePreparationRejectedError("Legacy checkpoint changed before isolated custody transfer");
-          }
-          if (state?.isolation && JSON.stringify(state.isolation) !== JSON.stringify(isolation)) {
-            throw new ReleasePreparationRejectedError("Forward isolation authority cannot be replaced");
-          }
-          await checkpoint("checking", { custody, devInventory, ...(isolation ? { isolation } : {}),
-            sourceRootIdentity: `${root.dev}:${root.ino}` }, true);
-          owned = true;
-        },
-        beforeCompose: async () => { await validate(); await checkpoint("composing"); },
-        forwardPreparation: { originalEnvelope: original, readIsolation: () => state?.isolation ?? null,
-          observeEffects: async inventory => { await validate(); await checkpoint("composing", { inventory }); } },
-        commitPrepared: async prepared => {
-          await validate();
-          const result = { schemaVersion: 1, kind: "forward-preparation-completed", requestId: args.request_id,
-            argumentsHash: record.argumentsHash, retainedLegacyOutcome: "unknown", workspaceId: context.workspaceId,
-            planRevision: prepared.planRevision, taskIds: prepared.taskIds,
-            sourceCommit: envelope.sourceCommit, sourceTree: envelope.sourceTree, sourceClosureHash: envelope.sourceClosureHash,
-            publicationHash: envelope.publicationHash, candidates: prepared.releaseCandidates.map(candidate => ({
-              repositoryRoot: candidate.repositoryRoot, releaseRoot: candidate.releaseRoot,
-              preReleaseHead: candidate.preReleaseHead, tree: candidate.tree,
-              baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
-              preflightRequestId: candidate.manifest?.preflightRequestId })) };
-          try { await checkpoint("completed", { result }); }
-          catch (cause) {
-            const after = this.workspaceCatalog.mcpOperation(args.request_id);
-            if (after?.preparationState?.ownerId === ownerId && after.preparationState.phase === "completed"
-                && JSON.stringify(after.preparationState.result) === JSON.stringify(result)) return after.preparationState.result;
-            throw Object.assign(new Error("Forward terminal persistence outcome is unknown", { cause }), { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
-          }
-          return result;
-        },
-      }); } catch (error) {
-        const after = this.workspaceCatalog.mcpOperation(args.request_id);
-        if (after?.preparationState?.ownerId === ownerId && after.preparationState.phase === "completed") return after.preparationState.result;
-        if (owned && after?.preparationState?.ownerId === ownerId && after.preparationState.revision === state.revision) {
-          await checkpoint("blocked", { error: String(error.message).slice(0, 2000) }).catch(() => {});
-        }
-        throw error;
-      }
-    };
-    return this.taskGitWorkspaces.withOperationTrace
-      ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.request_id }, run) : run();
-  }
-
   async callTaskStatusCutover(args = {}, { verifySource, inspectInstalledNativeOwner } = {}) {
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
@@ -1701,16 +1399,6 @@ export class HubMcpService {
         return this.#readAttachment(context, args);
       case "hub_task_attachment_add":
         return this.#addAttachment(context, args);
-      case "hub_release_plan_get":
-        return this.#releasePlan(context, args);
-      case "hub_release_run":
-        if (!this.#isReleaseManager(context)) throw new Error("release execution requires a Release Manager Stream");
-        return this.#runReleaseOperation(context, args);
-      case "hub_release_get":
-        return this.#getReleaseOperation(context, args);
-      case "hub_release_continue":
-        if (!this.#isReleaseManager(context)) throw new Error("release continuation requires a Release Manager Stream");
-        return this.#continueReleaseOperation(context, args);
       case "hub_events_list":
         return this.#events(context, args);
       case "hub_mcp_operations_list":
@@ -2061,9 +1749,9 @@ export class HubMcpService {
     return task;
   }
 
-  #custodyBusy(task) {
+  #custodyBusy(task, claimant = null) {
     if (task.streamId === null) return false;
-    return this.#activeRuns().some(run => run.streamId === task.streamId)
+    return this.#activeRuns().some(run => run.streamId === task.streamId && run !== claimant)
       || this.#deferredInputs().some(input => input.streamId === task.streamId
         || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({ provider: input.provider, threadId: input.threadId })?.streamId === task.streamId));
   }
@@ -2178,9 +1866,28 @@ export class HubMcpService {
       }
       if (committedReadbackOnly) throw new TaskClaimCustodyRejectedError("Committed custody binding is missing");
       this.#custodyTask(context, task.id, fence.envelope);
-      if (this.#custodyBusy(task)) throw new Error("Previous executor became active; exact custody claim may be reopened after its normal terminal");
+      const active = this.#currentRun(context);
+      const identity = Object.fromEntries(["id", "workspaceId", "streamId", "provider", "threadId", "turnId"].map(key => [key, active[key]]));
+      const validateAdmission = (beforeCommit = false) => {
+        const current = this.#currentRun(context);
+        if (current !== active || Object.entries(identity).some(([key, value]) => current[key] !== value)) {
+          throw new Error("Current custody claimant run changed");
+        }
+        const own = task.streamId === context.streamId;
+        if (own && (!String(identity.id ?? "").trim() || identity.workspaceId !== context.workspaceId
+            || identity.streamId !== context.streamId || identity.provider !== context.provider
+            || identity.threadId !== context.threadId || !String(identity.turnId ?? "").trim())) {
+          throw new Error("Current custody claimant requires a complete exact run identity");
+        }
+        // Only the exact current run is the claimant. Other runs and queued
+        // inputs of the same Stream still belong to the existing busy guard.
+        if (this.#custodyBusy(task, own ? active : null)) throw new Error(beforeCommit
+          ? "Previous executor became active before custody assignment commit"
+          : "Previous executor became active; exact custody claim may be reopened after its normal terminal");
+      };
+      validateAdmission();
       await guarded.assertOwned();
-      return this.#writeClaim(context, task, this.#currentRun(context), args.request_id, workspace, fence.requestId);
+      return this.#writeClaim(context, task, active, args.request_id, workspace, fence.requestId, validateAdmission);
     });
   }
 
@@ -2238,7 +1945,7 @@ export class HubMcpService {
     return this.#writeClaim(context, task, active, operationId, gitWorkspace);
   }
 
-  async #writeClaim(context, task, active, operationId, gitWorkspace, forwardCustodyRequestId = null) {
+  async #writeClaim(context, task, active, operationId, gitWorkspace, forwardCustodyRequestId = null, validateCustodyAdmission = null) {
     this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     const claimed = await this.taskBoard.claim({
@@ -2252,7 +1959,7 @@ export class HubMcpService {
       operationKind: "claim",
       gitBaseline: active.gitBaseline ?? null, forwardCustodyRequestId,
       validateClaimAdmission: forwardCustodyRequestId ? () => {
-        if (this.#custodyBusy(task)) throw new Error("Previous executor became active before custody assignment commit");
+        validateCustodyAdmission(true);
         this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
       } : null,
     });
@@ -2306,6 +2013,7 @@ export class HubMcpService {
     selected_preview_request_id: selectedPreviewRequestId = null,
     expected_selected_preview_hash: expectedSelectedPreviewHash = null,
     initial_native_test: initialNativeTest = null,
+    manual_delivery: manualDelivery = null,
   } = {}, { source = null } = {}) {
     const validationStarted = performance.now();
     let workflowStatus;
@@ -2327,6 +2035,10 @@ export class HubMcpService {
       throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
     }
     const task = this.#task(context, taskId);
+    if (manualDelivery && (workflowStatus !== "done" || !this.#isReleaseManager(context) || source
+        || expectedRevision == null || expectedWorkflowStatus == null)) {
+      throw new TaskInputValidationError("Manual delivery Done requires an RM and exact Task/status CAS");
+    }
     const squashValues = [
       squashSourceTaskId, squashSourceTaskRevision, squashBaselineResultCommit,
       squashNewResultCommit, squashDevAfterTree,
@@ -2336,6 +2048,9 @@ export class HubMcpService {
       .some((value) => value != null);
     const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution,
       selectedPreviewRequestId, expectedSelectedPreviewHash].some((value) => value != null);
+    if (manualDelivery && (squashRequested || selectedRequested || selectedAbsorptionHandoff || initialNativeTest)) {
+      throw new TaskInputValidationError("Manual delivery Done cannot combine another integration input");
+    }
     if (selectedRequested) {
       throw Object.assign(new TaskInputValidationError("New selected materialization is closed; use ordinary native Git Test and isolated conflict resolution"),
         { code: "TASK_NATIVE_GIT_REQUIRED" });
@@ -2436,6 +2151,7 @@ export class HubMcpService {
     } catch {}
     const options = {
       taskId: task.id,
+      manualDelivery,
       status: workflowStatus,
       operationId,
       binding,
@@ -2484,6 +2200,13 @@ export class HubMcpService {
     return cleanupConfirmation(task, action, preview);
   }
 
+  #validateCleanupToken(task, args, action) {
+    if (args.confirm_cleanup === true && !String(args.expected_cleanup_token ?? "").trim()
+        && !this.taskBoard.lifecycleTransition?.(args.request_id) && !this.taskBoard.lifecycleOutcome?.(args.request_id)) {
+      throw new TaskCleanupConfirmationRejectedError(task.id, action);
+    }
+  }
+
   async #completeTask(context, args = {}) {
     const {
     task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
@@ -2492,13 +2215,16 @@ export class HubMcpService {
     absorption_mode: absorptionMode = null,
     completion_mode: completionMode = null,
     published_delivery: publishedDelivery = null,
+    manual_delivery: manualDelivery = null,
+    retained_repositories: retainedRepositories = [],
     completed_operation_request_id: completedOperationRequestId = null,
     } = args;
     const task = this.#task(context, taskId);
+    this.#validateCleanupToken(task, args, "complete");
     const result = await this.taskLifecycle.complete({
       taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
-      absorptionMode, completionMode, publishedDelivery, completedOperationRequestId,
-      originalArguments: ["published_delivery", "operational"].includes(completionMode)
+      absorptionMode, completionMode, publishedDelivery, manualDelivery, retainedRepositories, completedOperationRequestId,
+      originalArguments: ["published_delivery", "operational", "manual_delivery"].includes(completionMode)
         ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) : null,
     });
     return result?.confirmationRequired
@@ -2506,11 +2232,13 @@ export class HubMcpService {
       : compactTask(result);
   }
 
-  async #deleteTask(context, {
+  async #deleteTask(context, args = {}) {
+    const {
     task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
     expected_cleanup_token: expectedCleanupToken = null,
-  } = {}) {
+    } = args;
     const task = this.#task(context, taskId);
+    this.#validateCleanupToken(task, args, "delete");
     const result = await this.taskLifecycle.delete({
       taskId: task.id, operationId, confirmCleanup, expectedCleanupToken,
     });
@@ -2523,189 +2251,6 @@ export class HubMcpService {
     return this.#workspace(context).streams.some((stream) => (
       stream.id === context.streamId && stream.settings?.releaseManager === true
     ));
-  }
-
-  #preparationReadback(context, args) {
-    const requestId = requiredText(args.preparation_request_id, "original preparation request id", 200);
-    const operation = this.workspaceCatalog.mcpOperation(requestId);
-    if (!/^[a-f0-9]{64}$/u.test(String(args.expected_arguments_hash ?? ""))
-        || !operation || operation.workspaceId !== context.workspaceId
-        || operation.toolName !== "hub_release_prepare"
-        || operation.argumentsHash !== args.expected_arguments_hash) {
-      throw new ReleasePreparationRejectedError("Original preparation receipt identity does not match");
-    }
-    return { requestId, argumentsHash: operation.argumentsHash,
-      caller: { workspaceId: operation.workspaceId, streamId: operation.streamId,
-        provider: operation.provider, threadId: operation.threadId },
-      status: operation.status, receiptState: operation.receiptState,
-      createdAtMs: operation.createdAtMs, completedAtMs: operation.completedAtMs,
-      result: operation.status === "succeeded" ? operation.result : null, error: operation.error,
-      recovery: operation.preparationState ? {
-        revision: operation.preparationState.revision, phase: operation.preparationState.phase,
-        originalError: operation.preparationState.originalError ?? null,
-        ...(operation.preparationState.kind === FORWARD_PREPARATION ? {
-          kind: FORWARD_PREPARATION, retainedLegacyOutcome: "unknown", epoch: operation.preparationState.epoch,
-          ...(operation.preparationState.phase === "completed" ? { result: operation.preparationState.result } : {}),
-        } : {}),
-        ...(["composing", "terminal-intent"].includes(operation.preparationState.phase)
-          ? { missingEvidence: "original committed candidate or rollback outcome is not proved by this stage" } : {}),
-      } : { revision: 0, phase: null, missingEvidence: "original owner stage checkpoint was not persisted" } };
-  }
-
-  async #resumePreparation(context, args) {
-    if (Object.keys(args).some(key => !["context_token", "request_id", "expected_arguments_hash",
-      "expected_preparation_revision"].includes(key))
-        || !Number.isSafeInteger(args.expected_preparation_revision) || args.expected_preparation_revision < 0) {
-      throw new ReleasePreparationRejectedError("Unexpected preparation recovery argument");
-    }
-    const original = this.#preparationReadback(context, { preparation_request_id: args.request_id,
-      expected_arguments_hash: args.expected_arguments_hash });
-    const record = this.workspaceCatalog.mcpOperation(original.requestId);
-    if (record.streamId !== context.streamId || record.provider !== context.provider
-        || record.threadId !== context.auditThreadId) {
-      throw new ReleasePreparationRejectedError("Preparation recovery original caller differs");
-    }
-    if (record.status === "succeeded") return record.result;
-    const forward = record.preparationState;
-    if (forward?.kind === FORWARD_PREPARATION) {
-      if (forward.phase === "completed") return forward.result;
-      if (forward.revision !== args.expected_preparation_revision
-          || !["checking", "blocked", "composing"].includes(forward.phase)
-          || !forward.isolation || forward.custody?.kind !== "preparation-effects-isolated-v1") {
-        throw new ReleasePreparationRejectedError("Original preparation has no established resumable isolated custody");
-      }
-      const preparation = structuredClone(forward.envelope);
-      // The one-time observer already transferred future-effect custody. Reuse
-      // that proof only after the normal leased owner regenerates the SAME
-      // isolation plan. No new serialized proof, force flag or historical
-      // descendant certificate is accepted by this ordinary continuation.
-      return this.callPreparationForward({ context_token: args.context_token, request_id: args.request_id,
-        expected_arguments_hash: args.expected_arguments_hash,
-        expected_preparation_revision: args.expected_preparation_revision,
-        original_preparation: forward.originalPreparation, preparation }, {
-        inspectOriginalExecution: async request => {
-          if (JSON.stringify(request.isolationPlan) !== JSON.stringify(forward.isolation)
-              || request.previousForward?.ownerId !== forward.ownerId
-              || request.previousForward?.epoch !== forward.epoch
-              || request.previousForward?.phase !== forward.phase) {
-            throw new ReleasePreparationRejectedError("Established isolated preparation custody changed");
-          }
-          return structuredClone(forward.custody);
-        },
-      });
-    }
-    if (!["pending", "unknown"].includes(record.status) || !record.preparationState
-        || !Number.isSafeInteger(args.expected_preparation_revision)
-        || args.expected_preparation_revision !== record.preparationState.revision
-        || !["checking", "paused"].includes(record.preparationState.phase)) {
-      throw new ReleasePreparationRejectedError("Preparation recovery lacks original resumable owner stage evidence; UNKNOWN is preserved");
-    }
-    const recovered = { context_token: args.context_token, request_id: original.requestId,
-      preparation: record.preparationState.envelope };
-    if (argumentsHash(recovered) !== original.argumentsHash) {
-      throw new ReleasePreparationRejectedError("Preparation recovery original envelope differs");
-    }
-    return this.#prepareRelease(context, recovered, { record });
-  }
-
-  async #prepareRelease(context, args, recovery = null) {
-    const envelope = validatePreparationEnvelope(args.preparation);
-    const hash = argumentsHash(args);
-    const identity = { workspaceId: context.workspaceId, streamId: context.streamId, provider: context.provider,
-      threadId: context.auditThreadId, argumentsHash: hash };
-    const ownerId = randomUUID();
-    let state = recovery?.record.preparationState ?? null;
-    let owned = false;
-    const sourceRoot = state?.sourceRoot ?? preparationSourceRoot();
-    const checkpoint = async (phase, extra = {}, { resume = false } = {}) => {
-      requiredMethod(this.workspaceCatalog, "checkpointMcpPreparation");
-      const next = { ...state, schemaVersion: 1, revision: (state?.revision ?? 0) + 1,
-        envelope, sourceRoot, ownerId, phase, ...extra };
-      const written = await this.workspaceCatalog.checkpointMcpPreparation(args.request_id,
-        { identity, expectedRevision: state?.revision ?? 0, state: next, resume });
-      state = written.preparationState;
-    };
-    const checkRows = () => {
-      if (!this.#isReleaseManager(context)) throw new ReleasePreparationRejectedError("Release Manager authority changed");
-      assertPreparationRows(envelope, this.taskBoard, context.workspaceId);
-      const original = this.workspaceCatalog.mcpOperation(args.request_id);
-      if (original?.argumentsHash !== hash || original?.toolName !== "hub_release_prepare"
-          || original?.workspaceId !== context.workspaceId
-          || !(recovery ? ["unknown", "pending", "reconciling"] : ["pending"]).includes(original?.status)) {
-        throw new ReleasePreparationRejectedError("Preparation intake identity changed");
-      }
-    };
-    const validate = async () => {
-      checkRows();
-      const root = await lstat(sourceRoot);
-      if (!root.isDirectory() || root.isSymbolicLink()
-          || state?.sourceRootIdentity && (state.sourceRootIdentity !== `${root.dev}:${root.ino}`)
-          || (await readPreparationSourceClosure(sourceRoot)).hash !== envelope.sourceClosureHash) {
-        throw new ReleasePreparationRejectedError("Preparation source closure changed");
-      }
-    };
-    await this.measureOperation("preparation:pins", validate);
-    if (typeof this.releasePreflight?.prepareCurrentAwaitSet !== "function") {
-      throw new ReleasePreparationRejectedError("Preparation owner is unavailable");
-    }
-    try { return await this.releasePreflight.prepareCurrentAwaitSet({
-      workspaceId: context.workspaceId, envelope, requestId: args.request_id, argumentsHash: hash, validate,
-      ownPreparation: async () => {
-        const root = await lstat(sourceRoot);
-        await checkpoint("checking", {
-          sourceRootIdentity: `${root.dev}:${root.ino}`,
-          originalError: state?.originalError ?? recovery?.record.error ?? null,
-        }, { resume: !!recovery });
-        owned = true;
-      },
-      beforeCompose: async () => { if (state.phase !== "composing") await checkpoint("composing"); },
-      commitPrepared: async (prepared) => {
-        if (!owned || state.phase !== "composing") throw new Error("Preparation commit has no owned compose boundary");
-        await validate();
-        const result = { schemaVersion: 1, kind: "preparation-only", requestId: args.request_id,
-          argumentsHash: hash, workspaceId: context.workspaceId, planRevision: prepared.planRevision,
-          sourceCommit: envelope.sourceCommit, sourceTree: envelope.sourceTree,
-          sourceClosureHash: envelope.sourceClosureHash, publicationHash: envelope.publicationHash,
-          taskIds: prepared.taskIds, candidates: prepared.releaseCandidates.map((candidate) => ({
-            repositoryRoot: candidate.repositoryRoot, preReleaseHead: candidate.preReleaseHead,
-            tree: candidate.tree, baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
-            preflightRequestId: candidate.manifest?.preflightRequestId,
-          })) };
-        try {
-          // This is provisional while candidate rollback is still live, not terminal authority.
-          await checkpoint("terminal-intent", { result });
-          await this.measureOperation("preparation:terminal-receipt", () => this.workspaceCatalog
-            .completeMcpOperation(args.request_id, result, { validate: checkRows }));
-        } catch (cause) {
-          const terminal = this.workspaceCatalog.mcpOperation(args.request_id);
-          if (terminal?.status === "succeeded" && terminal.argumentsHash === hash
-              && JSON.stringify(terminal.result) === JSON.stringify(result)) return terminal.result;
-          if (cause instanceof ReleasePreparationRejectedError) throw cause;
-          const unknown = new Error("Preparation terminal persistence outcome is unknown", { cause });
-          unknown.code = "AWAIT_ACCEPTANCE_UNKNOWN";
-          throw unknown;
-        }
-        return result;
-      },
-    }); } catch (error) {
-      let pauseFailed = false;
-      if (owned && state.phase === "checking") {
-        try {
-          await checkpoint("paused", { originalError: state.originalError ?? String(error.message).slice(0, 2000) });
-        } catch { pauseFailed = true; }
-      }
-      // A checkpoint can commit before its reply is lost. Read back this
-      // invocation's nonce, then settle only through the store's revision CAS.
-      // A caller refused before owner transfer has no receipt to mutate.
-      const current = this.workspaceCatalog.mcpOperation(args.request_id);
-      if (current?.preparationState?.ownerId === ownerId) {
-        await Promise.resolve(this.workspaceCatalog.settleMcpPreparationFailure(args.request_id, {
-          identity, ownerId, expectedRevision: current.preparationState.revision, error,
-          definite: !recovery && !pauseFailed && definiteMcpMutationFailure(error),
-        })).catch(() => {});
-      }
-      throw error;
-    }
   }
 
   async #adoptLegacyTaskGit(context, {
@@ -2787,114 +2332,6 @@ export class HubMcpService {
       },
     };
   }
-
-  async #releasePlan(context, { workspace_id: workspaceId = null } = {}) {
-    const targetWorkspaceId = this.#workspace(context, workspaceId).id;
-    const plan = await this.releasePlanner.plan(targetWorkspaceId);
-    if (!this.taskGitWorkspaces) return plan;
-    const roots = [...new Set(plan.ready.map((entry) => String(entry.projectRoot ?? "").trim()).filter(Boolean))];
-    const repositories = [];
-    for (const projectRoot of roots) {
-      try {
-        const dev = await this.taskGitWorkspaces.readDev(projectRoot);
-        repositories.push({
-          projectRoot: dev.repositoryRoot,
-          branch: dev.branch,
-          headCommit: dev.headCommit,
-          worktreeRoot: dev.projectRoot,
-        });
-      } catch (error) {
-        repositories.push({ projectRoot, branch: "dev", headCommit: null, error: error.message });
-      }
-    }
-    return { ...plan, devIntegration: { branch: "dev", repositories } };
-  }
-
-  #releaseOperation() {
-    if (!this.releaseOperations) throw new Error("durable release operation owner is unavailable");
-    return this.releaseOperations;
-  }
-
-  #runReleaseOperation(context, args) {
-    const workspaceId = this.#workspace(context, args.workspace_id).id;
-    const authorization = {
-      validationMode: requiredText(args.validation_mode, "validation mode", 32),
-      approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
-      ...(args.test_selection !== undefined ? { testSelection: args.test_selection } : {}),
-      ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
-      ...(args.release_version !== undefined ? { releaseVersion: args.release_version } : {}),
-    };
-    return this.#releaseOperation().start({
-      requestId: requiredText(args.request_id, "request id", 200),
-      workspaceId,
-      streamId: context.streamId,
-      threadId: context.auditThreadId,
-      authorization,
-      resolveAuthorization: preparedAwaitAuthorization(this.taskBoard, workspaceId, args.task_ids, authorization),
-    });
-  }
-
-  #getReleaseOperation(context, args) {
-    if (args.operation_request_id != null) {
-      if (args.operation_id != null) throw new Error("Release readback addresses an operation or an original request, not both");
-      const requestId = requiredText(args.operation_request_id, "original request id", 200);
-      const row = this.workspaceCatalog.mcpOperation(requestId);
-      if (!row || !["hub_release_run", "hub_release_continue"].includes(row.toolName)) throw new Error("Original release command receipt is unavailable");
-      if (row.workspaceId !== context.workspaceId) throw new Error("Original release command authority differs");
-      this.#workspace(context, row.workspaceId);
-      if (!this.#isReleaseManager(context) && (row.streamId !== context.streamId
-        || row.provider !== context.provider || row.threadId !== context.auditThreadId)) throw new Error("Original release command authority differs");
-      if (!args.original_arguments || args.original_arguments.request_id !== requestId
-        || argumentsHash(args.original_arguments) !== row.argumentsHash) throw new Error("Original release command arguments differ");
-      const snapshot = row.toolName === "hub_release_run"
-        ? this.#releaseOperation().getByRequest(row.workspaceId, requestId)
-        : this.#releaseOperation().get(requiredText(args.original_arguments.operation_id, "operation id", 200));
-      if (snapshot) this.#workspace(context, snapshot.operation.workspaceId);
-      return { ...(snapshot ?? { operation: null }), ...(snapshot && typeof this.#releaseOperation().hasLocalWork === "function"
-        ? { execution: { localActive: this.#releaseOperation().hasLocalWork(snapshot.operation.operationId) } } : {}), originalCommand: {
-        requestId, argumentsHash: row.argumentsHash, toolName: row.toolName, status: row.status,
-        active: this.#pendingMutations.has(requestId), terminal: ["succeeded", "failed"].includes(row.status),
-        error: row.error, createdAtMs: row.createdAtMs, completedAtMs: row.completedAtMs,
-      } };
-    }
-    const snapshot = this.#releaseOperation().get(requiredText(args.operation_id, "operation id", 200));
-    this.#workspace(context, snapshot.operation.workspaceId);
-    return { ...snapshot, ...(typeof this.#releaseOperation().hasLocalWork === "function"
-      ? { execution: { localActive: this.#releaseOperation().hasLocalWork(snapshot.operation.operationId) } } : {}) };
-  }
-
-  #continueReleaseOperation(context, args, { reconcileFirstCompose = false } = {}) {
-    const operationId = requiredText(args.operation_id, "operation id", 200);
-    const snapshot = this.#releaseOperation().get(operationId);
-    this.#workspace(context, snapshot.operation.workspaceId);
-    if (args.published_dev_sync != null) {
-      if (["reviewed_main", "test_selection", "task_ids", "task_scope", "release_metadata"].some(key => args[key] != null)) {
-        throw new ReleasePreparationRejectedError("Published dev sync requires exclusive recovery without amendments");
-      }
-      const input = args.published_dev_sync;
-      if (!input || typeof input !== "object" || Array.isArray(input)
-          || Object.keys(input).some(key => !["projectRoot", "expectedDevCommit"].includes(key))
-          || typeof input.projectRoot !== "string" || !input.projectRoot.trim()
-          || !/^[a-f0-9]{40}$/u.test(input.expectedDevCommit ?? "")
-          || !Number.isSafeInteger(args.expected_revision) || !Number.isSafeInteger(args.expected_generation)) {
-        throw new ReleasePreparationRejectedError("Published dev sync requires exact repository/dev and original revision/generation CAS");
-      }
-
-    }
-    const owner = this.#releaseOperation();
-    if (reconcileFirstCompose) return owner.reconcileFirstComposeContinuation(operationId, {
-      requestId: args.request_id, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
-    });
-    return owner.continue(operationId, {
-      requestId: args.request_id, reviewedMain: args.reviewed_main,
-      testSelection: args.test_selection, taskIds: args.task_ids, taskScope: args.task_scope, releaseMetadata: args.release_metadata, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
-      ...(args.published_dev_sync != null ? { publishedDevSync: args.published_dev_sync } : {}),
-      ...(args.assets_publication != null ? { assetsPublication: args.assets_publication,
-        assetsPublicationActor: { workspaceId: context.workspaceId, streamId: context.streamId,
-          threadId: context.threadId, provider: context.provider } } : {}),
-    });
-  }
-
 
   async #startTask(context, {
     task_id: taskId, stream_id: streamId = null, new_stream_name: newStreamName = null,
@@ -3393,7 +2830,26 @@ export class HubMcpService {
       ...(admittedExecution ? { taskExecution: admittedExecution } : {}),
     }); });
     if (started.taskExecution?.cancellation) throw taskOperationInterrupted();
-    if (started.status === "succeeded") return claimCustodyState(started)?.result ?? started.result;
+    if (started.status === "succeeded") {
+      if (cleanupConfirmationOriginal(started, false) && started.result?.receiptCompacted === true
+          && !started.result.cleanupToken && started.result.taskId === args.task_id) {
+        this.#task(context, args.task_id);
+        return this.taskLifecycle.recoverCleanupConfirmation({ taskId: args.task_id, operationId: requestId,
+          action: toolName === "hub_task_complete" ? "complete" : "delete", preview: true,
+          absorbedIntoTaskId: args.absorbed_into_task_id ?? null,
+          readback: async ({ preview, validate }) => {
+            const result = cleanupConfirmationCapsule({ ...preview, previewRecovery: {
+              kind: "fresh-cleanup-preview-from-compacted-original-v1", refreshedAtMs: Date.now(),
+              previousReceipt: { status: started.status, result: started.result, error: started.error,
+                createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs },
+            } });
+            const saved = await this.workspaceCatalog.recoverCompactedCleanupPreview(requestId, {
+              argumentsHash: started.argumentsHash, expectedResult: started.result, result, validate });
+            return saved.result;
+          } });
+      }
+      return claimCustodyState(started)?.result ?? started.result;
+    }
     if (started.status === "failed") {
       const proof = toolName === "hub_task_claim" ? this.#claimAdmissionRefusal(started, args.task_id) : null;
       if (proof) {
@@ -3401,17 +2857,35 @@ export class HubMcpService {
       }
       throw new Error(started.error || "previous MCP operation failed");
     }
+    if (started.status === "unknown" && cleanupConfirmationOriginal(started, true)
+        && !this.#pendingMutations.has(requestId)) {
+      this.#task(context, args.task_id);
+      const error = new TaskCleanupConfirmationRejectedError(args.task_id, toolName === "hub_task_complete" ? "complete" : "delete");
+      await this.taskLifecycle.recoverCleanupConfirmation({ taskId: args.task_id, operationId: requestId,
+        readback: async ({ task, validate }) => {
+          const identity = JSON.stringify({ ...started, replayed: undefined });
+          const check = row => {
+            validate();
+            if (JSON.stringify({ ...row, replayed: undefined }) !== identity || !cleanupConfirmationOriginal(row, true)
+                || row.taskExecution.taskWorkspaceId !== task.workspaceId) throw new Error("Missing confirmation original changed");
+          };
+          check(this.workspaceCatalog.mcpOperation(requestId));
+          return this.workspaceCatalog.failUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
+            error, beforeSettle: check, reconciliation: { kind: "cleanup-missing-token-validation-v1",
+              outcome: "failed", taskId: task.id, taskRevision: task.revision, argumentsHash: started.argumentsHash,
+              previousReceipt: { status: started.status, result: started.result, error: started.error,
+                createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs } } });
+        } });
+      throw error;
+    }
     const custodyConsume = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id);
     const custodyStage = toolName === "hub_task_operation_reconcile" && Boolean(args.claim_custody);
+    // Re-enter only the addressed ordinary Await reconciliation owner. This
+    // control never dispatches the old workflow; its leases and outcome fence
+    // decide whether to settle or read the already settled original.
+    const workflowReconciliationContinuation = started.replayed
+      && this.#ordinaryAwaitReconciliationContinuation(toolName, args, started);
     const interruption = toolName === "hub_task_operation_cancel";
-    // This owner resumes only the same addressed assets input. Its canonical
-    // step and GitHub journal recheck authority and reconcile remote intents
-    // before effects. An unknown outer receipt is preserved until it returns.
-    const assetsContinuation = toolName === "hub_release_continue" && args.assets_publication != null;
-    const firstComposeContinuation = toolName === "hub_release_continue" && started.replayed
-      && args.expected_generation === 0 && Number.isSafeInteger(args.expected_revision)
-      && Object.keys(args).every(key => ["context_token", "operation_id", "request_id", "expected_revision", "expected_generation"].includes(key))
-      && typeof this.releaseOperations?.reconcileFirstComposeContinuation === "function";
     if (started.status === "unknown" && toolName === "hub_task_claim" && !custodyConsume) {
       const reconciled = await this.#reconcileClaimAdmissionNoEffect(context, args, started).catch(() => null);
       if (reconciled) {
@@ -3426,27 +2900,20 @@ export class HubMcpService {
         throw terminal;
       }
     }
-    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption && !assetsContinuation && !firstComposeContinuation) {
+    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption && !workflowReconciliationContinuation) {
       throw new Error(`MCP operation outcome is unknown; reconcile authoritatively before retrying request_id ${requestId}`);
     }
     const inFlight = this.#pendingMutations.get(requestId);
     if (inFlight) return inFlight;
-    if (firstComposeContinuation) {
-      if (!this.#isReleaseManager(context)) throw new Error("release continuation requires a Release Manager Stream");
-      this.#workspace(context, this.#releaseOperation().get(args.operation_id).operation.workspaceId);
-      if (started.status !== "unknown") await this.workspaceCatalog.markMcpOperationUnknown(requestId,
-        new Error("First compose continuation requires addressed owner reconciliation"));
-    }
+
     const resumable = new Set([
       "hub_task_start", "hub_task_reassign", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
       "hub_task_checklist_update",
       "hub_task_operation_cancel",
     ]);
-    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage && !assetsContinuation && !firstComposeContinuation) {
+    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage && !workflowReconciliationContinuation) {
       const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
-      if (toolName !== "hub_release_prepare" || !started.preparationState) {
-        await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
-      }
+      await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
       throw reason;
     }
     const pending = (async () => {
@@ -3469,35 +2936,21 @@ export class HubMcpService {
           ? await this.taskOperationInterruption.run(started, args,
             () => committedClaimReadback ? this.#claimTask(context, args, { committedReadbackOnly: true }) : operation(started),
             { committedClaimReadback })
-          : firstComposeContinuation
-            ? await this.#continueReleaseOperation(context, args, { reconcileFirstCompose: true })
-            : await operation(started);
+          : await operation(started);
         effectCompleted = true;
-        if (toolName === "hub_release_prepare") {
-          const terminal = this.workspaceCatalog.mcpOperation(requestId);
-          if (terminal?.status !== "succeeded" || terminal.argumentsHash !== argumentsHash(args)) {
-            throw new Error("Preparation owner did not persist its exact terminal receipt");
-          }
-          return terminal.result;
-        }
+
         if (args.claim_custody && toolName === "hub_task_operation_reconcile") {
           const durable = claimCustodyState(this.workspaceCatalog.mcpOperation(requestId));
           if (!durable) throw new Error("Custody stage is not durable");
           return durable.result;
         }
-        if (firstComposeContinuation) {
+        if (workflowReconciliationContinuation) {
           const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, {
             workspaceId: context.workspaceId, toolName, result,
-            reconciliation: { kind: "failed-first-compose-owner-continuation-v1", operationId: args.operation_id,
-              recovery: result.recovery, priorReceipt: { status: started.status, error: started.error,
-                createdAtMs: started.createdAtMs, completedAtMs: started.completedAtMs } },
+            reconciliation: { kind: "ordinary-await-reconciliation-control-v1",
+              originalRequestId: args.operation_request_id, originalArgumentsHash: args.expected_arguments_hash,
+              previousReceipt: started },
           });
-          return completed.result;
-        } else if (assetsContinuation && started.status === "unknown") {
-          const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
-            result, reconciliation: { kind: "published-assets-owner-continuation-v1",
-              operationId: args.operation_id, generation: args.expected_generation,
-              targetId: args.assets_publication.target.targetId } });
           return completed.result;
         } else if (interruption && started.status === "unknown") {
           await this.workspaceCatalog.completeUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
@@ -3532,6 +2985,9 @@ export class HubMcpService {
         if (completed?.status === "succeeded" && completed.argumentsHash === argumentsHash(args)) {
           return claimCustodyState(completed)?.result ?? completed.result;
         }
+        // A failed continuation does not erase the previous control UNKNOWN:
+        // effects of that older invocation may already be in the target owner.
+        if (workflowReconciliationContinuation) throw error;
         if (args.claim_custody && toolName === "hub_task_operation_reconcile") {
           const durable = claimCustodyState(observe(() => this.workspaceCatalog.mcpOperation(requestId)));
           if (durable) return durable.result;
@@ -3541,13 +2997,7 @@ export class HubMcpService {
           await persist(() => this.workspaceCatalog.markMcpOperationUnknown(requestId,new Error(`Custody assignment committed before outer completion: ${error.message}`)));
           throw error;
         }
-        if (toolName === "hub_release_prepare") {
-          const terminal = observe(() => this.workspaceCatalog.mcpOperation(requestId));
-          if (terminal?.status === "succeeded" && terminal.argumentsHash === argumentsHash(args)) return terminal.result;
-          // Stage-backed failures belong exclusively to the invocation owner.
-          // This outer intake may resume after a newer owner has acquired it.
-          if (terminal?.preparationState) throw error;
-        }
+
         if (!effectCompleted && checklistMutation) {
           const reconciled = await this.#reconcileTaskChecklist(context, args).catch(() => null);
           if (reconciled) {
@@ -3582,7 +3032,7 @@ export class HubMcpService {
         }
         const workflowRefusal = toolName === "hub_task_status_update" ? observe(() => this.#workflowAdmissionRefusal(started)) : null;
         const reconciliationRefusal = toolName === "hub_task_operation_reconcile"
-          && error instanceof TaskOperationReconciliationRefusedError;
+          && !workflowReconciliationContinuation && error instanceof TaskOperationReconciliationRefusedError;
         if (workflowRefusal || reconciliationRefusal) {
           try {
             await persist(() => this.workspaceCatalog.failMcpOperation(requestId, error, {
@@ -3592,6 +3042,10 @@ export class HubMcpService {
           } catch (settlementError) {
             throw settlementError;
           }
+          throw error;
+        }
+        if (error instanceof TaskCleanupConfirmationRejectedError) {
+          await persist(() => this.workspaceCatalog.failMcpOperation(requestId, error, { validation: error.evidence }));
           throw error;
         }
         if (definiteMcpMutationFailure(error)) {
@@ -3706,16 +3160,42 @@ export class HubMcpService {
 
   async #reconcilePublishedDeliveryComplete(context, args) {
     const refuse = message => { throw new TaskOperationReconciliationRefusedError(new Error(message)); };
+    if (args.manual_preview_arguments) {
+      const captured = args.manual_preview_arguments;
+      const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+      if (Object.keys(args).some(k => !["context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile", "expected_arguments_hash", "manual_preview_arguments"].includes(k))
+          || Object.keys(captured).some(k => !["request_id", "task_id", "completion_mode", "manual_delivery", "confirm_cleanup"].includes(k))
+          || captured.confirm_cleanup != null && captured.confirm_cleanup !== false
+          || captured.completion_mode !== "manual_delivery" || captured.task_id !== args.task_id
+          || captured.request_id !== args.operation_request_id || !captured.manual_delivery
+          || !original || original.workspaceId !== context.workspaceId || original.toolName !== "hub_task_complete"
+          || original.status !== "unknown" || original.argumentsHash !== args.expected_arguments_hash
+          || argumentsHash(captured) !== original.argumentsHash
+          || this.taskBoard.lifecycleTransition?.(original.requestId) || this.taskBoard.lifecycleOutcome?.(original.requestId)) {
+        refuse("Only the exact hash-bound read-only manual Complete preview can be classified");
+      }
+      // The positive proof is the immutable original argument form: this
+      // preview cannot enter the lifecycle mutation branch. Absence alone is
+      // never sufficient, and confirmed originals cannot use this path.
+      await this.workspaceCatalog.failUnknownMcpOperation(original.requestId, {
+        workspaceId: context.workspaceId, toolName: original.toolName,
+        error: original.error || "Read-only manual Complete preview failed",
+        reconciliation: { kind: "manual-complete-read-only-preview-v1", outcome: "NO_EFFECT", originalArguments: captured },
+      });
+      return { taskId: args.task_id, operationId: original.requestId, outcome: "NO_EFFECT", readOnlyPreview: true };
+    }
     if (Object.keys(args).some(k => !["context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile", "project_root"].includes(k))) refuse("Complete reconciliation accepts only its original identity");
     const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
     const transition = this.taskBoard.lifecycleTransition?.(args.operation_request_id);
     const outcome = this.taskBoard.lifecycleOutcome?.(args.operation_request_id);
     const evidence = outcome?.result?.evidence ?? transition?.evidence;
     const captured = evidence?.originalArguments;
+    const deliveredTaskId = captured?.completion_mode === "manual_delivery"
+      ? evidence?.manualDelivery?.taskId : evidence?.publishedDelivery?.taskId;
     if (!original || original.workspaceId !== context.workspaceId || original.toolName !== "hub_task_complete"
-        || evidence?.publishedDelivery?.taskId !== args.task_id || !captured
+        || deliveredTaskId !== args.task_id || !captured
         || captured.task_id !== args.task_id || captured.request_id !== original.requestId
-        || !["published_delivery", "operational"].includes(captured.completion_mode) || captured.confirm_cleanup !== true
+        || !["published_delivery", "operational", "manual_delivery"].includes(captured.completion_mode) || captured.confirm_cleanup !== true
         || argumentsHash(captured) !== original.argumentsHash
         || (transition && (transition.taskId !== args.task_id || transition.kind !== "complete" || transition.phase !== "cleanup"))
         || (outcome && (outcome.taskId !== args.task_id || outcome.kind !== "complete"))) {
@@ -3726,7 +3206,8 @@ export class HubMcpService {
     if (result?.id !== args.task_id || result?.status !== "done") throw Error("Original direct cleanup did not finish");
     if (original.status === "unknown") await this.workspaceCatalog.completeUnknownMcpOperation(original.requestId, {
       workspaceId: context.workspaceId, toolName: "hub_task_complete", result,
-      reconciliation: { kind: "direct-published-cleanup-original-v1", lifecycleOperationId: original.requestId },
+      reconciliation: { kind: captured.completion_mode === "manual_delivery"
+        ? "manual-delivery-completion-original-v1" : "direct-published-cleanup-original-v1", lifecycleOperationId: original.requestId },
     });
     else if (original.status !== "succeeded") await this.workspaceCatalog.completeMcpOperation(original.requestId, result);
     return { taskId: args.task_id, operationId: original.requestId, outcome: "COMPLETED", result };

@@ -29,9 +29,10 @@ export class TaskLifecycleBeginRejectedError extends Error {
 }
 
 export class TaskLifecycleNoEffectError extends Error {
-  constructor(evidence) {
-    super(evidence.code === "WORKFLOW_REVISION_CHANGED"
-      ? "Task workflow cutover revision changed" : "Task workflow cutover status changed");
+  constructor(evidence, { cause } = {}) {
+    super(evidence.code === "WORKFLOW_AWAIT_NOT_ADMITTED" ? "Task Await was not admitted; its original lifecycle is fenced"
+      : evidence.code === "WORKFLOW_REVISION_CHANGED"
+      ? "Task workflow cutover revision changed" : "Task workflow cutover status changed", { cause });
     this.code = "TASK_WORKFLOW_NO_EFFECT";
   }
 }
@@ -116,6 +117,21 @@ export function claimAdmissionNoEffectEvidence(receipt, taskId = null) {
 // Only the existing lifecycle owner writes this outcome. Neither an error string
 // nor an absent transition is a certificate; the exact admitted MCP identity is
 // sealed with the observed CAS refusal before any workflow effects.
+export function ordinaryAwaitOriginalArguments(receipt) {
+  const execution = receipt?.taskExecution, args = execution?.arguments;
+  const keys = ["request_id", "task_id", "status", "expected_task_revision", "expected_workflow_status"];
+  if (receipt?.toolName !== "hub_task_status_update" || execution?.version !== 1
+      || execution.protocol !== "task-operation-interruption-v1" || typeof execution.ownerId !== "string" || !execution.ownerId
+      || execution.cancellation || execution.completionFailure?.effectCompleted === true
+      || execution.taskWorkspaceId !== receipt.workspaceId
+      || !args || Object.keys(args).length !== keys.length || Object.keys(args).some(key => !keys.includes(key))
+      || args.request_id !== receipt.requestId || args.task_id !== execution.taskId
+      || args.status !== "awaiting_implementation" || args.expected_workflow_status !== "testing"
+      || !Number.isSafeInteger(args.expected_task_revision) || args.expected_task_revision < 1
+      || mcpArgumentsHash(args) !== receipt.argumentsHash) return null;
+  return args;
+}
+
 export function workflowAdmissionNoEffectEvidence(outcome, receipt) {
   const proof = outcome?.result?.noEffect;
   if (!proof || proof.version !== 1 || outcome.kind !== "workflow"
@@ -146,6 +162,22 @@ export function workflowAdmissionNoEffectEvidence(outcome, receipt) {
   }
   if (proof.code === "WORKFLOW_STATUS_CHANGED") {
     return proof.expectedWorkflowStatus !== null && proof.expectedWorkflowStatus !== proof.observedWorkflowStatus ? proof : null;
+  }
+  if (proof.code === "WORKFLOW_AWAIT_NOT_ADMITTED") {
+    const args = ordinaryAwaitOriginalArguments(receipt);
+    return args && args.task_id === proof.taskId && proof.targetWorkflowStatus === args.status
+      && proof.expectedRevision === args.expected_task_revision && proof.observedRevision === proof.expectedRevision
+      && proof.expectedWorkflowStatus === "testing" && proof.observedWorkflowStatus === "testing"
+      && proof.admissionFence?.kind === "lifecycle-outcome-before-await-admission-v1"
+      && proof.admissionFence.ownerId === receipt.taskExecution.ownerId
+      && ["reconciliation-boundary", "lock-acquire-refusal"].includes(proof.admissionFence.origin)
+      && (proof.admissionFence.origin === "reconciliation-boundary" ? proof.lockAdmission === null
+        : proof.lockAdmission?.kind === "release-await-lock-admission-v1"
+          && proof.lockAdmission.workspaceId === proof.workspaceId && typeof proof.lockAdmission.lockPath === "string")
+      && proof.previousReceipt?.requestId === receipt.requestId
+      && proof.previousReceipt.argumentsHash === receipt.argumentsHash
+      && proof.previousReceipt.createdAtMs === receipt.createdAtMs
+      && ["pending", "unknown"].includes(proof.previousReceipt.status) ? proof : null;
   }
   return null;
 }

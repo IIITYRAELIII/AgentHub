@@ -21,7 +21,7 @@ const SNAPSHOT = {
   },
 };
 const WORKSPACE_CARD = '.task-workspace-item[data-workspace-id="workspace-1"]';
-const FOLDER_CARD = '.task-workspace-folder .task-workspace-item[data-workspace-id="workspace-2"]';
+
 const STREAM_TAB = '.stream-tab[data-stream-tab-id="stream-0"]';
 
 function contentType(pathname) {

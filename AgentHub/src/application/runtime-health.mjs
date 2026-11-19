@@ -228,8 +228,10 @@ export class RuntimeHealth {
         heapUsedBytes: memory.heapUsed,
         heapTotalBytes: memory.heapTotal,
         externalBytes: memory.external,
-        eventLoopDelayP95Ms: Number(this.#eventLoopDelay.percentile(95)) / 1e6,
-        eventLoopDelayMaxMs: Number(this.#eventLoopDelay.max) / 1e6,
+        ...(this.#eventLoopDelay ? {
+          eventLoopDelayP95Ms: Number(this.#eventLoopDelay.percentile(95)) / 1e6,
+          eventLoopDelayMaxMs: Number(this.#eventLoopDelay.max) / 1e6,
+        } : {}),
       };
     }
     if (Object.keys(workerMemory).length) diagnostics.workerMemory = workerMemory;

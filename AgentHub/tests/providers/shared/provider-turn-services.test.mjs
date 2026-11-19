@@ -5,6 +5,11 @@ import {
   CodexTurnService,
   unsupportedProviderSteer,
 } from "../../../src/providers/provider-turn-services.mjs";
+import { ManagedRunLifecycleService } from "../../../src/application/managed-run-lifecycle-service.mjs";
+import { StreamContextMaintenanceService } from "../../../src/application/stream-context-maintenance-service.mjs";
+import { StreamMaintenanceRegistry } from "../../../src/application/stream-maintenance-registry.mjs";
+import { TaskRunRegistry, createManagedTaskRun } from "../../../src/domain/task-runs.mjs";
+import { TaskProgressController } from "../../../src/interfaces/telegram/task-progress-controller.mjs";
 
 function codexTurnService(overrides = {}) {
   const noop = async () => {};
@@ -34,6 +39,60 @@ function codexTurnService(overrides = {}) {
     ...overrides,
   });
 }
+
+test("active-writer launch refusals release real progress/admission without starting context maintenance", async () => {
+  const noop = async () => {};
+  const registry = new StreamMaintenanceRegistry();
+  const taskRuns = new TaskRunRegistry();
+  let compactions = 0;
+  const maintenance = new StreamContextMaintenanceService({
+    registry, provider: {
+      start: async () => { compactions += 1; throw new Error("already has an active writer"); },
+      rotate: noop, rotateCompacted: noop, waitForTurnIdle: async () => true,
+      compactions: { get: () => null, isRunning: () => false },
+    },
+    latestContextUsage: () => ({ usedTokens: 95, modelContextWindow: 100 }),
+    autoCompactEnabled: () => true, autoCompactThreshold: () => 75,
+    deferredInputs: { values: () => [] }, logger: { error: noop },
+  });
+  const lifecycle = new ManagedRunLifecycleService({
+    taskRuns, currentTarget: noop, findProject: noop, codexSettings: noop,
+    currentPreferences: noop, normalizeCodexModel: noop, modelLabel: noop,
+    persistTaskDiff: noop, syncRun: noop, invalidateCatalog: noop, saveState: noop,
+    scheduleProgressStart: noop, clearSelectedDiff: noop, clearApprovals: noop,
+    pauseObservation: noop, pauseClaude: noop, stopTyping: noop,
+    prepareAdmission: noop, revokeAdmission: noop,
+    beforeCompletion: run => maintenance.reserveAfterTurn(run),
+    completionAborted: run => maintenance.cancelAfterTurn(run),
+    afterCompletion: run => maintenance.maintainAfterTurn(run),
+  });
+  const progress = new TaskProgressController({});
+  const input = "Preserved synthetic input";
+  const attempts = [];
+  const launch = codexTurnService({
+    sendRpc: async (method, params) => {
+      attempts.push({ method, params });
+      throw Object.assign(new Error("thread thread-old already has an active writer"), { code: -32600 });
+    },
+    finishProgress: (run, stage) => progress.finish(run, stage),
+    completeRun: run => lifecycle.complete(run),
+  });
+  for (let index = 0; index < 3; index += 1) {
+    const run = createManagedTaskRun({ provider: "codex", streamId: "same-stream", threadId: "thread-old",
+      projectRoot: "D:/Work", clientUserMessageId: "same-original-input", collaborationMode: "default",
+      modelId: "gpt-5.6-codex", reasoningId: "high" });
+    taskRuns.add(run);
+    await assert.rejects(launch.launch(run, input), /already has an active writer/u);
+    assert.equal(run.turnId, null);
+    assert.equal(taskRuns.size, 0);
+    assert.equal(registry.activeCount(), 0);
+  }
+  assert.equal(compactions, 0);
+  assert.equal(attempts.length, 3);
+  assert.ok(attempts.every(({ method, params }) => method === "turn/start"
+    && params.threadId === "thread-old" && params.clientUserMessageId === "same-original-input"
+    && params.input.some(item => item.type === "text" && item.text === input)));
+});
 
 test("pending naming failure is a pre-provider rejection, preserving the exact run and message", async () => {
   const failure = new Error("native name unconfirmed");
@@ -307,7 +366,7 @@ test("Codex turn service retries one active-turn transition with the same messag
   ]);
 });
 
-test("Codex turn service resumes a recycled app-server thread and retries the same steer identity", async () => {
+test("Codex turn service refuses an unloaded old turn without resuming or repeating steer", async () => {
   const calls = [];
   let steerAttempts = 0;
   const service = codexTurnService({
@@ -320,27 +379,20 @@ test("Codex turn service resumes a recycled app-server thread and retries the sa
     },
   });
 
-  const result = await service.steer({
+  await assert.rejects(service.steer({
     run: { turnId: "turn-1" },
     target: { threadId: "thread-1" },
     input: [{ type: "text", text: "Retry without duplication" }],
     clientUserMessageId: "message-1",
-  });
+  }), /thread not found: thread-1/);
 
-  assert.deepEqual(calls.map((call) => call.method), ["turn/steer", "thread/resume", "turn/steer"]);
-  assert.strictEqual(calls[0].params, calls[2].params);
+  assert.deepEqual(calls.map((call) => call.method), ["turn/steer"]);
   assert.deepEqual(calls[0].params, {
     threadId: "thread-1",
     expectedTurnId: "turn-1",
     input: [{ type: "text", text: "Retry without duplication" }],
     clientUserMessageId: "message-1",
   });
-  assert.deepEqual(calls[1].params, {
-    threadId: "thread-1",
-    approvalPolicy: "on-request",
-    sandbox: "workspace-write",
-  });
-  assert.deepEqual(result, { turnId: "turn-1" });
 });
 
 test("Codex turn service persists the exact receipt before background materialization", async () => {
@@ -690,4 +742,17 @@ test("Codex turn service never rejects or repeats an acknowledged turn with a de
   assert.equal(run.providerStart.state, "accepted-awaiting-first-event");
   assert.deepEqual(scheduled, ["turn-1"]);
   assert.deepEqual(completed, []);
+});
+
+test("a new input authentication rejection is explicit failed completion, never a resume fence", async () => {
+  const events = [];
+  const service = codexTurnService({
+    sendRpc: async (method) => { events.push(method); throw new Error("401 Unauthorized"); },
+    finishProgress: async (_run, stage) => events.push(stage),
+    completeRun: async run => events.push(["complete", run.providerTerminalStatus]),
+  });
+  await assert.rejects(service.launch({ id: "new-auth-run", threadId: "saved-thread",
+    projectRoot: "D:/fixture", modelId: "gpt-5.6-codex", collaborationMode: "default",
+    reasoningId: "medium", clientUserMessageId: "new-auth-input" }, "new input"), /401 Unauthorized/);
+  assert.deepEqual(events, ["turn/start", "Ошибка запуска: 401 Unauthorized", ["complete", "failed"]]);
 });

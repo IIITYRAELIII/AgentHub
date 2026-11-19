@@ -21,7 +21,7 @@ import { packageBackupRecoveryRequest, recoverPackageBackup, assertPackageBackup
   settlePackageBackupRecoveryStage } from "../../src/runtime/runtime-package-backup-recovery.mjs";
 import { readInterprocessLockStatus } from "../../src/infrastructure/process/interprocess-lock.mjs";
 import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
-import { buildWindowsRuntimeHost, runtimeHostSourceHash, RUNTIME_HOST_SOURCE_INPUTS } from "../../src/infrastructure/process/runtime-host-builder.mjs";
+import { buildWindowsRuntimeHost, runtimeHostSourceHash, RUNTIME_HOST_SOURCE_INPUTS } from "../helpers/external-runtime-builder.fixture.mjs";
 
 const noop = async () => {};
 const quiet = { log() {}, error() {}, warn() {} };
@@ -605,10 +605,12 @@ async function packageEntryFixture(t) {
   f.store.settle(f.binding.operationId, { succeeded: false, phase: "fixture-finished" });
   const packageRoot = path.join(f.scratchRoot, "verified"), payload = path.join(packageRoot, "runtime");
   await mkdir(payload, { recursive: true });
-  const files = { "AgentHub.RuntimeHost.exe": "synthetic; never execute", "package.json": '{"name":"agent-hub","version":"2.0.5"}' };
+  const files = { "AgentHub.RuntimeHost.exe": "synthetic; never execute", "package.json": '{"name":"agent-hub","version":"2.0.5"}',
+    "src/runtime/runtime-package-handoff.mjs": "// controlled incoming owner" };
   const manifest = { releaseId: "new", publicationRevision: "a".repeat(40), version: "2.0.5", releaseVersion: "2.0.5+build.18",
     versionScheme: "semver-build-v1", publicVersion: "2.0.5", buildNumber: 18, files: [] };
   for (const [name, body] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(payload, name)), { recursive: true });
     await writeFile(path.join(payload, name), body);
     manifest.files.push({ path: name, bytes: Buffer.byteLength(body), sha256: packageDigest(body) });
   }
@@ -637,7 +639,9 @@ async function packageEntryFixture(t) {
 
 for (const lostReply of [false, true]) test(`public package entry uses one graceful original; lostReply=${lostReply} never starts a manual fallback`, async (t) => {
   const f = await packageEntryFixture(t); let request = null, saves = 0, dispatches = 0;
-  const binding = { ...f.binding, operationId: f.input.operationId };
+  const binding = { ...f.binding, operationId: f.input.operationId,
+    target: { ...await verifyPublicPackageTarget(f.input, { readMetadata: f.readMetadata }),
+      runtimeManifest: await packageFile(path.join(f.input.packageRoot, "runtime/runtime-manifest.json")) } };
   const service = new RestartRequestService({ operationStore: f.store, currentTarget: () => ({}),
     getRequest: () => request, setRequest: (value) => { request = value; }, blockingWorkCount: () => 1,
     currentChatId: () => null, updateOffset: () => 0, processingUpdateId: () => null,
@@ -652,10 +656,20 @@ for (const lostReply of [false, true]) test(`public package entry uses one grace
     if (lostReply) throw new Error("lost addressed reply");
     return response;
   };
+  let bridges = 0;
   const invoke = () => startPackageBootstrap(f.requestFile, { readMetadata: f.readMetadata, control,
-    confirmManualStop: () => assert.fail("no manual fallback"), spawnImpl: () => assert.fail("no external legacy launch") });
-  if (lostReply) await assert.rejects(invoke(), /lost addressed reply/u);
-  else {
+    confirmManualStop: () => assert.fail("no manual fallback"), spawnImpl: (_host, args) => {
+      assert.equal(args[0], "--package-observe"); bridges++;
+      const child = new EventEmitter(); child.pid = 900; child.unref = () => {};
+      queueMicrotask(async () => {
+        const current = f.store.getReadonly(f.input.operationId), incoming = current.metadata.packageIncoming;
+        await packageCheckpoint(f.store, current.operationId, current.phase, {
+          packageIncoming: { ...incoming, native: { launcherPid: child.pid }, outsideAllJobs: true },
+        });
+      });
+      return child;
+    } });
+  {
     const admitted = await invoke();
     assert.equal(admitted.status, "accepted-graceful");
     assert.deepEqual(admitted.handoff, { action: "yield_current_turn", reason: "public_package_restart",
@@ -663,6 +677,7 @@ for (const lostReply of [false, true]) test(`public package entry uses one grace
     assert.equal(admitted.retainedPackage, f.scratchRoot);
   }
   assert.equal(dispatches, 1); assert.equal(saves, 1);
+  assert.equal(bridges, 1);
   const replay = await startPackageBootstrap(f.requestFile, { readMetadata: () => assert.fail("readback must not prepare again"),
     control: () => assert.fail("no repeated dispatch"), spawnImpl: () => assert.fail("no repeated native launch") });
   assert.equal(replay.effectsReplayed, false); assert.equal(replay.status, "blocked");
@@ -671,6 +686,64 @@ for (const lostReply of [false, true]) test(`public package entry uses one grace
   const failed = await invoke();
   assert.equal(failed.status, "failed");
   assert.equal(failed.handoff, undefined);
+});
+
+for (const failureAt of ["control-reply", "incoming-arm", "changed-binding"]) test(`public package entry reads exact terminal refusal during ${failureAt}`, async t => {
+  const f = await packageEntryFixture(t);
+  const binding = { ...f.binding, operationId: f.input.operationId,
+    target: { ...await verifyPublicPackageTarget(f.input, { readMetadata: f.readMetadata }),
+      runtimeManifest: await packageFile(path.join(f.input.packageRoot, "runtime/runtime-manifest.json")) } };
+  let request = null, bridges = 0, dispatches = 0;
+  const service = new RestartRequestService({ operationStore: f.store, currentTarget: () => ({}),
+    getRequest: () => request, setRequest: value => { request = value; }, blockingWorkCount: () => 1,
+    currentChatId: () => null, updateOffset: () => 0, processingUpdateId: () => null,
+    saveState: noop, announceDesktop: noop, sendTelegram: noop,
+    performRestart: () => assert.fail("no stop before incoming admission"),
+    scheduleRestart: () => assert.fail("active work cannot schedule"),
+    preparePackage: async () => ({ schema: 1, binding, sha256: packageBindingDigest(binding) }) });
+  const refuse = () => {
+    if (failureAt === "changed-binding") {
+      const foreign = { ...binding, old: { ...binding.old, pid: binding.old.pid + 1 } };
+      f.store.transition(f.input.operationId, { metadata: {
+        packageHandoff: { schema: 1, binding: foreign, sha256: packageBindingDigest(foreign) } } });
+    }
+    return f.store.settle(f.input.operationId, { succeeded: false, phase: "failed" });
+  };
+  const admission = startPackageBootstrap(f.requestFile, { readMetadata: f.readMetadata,
+    control: async (action, business) => {
+      if (action === "runtime-health") return { live: true, ready: true,
+        process: { pid: process.pid, releaseId: "old" }, packageHandoff: { protocol: 1 } };
+      assert.equal(action, "restart-package"); dispatches++;
+      const reply = await service.fromPackage(business);
+      if (failureAt === "control-reply") refuse();
+      return reply;
+    },
+    confirmManualStop: () => assert.fail("no manual fallback"),
+    spawnImpl: (_host, args) => {
+      assert.equal(args[0], "--package-observe"); bridges++;
+      const child = new EventEmitter(); child.pid = 901; child.unref = noop;
+      queueMicrotask(() => { refuse(); child.emit("exit", 1); });
+      return child;
+    } });
+  if (failureAt === "changed-binding") {
+    await assert.rejects(admission, /Original binding changed/u);
+    assert.deepEqual([dispatches, bridges], [1, 1]);
+    assert.equal(f.store.getReadonly(f.input.operationId).metadata.packageNative, undefined);
+    return;
+  }
+  const result = await admission;
+  assert.equal(result.status, "failed"); assert.equal(result.outcome, "failed");
+  assert.equal(result.handoff, undefined); assert.equal(result.accepted, undefined);
+  assert.deepEqual([dispatches, bridges], [1, failureAt === "incoming-arm" ? 1 : 0]);
+  const terminal = f.store.getReadonly(f.input.operationId);
+  assert.deepEqual(packageHandoffBinding(terminal), binding);
+  assert.equal(terminal.metadata.packageNative, undefined);
+  assert.equal(terminal.metadata.packageIncoming?.native, undefined);
+  const replay = await startPackageBootstrap(f.requestFile, {
+    readMetadata: () => assert.fail("terminal readback cannot prepare"),
+    control: () => assert.fail("no repeated dispatch"), spawnImpl: () => assert.fail("no repeated bridge") });
+  assert.equal(replay.status, "failed"); assert.equal(replay.handoff, undefined);
+  assert.deepEqual(f.store.getReadonly(f.input.operationId), terminal);
 });
 
 test("legacy package entry requires explicit manual step; health and canonical payload drift cannot admit it", async (t) => {

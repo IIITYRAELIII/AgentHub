@@ -9,7 +9,6 @@ import {
 } from "../interfaces/telegram/status.mjs";
 import { parseClaudeLimits } from "../providers/claude/claude.mjs";
 import { readCodexRolloutActivity } from "../providers/codex/codex-rollout-activity.mjs";
-import { codexThreadSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
 import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
 import { restartRequestProjection } from "../domain/maintenance-operation.mjs";
@@ -410,10 +409,6 @@ export async function createClientRuntimeComposition({
     pinnedTaskTitle,
     readCodexThreadTitleHistory,
     sendRpc: api.sendRpc,
-    resumeCodexThread: ({ threadId }) => api.sendRpc("thread/resume", {
-      threadId,
-      ...codexThreadSandboxSettings(config.codexSandboxMode),
-    }),
     isCodex,
     getThreadId: selectedThreadId,
     contextCompactions: provider.contextCompactions,

@@ -2,6 +2,8 @@ import {
   commandTaskTarget,
   createApplicationCommandService,
 } from "../application/application-command-service.mjs";
+import { preparePackageRestart } from "../runtime/runtime-package-handoff.mjs";
+import { assertOldPackageCurrent } from "../infrastructure/filesystem/runtime-package-current.mjs";
 import { RestartRequestService } from "../application/restart-request-service.mjs";
 import { TaskCommandService } from "../application/task-command-service.mjs";
 import { TaskNavigationService } from "../application/task-navigation-service.mjs";
@@ -46,7 +48,11 @@ export function createDesktopCommandComposition({
   const desktopNewTask = (...args) => taskCommandService.create(...args);
   const desktopRotateStream = (...args) => taskCommandService.rotate(...args);
 
-  const restartRequestService = new RestartRequestService(restart);
+  const restartRequestService = new RestartRequestService({
+    preparePackage: input => preparePackageRestart(input, { dataDir: restart.operationStore.dataDir }),
+    assertOldPackageCurrent,
+    ...restart,
+  });
   const desktopRestartServer = () => restartRequestService.fromDesktop();
   const desktopRestartPackage = (params) => restartRequestService.fromPackage(params);
   const desktopResumePackage = (params) => restartRequestService.resumePackage(params);
@@ -70,8 +76,6 @@ export function createDesktopCommandComposition({
       moveWorkspaceToFolder: workspaceActions.moveWorkspaceToFolder,
       renameWorkspaceFolder: workspaceActions.renameWorkspaceFolder,
       updateWorkspaceDeveloperRules: workspaceActions.updateWorkspaceDeveloperRules,
-      readWorkspaceReleasePlan: workspaceActions.readWorkspaceReleasePlan,
-      completeWorkspaceRelease: workspaceActions.completeWorkspaceRelease,
       createWorkspace: workspaceActions.createWorkspace,
       archiveWorkspace: workspaceActions.archiveWorkspace,
       restoreWorkspace: workspaceActions.restoreWorkspace,

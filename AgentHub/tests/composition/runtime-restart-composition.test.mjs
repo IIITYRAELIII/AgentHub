@@ -16,8 +16,10 @@ import { ProviderLoginService } from "../../src/application/provider-login-servi
 import { EventEmitter } from "node:events";
 import { packageBindingDigest, packageDigest, packageDirectory, packageFile } from "../../src/infrastructure/filesystem/runtime-package-target.mjs";
 
-test("restart composition records the original through its trace service and closes the composition worker", async () => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "hub398-restart-trace-")));
+test("restart composition records the original through its trace service and closes the composition worker", async t => {
+  const area = await realpath(await mkdtemp(path.join(os.tmpdir(), "hub398-restart-trace-")));
+  const root = path.join(area, "runtime"), scratchRoot = path.join(area, "scratch");
+  await mkdir(root); await mkdir(scratchRoot);
   const databaseFile = path.join(root, "data", "traces.sqlite");
   const noop = async () => {};
   let reopened;
@@ -52,7 +54,7 @@ test("restart composition records the original through its trace service and clo
       inputs[key] = await packageFile(file);
     }
     const binding = {
-      operationId, runtimeRoot: root, dataDir,
+      operationId, runtimeRoot: root, dataDir, scratchRoot, scratch: await packageDirectory(scratchRoot),
       roots: { runtime: await packageDirectory(root), data: await packageDirectory(dataDir) },
       old: { releaseId: oldManifest.releaseId,
         currentSha256: packageDigest(pointerRaw), manifestSha256: packageDigest(oldRaw) },
@@ -65,7 +67,10 @@ test("restart composition records the original through its trace service and clo
       status: "running", phase: "running",
       metadata: { packageHandoff: { schema: 1, binding, sha256: packageBindingDigest(binding) } },
     });
-    let blocked = true;
+    let blocked = true, stoppingAttempts = 0, newAttempts = 0;
+    const effects = [];
+    const create = store.create.bind(store);
+    t.mock.method(store, "create", (...args) => { newAttempts++; return create(...args); });
     const wiring = createRuntimeRestartWiring({
       taskRuns: { values: () => [] }, agentProviders: {},
       runCoordinator: { hasPendingAdmission: () => blocked },
@@ -74,9 +79,10 @@ test("restart composition records the original through its trace service and clo
       restartRequestService: { canPerform: () => true },
       runtimeRestart: {
         getRestartRequest: () => request, updateOffset: () => 0,
-        isStopping: () => false, beginStopping: () => false,
-        setWaiting: noop, setStopping: noop, updateRestartMessage: noop, saveState: noop,
-        stopRuntimeTimers: noop, stopCodexAppServerTree: noop,
+        isStopping: () => false, beginStopping: () => { stoppingAttempts++; return false; },
+        setWaiting: async () => effects.push("waiting-state"), setStopping: () => effects.push("stopping-state"),
+        updateRestartMessage: async () => effects.push("restart-message"), saveState: async () => effects.push("save-state"),
+        stopRuntimeTimers: () => effects.push("stop-timers"), stopCodexAppServerTree: async () => effects.push("stop-provider"),
         maintenanceOperations: store,
         commandTrace: { ...trace, close: async () => { await trace.close(); closed = true; } },
         workLogUsageStore: { close: noop }, rateLimitHistoryStore: { close: noop },
@@ -87,7 +93,11 @@ test("restart composition records the original through its trace service and clo
     assert.equal(wiring.restartBlockingWorkCount(), 1);
     blocked = false;
     assert.equal(wiring.restartBlockingWorkCount(), 0);
-    assert.equal((await wiring.performRestart()).status, "ignored");
+    await wiring.performRestart();
+    assert.equal(stoppingAttempts, 1, "verified package reaches the synchronous stopping fence");
+    assert.deepEqual(effects, [], "a declined fence cannot begin restart or stop the running resources");
+    assert.equal(newAttempts, 0, "a declined restart cannot manufacture a replacement original");
+    assert.deepEqual(store.getReadonly(operationId), request, "declined stopping fence grants no package attempt");
     assert.equal((await wiring.runtimeResources.finalize()).ok, true);
     assert.equal(closed, true);
     assert.equal(trace.store.stats().workerRunning, false);
@@ -98,7 +108,7 @@ test("restart composition records the original through its trace service and clo
     assert.ok(spans.find(span => span.stage === "restart-package-backup-preflight" && span.outcome === "succeeded").monotonicDurationMs >= 0);
   } finally {
     await trace.close(); await reopened?.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(area, { recursive: true, force: true });
   }
 });
 

@@ -12,12 +12,12 @@ import {
   runTaskGitCommand,
   TaskGitWorkspaceService,
 } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { releaseTaskNetProjections } from "../../../src/infrastructure/filesystem/release-task-net-projection.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
-import { TaskReleasePlanService } from "../../../src/application/task-release-plan-service.mjs";
-import { WorkspaceReleasePreflightService } from "../../../src/application/workspace-release-preflight-service.mjs";
+import { TaskCompositionPlanService } from "../../../src/application/task-composition-plan-service.mjs";
+import { TaskIntegrationService } from "../../../src/application/task-integration-service.mjs";
 import { TaskOperationReconciliationService } from "../../../src/application/task-operation-reconciliation-service.mjs";
 import { normalizedTaskSquashTransfer } from "../../../src/domain/task-squash-transfer.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
@@ -314,7 +314,7 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
   await assertNoAcceptedCheckpoint(missingIntegrationReleaseDataDir);
   await assertNoAcceptedCheckpoint(unavailableProofReleaseDataDir);
 
-  const release = new ReleaseGitWorkspaceService({ dataDir: releaseDataDir });
+  const release = new TaskIntegrationGitService({ dataDir: releaseDataDir });
   const prepared = await release.prepareCandidate({
     planRevision: "squash-direct-result",
     workspaceId: "workspace",
@@ -449,7 +449,7 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
     generation: "publication-1", revision: published,
     repositories: [{ root, revision: published }],
   };
-  const alreadyPublished = await new ReleaseGitWorkspaceService({
+  const alreadyPublished = await new TaskIntegrationGitService({
     dataDir: publishedReleaseDataDir,
   }).prepareCandidate({
     planRevision: "squash-already-published",
@@ -656,9 +656,9 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   assert.equal(taskBoard.task(survivor.id).gitReferences[0].resultCommit, newResultCommit);
   assert.equal(await readFile(path.join(dev.projectRoot, "unique.txt"), "utf8"), "combined\n");
 
-  const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces: gitService });
+  const releasePlanner = new TaskCompositionPlanService({ taskBoard, taskGitWorkspaces: gitService });
   let candidateBuilds = 0;
-  const releasePreflight = new WorkspaceReleasePreflightService({
+  const releasePreflight = new TaskIntegrationService({
     releasePlanner,
     taskGitWorkspaces: gitService,
     releaseGitWorkspaces: {

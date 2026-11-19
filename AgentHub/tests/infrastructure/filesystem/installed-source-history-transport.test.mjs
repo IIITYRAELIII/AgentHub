@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { installedNativeHistoryBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
@@ -68,7 +68,7 @@ async function fixture(t) {
   const input = { git: (args, options) => git(primary, args, options), sourceGit: git, repositoryRoot: primary,
     primaryMainCommit: main, publishedRevision: main, tasks, runtimeRoot, planRevision: "exact-plan" };
   const dataDir = path.join(runtimeRoot, "data");
-  const owner = new ReleaseGitWorkspaceService({ dataDir, environment });
+  const owner = new TaskIntegrationGitService({ dataDir, environment });
   const request = { projectRoot: primary, publishedRevision: main, tasks, planRevision: "exact-plan" };
   const state = async () => ({ head: await git(primary, ["rev-parse", "HEAD"]),
     refs: await git(primary, ["for-each-ref", "--format=%(refname) %(objectname)"]),

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { TaskCleanupConfirmationRejectedError } from "../domain/task-cleanup-confirmation.mjs";
 import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelectedAbsorption,
   assertSelectedAbsorptionTasks } from "../domain/task-selected-composition.mjs";
 import { realpathSync } from "node:fs";
@@ -101,6 +102,7 @@ function confirmation(task, action, preview) {
     gitReferences: preview.gitReferences ?? [],
     absorbedInto: preview.absorbedInto ?? null,
     releaseService: preview.releaseService ?? null,
+    ...(preview.manualDelivery ? { manualDelivery: preview.manualDelivery } : {}),
     ...(preview.publishedDelivery ? { publishedDelivery: preview.publishedDelivery,
       publishedCleanupReferences: preview.publishedCleanupReferences ?? [] } : {}),
     deleting: preview.deleting ?? [],
@@ -118,8 +120,6 @@ function confirmation(task, action, preview) {
 }
 
 export class TaskLifecycleService {
-  #releaseOperationWake = null;
-  #releaseOperationPrepare = null;
 
   constructor({ taskBoard, workspaceCatalog, taskGitWorkspaces = null, releasePreflight = null } = {}) {
     for (const name of [
@@ -140,16 +140,6 @@ export class TaskLifecycleService {
     this.workspaceCatalog = workspaceCatalog;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.releasePreflight = releasePreflight;
-  }
-
-  setReleaseOperationWake(wake) {
-    if (wake != null && typeof wake !== "function") throw new TypeError("release operation wake must be a function");
-    this.#releaseOperationWake = wake;
-  }
-
-  setReleaseOperationPrepare(prepare) {
-    if (prepare != null && typeof prepare !== "function") throw new TypeError("release operation prepare must be a function");
-    this.#releaseOperationPrepare = prepare;
   }
 
   #task(taskId) {
@@ -213,6 +203,10 @@ export class TaskLifecycleService {
 
   async #updateWorkflowStatusTraced(options) {
     const task = this.#task(options.taskId);
+    if (options.manualDelivery) {
+      if (options.status !== "done") throw Error("Manual delivery proof applies only to workflow Done");
+      return this.#updateWorkflowStatusLocked(options);
+    }
     const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
     if (workspace?.settings?.releaseWorkflowEnabled !== true) {
       return this.#updateWorkflowStatusLocked(options);
@@ -220,11 +214,25 @@ export class TaskLifecycleService {
     if (!this.releasePreflight) {
       throw new Error("Release preflight is unavailable; workflow status was not changed");
     }
-    const result = await this.#measure("await-transition", () => this.releasePreflight.withAwaitTransition(
-      workspace.id,
-      () => this.#measure("await-admitted", () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true })),
-    ));
-    if (result?.task?.workflowStatus === "awaiting_implementation") this.#releaseOperationWake?.(result.task.id);
+    let entered = false, result;
+    try {
+      result = await this.#measure("await-transition", () => this.releasePreflight.withAwaitTransition(
+        workspace.id,
+        () => { entered = true; return this.#measure("await-admitted", () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true })); },
+      ));
+    } catch (error) {
+      const lockAdmission = !entered && options.admissionReceipt?.replayed === false
+        && options.status === "awaiting_implementation"
+        && this.releasePreflight.awaitTransitionAdmissionNoEffect?.(workspace.id, error);
+      if (!lockAdmission) throw error;
+      let outcome;
+      try {
+        const receipt = this.workspaceCatalog.mcpOperation(options.operationId);
+        outcome = await this.#mutation(() => this.taskBoard.recordUnadmittedAwaitRefusal({ taskId: task.id, receipt,
+          projectRoot: options.projectRoot || this.#projectRoot(task), lockAdmission }), options.operationId);
+      } catch (persistenceError) { throw new TaskLifecyclePersistenceError(error, persistenceError); }
+      throw new TaskLifecycleNoEffectError(outcome.result.noEffect, { cause: error });
+    }
     return result;
   }
 
@@ -843,7 +851,7 @@ export class TaskLifecycleService {
   async #updateWorkflowStatusLocked({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
-    admissionReceipt = null,
+    admissionReceipt = null, manualDelivery = null,
     selectedAbsorptionHandoff: handoffInput = null,
   } = {}, { releaseWorkflow = false } = {}) {
     const handoff = selectedAbsorptionHandoff(handoffInput);
@@ -858,7 +866,7 @@ export class TaskLifecycleService {
       const history = prior?.kind === "native-task-integration-v1" ? prior.absorptionHistory ?? prior : null;
       return this.#updateWorkflowStatusWithLease({
         taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
-        admissionReceipt,
+        admissionReceipt, manualDelivery,
         operationEvidence: handoff ? { ...(operationEvidence ?? {}), nativeAbsorptionInput:
           this.#selectedAbsorptionBinding(task, handoffInput, operationId) }
           : history ? { ...(operationEvidence ?? {}), nativeAbsorptionHistory: history } : operationEvidence,
@@ -866,7 +874,7 @@ export class TaskLifecycleService {
     };
     return handoff
       ? this.taskGitWorkspaces.withTaskLocks([taskId, handoff.declaration.sourceTaskId], operation, { guardTaskId: taskId })
-      : this.#withLock(taskId, operation, { git: releaseWorkflow });
+      : this.#withLock(taskId, operation, { git: releaseWorkflow || !!manualDelivery });
   }
 
   async #refuseWorkflowAdmission({ taskId, admissionReceipt, projectRoot, status,
@@ -885,7 +893,7 @@ export class TaskLifecycleService {
   async #updateWorkflowStatusWithLease({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
-    admissionReceipt = null,
+    admissionReceipt = null, manualDelivery = null,
 
     initialNativeTestSource = null, initialNativeTestRecovery = false, nativeAwaitRecovery = null,
   } = {}, { releaseWorkflow = false, lease = {} } = {}) {
@@ -903,6 +911,9 @@ export class TaskLifecycleService {
         }
         throw new Error(revisionChanged ? "Task workflow cutover revision changed" : "Task workflow cutover status changed");
       }
+      const readManual = () => this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease });
+      const manualProof = manualDelivery ? await readManual() : null;
+      if (manualProof) operationEvidence = { ...(operationEvidence ?? {}), manualDelivery: manualProof };
       const snapshotsResult = releaseWorkflow && workflowStatus === "testing";
       const withdrawsResult = releaseWorkflow && ["new", "in_progress", "blocked"].includes(workflowStatus)
         && ["testing", "awaiting_implementation"].includes(task.workflowStatus);
@@ -1045,6 +1056,7 @@ export class TaskLifecycleService {
           };
         }
         if (!snapshotsResult) {
+          if (manualProof && JSON.stringify(await readManual()) !== JSON.stringify(manualProof)) throw Error("Manual delivery changed before Done");
           if (releaseWorkflow && workflowStatus === "awaiting_implementation") {
             requiredMethod(this.taskGitWorkspaces, "withTaskRepositoryRecoveryLock");
             requiredMethod(this.releasePreflight, "prepareAwaitAcceptance");
@@ -1113,7 +1125,6 @@ export class TaskLifecycleService {
                       }
                     }
                     try {
-                      this.#releaseOperationPrepare?.(task.id);
                     } catch {}
                     return {
                       task: current,
@@ -1136,7 +1147,7 @@ export class TaskLifecycleService {
             ...binding,
             evidence: {
               ...(operationEvidence ?? {}),
-              outcome: acceptsExistingResult ? "accepted_existing_result" : "not_required",
+              outcome: manualProof ? "verified_manual_delivery" : acceptsExistingResult ? "accepted_existing_result" : "not_required",
               ...(acceptedReference ? { resultCommit: acceptedReference.resultCommit } : {}),
               ...(affectsAwait ? { response: { releaseCandidate: {
                 status: "pending", reason: "Await membership changed; candidate preparation requires readback or retry",
@@ -1382,6 +1393,15 @@ export class TaskLifecycleService {
         )
         )));
     return this.releasePreflight.withAwaitTransition(workspace.id, locked);
+  }
+
+  async refuseUnadmittedAwaitOwned({ taskId, receipt, projectRoot, lease, beforeRecord = () => {} } = {}) {
+    await this.#assertOwned(lease);
+    requiredMethod(this.taskGitWorkspaces, "assertNoProcessTreeGuardOwned");
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(taskId, { lease });
+    await this.#assertOwned(lease);
+    beforeRecord();
+    return this.#mutation(() => this.taskBoard.recordUnadmittedAwaitRefusal({ taskId, receipt, projectRoot }), receipt.requestId);
   }
 
   async assertMalformedWorkflowIdleOwned({ taskId, operationId, lease } = {}) {
@@ -1672,7 +1692,8 @@ export class TaskLifecycleService {
     return confirmation(task, action, preview);
   }
 
-  async #completeAbsorbed({ taskId, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId }) {
+  async #completeAbsorbed({ taskId, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
+    previewReadback = null }) {
     if (taskId === absorbedIntoTaskId) throw new Error("A Task cannot absorb itself");
     requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
     requiredMethod(this.taskGitWorkspaces, "withAbsorptionEvidenceOwned");
@@ -1742,8 +1763,19 @@ export class TaskLifecycleService {
         preview.warning = exactSquash
           ? "Close the squash-absorbed source Task and remove only its exact clean Git artifacts after the survivor is durably published."
           : "Close the source Task as combined. Its branch, worktree and history are preserved; this does not mark it published.";
-        if (confirmCleanup !== true) return preview;
-        if (expectedCleanupToken !== preview.cleanupToken) throw new Error("Combined closure confirmation is stale; read the preview again");
+        if (confirmCleanup !== true) {
+          if (!previewReadback) return preview;
+          const validate = () => {
+            if (this.#task(task.id).revision !== task.revision || this.#task(target.id).revision !== target.revision
+                || this.taskBoard.lifecycleTransition(operationId) || this.taskBoard.lifecycleOutcome(operationId)) {
+              throw new Error("Combined preview original has lifecycle admission or Task drift");
+            }
+          };
+          await this.#assertOwned(ownedLease);
+          validate();
+          return previewReadback({ task, preview, validate });
+        }
+        if (expectedCleanupToken !== preview.cleanupToken) throw new TaskCleanupConfirmationRejectedError(task.id, "complete");
         if (exactSquash && (cleanup.dirty || cleanup.unpublished.length)) {
           throw new Error("Squash-absorbed Task cleanup requires its exact clean source result and published survivor");
         }
@@ -2048,18 +2080,80 @@ export class TaskLifecycleService {
     });
   }
 
+  async recoverCleanupConfirmation({ taskId, operationId, action, preview = false, absorbedIntoTaskId = null, readback }) {
+    if (absorbedIntoTaskId) {
+      if (!preview || action !== "complete") throw new Error("Combined recovery supports only the exact read-only preview");
+      // Acquire Workspace and both Task/repository leases once, in the normal
+      // combined-closure order; never nest that owner inside a source-only lock.
+      return this.#completeAbsorbed({ taskId, operationId, absorbedIntoTaskId,
+        confirmCleanup: false, previewReadback: readback });
+    }
+    return this.#withLock(taskId, async lease => {
+      const task = this.#task(taskId);
+      const validate = () => {
+        if (this.#task(taskId).revision !== task.revision || this.taskBoard.lifecycleTransition(operationId)
+            || this.taskBoard.lifecycleOutcome(operationId)) throw new Error("Cleanup validation original has lifecycle admission or Task drift");
+      };
+      validate();
+      const current = preview ? await this.#cleanupPreview(task, action) : null;
+      await this.#assertOwned(lease);
+      validate();
+      return readback({ task, preview: current, validate });
+    });
+  }
+
+  async #completeManualDelivery({ taskId, operationId, confirmCleanup, expectedCleanupToken, manualDelivery, originalArguments, retainedRepositories }) {
+    requiredMethod(this.taskGitWorkspaces, "manualDeliveryPreviewOwned");
+    const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
+    if (outcome?.taskId === taskId && outcome.kind === "complete" && outcome.result?.evidence?.manualDelivery) return outcome.result.result;
+    return this.#withLock(taskId, async lease => {
+      const task = this.#task(taskId);
+      if (task.workflowStatus !== "done") throw Error("Manual delivery completion requires workflow Done");
+      const read = () => this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories });
+      const retained = await read();
+      const preview = confirmation(task, "complete", retained);
+      preview.warning = "Close this verified manually delivered Task. All branches, worktrees, ignored files and history are preserved; cleanup is separate.";
+      if (!confirmCleanup) return preview;
+      if (expectedCleanupToken !== preview.cleanupToken) throw new TaskCleanupConfirmationRejectedError(taskId, "complete");
+      if (originalArguments?.task_id !== taskId || originalArguments.request_id !== operationId
+          || originalArguments.completion_mode !== "manual_delivery" || originalArguments.confirm_cleanup !== true) {
+        throw Error("Manual completion requires its exact original business arguments");
+      }
+      const resumed = this.taskBoard.lifecycleTransition?.(operationId);
+      if (resumed && (resumed.taskId !== taskId || resumed.kind !== "complete" || resumed.phase !== "cleanup"
+          || resumed.expectedRevision !== task.revision
+          || JSON.stringify(resumed.evidence?.manualDelivery) !== JSON.stringify(retained)
+          || JSON.stringify(resumed.evidence?.originalArguments) !== JSON.stringify(originalArguments))) throw Error("Manual completion original changed");
+      if (JSON.stringify(await read()) !== JSON.stringify(retained)) throw Error("Manual delivery or retained artifacts changed before closure");
+      await this.#assertOwned(lease);
+      if (!resumed) await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+        id: taskId, operationId, kind: "complete", expectedRevision: task.revision, evidence: { manualDelivery: retained, originalArguments },
+      }), operationId);
+      try {
+        await this.#assertOwned(lease);
+        return await this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+          receiptEvidence: { manualDelivery: retained, originalArguments },
+        }), operationId);
+      } catch (error) { await this.#failWhileOwned(lease, operationId, error); throw error; }
+    });
+  }
+
   async complete({
     taskId, operationId, confirmCleanup = false, expectedCleanupToken = null,
-    absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, originalArguments = null, completedOperationRequestId = null,
+    absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, manualDelivery = null, retainedRepositories = [], originalArguments = null, completedOperationRequestId = null,
   } = {}) {
-    if (completionMode != null && !["published_release_service", "published_delivery", "operational"].includes(completionMode)) {
+    if (completionMode != null && !["published_release_service", "published_delivery", "operational", "manual_delivery"].includes(completionMode)) {
       throw new Error("Unsupported Task completion mode");
     }
     if (completionMode && (absorptionMode || absorbedIntoTaskId)) {
       throw new Error("Release service completion cannot absorb another Task");
     }
     if (publishedDelivery && completionMode !== "published_delivery") throw Error("Direct publication evidence requires its explicit completion mode");
+    if (manualDelivery && completionMode !== "manual_delivery") throw Error("Manual delivery requires its explicit completion mode");
+    if (retainedRepositories.length && completionMode !== "manual_delivery") throw Error("Repository retention pins require manual delivery mode");
     if (completedOperationRequestId && completionMode !== "operational") throw Error("Historical completion proof requires operational cleanup mode");
+    if (completionMode === "manual_delivery") return this.#completeManualDelivery({ taskId, operationId,
+      confirmCleanup, expectedCleanupToken, manualDelivery, originalArguments, retainedRepositories });
     if (["published_delivery", "operational"].includes(completionMode)) return this.#completePublishedDelivery({ taskId, operationId,
       confirmCleanup, expectedCleanupToken, publishedDelivery, originalArguments, operational: completionMode === "operational", completedOperationRequestId });
     if (completionMode === "published_release_service") return this.#completePublishedReleaseService({
@@ -2084,7 +2178,7 @@ export class TaskLifecycleService {
       const preview = await this.#cleanupPreview(task, "complete");
       if (confirmCleanup !== true) return preview;
       if (!resumingCleanup && String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
-        throw new Error("Task cleanup confirmation is stale or missing; read the preview again");
+        throw new TaskCleanupConfirmationRejectedError(task.id, "complete");
       }
       const hasGitArtifacts = preview.preview.workspaces.length > 0 || (task.gitReferences?.length ?? 0) > 0;
       if (hasGitArtifacts && task.workflowStatus !== "done") {
@@ -2161,7 +2255,7 @@ export class TaskLifecycleService {
       const preview = await this.#cleanupPreview(task, "delete");
       if (confirmCleanup !== true) return preview;
       if (!resumingCleanup && String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
-        throw new Error("Task deletion confirmation is stale or missing; read the preview again");
+        throw new TaskCleanupConfirmationRejectedError(task.id, "delete");
       }
       await this.#assertOwned(lease);
       await this.#mutation(() => this.taskBoard.beginLifecycleTransition({

@@ -22,6 +22,7 @@ import {
   TASK_WORKFLOW_STATUSES,
   TaskLifecycleBeginRejectedError,
   workflowAdmissionNoEffectEvidence,
+  ordinaryAwaitOriginalArguments,
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
 import {
@@ -2546,12 +2547,15 @@ export class TaskBoardStore {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(taskId, ...identity, kind, baselineJson, timestamp);
       assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, String(workspaceId));
+      // A new fenced binding advances CAS even for the same assigned Stream.
+      // The ordinary revision trigger skips an explicitly advanced revision.
       database.prepare(`
         UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = CASE WHEN workflow_status IN ('testing', 'awaiting_implementation', 'blocked') THEN workflow_status ELSE 'in_progress' END,
           workspace_id = ?, stream_id = ?, placement_source = 'manual',
-          started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?
+          started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?,
+          row_revision = row_revision + ?
         WHERE id = ?
-      `).run(String(workspaceId), String(streamId), timestamp, timestamp, taskId);
+      `).run(String(workspaceId), String(streamId), timestamp, timestamp, forwardCustodyRequestId ? 1 : 0, taskId);
       const result = this.#taskWithRelease(
         database,
         database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId),
@@ -3178,6 +3182,66 @@ export class TaskBoardStore {
         database.exec("ROLLBACK");
         throw error;
       }
+    });
+  }
+
+  recordUnadmittedAwaitRefusal({ taskId, receipt, projectRoot, lockAdmission = null } = {}) {
+    return this.#withDatabase(database => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const row = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(receipt?.requestId);
+        const current = this.#taskRow(database, taskId);
+        const args = ordinaryAwaitOriginalArguments(receipt);
+        const fresh = ["pending", "reconciling"].includes(row?.receipt_state)
+          && lockAdmission?.kind === "release-await-lock-admission-v1"
+          && lockAdmission.workspaceId === receipt.workspaceId;
+        if (!row || !args || args.task_id !== taskId || row.status !== "pending"
+            || !(row.receipt_state === "unknown" || fresh)
+            || row.tool_name !== receipt.toolName || row.workspace_id !== receipt.workspaceId
+            || row.stream_id !== receipt.streamId || row.provider !== receipt.provider || row.provider_thread_id !== receipt.threadId
+            || row.arguments_hash !== receipt.argumentsHash || Number(row.created_at_ms) !== receipt.createdAtMs
+            || (row.completed_at_ms == null ? null : Number(row.completed_at_ms)) !== receipt.completedAtMs
+            || String(row.error_text ?? "") !== String(receipt.error ?? "") || row.result_json != null
+            || row.task_execution_json !== JSON.stringify(receipt.taskExecution)
+            || row.preparation_state_json || row.claim_custody_json || row.interstream_content_hash
+            || current.workspace_id !== receipt.workspaceId || Number(current.row_revision) !== args.expected_task_revision
+            || current.workflow_status !== "testing" || current.status === "done"
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_transitions WHERE operation_id = ?").get(receipt.requestId)
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(receipt.requestId)
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_transitions WHERE task_id = ? AND phase IN ('pending_git','cleanup')").get(taskId)) {
+          throw new Error("Unadmitted Await original, lifecycle or Task CAS changed");
+        }
+        assertNoPendingTaskInterruption(database, taskId);
+        const workspace = database.prepare("SELECT settings_json FROM hub_workspaces WHERE id = ?").get(current.workspace_id);
+        const stream = current.stream_id
+          ? database.prepare("SELECT settings_json FROM hub_streams WHERE id = ? AND workspace_id = ?").get(current.stream_id, current.workspace_id) : null;
+        const configuredRoot = workspace && taskProjectRoot({ workspace: { settings: parsedSettings(workspace.settings_json) },
+          stream: stream ? { settings: parsedSettings(stream.settings_json) } : null });
+        if (!configuredRoot || !projectRoot || !sameResolvedPath(configuredRoot, projectRoot)
+            || parsedSettings(workspace.settings_json).releaseWorkflowEnabled !== true) {
+          throw new Error("Unadmitted Await repository or Workspace changed");
+        }
+        const noEffect = { version: 1, code: "WORKFLOW_AWAIT_NOT_ADMITTED", taskId, projectRoot,
+          targetWorkflowStatus: args.status, expectedRevision: args.expected_task_revision, expectedWorkflowStatus: "testing",
+          observedRevision: Number(current.row_revision), observedWorkflowStatus: current.workflow_status,
+          ...Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName",
+            "argumentsHash", "createdAtMs"].map(key => [key, receipt[key]])),
+          admissionFence: { kind: "lifecycle-outcome-before-await-admission-v1", ownerId: receipt.taskExecution.ownerId,
+            origin: fresh ? "lock-acquire-refusal" : "reconciliation-boundary" },
+          lockAdmission: fresh ? structuredClone(lockAdmission) : null,
+          previousReceipt: structuredClone(receipt),
+        };
+        const outcome = { operationId: receipt.requestId, taskId, kind: "workflow", result: { noEffect } };
+        if (!workflowAdmissionNoEffectEvidence(outcome, receipt)) throw new Error("Unadmitted Await proof identity differs");
+        // The existing BEGIN owner checks this outcome in the same SQLite
+        // transaction before any Git effect. A late original either committed
+        // its transition first (and we refused above), or can no longer begin.
+        database.prepare(`INSERT INTO hub_task_lifecycle_outcomes
+          (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, ?)`)
+          .run(receipt.requestId, taskId, JSON.stringify(outcome.result), this.now());
+        database.exec("COMMIT");
+        return outcome;
+      } catch (error) { database.exec("ROLLBACK"); throw error; }
     });
   }
 
@@ -3904,37 +3968,6 @@ export class TaskBoardStore {
     });
   }
 
-  recordReleaseFinalizationStage(workspaceId, { planRevision, stage, projectRoot, receipt }) {
-    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
-    return this.#withDatabase((database) => {
-      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
-      const pending = value ? JSON.parse(value) : null;
-      if (!pending || pending.version !== 2 || pending.planRevision !== planRevision) {
-        throw new Error("release finalization revision conflict");
-      }
-      if (!receipt || typeof receipt.completed !== "boolean" || !receipt.result) {
-        throw new Error("release finalization requires a stage receipt");
-      }
-      let holder;
-      let field;
-      if (stage === "await") {
-        holder = pending;
-        field = "awaitResult";
-      } else if (["primary", "dev"].includes(stage)) {
-        holder = pending.repositories.find((repository) => repository.projectRoot === projectRoot);
-        field = stage;
-      }
-      if (!holder) throw new Error("unknown release finalization stage or repository");
-      if (holder[field]?.completed) return false;
-      holder[field] = receipt;
-      const updated = database.prepare(`
-        UPDATE hub_board_settings SET value = ?, updated_at_ms = ? WHERE key = ? AND value = ?
-      `).run(JSON.stringify(pending), this.now(), key, value);
-      if (!Number(updated.changes)) throw new Error("release finalization checkpoint changed");
-      return true;
-    });
-  }
-
   clearAwaitRebuildPending(workspaceId, expectedPlanRevision = null) {
     const key = `release_await_rebuild_pending:${String(workspaceId)}`;
     return this.#withDatabase((database) => {
@@ -3959,187 +3992,6 @@ export class TaskBoardStore {
         `).run(JSON.stringify({ version: 2, completed: true, completedOutcomes }), this.now(), key, value).changes) > 0;
       }
       return Number(database.prepare("DELETE FROM hub_board_settings WHERE key = ? AND value = ?").run(key, value).changes) > 0;
-    });
-  }
-
-  completeRelease(workspaceId, {
-    expectedPlanRevision = null, plan = null, verificationEvidence = null, awaitRebuild = null,
-  } = {}) {
-    const expected = String(expectedPlanRevision ?? "").trim();
-    return this.#withDatabase((database) => {
-      database.exec("BEGIN IMMEDIATE");
-      try {
-      if (this.awaitRebuildPending(workspaceId)) {
-        throw new Error("release finalization is still pending");
-      }
-      const tasks = this.releaseTasks(workspaceId);
-      const awaiting = tasks.filter((task) => task.status !== "done"
-        && task.workflowStatus === "awaiting_implementation");
-      const doneAudit = tasks.filter((task) => task.status !== "done" && task.workflowStatus === "done");
-      const releaseRevision = taskReleasePlanRevision(workspaceId, awaiting);
-      const legacyRevision = taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit], { legacy: true });
-      const legacy = expected !== releaseRevision && expected === legacyRevision;
-      const currentRevision = legacy ? legacyRevision : releaseRevision;
-      if (!expected || currentRevision !== expected || plan?.revision !== expected) {
-        throw new Error("release plan revision conflict; verify the current release plan again");
-      }
-      if (!plan.candidates.length) throw new Error("release has no awaiting Task candidates");
-      if (taskReleasePlanRevision(workspaceId, plan.candidates) !== releaseRevision) {
-        throw new Error("release Task results or membership changed before closure");
-      }
-      if (!verificationEvidence || typeof verificationEvidence !== "object") {
-        throw new Error("release completion requires durable publication evidence");
-      }
-      const rebuildPlanRevision = String(awaitRebuild?.planRevision ?? "").trim();
-      const fallbackProjectRoots = Array.isArray(awaitRebuild?.fallbackProjectRoots)
-        ? awaitRebuild.fallbackProjectRoots.map((root) => String(root).trim()).filter(Boolean)
-        : [];
-      if (rebuildPlanRevision !== expected || !fallbackProjectRoots.length) {
-        throw new Error("release completion requires durable Await rebuild evidence");
-      }
-      const previousValue = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?")
-        .get(`release_await_rebuild_pending:${String(workspaceId)}`)?.value;
-      const completedOutcomes = previousValue ? JSON.parse(previousValue).completedOutcomes ?? [] : [];
-      const pending = { planRevision: rebuildPlanRevision, fallbackProjectRoots };
-      if (awaitRebuild.version === 2) {
-        const expectedRepositories = verificationEvidence.publication?.repositories ?? [];
-        if (!expectedRepositories.length || !Array.isArray(awaitRebuild.repositories)
-          || awaitRebuild.repositories.length !== expectedRepositories.length
-          || awaitRebuild.repositories.some((repository, index) => (
-            repository.projectRoot !== expectedRepositories[index].root
-            || repository.publishedRevision !== expectedRepositories[index].revision
-            || !repository.publishedRevision
-          ))) throw new Error("release finalization requires exact verified repositories");
-        Object.assign(pending, {
-          version: 2,
-          completedOutcomes,
-          repositories: awaitRebuild.repositories.map(({ projectRoot, publishedRevision }) => ({
-            projectRoot, publishedRevision, primary: null, dev: null,
-          })),
-          awaitResult: null,
-        });
-      }
-      const timestamp = this.now();
-      const released = [];
-      for (const task of plan.candidates) {
-        const current = database.prepare(`
-          SELECT row_revision, release_revision, workflow_status FROM hub_board_tasks WHERE id = ?
-        `).get(task.id);
-        if (!current
-           || (legacy && Number(current.row_revision) !== task.revision)
-           || Number(current.release_revision) !== (task.releaseRevision ?? task.revision)
-          || current.workflow_status !== "awaiting_implementation") {
-          throw new Error(`release Task revision changed: ${task.id}`);
-        }
-        const result = database.prepare(`
-          UPDATE hub_board_tasks SET workflow_status = 'done', status = 'done',
-            completed_at_ms = ?, updated_at_ms = ?
-          WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation'
-        `).run(timestamp, timestamp, task.id, Number(current.row_revision));
-        if (!Number(result.changes)) throw new Error(`release Task disappeared: ${task.id}`);
-        released.push({ id: task.id, revision: Number(current.row_revision),
-          releaseRevision: Number(current.release_revision), gitReferences: task.gitReferences });
-      }
-      const result = {
-        workspaceId: String(workspaceId),
-        released,
-        verificationEvidence,
-      };
-      database.prepare(`
-        INSERT INTO hub_board_settings (key, value, updated_at_ms)
-        VALUES (?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.updated_at_ms
-      `).run(
-        `release_await_rebuild_pending:${String(workspaceId)}`,
-        JSON.stringify(pending),
-        timestamp,
-      );
-      database.exec("COMMIT");
-      return result;
-      } catch (error) {
-        database.exec("ROLLBACK");
-        throw error;
-      }
-    });
-  }
-
-  completeReleaseOperation(workspaceId, {
-    operationId, generation, selectedResults = [], publicationEffects = {},
-  } = {}) {
-    const releaseOperationId = String(operationId ?? "").trim();
-    const generationNumber = Number(generation);
-    if (!releaseOperationId || !Number.isSafeInteger(generationNumber) || generationNumber < 1) {
-      throw new Error("release operation finalization requires exact operation and generation");
-    }
-    if (!Array.isArray(selectedResults) || !selectedResults.length) {
-      throw new Error("release operation finalization requires selected results");
-    }
-    const key = `release_operation_finalized:${releaseOperationId}:${generationNumber}`;
-    return this.#withDatabase((database) => {
-      database.exec("BEGIN IMMEDIATE");
-      try {
-        const existing = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
-        if (existing) {
-          database.exec("ROLLBACK");
-          return { ...JSON.parse(existing), alreadyFinalized: true };
-        }
-        const timestamp = this.now();
-        const deliveries = [];
-        for (const selected of selectedResults) {
-          const taskId = String(selected?.taskId ?? "").trim();
-          const resultCommit = String(selected?.resultCommit ?? "").trim();
-          const task = database.prepare(`
-            SELECT workspace_id, row_revision, release_revision, workflow_status, status
-            FROM hub_board_tasks WHERE id = ?
-          `).get(taskId);
-          if (!task || String(task.workspace_id ?? "") !== String(workspaceId)) {
-            throw new Error(`release operation Task is missing from its Workspace: ${taskId}`);
-          }
-          const references = database.prepare(`
-            SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
-            FROM hub_task_git_references WHERE task_id = ? ORDER BY project_root
-          `).all(taskId);
-          const currentResult = references.some((reference) => reference.resultCommit === resultCommit);
-          const closesCurrent = currentResult
-            && task.workflow_status === "awaiting_implementation"
-            && task.status !== "done";
-          if (closesCurrent) {
-            const updated = database.prepare(`
-              UPDATE hub_board_tasks SET workflow_status = 'done', status = 'done',
-                completed_at_ms = ?, updated_at_ms = ?
-              WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation'
-            `).run(timestamp, timestamp, taskId, Number(task.row_revision));
-            if (Number(updated.changes) !== 1) throw new Error(`release operation Task CAS changed: ${taskId}`);
-          }
-          deliveries.push({
-            taskId,
-            resultCommit,
-            delivered: true,
-            closedCurrentTask: closesCurrent,
-            currentWorkflowStatus: closesCurrent ? "done" : task.workflow_status,
-            currentResult,
-            taskRevision: Number(task.row_revision),
-            releaseRevision: Number(task.release_revision),
-          });
-        }
-        const result = {
-          schemaVersion: 1,
-          workspaceId: String(workspaceId),
-          operationId: releaseOperationId,
-          generation: generationNumber,
-          deliveries,
-          publicationEffects: structuredClone(publicationEffects),
-          completedAtMs: timestamp,
-        };
-        database.prepare(`
-          INSERT INTO hub_board_settings (key, value, updated_at_ms) VALUES (?, ?, ?)
-        `).run(key, JSON.stringify(result), timestamp);
-        database.exec("COMMIT");
-        return result;
-      } catch (error) {
-        try { database.exec("ROLLBACK"); } catch {}
-        throw error;
-      }
     });
   }
 

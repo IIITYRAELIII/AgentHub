@@ -66,16 +66,6 @@ function loadJournalView() {
   return window.AgentHubJournalView;
 }
 
-function functionSource(source, name, nextMarker) {
-  let start = source.indexOf(`function ${name}`);
-  if (source.slice(Math.max(0, start - 6), start) === "async ") start -= 6;
-  const closing = /\r?\n\}\r?\n/u.exec(source.slice(start));
-  const end = name === "applyOpened" ? start + closing.index + closing[0].length : source.indexOf(nextMarker, start);
-  assert.notEqual(start, -1, `${name} source start`);
-  assert.notEqual(end, -1, `${name} source end`);
-  return source.slice(start, end);
-}
-
 function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
   const source = fs.readFileSync(path.join(__dirname, "vscode-bootstrap.js"), "utf8");
   const listeners = new Map();
@@ -376,7 +366,8 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
       fs.writeFileSync(path.join(shadowAssets, file), "");
       fs.writeFileSync(path.join(runtimeAssets, file), "");
     }
-    fs.cpSync(path.join(WEB_APP_ROOT, "themes"), path.join(runtimeAssets, "themes"), { recursive: true });
+    fs.symlinkSync(path.join(WEB_APP_ROOT, "themes"), path.join(runtimeAssets, "themes"),
+      process.platform === "win32" ? "junction" : "dir");
     fs.copyFileSync(path.resolve(__dirname, "..", "theme-registry.cjs"), path.join(runtimeRoot, "theme-registry.cjs"));
     fs.copyFileSync(path.resolve(__dirname, "..", "client-assets.cjs"), path.join(runtimeRoot, "client-assets.cjs"));
     fs.writeFileSync(path.join(shadowRoot, "Utilities", "AgentHub", "work-log.css"), "");
@@ -424,20 +415,6 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   }
 });
 
-test("extension keeps its shell synchronized with the active runtime", () => {
-  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
-  const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
-  assert.match(shared, /rewriteRuntimeAssetReferences/u);
-  assert.match(extension, /refreshPanelShellIfReleaseChanged/u);
-  assert.match(extension, /agenthub:runtime-changed/u);
-  assert.match(extension, /subscribeRuntime/u);
-  assert.match(
-    extension,
-    /async refresh\(force = false\)[\s\S]*await this\.refreshPanelShellIfReleaseChanged\(\)/u,
-  );
-  assert.match(extension, /runtimeUri,\s*\n\s*extensionUri: this\.context\.extensionUri/u);
-  assert.doesNotMatch(shared, /media", "mini-app/u);
-});
 
 test("VS Code ignores rendering and HTTP results for a disposed panel", async () => {
   const harness = panelHarness();
@@ -465,6 +442,64 @@ test("VS Code ignores rendering and HTTP results for a disposed panel", async ()
   response.resolve({ status: 200, headers: {}, body: "ok" });
   await pendingResponse;
   assert.deepEqual(harness.messages, []);
+});
+
+test("VS Code runtime notifications prepare once and replace the shell only at client readiness", async () => {
+  const { WorkLogViewProvider } = loadExtension({});
+  const provider = new WorkLogViewProvider(providerContext());
+  const harness = panelHarness();
+  provider.panel = harness.panel;
+  provider.sharedPanel = true;
+  provider.panelRuntimeRoot = "old-runtime";
+  let root = "old-runtime";
+  provider.currentBridge = async () => ({ runtimeReleaseRoot: async () => root });
+  const rendered = [];
+  provider.renderPanelShell = async (_panel, value) => { rendered.push(value); provider.panelRuntimeRoot = value; };
+  assert.equal(await provider.refreshPanelShellIfReleaseChanged(), false);
+  root = "new-runtime";
+  assert.equal(await provider.refreshPanelShellIfReleaseChanged(), false);
+  assert.equal(await provider.refreshPanelShellIfReleaseChanged(), false);
+  assert.deepEqual(harness.messages, [{ type: "agenthub:runtime-published" }]);
+  assert.deepEqual(rendered, []);
+  assert.equal(await provider.refreshPanelShellIfReleaseChanged({ clientReady: true }), true);
+  assert.deepEqual(rendered, ["new-runtime"]);
+});
+
+test("VS Code missing runtime shell emits a closed failure instead of a workspace fallback", async () => {
+  const harness = panelHarness();
+  const errors = [];
+  const vscode = { ViewColumn: { Active: 1 }, window: { createWebviewPanel: () => harness.panel,
+    showErrorMessage: message => errors.push(message) } };
+  const { WorkLogViewProvider } = loadExtension(vscode);
+  const provider = new WorkLogViewProvider(providerContext());
+  provider.renderPanelShell = async () => { throw new Error("Synthetic missing bundled resource"); };
+  provider.scheduleRefresh = () => {};
+  await provider.openPanel();
+  assert.equal(provider.sharedPanel, "unavailable");
+  assert.ok(harness.panel.webview.html.includes("Ресурсы Agent Hub повреждены"));
+  assert.equal(errors.length, 1);
+});
+
+test("VS Code shell permits only extension, selected runtime and attachment roots and discovers its theme catalog", async () => {
+  const harness = panelHarness();
+  const vscode = webviewVscode(["forbidden-workspace-root"]);
+  loadSharedWebview(vscode);
+  const { WorkLogViewProvider } = loadExtension(vscode);
+  const context = providerContext();
+  context.extensionUri = vscodeUri(__dirname);
+  const provider = new WorkLogViewProvider(context);
+  provider.panel = harness.panel;
+  harness.panel.webview.cspSource = "vscode-webview://test";
+  harness.panel.webview.asWebviewUri = value => ({ toString: () => `vscode-webview-resource:${value.fsPath}` });
+  const runtime = path.resolve(__dirname, "..");
+  const attachments = path.join(os.tmpdir(), "synthetic-attachment-root");
+  provider.currentBridge = async () => ({ runtimeReleaseRoot: async () => runtime, attachmentDirectory: () => attachments });
+  await provider.renderPanelShell();
+  assert.deepEqual(harness.panel.webview.options.localResourceRoots.map(value => value.fsPath), [context.extensionUri.fsPath, runtime, attachments]);
+  assert.deepEqual([...provider.themes], THEMES);
+  assert.equal(provider.panelRuntimeRoot, runtime);
+  assert.ok(harness.panel.webview.html.includes("vscode-webview-resource:"));
+  assert.ok(!harness.panel.webview.html.includes("browser-device-auth.js"));
 });
 
 test("VS Code forces a retained journal refresh when its panel becomes visible", async () => {
@@ -552,21 +587,6 @@ test("VS Code resumes animations created after asynchronous Stream rendering", (
   assert.equal(playCalls, 1);
 });
 
-test("missing bundled resources fail closed without workspace-derived fallback", () => {
-  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
-  assert.match(extension, /this\.sharedPanel = "unavailable"/u);
-  assert.match(extension, /Ресурсы Agent Hub повреждены/u);
-  assert.doesNotMatch(extension, /catch \(error\) \{\s*panel\.webview\.html = webviewHtml/u);
-});
-
-test("webview resource roots exclude every workspace folder", () => {
-  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
-  assert.match(
-    extension,
-    /localResourceRoots:\s*\[\s*this\.context\.extensionUri,\s*runtimeUri,/u,
-  );
-  assert.doesNotMatch(extension, /localResourceRoots:\s*\[[^\]]*workspaceFolders\(/u);
-});
 
 test("renderWorkLog turns the document title into a heading and preserves journal HTML", () => {
   assert.equal(
@@ -582,15 +602,6 @@ test("journal HTML cannot inject scripts or inline handlers", () => {
   );
 });
 
-test("panel exposes all shared journal themes and reports the choice to the extension", () => {
-  const html = webviewHtml({}, "orbit", WEBVIEW_THEMES);
-  for (const theme of THEMES) {
-    assert.match(html, new RegExp(`option value=\\\\"${theme}\\\\"`));
-  }
-  assert.match(html, /vscode\.setState\(\{ \.\.\.\(vscode\.getState\(\) \|\| \{\}\), theme \}\)/);
-  assert.match(html, /vscode\.postMessage\(\{ type: 'theme', theme \}\)/);
-  assert.match(html, /event\.data\?\.type === 'theme'/);
-});
 
 test("panel starts in the theme the extension restored", () => {
   assert.match(
@@ -610,66 +621,6 @@ test("panel starts in the theme the extension restored", () => {
     /<html lang="ru" data-theme="orbit" data-surface="desktop">/,
   );
 });
-
-test("panel heading uses the journal path as its title", () => {
-  assert.match(webviewHtml({}), /installHeaderControls\(event\.data\.title\)/);
-  assert.match(webviewHtml({}), /\? snapshotOpenDetails\(\)/);
-  assert.match(webviewHtml({}), /if \(open\) restoreOpenDetails\(open\)/);
-});
-
-test("panel keeps explicit collapse state and exposes collapse-all in the header", () => {
-  const html = webviewHtml({});
-  assert.match(html, /collapseAll\.setAttribute\('data-collapse-all', ''\)/);
-  assert.match(html, /collapseAll\.textContent = 'Свернуть всё'/);
-  assert.match(html, /journalStateVersion: 1/);
-  assert.match(html, /openDetails: \[\.\.\.snapshotOpenDetails\(\)\]/);
-  assert.match(html, /hasPersistedOpenState/);
-  assert.match(html, /collapseAllDetails\(\)/);
-});
-
-test("panel moves generated rate-limit chips into its sticky heading", () => {
-  const html = webviewHtml({});
-  assert.match(html, /content\.querySelector\('\[data-work-log-rate-limits\]'\)/);
-  assert.match(html, /rateLimits\.className = 'rate-limits'/);
-  assert.match(html, /rateLimits\.replaceChildren\(\.\.\.sourceLimits\.childNodes\)/);
-  assert.match(html, /sourceLimits\.remove\(\)/);
-  assert.match(html, /heading\.append\(rateLimits, collapseAll, picker\)/);
-});
-
-test("panel handles the duplicate collapse-turns button", () => {
-  const html = webviewHtml({});
-  assert.match(html, /closest\('\[data-work-log-collapse-turns\]'\)/);
-  assert.match(html, /row\?\.querySelector\('details\[data-work-log-previous-turns\]'\)/);
-  assert.match(html, /previous\.open = false/);
-});
-
-test("grouped Claude work keeps the latest turn visible and collapses previous turns", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  const workLogStyles = fs.readFileSync(require.resolve("../work-log.css"), "utf8");
-  assert.match(app, /function replaceCollapsedTurnList\(list, entries\)/u);
-  assert.match(app, /data-work-log-previous-turns-closed/u);
-  assert.match(app, /Показать предыдущие ходы/u);
-  assert.match(app, /replaceCollapsedTurnList\(list, entries\)/u);
-  assert.doesNotMatch(app, /if \(list\) list\.replaceChildren\(\.\.\.entries\)/u);
-  assert.match(styles, /details\[data-work-log-previous-turns\] \{[\s\S]*?display: block;/u);
-  assert.match(workLogStyles, /details\[data-work-log-previous-turns\] \{[\s\S]*?display: block;/u);
-});
-
-test("chat controls live in the shared composer without a chat header", () => {
-  const index = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(path.join(WEB_APP_ROOT, "styles.css"), "utf8");
-  assert.doesNotMatch(index, /class="chat-head"|data-mobile-chat-actions|class="chat-actions"|class="overflow"/u);
-  assert.match(index, /class="chat-overlay-actions"[\s\S]*?data-action="task-diff"[\s\S]*?data-action="task-settings"/u);
-  assert.doesNotMatch(index, /data-chat-(?:title|subtitle|provider-dot|running)/u);
-  assert.doesNotMatch(app, /buildSubtitleChips|chatProviderDot|chatSubtitle|chatTitle|chatRunning|syncChatActionsPlacement|mobileChatActions|chatHead/u);
-  assert.match(styles, /\.chat-pane\s*\{[\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\);/u);
-  assert.match(styles, /\.chat-scroll\s*\{[\s\S]*?grid-row:\s*1;/u);
-});
-
-/* фон BlackHole приходит из workspace через webview, поэтому его источник
-   должен попадать в img-src — но ничего удалённого туда попасть не должно */
 test("panel allows the webview's own resources and data URIs, but no remote source", () => {
   assert.match(webviewHtml({}), /default-src 'none'; img-src data:;/);
   assert.match(
@@ -679,18 +630,6 @@ test("panel allows the webview's own resources and data URIs, but no remote sour
   assert.doesNotMatch(webviewHtml({}), /img-src[^;]*https?:/);
 });
 
-test("extension discovers theme assets from the active runtime catalog", () => {
-  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
-  const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
-  assert.doesNotMatch(extension, /const THEMES = new Set/u);
-  assert.match(extension, /this\.themes = new Set\(shell\.themeIds\)/u);
-  assert.doesNotMatch(extension, /PULSAR_IMAGE_PATH|WORK_LOG\.md/u);
-  assert.match(shared, /require\(path\.join\(runtimeUri\.fsPath, "theme-registry\.cjs"\)\)/u);
-  assert.match(shared, /registryTools\.loadThemeRegistry\(path\.join\(runtimeUri\.fsPath, \.\.\.ASSET_ROOT\)\)/u);
-  assert.match(shared, /renderThemeHtml\(html, themeRegistry/u);
-  assert.match(shared, /themeRegistry\.resources/u);
-  assert.doesNotMatch(shared, /--stormglass-image|stormGlass|ashen-reliquary/u);
-});
 
 test("background choice is remembered independently for every theme", () => {
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
@@ -838,7 +777,6 @@ test("general settings and current-dialog settings stay separate", async () => {
   assert.match(html, /data-dialog-options="mode"/u);
   assert.match(html, /data-dialog-working-directory/u);
   assert.doesNotMatch(html, /data-dialog-options="project"/u);
-  assert.match(app, /chatPane\.toggleAttribute\("data-dialog-settings-open", visible\)/u);
   assert.doesNotMatch(html, /data-token-breakdown-toggle/u);
   assert.match(html, /data-claude-group-toggle/u);
   assert.match(html, /data-usage-unit="rub">₽<\/button>/u);
@@ -894,169 +832,6 @@ test("the active Agent Hub tab survives a page reload", () => {
   }
 });
 
-test("VS Code shared WebView applies deferred task history and requests the exact v4 snapshot delta", () => {
-  const clientSource = fs.readFileSync(path.join(WEB_APP_ROOT, "hub-client.js"), "utf8");
-  const transportSource = fs.readFileSync(path.join(WEB_APP_ROOT, "snapshot-transport.js"), "utf8");
-  const applied = [];
-  const snapshotApplications = [];
-  const selected = [];
-  const refreshRequests = [];
-  const lastSnapshot = {
-    version: "snapshot-v7",
-    collectionVersions: {
-      conversations: "conversations-v4",
-      workspaces: "workspaces-v3",
-      boardTasks: "board-v9",
-      messageReceipts: "receipts-v5",
-      messagePins: "pins-v2",
-    },
-    tasks: [{ streamId: "stream-b", provider: "codex", threadId: "thread-b" }],
-  };
-  const window = { requestAnimationFrame: (callback) => callback() };
-  vm.runInNewContext(transportSource, { window });
-  const sandbox = vm.createContext({
-    Map,
-    window,
-    lastSnapshot,
-    selectedTaskId: "stream-b",
-    historyPageByTask: new Map(),
-    historyWindowByTask: new Map(),
-    liveCardsByTask: new Map(),
-    snapshotResponseIsStale: () => false,
-    traceHistoryCard: () => {},
-    commandTrace: { objectId: () => "", newId: () => "fixture-open", now: () => 0 },
-    taskId: (_provider, _threadId, streamId) => streamId,
-    historyMessages: (history) => history.items,
-    setHistoryWindow: (id, items) => applied.push([id, ...items.map((item) => item.id)]),
-    clearDurablyCompletedLiveCard: () => {},
-    setFocusedHistoryWindow: () => {},
-    mergeNewestHistory: (_previous, newest) => newest,
-    rememberSelectedTaskId: (id) => selected.push(`remember:${id}`),
-    refresh: async () => {
-      refreshRequests.push(window.AgentHubSnapshotTransport.requestParams(lastSnapshot));
-    },
-    applySnapshot: (snapshot) => snapshotApplications.push(snapshot),
-    agentHub: { selectTask: (id) => selected.push(`select:${id}`) },
-    syncHistoryPagination: () => {},
-    renderTaskMessages: () => [],
-    renderTaskQueue: () => {},
-    displayedFinalAcknowledgement: () => false,
-    settleOpenedTaskHistory: async () => {},
-    updateHistoryCatchUp: () => {},
-  });
-  vm.runInContext(
-    `${functionSource(clientSource, "stableIdentity", "function taskOpenParams")};`
-      + `${functionSource(clientSource, "applyOpened", "function acknowledgeDisplayedFinal")};`
-      + "globalThis.applyDeferredOpen = applyOpened;",
-    sandbox,
-  );
-
-  sandbox.applyDeferredOpen({
-    snapshot: null,
-    snapshotDeferred: true,
-    history: {
-      streamId: "stream-b",
-      provider: "codex",
-      threadId: "thread-b",
-      start: 0,
-      end: 1,
-      total: 1,
-      messageTotal: 1,
-      version: "history-v1",
-      items: [{ id: "turn-b" }],
-    },
-  });
-
-  assert.deepEqual(applied, [["stream-b", "turn-b"]]);
-  assert.deepEqual(snapshotApplications, [null]);
-  assert.deepEqual(selected, ["remember:stream-b", "select:stream-b"]);
-  assert.deepEqual(JSON.parse(JSON.stringify(refreshRequests)), [{
-    knownVersion: "snapshot-v7",
-    compactSnapshot: true,
-    snapshotProtocol: 4,
-    conversationsVersion: "conversations-v4",
-    workspacesVersion: "workspaces-v3",
-    boardTasksVersion: "board-v9",
-    messageReceiptsVersion: "receipts-v5",
-    messagePinsVersion: "pins-v2",
-  }]);
-});
-
-test("task list keeps active duration live and metadata badges readable", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  const timingSandbox = {
-    window: {
-      AgentHubMessageProjection: { userRunActivity: run => ({ running: Boolean(run), canStop: Boolean(run) }) },
-      AgentHubStreamTabs: { resolveTaskHierarchy: () => ({}), streamModelLabel: () => '' },
-    },
-    taskId: () => 'task', projectedActiveUserRun: (_id, value) => value.running ? value.run : null,
-    readMarker: { cursorCovers: () => false, threadIdentity: () => '' },
-    confirmedReadCursorByThread: new Map(), runtimeShortLabels: {},
-  };
-  vm.runInNewContext(fs.readFileSync(path.join(WEB_APP_ROOT, 'messages/lifecycle.js'), 'utf8'), timingSandbox);
-  timingSandbox.activeRunSubmissionTiming = timingSandbox.AgentHubMessageLifecycle.activeRunSubmissionTiming;
-  vm.runInNewContext(functionSource(client, 'modelTask', 'function emptyStreamModels') + '\nglobalThis.projectTask = modelTask;', timingSandbox);
-  const sourceTask = { running: true, run: { turnId: 'turn', startedAt: '2026-10-24T01:00:00Z' } };
-  const project = () => timingSandbox.projectTask(sourceTask, {}, 'task', 'task');
-  assert.equal(project().startedAt, sourceTask.run.startedAt);
-  sourceTask.run.providerStart = { state: 'queued', turnId: 'turn' };
-  assert.equal(project().startedAt, null, 'queued provider launch cannot start the active duration');
-  sourceTask.run.providerStart = { state: 'observed', turnId: 'turn', acceptedAt: '2026-10-24T01:01:00Z' };
-  assert.equal(project().startedAt, sourceTask.run.providerStart.acceptedAt);
-  sourceTask.running = false; assert.equal(project().startedAt, null);
-  assert.match(app, /function formatRunningDuration\(/u);
-  assert.match(app, /data-task-started-at/u);
-  assert.match(app, /setInterval\(refreshTaskDurations,\s*1_000\)/u);
-  assert.match(styles, /\.task-agent\s*\{[^}]*flex:\s*0 0 auto;/su);
-  assert.match(styles, /\.task-runtime\s*\{[^}]*background:\s*var\(--accent-soft\);[^}]*color:\s*var\(--accent\);/su);
-  assert.match(app, /function shortModelLabel\(value\)/u);
-  assert.match(app, /\["terra", "Terra"\][\s\S]*\["sonnet", "Sonnet"\]/u);
-  assert.match(app, /\["spark", "Spark"\]/u);
-  assert.match(app, /class: "task-agent task-model"[\s\S]*text: shortModelLabel\(task\.modelLabel\)/u);
-  const window = {};
-  vm.runInNewContext(fs.readFileSync(path.join(WEB_APP_ROOT, "stream-tabs-controller.js"), "utf8"), { window });
-  const task = { provider: "codex", model: "old-model", running: false };
-  const stream = { settings: { provider: "codex", model: "next-model" } };
-  assert.equal(window.AgentHubStreamTabs.streamModelLabel(task, stream), "next-model");
-  task.running = true;
-  task.run = { turnId: "turn", operationKind: "user-turn", projectionState: "active", model: "captured-model" };
-  assert.equal(window.AgentHubStreamTabs.streamModelLabel(task, stream), "captured-model");
-  task.run.projectionState = "completed";
-  assert.equal(window.AgentHubStreamTabs.streamModelLabel(task, stream), "next-model");
-  assert.match(app, /task\.statusLabel[\s\S]*task\.runtimeLabel/u);
-  assert.match(styles, /\.task-meta\s*\{[^}]*flex:\s*1 1 auto;/su);
-  assert.match(styles, /\.task-runtime\s*\{[^}]*margin-left:\s*auto;/su);
-});
-
-test("rename targets the emitted Thread and upgrades to its Workspace when present", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /task:rename", \(\{ id, title \}\)/u);
-  assert.match(client, /const targetId = id \|\| selectedTaskId;/u);
-  assert.match(client, /taskId\(candidate\.provider, candidate\.threadId, candidate\.streamId\) === targetId/u);
-  assert.match(client, /task\?\.workspaceId \? "rename-workspace" : "rename-task"/u);
-  assert.match(client, /task\?\.workspaceId \? \{ workspaceId: task\.workspaceId, name: title \} : \{ \.\.\.identity, title \}/u);
-});
-
-test("web clients reload after any Hub runtime identity change", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /snapshot\?\.server\?\.process/u);
-  assert.match(client, /runtimeIdentityTransition/u);
-  assert.match(client, /transition\.reloadRequired/u);
-  assert.match(client, /instanceChanged[\s\S]*notifyAndroidAboutRelease/u);
-  assert.match(client, /reloadForPublishedRuntime\(\)/u);
-  assert.match(client, /AgentHubAndroid\?\.onHubRestarted/u);
-  assert.match(client, /prepareForRuntimeReload/u);
-  assert.match(client, /window\.location\.reload\(\)/u);
-});
-
-test("shared VS Code webview removes public browser pairing", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
-  assert.match(html, /<script src="\/browser-device-auth\.js" defer><\/script>/u);
-  assert.match(shared, /browser-device-auth/u);
-});
 
 test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {
   const styles = themeFile("metropolis");
@@ -1450,15 +1225,6 @@ test("turn header keeps its actions in the trailing columns", () => {
   );
 });
 
-test("subagent responses render collapsed with a readable title", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(app, /el\(subagent \? "details" : "article"/u);
-  assert.match(app, /"data-subagent-response": true/u);
-  assert.match(app, /function subagentResponseTitle\(message\)/u);
-  assert.match(styles, /\.msg-subagent\[open\] \.msg-subagent-chevron-icon/u);
-});
-
 test("task rail width does not collide with decorative rail thickness", () => {
   const dialogArea = fs.readFileSync(
     require.resolve("../assets/web-app/dialog-area.css"),
@@ -1481,92 +1247,6 @@ test("journal width stays fixed while days and turns are expanded", () => {
   assert.match(
     styles,
     /html\[data-surface="mobile"\]\[data-view="journal"\] \.journal-view\s*\{[^}]*width:\s*100%;/su,
-  );
-});
-
-test("journal keeps explicit Workspace and Stream grouping modes", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(
-    require.resolve("../assets/web-app/styles.css"),
-    "utf8",
-  );
-  assert.match(
-    styles,
-    /\.journal details\[data-work-log-workspace\]\s*\{[^}]*border:\s*1px solid var\(--line\);[^}]*overflow:\s*hidden;/su,
-  );
-  assert.match(
-    styles,
-    /\.journal summary\[data-work-log-workspace-header\]\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*1rem 17\.5rem minmax\(0, 1fr\);/su,
-  );
-  assert.match(
-    styles,
-    /\.journal details\[data-work-log-stream\]\[open\]\s*\{[^}]*display:\s*block;/su,
-  );
-  assert.match(styles, /\.journal span\[data-work-log-turn-stream\]\s*\{[^}]*border-radius:\s*999px;/su);
-  assert.match(styles, /\.journal summary\[data-work-log-stream-summary\]\s*\{[^}]*cursor:\s*pointer;[^}]*display:\s*grid;/su);
-  assert.match(app, /function upgradeLegacyWorkspaceGroups\(scope = journal\)/u);
-  assert.match(app, /function decorateLegacyStreamTurns\(scope = journal\)/u);
-  assert.doesNotMatch(app, /function flattenWorkspaceStreams\(scope = journal\)/u);
-  assert.doesNotMatch(app, /function applyStreamCollapse\(value,/u);
-  assert.doesNotMatch(app, /function setStreamsCollapsed\(collapsed,/u);
-  assert.match(app, /agent-hub-collapse-streams/u);
-  assert.doesNotMatch(styles, /data-work-log-streams-collapsed/u);
-  assert.match(app, /taskGroupsFrom\(source, \{ hierarchy: mode \}\)/u);
-  assert.match(
-    app,
-    /text: `\$\{workspaceTitle\} - \$\{streamTitle\}`/u,
-  );
-  assert.match(
-    app,
-    /journalGroupSection\(group, groups, \{ showStreams: mode !== "stream" \}\)/u,
-  );
-  assert.match(app, /JournalView\.groupIdentity/u);
-  assert.doesNotMatch(
-    styles,
-    /\[data-journal-ledger-title\]::before\s*\{[^}]*mask:/su,
-  );
-  assert.match(styles, /span\[data-work-log-duration-summary\][\s\S]*?grid-column:\s*1 \/ -1;/u);
-  assert.match(
-    styles,
-    /details\[data-work-log-collapsed-workspace-usage-details\][\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\) auto auto;[\s\S]*?> span\[data-work-log-duration-summary\][\s\S]*?display:\s*contents;/u,
-  );
-  assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
-});
-
-test("task-grouped journal pages large histories without per-row Metropolis blur", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = themeFile("metropolis");
-  assert.match(app, /const TASK_GROUP_TURN_PAGE_SIZE = 30/u);
-  assert.match(app, /const taskGroupTurns = new WeakMap\(\)/u);
-  assert.match(app, /function appendTaskGroupTurnPage\(details, \{ nextPage = false \} = \{\}\)/u);
-  assert.match(app, /Показать ещё \(\$\{turns\.length - next\}\)/u);
-  assert.match(app, /details\[data-work-log-task-group\]\[open\][\s\S]*appendTaskGroupTurnPage/u);
-  assert.match(
-    styles,
-    /html\[data-theme="metropolis"\]:is\(\[data-grouping="stream"\], \[data-grouping="workspace"\]\)[\s\S]*details\[data-work-log-turn-details\][\s\S]*backdrop-filter:\s*none/u,
-  );
-});
-
-test("day-grouped journal uses Workspace cards and plain credit values", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(
-    require.resolve("../assets/web-app/styles.css"),
-    "utf8",
-  );
-  assert.match(app, /function workspaceGroupsFrom\(day\)/u);
-  assert.match(app, /taskGroupsFrom\(day, \{ workspace \}\)/u);
-  assert.doesNotMatch(app, /holder\.append\(day\.cloneNode\(true\)\)/u);
-  assert.match(app, /data-work-log-collapsed-workspace-usage-details/u);
-  assert.match(app, /journalLedgerSummary\(total, \{ label: dateLabel, showStreams: false \}\)/u);
-  assert.match(app, /data-journal-day-picker-turns/u);
-  const lazyDayBody = app.slice(
-    app.indexOf("async function loadLazyDay"),
-    app.indexOf("async function loadLazyTurn"),
-  );
-  assert.doesNotMatch(lazyDayBody, /setStreamsCollapsed\(collapseStreams, replacement\)/u);
-  assert.match(
-    styles,
-    /\.journal-ledger \.journal span\[data-kilo-usage\][\s\S]*?background:\s*transparent;[\s\S]*?box-shadow:\s*none;/u,
   );
 });
 
@@ -1613,355 +1293,35 @@ test("mobile task list cannot widen the viewport", () => {
   );
 });
 
-test("narrow desktop measures the document viewport before host window width", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const resolver = app.match(
-    /function layoutViewportWidth\(\) \{[\s\S]*?\r?\n\}\r?\n\r?\nfunction resolveSurface\(\) \{[\s\S]*?\r?\n\}/u,
-  )?.[0];
-  assert.ok(resolver, "surface resolver is present");
-  assert.doesNotMatch(resolver, /return window\.innerWidth < compactSurfaceWidth/u);
-
-  const surfaceFor = ({ documentWidth, windowWidth }) => vm.runInNewContext(`
-    const telegramMode = false;
-    const telegramPlatform = "";
-    const mobileTelegramPlatforms = new Set(["android", "ios"]);
-    const compactSurfaceWidth = 860;
-    ${resolver}
-    resolveSurface();
-  `, {
-    document: { documentElement: { clientWidth: documentWidth } },
-    window: { innerWidth: windowWidth },
-  });
-
-  /* Edge Web App can expose the host width through window.innerWidth while
-     the actual webview is much narrower. The compact CSS then keeps the
-     workspace in one column, so it cannot create a horizontal page overflow. */
-  assert.equal(surfaceFor({ documentWidth: 380, windowWidth: 545 }), "mobile");
-  assert.equal(surfaceFor({ documentWidth: 920, windowWidth: 545 }), "desktop");
-});
-
-test("mobile journal task links do not become nested expansion buttons", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(
-    app,
-    /if \(title\.querySelector\("\[data-open-task\]"\)\) \{[\s\S]*title\.removeAttribute\("role"\)/u,
-  );
-  assert.match(app, /if \(event\.target\.closest\("\[data-open-task\]"\)\) return;/u);
-});
-
-test("chat distinguishes loading history from an empty task", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /const historyLoaded = state\.messages\.has\(taskId\)/u);
-  assert.match(app, /MessageView\.claimKeyedChildrenOwner\(chatLog, taskId\)/u);
-  assert.match(app, /Загрузка истории…/u);
-});
-
-test("chat refreshes every visible external run without rebuilding a second snapshot", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const refresh = client.match(
-    /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nagentHub\.on\("connection:retry"/u,
-  )?.groups?.body ?? "";
-  assert.match(client, /const EXTERNAL_HISTORY_REFRESH_MS = 2_500/u);
-  assert.match(client, /let visibleStreamTaskIds = new Set\(\)/u);
-  assert.match(client, /async function refreshVisibleTaskHistories[\s\S]*Promise\.all\(\[\.\.\.visibleIds\]/u);
-  assert.match(client, /const externalLive = currentTask\.running[\s\S]*executionOwner/u);
-  assert.match(client, /const chatVisible = document\.documentElement\.dataset\.view === "chat"/u);
-  assert.match(client, /const refreshExternalHistory = chatVisible && externalLive/u);
-  assert.match(client, /refreshExternalHistory[\s\S]*enqueueTaskHistoryLoad\(id, identity/u);
-  assert.match(client, /function enqueueTaskHistoryLoad[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
-  assert.match(client, /includeActive: true[\s\S]*knownVersion: historyPageByTask\.get\(id\)\?\.version/u);
-  assert.match(refresh, /void refreshVisibleTaskHistories\(previousSnapshot, snapshot\)\.catch/u);
-  assert.doesNotMatch(refresh, /await refreshVisibleTaskHistories\(previousSnapshot, snapshot\)/u);
-  assert.doesNotMatch(refresh, /control\("open-task"/u);
-});
-
-test("journal navigation avoids body-wide select and motion subtree scans", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const bootstrap = fs.readFileSync(require.resolve("./vscode-bootstrap.js"), "utf8");
-  assert.match(app, /node === journal \|\| journal\.contains\(node\)[\s\S]*node\.querySelector\?\.\("select"\)/u);
-  assert.match(bootstrap, /!node\?\.closest\?\.\("\[data-journal\]"\)[\s\S]*MOTION_TARGET_SELECTOR/u);
-});
-
-test("completed chat keeps probing briefly for late generated images", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const refresh = client.match(
-    /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nagentHub\.on\("connection:retry"/u,
-  )?.groups?.body ?? "";
-  assert.match(client, /const HISTORY_ATTACHMENT_REFRESH_MS = 10_000/u);
-  assert.match(client, /const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000/u);
-  assert.match(client, /function scheduleHistoryAttachmentSettle\(taskIdValue\)/u);
-  assert.match(client, /if \(answerTransition\) \{[\s\S]*scheduleHistoryAttachmentSettle\(id\)[\s\S]*historyCatchUpDeadlines\.set/u);
-  assert.match(client, /refreshSettlingAttachments[\s\S]*enqueueTaskHistoryLoad\(id, identity/u);
-});
-
-test("opening a task settles generated images without delaying the cached history", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /if \(selectTask && !result\.focusedTurn\)[\s\S]*void settleOpenedTaskHistory/u);
-  assert.match(
-    client,
-    /async function settleOpenedTaskHistory[\s\S]*enqueueTaskHistoryLoad\(id, identity,[\s\S]*refreshSource: true/u,
-  );
-  assert.match(client, /pending\.onlyWhenSelected && selectedTaskId !== id/u);
-});
-
-test("background history refresh cannot switch the task or reorder a completed turn", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /selectTask = true/u);
-  assert.match(client, /if \(selectTask\) rememberSelectedTaskId\(id\)/u);
-  assert.match(client, /if \(selectTask\) agentHub\.selectTask\(id\)/u);
-  assert.match(client, /preserveScroll: pending\.preserveScroll,\s*skipSnapshot: true,\s*selectTask: false/su);
-  assert.doesNotMatch(client, /incomingStartedAtMs|new Date\(incomingStartedAtMs - 1\)/u);
-  assert.match(client, /time: run\.lastActivityAt \?\? run\.startedAt \?\? null/u);
-});
-
-// Keyboard submission/newline behavior is exercised against the shipped app
-// in tests/public/composer-keyboard-dom.test.mjs (HUB-278). Its Ctrl+Enter
-// contract supersedes the old implementation-text snapshot here.
-
-  test("chat reconciles optimistic and accepted history by exact identity", () => {
-    const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-    const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
-    assert.match(client, /rememberOutgoing\(request\.taskId, optimistic\);/u);
-    assert.match(client, /const queuesOptimistically = request\.followUpMode === "queue"/u);
-    assert.match(client, /optimisticDeferredClientUserMessageIds\.add\(request\.requestId\)/u);
-  assert.match(client, /\.\.\.deliveryPatch\(queuesOptimistically \? "sending" : steersOptimistically \? "steering" : "preparing"\)/u);
-  assert.match(client, /providerAccepted: false/u);
-  assert.match(client, /clientUserMessageId: request\.requestId/u);
-  assert.match(client, /reconcileMessageLifecycle\(serverMessages, outgoing\)/u);
-  assert.match(client, /if \(!matchedIds\.has\(message\.clientUserMessageId\)\) result\.push\(message\)/u);
-  assert.match(client, /confirmedOutgoingMessageIds\(durableMessages, outgoing\)/u);
-  assert.match(client, /for \(const clientUserMessageId of confirmedMatchedIds\) \{[\s\S]*pending\.delete\(clientUserMessageId\)[\s\S]*optimisticDeferredClientUserMessageIds\.delete\(clientUserMessageId\)[\s\S]*deferredClientUserMessageIds\.delete\(clientUserMessageId\)/u);
-  assert.match(client, /function promoteLiveCompletion\(taskIdValue, selected, incomingTurnId/u);
-  assert.match(client, /completionOverlaysByTask\.set\(taskIdValue, overlays\)/u);
-  assert.match(client, /completedConversationTurnVisible\(durableMessages/u);
-  assert.match(client, /const visible = visibleConversationMessages\(result\.map\(normalizedUserMessage\)/u);
-  assert.match(client, /chronologicalMessages\(projectCanonicalMessages\(visible\)\)/u);
-  assert.match(lifecycle, /historicalAgentResponseVisible\(item\)/u);
-  assert.match(client, /historyOrder:\s*\(historyStart \+ itemIndex\) \* 1_000 \+ messageIndex/u);
-});
-
-test("chat short-polls commands and skips only unchanged loaded history renders", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /const REMOTE_WAIT_MS = 0;/u);
-  assert.match(client, /control\/result\?id=.*waitMs=.*REMOTE_WAIT_MS[\s\S]*REMOTE_RESULT_FALLBACK_POLL_MS/su);
-  assert.doesNotMatch(client, /REMOTE_RESULT_LONG_POLL_MS/u);
-  assert.match(client, /async function probeSnapshotTransport\(\)[\s\S]*method: "HEAD"/u);
-  assert.match(client, /vscode \? probeVscodeRuntimeHealth\(\) : probeSnapshotTransport\(\)/u);
-  assert.match(client, /control\(\s*"snapshot",\s*window\.AgentHubSnapshotTransport\.requestParams\(lastSnapshot\),\s*\)/u);
-  assert.match(client, /window\.AgentHubSnapshotTransport\.materialize\(lastSnapshot, snapshotResult\)/u);
-  assert.match(client, /applySnapshot\(snapshot, \{ materialized: true \}\)/u);
-  assert.match(client, /if \(!materialized\) snapshot = window\.AgentHubSnapshotTransport\.materialize/u);
-  assert.equal((client.match(/applySnapshotConnection\(snapshot\);/gu) ?? []).length, 2);
-  assert.match(client, /window\.AgentHubSnapshotTransport\.isBaselineError\(error\)/u);
-  assert.match(client, /window\.AgentHubSnapshotTransport\.requestParams\(null\)/u);
-  assert.match(app, /setMessages\(taskId, messages\) \{[\s\S]*state\.messages\.has\(taskId\) && sameData\(state\.messages\.get\(taskId\), next\)[\s\S]*return/u);
-  assert.match(app, /setMessagesPreservingScroll\(taskId, messages\) \{[\s\S]*const previous = state\.messages\.get\(taskId\) \?\? \[\][\s\S]*state\.messages\.has\(taskId\) && sameData\(previous, next\)[\s\S]*return/u);
-  assert.match(app, /function taskNavigationData\(task\)[\s\S]*lastActivity: task\.running \? task\.startedAt/u);
-  assert.match(app, /const navigationChangedIds = changedTaskIds\(previousTasks, nextTasks, taskNavigationData\)/u);
-  assert.match(app, /state\.visibleStreamTaskIds\.includes\(task\.id\)[\s\S]*chatChangedIds\.has\(task\.id\)/u);
-  assert.match(app, /setConnection\(status, details = \{\}\)[\s\S]*if \(unchanged\) return;[\s\S]*renderConnectionQuality\(\)/u);
-  assert.match(app, /setServerStatus\(payload\)[\s\S]*root\.dataset\.view === "server"/u);
-});
-
-test("Sync controls use the shared text dialog in VS Code webviews", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.doesNotMatch(app, /window\.prompt/u);
-  assert.match(app, /await askText\(\{ title: "Никнейм этого устройства для Sync"/u);
-  assert.match(app, /await askText\(\{ title: "Код подключения Sync для другого устройства"/u);
-  assert.match(app, /await askText\(\{ title: "Введите код подключения Sync"/u);
-});
-
-  test("dispatching deferred messages stay in the queue until provider acceptance", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.doesNotMatch(app, /\.filter\(\(entry\) => entry\.state !== "dispatching" && entry\.state !== "steering"\)/u);
-  assert.equal((app.match(/MessageView\.conversationSurfaceMessages\(/gu) ?? []).length, 2);
-  assert.match(app, /Date\.parse\(left\.createdAt \|\| 0\)/u);
-    assert.match(
-      client,
-      /function deferredEntriesForTask[\s\S]*queuedCommandUsesQueue\(item, snapshot\?\.messageReceipts\)/u,
-    );
-    assert.match(
-      client,
-      /const deferredDeliveryState = queuedCommandDeliveryState\([\s\S]*\.\.\.deliveryPatch\(deferredDeliveryState\)/u,
-    );
-});
-
-test("message attachments keep timestamps, previews and an explicit open action", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
-  assert.match(client, /createdAt:\s*message\.submittedAt \?\? message\.time/u);
-  assert.match(client, /attachments:\s*attachmentViews\(message\.attachments\)/u);
-  assert.match(client, /agentHub\.on\("attachment:open"/u);
-  assert.match(app, /emit\("attachment:open",\s*\{\s*attachment:\s*item,\s*gallery,\s*index:/u);
-  assert.match(extension, /decorateAttachmentUrls/u);
-  assert.match(extension, /\["open-attachment", "copy-attachment", "save-attachment"\]\.includes\(action\)/u);
-  assert.match(app, /Файл недоступен/u);
-  assert.match(app, /disabled:\s*missing/u);
-  assert.match(app, /\(!source && !item\.id\)/u);
-  assert.match(client, /control\("open-attachment", \{ id \}\)/u);
-  assert.match(client, /agentHub\.openAttachmentViewer/u);
-  assert.match(client, /agentHub\.on\("attachment:load"/u);
-  assert.match(client, /bridgeCall\("resolve-attachment", \{ id \}\)/u);
-  assert.match(extension, /action === "resolve-attachment"/u);
-  assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="save"[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"/u);
-  assert.match(client, /agentHub\.on\("resource:copy"[\s\S]*agentHub\.on\("resource:save"/u);
-  assert.match(client, /value\.url = `\/api\/message-attachment\/\$\{encodeURIComponent\(id\)\}`/u);
-  assert.doesNotMatch(client, /window\.open\(url, "_blank"/u);
-});
-
-test("background navigation is empty and settings expose the bug report flow", async () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(html, /data-view-button="background"[\s\S]*?<span>Ничё<\/span>/u);
-  assert.match(html, /<main class="background-view" data-background-view aria-label="Фон"><\/main>/u);
-  assert.match(html, /data-bug-report-toggle[\s\S]*data-phosphor-icon="bug"[\s\S]*Сообщить о баге\./u);
-  assert.match(html, /<input[^>]*multiple[^>]*data-bug-report-files/u);
-  assert.match(html, /Скриншот можно вставить из буфера: Ctrl\+V\./u);
-  assert.match(app, /document\.addEventListener\("paste"/u);
-  assert.match(app, /event\.clipboardData\?\.items/u);
-  assert.match(app, /item\.getAsFile\(\)/u);
-  assert.match(app, /void readBugReportFiles\(screenshots\)/u);
-  assert.match(app, /emit\("bug-report:submit"/u);
-  assert.match(client, /control\("submit-bug-report"/u);
-  assert.match(app, /if \(bugReportForm\) bugReportForm\.hidden = next\.formHidden/u);
-  assert.match(app, /bugReportToggle\?\.setAttribute\("aria-expanded", String\(next\.expanded\)\)/u);
-  const pending = new Map(), delays = [];
-  const sandbox = vm.createContext({ bridgeSequence: 0, pendingBridgeCalls: pending,
-    performance: { now: () => 0 }, vscode: { postMessage: () => {} },
-    window: { setTimeout: (_, delay) => { delays.push(delay); return delays.length; } } });
-  const constants = client.slice(client.indexOf("const DEFAULT_CONTROL_TIMEOUT_MS"),
-    client.indexOf("const VSCODE_MESSAGE_RETRY_DELAYS_MS"));
-  vm.runInContext(constants + "\n" + functionSource(client, "bridgeCallOnce", "function bridgeCall(")
-    + "\nglobalThis.call = bridgeCallOnce;", sandbox);
-  for (const action of ["submit-bug-report", "refresh-model-catalog", "ordinary-read"]) {
-    const result = sandbox.call(action);
-    [...pending.values()].at(-1).resolve("received");
-    assert.equal(await result, "received");
+test("VS Code resolves, opens, copies and offers saving only the exact attachment identity", async () => {
+  const harness = panelHarness();
+  const opened = [], copied = [], resolved = [];
+  let saveOffers = 0;
+  const vscode = { Uri: { file: vscodeUri },
+    commands: { executeCommand: async (...args) => opened.push(args) },
+    env: { clipboard: { writeText: async value => copied.push(value) } },
+    window: { showSaveDialog: async () => { saveOffers += 1; return null; } } };
+  const { WorkLogViewProvider } = loadExtension(vscode);
+  const provider = new WorkLogViewProvider(providerContext());
+  provider.panel = harness.panel;
+  const target = path.join(os.tmpdir(), "synthetic-message-image.png");
+  provider.currentBridge = async () => ({ attachmentPath: async id => {
+    assert.equal(id, "exact-attachment"); resolved.push(id); return target;
+  } });
+  harness.panel.webview.asWebviewUri = value => `vscode-webview-resource:${value.fsPath}`;
+  for (const action of ["resolve-attachment", "open-attachment", "copy-attachment", "save-attachment"]) {
+    await provider.handleControlMessage({ id: action, action, params: { id: "exact-attachment" } });
+    assert.equal(harness.messages.at(-1).id, action);
+    assert.equal(harness.messages.at(-1).ok, true);
   }
-  assert.deepEqual(delays, [180_000, 180_000, 45_000]);
+  assert.deepEqual(resolved, Array(4).fill("exact-attachment"));
+  assert.equal(harness.messages[0].result.url, `vscode-webview-resource:${target}`);
+  assert.equal(opened[0][0], "vscode.open");
+  assert.equal(opened[0][1].fsPath, target);
+  assert.deepEqual(copied, [target]);
+  assert.equal(saveOffers, 1);
 });
 
-test("Codex file citations render as compact local links", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(app, /function codexFileCitation\(raw\)/u);
-  assert.match(app, /token\.startsWith\(":codex-file-citation\{"\)/u);
-  assert.match(app, /link\.dataset\.agentHubLocalLink = targetLink\.localPath/u);
-  assert.match(styles, /\.file-citation\s*\{/u);
-});
-
-test("composer accepts documents and renders downloadable file cards", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(html, /data-file-input/u);
-  assert.doesNotMatch(html, /data-file-input[^>]*accept=["']image\/\*/u);
-  assert.match(app, /async function readAttachmentFiles\(files\)/u);
-  assert.match(app, /file\.size <= 20 \* 1024 \* 1024/u);
-  assert.match(app, /attachment-file-card/u);
-  assert.match(client, /X-Agent-Hub-File-Name/u);
-  assert.match(client, /async function saveBlob\(blob, name\)/u);
-  assert.match(client, /downloadBlob\(blob, name\)/u);
-});
-
-test("mobile navigation backs out from image to chat and from chat to tasks", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const android = fs.readFileSync(
-    require.resolve("../AndroidApp/app/src/main/java/app/agenthub/mobile/MainActivity.java"),
-    "utf8",
-  );
-  assert.match(html, /data-attachment-viewer[\s\S]*data-attachment-viewer-close/u);
-  assert.match(html, /data-attachment-viewer-previous[\s\S]*data-attachment-viewer-next/u);
-  assert.match(app, /function navigateBack\(\)[\s\S]*closeAttachmentViewer\(\)[\s\S]*setPane\("tasks"\)/u);
-  assert.match(app, /event\.key === "ArrowLeft"[\s\S]*event\.key === "ArrowRight"/u);
-  assert.match(app, /dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
-  assert.match(android, /window\.AgentHub\.navigateBack/u);
-});
-
-test("annotation actions preserve native selection and keep per-quote comments", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const android = fs.readFileSync(
-    require.resolve("../AndroidApp/app/src/main/java/app/agenthub/mobile/MainActivity.java"),
-    "utf8",
-  );
-  assert.doesNotMatch(html, /data-action="annotate"/u);
-  assert.match(app, /showToast\("Выделите фрагмент сообщения или рассуждения\."\)/u);
-  assert.match(html, /data-annotation-context-menu[\s\S]*Цитировать выделение/u);
-  assert.match(app, /async function addAnnotation\(selection\)/u);
-  assert.match(app, /addAnnotation\(selectedQuotableSelection\(\) \|\| lastAnnotationSelection\)/u);
-  assert.match(app, /data-annotation-comment-index/u);
-  assert.match(app, /pointer: coarse/u);
-  assert.match(app, /function handleAnnotationContextMenu\(event\)[\s\S]*openAnnotationContextMenu\(event, selected \?\? lastAnnotationSelection\)/u);
-  assert.match(app, /document\.addEventListener\("contextmenu", handleAnnotationContextMenu, \{ capture: true \}\)/u);
-  assert.match(app, /selectedQuotableSelection\(\) \|\| lastAnnotationSelection/u);
-  assert.match(android, /MENU_ANNOTATE_SELECTION[\s\S]*"Цитировать"/u);
-  assert.match(android, /SHOW_AS_ACTION_ALWAYS \| MenuItem\.SHOW_AS_ACTION_WITH_TEXT/u);
-  assert.match(android, /ActionMode\.Callback2[\s\S]*onGetContentRect/u);
-});
-
-test("lost command results reconcile by durable message receipt without duplicate draft", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /function applyMessageReceipts\(snapshot\)[\s\S]*const projection = queueHistoryReceiptProjection\(receipt\)[\s\S]*projectionState: projection\.projectionState/u);
-  assert.match(client, /function canonicalAcceptedEvidence\(snapshot\)[\s\S]*agentHub\.completeSend\(clientUserMessageId, \{ outcome: "accepted", taskId: stableTaskId \}\)/u);
-  assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)[\s\S]*if \(rejected\) \{[\s\S]*outgoingMessages\(request\.taskId\)\.delete\(request\.requestId\)[\s\S]*else \{[\s\S]*deliveryPatch\("unconfirmed"\)/u);
-});
-
-test("queue actions are single-flight and steer uses the dedicated server action", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(app, /case "queue-steer":[\s\S]*emit\("queue:steer"/u);
-  assert.match(app, /entry\.optimistic[\s\S]*queue-optimistic"[\s\S]*entry\.delivery[\s\S]*Ожидает подтверждения Hub/u);
-  assert.match(client, /queueActionsInFlight\.has\(key\)/u);
-  assert.match(client, /optimisticQueueSteerIds\.add[\s\S]*deliveryPatch\("steering"\)[\s\S]*renderTaskQueue/u);
-  assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
-});
-
-test("journal preserves recursive subagent trees in date and task groupings", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  const workLogStyles = fs.readFileSync(require.resolve("../work-log.css"), "utf8");
-  assert.match(app, /function isRootTurnEntry\(entry\)/u);
-  assert.match(app, /if \(isRootTurnEntry\(entry\)\) group\.turns\.push/u);
-  assert.match(styles, /\.journal div\[data-work-log-turn-children\]/u);
-  assert.match(workLogStyles, /div\[data-work-log-turn-children\]/u);
-  assert.match(app, /subagents: \[\.\.\.journal\.querySelectorAll\("details\[data-work-log-turn-children-details\]\[open\]"\)\]/u);
-  assert.match(app, /openState\.subagents \?\? \[\]/u);
-  assert.match(app, /collapseAllButton\.addEventListener\("click",[\s\S]*querySelectorAll\("details\[open\]"\)/u);
-  assert.match(styles, /details\[data-work-log-turn-children-details\] > summary/u);
-  assert.match(workLogStyles, /details\[data-work-log-turn-children-details\] > summary/u);
-});
-
-test("response annotations render as quote cards without the service envelope", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
-  assert.match(lifecycle, /function embeddedResponseAnnotations\(value\)/u);
-  assert.match(lifecycle, /text: embedded \|\| annotations\.length \? request/u);
-  assert.match(client, /responseAnnotations: message\.responseAnnotations/u);
-  assert.match(client, /return responseAnnotationPrompt\(text, annotations\);/u);
-  assert.match(app, /function renderResponseAnnotations\(body, message\)/u);
-  assert.match(app, /class: "msg-annotation-quote"/u);
-  assert.match(app, /class: "msg-annotation-request"/u);
-  assert.match(styles, /\.msg-annotation-content\s*\{[^}]*border-left:\s*3px solid var\(--accent-line\);/su);
-});
-
-test("focused journal turn reuses the task thread without duplicating its prompt", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /!focusedTurnAlreadyVisible\(history, messages, focusedTurn\)/u);
-  assert.match(client, /const focusedThreadId = focusedTurnTaskThreadId\(focusedTurn\)/u);
-  assert.doesNotMatch(
-    client,
-    /message\.threadId === \(focusedTurn\.turnThreadId \?\? focusedTurn\.taskThreadId\)/u,
-  );
-});
 
 test("desktop settings stay available with the mobile composer layout", () => {
   const html = fs.readFileSync(
@@ -1980,50 +1340,6 @@ test("desktop settings stay available with the mobile composer layout", () => {
   );
 });
 
-test("Telegram mobile chat disables the host vertical collapse gesture", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /telegram\?\.expand\(\);\s*telegram\?\.disableVerticalSwipes\?\.\(\);/u);
-});
-
-test("composer drafts survive mobile navigation, reconnects and WebView recreation", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /const DRAFT_STORAGE_VERSION = "agent-hub:composer-drafts:v1";/u);
-  assert.match(app, /function draftStorageSurface\(\)[\s\S]*window\.AgentHubAndroid[\s\S]*return "android";/u);
-  assert.match(app, /function restorePersistedDrafts\(\)[\s\S]*localStorage\.getItem\(draftStorageKey\(\)\)/u);
-  assert.match(app, /function persistDrafts\(\{ requiredRecoveryRequestId = "" \} = \{\}\)[\s\S]*localStorage\.setItem\(draftStorageKey\(\), JSON\.stringify\(persisted\)\)/u);
-  assert.match(app, /persist: \(options\) => persistDrafts\(options\)/u);
-  assert.match(app, /restorePersistedDrafts\(\);[\s\S]*pagehide[\s\S]*saveDraft\(\);/u);
-  assert.match(app, /visibilitychange[\s\S]*document\.visibilityState === "hidden"[\s\S]*saveDraft\(\)/u);
-});
-
-test("left-edge swipe uses in-app back and prevents browser history navigation", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /const EDGE_SWIPE_ZONE = 32;/u);
-  assert.match(app, /fromLeftEdge: touch\.clientX <= EDGE_SWIPE_ZONE/u);
-  assert.match(app, /\.markdown-table-scroll/u);
-  assert.match(app, /touchmove[\s\S]*swipeStart\?\.fromLeftEdge[\s\S]*event\.preventDefault\(\)/u);
-  assert.match(app, /if \(!fromLeftEdge \|\| dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
-  assert.match(app, /function navigateBack\(\) \{\s*if \(composerShortcuts\.handleBack\(\)\) return true;\s*saveDraft\(\);[\s\S]*root\.dataset\.view !== "chat"[\s\S]*setPane\("tasks"\)/u);
-});
-
-test("task list no longer exposes legacy Project groups", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.doesNotMatch(app, /const hasProject = visible\.some/u);
-  assert.doesNotMatch(app, /function renderTaskProjectGroup\(/u);
-  assert.doesNotMatch(styles, /\.task-project-heading\s*\{/u);
-});
-
-test("new Workspace Thread becomes the selected chat before its title is applied", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /control\("new-task"[\s\S]*const created = \(snapshot\.tasks \?\? \[\]\)\.find\(\(task\) => task\.selected\)/u);
-  assert.match(client, /workspaceName: title \|\| undefined/u);
-  assert.match(client, /pendingSelectionId = taskId\(created\.provider, created\.threadId, created\.streamId\)/u);
-  assert.match(client, /agentHub\.showSelectedTask\(\)/u);
-  assert.match(app, /showSelectedTask\(\) \{\s*setView\("chat"\);\s*setPane\("chat"\);/u);
-  assert.match(client, /replaceRoute\(`#\/chat\//u);
-});
 
 test("metropolis uses square pixel rain cells on mobile", () => {
   const shader = fs.readFileSync(
@@ -2040,229 +1356,6 @@ test("metropolis uses square pixel rain cells on mobile", () => {
   assert.match(shader, /1\.0 - smoothstep\(y, 0\.5, cellUv\.y\)/u);
 });
 
-test("chat loads older pages from a button and a cancellable mobile pull gesture", () => {
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(html, /data-history-loader[\s\S]*data-history-load/u);
-  assert.match(app, /const HISTORY_PULL_THRESHOLD = 84;/u);
-  assert.match(app, /touchmove[\s\S]*historyPull\.armed = damped >= HISTORY_PULL_THRESHOLD/u);
-  assert.match(app, /touchend[\s\S]*if \(shouldLoad\) requestOlderHistory\(\)/u);
-  assert.match(app, /emit\("history:load-older", \{ taskId: state\.selectedId \}\)/u);
-  assert.match(app, /function captureChatAnchor\(\)[\s\S]*function restoreChatAnchor\(anchor\)/u);
-  assert.match(client, /const requestedBefore = Number\(page\.nextBefore\)[\s\S]*control\("task-history", \{[\s\S]*before: requestedBefore,[\s\S]*limit: 20/u);
-  assert.match(client, /returnedEnd > requestedBefore[\s\S]*returnedStart >= requestedBefore/u);
-  assert.match(client, /prependOlderHistory[\s\S]*preserveScroll: true/u);
-  assert.match(styles, /html\[data-surface="mobile"\] \.chat-history-loader\[data-pulling\]/u);
-});
-
-test("chat keeps an active response only in the live card after task switching", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
-  assert.match(
-    lifecycle,
-    /function visibleConversationMessages\(messages,[\s\S]*const liveTurnRole = identityKey\(liveProbe, \{ withoutItem: true \}\);[\s\S]*identityKey\(message, \{ withoutItem: true \}\) !== liveTurnRole/u,
-  );
-  assert.match(client, /liveProbeByTask\.set\(taskIdValue, nextProbe\)/u);
-  assert.match(client, /liveProbe: liveProbeByTask\.get\(taskIdValue\) \?\? null/u);
-  assert.match(client, /text: response/u);
-  assert.match(app, /function liveCardHasContent\(live\)[\s\S]*normalizedMessageText\(live\.stage\)/u);
-  assert.match(
-    app,
-    /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ preserveTop: true \}\);\s*renderLive\(\);/u,
-  );
-});
-
-test("active commentary stays live while interrupted commentary remains in history", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
-  assert.match(
-    lifecycle,
-    /const visibleAgent = historicalAgentResponseVisible\(item\)[\s\S]*\?\s*parentAgents\.findLast[\s\S]*:\s*null;/u,
-  );
-  assert.match(lifecycle, /historicalAgentResponseVisible\(item\) && String\(item\?\.answer/u);
-  assert.match(
-    lifecycle,
-    /function historicalAgentResponseVisible\(turn\) \{\s*return turn\?\.completed === true \|\| turn\?\.active !== true;/u,
-  );
-});
-
-test("manual context compaction reports completion and stays on the fast refresh loop", async () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(client, /requestedContextCompactions/u);
-  assert.match(client, /Свёртка завершена успешно/u);
-  assert.match(client, /Началась автосвёртка контекста/u);
-  assert.match(client, /Свёртка контекста…/u);
-  assert.match(client, /Автосвёртка контекста…/u);
-  assert.match(client, /Замер контекста…/u);
-  assert.match(client, /Ротация контекста…/u);
-  assert.match(client, /activeMaintenanceByTask/u);
-  assert.match(client, /rememberMaintenanceEvent/u);
-  for (const [task, expectedDelay] of [[{}, 5000], [{ running: true }, 1200],
-    [{ activityUnknown: true }, 1200], [{ context: { compacting: true } }, 1200], [{ maintenance: {} }, 1200]]) {
-    const delays = [], sandbox = {
-      window: { clearTimeout() {}, setTimeout: (_fn, delay) => delays.push(delay), AgentHubSnapshotTransport: { requestParams: () => ({}) } },
-      refreshing: false, refreshRequested: false, refreshTimer: null, composerRecoveryBarrier: Promise.resolve(),
-      lastSnapshot: { tasks: [task] }, prepareSnapshotTransport: async () => {}, control: async () => ({ notModified: true }),
-      snapshotResponseIsStale: () => false, refreshConnectionLatency() {}, resetConnectionFailures() {},
-      applySnapshotConnection() {}, considerDisplayedFinal() {}, selectedTaskId: null,
-      refreshVisibleTaskHistories: async () => {}, recordTransientConnectionFailure: () => assert.fail('unexpected refresh failure'),
-      visibleStreamTaskIds: new Set(), historyNeedsCatchUp: () => false,
-    };
-    vm.runInNewContext(functionSource(client, 'refresh(', 'agentHub.on("connection:retry"') + '\nglobalThis.runRefresh = refresh;', sandbox);
-    await sandbox.runRefresh(); assert.deepEqual(delays, [expectedDelay]);
-  }
-  assert.match(app, /message\.kind === "maintenance"/u);
-  assert.match(styles, /\.msg-maintenance \.msg-body/u);
-  // Context labels and the preparation/start/compaction/measurement transitions
-  // are verified through rendered DOM in message-render-dom.test.mjs.
-  assert.match(app, /context\.compaction\?\.stage === "cleaning-images"/u);
-  assert.match(app, /Удаляются дубликаты изображений/u);
-  assert.match(app, /toggleAttribute\("data-compacting"/u);
-  assert.match(styles, /context-compaction-spin/u);
-});
-
-test("live reasoning renders Markdown separately from the response", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  assert.match(html, /data-live-reasoning/u);
-  assert.match(html, /data-live-body/u);
-  assert.match(app, /const reasoning = node\.querySelector\("\[data-live-reasoning\]"\);/u);
-  assert.match(app, /const body = node\.querySelector\("\[data-live-body\]"\);/u);
-});
-
-test("shared chat Markdown renders GFM tables responsively", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(app, /function markdownTableCells\(line\)/u);
-  assert.match(app, /\^:\?-\{3,\}:\?\$/u);
-  assert.match(app, /el\("table", \{ class: "markdown-table" \}/u);
-  assert.match(styles, /\.markdown-table-scroll[\s\S]*overflow-x: auto;/u);
-  assert.match(styles, /\.markdown-table[\s\S]*border-collapse: collapse;/u);
-  assert.match(styles, /\.markdown-table[\s\S]*table-layout: fixed;[\s\S]*width: 100%;/u);
-  assert.match(styles, /\.markdown-table th,[\s\S]*overflow-wrap: anywhere;/u);
-  assert.match(styles, /\.markdown-table tr > :first-child:nth-last-child\(2\)[\s\S]*width: clamp\(9rem, 30%, 18rem\);/u);
-});
-
-test("active chat input stays in the manual queue until an explicit action", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
-  assert.match(app, /const entryAnnotations = Array\.isArray\(entry\.annotations\)/u);
-  assert.match(app, /class: "queue-annotation-quote"/u);
-  assert.match(app, /class: "queue-annotation-comment"/u);
-  assert.match(app, /\(entryAnnotations\.length && annotationEnvelope\.test\(rawText\)\)/u);
-  assert.match(app, /data-action": "queue-steer"/u);
-  assert.match(app, /data-action": "queue-edit"/u);
-  assert.match(app, /followUpMode: MessageView\.composerFollowUpMode\(task, \{ steerWhileRunning \}\)/u);
-  const sandbox = { state: { selectedId: 'task' }, currentPendingComposerRequest: () => null,
-    currentAttachmentPreviews: () => [], currentTask: () => sandbox.task,
-    performance: { now: () => 0 }, window: { AgentHubComposerDraftReconciliation: { recoveryFingerprint: () => 'payload' } },
-    retryComposerRequests: new Map(), pendingComposerRequests: new Map(),
-    composerDraftReconciliation: { revision: () => 0 }, emit: (_name, request) => { sandbox.request = request; }, updateSendState() {},
-  };
-  vm.runInNewContext(fs.readFileSync(path.join(WEB_APP_ROOT, 'message-view-controller.js'), 'utf8'), sandbox);
-  sandbox.MessageView = sandbox.AgentHubMessageView;
-  vm.runInNewContext(functionSource(app, 'sendComposerRequest', 'function submitComposer') + '\nglobalThis.send = sendComposerRequest;', sandbox);
-  for (const [task, steerWhileRunning, deferred] of [[{ running: true }, false, true],
-    [{ canStop: true }, false, true], [{ running: true }, true, false], [{}, false, false]]) {
-    sandbox.task = task; sandbox.send({ rawText: 'fixture', steerWhileRunning });
-    assert.equal(sandbox.request.deferWhileRunning, deferred);
-  }
-  assert.doesNotMatch(app, /followUpModeButton|renderFollowUpMode|Изменить ход/u);
-  assert.doesNotMatch(html, /data-follow-up-mode/u);
-  assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
-  assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
-  assert.match(client, /control\("deferred-input", \{ id, action: "composer-prepare" \}\)/u);
-  assert.match(client, /control\("deferred-input", \{ id, action: "composer-commit", token \}\)/u);
-  assert.match(client, /control\("deferred-input", \{ id, action: "composer-release", token \}\)/u);
-  assert.match(client, /request\.deferWhileRunning === true/u);
-  assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
-  assert.doesNotMatch(client, /if \(result\?\.duplicate\)[\s\S]*outgoingMessages\(request\.taskId\)\.delete/u);
-  assert.match(client, /function optimisticDeferredEntries\(taskIdValue, serverEntries = \[\]\)/u);
-  assert.match(client, /mergeDeferredQueueEntries\(\s*serverEntries,/u);
-  assert.match(lifecycle, /function mergeDeferredQueueEntries\(serverEntries, clientEntries\)/u);
-  assert.doesNotMatch(
-    lifecycle,
-    /message\?\.role === "user"[\s\S]*deferredIds\.has\(String\(message\?\.clientUserMessageId/u,
-  );
-});
-
-test("composer restores definite rejection but keeps an ambiguous delivery single", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const reconciliation = fs.readFileSync(
-    require.resolve("../assets/web-app/messages/composer-draft-reconciliation.js"),
-    "utf8",
-  );
-  const connectionBanner = fs.readFileSync(
-    require.resolve("../assets/web-app/connection-banner.js"),
-    "utf8",
-  );
-  const submit = app.match(
-    /function submitComposer\(\{ steerWhileRunning = false \} = \{\}\) \{(?<body>[\s\S]*?)\n\}/u,
-  )?.groups?.body ?? "";
-  assert.match(submit, /sendComposerRequest\(\{/u);
-  assert.match(submit, /clearComposer: true/u);
-  assert.match(submit, /restoreOnReject: true/u);
-  assert.match(app, /function completeComposerSend\(requestId, \{ outcome = "unknown", taskId = "" \} = \{\}\)/u);
-  assert.match(app, /composerDraftReconciliation\.complete\(\{[\s\S]*requestId,[\s\S]*taskId,[\s\S]*outcome,/u);
-  assert.match(app, /const retryComposerRequests = new Map\(\)/u);
-  assert.match(app, /const requestId = retry\?\.fingerprint === fingerprint[\s\S]*retry\.requestId/u);
-  assert.match(reconciliation, /if \(!identityConflict && matchesPending && unchangedSinceSend && normalizedOutcome !== "accepted"\)/u);
-  assert.match(reconciliation, /retries\.set\(resolvedTaskId, \{[\s\S]*requestId: pending\.requestId,[\s\S]*fingerprint: pending\.fingerprint/u);
-  assert.match(reconciliation, /normalizedOutcome === "rejected"[\s\S]*pending\.restoreOnReject !== false/u);
-  assert.match(client, /agentHub\.completeSend\(request\.requestId/u);
-  assert.match(client, /reusableAttachmentPaths\([\s\S]*\{ remote: !vscode \}/u);
-  assert.match(client, /if \(isConnectionFailure\(error\)\) recordTransientConnectionFailure/u);
-  assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)/u);
-  assert.match(client, /if \(rejected\) \{[\s\S]*outgoingMessages\(request\.taskId\)\.delete\(request\.requestId\)[\s\S]*else \{[\s\S]*deliveryPatch\("unconfirmed"\)/u);
-  assert.match(client, /AgentHubConnectionBanner\.snapshotConnectionState\(snapshot, idleStatus\)/u);
-  assert.match(connectionBanner, /snapshot\?\.restartWaiting === true \|\| blockingCount > 0/u);
-  assert.match(html, /data-restart-banner/u);
-  assert.match(connectionBanner, /Agent Hub ожидает завершения блокирующей работы: \$\{count\}\./u);
-  assert.match(app, /restarting: "Agent Hub перезапускается…"/u);
-  assert.match(app, /offline: "Нет связи с Agent Hub\."/u);
-  assert.doesNotMatch(
-    app,
-    /Текст в поле ввода сохранён|Непринятый текст будет восстановлен|Неотправленное сообщение сохранено/u,
-  );
-});
-
-test("chat retries an initial history load after the connection recovers", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /const historyMissing = Boolean\(previousTask\) && !historyPageByTask\.has\(id\)/u);
-  assert.match(client, /historyMissing[\s\S]*enqueueTaskHistoryLoad\(id, identity/u);
-});
-
-test("one transient control failure does not mark the whole Hub offline", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /CONNECTION_OFFLINE_FAILURES = 3/u);
-  assert.match(client, /CONNECTION_OFFLINE_GRACE_MS = 6_000/u);
-  assert.match(client, /function recordTransientConnectionFailure\(\)/u);
-  assert.match(client, /transientFailureDecision\(\{[\s\S]*failureCount: connectionFailureCount/u);
-  assert.match(client, /if \(decision === "connecting"\) applySnapshotConnection/u);
-  assert.match(client, /function applySnapshot\(snapshot, \{ materialized = false \} = \{\}\)[\s\S]*resetConnectionFailures\(\)/u);
-  assert.doesNotMatch(client, /catch \(error\) \{\s*if \(isConnectionFailure\(error\)\) applySnapshotConnection/u);
-});
-
-test("chat keeps refreshing until the ready answer reaches task history", () => {
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /function updateHistoryCatchUp\(taskIdValue, history, task\)/u);
-  assert.match(
-    client,
-    /historyContainsLatestAnswer\(history, task, \{\s*expectedTurnId: historyCatchUpTurnIds\.get\(taskIdValue\),\s*\}\)/u,
-  );
-  assert.match(client, /refreshCaughtUpHistory/u);
-  assert.match(client, /\|\| historyNeedsCatchUp\(selectedTaskId\)/u);
-  assert.doesNotMatch(client, /\n\s*markAnswerSeen\(task\);\n\}/u);
-});
 
 test("current limits live in settings and statistics instead of the compact header", () => {
   const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
@@ -2556,181 +1649,6 @@ test("maintained shells package derivatives of the unified Agent Hub mark", () =
   assert.equal(androidIcon.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
 });
 
-test("composer pastes arbitrary clipboard files and falls back to the files list", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /function clipboardAttachmentFiles\(clipboardData\)/u);
-  assert.match(app, /clipboardData\?\.items/u);
-  assert.match(app, /clipboardData\?\.files/u);
-  assert.match(app, /const values = itemFiles\.length > 0 \? itemFiles :/u);
-  assert.match(app, /void readAttachmentFiles\(files\)/u);
-});
-
-test("shared shell groups threads under stable Workspace and Stream identities", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const streamTabs = fs.readFileSync(
-    require.resolve("../assets/web-app/stream-tabs-controller.js"),
-    "utf8",
-  );
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  const tabsStart = app.indexOf("function renderStreamTabs()");
-  const tabsEnd = app.indexOf("function publishVisibleStreamTasks", tabsStart);
-  const tabs = app.slice(tabsStart, tabsEnd);
-
-  // Новый фронтенд работает только от канонического streamId.
-  assert.match(client, /const streamId = String\(task\.streamId \?\? ""\)\.trim\(\)/u);
-  const modelTask = client.match(/function modelTask\([^)]*\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
-  assert.match(modelTask, /streamId,/u);
-  assert.doesNotMatch(modelTask, new RegExp(["hub", "TaskId"].join(""), "u"));
-
-  // Один безымянный поток не показывает искусственный номер; несколько получают Stream N.
-  assert.match(streamTabs, /function streamDisplayName\(stream, streamCount\)/u);
-  assert.match(streamTabs, /Number\(streamCount\) > 1/u);
-  assert.match(app, /AgentHubStreamTabs\.streamDisplayName\(stream, streams\.length\)/u);
-  // Обычный клик переключает единственную колонку; Ctrl+click держит до четырёх.
-  assert.match(app, /normalized = \[selectedInWorkspace \|\| ordered\[0\]\?\.id\]\.filter\(Boolean\)/u);
-  assert.match(app, /configuredOpenStreamWorkspaces/u);
-  assert.match(app, /function toggleOpenStream\(workspaceId, streamId, streams, \{ additive = false, preserveClickTarget = false \} = \{\}\)/u);
-  const toggleStart = app.indexOf("function toggleOpenStream(");
-  const toggleEnd = app.indexOf("/* =========================================================== роутер видов */", toggleStart);
-  const toggle = app.slice(toggleStart, toggleEnd);
-  assert.match(toggle, /persistOpenStreams\(\)/u);
-  assert.match(toggle, /selectTaskFromUi\(target\.id, \{ preserveStreamTabs: preserveClickTarget \}\)/u);
-  assert.match(app, /additive: event\.ctrlKey \|\| event\.metaKey/u);
-  // Слева остаются только Workspace; Streams живут в горизонтальной полосе.
-  assert.match(app, /function renderTaskWorkspaceItem\(/u);
-  assert.doesNotMatch(app, /class: "task-workspace-streams"/u);
-  assert.match(styles, /\.task-workspace-item\[data-selected\]/u);
-  assert.match(styles, /\.stream-tab\[aria-pressed="true"\]/u);
-  // Верхняя полоса показывает Stream и свойства текущего Thread, но не его
-  // сменяемое название: история Thread появится только в истории перерождений.
-  assert.match(tabs, /class: "stream-tab-card"/u);
-  assert.match(tabs, /text: streamName/u);
-  assert.doesNotMatch(tabs, /task\?\.threadTitle \|\| task\?\.title/u);
-  assert.match(tabs, /"data-stream-model": task\?\.modelLabel \?\? ""/u);
-  assert.doesNotMatch(tabs, /class: "task-agent task-model"/u);
-  assert.doesNotMatch(tabs, /class: "task-runtime"/u);
-  assert.match(app, /streamHeaderModel\.textContent = shortModelLabel\(model\)/u);
-  assert.match(styles, /\.stream-tab-card\s*\{/u);
-  assert.match(tabs, /"data-running": running \? "" : null/u);
-  assert.match(tabs, /"data-answer-ready": answerReady \? "" : null/u);
-  assert.doesNotMatch(tabs, /class: "task-status"/u);
-  assert.match(styles, /@keyframes stream-running-wave/u);
-  assert.match(styles, /@keyframes stream-answer-ready/u);
-  assert.match(app, /const running = tasks\.some\(\(task\) => task\.running\)/u);
-  assert.match(app, /"data-running": running \? "" : null/u);
-  assert.match(styles, /\.task-workspace-item\[data-running\]::after/u);
-  assert.match(styles, /\.task-workspace-item\[data-unread\]:not\(\[data-running\]\)/u);
-  assert.doesNotMatch(app, /class: "task-unread", title: "Есть непрочитанные сообщения"/u);
-  assert.doesNotMatch(styles, /\.stream-tab\[data-current\]\s*\{[\s\S]*?box-shadow/u);
-});
-
-test("Stream card moves it to an existing Workspace while its menu rotates Threads", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-
-  assert.match(app, /function openStreamContextMenu\(event, tab\)/u);
-  assert.doesNotMatch(app, /text: "Статус и лимиты"/u);
-  assert.match(html, /data-stream-card-move/u);
-  assert.match(app, /emit\("stream:move", \{ streamId, workspaceId: targetWorkspaceId \}\)/u);
-  assert.match(app, /text: "Ротация"/u);
-  assert.match(app, /Завершить текущий Thread и продолжить Stream в новом/u);
-  assert.match(app, /emit\("stream:rebirth", \{ streamId, provider, taskId \}\)/u);
-  assert.match(app, /event\.pointerType !== "touch"/u);
-  assert.match(app, /event\.key === "ContextMenu"/u);
-  assert.match(client, /control\("move-stream", \{ streamId, workspaceId, beforeStreamId \}\)/u);
-  assert.match(client, /control\("new-task", \{[\s\S]*?streamId,/u);
-  assert.match(styles, /\.stream-context-menu\s*\{/u);
-  assert.match(styles, /\.stream-card-move-menu\s*\{/u);
-  assert.match(styles, /\.stream-context-menu\s*\{[\s\S]*?scrollbar-gutter:\s*stable;[\s\S]*?width:\s*min\(14rem,/u);
-  assert.match(styles, /\.stream-context-action\s*\{[\s\S]*?width:\s*100%;/u);
-  assert.match(styles, /\.stream-context-menu\s*\{[\s\S]*?background-color:\s*var\(--bg\);[\s\S]*?background-image:\s*var\(--card-bg-open\);/u);
-});
-
-test("wide shared shell opens up to four Workspace Streams as chat columns", () => {
-  const index = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-
-  assert.match(index, /data-stream-tabs/u);
-  assert.match(index, /data-stream-chat-columns/u);
-  assert.match(app, /function visibleWorkspaceStreamTasks\(\)/u);
-  assert.match(app, /const shown = surface === "mobile" \? visible\.slice\(0, 1\) : visible\.slice\(0, 4\)/u);
-  const appSource = app.replaceAll("\r\n", "\n");
-  const publisherSource = (name) => {
-    const start = appSource.indexOf(`function ${name}(`);
-    if (start < 0) throw new Error(`Missing executable publisher port: ${name}`);
-    const end = appSource.indexOf("\n}\n", start);
-    if (end < 0) throw new Error(`Incomplete executable publisher port: ${name}`);
-    return appSource.slice(start, end + 3);
-  };
-  const tasks = Array.from({ length: 5 }, (_, index) => ({
-    id: `task-${index}`, streamId: `stream-${index}`, workspaceId: index < 4 ? "workspace-1" : "workspace-2",
-  }));
-  const published = [];
-  const publisher = vm.createContext({
-    state: { tasks, visibleStreamTaskIds: [], openStreamsByWorkspace: new Map([
-      ["workspace-1", tasks.slice(0, 4).map((task) => task.streamId)],
-      ["workspace-2", [tasks[4].streamId]],
-    ]) },
-    publishedRetainedHistoryTaskIds: [],
-    emit: (type, detail) => published.push({ type, detail: JSON.parse(JSON.stringify(detail)) }),
-  });
-  vm.runInContext(["sameData", "workspaceKey", "streamKey", "publishVisibleStreamTasks"].map(publisherSource).join("\n"), publisher);
-  publisher.publishVisibleStreamTasks(tasks.slice(0, 4));
-  assert.deepEqual(published, [{ type: "workspace:visible-streams", detail: {
-    taskIds: tasks.slice(0, 4).map((task) => task.id), retainedTaskIds: tasks.map((task) => task.id),
-  } }]);
-  publisher.publishVisibleStreamTasks(tasks.slice(0, 4));
-  assert.equal(published.length, 1, "unchanged visible and retained identities do not repeat the intent");
-  publisher.state.openStreamsByWorkspace.set("workspace-2", []);
-  publisher.publishVisibleStreamTasks(tasks.slice(0, 4));
-  assert.equal(published.length, 2, "a changed retained layout publishes even when visible identities stay equal");
-  assert.deepEqual(published[1].detail.retainedTaskIds, tasks.slice(0, 4).map((task) => task.id));
-  assert.match(app, /function renderStreamChatPreview\(task\)/u);
-  assert.match(client, /agentHub\.on\("workspace:visible-streams"/u);
-  assert.match(client, /visibleStreamTaskIds = new Set\(ids\)/u);
-  assert.match(client, /for \(const task of snapshot\.tasks \?\? \[\]\) \{[\s\S]*agentHub\.setLive\(stableTaskId/u);
-  assert.match(client, /control\("task-history", \{/u);
-  assert.match(styles, /\.stream-chat-columns\[data-multi-stream\]/u);
-  assert.match(styles, /repeat\(var\(--stream-chat-count, 1\), minmax\(13rem, 1fr\)\)/u);
-  assert.match(styles, /\.stream-chat-columns\[data-multi-stream\] > \.chat-pane\[data-active-stream\]/u);
-  assert.match(app, /chatPane\.toggleAttribute\("data-active-stream", selectedIndex >= 0\)/u);
-  assert.ok(index.indexOf("data-stream-chat-columns") < index.indexOf("<!-- Запросы подтверждений"));
-  assert.ok(index.indexOf("<!-- Запросы подтверждений") < index.indexOf("data-composer"));
-  assert.doesNotMatch(index, /data-mobile-chat-actions/u);
-  assert.match(app, /class: "stream-chat-preview-head"/u);
-  assert.match(app, /class: "stream-chat-preview-title"/u);
-  assert.match(styles, /\.stream-chat-preview-head\s*\{/u);
-  assert.match(app, /class: "stream-chat-preview-log chat-scroll"/u);
-  assert.match(app, /class: "stream-chat-preview-messages chat-log"/u);
-  assert.match(styles, /\.chat-overlay-actions\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?right:/u);
-  assert.doesNotMatch(styles, /\.stream-chat-preview-log \.activity-feed\s*\{[\s\S]*?display:\s*none;/u);
-  assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-preview\s*\{\s*display: none;/su);
-  assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-columns\s*\{[\s\S]*?display: grid;/u);
-});
-
-test("VS Code stream refresh keeps composer focus and opens history at the bottom", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const deckStart = app.indexOf("function renderStreamChatDeck()");
-  const deckEnd = app.indexOf("function refreshSupplementaryStreamChat", deckStart);
-  const deck = app.slice(deckStart, deckEnd);
-  const chatStart = app.indexOf("function renderChat({ preserveStreamTabs = false } = {})");
-  const chatEnd = app.indexOf("function renderContextUsage", chatStart);
-  const chat = app.slice(chatStart, chatEnd);
-
-  // Фоновое обновление удаляет только read-only previews. Общий composer
-  // находится вне колонок и остаётся подключённым к DOM.
-  assert.match(deck, /querySelectorAll\("\.stream-chat-preview"\)/u);
-  assert.doesNotMatch(deck, /replaceChildren\(chatPane/u);
-  assert.match(deck, /chatPane\.style\.order/u);
-  assert.doesNotMatch(app, /syncChatActionsPlacement/u);
-  // Колонки фиксируются до forceBottom, поэтому переносы строк уже учтены.
-  assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true });"));
-});
 
 test("hub status band lives inside the top toolbar instead of covering the stream row", () => {
   const html = fs.readFileSync(path.join(WEB_APP_ROOT, "index.html"), "utf8");

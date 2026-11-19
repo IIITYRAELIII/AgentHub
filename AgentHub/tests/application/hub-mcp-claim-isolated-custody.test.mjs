@@ -5,9 +5,9 @@ import { readFile, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import { claimCustodyFixture } from "../fixtures/claim-custody-public-fixture.mjs";
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
-import { TaskReleasePlanService } from "../../src/application/task-release-plan-service.mjs";
-import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
-import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskCompositionPlanService } from "../../src/application/task-composition-plan-service.mjs";
+import { TaskIntegrationService } from "../../src/application/task-integration-service.mjs";
+import { TaskIntegrationGitService } from "../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { cloneJournalToTestContour } from "../../src/infrastructure/persistence/test-contour-data-clone.mjs";
 
@@ -203,9 +203,9 @@ test("ordinary public Test imports isolated history and result authority without
   await f.git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "successor result");
   const result = await f.git(root, "rev-parse", "HEAD");
   let publication = null;
-  const preflight = new WorkspaceReleasePreflightService({
-    releasePlanner: new TaskReleasePlanService({ taskBoard: f.tasks, taskGitWorkspaces: f.workspaces }),
-    taskGitWorkspaces: f.workspaces, releaseGitWorkspaces: new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") }),
+  const preflight = new TaskIntegrationService({
+    releasePlanner: new TaskCompositionPlanService({ taskBoard: f.tasks, taskGitWorkspaces: f.workspaces }),
+    taskGitWorkspaces: f.workspaces, releaseGitWorkspaces: new TaskIntegrationGitService({ dataDir: path.join(f.root, "data") }),
     readPublicationState: async () => publication,
     resolveReleaseValidationSource: () => assert.fail("Task Test must not refresh a shared environment"),
     validateProductionCandidate: () => assert.fail("Task Test must not publish"),

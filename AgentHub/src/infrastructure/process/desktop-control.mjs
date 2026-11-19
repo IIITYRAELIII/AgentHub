@@ -489,7 +489,10 @@ async function callDesktopControlOnce(action, params, {
       socket.destroy();
       operation(value);
     };
-    const timer = setTimeout(() => finish(reject, new Error("Desktop control request timed out")), timeoutMs);
+    const timer = setTimeout(() => {
+      if (state === "retirement") finish(resolve, deliveredResult);
+      else finish(reject, new Error("Desktop control request timed out"));
+    }, timeoutMs);
     timer.unref?.();
     socket.setEncoding("utf8");
     socket.on("connect", () => {
@@ -565,7 +568,9 @@ async function callDesktopControlOnce(action, params, {
           deliveredResult = value.result;
           state = "retirement";
           socket.write(`${JSON.stringify({ type: "result-ack", commandId })}\n`, () => {
-            finish(resolve, deliveredResult);
+            // Business completion must not wait for receipt housekeeping, but
+            // keep the existing exchange alive until retirement or close.
+            resolve(deliveredResult);
           });
         } else finish(resolve, value.result);
       } catch (error) {

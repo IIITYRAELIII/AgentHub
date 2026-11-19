@@ -1,31 +1,36 @@
-# Build Hub independently
+# Independent build and package primitives
 
-The application source retains its own runtime builder and public preparation
-interface. Use the dependency versions pinned by `package-lock.json`; reuse an
-existing matching dependency root. Node >=22.5, Python and the supported Windows
-C# compiler are required for the Windows RuntimeHost body.
+Release orchestration was removed by ADR-HUB-463. Building does not require a
+ReleaseOperation, generation/freeze, PREPARED.json or Hub release API. It does
+not install, activate, restart, publish, push or change Task status.
 
-From the exact clean application source:
+The explicitly pinned external package supplies `src/build.mjs`
+(`buildPinnedCandidate`) → `src/runtime-build.mjs` (`prepareRuntime`) →
+`python/build_package.py`. The first entry checks a clean exact repository
+HEAD/tree before and after building. The runtime builder owns source collection,
+locked production dependencies, C# compilation and the byte/companion manifest.
+No dev/operational aggregate or unaccepted Task source is substituted.
 
-```sh
-node AgentHub/build-runtime.mjs --runtime-root <owned-build-runtime> --release-id <original-body-id> --source-commit <exact-source-OID> --artifact-version <frozen-public-version+build.N>
+The application development primitive is:
+
+```powershell
+node build-runtime.mjs --runtime-root <build-output> --release-id <body-id> --source-commit <exact-OID> --artifact-version <version+build.N>
 ```
 
-This prepares an immutable body under the existing runtime installation lease.
-It does not install, activate, restart, publish, change Task status or create a
-release authorization. Its manifest and the runtime builder retain the source,
-version, complete file inventory, native companion and dependency verification.
-The external release tool's `build` command adds exact clean Git HEAD/tree checks
-before and after invoking this interface.
+It delegates directly to the independent runtime builder. The delivery owner
+must pin/check the source repository and tool before using this primitive;
+`buildPinnedCandidate` provides the existing repository check around it. Set the
+existing `AGENT_HUB_RELEASE_TOOLS_ROOT` and `AGENT_HUB_RELEASE_TOOLS_SHA256`
+variables to the accepted immutable tool export. Their legacy names are package
+location/digest compatibility, not an enabled release recipe.
 
-Release ordering, package creation and publication are in the independent
-`IIITYRAELIII/AgentHub-ReleaseTools` package. The publisher configures its exact
-`AGENT_HUB_RELEASE_TOOLS_ROOT` and `AGENT_HUB_RELEASE_TOOLS_SHA256` pin; neither
-the package nor its dependencies are copied into the application runtime. Run
-`agent-hub-release identity` from that installed tool to obtain its content pin.
-Keep that directory immutable until its consumers join.
+Build requirements: Node >=22.5 with SQLite, Git, npm and the production lock,
+Python >=3.10, and the supported Windows .NET 4 C# compiler/System.Drawing for
+RuntimeHost/icon. Reuse only an exact matching dependency root. Dependencies,
+build outputs and local configuration stay outside tracked source.
 
-For application tests that exercise publication/distribution adapters, supply
-the reviewed tool source root and its exact pin. The standalone tool's tests run
-in its own repository. The normal complete publication pipeline remains owned
-by the release operation and consumes the whole accepted prepared candidate.
+The application retains its JSON `runtime-maintenance.mjs` boundary: status,
+verify, install, package-install, config-validate and maintenance-read. The
+independent recipient installer uses those installation owners. See
+[distribution/README.md](../distribution/README.md). Worker asset/deploy/verify
+commands remain independent tools; they do not start a Hub release operation.

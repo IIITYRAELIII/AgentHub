@@ -40,7 +40,7 @@ test("Codex recovery prepares its transport once for a provider batch", async ()
     turnTokenUsage: new Map(),
   });
   await service.prepare([{}]);
-  assert.deepEqual(calls, ["start", ["initialize", { attachSelectedThread: true }]]);
+  assert.deepEqual(calls, ["start", ["initialize", { attachSelectedThread: false }]]);
 });
 
 test("Codex restart with unavailable transport retains the original run without a false interrupted final", async () => {

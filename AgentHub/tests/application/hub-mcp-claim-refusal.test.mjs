@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { completionPersistenceFailure } from "../helpers/mcp-completion-persistence.fixture.mjs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -91,9 +92,11 @@ for (const mode of ["active", "queued-stream", "queued-thread"]) {
 test("pending refusal after process loss before either terminal write is recovered at startup", async t => {
   const f = await fixture(t);
   f.busy();
-  f.rawCatalog.failMcpOperation = () => { throw new Error("simulated process loss"); };
+  const terminalFailure = new Error("simulated process loss");
+  f.rawCatalog.failMcpOperation = () => { throw terminalFailure; };
   f.rawCatalog.markMcpOperationUnknown = () => { throw new Error("process already lost"); };
-  await assert.rejects(f.hub.call("hub_task_claim", f.input), /simulated process loss/);
+  await assert.rejects(f.hub.call("hub_task_claim", f.input),
+      completionPersistenceFailure("TASK_CLAIM_EXECUTOR_BUSY", terminalFailure));
   const pending = f.catalog.mcpOperation(f.input.request_id);
   assert.equal(pending.status, "pending");
   assert.equal(pending.result.outcome, "NO_EFFECT");
@@ -167,8 +170,17 @@ for (const startup of [false, true]) {
   test(`durable busy refusal survives failed receipt write and ${startup ? "startup" : "same-ID"} reopen`, async t => {
     const f = await fixture(t);
     f.busy();
-    f.rawCatalog.failMcpOperation = () => { throw new Error("receipt write unavailable"); };
-    await assert.rejects(f.hub.call("hub_task_claim", f.input), /receipt write unavailable/);
+    const terminalFailure = new Error("receipt write unavailable");
+  f.rawCatalog.failMcpOperation = () => { throw terminalFailure; };
+    await assert.rejects(f.hub.call("hub_task_claim", f.input),
+      completionPersistenceFailure("TASK_CLAIM_EXECUTOR_BUSY", terminalFailure));
+    const pending = f.catalog.mcpOperation(f.input.request_id);
+    assert.equal(pending.status, "pending", "a failed terminal write alone cannot establish UNKNOWN");
+    assert.equal(pending.taskExecution.completionFailure.originalError.code, "TASK_CLAIM_EXECUTOR_BUSY");
+    assert.equal(pending.taskExecution.completionFailure.persistenceError.message, terminalFailure.message);
+    // Independently seed this retained historical UNKNOWN through its canonical
+    // fixture owner; the completion write failure above did not establish it.
+    await f.catalog.markMcpOperationUnknown(f.input.request_id, new Error("fixture retained original uncertainty"));
     const unknown = f.catalog.mcpOperation(f.input.request_id);
     assert.equal(unknown.status, "unknown");
     assert.equal(unknown.result.outcome, "NO_EFFECT");

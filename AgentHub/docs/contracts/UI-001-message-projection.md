@@ -228,6 +228,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   commands; inter-Stream authorship must not leak into another user message.
 - Context compaction and maintenance operations have separate kinds and never
   create user-turn cards. Context estimates are observations, not generated turns.
+  A dedicated compaction awaiting its provider turn is preparation, not a
+  confirmed start notification. Repeated snapshots and reconnect retain the
+  same operation's terminal revision; an older running projection cannot revive
+  it. Reload reuses the existing terminal maintenance marker. Notifications of
+  observed automatic starts occur once per exact operation in the current
+  client session, with the initial snapshot as its baseline; new operations and
+  real failures remain visible.
 - The ordinary browser shell never waits on the third-party Telegram runtime.
   A same-origin parser bootstrap requests that runtime only when Telegram launch
   parameters or a native Telegram bridge are already present, preserving the
@@ -287,6 +294,11 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   without coordinates retain an explicit compatibility list until their trusted
   original is reprojected through the existing history owner; no stored source
   or user text is rewritten. See ADR-HUB-401.
+  Commentary shown in live and historical trace groups, including addressed
+  trace pages, carries a read-only presentation from that same assistant parser.
+  The original reasoning, provider item and source-generation/hash fields stay
+  intact. Rendering and citation navigation use the group's presentation in the
+  exact owning message context; a later annotated user cannot become its target.
 - A new user-created annotation records its exact source user command or agent
   provider item, including an active non-final agent item. A user with a durable
   `clientUserMessageId` uses the client namespace scoped by provider and Thread,
@@ -400,6 +412,38 @@ Thread and Stream identity; it never replays a command or infers read state.
 In-flight pages for a closed column are superseded through the existing request
 generation fence. Pending sends, drafts, queue/live authority and exact read
 receipts are independent and are not evicted with history (ADR-HUB-343).
+
+Known phased Codex rollout items retain their native item identity and phase
+through observation and active-history projection. Commentary remains in its
+trace group, while an explicit streaming final keeps its own answer body and
+citations, including when its text equals an earlier commentary item. The
+existing item reducer preserves a later streamed item during an older rollout
+observation. Unphased legacy recovery and exact terminal status/content retain
+their existing owners.
+
+That read captures the reducer's process-local mutation revision before yielding.
+Native start, delta, completion, hydration and accepted observation advance it.
+An intervening mutation retains the current item body and citations, including
+for the same item ID. A fresh observation may apply an authoritative shorter
+body. Its canonical text and complete annotation metadata cross the reducer
+together, with the bounded raw provider text retained for subsequent deltas.
+The shared observation annotation-copy owner retains that native projection.
+Its legacy metadata-only, empty-answer and different-turn behavior remains
+available through the same constructor and publication entry points.
+This ephemeral revision is separate from durable terminal revision authority.
+Native updates that precede the read also retain ownership of their item. The
+rollout reader carries the record position in its existing append-validated
+cache generation. An unchanged record or unrelated file growth cannot replace
+that native body. A later record for the item in the same append generation can
+apply a shorter update. Rewrites, cache loss and missing ordering retain native
+ownership until ordering is available through the canonical native item path.
+The selected native item also owns selection against a different incoming ID.
+An unseen observation needs the same later-record proof to displace it. A
+proven later record may select a different item with equal text or refresh an
+earlier retained item. Array insertion order alone supplies no such proof.
+Source completeness accompanies a shortened live preview. A complete native
+item retains its full body when the bounded observation covers a suffix, while
+preview-owned items continue to refresh within the existing preview bound.
 
 Hidden or zero-sized chat panes do not automatically expand cached history or
 request older pages. Queued frame and scroll callbacks recheck current visibility;
@@ -955,3 +999,11 @@ Canonical history supplies the complete last request and final response. Existin
 history pages, older-page cursors, retained windows and exact navigation provide
 the rest of the conversation. The same rendered-final and durable read-cursor
 owner clears Ready on both tabs and activity cards. See ADR-HUB-427.
+## Task attachment and retired Spark actions (ADR-HUB-434)
+
+Attaching a Dashboard Task keeps the visible composer reference, draft,
+remove/send behavior and error feedback without a redundant success toast.
+New Spark selection and Task retry controls/routing are removed. Historical
+Spark messages, Task records and accounting remain readable; ordinary available
+model actions are preserved. There is no replacement setting or silent model
+substitution. The provider owner also refuses new Spark dispatch.

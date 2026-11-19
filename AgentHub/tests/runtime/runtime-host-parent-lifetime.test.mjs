@@ -3,7 +3,7 @@ import test from 'node:test';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import os from 'node:os'; import path from 'node:path'; import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process'; import {promisify} from 'node:util';
-import {buildWindowsRuntimeHost} from '../../src/infrastructure/process/runtime-host-builder.mjs';
+import {buildWindowsRuntimeHost} from '../helpers/external-runtime-builder.fixture.mjs';
 const exec=promisify(execFile);
 test('real compiled cold and controlled hosts survive submitting Node exit',{skip:process.platform!=='win32'},async t=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'hub-parent-exit-'));

@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
 
 const run = promisify(execFile);
@@ -98,7 +98,7 @@ test("ordinary Test still refuses unpublished release notes and package versions
 
 test("ordinary candidate accepts only exact durable published context over the fixed agreed main", async t => {
   const f = await fixture(t);
-  const candidate = new ReleaseGitWorkspaceService({ dataDir: f.dataDir, environment: f.environment });
+  const candidate = new TaskIntegrationGitService({ dataDir: f.dataDir, environment: f.environment });
   const prepared = await candidate.prepareCandidate({ projectRoot: f.primary, workspaceId: "fixture", planRevision: "published-plan",
     frozenTasks: [f.task], approvedBaseCommit: f.main });
   assert.ok(prepared.preReleaseHead);
@@ -131,7 +131,7 @@ test("published dev and copied metadata alone cannot authorize a source without 
 });
 
 test("ordinary candidate refuses publication record drift before the owning commit", async t => {
-  const f = await fixture(t), candidate = new ReleaseGitWorkspaceService({ dataDir: f.dataDir, environment: f.environment });
+  const f = await fixture(t), candidate = new TaskIntegrationGitService({ dataDir: f.dataDir, environment: f.environment });
   let committed = false;
   await assert.rejects(candidate.prepareCandidate({ projectRoot: f.primary, workspaceId: "fixture", planRevision: "fenced-published-plan",
     frozenTasks: [f.task], approvedBaseCommit: f.main,

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { runtimeHostCompilerCandidates } from "../../src/infrastructure/process/runtime-host-builder.mjs";
+import { runtimeHostCompilerCandidates } from "../helpers/external-runtime-builder.fixture.mjs";
 
 const execute = promisify(execFile);
 async function compileProbe(t) {

@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { publicationStateFile } from "../../../src/infrastructure/persistence/publication-state.mjs";
 import { archivePublishedNotesCheckout } from "../../../src/infrastructure/filesystem/native-await-published-notes-recovery.mjs";
 
@@ -36,7 +36,7 @@ async function fixture(t) {
   const base = await commit(primary, "main");
   await git(primary, "push", "origin", "main");
   const environment = { ...process.env, LOCALAPPDATA: root, XDG_STATE_HOME: root };
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data"), environment });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(root, "data"), environment });
   async function result(id) {
     const folder = path.join(root, id);
     await git(primary, "worktree", "add", "-b", id, folder, base);
@@ -100,7 +100,7 @@ test("archived failure hands exact physical evidence to a new Await and resumes 
   const f = await fixture(t);
   const layout = { root: f.ownerRoot, primaryRoot: f.primary, releaseRoot: f.prior.releaseRoot,
     evidenceRoot: path.join(f.ownerRoot, "evidence"), checkpointFile: f.checkpointFile };
-  const { assertReleaseCloneForPublication } = await import("../../../src/infrastructure/filesystem/release-git-workspace.mjs");
+  const { assertReleaseCloneForPublication } = await import("../../../src/infrastructure/filesystem/task-integration-git.mjs");
   const archived = await archivePublishedNotesCheckout({ layout, original: f.original, frozenTasks: [f.selected], publishedRevision: f.published,
     gitAt: async (cwd, args, options = {}) => {
       const response = await execute("git", args, { cwd, windowsHide: true, encoding: options.rawOutput ? "buffer" : "utf8" });
@@ -195,7 +195,7 @@ test("durable archive intent resumes after checkpoint-move boundary and rejects 
   // Inject failure at the persisted intent boundary, retaining all real Git/filesystem evidence.
   const layout = { root: f.ownerRoot, primaryRoot: f.primary, releaseRoot: f.prior.releaseRoot,
     evidenceRoot: path.join(f.ownerRoot, "evidence"), checkpointFile: f.checkpointFile };
-  const { assertReleaseCloneForPublication } = await import("../../../src/infrastructure/filesystem/release-git-workspace.mjs");
+  const { assertReleaseCloneForPublication } = await import("../../../src/infrastructure/filesystem/task-integration-git.mjs");
   const options = { layout, original: f.original, frozenTasks: [f.selected], publishedRevision: f.published,
     gitAt: async (cwd, args, options = {}) => {
       const response = await execute("git", args, { cwd, windowsHide: true, encoding: options.rawOutput ? "buffer" : "utf8" });

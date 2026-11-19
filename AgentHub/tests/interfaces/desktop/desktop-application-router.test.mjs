@@ -14,7 +14,7 @@ function router(calls, { omit = [], overrides = {} } = {}) {
     "messagePinSet", "messagePinsClear",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskDiff", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
-    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
+    "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
     "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, handler]));
@@ -38,6 +38,18 @@ test("Desktop application router requires the Task workflow status handler", () 
     () => router([], { omit: ["boardTaskStatus"] }),
     /boardTaskStatus is required/u,
   );
+});
+
+test("Desktop startup needs no retired Spark handler and cannot dispatch the retired retry", async () => {
+  const calls = [];
+  const control = router(calls);
+  const result = await control.handleDesktopControl({ action: "snapshot", params: {},
+    context: { source: "desktop-control" } });
+  assert.equal(result.params.maxResponseBytes, 3_500_000);
+  await assert.rejects(control.handleDesktopControl({ action: "board-task-retry-triage",
+    params: { id: "retained-task" }, context: { source: "desktop-control" } }),
+  /Неизвестная desktop-команда/u);
+  assert.deepEqual(calls, []);
 });
 
 test("explicit Task operation cancellation reaches its owner beside a blocked Test", async () => {
@@ -469,7 +481,7 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskDiff", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
-    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
+    "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
     "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
@@ -502,7 +514,7 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskDiff", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
-    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
+    "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
     "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
