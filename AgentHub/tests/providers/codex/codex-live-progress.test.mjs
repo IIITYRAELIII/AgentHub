@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { CodexAppServerTransport } from "../../../src/providers/codex/codex-app-server-transport.mjs";
 import { markProviderTurnEvent } from "../../../src/domain/task-runs.mjs";
-import { completeCodexAgentMessage } from "../../../src/providers/codex/codex-agent-message-reducer.mjs";
+import { appendCodexAgentMessageDelta, completeCodexAgentMessage } from "../../../src/providers/codex/codex-agent-message-reducer.mjs";
 import { currentLiveProgress } from "../../fixtures/current-live-progress.mjs";
 
 test("the current exact live Codex turn regains its desktop progress after a failed read", async () => {
@@ -140,4 +140,90 @@ test("native progress during confirmation does not starve the live display or lo
   assert.equal(f.project().running, true);
   assert.equal(f.run.responseText, "Newer native live body");
   assert.equal(f.run.responseItemId, "new-native-item");
+});
+
+test("a nonempty native confirmation without an intervening event restores its exact item", async () => {
+  const f = currentLiveProgress({ readThread: async () => ({ thread: {
+    id: "thread-a", path: "controlled-rollout", status: { type: "active" },
+    turns: [{ id: "turn-live", status: "inProgress", items: [
+      { id: "native-answer", type: "agentMessage", phase: "final_answer", text: "Observed live answer" },
+    ] }],
+  } }) });
+  f.run.activityUnknown = true;
+  await f.poll();
+  assert.equal(f.project().running, true);
+  assert.equal(f.run.responseText, "Observed live answer");
+  assert.equal(f.run.responseItemId, "native-answer");
+  assert.equal(f.publications.at(-1).answer, "Observed live answer");
+});
+
+test("nonempty stale native confirmation preserves newer completion and delta bodies and citation bindings", async () => {
+  for (const event of ["same-item-completion", "same-item-delta", "new-item-completion"]) {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const old = "Old observed live body";
+    const f = currentLiveProgress({ readThread: async () => { await held; return { thread: {
+      id: "thread-a", path: "controlled-rollout", status: { type: "active" },
+      turns: [{ id: "turn-live", status: "inProgress", items: [
+        { id: "same-native-item", type: "agentMessage", phase: "final_answer", text: old },
+      ] }],
+    } }; } });
+    f.run.userMessages[0].responseAnnotations = [{ text: "Quote A", annotation: "Comment A" }];
+    completeCodexAgentMessage(f.run, { turnId: f.run.turnId, item: {
+      id: "same-native-item", type: "agentMessage", phase: "final_answer", text: old,
+    } });
+    f.run.activityUnknown = true;
+    const pending = f.poll();
+    if (event === "same-item-delta") {
+      appendCodexAgentMessageDelta(f.run, { turnId: f.run.turnId, itemId: "same-native-item",
+        delta: ' plus newer native delta :agent-annotation{index="1"}' });
+    } else {
+      completeCodexAgentMessage(f.run, { turnId: f.run.turnId, item: {
+        id: event === "new-item-completion" ? "new-native-item" : "same-native-item",
+        type: "agentMessage", phase: "final_answer", text: 'Newer native live body :agent-annotation{index="1"}',
+      } });
+    }
+    const expected = { text: f.run.responseText, itemId: f.run.responseItemId,
+      references: structuredClone(f.run.responseAnnotationReferences) };
+    assert.equal(expected.references.length, 1);
+    release(); await pending;
+    assert.equal(f.project().running, true, "new progress cannot starve valid same-live activity confirmation");
+    assert.equal(f.run.responseText, expected.text, event);
+    assert.equal(f.run.responseItemId, expected.itemId, event);
+    assert.deepEqual(f.run.responseAnnotationReferences, expected.references, event);
+    assert.equal(f.publications.at(-1).answer, expected.text, event);
+  }
+});
+
+test("native confirmation preserves canonical final selection, legacy parts and exact citation source", async () => {
+  const user = { id: "user-native", clientId: "client-native", type: "userMessage", content: [{ type: "text",
+    text: '<response-annotations>[{"text":"Quote A","annotation":"Comment A"}]</response-annotations>\nContinue' }] };
+  const agent = (id, text, phase) => ({ id, type: "agentMessage", text, ...(phase ? { phase } : {}) });
+  for (const { items, text, ids, referenceClient } of [
+    { items: [agent("part-1", "Legacy first"), agent("part-2", "Legacy second")],
+      text: "Legacy first\n\nLegacy second", ids: ["part-1", "part-2"] },
+    { items: [agent("old-final", "Earlier", "final_answer"), agent("final", "Selected", "final_answer"),
+      agent("later-commentary", "Still working", "commentary"),
+      { ...agent("question", "Pick", "final_answer"), questions: [{ title: "Choose" }] }],
+      text: "Selected", ids: ["final"] },
+    { items: [{ id: "plan", type: "plan", text: "Plan answer" }, agent("comment", "Working", "commentary")],
+      text: "Plan answer", ids: ["plan"] },
+    { items: [user, agent("annotated", 'Visible answer :agent-annotation{index="1"}', "final_answer")],
+      text: "Visible answer \nЦитата 1", ids: ["annotated"], referenceClient: "client-native" },
+  ]) {
+    const f = currentLiveProgress({ readThread: async () => ({ thread: {
+      id: "thread-a", path: "controlled-rollout", status: { type: "active" },
+      turns: [{ id: "turn-live", status: "inProgress", items }],
+    } }) });
+    f.run.activityUnknown = true;
+    await f.poll();
+    assert.equal(f.project().running, true);
+    assert.equal(f.run.responseText, text);
+    assert.equal(f.publications.at(-1).answer, text);
+    assert.deepEqual(f.run.responseItems.map(item => item.id), ids);
+    if (referenceClient) {
+      assert.equal(f.run.responseAnnotationReferences.length, 1);
+      assert.equal(f.run.responseAnnotationReferences[0].target.clientUserMessageId, referenceClient);
+    }
+  }
 });

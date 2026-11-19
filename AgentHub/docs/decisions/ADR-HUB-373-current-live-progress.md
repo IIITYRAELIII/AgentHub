@@ -24,6 +24,17 @@ The controller captures run/provider/Stream/Thread/turn before yielding. A
 changed identity, removed registry owner or terminal run rejects that result.
 Native content received during that read keeps its existing item-reducer
 revision guard; ongoing events cannot starve valid same-live confirmation.
+Native-turn-backed responses carry the selected exact provider item and the
+revision captured before the read, through that same observed-item boundary.
+They cannot publish a raw old answer around the reducer after a newer completion
+or delta. Item identity, raw provider text and existing citation bindings remain
+owned by the canonical reducer; activity confirmation does not replace them.
+The existing answer owner selects the explicit final (including a plan) or
+ordered legacy answer parts, excluding commentary and question forms. Those
+real provider items are observed in one synchronous revision-checked batch;
+their original text is retained and citation targets use the existing exact
+history item join. A turn page without a user item does not invent one merely
+to obtain its native answer identity.
 Managed observation never
 rebinds an accepted turn to another native turn. External observer behavior
 retains its existing owner; this change does not create any external observer.
