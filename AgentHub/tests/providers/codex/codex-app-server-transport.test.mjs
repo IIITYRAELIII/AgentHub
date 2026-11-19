@@ -439,6 +439,45 @@ test("CodexAppServerTransport owns notifications, responses and process-tree sto
   assert.equal(transport.diagnostics().hubOwnedProcessTrees, undefined);
 });
 
+test("CodexAppServerTransport retains the exact owner when process-tree stop is unconfirmed", async () => {
+  const child = fakeChild({ pid: 731 });
+  const stopped = [];
+  const { transport } = await startedTransport({
+    child,
+    stopProcessTree: async (pid, options) => {
+      stopped.push([pid, options]);
+      return false;
+    },
+  });
+
+  await assert.rejects(transport.stop(), (error) => {
+    assert.equal(error.code, "CODEX_APP_SERVER_STOP_UNCONFIRMED");
+    return true;
+  });
+  assert.deepEqual(stopped, [[731, { requireTreeConfirmation: true }]]);
+  assert.equal(transport.running, true);
+  assert.equal(transport.pid, 731);
+  assert.equal(child.killed, false);
+});
+
+test("CodexAppServerTransport accepts an exit race without targeting another process", async () => {
+  const child = fakeChild({ pid: 811 });
+  const stopped = [];
+  const { transport } = await startedTransport({
+    child,
+    stopProcessTree: async (pid) => {
+      stopped.push(pid);
+      child.emit("exit", 0, null);
+      await new Promise((resolve) => setImmediate(resolve));
+      return false;
+    },
+  });
+
+  await transport.stop();
+  assert.deepEqual(stopped, [811]);
+  assert.equal(transport.running, false);
+});
+
 test("CodexAppServerTransport reports startup failures without becoming active", async () => {
   const transport = new CodexAppServerTransport({
     spawnProcess: async () => { throw new Error("spawn blocked"); },

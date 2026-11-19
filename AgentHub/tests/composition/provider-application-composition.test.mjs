@@ -34,6 +34,7 @@ test("pending runtime restart wakes deferred inputs before considering safe rest
     restartPending: true,
     wakeDeferredInputs: () => events.push("wake"),
     scheduleDeferredRestartIfReady: () => events.push("restart"),
+    recycleCodexToolSessionAfterTurn: () => events.push("recycle"),
   }), "deferred-inputs");
   assert.deepEqual(events, ["wake"]);
 
@@ -43,13 +44,49 @@ test("pending runtime restart wakes deferred inputs before considering safe rest
   assert.deepEqual(events, ["wake", "restart"]);
 });
 
-test("completed turn wakes deferred inputs when restart is not pending", () => {
+test("completed turn wakes deferred inputs then recycles its Codex tool session", async () => {
   const events = [];
   assert.equal(resumePostTurnWork({
     maintenance: Promise.resolve(),
     restartPending: false,
     wakeDeferredInputs: () => events.push("wake"),
     scheduleDeferredRestartIfReady: () => events.push("restart"),
+    recycleCodexToolSessionAfterTurn: (options) => events.push(["recycle", options]),
+    provider: "codex",
+    terminalStatus: "completed",
   }), "deferred-inputs");
+  assert.deepEqual(events, ["wake"]);
+  await Promise.resolve();
+  assert.deepEqual(events, ["wake", ["recycle", { reason: "turn-completed" }]]);
+});
+
+test("failed post-turn maintenance still recycles cancelled Codex tool sessions", async () => {
+  const events = [];
+  resumePostTurnWork({
+    maintenance: Promise.reject(new Error("maintenance failed")),
+    restartPending: false,
+    wakeDeferredInputs: () => events.push("wake"),
+    scheduleDeferredRestartIfReady: () => events.push("restart"),
+    recycleCodexToolSessionAfterTurn: (options) => events.push(["recycle", options]),
+    provider: "codex",
+    terminalStatus: "cancelled",
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(events, ["wake", ["recycle", { reason: "turn-cancelled" }]]);
+});
+
+test("Claude completion never recycles the shared Codex process tree", async () => {
+  const events = [];
+  resumePostTurnWork({
+    maintenance: Promise.resolve(),
+    restartPending: false,
+    wakeDeferredInputs: () => events.push("wake"),
+    scheduleDeferredRestartIfReady: () => events.push("restart"),
+    recycleCodexToolSessionAfterTurn: () => events.push("recycle"),
+    provider: "claude",
+  });
+
+  await Promise.resolve();
   assert.deepEqual(events, ["wake"]);
 });

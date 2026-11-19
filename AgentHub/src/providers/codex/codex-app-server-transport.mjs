@@ -261,10 +261,25 @@ export class CodexAppServerTransport {
   async stop() {
     const child = this.child;
     if (!child) return;
+    let stopped = false;
     if (!child.pid || typeof this.stopProcessTree !== "function") {
-      child.kill();
+      stopped = child.kill();
     } else {
-      await this.stopProcessTree(child.pid).catch(() => child.kill());
+      try {
+        stopped = await this.stopProcessTree(child.pid, { requireTreeConfirmation: true }) === true;
+      } catch (error) {
+        if (this.child !== child) return;
+        throw Object.assign(new Error(
+          `Codex app-server owned process tree ${child.pid} could not be stopped: ${error.message}`,
+          { cause: error },
+        ), { code: "CODEX_APP_SERVER_STOP_FAILED" });
+      }
+    }
+    if (this.child !== child) return;
+    if (!stopped) {
+      throw Object.assign(new Error(
+        `Codex app-server owned process tree ${child.pid ?? "unknown"} did not confirm stop`,
+      ), { code: "CODEX_APP_SERVER_STOP_UNCONFIRMED" });
     }
     await this.#handleExit(child, null, "owner-stop", new Error("stopped by Hub owner"));
   }
