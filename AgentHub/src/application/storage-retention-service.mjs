@@ -185,10 +185,13 @@ export class StorageRetentionService {
     let parent = this.store.get(ROOT_ID) ?? await this.#create(lease, { operationId: ROOT_ID, kind: KIND, ...SCOPE,
       metadata: { version: STORAGE_RETENTION_VERSION, ownerIds: this.owners.map(o => o.id), pending: [], summary: summary() } });
     const ownerIds = this.owners.map(o => o.id);
-    const ownerListChanged = JSON.stringify(parent.metadata.ownerIds) !== JSON.stringify(ownerIds);
+    const approvedSubset = approved && Array.isArray(parent.metadata.ownerIds) && ownerIds.every(id => parent.metadata.ownerIds.includes(id));
+    const ownerListChanged = !approvedSubset && JSON.stringify(parent.metadata.ownerIds) !== JSON.stringify(ownerIds);
     const oldOwners = ["native-merge-transport", "runtime-release", "release-generation-transport"];
     const prior = parent.metadata.ownerIds;
-    const knownUpgrade = Array.isArray(prior) && prior.length >= 1 && prior.length <= 3
+    const knownUpgrade = JSON.stringify(prior) === JSON.stringify(["runtime-update-backup"])
+      && JSON.stringify(ownerIds) === JSON.stringify(["runtime-update-backup", "native-merge-transport", "runtime-release"])
+      || Array.isArray(prior) && prior.length >= 1 && prior.length <= 3
       && JSON.stringify(prior) === JSON.stringify(oldOwners.slice(0, prior.length))
       && (JSON.stringify(ownerIds) === JSON.stringify(oldOwners)
         || JSON.stringify(ownerIds) === JSON.stringify(["runtime-update-backup", ...oldOwners]));
@@ -308,11 +311,12 @@ export class StorageRetentionService {
       if (!await settle(owner, record.candidate, record)) return this.#last = { state: "deferred", more: true };
       await save();
     }
-    let deferred = false;
+    let deferred = false, retry = false;
     while (state.ownerIndex < this.owners.length && used < this.maxUnits
         && this.clock() - started < this.budgetMs && !(this.#closed || this.isStopping())) {
       const owner = this.owners[state.ownerIndex];
       const page = await owner.list({ after: state.cursor, limit: this.maxUnits - used, context });
+      retry ||= page.retry === true;
       if (!Array.isArray(page?.items) || page.items.length > this.maxUnits - used || typeof page.done !== "boolean") throw new Error("retention-discovery-budget");
       if (!page.items.length && !page.done) throw new Error("retention-discovery-no-progress");
       for (const candidate of page.items) {
@@ -327,8 +331,10 @@ export class StorageRetentionService {
         state.ownerIndex += 1; state.cursor = null; await save();
       } else if ((this.#closed || this.isStopping()) || deferred) break;
     }
+    const more = state.ownerIndex < this.owners.length;
+    if (retry && !more) { state.ownerIndex = 0; state.cursor = null; await save(); }
     this.#last = { state: "idle", policyVersion: STORAGE_RETENTION_POLICY_VERSION, cycle,
-      more: state.ownerIndex < this.owners.length, pending: state.pending.length, ...state.summary };
+      more, retry, pending: state.pending.length, ...state.summary };
     return this.status();
   }
 }

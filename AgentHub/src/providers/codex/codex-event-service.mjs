@@ -118,12 +118,24 @@ export class CodexEventService {
     }
     if (id !== undefined && method) d.logError?.(`Codex server request received: ${method}`);
     const eventTurnId = params.turn?.id ?? params.turnId ?? null;
-    const run = d.forEvent({
+    let run = d.forEvent({
       turnId: eventTurnId,
       threadId: params.threadId,
       provider: "codex",
-      allowThreadFallback: method === "turn/started",
+      allowThreadFallback: false,
     });
+    if (!run && method === "turn/started" && eventTurnId) {
+      const commandId = String(params.clientUserMessageId ?? params.turn?.clientUserMessageId ?? "").trim();
+      if (commandId) {
+        const pending = d.forEvent({ turnId: eventTurnId, threadId: params.threadId,
+          provider: "codex", allowThreadFallback: true });
+        if (pending?.status === "running" && !pending.turnId
+          && pending.providerStart?.state === "requesting"
+          && pending.clientUserMessageId === commandId) run = pending;
+      }
+      // A late task_started from a stopped turn cannot adopt a new unbound
+      // input by Thread alone. The new RPC receipt/exact command readback can.
+    }
     if (run && eventTurnId && eventTurnId === run.turnId && run.status === "running") {
       if (method === "error") {
         // Structured provider retry evidence, never inferred from error text or age.

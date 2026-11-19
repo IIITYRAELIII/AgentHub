@@ -90,6 +90,9 @@ export class StreamContextMaintenanceService {
       run?.provider !== "codex"
       || !["finishing", "completed"].includes(run?.status)
       || run?.completionPrepared === true
+      // Launch rejection also passes through progress/admission cleanup. It
+      // has no provider turn to maintain, even if the Thread's old usage is high.
+      || !normalized(run?.turnId)
     ) {
       return false;
     }

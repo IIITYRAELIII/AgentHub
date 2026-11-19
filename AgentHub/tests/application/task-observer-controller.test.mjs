@@ -101,3 +101,33 @@ test("observer preserves uncertain ownership and clears its display only from ex
   await missing.controller.poll(run);
   assert.equal(run.activityUnknown, true);
 });
+
+test("retained Codex activity cannot skip recovery while an exact managed run is unknown", async () => {
+  for (const snapshot of [
+    { turnId: "original", active: true, completed: false },
+    { turnId: "original", active: false, completed: false },
+  ]) {
+    const run = { provider: "codex", observer: false, turnId: "original", activityUnknown: true };
+    const f = fixture({ snapshot });
+    await f.controller.poll(run);
+    assert.deepEqual(f.events, ["unknown"]);
+    assert.equal(run.activityUnknown, true);
+    assert.equal(f.timers.length, 1);
+  }
+});
+
+test("recovery routing preserves terminal, fresh-running, ordinary and external observations", async () => {
+  for (const [runInput, snapshot, expected] of [
+    [{}, { turnId: "original", completed: true }, "completed"],
+    [{}, { turnId: "original", running: true, active: true }, "active"],
+    [{ activityUnknown: false }, { turnId: "original", active: true }, "active"],
+    [{ observer: true }, { turnId: "original", active: true }, "active"],
+    [{ provider: "claude" }, { turnId: "original", active: true }, "active"],
+  ]) {
+    const run = { provider: "codex", observer: false, turnId: "original", activityUnknown: true, ...runInput };
+    const f = fixture({ snapshot });
+    await f.controller.poll(run);
+    assert.deepEqual(f.events, [expected]);
+    if (snapshot.running) assert.equal(run.activityUnknown, false);
+  }
+});

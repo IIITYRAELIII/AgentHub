@@ -15,6 +15,7 @@ import { DeferredInputController } from "../../../src/application/deferred-input
 import { RuntimeStateStore, readRuntimeState } from "../../../src/infrastructure/persistence/runtime-state-store.mjs";
 import { CommandTraceService } from "../../../src/application/command-trace-service.mjs";
 import { CommandTraceWorkerStore } from "../../../src/infrastructure/persistence/command-trace-worker-store.mjs";
+import { TaskObserverController } from "../../../src/application/task-observer-controller.mjs";
 
 function gate() {
   let release;
@@ -152,7 +153,17 @@ test("accepted orphan recovery commits SQLite before one same-ID queued input wi
     consumeTracker: () => null, finalizeDelivery: async () => assert.fail("Canonical terminal owner only"),
     turnTokenUsage: new Map(),
   });
-  const recovering = recovery.recover(f.run);
+  f.run.activityUnknown = true;
+  const observer = new TaskObserverController({
+    canObserve: run => f.current() === run,
+    readSnapshot: async () => ({ turnId: f.run.turnId, active: true, completed: false }),
+    pollDelay: () => 1, onUnknown: run => recovery.recover(run, { reconcileOnly: true }),
+    onMissing() {}, onTurnChanged: () => assert.fail("Keep the original turn"),
+    onCompleted: () => assert.fail("A retained marker is not terminal"),
+    onActive: () => assert.fail("UNKNOWN must reach recovery"),
+    onError: (_run, error) => { throw error; }, setTimeoutImpl: () => 1, clearTimeoutImpl() {},
+  });
+  const recovering = observer.poll(f.run);
   await entered.promise;
   try {
     await controller.process(original.id);
@@ -173,10 +184,11 @@ test("accepted orphan recovery commits SQLite before one same-ID queued input wi
   traceStore = new CommandTraceWorkerStore({ databaseFile: tracesFile });
   await traceStore.initialize();
   const spans = await traceStore.readCommandTimeline(f.run.clientUserMessageId);
-  for (const stage of ["recovery-activity-before", "recovery-interrupt", "recovery-activity-after"]) {
+  for (const stage of ["recovery-activity-before", "recovery-activity-after"]) {
     assert.deepEqual(spans.filter(s => s.stage === stage).map(s => s.outcome),
-      ["started", stage === "recovery-interrupt" ? "failed" : "succeeded"]);
+      ["started", "succeeded"]);
   }
+  assert.equal(spans.some(s => s.stage === "recovery-interrupt"), false);
   assert.doesNotMatch(JSON.stringify(spans), /original annotated input|original-image|retained partial answer/);
 });
 
