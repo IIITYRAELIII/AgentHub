@@ -30,12 +30,12 @@ terminal.
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before ordinary provider completion releases admission or queue ownership.
-  The administrative local-only reboot disposition below is not provider completion.
+  The administrative local-only disposition below is not provider completion.
 - Ordinary Claude turns remain background work on Windows: starting a turn or
   any console descendant must not expose a console window or steal foreground
-  focus. The durable worker survives an Agent Hub restart, retains redirected
-  file output and stream input, and cancellation still owns its complete process
-  tree.
+  focus. Redirected file output and provider process evidence remain retained.
+  A new Hub does not reattach the previous worker; current-process cancellation
+  still owns its exact complete process tree.
 - The post-turn reservation is acquired before admission release. Once the
   terminal is durable, admission completion starts reserved post-turn
   maintenance independently of outbox delivery. A stalled delivery cannot hold
@@ -54,52 +54,37 @@ terminal.
   successful empty answer. Exact-turn, tail and historical readers retain the
   same outcome. A promptless `task_started`, a missing active-turn projection,
   an App Server `interrupted` status, a lost connection and rollout age are not
-  terminal evidence. Observer and restart recovery keep the exact run and its
-  admission lane until an exact terminal event, the narrowly proven current
-  recovery interruption below, or the local-only reboot disposition is committed; a late terminal
-  releases that lane once. Current context maintenance does not generate a user
-  turn. The retired probe is a bounded historical exception identified only by
-  its generated reserved `client_id`, never by prompt or response text (ADR-0073).
-- Restart recovery may establish a new interrupted outcome for an exact managed
-  accepted run through the existing cancellation owner (ADR-0125, ADR-HUB-392).
-  A fresh idle provider Thread with that exact interrupted turn is only eligibility.
-  An exact retained `inProgress` turn is also eligible only with positive Hub
-  ownership and an accepted/observed provider-start bound to the same turn: fresh
-  provider/native inactivity,
-  a second fresh inactivity check and unchanged ownership are required. Missing
-  or failed snapshot/terminal persistence keeps admission. This does not infer a
-  historical success, rewrite the rollout, replay the old prompt or authorize a
-  different run. No automatic interrupt, provider resume, prompt reconstruction or
-  turn reexecution is used to obtain this proof (ADR-HUB-470 user override).
-  Terminal persistence still precedes admission release.
-  A fresh `notLoaded` Thread is also eligible for that same retained accepted
-  Hub-owned original, including its exact nonterminal rollout snapshot
-  (ADR-HUB-470). It is not inactivity or terminal evidence: all fresh activity,
-  identity and persistence checks above still apply.
-  Fresh activity resolution treats `notLoaded` plus successful native absence
-  for the exact rollout as inactive; a live holder is active, failed/missing
-  native proof or unknown/error Thread metadata is unknown. This shared activity
-  result alone never releases the retained managed original.
-- Ordinary managed UNKNOWN observation re-enters that same read-only settlement owner at its
-  existing cadence. Inconclusive/live prechecks cannot cache a negative recovery
-  result forever. Concurrent checks share one attempt and never send an interrupt
-  or resume RPC. An explicit Stop ACK is not a terminal. Another live turn or external owner in the same Thread keeps the
-  original blocked; mailbox read/cancellation cannot establish provider terminal.
-- The canonical managed lifecycle may durably retire only an old local Codex Hub
-  execution after trusted later system boot and exact canonical saved-run provenance
-  (run, command, Thread, turn and captured admission/request/acceptance times).
-  This administrative record is stored separately from provider terminals within
-  the existing lifecycle store/mutation owner. It preserves providerStart, UNKNOWN,
-  raw history and accepted input; it never creates a terminal/outbox or post-turn
-  maintenance. Durable write precedes removal of only local admission ownership.
-  Exact old run/turn lookup and retained runtime snapshot survive for later real
-  provider evidence. New starts/steers still cross fresh current/external guards.
-  Missing/ambiguous proof, same boot, foreign/new identity, registry replacement
-  and failed persistence retain the fence. PID absence/reuse never authorizes
-  retirement or interruption. See ADR-HUB-392.
-  These historical local-only dispositions remain readable; automatic startup
-  no longer creates them after the ADR-HUB-470 user override. New interrupted
-  originals use the canonical terminal settlement above.
+  terminal evidence. Current-process observation retains exact identity until
+  ordinary provider completion or explicit cancellation. Restart never restores
+  an old user run as current execution (ADR-HUB-476).
+  Current context maintenance does not generate a user turn. The retired probe
+  is a bounded historical exception identified only by its generated reserved
+  `client_id`, never by prompt or response text (ADR-0073).
+- Automatic old-user-turn recovery is removed: there is no startup recovery
+  stage, provider recovery port, reconnect replay, old-run preparation, completion
+  lookup or retry through the observer. A failed old Thread read cannot hold Ready
+  or new input because no such read is performed for local execution recovery.
+- Canonical runtime restoration records each previous local execution's exact
+  local disposition in the existing lifecycle store before registering it as
+  retained-only. This covers accepted, pre-ACK, legacy and observer records for
+  both providers. The local admission owner is gone; the provider outcome remains
+  unchanged/unknown. No terminal/outbox, raw history rewrite, prompt replay,
+  worker reattachment, native interruption or post-turn maintenance is fabricated.
+  Provider-independent history/context reads remain separate operations.
+- The disposition binds the canonical saved run/provider/Thread/turn/command/
+  Stream identity, including explicit absent legacy fields. A current-process
+  run is not restored custody and cannot be released by that proof. A changed
+  record or failed durable write refuses the local transition. Startup fails
+  explicitly on disposition persistence failure rather than overwriting saved
+  state with empty defaults. Historical later-system-boot dispositions retain
+  their existing interpretation.
+- Retained old records survive subsequent snapshots/cold starts and cannot
+  reacquire the active registry index. Late exact provider events may contribute
+  genuine terminal evidence through the existing terminal owner; they cannot
+  adopt a newer input or reserve old maintenance over it. Automatic selection
+  watchers no longer adopt independently running external work. A new explicit
+  input keeps ordinary fresh external-activity/ownership checks and its original
+  receipt, queue and attachment identities.
   A generic completion call cannot settle a locally retired UNKNOWN. Only an
   exact durable terminal with the original provider/Thread/turn/run identity
   and committed terminal revision may finalize it. Late nonterminal events keep

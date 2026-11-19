@@ -347,47 +347,31 @@ Provider recovery read, reconnect or reattach failure is likewise unknown: a
 generic recovery exception and a local `interrupted` bookkeeping decision do
 not create provider terminal evidence or release the manual session. Only the
 provider/process completion owner may commit the exact terminal outcome.
-The ADR-HUB-470 user override removes automatic provider-turn recovery effects.
-The existing cancellation/terminal owner settles an exact interrupted original
-after fresh provider/native inactivity before and after its exact snapshot;
-a startup/read exception or idle status alone still cannot release.
-ADR-HUB-392 extends its eligibility to an exact retained `inProgress` original
-only when its accepted/observed provider-start and positive Hub ownership agree.
-Ordinary UNKNOWN observation retries that owner's prechecks without a new timer;
-live/unknown evidence does not permanently suppress a later authoritative check.
-Automatic settlement never sends an interrupt or resume; no ACK releases admission.
-A live external/current turn in the same Thread still blocks recovery.
-For a canonically accepted exact Hub-owned original, recovery reads fresh Thread
-metadata and its exact rollout snapshot without requiring paginated full history.
-An exact UNKNOWN snapshot grants eligibility only; missing/foreign snapshots,
-live/unknown provider or native activity still cannot settle or release the run.
-The existing tracer records the original recovery read start/outcome without payload.
-Fresh `notLoaded` metadata also permits this guarded recovery for an exact
-retained accepted Hub-owned original (ADR-HUB-470). Not being loaded in this
-App Server is not evidence of inactivity elsewhere or a terminal outcome.
-Unknown/error metadata and missing acceptance keep the original fenced.
+The 19 November user override (ADR-HUB-476) removes the complete automatic
+old-user-turn recovery mechanism, superseding ADR-HUB-470's narrower settlement
+policy. Startup has no runs-recovery operation or retry dependency. Reconnect,
+failed replacement and ordinary UNKNOWN observation do not prepare, reattach,
+resume or query a previous user execution for recovery. Ready never depends on
+that old Thread's loaded/error/response state.
 
-After a trusted later system boot, the existing canonical managed lifecycle has
-a separate local-only disposition (ADR-HUB-392). Only an exact Hub-owned accepted
-original restored from the canonical runtime snapshot, with unchanged run/command/
-Thread/turn and consistent admission/request/acceptance provenance before that
-boot, is eligible. Legacy providerStart without process birth is not repaired
-from a TaskGit guard, numeric PID, time proximity or Thread projection: missing
-canonical provenance refuses retirement. Canonical requested/accepted-start times
-must precede boot independently of display/history `startedAt`; an old display
-date cannot retire postboot ownership. The existing Win32 boot identity owner
-supplies the boot witness; current PID reuse supplies no authority.
-The existing lifecycle store persists exact local retirement before admission is
-released. No provider terminal, command settlement, history rewrite or provider
-interrupt follows. Retained original input and exact turn lookup survive reopen,
-including loss of the following runtime snapshot save. A changed registry/identity,
-same boot, unavailable proof or failed disposition write retains ownership.
-These historical local-only dispositions remain readable. New automatic startup
-does not create them: exact interrupted runs use the canonical terminal owner
-and the fresh stopped-process proof above. There is no second reconciler or timer.
-Queue wake rechecks fresh external/current authority and cannot send concurrently
-to a live newer desktop writer. Payload-free proof/persistence trace spans reuse
-the original command identity and existing durable trace owner.
+Under the already acquired single-instance data-root owner, canonical runtime
+restoration records a previous-local-execution disposition through the existing
+lifecycle store. Exact old run/command/provider/Thread/turn/Stream custody is
+preserved, including pre-ACK and legacy absent fields. Only the old local
+admission is retired; raw state, history, queued input and attachments survive.
+No provider terminal, worker stop, prompt replay or after-turn maintenance is
+inferred. A persistence failure aborts startup explicitly without dropping the
+saved snapshot. The retained-only registry cannot reacquire the old lane; a
+fresh current run has no restored-custody proof and cannot be retired this way.
+Historical reboot dispositions remain readable with their original strict proof.
+
+Automatic selection observation no longer creates a managed admission owner for
+independent external work. Ordinary explicit new input still checks actual
+current/external ownership and reports its own errors; it never adopts or stops
+a foreign live turn. Provider context/history loading, completed-terminal
+projection recovery, Task/Git reconciliation and installation rollback remain
+separate functions, not old-user-turn recovery. Existing startup/admission traces
+measure local disposition and Ready/new input without message content.
 
 ## Invariants
 
@@ -516,17 +500,11 @@ the original command identity and existing durable trace owner.
   Concurrent Thread checks share one bounded process snapshot per runtime
   cadence. Queue retries use capped exponential backoff with jitter; an exact
   completion or wake cancels that delay and rechecks the lane head immediately.
-- Retained uncertain run ownership is projected as unknown while preserving the
-  exact Stop target and replay fence. Only an exact fresh active snapshot clears
-  that uncertainty; no terminal is manufactured from reconnect failure.
-- Process death does not preserve local `running` as fact. Recovery reconciles
-  provider state or records an honest terminal timeout/unknown result.
-- An exact Codex turn whose rollout has only `task_started` remains unknown
-  across reconnect and restart, even after the promptless grace period or an
-  App Server `interrupted` projection. The original run and queue lane remain
-  owned until the exact terminal or the fresh native/provider stopped proof
-  above permits canonical interrupted completion. Age and a local marker do not
-  grant it. No prompt replay, automatic old-turn resume or rollback is performed.
+- Current-process uncertain ownership is projected honestly as unknown. It does
+  not invoke an automatic old-turn recovery service. Previous-process local
+  records are retained-only and create neither running/UNKNOWN occupancy nor a
+  Stop target for a newly admitted input. Real provider terminal evidence remains
+  distinct from local lifecycle disposition.
 - Before provider discovery finishes, the initial catalog resolves retained
   Threads against existing visible Workspace/Stream bindings read-only. It does
   not expose an unbound historical Thread as a synthetic Stream. Discovery
@@ -631,8 +609,8 @@ authority; this hook creates no second restart operation.
 
 Full provider catalog/pricing enrichment is background work after the mandatory
 startup and readiness barrier. It is measured and retryable, but does not reopen
-the startup barrier or hide the ready interface. Recovery of active ownership,
-durable terminals and the persisted restart remains mandatory before dispatch.
+the startup barrier or hide the ready interface. Durable previous-local disposition,
+terminal projections and the persisted restart remain ordered before dispatch.
 Background enrichment reuses one existing owner, yields between bounded units,
 and stops admitting more units during shutdown. See ADR-0030.
 

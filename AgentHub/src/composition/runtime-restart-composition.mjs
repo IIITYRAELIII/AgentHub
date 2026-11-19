@@ -67,7 +67,6 @@ export function createRuntimeRestartComposition({
   taskRuns,
   startCodexAppServer,
   initializeCodex,
-  runRecovery,
   updateRestartMessage,
   startRuntimeTimers,
   delay,
@@ -203,10 +202,9 @@ export function createRuntimeRestartComposition({
       restoreProvider: async () => {
         if (isCodex() || taskRuns.values().some((run) => run.provider === "codex")) {
           await startCodexAppServer();
-          await initializeCodex({ attachSelectedThread: isCodex() });
+          await initializeCodex({ attachSelectedThread: false });
         }
       },
-      recoverRuns: (...args) => runRecovery.recoverAll(...args),
       updateMessage: (message) => updateRestartMessage(message).catch(() => {}),
       failRestartOperation,
       clearRestartRequest: () => setRestartRequest(null),

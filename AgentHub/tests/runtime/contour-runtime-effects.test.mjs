@@ -64,11 +64,9 @@ test("captured Claude PID and exact fingerprint cannot authorize read, completio
   assert.equal(await controller.stop(run), false);
   await controller.drain(run);
   await controller.complete(run);
-  assert.equal(await controller.attachAfterRestart(run), false);
-  assert.equal(interrupted, 1);
-  const { contourRecoveryExclusion, ...preserved } = run;
-  assert.equal(contourRecoveryExclusion, "captured-process-and-output-not-owned");
-  assert.deepEqual(preserved, before);
+  assert.equal(controller.attachAfterRestart, undefined);
+  assert.equal(interrupted, 0);
+  assert.deepEqual(run, before);
   assert.equal(await readFile(f.original, "utf8"), "production");
 });
 

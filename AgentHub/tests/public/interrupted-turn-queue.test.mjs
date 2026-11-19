@@ -3,10 +3,10 @@ import test from "node:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { TaskRunRegistry, markProviderTurnRequested, markProviderTurnAccepted } from "../../src/domain/task-runs.mjs";
-import { CodexTurnService, ProviderCancellationService } from "../../src/providers/provider-turn-services.mjs";
-import { TerminalTurnCommitService } from "../../src/application/terminal-turn-commit-service.mjs";
-import { ProviderTurnTerminalStore } from "../../src/infrastructure/persistence/provider-turn-terminal-store.mjs";
+import { TaskRunRegistry, markProviderTurnRequested, markProviderTurnAccepted, persistedLocalExecutionIdentity } from "../../src/domain/task-runs.mjs";
+import { CodexTurnService } from "../../src/providers/provider-turn-services.mjs";
+import { restorePersistedTaskRun } from "../../src/composition/runtime-state-restoration-composition.mjs";
+import { ProviderRunTerminalStore } from "../../src/infrastructure/persistence/provider-run-terminal-store.mjs";
 import { launchBrowser, openFixture, snapshot, applyFixtureSnapshot } from "./composer-production.fixture.mjs";
 
 async function stoppedOriginalAndNewInput(dataDir) {
@@ -15,24 +15,15 @@ async function stoppedOriginalAndNewInput(dataDir) {
   const saved = { id: "old-run", provider: "codex", threadId: "thread-a", streamId: "stream-a",
     projectRoot: "D:/fixture", turnId: "old-turn", status: "running", executionOwner: "hub",
     clientUserMessageId: "old-client", responseText: "Retained old answer" };
-  registry.addRestored(saved, structuredClone(saved));
   markProviderTurnRequested(saved); markProviderTurnAccepted(saved, { turnId: saved.turnId });
-  const commits = new TerminalTurnCommitService({ store: new ProviderTurnTerminalStore({ dataDir }) });
+  const lifecycle = new ProviderRunTerminalStore({ dataDir });
+  await lifecycle.recordLocalExecutionRetirement({ identity: persistedLocalExecutionIdentity(saved),
+    proof: { kind: "previous-hub-local-execution", source: "canonical-runtime-snapshot", restoredAt: new Date().toISOString() } });
+  const restored = restorePersistedTaskRun(saved, null, lifecycle);
+  registry.addRestored(restored, saved);
+  assert.equal(registry.forTask(saved), null);
+  assert.equal(lifecycle.get(saved), null, "No fabricated provider terminal");
   const requests = [];
-  const cancellation = new ProviderCancellationService({
-    interruptCodex: async () => assert.fail("No automatic provider interrupt"),
-    runForTask: run => registry.forTask(run),
-    readCodexSnapshot: async () => ({ turnId: saved.turnId, completed: false, active: true, answer: saved.responseText }),
-    taskExternalActivity: async () => ({ state: "inactive" }),
-    completeManaged: async (run, { snapshot: terminal }) => {
-      await commits.commit({ provider: run.provider, threadId: run.threadId, turnId: run.turnId,
-        status: terminal.status, finalAnswer: terminal.answer, clientUserMessageId: run.clientUserMessageId }, { run });
-      registry.remove(run);
-    }, finishObserved: noop, stopClaudeRun: noop, processIsAlive: () => false,
-    claudeCancellationKey: () => "", saveState: noop,
-  });
-  assert.equal(await cancellation.recoverCodex(saved), true);
-  assert.equal((await commits.get(saved)).status, "aborted");
   const next = { id: "new-run", provider: "codex", streamId: "stream-a", threadId: "thread-a",
     projectRoot: "D:/fixture", status: "running", clientUserMessageId: "queued-client",
     modelId: "gpt-5.6-codex", reasoningId: "medium", collaborationMode: "default" };

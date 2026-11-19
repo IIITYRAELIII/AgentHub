@@ -24,7 +24,6 @@ import {
   recoveredCodexAnswer,
 } from "../providers/codex/codex-task-snapshot-service.mjs";
 import { ClaudeCompletionService, CodexCompletionService } from "../providers/provider-completion-services.mjs";
-import { ClaudeRecoveryService, CodexRecoveryService } from "../providers/provider-recovery-services.mjs";
 import { ClaudeProviderTaskService, CodexProviderTaskService } from "../providers/provider-task-service.mjs";
 import { CodexTurnService, ProviderCancellationService } from "../providers/provider-turn-services.mjs";
 
@@ -41,7 +40,6 @@ export function createProviderOperationComposition({
   taskProgress,
   taskObserver,
   managedRunLifecycle,
-  runRecovery,
   runCoordinator,
   turnTemporaryFiles,
   turnSpeechButtons,
@@ -74,7 +72,6 @@ export function createProviderOperationComposition({
   persistClaudeRunHistory,
   projectClaudeRunToWorkLog,
   finalizeRunDelivery,
-  attachClaudeRunAfterRestart,
   readCodexTaskSnapshot,
   isCodex,
   autoApprove,
@@ -185,31 +182,6 @@ export function createProviderOperationComposition({
     temporaryFiles: turnTemporaryFiles,
     removeFile: removeRuntimeFile,
     logError: (...args) => console.error(...args),
-  });
-  const claudeRecoveryService = new ClaudeRecoveryService({
-    attach: attachClaudeRunAfterRestart,
-    finishInterrupted: (...args) => runRecovery().finishInterrupted(...args),
-  });
-  const codexRecoveryService = new CodexRecoveryService({
-    commandTrace,
-    transportRunning: codexTransportRunning,
-    readTaskSnapshot: readCodexTaskSnapshot,
-    recoverInactiveRun: (run) => providerCancellationService.recoverCodex(run),
-    startTransport: startCodexTransport,
-    initialize: initializeCodex,
-    readThread: readCodexThread,
-    restartRequested,
-    finishProgress: (...args) => taskProgress().finish(...args),
-    recoveredAnswer: recoveredCodexAnswer,
-    setProgressStage: (...args) => taskProgress().setStage(...args),
-    reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-    scheduleObservedRun: (...args) => taskObserver().schedule(...args),
-    startTyping,
-    saveState,
-    telegram,
-    consumeTracker: consumeTurnTokenTracker,
-    finalizeDelivery: finalizeCodexRunDelivery,
-    turnTokenUsage,
   });
   const codexTurnService = new CodexTurnService({
     ensureThreadNamed: (reference) => nameCreatedThread({ ...reference, recovering: true }),
@@ -327,8 +299,6 @@ export function createProviderOperationComposition({
     claudeProviderTasks,
     codexCompletionService,
     claudeCompletionService,
-    claudeRecoveryService,
-    codexRecoveryService,
     codexTurnService,
     providerCancellationService,
     codexHubMcpBridgeRecovery,

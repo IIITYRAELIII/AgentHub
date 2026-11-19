@@ -40,9 +40,8 @@ export class TaskObserverController {
       // Snapshot мог читаться дольше, чем переключалась/завершалась задача.
       // Устаревший результат нельзя применять к уже удалённому run.
       if (!this.canObserve(run)) return;
-      // A retained task_started can stay active in an exact Codex snapshot after
-      // its writer was lost. It cannot turn a known-UNKNOWN managed run into an
-      // ordinary active observation and bypass the existing recovery owner.
+      // A nonterminal marker cannot turn a current UNKNOWN run into confirmed
+      // activity. Previous-process runs never enter this observation owner.
       const retainedUnknown = run.provider === "codex" && run.observer !== true
         && run.activityUnknown === true && Boolean(run.turnId)
         && snapshot?.turnId === run.turnId

@@ -82,8 +82,6 @@ export function createProviderCatalogComposition({
   claudeProviderTasks,
   codexCompletionService,
   claudeCompletionService,
-  codexRecoveryService,
-  claudeRecoveryService,
   codexTurnService,
   providerCancellationService,
   readCodexTaskSnapshot,
@@ -200,9 +198,6 @@ export function createProviderCatalogComposition({
       readCodexTaskSnapshot,
       completeObservedCodexRun: (...args) => codexCompletionService.completeObserved(...args),
       completeManagedCodexRun: (...args) => codexCompletionService.completeManaged(...args),
-      recoverCodexRun: (...args) => codexRecoveryService.recover(...args),
-      readCodexRecoverySnapshot: (...args) => codexRecoveryService.readSnapshot(...args),
-      prepareCodexRecovery: (...args) => codexRecoveryService.prepare(...args),
       applyCodexObservedSnapshot,
       applyCodexActiveSnapshot,
     },
@@ -221,7 +216,6 @@ export function createProviderCatalogComposition({
       readClaudeTaskSnapshot: (...args) => claudeTaskSnapshots.read(...args),
       completeObservedClaudeRun: (...args) => claudeCompletionService.completeObserved(...args),
       completeManagedClaudeRun: (...args) => claudeCompletionService.completeManaged(...args),
-      recoverClaudeRun: (...args) => claudeRecoveryService.recover(...args),
     },
   });
   const currentWorkspaceEntries = currentWorkspaceThreadEntries(workspaceCatalogStore);

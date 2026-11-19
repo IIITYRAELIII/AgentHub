@@ -107,7 +107,7 @@ export class ProviderRunTerminalStore {
   // in the same canonical lifecycle store and mutation owner.
   recordLocalExecutionRetirement({ identity: key, proof }) {
     if (!validLocalExecutionRetirement({ identity: key, proof })) {
-      throw new Error("exact local execution retirement identity and boot proof required");
+      throw new Error("exact local execution retirement identity and local lifecycle proof required");
     }
     const identityJson = JSON.stringify(key);
     const proofJson = JSON.stringify(proof);

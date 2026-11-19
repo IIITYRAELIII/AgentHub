@@ -270,6 +270,7 @@ export async function createClientRuntimeComposition({
       projects,
       maximumDeferredInputs,
       runtimeStateStore,
+      commandTrace: infrastructure.commandTraceService,
       canonicalizeProjectRoots,
       restoreContext: {
         selectionStore,
@@ -376,7 +377,6 @@ export async function createClientRuntimeComposition({
       providerSelected: isCodex,
       activeRuns: () => taskRuns.values(),
       setStage: (run, stage) => late.taskProgress().setStage(run, stage),
-      recoverRuns: () => late.runRecovery().recoverAll({ provider: "codex" }),
       startTyping: clients.startTyping,
       attachSelectedThread: api.attachCodexThread,
     },

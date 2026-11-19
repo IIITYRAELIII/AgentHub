@@ -32,7 +32,6 @@ export function createExecutionBootstrapPhase({
   const runtime = createRuntimeOrchestrationComposition({
     config,
     constants: {
-      selectedTaskWatchIntervalMs: 2_000,
       terminalAuditIntervalMs: 30_000,
       externalPollIntervalMs: 1_500,
       managedPollIntervalMs: 5_000,
@@ -366,7 +365,6 @@ export function createExecutionBootstrapPhase({
       signal?.throwIfAborted();
       return measure("startup-pricing-backfill", () => api.backfillWorkLogPricingMetadata(threads, { signal, propagateErrors: true }));
     },
-    recoverRuns: (...args) => runtime.runRecovery.recoverAll(...args),
     retryTerminalProjections: () => api.retryPendingTurnEndProjections({ recoverProjecting: true }),
     retryNotifications: api.retryPendingTurnEndNotifications,
     restoreBackgroundJobs: () => provider.backgroundJobs.restore(),

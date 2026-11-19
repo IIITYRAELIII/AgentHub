@@ -511,6 +511,16 @@ export function localExecutionIdentity(run) {
 export function validLocalExecutionRetirement(record) {
   const key = record?.identity;
   const proof = record?.proof;
+  if (proof?.kind === "previous-hub-local-execution") {
+    return Boolean(["codex", "claude"].includes(key?.provider)
+      && typeof key.runId === "string" && key.runId.length > 0
+      && key.runId.length <= 512
+      && ["threadId", "turnId", "commandId", "streamId"].every(name => (
+        key[name] === null || (typeof key[name] === "string" && key[name].length <= 512)
+      ))
+      && proof.source === "canonical-runtime-snapshot"
+      && Number.isFinite(Date.parse(proof.restoredAt)));
+  }
   const boot = Date.parse(proof?.bootTime);
   const restored = Date.parse(proof?.restoredAt);
   return Boolean(key?.provider === "codex"
@@ -525,6 +535,23 @@ export function validLocalExecutionRetirement(record) {
     ))
     && Date.parse(key.startedAt) <= Date.parse(key.requestedAt)
     && Date.parse(key.requestedAt) <= Date.parse(key.acceptedAt));
+}
+
+// Local runtime-snapshot custody is independent of provider execution. A saved
+// observer, an unacknowledged launch and a legacy Hub run are all records of a
+// previous process, never a current in-memory admission owner.
+export function persistedLocalExecutionIdentity(run) {
+  if (!run || !["codex", "claude"].includes(run.provider)
+    || !["running", "finishing"].includes(run.status)
+    || typeof run.id !== "string" || !run.id || run.id.length > 512) return null;
+  return localExecutionIdentity(run) ?? {
+    runId: run.id, provider: run.provider,
+    threadId: run.threadId ?? null, turnId: run.turnId ?? null,
+    commandId: run.clientUserMessageId ?? null, streamId: run.streamId ?? null,
+    startedAt: run.startedAt ?? null,
+    requestedAt: run.providerStart?.requestedAt ?? null,
+    acceptedAt: run.providerStart?.acceptedAt ?? null,
+  };
 }
 
 export class TaskRunRegistry {
@@ -569,7 +596,7 @@ export class TaskRunRegistry {
       }
       this.#revision += 1;
     } else this.add(run);
-    const identity = localExecutionIdentity(savedRun);
+    const identity = persistedLocalExecutionIdentity(savedRun);
     if (identity) this.#restoredLocalExecutions.set(run, {
       identity, restoredAt: new Date().toISOString(),
     });
@@ -583,9 +610,13 @@ export class TaskRunRegistry {
   }
 
   releaseLocalAdmission(run, disposition) {
+    if (disposition?.proof?.kind === "previous-hub-local-execution"
+      && JSON.stringify(this.#restoredLocalExecutions.get(run)?.identity)
+        !== JSON.stringify(disposition?.identity)) return false;
     if (this.#byId.get(run?.id) !== run
       || !validLocalExecutionRetirement(disposition)
-      || JSON.stringify(localExecutionIdentity(run)) !== JSON.stringify(disposition?.identity)) {
+      || JSON.stringify(disposition?.proof?.kind === "previous-hub-local-execution"
+        ? persistedLocalExecutionIdentity(run) : localExecutionIdentity(run)) !== JSON.stringify(disposition?.identity)) {
       return false;
     }
     if (run.localAdmissionReleased === true) return true;
@@ -819,45 +850,6 @@ export function updateTaskRunTitle(run, title) {
   return true;
 }
 
-export function shouldAutoObserveTask({
-  task,
-  selectedTask = task,
-  snapshot,
-  existingRun = null,
-  dismissed = false,
-  lastSeenTurnId = null,
-} = {}) {
-  const provider = String(task?.provider ?? "").trim().toLowerCase();
-  const codexHasUserInput = Boolean(
-    String(snapshot?.clientUserMessageId ?? "").trim()
-      || String(snapshot?.prompt ?? "").trim()
-      || (Array.isArray(snapshot?.userMessages) && snapshot.userMessages.some((message) => (
-        String(message?.text ?? "").trim()
-        || String(message?.clientUserMessageId ?? message?.clientId ?? "").trim()
-        || (Array.isArray(message?.attachments) && message.attachments.length)
-      )))
-      || (Array.isArray(snapshot?.items) && snapshot.items.some((item) => item?.type === "userMessage")),
-  );
-  return Boolean(
-    task?.provider
-      && task?.projectRoot
-      && task?.threadId
-      && String(selectedTask?.provider ?? "") === String(task.provider)
-      && String(selectedTask?.threadId ?? "") === String(task.threadId)
-      && snapshot?.active
-      // Codex completion is correlated by turn id. An active transport-level
-      // snapshot without one can be a short-lived reconnect
-      // state and must not become a task run that blocks normal input.
-      && (provider !== "codex" || (
-        snapshot?.turnId
-        && codexHasUserInput
-      ))
-      && (!snapshot?.turnId || String(snapshot.turnId) !== String(lastSeenTurnId ?? ""))
-      && !existingRun
-      && !dismissed,
-  );
-}
-
 export function serializableTaskRun(run) {
   const {
     localAdmissionReleased: _localAdmissionReleased,
@@ -870,7 +862,7 @@ export function serializableTaskRun(run) {
     progressUpdateInFlight: _progressUpdateInFlight,
     progressUpdatePending: _progressUpdatePending,
     observerTimer: _observerTimer,
-    // Чтение вывода Claude пересоздаётся при подключении к ходу после перезапуска.
+    // Handles чтения текущего процесса не входят в сохранённую историю.
     claudeReader: _claudeReader,
     claudeDrainTimer: _claudeDrainTimer,
     claudeDrainInFlight: _claudeDrainInFlight,
