@@ -16,6 +16,17 @@ import {
   markProviderTurnEvent,
 } from "../../domain/task-runs.mjs";
 
+function upsertCommentaryBlock(dependencies, run, item, sourceItemId) {
+  const block = {
+    id: item.id,
+    sourceItemId,
+    kind: "commentary",
+    text: codexAgentMessageSourceText(item),
+  };
+  if (item.responseAnnotationTarget) block.responseAnnotationTarget = item.responseAnnotationTarget;
+  dependencies.upsertReasoningBlock(run, block);
+}
+
 function startsProviderResponse(method) {
   return String(method ?? "").startsWith("item/")
     || method === "turn/diff/updated"
@@ -290,8 +301,7 @@ export class CodexEventService {
         hydrationReplay: params.agentHubHydrationReplay === true,
       });
       if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
-        d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.itemId ?? "", kind: "commentary", text: codexAgentMessageSourceText(item),
-          responseAnnotationTarget: item.responseAnnotationTarget });
+        upsertCommentaryBlock(d, run, item, params.itemId ?? "");
       }
       if (delta && params.agentHubHydrationReplay !== true) {
         const reasoning = ["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""));
@@ -337,8 +347,7 @@ export class CodexEventService {
       if (run) {
         const item = startCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
         if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
-          d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.item?.id ?? "", kind: "commentary", text: codexAgentMessageSourceText(item),
-            responseAnnotationTarget: item.responseAnnotationTarget });
+          upsertCommentaryBlock(d, run, item, params.item?.id ?? "");
         }
         d.startLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, false));
@@ -360,8 +369,7 @@ export class CodexEventService {
       if (run) {
         const item = completeCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
         if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
-          d.upsertReasoningBlock(run, { id: item.id, sourceItemId: params.item?.id ?? "", kind: "commentary", text: codexAgentMessageSourceText(item),
-            responseAnnotationTarget: item.responseAnnotationTarget });
+          upsertCommentaryBlock(d, run, item, params.item?.id ?? "");
         }
         d.completeLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, true));
