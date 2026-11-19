@@ -14,7 +14,7 @@ import {
   withoutClaudeResumePreludes,
 } from "../domain/claude-transcript.mjs";
 import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
-import { codexAssistantResponseProjection } from "../domain/codex-response-annotation.mjs";
+import { codexAssistantResponseProjection, bindResponseAnnotationTarget, responseAnnotationTargetForMessages } from "../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations, normalizedResponseAnnotationItemId } from "../domain/response-annotation-source.mjs";
 import {
   hasCanonicalUserMessages,
@@ -361,13 +361,21 @@ function codexAnswerPhase(item) {
 export function codexTurnActivityGroups(turn) {
   const groups = [];
   let current = null;
+  let target = null;
   for (const [index, item] of (Array.isArray(turn?.items) ? turn.items : []).entries()) {
+    if (item?.type === "userMessage") {
+      const annotations = responseAnnotationDetails(textContent(item.content))?.items;
+      const next = responseAnnotationTargetForMessages([{ role: "user", itemId: messageItemId(turn?.id, "user", item, index),
+        clientUserMessageId: item.clientId, sourceOccurrenceId: codexAppServerOccurrenceId(turn?.id, item, index), responseAnnotations: annotations }]);
+      if (next) target = next;
+    }
     const reasoning = codexVisibleReasoning(item);
     if (reasoning) {
       current = {
         id: `${item?.type === "agentMessage" ? "commentary" : "reasoning"}:${boundedTraceId(item.id ?? index)}`,
         ...(normalizedResponseAnnotationItemId(item.id) ? { sourceItemId: normalizedResponseAnnotationItemId(item.id) } : {}),
         reasoning,
+        ...(target ? { responseAnnotationTarget: target } : {}),
         activities: [],
       };
       groups.push(current);
@@ -408,6 +416,7 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
       ))
       : []
   )).filter(([threadId]) => threadId));
+  let target = null;
   const messages = items.flatMap((item, index) => {
     if (item?.type === "userMessage") {
       const rawText = textContent(item.content);
@@ -428,6 +437,9 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
       const taskReferences = userTaskReferencePromptDetails(rawText)?.references ?? [];
       const attachmentSources = codexAttachmentSources(item.content, envelope, rawText);
       const responseAnnotations = responseAnnotationDetails(rawText);
+      const nextTarget = responseAnnotationTargetForMessages([{ role: "user", itemId: messageItemId(turnId, "user", item, index),
+        clientUserMessageId, sourceOccurrenceId: codexAppServerOccurrenceId(turnId, item, index), responseAnnotations: responseAnnotations?.items }]);
+      if (nextTarget) target = nextTarget;
       const text = displayUserPrompt(rawText)
         || (attachmentSources.length ? (envelope ? "Вложение" : "Изображение") : "");
       const author = String(userAuthor).trim();
@@ -461,7 +473,7 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
       }] : [];
     }
     if (isCodexAnswerItem(item) && String(item.text ?? "").trim()) {
-      const projection = codexAssistantResponseProjection(item.text);
+      const projection = bindResponseAnnotationTarget(codexAssistantResponseProjection(item.text), target);
       return [{
         itemId: messageItemId(turnId, "agent", item, index),
         role: "agent",

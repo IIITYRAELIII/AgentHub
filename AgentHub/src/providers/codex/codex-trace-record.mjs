@@ -1,4 +1,4 @@
-// Compaction snapshots and user input are not agent trace items. Validate their
+// Compaction snapshots, user input and tool results are not agent trace items. Validate their
 // complete JSON structure without materializing large input/history strings.
 // No projected record may supply trace content, lifecycle state or identity.
 export class IgnoredTraceRecord {
@@ -71,7 +71,9 @@ export class IgnoredTraceRecord {
     try { entry = JSON.parse(this.#output.subarray(0, this.#length).toString("utf8")); }
     catch { throw new Error("Trace source contains an invalid record"); }
     const ignored = entry?.type === "compacted"
-      || entry?.type === "response_item" && entry.payload?.type === "message" && entry.payload.role === "user";
+      || entry?.type === "response_item" && (entry.payload?.type === "message" && entry.payload.role === "user"
+        || ["custom_tool_call_output", "customToolCallOutput", "function_call_output", "functionCallOutput"]
+          .includes(entry.payload?.type));
     if (!ignored) throw new Error("Trace record exceeds read budget");
   }
 }

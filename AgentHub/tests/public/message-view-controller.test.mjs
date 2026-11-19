@@ -526,6 +526,25 @@ test("rendered annotation content still changes the message signature", async ()
   );
 });
 
+test("explicit citation targets refuse foreign, missing and ambiguous users instead of using the latest quote", async () => {
+  const api = await messageViewApi();
+  const scope = { provider: "codex", threadId: "thread", turnId: "turn" };
+  const a = { ...scope, role: "user", clientUserMessageId: "client-A", itemId: "hydrated-A",
+    sourceOccurrenceId: "occurrence-A", responseAnnotations: [{ text: "same", annotation: "same" }] };
+  const b = { ...scope, role: "user", clientUserMessageId: "client-B", responseAnnotations: [{ text: "same", annotation: "same" }] };
+  const response = { ...scope, role: "agent", itemId: "answer", responseAnnotationReferences: [{ index: 1,
+    target: { sourceOccurrenceId: "occurrence-A", itemId: "old-native-A" } }] };
+  const citation = values => api.responseCitationPresentations(values, values.length - 1)[0];
+  assert.equal(citation([a, b, response]).targetMessageKey, "client\u001fclient-A");
+  assert.equal(citation([{ ...a, threadId: "foreign" }, b, response]).interactive, false);
+  assert.equal(citation([{ ...a, turnId: "old-turn" }, b, response]).interactive, false);
+  assert.equal(citation([b, response]).interactive, false);
+  assert.equal(citation([a, { ...a }, b, response]).interactive, false);
+  assert.equal(citation([a, b, { ...response, provider: "" }]).interactive, false);
+  assert.equal(citation([a, b, { ...response, responseAnnotationReferences: [{ index: 1 }] }]).targetMessageKey,
+    "client\u001fclient-B", "legacy references retain their existing compatibility mapping");
+});
+
 test("agent citation displays the user comment and targets its annotation card by canonical identity", async () => {
   const api = await messageViewApi();
   const messages = [{

@@ -992,6 +992,7 @@ function mergeLiveUserMessages(messages, {
       turnId,
       itemId: String(message.itemId ?? `live-${role}-${index}`),
       clientUserMessageId: resolvedClientUserMessageId,
+      ...(message?.sourceOccurrenceId ? { sourceOccurrenceId: String(message.sourceOccurrenceId) } : {}),
       turnUserSlot,
       role,
       author,

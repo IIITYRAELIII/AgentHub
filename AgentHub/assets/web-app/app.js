@@ -7622,12 +7622,22 @@ function traceCitationPresentation(group, identity) {
   const currentLive = identity && live && MessageView.messageKey({ ...identity, role: "agent" })
     === MessageView.messageKey({ ...live, role: "agent" });
   const preceding = ownerIndex >= 0 ? messages.slice(0, ownerIndex) : currentLive ? messages : [];
-  const message = { ...identity, ...presentation, role: "agent" };
+  const message = { ...identity, ...presentation, role: "agent",
+    ...(group.responseAnnotationTarget ? { responseAnnotationReferences: (presentation.responseAnnotationReferences ?? [])
+      .map(reference => ({ ...reference, target: group.responseAnnotationTarget })) } : {}),
+  };
   return { ...group, responseAnnotationPresentation: { ...presentation,
     responseCitationPresentations: MessageView.responseCitationPresentations(
       [...preceding, message], preceding.length,
     ),
   } };
+}
+
+function traceGroupWithCitationContext(group, identity) {
+  const matches = (identity?.activityGroups ?? []).filter((candidate) => candidate.id === group.id
+    && String(candidate.sourceItemId ?? "") === String(group.sourceItemId ?? ""));
+  const target = matches.length === 1 ? matches[0].responseAnnotationTarget : null;
+  return target ? { ...group, responseAnnotationTarget: target } : group;
 }
 
 function traceReasoningNode(group, identity = null) {
@@ -8232,7 +8242,7 @@ async function focusResponseCitationSource(button) {
         const page = await requestTracePage(projection.message, { turnId: source.turnId, groupId: source.traceGroupId });
         if (!article.isConnected) return false;
         if (page.groups?.length !== 1 || page.groups[0].id !== source.traceGroupId) return false;
-        group = page.groups[0];
+        group = traceGroupWithCitationContext(page.groups[0], projection.message);
         const candidate = { ...projection.message, activityGroups: [group] };
         if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
         article.querySelector("[data-citation-trace]")?.remove();
@@ -9831,8 +9841,9 @@ async function responseAnnotationFromSelection(selection) {
     if (page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return responseAnnotationRefusal("source-group-mismatch");
     const selectedNativeItemId = traceDetailSources.get(selection.surface)?.sourceItemId;
     if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return responseAnnotationRefusal("source-item-mismatch");
-    sourceMessage = { ...current, activityGroups: page.groups };
-    sourceSurface = traceReasoningNode(page.groups[0], sourceMessage);
+    const fullGroup = traceGroupWithCitationContext(page.groups[0], current);
+    sourceMessage = { ...current, activityGroups: [fullGroup] };
+    sourceSurface = traceReasoningNode(fullGroup, sourceMessage);
     // A cut Markdown construct may render differently. Do not guess a new range.
     if (!sourceSurface.textContent.startsWith(selectedSurfaceText.trimEnd())) return responseAnnotationRefusal("rendered-prefix-mismatch");
     if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return responseAnnotationRefusal("selected-range-mismatch");
@@ -9875,7 +9886,11 @@ async function addAnnotation(selection) {
   annotationOperationSequences.set(operation.taskId, operationSequence);
   let next;
   try {
-    next = await responseAnnotationFromSelection(selection);
+    const validate = () => responseAnnotationFromSelection(selection);
+    next = window.AgentHubCommandTrace
+      ? await window.AgentHubCommandTrace.measure("ui-interaction", "annotation-source", validate,
+        undefined, result => ({ outcome: result ? "succeeded" : "failed" }))
+      : await validate();
   } catch {
     next = responseAnnotationRefusal("source-error");
   }

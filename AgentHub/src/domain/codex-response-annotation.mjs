@@ -6,16 +6,56 @@ const FENCE_START = /^[ \t]{0,3}(`{3,}|~{3,})/u;
 
 export const MAX_CODEX_RESPONSE_ANNOTATION_INDEX = 20;
 
+export function normalizedResponseAnnotationTarget(value) {
+  if (!value || typeof value !== "object") return null;
+  const target = {};
+  for (const key of ["clientUserMessageId", "sourceOccurrenceId", "itemId"]) {
+    const id = String(value[key] ?? "").trim();
+    if (id && id.length <= 300 && !/[\u0000-\u001f]/u.test(id)) target[key] = id;
+  }
+  if (!Object.keys(target).length) return null;
+  if (value.origin === "native-item") target.origin = "native-item";
+  return target;
+}
+
+export function preferredResponseAnnotationTarget(existing, incoming) {
+  const previous = normalizedResponseAnnotationTarget(existing);
+  const next = normalizedResponseAnnotationTarget(incoming);
+  return next?.origin === "native-item" && previous?.origin !== "native-item"
+    ? next : previous ?? next;
+}
+
+export function responseAnnotationTargetForMessages(messages) {
+  const user = (Array.isArray(messages) ? messages : []).findLast((message) => (
+    message?.role === "user" && message.responseAnnotations?.length
+  ));
+  return normalizedResponseAnnotationTarget(user);
+}
+
+export function bindResponseAnnotationTarget(projection, value) {
+  const target = normalizedResponseAnnotationTarget(value);
+  return target ? { ...projection, responseAnnotationTarget: target,
+    responseAnnotationReferences: (projection.responseAnnotationReferences ?? []).map((reference) => ({ ...reference, target })) }
+    : projection;
+}
+
 export function normalizedCodexResponseAnnotationReferences(references) {
   const normalized = [];
   const seen = new Set();
   for (const reference of Array.isArray(references) ? references : []) {
     const index = Number(reference?.index);
     if (!Number.isSafeInteger(index) || index < 1
-      || index > MAX_CODEX_RESPONSE_ANNOTATION_INDEX || seen.has(index)) continue;
+      || index > MAX_CODEX_RESPONSE_ANNOTATION_INDEX) continue;
+    const target = normalizedResponseAnnotationTarget(reference.target);
+    if (seen.has(index)) {
+      const retained = normalized.find((item) => item.index === index);
+      const preferred = preferredResponseAnnotationTarget(retained.target, target);
+      if (preferred) retained.target = preferred;
+      continue;
+    }
     seen.add(index);
     const position = reference?.position;
-    normalized.push({ index, ...(Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
+    normalized.push({ index, ...(target ? { target } : {}), ...(Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
       && position.end === position.start + `Цитата ${index}`.length
       ? { position: { start: position.start, end: position.end } } : {}) });
   }
@@ -159,6 +199,9 @@ export function visibleCodexAssistantText(value) {
 export function assistantTraceAnnotationPresentation(group) {
   const text = String(group?.reasoning ?? "");
   const projection = codexAssistantResponseProjection(text);
+  const target = normalizedResponseAnnotationTarget(group?.responseAnnotationTarget);
+  if (target) projection.responseAnnotationReferences = projection.responseAnnotationReferences
+    .map((reference) => ({ ...reference, target }));
   return projection.text === text && !projection.responseAnnotationReferences.length
     ? group
     : { ...group, responseAnnotationPresentation: projection };

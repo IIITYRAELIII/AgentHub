@@ -287,8 +287,20 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   ordinary prose, before validating the payload (ADR-0036);
   invalid payloads retain only a readable generic fallback and do not enter
   structured state. Partial markers remain hidden while streaming. The UI
-  resolves each valid index to the nearest preceding annotated user entity by
-  its canonical message key,
+  resolves each valid index to its captured annotated user entity by exact
+  client command, source occurrence or native item identity within the same
+  provider/Thread/turn. Native items and trace groups retain that target across
+  steer, observation, terminal storage and reload; a new input does not retarget
+  an existing item. Missing, foreign or ambiguous explicit targets fail closed.
+  A native item-start capture takes precedence over a target inferred from
+  completion order. Observation, hydration and existing SQLite history merges
+  retain it only for the same provider/Thread/turn and native item/group identity;
+  a later completion after steer B cannot replace item A's captured target.
+  Incoming reference positions and explicit empty lists remain authoritative.
+  Native commentary is projected from its original provider text; its hidden
+  response body must not create a second detached citation.
+  Legacy references without target metadata retain the nearest preceding
+  annotated-user compatibility mapping by canonical message key. The renderer
   renders the user's annotation/comment text and exposes a keyboard-operable
   jump to that exact annotation card only when the target annotation exists.
   Missing mappings render non-interactive
@@ -308,6 +320,10 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   The original reasoning, provider item and source-generation/hash fields stay
   intact. Rendering and citation navigation use the group's presentation in the
   exact owning message context; a later annotated user cannot become its target.
+  Addressed full-source reconstruction retains only the selected exact group's
+  captured target, after group/native-item validation. An empty answer has no
+  citation surface: commentary references cannot create a detached answer card.
+  Distinct native items and equal-text user commands remain distinct links.
 - A new user-created annotation records its exact source user command or agent
   provider item, including an active non-final agent item. A user with a durable
   `clientUserMessageId` uses the client namespace scoped by provider and Thread,
