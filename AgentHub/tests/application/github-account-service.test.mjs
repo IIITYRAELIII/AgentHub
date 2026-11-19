@@ -19,6 +19,7 @@ import { spawnClaudeWorker } from "../../src/providers/claude/claude-run-io.mjs"
 import { OwnedNativeObjectStore } from "../../src/infrastructure/filesystem/owned-native-object-store.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { inventoryNativeCapture } from "../../src/infrastructure/filesystem/native-capture-inventory.mjs";
+import { githubAccountFetch } from "../../src/infrastructure/network/github-account-request.mjs";
 
 const execute = promisify(execFile);
 const token = "github_pat_SYNTHETIC_TEST_VALUE_123456789";
@@ -336,5 +337,23 @@ test("native protected vault serves actual Git credential plumbing without token
   assert.equal(actual.stderr, "");
   assert.equal((await readFile(vault.profileFile, "utf8")).includes(token), false);
   assert.equal((await readFile(vault.file, "utf8")).includes(token), false);
+  const originalFetch = globalThis.fetch, originalDirectory = process.env.AGENT_HUB_GITHUB_DIRECTORY;
+  let apiCalls = 0;
+  try {
+    process.env.AGENT_HUB_GITHUB_DIRECTORY = vault.directory;
+    globalThis.fetch = async (url, options) => {
+      apiCalls++;
+      assert.equal(url, "https://api.github.com/repos/owner/private");
+      assert.equal(options.headers.Authorization === `Bearer ${token}`, true);
+      return Response.json({ accountAuthorized: true });
+    };
+    assert.deepEqual(await (await githubAccountFetch("https://api.github.com/repos/owner/private")).json(), { accountAuthorized: true });
+    await assert.rejects(githubAccountFetch("https://foreign.invalid/repos/owner/private"), /origin/u);
+    assert.equal(apiCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalDirectory === undefined) delete process.env.AGENT_HUB_GITHUB_DIRECTORY;
+    else process.env.AGENT_HUB_GITHUB_DIRECTORY = originalDirectory;
+  }
   await service.disconnect();
 });
