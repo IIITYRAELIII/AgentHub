@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir, chmod } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { GitHubAccountService } from "../../src/application/github-account-service.mjs";
@@ -49,7 +49,7 @@ test("connect, authenticated operation, explicit denial/expiry, reconnect and di
   const connected = await f.service.connect(token);
   assert.deepEqual(connected.account, { id: 1234, login: "connected-user", name: "Connected User", email: "connected@example.invalid" });
   assert.equal(JSON.stringify(connected).includes(token), false);
-  assert.equal((await readFile(f.vault.file, "utf8")).includes(token), false);
+  assert.equal((await readFile(f.vault.credentialFile((await f.vault.read()).id), "utf8")).includes(token), false);
   assert.equal((await readFile(f.vault.profileFile, "utf8")).includes(token), false);
   assert.deepEqual(await (await f.service.request("/repos/owner/private")).json(), { authorized: true });
   assert.ok(f.requests.every(item => item.authorization === `Bearer ${token}` && item.redirect === "error"));
@@ -66,6 +66,79 @@ test("connect, authenticated operation, explicit denial/expiry, reconnect and di
   assert.equal((await f.service.snapshot()).status, "disconnected");
   await assert.rejects(f.service.request("/user"), /Подключите/u);
   await assert.rejects(f.service.request("https://foreign.invalid"));
+});
+
+test("atomic selection failure preserves the same account, credential and Git profile", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t);
+  await f.service.connect(token);
+  const original = await f.vault.read();
+  const profile = await readFile(f.vault.profileFile);
+  // Actual Windows filesystem refusal: saving an immutable new credential is
+  // possible, replacing the read-only selected profile is not.
+  await chmod(f.vault.profileFile, 0o444);
+  try {
+    await assert.rejects(f.service.connect(token));
+    assert.equal((await f.vault.read()).id, original.id);
+    assert.deepEqual(await readFile(f.vault.profileFile), profile);
+    assert.equal(await f.vault.token(await f.vault.read()) === token, true);
+    await assert.rejects(f.service.disconnect());
+    assert.equal((await f.vault.read()).id, original.id);
+    assert.equal((await f.service.snapshot()).status, "connected");
+  } finally { await chmod(f.vault.profileFile, 0o600); }
+  await f.service.disconnect();
+  assert.equal(await f.vault.read(), null);
+  await assert.rejects(readFile(f.vault.credentialFile(original.id)), error => error.code === "ENOENT");
+});
+
+test("same atomic connection readback resolves only an already published profile after lost write acknowledgement", async t => {
+  const f = await fixture(t);
+  const publish = f.vault.publish.bind(f.vault);
+  f.vault.publish = async row => { await publish(row); throw new Error("Synthetic lost write acknowledgement"); };
+  assert.equal((await f.service.connect(token)).status, "connected");
+  const first = (await f.vault.read()).id;
+  const reopened = await new GitHubAccountService({ directory: f.directory, vault: f.vault }).initialize();
+  assert.equal((await reopened.snapshot()).status, "connected");
+  assert.equal((await f.vault.read()).id, first);
+  assert.equal((await f.service.connect(token)).status, "connected");
+  assert.notEqual((await f.vault.read()).id, first);
+  await assert.rejects(readFile(f.vault.credentialFile(first)), error => error.code === "ENOENT");
+  assert.equal((await f.service.disconnect()).status, "disconnected");
+  f.vault.publish = async () => { throw new Error("Synthetic write refused before publication"); };
+  await assert.rejects(f.service.connect(token), /сохранить GitHub-профиль/u);
+  assert.equal(await f.vault.read(), null);
+});
+
+test("selected credential loss or mismatched account refuses initialization without substituting a connection", async t => {
+  const f = await fixture(t);
+  await f.service.connect(token);
+  const row = await f.vault.read(), file = f.vault.credentialFile(row.id);
+  const saved = await readFile(file);
+  await writeFile(file, JSON.stringify({ ...row, account: { ...row.account, id: row.account.id + 1 } }));
+  await assert.rejects(f.service.snapshot(), /storage cannot be read/u);
+  await assert.rejects(new GitHubAccountService({ directory: f.directory, vault: f.vault }).initialize(), /storage cannot be read/u);
+  await rm(file);
+  await assert.rejects(f.vault.read(), /storage cannot be read/u);
+  await writeFile(file, saved);
+  assert.equal((await f.service.snapshot()).status, "connected");
+});
+
+test("credential cleanup refusal reports the committed connection or disconnection without changing its selection", async t => {
+  const f = await fixture(t);
+  await f.service.connect(token);
+  const first = (await f.vault.read()).id;
+  const remove = f.vault.remove.bind(f.vault);
+  f.vault.remove = async () => { throw new Error("Synthetic encrypted credential cleanup refusal"); };
+  await assert.rejects(f.service.connect(token), /GitHub подключён.*зашифрованные данные сохранены/u);
+  const second = (await f.vault.read()).id;
+  assert.notEqual(second, first);
+  assert.equal((await f.vault.selection()).id, second);
+  assert.equal((await f.service.snapshot()).status, "connected");
+  assert.equal((await readFile(f.vault.credentialFile(first))).length > 0, true);
+  await assert.rejects(f.service.disconnect(), /GitHub отключён.*Зашифрованные данные сохранены/u);
+  assert.equal(await f.vault.read(), null);
+  assert.equal((await readFile(f.vault.credentialFile(second))).length > 0, true);
+  f.vault.remove = remove;
+  await remove(first); await remove(second);
 });
 
 test("late connection cannot undo disconnect, optional email scope uses authenticated numeric noreply identity", async t => {
@@ -336,7 +409,7 @@ test("native protected vault serves actual Git credential plumbing without token
   assert.equal(actual.stdout.includes(`password=${token}`), true);
   assert.equal(actual.stderr, "");
   assert.equal((await readFile(vault.profileFile, "utf8")).includes(token), false);
-  assert.equal((await readFile(vault.file, "utf8")).includes(token), false);
+  assert.equal((await readFile(vault.credentialFile((await vault.read()).id), "utf8")).includes(token), false);
   const originalFetch = globalThis.fetch, originalDirectory = process.env.AGENT_HUB_GITHUB_DIRECTORY;
   let apiCalls = 0;
   try {

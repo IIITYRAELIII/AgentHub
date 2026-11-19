@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 const quote = value => '"' + String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n") + '"';
 const shellQuote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
+const selectionPrefix = "# agent-hub-github-account-v1 ";
 export const githubDirectory = environment => String(environment.AGENT_HUB_GITHUB_DIRECTORY ?? "");
 export const githubProfileFile = environment => githubDirectory(environment) ? path.join(githubDirectory(environment), "gitconfig") : "";
 
@@ -33,14 +34,30 @@ export function withoutGithubAccountEnvironment(environment = process.env) {
 // Public metadata only. The helper decrypts a credential only inside Git's
 // private credential pipe. Binding its generation rejects reconnect races.
 export function githubGitConfig({ directory, id, account, node = process.execPath }) {
-  if (!account) return "# GitHub account disconnected\n";
+  if (!account) return selectionPrefix + "null\n# GitHub account disconnected\n";
+  const selection = selectionPrefix + Buffer.from(JSON.stringify({ id, account })).toString("base64") + "\n";
   const helper = fileURLToPath(new URL("../process/github-credential-helper.mjs", import.meta.url));
   const command = "!" + shellQuote(node.replaceAll("\\", "/")) + " " + shellQuote(helper.replaceAll("\\", "/"))
     + " " + shellQuote(directory.replaceAll("\\", "/")) + " " + shellQuote(id);
-  return `[user]\n\tname = ${quote(account.name)}\n\temail = ${quote(account.email)}\n`
+  return selection + `[user]\n\tname = ${quote(account.name)}\n\temail = ${quote(account.email)}\n`
     + `[credential "https://github.com"]\n\thelper =\n\thelper = ${quote(command)}\n`
     + '[url "https://github.com/"]\n\tinsteadOf = git@github.com:\n\tinsteadOf = ssh://git@github.com/\n'
     + '\tinsteadOf = ssh://git@github.com:22/\n\tinsteadOf = ssh://git@ssh.github.com:443/\n';
+}
+
+export function githubProfileSelection(profile) {
+  const line = String(profile).split("\n", 1)[0];
+  if (!line.startsWith(selectionPrefix)) throw new Error("GitHub account selection cannot be read");
+  const encoded = line.slice(selectionPrefix.length);
+  if (encoded === "null") return null;
+  if (encoded.length > 8192 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) throw new Error("Invalid GitHub account selection");
+  const value = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+  const account = value.account;
+  if (!/^[0-9a-f-]{36}$/u.test(value.id) || !Number.isSafeInteger(account?.id) || account.id <= 0
+    || !/^[A-Za-z0-9-]{1,39}$/u.test(account.login) || typeof account.name !== "string"
+    || !account.name || /[\x00-\x1f\x7f<>]/u.test(account.name)
+    || typeof account.email !== "string" || !/^[^\s@<>]+@[^\s@<>]+$/u.test(account.email)) throw new Error("Invalid GitHub account selection");
+  return { id: value.id, account: { id: account.id, login: account.login, name: account.name, email: account.email } };
 }
 
 export function githubAgentEnvironment(environment = process.env, directory = githubDirectory(environment)) {

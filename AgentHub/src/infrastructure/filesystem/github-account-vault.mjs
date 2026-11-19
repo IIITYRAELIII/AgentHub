@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { protectRuntimeDirectory } from "./runtime-security.mjs";
+import { githubGitConfig, githubProfileSelection } from "./github-git-profile.mjs";
 
 // Current-user DPAPI. Plaintext crosses private redirected stdin/stdout only;
 // never a command argument, environment variable, diagnostic or shell source.
@@ -34,7 +35,9 @@ export function windowsAccountCrypt(value, decrypt = false) {
 export async function atomicAccountFile(file, value) {
   const temporary = file + "." + randomUUID() + ".tmp";
   try {
-    await writeFile(temporary, value, { flag: "wx", mode: 0o600 });
+    const handle = await open(temporary, "wx", 0o600);
+    try { await handle.writeFile(value); await handle.sync(); }
+    finally { await handle.close(); }
     await rename(temporary, file);
   } finally { await unlink(temporary).catch(error => { if (error.code !== "ENOENT") throw error; }); }
 }
@@ -42,7 +45,6 @@ export async function atomicAccountFile(file, value) {
 export class GitHubAccountVault {
   constructor({ directory, crypt = windowsAccountCrypt, protect = protectRuntimeDirectory }) {
     this.directory = path.resolve(directory);
-    this.file = path.join(this.directory, "account.json");
     this.profileFile = path.join(this.directory, "gitconfig");
     this.crypt = crypt;
     this.protect = protect;
@@ -53,15 +55,29 @@ export class GitHubAccountVault {
   }
   async read() {
     try {
-      const body = await readFile(this.file, "utf8");
+      const selected = await this.selection();
+      if (!selected) return null;
+      const body = await readFile(this.credentialFile(selected.id), "utf8");
       if (Buffer.byteLength(body) > 32_768) throw new Error();
       const row = JSON.parse(body);
       if (row.version !== 1 || !/^[0-9a-f-]{36}$/u.test(row.id) || !row.account?.login
         || !row.account.name || !row.account.email || typeof row.secret !== "string"
-        || !/^[A-Za-z0-9+/]+={0,2}$/u.test(row.secret)) throw new Error();
+        || !/^[A-Za-z0-9+/]+={0,2}$/u.test(row.secret)
+        || row.id !== selected.id || JSON.stringify(row.account) !== JSON.stringify(selected.account)) throw new Error();
       return row;
     }
-    catch (error) { if (error.code === "ENOENT") return null; throw new Error("GitHub account storage cannot be read"); }
+    catch { throw new Error("GitHub account storage cannot be read"); }
+  }
+  async selection() {
+    try { return githubProfileSelection(await readFile(this.profileFile, "utf8")); }
+    catch (error) { if (error.code === "ENOENT") return null; throw new Error("GitHub account selection cannot be read"); }
+  }
+  credentialFile(id) {
+    if (!/^[0-9a-f-]{36}$/u.test(id)) throw new Error("Invalid GitHub connection identity");
+    return path.join(this.directory, `connection-${id}.json`);
+  }
+  async publish(row) {
+    await atomicAccountFile(this.profileFile, githubGitConfig({ directory: this.directory, ...row }));
   }
   #rejectionFile(id) {
     if (!/^[0-9a-f-]{36}$/u.test(id)) throw new Error("Invalid GitHub connection identity");
@@ -79,7 +95,12 @@ export class GitHubAccountVault {
   }
   async save({ id, account, token }) {
     const secret = (await this.crypt(Buffer.from(token))).toString("base64");
-    await atomicAccountFile(this.file, JSON.stringify({ version: 1, id, account, secret }));
+    const handle = await open(this.credentialFile(id), "wx", 0o600);
+    try { await handle.writeFile(JSON.stringify({ version: 1, id, account, secret })); await handle.sync(); }
+    finally { await handle.close(); }
   }
-  async remove() { await unlink(this.file).catch(error => { if (error.code !== "ENOENT") throw error; }); }
+  async remove(id) {
+    if ((await this.selection())?.id === id) throw new Error("Cannot remove selected GitHub credential");
+    await unlink(this.credentialFile(id)).catch(error => { if (error.code !== "ENOENT") throw error; });
+  }
 }

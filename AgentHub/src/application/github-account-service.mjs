@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { GitHubAccountVault, atomicAccountFile } from "../infrastructure/filesystem/github-account-vault.mjs";
-import { githubGitConfig } from "../infrastructure/filesystem/github-git-profile.mjs";
+import { GitHubAccountVault } from "../infrastructure/filesystem/github-account-vault.mjs";
 
 const safeText = (value, name) => {
   const text = String(value ?? "").trim();
@@ -40,7 +39,14 @@ export class GitHubAccountService {
   async drain() { await Promise.allSettled([...this.#pending]); }
   async dispose() { this.#disposed = true; this.pause(); await this.drain(); }
   async #profile(row) {
-    await atomicAccountFile(this.vault.profileFile, githubGitConfig({ directory: this.vault.directory, ...row }));
+    try { await this.vault.publish(row); }
+    catch {
+      // Read back a possibly completed rename on the SAME connection identity.
+      const selected = await this.vault.selection().catch(() => undefined);
+      if (selected === undefined || (selected?.id ?? null) !== (row?.id ?? null)) {
+        throw new Error("Не удалось сохранить GitHub-профиль. Проверьте подключение в Hub.");
+      }
+    }
   }
   async snapshot() {
     const row = await this.vault.read();
@@ -102,9 +108,15 @@ export class GitHubAccountService {
     if (!/^[^\s@]+@[^\s@]+$/u.test(account.email)) throw new Error("GitHub returned an invalid email");
     return this.#serialize(async () => {
       if (revision !== this.#revision) throw new Error("Подключение GitHub заменено более новым действием");
+      const previous = await this.vault.selection();
       const id = randomUUID();
       await this.vault.save({ id, account, token });
-      await this.#profile({ id, account });
+      try { await this.#profile({ id, account }); }
+      catch (error) { await this.vault.remove(id).catch(() => {}); throw error; }
+      if (previous?.id) {
+        try { await this.vault.remove(previous.id); }
+        catch { throw new Error("GitHub подключён. Предыдущие зашифрованные данные сохранены: их удаление не завершено."); }
+      }
       return this.snapshot();
     });
   }
@@ -112,8 +124,12 @@ export class GitHubAccountService {
   async #disconnect() {
     ++this.#revision;
     return this.#serialize(async () => {
-      await this.vault.remove();
+      const previous = await this.vault.selection();
       await this.#profile(null);
+      if (previous?.id) {
+        try { await this.vault.remove(previous.id); }
+        catch { throw new Error("GitHub отключён. Зашифрованные данные сохранены: их удаление не завершено."); }
+      }
       return this.snapshot();
     });
   }

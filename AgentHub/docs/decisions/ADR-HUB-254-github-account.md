@@ -18,6 +18,17 @@ Only the encrypted credential and public account metadata are saved. The existin
 local control boundary excludes token-bearing actions from durable command receipts;
 neither a Task nor a provider instruction receives the token.
 
+Each connection has an immutable encrypted credential file. The same atomic public
+Git include selects its connection identity and account metadata; both Git and
+the API read that selection. Replacing the include publishes a connection only
+after its credential is durable. A refused replacement preserves the previous
+account and Git identity together; a lost write acknowledgement is read back only
+for the same intended connection. Disconnect publishes the empty profile before
+removing the prior encrypted credential. Cleanup refusal reports retained encrypted
+data explicitly and never reverses or misreports the selected account. Missing or
+mismatched selected credentials fail closed. This source format has not been
+delivered and introduces no migration of an existing user's connected account.
+
 An atomic public Git include supplies name/email, a GitHub-only credential helper,
 and GitHub SSH-to-HTTPS URL rewrites. Internal owned Git inserts that include after
 legacy synthetic user defaults. Codex and Claude receive its stable public path;

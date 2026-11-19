@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as owner from "../../../src/infrastructure/persistence/runtime-maintenance-backup.mjs";
+import { githubGitConfig } from "../../../src/infrastructure/filesystem/github-git-profile.mjs";
 
 async function fixture(t) {
   const base = await mkdtemp(path.join(os.tmpdir(), "hb380-"));
@@ -20,9 +21,11 @@ async function fixture(t) {
 test("stopped backup includes encrypted GitHub account and connection/profile state", async t => {
   const f = await fixture(t), account = path.join(f.data, "github-account");
   await mkdir(account);
-  const entries = { "account.json": '{"secret":"synthetic-ciphertext-only"}',
-    "gitconfig": '[user]\nname = Connected User\nemail = connected@example.invalid\n',
-    "rejected-original.json": '{"id":"original-connection"}' };
+  const id = "11111111-1111-4111-8111-111111111111";
+  const metadata = { id: 1234, login: "connected-user", name: "Connected User", email: "connected@example.invalid" };
+  const entries = { [`connection-${id}.json`]: JSON.stringify({ version: 1, id, account: metadata, secret: "synthetic-ciphertext-only" }),
+    "gitconfig": githubGitConfig({ directory: account, id, account: metadata }),
+    [`rejected-${id}.json`]: JSON.stringify({ id }) };
   for (const [name, value] of Object.entries(entries)) await writeFile(path.join(account, name), value);
   const result = await owner.backupStoppedRuntime({ runtimeRoot: f.root, destination: f.destination, assertStopped: async () => {} });
   assert.equal(result.retained.some(entry => entry.path === path.join("data", "github-account")), false);
