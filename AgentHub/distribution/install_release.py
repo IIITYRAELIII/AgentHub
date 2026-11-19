@@ -802,60 +802,147 @@ def outside_jobs(handle):
     return not member.value
 
 
-def independent_worker(command, directory, environment):
-    """Use the interactive desktop parent, not the caller's kill-on-close Job."""
+def process_security(handle):
+    """Compare the actual process tokens, not provider success or a user name."""
     c, w, k = native_api()
-    class SI(c.Structure):
-        _fields_ = [("cb", w.DWORD), ("reserved", w.LPWSTR), ("desktop", w.LPWSTR),
-                    ("title", w.LPWSTR), *[(n, w.DWORD) for n in ("x", "y", "xs", "ys", "xc", "yc", "fill", "flags")],
-                    ("show", w.WORD), ("reserved2size", w.WORD), ("reserved2", c.c_void_p),
-                    ("stdin", w.HANDLE), ("stdout", w.HANDLE), ("stderr", w.HANDLE)]
-    class SIX(c.Structure):
-        _fields_ = [("si", SI), ("attributes", c.c_void_p)]
-    class PI(c.Structure):
-        _fields_ = [("process", w.HANDLE), ("thread", w.HANDLE), ("pid", w.DWORD), ("tid", w.DWORD)]
-    u = c.WinDLL("user32", use_last_error=True)
-    u.GetShellWindow.restype = w.HWND
-    u.GetWindowThreadProcessId.argtypes = [w.HWND, c.POINTER(w.DWORD)]
-    shellpid = w.DWORD(); u.GetWindowThreadProcessId(u.GetShellWindow(), c.byref(shellpid))
-    parent = k.OpenProcess(0x0080 | 0x1000 | 0x100000, False, shellpid.value)
-    if not parent:
-        raise RuntimeError("Interactive desktop parent is unavailable; no Hub process was stopped")
-    k.InitializeProcThreadAttributeList.argtypes = [c.c_void_p, w.DWORD, w.DWORD, c.POINTER(c.c_size_t)]
-    k.UpdateProcThreadAttribute.argtypes = [c.c_void_p, w.DWORD, c.c_size_t, c.c_void_p, c.c_size_t, c.c_void_p, c.c_void_p]
-    k.DeleteProcThreadAttributeList.argtypes = [c.c_void_p]
-    k.CreateProcessW.argtypes = [w.LPCWSTR, w.LPWSTR, c.c_void_p, c.c_void_p, w.BOOL, w.DWORD,
-                                c.c_void_p, w.LPCWSTR, c.c_void_p, c.POINTER(PI)]
-    k.ResumeThread.argtypes = [w.HANDLE]; k.ResumeThread.restype = w.DWORD
-    size = c.c_size_t(); k.InitializeProcThreadAttributeList(None, 1, 0, c.byref(size))
-    memory = c.create_string_buffer(size.value); pi = PI(); initialized = False
+    adv = c.WinDLL("advapi32", use_last_error=True)
+    adv.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, c.POINTER(w.HANDLE)]
+    adv.GetTokenInformation.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD)]
+    adv.GetLengthSid.argtypes = [c.c_void_p]; adv.GetLengthSid.restype = w.DWORD
+    token = w.HANDLE()
+    if not adv.OpenProcessToken(handle, 8, c.byref(token)):
+        raise c.WinError(c.get_last_error())
     try:
-        if not k.InitializeProcThreadAttributeList(memory, 1, 0, c.byref(size)):
-            raise c.WinError(c.get_last_error())
-        initialized = True; parent_value = w.HANDLE(parent)
-        if not k.UpdateProcThreadAttribute(memory, 0, 0x00020000, c.byref(parent_value), c.sizeof(parent_value), None, None):
-            raise c.WinError(c.get_last_error())
-        startup = SIX(); startup.si.cb = c.sizeof(startup); startup.attributes = c.addressof(memory)
-        env = c.create_unicode_buffer("\0".join(f"{a}={b}" for a, b in sorted(environment.items())) + "\0\0")
-        cmd = c.create_unicode_buffer(subprocess.list2cmdline(command))
-        if not k.CreateProcessW(command[0], cmd, None, None, False, 0x00080000 | 0x00000400 | 0x08000000 | 4,
-                                env, str(directory), c.byref(startup), c.byref(pi)):
-            raise c.WinError(c.get_last_error())
-        if not outside_jobs(pi.process):
-            raise RuntimeError("Installer worker did not leave the old Job")
-        proof = dict(pid=pi.pid, **process_identity(pi.process), outsideAllJobs=True, parentPid=shellpid.value)
-        if k.ResumeThread(pi.thread) == 0xffffffff:
-            raise c.WinError(c.get_last_error())
+        def info(kind):
+            size = w.DWORD()
+            adv.GetTokenInformation(token, kind, None, 0, c.byref(size))
+            if not size.value: raise c.WinError(c.get_last_error())
+            data = c.create_string_buffer(size.value)
+            if not adv.GetTokenInformation(token, kind, data, size, c.byref(size)):
+                raise c.WinError(c.get_last_error())
+            return data
+        user = info(1); sid = c.cast(user, c.POINTER(c.c_void_p))[0]
+        stats = info(10)
+        return dict(userSidSha256=hashlib.sha256(c.string_at(sid, adv.GetLengthSid(sid))).hexdigest(),
+                    logonId=stats.raw[8:16].hex(), sessionId=w.DWORD.from_buffer(info(12)).value,
+                    elevationType=w.DWORD.from_buffer(info(18)).value)
+    finally:
+        k.CloseHandle(token)
+
+
+def suspended_worker_thread(pid):
+    """The never-resumed process must have exactly one native owned thread."""
+    c, w, k = native_api()
+    class Entry(c.Structure):
+        _fields_ = [("size", w.DWORD), ("usage", w.DWORD), ("id", w.DWORD),
+                    ("owner", w.DWORD), ("priority", w.LONG), ("delta", w.LONG), ("flags", w.DWORD)]
+    k.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
+    k.CreateToolhelp32Snapshot.restype = w.HANDLE
+    k.Thread32First.argtypes = [w.HANDLE, c.POINTER(Entry)]
+    k.Thread32Next.argtypes = [w.HANDLE, c.POINTER(Entry)]
+    k.OpenThread.argtypes = [w.DWORD, w.BOOL, w.DWORD]; k.OpenThread.restype = w.HANDLE
+    k.GetProcessIdOfThread.argtypes = [w.HANDLE]; k.GetProcessIdOfThread.restype = w.DWORD
+    snapshot = k.CreateToolhelp32Snapshot(4, 0)
+    if snapshot == c.c_void_p(-1).value: raise c.WinError(c.get_last_error())
+    try:
+        entry = Entry(); entry.size = c.sizeof(entry); threads = []
+        present = k.Thread32First(snapshot, c.byref(entry))
+        while present:
+            if entry.owner == pid: threads.append(entry.id)
+            present = k.Thread32Next(snapshot, c.byref(entry))
+        if c.get_last_error() != 18: raise c.WinError(c.get_last_error())
+        if len(threads) != 1: raise RuntimeError("Suspended installer thread identity is not unique")
+        thread = k.OpenThread(2 | 0x0800, False, threads[0])
+        if not thread: raise c.WinError(c.get_last_error())
+        if k.GetProcessIdOfThread(thread) != pid:
+            k.CloseHandle(thread); raise RuntimeError("Suspended installer thread changed")
+        return thread
+    finally:
+        k.CloseHandle(snapshot)
+
+
+def independent_worker(command, directory, environment):
+    """Use the local Windows process provider; prove independence before Resume.
+
+    Neither Explorer nor the calling Hub is the parent. The provider's own Job
+    is explicitly escaped, not accepted as independent merely because it is WMI.
+    There is one creation attempt. A lost reply retains its original transport.
+    """
+    c, w, k = native_api(); directory = directory.resolve(strict=True)
+    k.ResumeThread.argtypes = [w.HANDLE]; k.ResumeThread.restype = w.DWORD
+    intent = dict(schema=1, mechanism="Win32_Process.Create", creationFlags=0x01000004,
+                  commandSha256=hashlib.sha256(subprocess.list2cmdline(command).encode()).hexdigest(),
+                  caller=dict(pid=os.getpid(), outsideAllJobs=outside_jobs(k.GetCurrentProcess()),
+                              **process_identity(k.GetCurrentProcess())))
+    request_file = directory/"request.json"
+    if request_file.exists():
+        intent.update(operationId=_read_record(request_file)["operationId"], requestSha256=file_hash(request_file))
+    _write_record(directory/"worker-create-intent.json", intent)
+    started = time.monotonic(); earliest = time.time_ns()//100 + 116444736000000000
+    # JSON stdin is data; argv, paths and environment are never shell source.
+    script = r'''$ErrorActionPreference='Stop';
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);
+$x=[Console]::In.ReadToEnd()|ConvertFrom-Json;
+$s=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{
+ CreateFlags=[uint32]16777220; ShowWindow=[uint16]0; EnvironmentVariables=[string[]]$x.environment};
+$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+ CommandLine=$x.command;CurrentDirectory=$x.directory;ProcessStartupInformation=$s};
+$v=@{returnValue=$r.ReturnValue;pid=$r.ProcessId}|ConvertTo-Json -Compress;
+$f=[IO.File]::Open($x.result,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);
+try {$b=[Text.UTF8Encoding]::new($false).GetBytes($v);$f.Write($b,0,$b.Length);$f.Flush($true)} finally {$f.Dispose()};
+[Console]::WriteLine($v);'''
+    process = thread = None; owned = False
+    try:
+        reply_file = directory/"worker-create-result.json"
+        result = subprocess.run([str(Path(os.environ["SystemRoot"])/"System32/WindowsPowerShell/v1.0/powershell.exe"),
+                                 "-NoProfile", "-NonInteractive", "-Command", script],
+            input=json.dumps(dict(command=subprocess.list2cmdline(command), directory=str(directory),
+                                  environment=[f"{a}={b}" for a,b in environment.items()],result=str(reply_file))),
+            capture_output=True, encoding="utf-8", env=environment, creationflags=0x08000000)
+        if result.returncode:
+            (directory/"worker-provider.stderr").write_text(result.stderr[:4000],encoding="utf-8")
+            raise RuntimeError("Windows process provider failed: exit "+str(result.returncode))
+        reply = json.loads(result.stdout)
+        if reply != _read_record(reply_file): raise RuntimeError("Windows process provider reply changed")
+        if reply.get("returnValue") != 0 or type(reply.get("pid")) is not int or reply["pid"] <= 0:
+            raise RuntimeError("Windows process provider refused creation: "+str(reply.get("returnValue")))
+        process = k.OpenProcess(0x1000 | 0x100000 | 1, False, reply["pid"])
+        if not process: raise c.WinError(c.get_last_error())
+        identity = process_identity(process)
+        if (int(identity["created"]) < earliest or int(identity["created"]) > time.time_ns()//100+116444736000000000
+                or os.path.normcase(identity["image"]) != os.path.normcase(str(Path(command[0]).resolve()))):
+            raise RuntimeError("Windows process provider returned a different process identity")
+        rows = [row for row in process_snapshot() if row["ProcessId"] == reply["pid"]]
+        if (len(rows) != 1 or command_arguments(rows[0].get("CommandLine")) != command
+                or k.WaitForSingleObject(process,0) != 258):
+            raise RuntimeError("Windows process provider worker command or lifetime changed")
+        owned = True
+        security = process_security(process)
+        if security != process_security(k.GetCurrentProcess()):
+            raise RuntimeError("Installer worker security context differs from initiator")
+        if not outside_jobs(process):
+            raise RuntimeError("Windows process provider worker belongs to a Job; independence unproved")
+        thread = suspended_worker_thread(reply["pid"])
+        proof = dict(pid=reply["pid"], **identity, outsideAllJobs=True, security=security,
+                     mechanism=intent["mechanism"], parentPid=process_parent(process),
+                     elapsedMs=(time.monotonic()-started)*1000)
+        _write_record(directory/"worker-verified-suspended.json",proof)
+        suspended = k.ResumeThread(thread)
+        if suspended == 0xffffffff: raise c.WinError(c.get_last_error())
+        if suspended != 1: raise RuntimeError("Installer worker had an unexpected native suspend count")
         return proof
-    except BaseException:
-        if pi.process:
-            k.TerminateProcess(pi.process, 1); k.WaitForSingleObject(pi.process, 10000)
+    except BaseException as error:
+        if owned:
+            k.TerminateProcess(process, 1)
+            if k.WaitForSingleObject(process, 10000) != 0:
+                raise RuntimeError("Installer dispatch refusal could not join its exact worker") from error
+        _write_record(directory/"worker-dispatch-failure.json",dict(code=type(error).__name__,
+            diagnostic=str(error)[:1000],elapsedMs=(time.monotonic()-started)*1000,
+            workerIdentityVerified=owned))
         raise
     finally:
-        if pi.thread: k.CloseHandle(pi.thread)
-        if pi.process: k.CloseHandle(pi.process)
-        if initialized: k.DeleteProcThreadAttributeList(memory)
-        k.CloseHandle(parent)
+        if thread: k.CloseHandle(thread)
+        if process: k.CloseHandle(process)
 
 
 def process_snapshot():

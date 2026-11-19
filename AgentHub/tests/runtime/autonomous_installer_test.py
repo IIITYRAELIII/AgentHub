@@ -758,6 +758,112 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             self.assertEqual(json.loads(output.read_text())["hub"], [])
             self.assertTrue(proof["outsideAllJobs"])
 
+    def test_real_kill_job_caller_exit_does_not_kill_verified_worker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); output=base/'proof.json'; finish=base/'finish'
+            worker=base/'worker.py'
+            worker.write_text("import pathlib,time\np=pathlib.Path("+repr(str(finish))+")\n"
+                              "while not p.exists(): time.sleep(.05)\n",encoding='utf-8')
+            caller=base/'caller.py'
+            caller.write_text("import importlib.util,pathlib,json,sys,time\n"
+                "s=importlib.util.spec_from_file_location('installer',"+repr(str(SOURCE))+");m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+                "proof=m.independent_worker([sys.executable,str(pathlib.Path("+repr(str(worker))+"))],pathlib.Path("+repr(str(base))+"),m.clean_installer_environment())\n"
+                "pathlib.Path("+repr(str(output))+").write_text(json.dumps(proof))\n"
+                "time.sleep(60)\n",encoding='utf-8')
+            c,w,k=installer.native_api()
+            k.CreateJobObjectW.argtypes=[c.c_void_p,w.LPCWSTR];k.CreateJobObjectW.restype=w.HANDLE
+            k.AssignProcessToJobObject.argtypes=[w.HANDLE,w.HANDLE]
+            k.TerminateJobObject.argtypes=[w.HANDLE,w.UINT]
+            job=k.CreateJobObjectW(None,None); self.assertTrue(job)
+            caller_process=subprocess.Popen([sys.executable,str(caller)],creationflags=4|0x08000000,
+                                             stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+            handle=None
+            try:
+                self.assertTrue(k.AssignProcessToJobObject(job,int(caller_process._handle)))
+                thread=installer.suspended_worker_thread(caller_process.pid)
+                try:
+                    k.ResumeThread.argtypes=[w.HANDLE];k.ResumeThread.restype=w.DWORD
+                    self.assertEqual(k.ResumeThread(thread),1)
+                finally:k.CloseHandle(thread)
+                until=time.monotonic()+20
+                while not output.exists() and caller_process.poll() is None and time.monotonic()<until:time.sleep(.05)
+                self.assertTrue(output.exists(), 'caller did not publish its native dispatch proof')
+                proof=json.loads(output.read_text()); handle=k.OpenProcess(0x1000|0x100000|1,False,proof['pid'])
+                self.assertTrue(handle);self.assertEqual(installer.process_identity(handle)['created'],proof['created'])
+                self.assertTrue(installer.outside_jobs(handle))
+                member=w.BOOL();self.assertTrue(k.IsProcessInJob(handle,job,c.byref(member)));self.assertFalse(member.value)
+                self.assertTrue(k.TerminateJobObject(job,1));caller_process.wait(timeout=10)
+                self.assertEqual(k.WaitForSingleObject(handle,0),258)
+                finish.write_text('finish');self.assertEqual(k.WaitForSingleObject(handle,10000),0)
+            finally:
+                finish.touch(exist_ok=True)
+                if handle:
+                    if k.WaitForSingleObject(handle,10000)!=0:k.TerminateProcess(handle,1);k.WaitForSingleObject(handle,10000)
+                    k.CloseHandle(handle)
+                k.TerminateJobObject(job,1);k.CloseHandle(job)
+                caller_process.communicate(timeout=10)
+
+    def test_real_job_reassignment_refuses_before_worker_payload_and_joins(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); marker=base/'must-not-run'
+            c,w,k=installer.native_api()
+            k.CreateJobObjectW.argtypes=[c.c_void_p,w.LPCWSTR];k.CreateJobObjectW.restype=w.HANDLE
+            k.AssignProcessToJobObject.argtypes=[w.HANDLE,w.HANDLE]
+            job=k.CreateJobObjectW(None,None);self.assertTrue(job)
+            real=installer.outside_jobs; retained=[]
+            def foreign_assignment(handle):
+                if handle!=k.GetCurrentProcess():
+                    # Retain an independent handle to prove the same process exit.
+                    pid=json.loads((base/'worker-create-result.json').read_text())['pid']
+                    probe=k.OpenProcess(0x1000|0x100000|0x0100|1,False,pid)
+                    self.assertTrue(probe);self.assertEqual(installer.process_identity(probe),installer.process_identity(handle))
+                    retained.append(probe)
+                    self.assertTrue(k.AssignProcessToJobObject(job,probe))
+                return real(handle)
+            try:
+                with patch.object(installer,'outside_jobs',side_effect=foreign_assignment):
+                    with self.assertRaisesRegex(RuntimeError,'independence unproved'):
+                        installer.independent_worker([sys.executable,'-c',"from pathlib import Path;Path("+repr(str(marker))+").touch()"],base,installer.clean_installer_environment())
+                self.assertEqual(len(retained),1);self.assertEqual(k.WaitForSingleObject(retained[0],0),0)
+                self.assertFalse(marker.exists());self.assertTrue((base/'worker-dispatch-failure.json').exists())
+            finally:
+                for handle in retained:k.CloseHandle(handle)
+                k.CloseHandle(job)
+
+    def test_worker_does_not_require_an_interactive_desktop_shell(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp);marker=base/'completed';c,w,k=installer.native_api()
+            class Native:
+                def __getattr__(self,key):return getattr(c,key)
+                def WinDLL(self,name,*args,**kwargs):
+                    if name=='user32':raise OSError('No interactive desktop shell in this fixture')
+                    return c.WinDLL(name,*args,**kwargs)
+            with patch.object(installer,'native_api',return_value=(Native(),w,k)):
+                proof=installer.independent_worker([sys.executable,'-c',"from pathlib import Path;Path("+repr(str(marker))+").touch()"],base,installer.clean_installer_environment())
+            handle=k.OpenProcess(0x1000|0x100000,False,proof['pid'])
+            if handle:
+                try:self.assertEqual(k.WaitForSingleObject(handle,10000),0)
+                finally:k.CloseHandle(handle)
+            self.assertTrue(marker.exists())
+
+    def test_provider_refusal_keeps_one_creation_intent_and_original_readback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp);request=dict(operationId='same-original')
+            installer._write_record(base/'request.json',request)
+            def refused(command,**kwargs):
+                data=json.loads(kwargs['input'])
+                reply=dict(returnValue=2,pid=None)
+                installer._write_record(Path(data['result']),reply)
+                return subprocess.CompletedProcess(command,0,json.dumps(reply),'')
+            with patch.object(installer.subprocess,'run',side_effect=refused) as provider:
+                with self.assertRaisesRegex(RuntimeError,'refused creation: 2'):
+                    installer.independent_worker([sys.executable,'-c','raise AssertionError()'],base,installer.clean_installer_environment())
+                self.assertEqual(provider.call_count,1)
+            self.assertEqual(installer._read_record(base/'request.json'),request)
+            self.assertEqual(installer._read_record(base/'worker-create-intent.json')['operationId'],'same-original')
+            self.assertFalse((base/'worker-verified-suspended.json').exists())
+            self.assertTrue((base/'worker-dispatch-failure.json').exists())
+
 
 if __name__ == "__main__":
     unittest.main()

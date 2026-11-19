@@ -890,6 +890,20 @@ the runtime and proves its worker is outside all old Jobs. Installed API/handoff
 availability and stdin are not admission requirements. Other installations and
 unrelated Node processes remain outside its authority.
 
+ADR-HUB-477 replaces only this recipient's desktop-parent creation with local
+Windows `Win32_Process.Create`, using explicit breakaway and suspended creation.
+Provider success, a shell PID or a scheduler acknowledgement is not independence
+proof. Fresh process birth/image/exact command, live retained process handle,
+same user/logon/session/elevation, absence of every Job and the single native
+thread's process binding are verified before Resume. The resumed worker checks
+Job absence again. Unavailable, changed or unproved creation refuses before
+selected-Hub retirement; there is one creation attempt and no launch fallback.
+Only the positively bound new worker may be cleaned up, and its exit is joined.
+An unverified returned PID grants no termination authority. Intent, provider
+result, native proof and early refusal remain under the same retained request.
+A lost reply cannot bypass its existing same-original dispatch fence. The
+RuntimeHost cold-start/replacement native owner above is unchanged.
+
 Native handles, creation time, image and actual selected-tree ownership bind
 termination. The existing maintenance original, stopped backup, verified package
 and installation owners remain authoritative. Actual Ready must bind the new

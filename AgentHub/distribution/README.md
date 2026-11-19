@@ -142,10 +142,26 @@ input remain retained.
 
 `install_release.py` is the single-file recipient entry. It needs Windows,
 Python and Node.js with `node:sqlite` (22.5 or newer). It verifies the public
-package, escapes the calling Hub Job, force stops only the selected installation,
+package, starts an independent worker, force stops only the selected installation,
 backs up durable state, installs and starts the new version, and checks real
 Ready. A failed replacement restores verified prior code and checks old Ready.
 The update authorizes interruption of active work in that installation.
+
+The recipient uses local `Win32_Process.Create` with `CREATE_SUSPENDED` and
+`CREATE_BREAKAWAY_FROM_JOB`. It does not select Explorer or assume that a shell
+or scheduler launch escaped a Job. Before resuming the single native thread,
+the caller verifies the returned process's fresh birth, executable, exact command,
+live retained handle, same user/logon/session/elevation and absence of every Job.
+The worker repeats the Job check. A refused or unavailable provider does not
+stop Hub or fall back to another launch. The exact new worker is joined on a
+verified pre-resume refusal; an unverified identity is never terminated by PID.
+This recipient-specific boundary does not change RuntimeHost restart launching.
+
+The retained directory records `worker-create-intent.json`, the provider result,
+`worker-verified-suspended.json` and addressed dispatch failures before normal
+worker logging starts. Keep that directory and original operation ID after a
+lost reply. Repeating the same input reads the same original; it cannot create
+another worker. A Job-related refusal alone does not identify the Job owner.
 
 Example: `python install_release.py --release <version> --runtime-root <Hub-directory> --scratch-root <separate-directory> --mode force`.
 Offline input uses `--archive <ZIP> --sha256 <exact-digest>` instead of `--release`.
