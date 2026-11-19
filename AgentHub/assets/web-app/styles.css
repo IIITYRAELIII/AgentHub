@@ -9660,6 +9660,18 @@ button.attachment-preparing-label {
 .file-transfer-owner-dialog header { align-items: flex-start; display: flex; gap: 1rem; justify-content: space-between; padding: 1.35rem 1.35rem 0; }
 .file-transfer-owner-dialog h2, .file-transfer-revoke-dialog h2 { font-size: 1.25rem; margin: 0; }
 .file-transfer-owner-dialog h2[tabindex="-1"]:focus { outline: none; }
+.file-transfer-semantic-status {
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
 .file-transfer-owner-kicker { color: var(--text-faint); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; margin: 0 0 0.3rem; text-transform: uppercase; }
 .file-transfer-owner-close { align-items: center; background: transparent; border: 0; border-radius: 50%; color: var(--text-faint); cursor: pointer; display: flex; flex: 0 0 44px; font-size: 1.5rem; height: 44px; justify-content: center; }
 .file-transfer-owner-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 1.15rem 1.35rem; }
@@ -9676,6 +9688,11 @@ button.attachment-preparing-label {
 .file-transfer-owner-warning { background: color-mix(in srgb, #d99018 15%, transparent); border-left: 3px solid #d99018; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; padding: 0.75rem; }
 .file-transfer-owner-progress { background: var(--line); border-radius: 999px; height: 0.65rem; margin-top: 0.9rem; overflow: hidden; }
 .file-transfer-owner-progress span { background: var(--accent); display: block; height: 100%; width: var(--progress); }
+.file-transfer-owner-progress.is-indeterminate span { animation: file-transfer-owner-indeterminate 1.2s ease-in-out infinite; width: 30%; }
+@keyframes file-transfer-owner-indeterminate { from { transform: translateX(-110%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) {
+  .file-transfer-owner-progress.is-indeterminate span { animation: none; opacity: 0.55; transform: none; width: 100%; }
+}
 .file-transfer-owner-details { display: grid; gap: 0.65rem; }
 .file-transfer-owner-details div { display: grid; gap: 0.2rem; }
 .file-transfer-owner-details dt { color: var(--text-faint); font-size: 0.75rem; }

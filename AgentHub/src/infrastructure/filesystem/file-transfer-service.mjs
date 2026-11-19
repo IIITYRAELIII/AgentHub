@@ -427,6 +427,10 @@ export class FileTransferService {
     return this.#store.artifact(String(owner), String(artifactId));
   }
 
+  cancelPreparation(owner, artifactId) {
+    return this.#store.cancelPreparation(String(owner), String(artifactId));
+  }
+
   async createShare({ owner, artifactId, requestId, ttlMs, sourcePath = null }) {
     const ownerId = String(owner), artifactKey = String(artifactId), requestKey = String(requestId);
     const issuanceKid = this.#keyring.currentKid;
@@ -453,7 +457,7 @@ export class FileTransferService {
     delete result.kid;
     delete result.requestId;
     delete result.secretHash;
-    if (result.state === "ready") {
+    if (["preparing", "ready"].includes(result.state)) {
       result.url = `${this.#policy.publicBaseUrl}/transfer/#v1.${share.kid}.${share.id}.${secret}`;
     }
     return result;
@@ -625,7 +629,7 @@ export class FileTransferService {
     }
     const result = await this.#store.ownerFile(String(owner), this.#sourceAliases(target), sourceIdentity(info));
     let share = result?.share ?? null;
-    if (share?.state === "ready") {
+    if (["preparing", "ready"].includes(share?.state)) {
       const key = this.#keyring.keys.get(share.kid);
       if (key) {
         const ttlMs = share.expiresAt - share.createdAt;

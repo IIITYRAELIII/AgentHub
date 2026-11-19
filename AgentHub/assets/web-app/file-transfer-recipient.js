@@ -20,6 +20,7 @@
   let written = 0;
   let pendingPlanRequestId = "";
   let sessionSelector = "";
+  let inspectTimer = null;
 
   const bytesLabel = (value) => {
     const bytes = Math.max(0, Number(value) || 0);
@@ -42,10 +43,19 @@
     button.disabled = false;
   };
   const clearActions = () => { setButton(primary, ""); setButton(secondary, ""); };
+  const stopInspecting = () => {
+    if (inspectTimer) clearTimeout(inspectTimer);
+    inspectTimer = null;
+  };
+  const scheduleInspect = (delay = 1200) => {
+    stopInspecting();
+    inspectTimer = setTimeout(() => void inspectCapability(), delay);
+  };
   const setState = (heading, body, { error = false } = {}) => {
-    title.textContent = heading;
-    message.textContent = body;
-    message.setAttribute("role", error ? "alert" : "status");
+    if (title.textContent !== heading) title.textContent = heading;
+    if (message.textContent !== body) message.textContent = body;
+    const role = error ? "alert" : "status";
+    if (message.getAttribute("role") !== role) message.setAttribute("role", role);
     alert.hidden = true;
     alert.textContent = "";
   };
@@ -88,6 +98,7 @@
     return `${protectedHeader}.${encodedPayload}.${base64url(signature)}`;
   }
   function showReady() {
+    stopInspecting();
     setState("Получение файла", "Файл готов к защищённой загрузке.");
     file.hidden = false;
     name.textContent = metadata.name;
@@ -98,7 +109,51 @@
     setButton(primary, "Скачать", () => void begin());
     setButton(secondary, "");
   }
+  function showPreparing() {
+    setState("Файл загружается", "Ссылка уже действует. Скачивание станет доступно после завершения загрузки.");
+    file.hidden = false;
+    name.textContent = metadata.name;
+    size.textContent = bytesLabel(metadata.size);
+    expiry.textContent = `Доступна до ${formatDate(metadata.expiresAt)}`;
+    warning.hidden = true;
+    progressWrap.hidden = true;
+    clearActions();
+    scheduleInspect();
+  }
+  function showInspectFailure() {
+    setState("Не удалось проверить статус", "Проверьте подключение и попробуйте ещё раз.", { error: true });
+    warning.hidden = true;
+    progressWrap.hidden = true;
+    if (metadata?.name) {
+      file.hidden = false;
+      name.textContent = metadata.name;
+      size.textContent = bytesLabel(metadata.size);
+      expiry.textContent = `Доступна до ${formatDate(metadata.expiresAt)}`;
+    }
+    setButton(primary, "Проверить снова", () => void inspectCapability());
+    setButton(secondary, "");
+  }
+  function showTerminal(state) {
+    stopInspecting();
+    file.hidden = true;
+    warning.hidden = true;
+    progressWrap.hidden = true;
+    clearActions();
+    const terminal = {
+      revoked: ["Ссылка отозвана", "Передача по этой ссылке прекращена."],
+      expired: ["Срок ссылки истёк", "Ссылка больше недоступна."],
+      failed: ["Не удалось подготовить файл", "Файл не был опубликован. Скачивание по этой ссылке недоступно."],
+      cancelled: ["Загрузка отменена", "Файл не был опубликован. Скачивание по этой ссылке недоступно."],
+      claimed: ["Ссылка уже использована", "Файл уже закреплён за другим браузером."],
+      downloading: ["Ссылка уже использована", "Файл уже закреплён за другим браузером."],
+      completed: ["Ссылка уже использована", "Файл уже закреплён за другим браузером."],
+      ambiguous_terminal: ["Не удалось подготовить файл", "Файл не был опубликован. Скачивание по этой ссылке недоступно."],
+    };
+    const [heading, body] = terminal[state] || ["Ссылка недоступна", "Загрузка по этой ссылке больше недоступна."];
+    setState(heading, body, { error: true });
+  }
   function showUnavailable() {
+    stopInspecting();
     file.hidden = true;
     warning.hidden = true;
     progressWrap.hidden = true;
@@ -106,12 +161,14 @@
     setState("Ссылка недоступна", "Загрузка по этой ссылке больше недоступна. Попросите отправителя создать новую ссылку.", { error: true });
   }
   function showUnsupported() {
+    stopInspecting();
     file.hidden = true;
     warning.hidden = true;
     clearActions();
     setState("Защищённая загрузка недоступна", "В этом браузере нельзя безопасно загрузить файл. Ссылка не использована. Откройте её в поддерживаемом браузере.", { error: true });
   }
   function showWebView() {
+    stopInspecting();
     file.hidden = true;
     warning.hidden = true;
     setState("Защищённая загрузка выполняется во внешнем браузере.", "Скопируйте ссылку и откройте её во внешнем браузере. Ссылка не будет использована внутри WebView.");
@@ -233,6 +290,28 @@
       setButton(primary, "Продолжить загрузку", () => void download());
     }
   }
+  async function inspectCapability() {
+    stopInspecting();
+    try {
+      const response = await api("inspect", capability);
+      const next = await response.json();
+      if (!next || typeof next !== "object" || !["preparing", "ready", "revoked", "expired", "failed",
+        "cancelled", "claimed", "downloading", "completed", "ambiguous_terminal"].includes(next.state)) {
+        throw new Error("invalid transfer state");
+      }
+      metadata = next;
+      if (next.state === "preparing") showPreparing();
+      else if (next.state === "ready") showReady();
+      else showTerminal(next.state);
+    } catch (error) {
+      if (error?.status && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) {
+        showUnavailable();
+        return;
+      }
+      showInspectFailure();
+      scheduleInspect(error?.status === 429 ? 3000 : 1800);
+    }
+  }
   async function start() {
     if (isWebView()) { showWebView(); return; }
     capability = parseCapability();
@@ -243,10 +322,7 @@
       return;
     }
     if (!supported()) { showUnsupported(); return; }
-    try {
-      metadata = await (await api("inspect", capability)).json();
-      showReady();
-    } catch { showUnavailable(); }
+    await inspectCapability();
   }
   void start();
 })();

@@ -179,6 +179,169 @@ test("file transfer preparation creates an immutable managed snapshot and explic
   }
 });
 
+test("one early capability waits without claim and becomes ready after immutable publication and restart", async (t) => {
+  const value = await fixture();
+  const services = [value.service];
+  t.after(async () => {
+    await Promise.all(services.map((service) => service.close().catch(() => {})));
+    await rm(value.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+  const owner = "device:early-link";
+  const source = path.join(value.workspace, "early-link.bin");
+  const bytes = Buffer.alloc(2 * TRANSFER_BLOCK_BYTES, 0x45);
+  await writeFile(source, bytes);
+  const addBlocks = value.store.addBlocks.bind(value.store);
+  let copyReachedResolve;
+  let releaseCopyResolve;
+  const copyReached = new Promise((resolve) => { copyReachedResolve = resolve; });
+  const releaseCopy = new Promise((resolve) => { releaseCopyResolve = resolve; });
+  value.store.addBlocks = async (...args) => {
+    copyReachedResolve();
+    await releaseCopy;
+    return addBlocks(...args);
+  };
+
+  const artifact = await value.service.prepare({ owner, sourcePath: source, requestId: "early:prepare" });
+  await copyReached;
+  const share = await value.service.createShare({ owner, sourcePath: source, artifactId: artifact.id,
+    requestId: "early:share", ttlMs: 3_600_000 });
+  assert.equal(share.state, "preparing");
+  assert.match(share.url, /#v1\.test-v1\./u);
+  const lostResponseReplay = await value.service.createShare({ owner, sourcePath: source, artifactId: artifact.id,
+    requestId: "early:share", ttlMs: 3_600_000 });
+  assert.equal(lostResponseReplay.url, share.url);
+  assert.equal(lostResponseReplay.state, "preparing");
+  const [, kid, shareId, secret] = /#v1\.([^.]+)\.([^.]+)\.(.+)$/u.exec(share.url);
+  const waiting = await Promise.all(Array.from({ length: 32 }, () => value.service.inspect({ kid, shareId, secret })));
+  assert.equal(waiting.every((item) => item.state === "preparing" && item.sha256 === null), true,
+    "concurrent early opens must observe waiting without partial publication");
+  const { publicKey } = await generateKeyPair("ES256", { extractable: true });
+  const publicJwk = await exportJWK(publicKey);
+  await assert.rejects(value.service.createClaimChallenge({ kid, shareId, secret,
+    claimId: randomBytes(32).toString("base64url"), publicJwk }), /transfer-unavailable/u,
+  "a waiting capability must not admit claim or bytes");
+
+  releaseCopyResolve();
+  await value.service.waitForPreparation(artifact.id);
+  const ready = await value.service.inspect({ kid, shareId, secret });
+  assert.equal(ready.state, "ready");
+  assert.equal(ready.sha256, createHash("sha256").update(bytes).digest("hex"));
+  const replay = await value.service.createShare({ owner, sourcePath: source, artifactId: artifact.id,
+    requestId: "early:share", ttlMs: 3_600_000 });
+  assert.equal(replay.url, share.url, "publication must not rotate the early capability");
+  assert.equal(replay.state, "ready");
+
+  await value.service.close();
+  const restartedStore = new FileTransferStore({ dataDir: value.dataDir, policy: value.policy,
+    instanceId: "early-restarted" });
+  const restarted = new FileTransferService({ dataDir: value.dataDir, roots: [value.workspace],
+    store: restartedStore, policy: value.policy,
+    keyring: { currentKid: "test-v1", keys: { "test-v1": value.key } } });
+  services.push(restarted);
+  assert.equal((await restarted.inspect({ kid, shareId, secret })).state, "ready");
+  assert.equal((await restarted.ownerStatus(owner, source)).share.url, share.url);
+  assert.deepEqual(await downloadIssuedShare(restarted, replay), bytes);
+});
+
+test("early capability expiry and revoke remain terminal after publication", async (t) => {
+  let now = Date.now();
+  const value = await fixture({ now: () => now });
+  t.after(async () => { await value.service.close(); await rm(value.root, { recursive: true, force: true }); });
+  const owner = "device:early-terminal";
+  const source = path.join(value.workspace, "early-terminal.bin");
+  await writeFile(source, Buffer.alloc(2 * TRANSFER_BLOCK_BYTES, 0x54));
+  const addBlocks = value.store.addBlocks.bind(value.store);
+  let reachedResolve;
+  let releaseResolve;
+  const reached = new Promise((resolve) => { reachedResolve = resolve; });
+  const release = new Promise((resolve) => { releaseResolve = resolve; });
+  value.store.addBlocks = async (...args) => { reachedResolve(); await release; return addBlocks(...args); };
+  const artifact = await value.service.prepare({ owner, sourcePath: source, requestId: "terminal:prepare" });
+  await reached;
+  const share = await value.service.createShare({ owner, sourcePath: source, artifactId: artifact.id,
+    requestId: "terminal:share", ttlMs: 3_600_000 });
+  const [, kid, shareId, secret] = /#v1\.([^.]+)\.([^.]+)\.(.+)$/u.exec(share.url);
+  assert.equal((await value.service.inspect({ kid, shareId, secret })).state, "preparing");
+  assert.equal((await value.service.revoke(owner, shareId)).state, "revoked");
+  assert.equal((await value.service.inspect({ kid, shareId, secret })).state, "revoked");
+  releaseResolve();
+  await value.service.waitForPreparation(artifact.id);
+  assert.equal((await value.service.inspect({ kid, shareId, secret })).state, "revoked");
+
+  const secondSource = path.join(value.workspace, "early-expiry.bin");
+  await writeFile(secondSource, Buffer.alloc(TRANSFER_BLOCK_BYTES, 0x58));
+  const second = await value.service.prepare({ owner, sourcePath: secondSource, requestId: "expiry:prepare" });
+  const expiring = await value.service.createShare({ owner, sourcePath: secondSource, artifactId: second.id,
+    requestId: "expiry:share", ttlMs: 3_600_000 });
+  const [, expiryKid, expiryShareId, expirySecret] = /#v1\.([^.]+)\.([^.]+)\.(.+)$/u.exec(expiring.url);
+  now += 3_600_001;
+  assert.equal((await value.service.inspect({ kid: expiryKid, shareId: expiryShareId, secret: expirySecret })).state,
+    "expired");
+  await assert.rejects(value.service.waitForPreparation(second.id), /transfer-preparation-unavailable/u);
+  assert.equal((await value.service.inspect({ kid: expiryKid, shareId: expiryShareId, secret: expirySecret })).state,
+    "expired");
+});
+
+test("explicit preparation cancellation keeps the early link terminal and publishes no bytes", async (t) => {
+  const value = await fixture();
+  t.after(async () => { await value.service.close(); await rm(value.root, { recursive: true, force: true }); });
+  const owner = "device:early-cancel";
+  const source = path.join(value.workspace, "early-cancel.bin");
+  await writeFile(source, Buffer.alloc(2 * TRANSFER_BLOCK_BYTES, 0x43));
+  const addBlocks = value.store.addBlocks.bind(value.store);
+  let reachedResolve;
+  let releaseResolve;
+  const reached = new Promise((resolve) => { reachedResolve = resolve; });
+  const release = new Promise((resolve) => { releaseResolve = resolve; });
+  value.store.addBlocks = async (...args) => { reachedResolve(); await release; return addBlocks(...args); };
+  const artifact = await value.service.prepare({ owner, sourcePath: source, requestId: "cancel:prepare" });
+  await reached;
+  const share = await value.service.createShare({ owner, sourcePath: source, artifactId: artifact.id,
+    requestId: "cancel:share", ttlMs: 3_600_000 });
+  const [, kid, shareId, secret] = /#v1\.([^.]+)\.([^.]+)\.(.+)$/u.exec(share.url);
+  assert.equal((await value.service.cancelPreparation(owner, artifact.id)).state, "failed");
+  assert.equal((await value.service.inspect({ kid, shareId, secret })).state, "cancelled");
+  releaseResolve();
+  await assert.rejects(value.service.waitForPreparation(artifact.id), /transfer-preparation-cancelled/u);
+  assert.equal((await value.service.inspect({ kid, shareId, secret })).state, "cancelled");
+  await assert.rejects(readFile(value.service.artifactPath(artifact.id)), { code: "ENOENT" });
+});
+
+test("stale preparation recovery after restart keeps the early capability terminal", async (t) => {
+  let now = Date.now();
+  const value = await fixture({ now: () => now, instanceId: "early-crashed" });
+  const services = [value.service];
+  t.after(async () => {
+    await Promise.all(services.map((service) => service.close().catch(() => {})));
+    await rm(value.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+  const owner = "device:early-recovery";
+  const source = path.join(value.workspace, "early-recovery.bin");
+  await writeFile(source, Buffer.alloc(2 * TRANSFER_BLOCK_BYTES, 0x52));
+  const addBlocks = value.store.addBlocks.bind(value.store);
+  let reachedResolve;
+  let releaseResolve;
+  const reached = new Promise((resolve) => { reachedResolve = resolve; });
+  const release = new Promise((resolve) => { releaseResolve = resolve; });
+  value.store.addBlocks = async (...args) => { reachedResolve(); await release; return addBlocks(...args); };
+  const artifact = await value.service.prepare({ owner, sourcePath: source, requestId: "recovery:prepare" });
+  await reached;
+  const share = await value.service.createShare({ owner, sourcePath: source, artifactId: artifact.id,
+    requestId: "recovery:share", ttlMs: 3_600_000 });
+  const [, kid, shareId, secret] = /#v1\.([^.]+)\.([^.]+)\.(.+)$/u.exec(share.url);
+  now += 31_000;
+  const recoveredStore = new FileTransferStore({ dataDir: value.dataDir, policy: value.policy,
+    now: () => now, instanceId: "early-recovered", isAlive: () => false });
+  const recovered = new FileTransferService({ dataDir: value.dataDir, roots: [value.workspace],
+    store: recoveredStore, policy: value.policy,
+    keyring: { currentKid: "test-v1", keys: { "test-v1": value.key } } });
+  services.push(recovered);
+  assert.equal((await recovered.status(owner, artifact.id)).state, "failed");
+  assert.equal((await recovered.inspect({ kid, shareId, secret })).state, "failed");
+  releaseResolve();
+  await assert.rejects(value.service.waitForPreparation(artifact.id), /transfer-preparation-cancelled/u);
+});
+
 test("same-path same-size replacement creates one new snapshot while the old share keeps its bytes", async (t) => {
   const value = await fixture();
   const services = [value.service];
@@ -255,17 +418,30 @@ test("same-size replacement during preparation fails closed without publishing m
   await writeFile(source, bytesA);
   const addBlocks = value.store.addBlocks.bind(value.store);
   let replaced = false;
+  let reachedResolve;
+  let releaseResolve;
+  const reached = new Promise((resolve) => { reachedResolve = resolve; });
+  const release = new Promise((resolve) => { releaseResolve = resolve; });
   value.store.addBlocks = async (...args) => {
     if (!replaced) {
       replaced = true;
+      reachedResolve();
+      await release;
       await writeFile(source, bytesB);
     }
     return addBlocks(...args);
   };
   const artifact = await value.service.prepare({ owner, sourcePath: source, requestId: "prepare-race" });
+  await reached;
+  const early = await value.service.createShare({ owner, sourcePath: source, artifactId: artifact.id,
+    requestId: "prepare-race-share", ttlMs: 3_600_000 });
+  const [, kid, shareId, secret] = /#v1\.([^.]+)\.([^.]+)\.(.+)$/u.exec(early.url);
+  assert.equal((await value.service.inspect({ kid, shareId, secret })).state, "preparing");
+  releaseResolve();
   await assert.rejects(value.service.waitForPreparation(artifact.id), /transfer-source-changed/u);
   assert.equal(replaced, true);
   assert.equal((await value.service.status(owner, artifact.id)).state, "failed");
+  assert.equal((await value.service.inspect({ kid, shareId, secret })).state, "failed");
   await assert.rejects(readFile(value.service.artifactPath(artifact.id)), { code: "ENOENT" });
 
   const replacement = await value.service.prepare({ owner, sourcePath: source, requestId: "prepare-after-race" });
@@ -305,6 +481,7 @@ test("legacy ready artifacts without source identity migrate fail-closed and are
   const migrated = new DatabaseSync(databasePath, { readOnly: true });
   try {
     assert.equal(migrated.prepare("SELECT count(*) n FROM pragma_table_info('transfer_artifacts') WHERE name='source_identity_json'").get().n, 1);
+    assert.equal(migrated.prepare("SELECT count(*) n FROM pragma_table_info('transfer_artifacts') WHERE name='failure_code'").get().n, 1);
   } finally { migrated.close(); }
 });
 
@@ -347,7 +524,8 @@ test("atomic PoP claim has exactly one winner across independent store connectio
   assert.equal(winners.length, 1);
   assert.match(winners[0].value.id, /^[0-9a-f-]{36}$/u);
   assert.match(winners[0].value.credential, /^v1\.test-v1\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/u);
-  await assert.rejects(value.service.inspect({ kid, shareId, secret }), /transfer-unavailable/u);
+  assert.equal((await value.service.inspect({ kid, shareId, secret })).state, "claimed",
+    "the exact capability may report that another recipient already claimed it without reopening claim");
 });
 
 test("lost create and claim responses replay byte-identically across key rotation", async (t) => {
@@ -1173,9 +1351,16 @@ test("700 MiB sparse source prepares and streams with bounded process memory", {
   let rssPeak = rssBefore;
   const artifact = await value.service.prepare({ owner: "device:large", sourcePath: source,
     requestId: "large:prepare" });
-  await value.service.waitForPreparation(artifact.id);
-  const share = await value.service.createShare({ owner: "device:large", artifactId: artifact.id,
+  const earlyShare = await value.service.createShare({ owner: "device:large", sourcePath: source,
+    artifactId: artifact.id,
     requestId: "large:share", ttlMs: 3_600_000 });
+  assert.equal(earlyShare.state, "preparing");
+  const earlyUrl = earlyShare.url;
+  await value.service.waitForPreparation(artifact.id);
+  const share = await value.service.createShare({ owner: "device:large", sourcePath: source,
+    artifactId: artifact.id, requestId: "large:share", ttlMs: 3_600_000 });
+  assert.equal(share.state, "ready");
+  assert.equal(share.url, earlyUrl);
   const [, kid, shareId, secret] = /#v1\.([^.]+)\.([^.]+)\.(.+)$/u.exec(share.url);
   const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
   const publicJwk = await exportJWK(publicKey);

@@ -75,7 +75,10 @@ for (const samePath of [false, true]) for (const action of ['status', 'create', 
             const handler = async (act, args) => {
               window.calls.push({ action: act, args });
               if (act === 'status') return { ...window.snapshot(window.next), artifact: window.next === 'A' ? null : window.snapshot('B').artifact };
-              if (act === 'prepare') return new Promise(resolve => { window.releaseOld = () => resolve({ artifact: { id: 'A', state: 'preparing', size: 10 } }); });
+              if (act === 'prepare') {
+                if (window.next === 'A') return new Promise(resolve => { window.releaseOld = () => resolve({ artifact: { id: 'A', state: 'preparing', size: 10 } }); });
+                return { artifact: window.snapshot('B').artifact };
+              }
               if (act === 'create') return { share: window.share(args.artifactId) };
               throw new Error('Unexpected synthetic action');
             };
@@ -138,6 +141,7 @@ test('ambiguous create keeps its exact idempotency envelope in the same opening'
     window.AgentHubFileTransferOwner.configure(async (action, args) => {
       window.calls.push({ action, args });
       if (action === 'status') return window.snapshot('A');
+      if (action === 'prepare') return { artifact: window.snapshot('A').artifact };
       if (action === 'create') {
         if (window.calls.filter(c => c.action === 'create').length === 1) throw new Error('synthetic lost reply');
         return { share: window.share('A') };
