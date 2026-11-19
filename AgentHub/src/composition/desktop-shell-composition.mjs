@@ -12,6 +12,7 @@ import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { retryAgentHubStartup } from "../application/agent-hub-startup-coordinator.mjs";
 import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
 import { DesktopDirectoryPickerService } from "../interfaces/desktop/desktop-directory-picker-service.mjs";
+import { installerCutoverOperation, installerCutoverSnapshot } from "../application/installer-cutover.mjs";
 
 export function createDesktopShellComposition({
   config, server = {}, diagnostics, limits, models, state, catalog,
@@ -564,7 +565,8 @@ export function createDesktopShellComposition({
       hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
       isMaintenanceActive: (target) => streamContextMaintenance.isActive(target),
       isManagedMaintenanceActive: (target) => streamContextMaintenance.isManagedActive(target),
-      isRuntimeStopping: () => hostState.stopping,
+      isRuntimeStopping: () => hostState.stopping
+        || Boolean(installerCutoverOperation(maintenanceOperations, config.dataDir)),
       scheduleDeferred: scheduleQueuedInput,
       setProgressStage: (...args) => taskProgress.setStage(...args),
       noteRunActivity: (...args) => taskProgress.noteActivity(...args),
@@ -614,6 +616,12 @@ export function createDesktopShellComposition({
       }),
       runtimeHealth: () => ({
         ...agentHubRuntimeHealth.snapshot(),
+        installerCutover: installerCutoverSnapshot({
+          operation: installerCutoverOperation(maintenanceOperations, config.dataDir),
+          runs: taskRuns.values().filter(taskRunIsActive),
+          pendingAdmission: desktopRunCoordinator?.hasPendingAdmission(() => true),
+          maintenanceCount: streamMaintenance.activeCount(),
+        }),
         ...(process.env.AGENT_HUB_PACKAGE_HANDOFF_PROTOCOL === "1" && typeof desktopActions.restartPackage === "function"
           ? { packageHandoff: { protocol: 1 } } : {}),
         process: {

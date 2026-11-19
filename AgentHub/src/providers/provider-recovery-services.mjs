@@ -1,7 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { codexThreadWaitingOnApproval } from "./codex/codex-approvals.mjs";
 import {
-  codexThreadHistory,
   codexTurnActivityGroups,
 } from "../application/task-history.mjs";
 import { replaceRunActivityGroups } from "../domain/run-activity.mjs";
@@ -45,10 +43,10 @@ export class CodexRecoveryService {
 
   constructor(dependencies = {}) {
     for (const name of [
-      "transportRunning", "readTaskSnapshot", "startTransport", "initialize", "isCodex",
-      "finishInterrupted", "readThread", "autoApprove", "restartRequested",
-      "finishProgress", "completeRun", "recoveredAnswer", "setProgressStage",
-      "launchTurn", "reindexRun", "scheduleObservedRun", "startTyping", "saveState",
+      "transportRunning", "readTaskSnapshot", "startTransport", "initialize",
+      "readThread", "restartRequested",
+      "finishProgress", "recoveredAnswer", "setProgressStage",
+      "reindexRun", "scheduleObservedRun", "startTyping", "saveState",
       "telegram", "consumeTracker", "finalizeDelivery",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -62,12 +60,11 @@ export class CodexRecoveryService {
   async prepare(runs) {
     if (!runs.length || this.#d.transportRunning()) return;
     await this.#d.startTransport();
-    await this.#d.initialize({ attachSelectedThread: this.#d.isCodex() });
+    await this.#d.initialize({ attachSelectedThread: false });
   }
 
   async recover(run, { observerSnapshot = null, reconcileOnly = false } = {}) {
     const d = this.#d;
-    if (await d.retireLocalExecutionAfterReboot?.(run)) return;
     run.activityUnknown = true;
     const initialAction = resolveTaskRecoveryAction({
       run,
@@ -93,8 +90,9 @@ export class CodexRecoveryService {
         metadata: { runId: run.id, threadId: run.threadId, turnId: run.turnId, metadataOnly },
       });
     } catch { /* Diagnostics never grant recovery authority. */ }
+    const observation = {};
     const finishRead = (outcome) => {
-      try { readSpan?.finish({ outcome }); } catch { /* Best effort. */ }
+      try { readSpan?.finish({ outcome, metadata: observation }); } catch { /* Best effort. */ }
     };
     let recoveryResult;
     try {
@@ -103,7 +101,8 @@ export class CodexRecoveryService {
         includeTurns: !metadataOnly,
         priority: "interactive",
         applySnapshot: async (snapshot) => {
-          recoveryResult = await this.#recoverFromThread(run, snapshot, { reconcileOnly });
+          recoveryResult = await this.#recoverFromThread(run, snapshot, { reconcileOnly, observation });
+          observation.recoveryEligible = recoveryResult === INACTIVE_RECOVERY;
         },
       });
       finishRead("succeeded");
@@ -123,21 +122,19 @@ export class CodexRecoveryService {
     return recoveryResult;
   }
 
-  async #recoverFromThread(run, result, { reconcileOnly }) {
+  async #recoverFromThread(run, result, { reconcileOnly, observation }) {
     const d = this.#d;
     const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
     const exactTurnId = String(run.turnId ?? "").trim();
     const turn = exactTurnId
       ? turns.find((item) => String(item?.id ?? "").trim() === exactTurnId)
       : turns.at(-1);
-    hydrateCodexAgentMessages(run, turn?.items, { turnId: turn?.id });
+    if (turn?.items?.length) hydrateCodexAgentMessages(run, turn.items, { turnId: turn.id });
     replaceRunActivityGroups(run, codexTurnActivityGroups(turn));
     const recoveryAction = resolveTaskRecoveryAction({
       run,
       codexAvailable: d.transportRunning(),
       codexTurn: turn,
-      waitingOnApproval: codexThreadWaitingOnApproval(result.thread?.status),
-      autoApprove: d.autoApprove(),
       restartRequested: d.restartRequested(),
     });
     let terminalSnapshot = null;
@@ -149,13 +146,21 @@ export class CodexRecoveryService {
         // original run and let the exact observer retry the same identity.
       }
     }
+    Object.assign(observation, {
+      threadState: ["idle", "active", "notLoaded", "systemError"].includes(result.thread?.status?.type)
+        ? result.thread.status.type : "unknown",
+      snapshotTurnId: String(terminalSnapshot?.turnId ?? "").slice(0, 256) || null,
+      snapshotActive: terminalSnapshot?.active === true,
+      snapshotCompleted: terminalSnapshot?.completed === true,
+      snapshotUnknown: terminalSnapshot?.activityUnknown === true,
+    });
     const exactTerminal = terminalSnapshot?.completed === true
       && String(terminalSnapshot.turnId ?? "").trim() === exactTurnId
       ? terminalSnapshot : null;
     // A disconnected accepted turn can remain inProgress after its original
     // provider process is gone. This is only eligibility, never terminal proof:
-    // cancellation still requires fresh provider/native inactivity, exact
-    // interrupt rejection and a second fresh inactivity check.
+    // settlement still requires fresh provider/native inactivity, exact
+    // identity and a second fresh inactivity check. It performs no provider RPC effect.
     // A dangling rollout active marker is eligibility just like the previous
     // exact inProgress page; it is not proof of a currently live process.
     const exactRetainedSnapshot = !turn && terminalSnapshot?.turnId === exactTurnId
@@ -165,10 +170,14 @@ export class CodexRecoveryService {
     const retainedAcceptedTurn = (turn?.status === "inProgress" || exactRetainedSnapshot)
       && normalizeTaskExecutionOwner(run.executionOwner) === TASK_EXECUTION_OWNERS.HUB
       && providerTurnAcceptance(run).accepted;
+    // A restarted App Server may not have loaded the retained Thread. This
+    // permits the same guarded activity checks, never a terminal by itself.
+    const recoveryThreadEligible = result.thread?.status?.type === "idle"
+      || (result.thread?.status?.type === "notLoaded" && retainedAcceptedTurn);
     if (!exactTerminal && run.observer !== true && exactTurnId
       && String(run.clientUserMessageId ?? "").trim()
       && run.providerStart?.state !== "unconfirmed"
-      && result.thread?.status?.type === "idle"
+      && recoveryThreadEligible
       && (["interrupted", "aborted"].includes(turn?.status) || retainedAcceptedTurn)
       && typeof d.recoverInactiveRun === "function") return INACTIVE_RECOVERY;
     if (!exactTerminal && recoveryAction === TASK_RECOVERY_ACTIONS.MISSING_CODEX_TURN) {
@@ -178,19 +187,6 @@ export class CodexRecoveryService {
       return;
     }
     run.responseText = (turn ? d.recoveredAnswer(turn) : "") || run.responseText;
-    if (!exactTerminal && !reconcileOnly && recoveryAction === TASK_RECOVERY_ACTIONS.RETRY_LOST_APPROVAL) {
-      const originalPrompt = codexThreadHistory([turn]).at(-1)?.prompt || run.promptPreview || "текущий поток";
-      run.responseText = "";
-      run.progressReasoning = "";
-      d.setProgressStage(run, "Восстанавливаю ход после потерянного запроса подтверждения…");
-      await d.launchTurn(
-        run,
-        "Продолжи текущий поток с места остановки. Предыдущий ход завис на запросе подтверждения, "
-          + "который был потерян при переподключении App Server. Проверь уже выполненные действия и файлы, "
-          + `не повторяй завершённую работу. Исходный запрос:\n\n${originalPrompt}`,
-      );
-      return;
-    }
     if (!exactTerminal && recoveryAction === TASK_RECOVERY_ACTIONS.ATTACH_CODEX) {
       run.activityUnknown = !(terminalSnapshot?.running === true
         && String(terminalSnapshot.turnId ?? "").trim() === exactTurnId);

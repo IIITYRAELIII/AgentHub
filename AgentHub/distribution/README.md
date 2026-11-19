@@ -52,7 +52,7 @@ The recipient needs Python >=3.10 and Node >=22.5/SQLite, not Git/npm or the
 source checkout. Use the versioned installer shipped with the exact package:
 
 ```powershell
-python <recipient>/install_release.py --archive <archive.zip> --sha256 <archive-SHA256> --runtime-root <existing-runtime> --scratch-root <private-scratch>
+python <recipient>/install_release.py --archive <archive.zip> --sha256 <archive-SHA256> --runtime-root <existing-runtime> --scratch-root <private-scratch> --mode force
 ```
 
 For a first installation, provide the selected `--project-root` as required by
@@ -122,3 +122,110 @@ pin compatibility. Tool updates are separate from application installation and
 must not advance a pin used by an active build. No recipe/orchestrator API is
 loaded by runtime-manager preparation. Standalone Worker tools remain separate
 from the manual desktop package installation.
+# Autonomous recipient installer
+
+Every future installer asset uses the common `distribution/install_release.py`.
+Choose "Дождаться текущих ходов" (`--mode wait`) or "Завершить все ходы"
+(`--mode force`). Without the flag, an interactive run opens the two-button
+picker. Background callers must pass the explicit mode; closing the picker
+does not start an update.
+
+Wait closes new provider admission through the existing maintenance original
+and preserves new inputs in the durable queue while current work finishes. It
+requires a runtime supporting fenced drain. An old API without that capability,
+unknown activity or changed process refuses before stopping; choose force
+explicitly if interruption is wanted. Wait never escalates itself. Force works
+without the old API, retains native ownership guards and interrupts selected
+work. Neither mode resumes old provider turns. The interrupted turn's terminal
+accounting belongs to the existing startup owner, while history and queued
+input remain retained.
+
+`install_release.py` is the single-file recipient entry. It needs Windows,
+Python and Node.js with `node:sqlite` (22.5 or newer). It verifies the public
+package, escapes the calling Hub Job, force stops only the selected installation,
+backs up durable state, installs and starts the new version, and checks real
+Ready. A failed replacement restores verified prior code and checks old Ready.
+The update authorizes interruption of active work in that installation.
+
+Example: `python install_release.py --release <version> --runtime-root <Hub-directory> --scratch-root <separate-directory> --mode force`.
+Offline input uses `--archive <ZIP> --sha256 <exact-digest>` instead of `--release`.
+An explicitly requested `--resume-partialstop --operation-id <same-original>`
+continues the exact retained d148 partial-stop revision3, or its pinned a297
+revision5 descendant-parent refusal, after verified previous Ready is restored.
+Revision5 retains and revalidates the whole revision3 history plus the retired
+a297 worker and its exact input. The same archive/runtime/scratch arguments are required.
+The whole prior UNKNOWN and its earlier history are saved by the existing CAS.
+Continuation transport directories stay directly under the supplied scratch
+root, keyed by original and installer bytes. Prior directories remain linked
+through the retained input and canonical whole-row history. They are not nested
+again: repeated path growth can prevent SQLite from creating backup sidecars.
+Fresh retirement uses retained-handle exit proof, batch process capture and the
+existing stop budget. Timing and captured target identities are retained with
+the worker evidence. This bounded compatibility ends when those originals are
+disposed.
+
+An exited child which disappeared before native capture does not require a
+parent effect binding. Live children still require the native original parent
+and birth. Native rundown errors remain pending until that same retained handle
+signals; a live denied handle never grants stopped backup or installation.
+Recovery keeps those original handles across the failed stopping pass.
+
+Ready also verifies the configured local web capability and TCP listener owner
+against the authenticated Node and its launched Host. Headless configuration
+remains supported. A slow startup is observed while the exact Host remains live;
+elapsed time alone no longer triggers rollback. Host exit or an explicit startup
+capability failure follows the existing previous-version recovery path.
+The existing maintenance SQLite queue retries only the same checkpoint while
+another writer owns the database. A contended Ready write waits for persistence;
+it does not repeat launch, replace the original identity or trigger rollback.
+Its persistence retries and wait are recorded in the original installer timing.
+
+An explicitly requested `--resume-prestop --operation-id <same-original>` can
+continue only the positively verified published8c09 pre-stop foreign refusal;
+it preserves the old UNKNOWN/history and never replays backup/install/launch.
+Keep the reported retained directory: it contains progress, backup and the
+original result. Dispatch is not completion. Repeat the same command to read the
+same original without restarting effects. Never reuse an old skipped operation
+ID for a new installation attempt. `--prepare-update` uses this same autonomous
+entry; no Enter or manual process termination is involved.
+
+The preserved public 2.1.7 archive/old installer are inputs, not files this Task
+overwrites. Deliver the new installer as a separately hashed artifact until the
+distribution owner updates normal download entrypoints. Historical cooperative
+package callers and versioned offline installer bytes retain their own protocol.
+
+## Installer storage lifecycle
+
+New packages record autonomous backup/storage evidence for the existing
+after-ready retention owner (ADR-HUB-471). All update backups share the existing
+limit of five, including protected recovery copies. Proven unused extracted
+payloads and owned downloads retire after terminal disposition and creator exit;
+borrowed ZIPs and compact original receipts stay. UNKNOWN is not cleanup consent.
+Progress/partial native deletion resumes on the same canonical storage child.
+
+The maintained application JSON CLI supports addressed migration. Feed one JSON
+object on stdin to `node runtime-maintenance.mjs installer-storage-register`:
+`runtimeRoot`, `operationId`, `cache`, `expectedOriginalSha256` (SHA256 of the
+canonical owner's JSON representation). It verifies terminal disposition,
+request/worker/script, archive/descriptor and physical ownership. It registers
+proof only; it does not delete or rewrite that source original. Old successful
+backups with a canonical directory reference also migrate automatically.
+
+For an explicitly accepted legacy partial root with no historical creation
+proof, supply `runtimeRoot` and `custody` instead: `previewFile`, `previewSha256`,
+`successorOperationId`, `decisionId`. The preview binds the whole failed original,
+target/root, file/directory identities and full hashes, zero effects and retired
+worker. This requires a real delivery-owner custody decision; it is not a scan.
+`custody.inspectOnly=true` verifies it without creating a receipt. Keep the
+preview outside the candidate directory. Automatic discovery never adopts it.
+
+`installer-storage-preview` takes `runtimeRoot` and optional `after`; it returns
+up to three candidate/eligible binding pairs without deleting. After integration,
+ordinary installed startup performs cleanup through the existing service. An
+addressed finite `installer-storage-cleanup` input supplies `runtimeRoot` and
+`approved:[{ownerId,candidate,binding}]` from that preview. Repeat the SAME binding
+for admitted partial progress/readback, not a new filesystem preview over an
+already partially deleted tree. Normal readiness/busy/lease fences still apply;
+an older live runtime without authenticated busy evidence safely defers this
+foreground call. The updated runtime's ordinary background path needs no manual
+command. Root owns actual local cleanup and public delivery.

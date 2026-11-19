@@ -170,6 +170,32 @@ test("approved owner previews preserve discovery cursor and unrelated pending or
   assert.deepEqual(f.store.get(pending), original);
 });
 
+test("foreground owner subset preserves full registry and unrelated pending originals", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  f.owner.prune = async () => ({ status: "unknown", reason: "original-unknown" });
+  const other = { ...f.owner, id: "other-owner", list: async () => ({ items: [], done: true }) };
+  await f.make({ owners: [f.owner, other] }).runOnce();
+  const before = f.store.getReadonly("storage-retention:v1");
+  f.owner.prune = async () => ({ status: "removed", logicalBytes: 3 });
+  const service = f.make({ owners: [f.owner] });
+  await service.runApproved([{ ownerId: f.owner.id, candidate: { id: "chosen", cursor: "chosen" }, binding: { id: "chosen" } }]);
+  const after = f.store.getReadonly(before.operationId);
+  assert.deepEqual(after.metadata.ownerIds, before.metadata.ownerIds);
+  assert.deepEqual(after.metadata.pending, before.metadata.pending);
+  assert.equal(after.metadata.cursor, before.metadata.cursor);
+  assert.equal(after.metadata.ownerIndex, before.metadata.ownerIndex);
+});
+
+test("terminal creator retry hint resets discovery through the same parent without changing cadence or pending identity", async t => {
+  const f = await setup(t); let live = true;
+  f.owner.list = async () => live ? { items: [], done: true, retry: true }
+    : { items: [{ id: "a", cursor: "a" }], done: true };
+  const service = f.make();
+  const deferred = await service.runOnce(); assert.equal(deferred.retry, true); assert.equal(deferred.more, false);
+  live = false; const result = await service.runOnce(); assert.equal(result.removed, 1);
+  assert.equal(f.calls.length, 1);
+});
+
 test("approved cleanup refuses stale previews and preserves readiness and budget checks", async t => {
   const f = await setup(t, { maxUnits: 1 });
   const approval = { ownerId: f.owner.id, candidate: { id: "a", cursor: "a" }, binding: { id: "stale" } };

@@ -64,6 +64,7 @@
         "src/application/deferred-input*",
         "src/application/managed-run-lifecycle-service.mjs",
         "src/application/run-coordinator.mjs",
+        "src/application/installer-cutover.mjs",
         "src/application/task-history.mjs",
         "src/application/task-observation-service.mjs",
         "src/application/async-user-question-service.mjs",
@@ -213,6 +214,9 @@
       "title": "Restart and maintenance recovery",
       "document": "RST-001-restart-recovery.md",
       "paths": [
+        "src/application/stream-context-maintenance-service.mjs",
+        "tests/application/stream-context-maintenance-service.test.mjs",
+        "tests/providers/shared/provider-turn-services.test.mjs",
         "tests/infrastructure/process/public-runtime-installer-owner.test.mjs",
         "docs/decisions/ADR-HUB-409-startup-journal-work.md",
         "docs/decisions/ADR-HUB-427-cold-chat-selection.md",
@@ -244,6 +248,7 @@
         "src/application/deferred-input*",
         "src/application/provider-task-activity-service.mjs",
         "src/application/run-coordinator.mjs",
+        "src/application/installer-cutover.mjs",
         "src/composition/desktop-shell-composition.mjs",
         "src/composition/interaction-shell-phase-composition.mjs",
         "src/composition/provider-catalog-composition.mjs",
@@ -673,7 +678,9 @@
         "docs/decisions/ADR-HUB-463-remove-release-mechanism.md",
         "src/infrastructure/persistence/task-publication-history.mjs",
         "src/domain/legacy-task-publication-*.mjs",
-        "tests/application/tasks-without-release.test.mjs"
+        "tests/application/tasks-without-release.test.mjs",
+        "src/infrastructure/filesystem/manual-task-delivery.mjs",
+        "tests/infrastructure/filesystem/manual-task-delivery.test.mjs"
       ]
     },
     {

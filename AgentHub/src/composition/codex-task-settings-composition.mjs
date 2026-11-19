@@ -4,7 +4,6 @@ export function createCodexTaskSettingsComposition({
   pinnedTaskTitle,
   readCodexThreadTitleHistory,
   sendRpc,
-  resumeCodexThread,
   isCodex,
   getThreadId,
   contextCompactions,
@@ -71,7 +70,6 @@ export function createCodexTaskSettingsComposition({
     await updateCodexThreadSettingsWithRecovery({
       threadId,
       update: () => sendRpc("thread/settings/update", settings),
-      resume: resumeCodexThread,
     });
     agentPreferences.rememberCodexTaskSettings();
     await saveState();

@@ -232,6 +232,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   commands; inter-Stream authorship must not leak into another user message.
 - Context compaction and maintenance operations have separate kinds and never
   create user-turn cards. Context estimates are observations, not generated turns.
+  A dedicated compaction awaiting its provider turn is preparation, not a
+  confirmed start notification. Repeated snapshots and reconnect retain the
+  same operation's terminal revision; an older running projection cannot revive
+  it. Reload reuses the existing terminal maintenance marker. Notifications of
+  observed automatic starts occur once per exact operation in the current
+  client session, with the initial snapshot as its baseline; new operations and
+  real failures remain visible.
 - The ordinary browser shell never waits on the third-party Telegram runtime.
   A same-origin parser bootstrap requests that runtime only when Telegram launch
   parameters or a native Telegram bridge are already present, preserving the
@@ -291,6 +298,11 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   without coordinates retain an explicit compatibility list until their trusted
   original is reprojected through the existing history owner; no stored source
   or user text is rewritten. See ADR-HUB-401.
+  Commentary shown in live and historical trace groups, including addressed
+  trace pages, carries a read-only presentation from that same assistant parser.
+  The original reasoning, provider item and source-generation/hash fields stay
+  intact. Rendering and citation navigation use the group's presentation in the
+  exact owning message context; a later annotated user cannot become its target.
 - A new user-created annotation records its exact source user command or agent
   provider item, including an active non-final agent item. A user with a durable
   `clientUserMessageId` uses the client namespace scoped by provider and Thread,
