@@ -20,6 +20,7 @@ import { OwnedNativeObjectStore } from "../../src/infrastructure/filesystem/owne
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { inventoryNativeCapture } from "../../src/infrastructure/filesystem/native-capture-inventory.mjs";
 import { githubAccountFetch } from "../../src/infrastructure/network/github-account-request.mjs";
+import { githubInvocation } from "../../src/infrastructure/process/github-gh-arguments.mjs";
 
 const execute = promisify(execFile);
 const token = "github_pat_SYNTHETIC_TEST_VALUE_123456789";
@@ -371,6 +372,20 @@ test("gh content URLs remain exact body, notes, title, formatting and query payl
     ["search", "issues", "https://example.org/docs"],
     ["repo", "create", "owner/repo", "--description", "https://example.org/docs", "--homepage", "https://example.org"],
     ["repo", "view", "--json", "name", "https://github.com/owner/repo"],
+    ["issue", "close", "-c", "https://example.org/docs", "123", "--repo", "owner/repo"],
+    ["issue", "close", "--comment=https://example.org/docs", "123", "--repo", "owner/repo"],
+    ["issue", "close", "-chttps://example.org/docs", "123", "--repo", "owner/repo"],
+    ["issue", "close", "-c=https://example.org/docs", "123", "--repo", "owner/repo"],
+    ["issue", "close", "-c=", "123", "--repo", "owner/repo"],
+    ["repo", "view", "-b", "main", "https://github.com/owner/repo"],
+    ["repo", "view", "-bmain", "https://github.com/owner/repo"],
+    ["repo", "view", "-wbmain", "https://github.com/owner/repo"],
+    ["pr", "diff", "--color", "always", "https://github.com/owner/repo/pull/1"],
+    ["pr", "diff", "--color=always", "https://github.com/owner/repo/pull/1"],
+    ["pr", "co", "https://github.com/owner/repo/pull/1"],
+    ["repo", "new", "owner/repo", "--template", "github.com/template/project", "--description", "https://example.org/docs"],
+    ["repo", "deploy-key", "add", "foreign.ghe.com/local/key.pub"],
+    ["release", "create", "v-fixture", "foreign.ghe.com/local/archive.zip", "--notes", "https://example.org/docs"],
   ];
   for (const args of commands) {
     const result = await f.run(args);
@@ -395,10 +410,49 @@ test("gh destination host controls still reject actual foreign selectors and pos
     ["pr", "review", "--comment", "https://foreign.invalid/owner/repo/pull/1"],
     ["repo", "view", "--repo=foreign.ghe.com/owner/repo"],
     ["api", "--field", "body=ordinary", "https://foreign.invalid/user"],
+    ["repo", "view", "-b", "main", "https://foreign.ghe.com/owner/repo"],
+    ["repo", "view", "-b=main", "https://foreign.ghe.com/owner/repo"],
+    ["repo", "view", "-wbmain", "https://foreign.ghe.com/owner/repo"],
+    ["issue", "close", "-c", "Closing", "https://foreign.ghe.com/owner/repo/issues/1"],
+    ["issue", "close", "--comment=Closing", "https://foreign.ghe.com/owner/repo/issues/1"],
+    ["issue", "close", "-cClosing", "https://foreign.ghe.com/owner/repo/issues/1"],
+    ["issue", "close", "-c=", "https://foreign.ghe.com/owner/repo/issues/1"],
+    ["pr", "diff", "--color", "always", "https://foreign.ghe.com/owner/repo/pull/1"],
+    ["pr", "diff", "--color=always", "https://foreign.ghe.com/owner/repo/pull/1"],
+    ["pr", "co", "https://foreign.ghe.com/owner/repo/pull/1"],
+    ["repo", "sync", "--source", "foreign.ghe.com/owner/repo"],
+    ["repo", "create", "owner/repo", "--template=https://foreign.ghe.com/owner/repo"],
+    ["issue", "develop", "123", "--branch-repo", "foreign.ghe.com/owner/repo"],
+    ["extension", "install", "https://foreign.ghe.com/owner/repo"],
   ]) await assert.rejects(f.run(args), /limited to github.com/u);
   await assert.rejects(f.run(["api", "user"], { ...process.env, GH_HOST: "foreign.invalid" }), /limited to github.com/u);
   await assert.rejects(f.run(["issue", "list"], { ...process.env, GH_REPO: "foreign.ghe.com/owner/repo" }), /limited to github.com/u);
   assert.equal(f.starts(), 0);
+});
+
+test("gh built-in value option grammar matches the installed CLI reference across commands and shorthand forms", async t => {
+  const env = withoutGithubAccountEnvironment(process.env);
+  for (const key of Object.keys(env)) if (/^(?:GH|GITHUB)_(?:ENTERPRISE_)?TOKEN$/iu.test(key)) delete env[key];
+  let reference;
+  try { reference = (await execute("gh", ["help", "reference"], { env, windowsHide: true, maxBuffer: 1024 * 1024 })).stdout; }
+  catch (error) { if (error.code === "ENOENT") { t.skip("GitHub CLI is not installed; its command metadata cannot be checked"); return; } throw error; }
+  let command, options = 0;
+  for (const line of reference.split(/\r?\n/u)) {
+    const heading = line.match(/^#{2,} gh ([a-z0-9][a-z0-9-]*(?: [a-z0-9][a-z0-9-]*)*)/u);
+    if (heading) { command = heading[1].split(" "); continue; }
+    const flag = line.match(/^  (?:(-[A-Za-z0-9?]), *)? *(--[A-Za-z0-9-]+)(.*)$/u);
+    if (!command || !flag || !/^ [^ ]/u.test(flag[3])) continue;
+    for (const name of [flag[1], flag[2]].filter(Boolean)) {
+      const value = "https://example.org/opaque-content", target = "resource-sentinel";
+      for (const argv of [[...command, name, value, target], [...command, name + "=" + value, target],
+        [...command, name + "=", target], ...(name.startsWith("--") ? [] : [[...command, name + value, target]])]) {
+        assert.deepEqual(githubInvocation(argv).operands, [target], `Valued option ${command.join(" ")} ${name}`);
+      }
+      options++;
+    }
+  }
+  assert.ok(options > 500, "Full built-in reference was not read");
+  t.diagnostic(`Checked ${options} documented value-option names and shorthand aliases against the actual installed CLI`);
 });
 
 test("test/child runtime isolation removes only the inherited Hub account include and gh path", () => {

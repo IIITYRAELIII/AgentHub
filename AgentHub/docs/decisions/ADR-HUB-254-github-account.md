@@ -49,7 +49,14 @@ accounts. API requests never redirect an Authorization header to another host.
 The gh boundary checks host/repository selectors and the command's positional
 repository or API/resource address. Body, notes, title, formatting and query
 values remain opaque content, including external links; they are not destinations
-for the connected account. Short flags are interpreted in their command context.
+for the connected account. The pure argument reader uses complete value-option
+roles and aliases from GitHub CLI 2.96.0's built-in reference, including nested
+commands, attached/equals short values and boolean clusters. A focused test checks
+these roles against the actual installed CLI reference. The data is source grammar,
+not a runtime help query/cache or a command allowlist; unknown commands are still
+forwarded to gh. Positional resource slots are distinct from local key/archive
+paths, release tags/assets and query text. Named template/source repository options
+retain their own destination checks; a formatting template remains content.
 
 Actual runtime cutover pauses this owner's intake and drains admitted credential
 validation/writes before backup/instance release. Reversible restart recovery resumes
