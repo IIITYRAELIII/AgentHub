@@ -78,7 +78,16 @@ Hub controls instead of exporting the credential or modifying global Git auth.
 The account service serializes only its own local writes. An older asynchronous
 connection cannot undo a later disconnect/reconnect. Credentials are generation
 bound; stale helpers cannot use a new token with an old profile, or clear a newer
-connection's rejected state. A 401/rejected credential exposes reconnect state.
+connection's rejected state. Cancellation/replacement invalidate authorization at
+admission, then their acknowledgements join the existing credential write queue.
+Revision checks after selection and encryption discard a superseded unselected
+credential. Once publication is in flight, that same queue owns its actual
+outcome/readback and old-credential cleanup before reporting the selected winner.
+A cancelled older flow cannot silently publish after an old-selection reply.
+Quiesced snapshots join that section too; normal live snapshots do not wait on
+credential writes. Internal writer readback uses the same private projection
+without recursively awaiting itself. There is no new ledger, queue or rollback.
+A 401/rejected credential exposes reconnect state.
 A 403 remains a permission refusal, not proof of expiry or permission to switch
 accounts. API requests never redirect an Authorization header to another host.
 The gh boundary checks host/repository selectors and the command's positional

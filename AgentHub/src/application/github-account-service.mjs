@@ -53,6 +53,12 @@ export class GitHubAccountService {
     }
   }
   async snapshot() {
+    // Quiesced readback joins an admitted publication. Ordinary live reads
+    // remain independent of the credential writer.
+    if (this.#paused) await this.#writes;
+    return this.#snapshot();
+  }
+  async #snapshot() {
     const row = await this.vault.read();
     const account = row ? { id: row.account.id, login: row.account.login, name: row.account.name, email: row.account.email } : null;
     return { status: !row ? "disconnected" : await this.vault.rejected(row.id)
@@ -63,11 +69,13 @@ export class GitHubAccountService {
     const revision = ++this.#revision;
     this.#login = null;
     const flow = await this.deviceAuthorization.start();
-    if (revision !== this.#revision || this.#paused) throw new Error("Вход GitHub заменён более новым действием");
-    const attemptId = randomUUID();
-    this.#login = { attemptId, revision, flow, pending: null };
-    return { githubAccount: await this.snapshot(), login: { attemptId, userCode: flow.userCode,
-      verificationUri: flow.verificationUri, expiresAt: flow.expiresAt, waitMs: flow.intervalMs } };
+    return this.#serialize(async () => {
+      if (revision !== this.#revision || this.#paused) throw new Error("Вход GitHub заменён более новым действием");
+      const attemptId = randomUUID();
+      this.#login = { attemptId, revision, flow, pending: null };
+      return { githubAccount: await this.#snapshot(), login: { attemptId, userCode: flow.userCode,
+        verificationUri: flow.verificationUri, expiresAt: flow.expiresAt, waitMs: flow.intervalMs } };
+    });
   }); }
   pollLogin(attemptId) { return this.#admit(async () => {
     const login = this.#login;
@@ -93,7 +101,9 @@ export class GitHubAccountService {
   }); }
   cancelLogin(attemptId) { return this.#admit(async () => {
     if (this.#login?.attemptId === attemptId) { ++this.#revision; this.#login = null; }
-    return { githubAccount: await this.snapshot() };
+    // Invalidate immediately, then join the actual winner through publication,
+    // durable readback and cleanup before acknowledging the selected account.
+    return this.#serialize(async () => ({ githubAccount: await this.#snapshot() }));
   }); }
   async #request(pathname, token, options = {}) {
     if (!/^\/(?!\/)/u.test(pathname)) throw new Error("GitHub API requires a relative path");
@@ -151,15 +161,21 @@ export class GitHubAccountService {
     return this.#serialize(async () => {
       if (revision !== this.#revision) throw new Error("Подключение GitHub заменено более новым действием");
       const previous = await this.vault.selection();
+      if (revision !== this.#revision) throw new Error("Подключение GitHub заменено более новым действием");
       const id = randomUUID();
       await this.vault.save({ id, account, token, expiresAt });
-      try { await this.#profile({ id, account }); }
+      try {
+        if (revision !== this.#revision) throw new Error("Подключение GitHub заменено более новым действием");
+        // Cancellation/replacement replies join this existing serialized
+        // section; a rename already in flight cannot silently outlive them.
+        await this.#profile({ id, account });
+      }
       catch (error) { await this.vault.remove(id).catch(() => {}); throw error; }
       if (previous?.id) {
         try { await this.vault.remove(previous.id); }
         catch { throw new Error("GitHub подключён. Предыдущие зашифрованные данные сохранены: их удаление не завершено."); }
       }
-      return this.snapshot();
+      return this.#snapshot();
     });
   }
   disconnect() { return this.#admit(() => this.#disconnect()); }
@@ -173,7 +189,7 @@ export class GitHubAccountService {
         try { await this.vault.remove(previous.id); }
         catch { throw new Error("GitHub отключён. Зашифрованные данные сохранены: их удаление не завершено."); }
       }
-      return this.snapshot();
+      return this.#snapshot();
     });
   }
   async request(pathname, options = {}) {

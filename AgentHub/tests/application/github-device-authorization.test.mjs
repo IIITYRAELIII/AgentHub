@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, access, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -12,6 +12,7 @@ import { githubCredential } from "../../src/infrastructure/process/github-creden
 import { runGitHubCli } from "../../src/infrastructure/process/github-gh-cli.mjs";
 
 const token = "gho_SYNTHETIC_OAUTH_ACCESS_1234567890";
+const oldToken = "github_pat_SYNTHETIC_OLD_PUBLICATION_123456";
 const deviceCode = "synthetic_device_code_12345678901234567890";
 const grant = { device_code: deviceCode, user_code: "ABCD-EFGH", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 };
 async function fixture(t) {
@@ -29,7 +30,9 @@ async function fixture(t) {
       return res.end(JSON.stringify(replies.shift() ?? { access_token: token, token_type: "bearer", expires_in: 28800 }));
     }
     if (apiDenied) { res.statusCode = apiDenied; return res.end("{}"); }
-    if (req.url === "/user") return res.end(JSON.stringify({ id: 211, login: "oauth-user", name: "OAuth User" }));
+    if (req.url === "/user") return res.end(JSON.stringify(req.headers.authorization === `Bearer ${oldToken}`
+      ? { id: 11, login: "original-user", name: "Original User" }
+      : { id: 211, login: "oauth-user", name: "OAuth User" }));
     if (req.url === "/user/emails") return res.end(JSON.stringify([{ primary: true, verified: true, email: "oauth@example.invalid" }]));
     return res.end(JSON.stringify({ authorized: req.headers.authorization === `Bearer ${token}` }));
   });
@@ -161,4 +164,115 @@ test("concurrent exact polls redeem once; snapshot/reopen do not revive a pendin
   await assert.rejects(reopened.pollLogin(started.login.attemptId), /завершён/u);
   await reopened.snapshot();
   assert.equal(external, 0);
+});
+
+for (const phase of ["selection", "save", "publish-before", "publish-after"]) {
+  for (const action of ["cancel", "replace", "pause", "disconnect"]) {
+    test(`OAuth publication ${phase} linearizes ${action} with actual selected-account readback`, { timeout: 10_000 }, async t => {
+      const f = await fixture(t);
+      await f.service.connect(oldToken);
+      const original = await f.vault.selection();
+      const started = await f.service.startLogin(); f.advance(5000);
+      let reachedResolve, release;
+      const reached = new Promise(resolve => { reachedResolve = resolve; });
+      const barrier = new Promise(resolve => { release = resolve; });
+      const events = [];
+      let held = false;
+      const hold = async () => { if (!held) { held = true; reachedResolve(); await barrier; } };
+      if (phase === "selection") {
+        const selection = f.vault.selection.bind(f.vault);
+        f.vault.selection = async () => { const row = await selection(); await hold(); return row; };
+      } else if (phase === "save") {
+        const crypt = f.vault.crypt;
+        f.vault.crypt = async (bytes, decrypt) => { if (!decrypt) await hold(); return crypt(bytes, decrypt); };
+      } else {
+        const publish = f.vault.publish.bind(f.vault);
+        f.vault.publish = async row => {
+          if (row?.account.id !== 211) return publish(row);
+          if (phase === "publish-before") await hold();
+          await publish(row);
+          events.push("published");
+          if (phase === "publish-after") await hold();
+        };
+      }
+      // Observe the next device-code response too: replacement must not pass
+      // merely because its network request still happens to be pending.
+      let nextFlowResolve;
+      const nextFlow = new Promise(resolve => { nextFlowResolve = resolve; });
+      const start = f.oauth.start.bind(f.oauth);
+      f.oauth.start = async () => { const flow = await start(); nextFlowResolve(); return flow; };
+      const outcome = f.service.pollLogin(started.login.attemptId).then(value => ({ value }), error => ({ error }));
+      let changing;
+      try {
+        await reached;
+        // Only the explicit cancellation/replacement/quiesced read joins the
+        // writer; an ordinary live read still projects its actual selection.
+        assert.equal((await f.service.snapshot()).account.id, phase === "publish-after" ? 211 : 11);
+        let replied = false;
+        if (action === "cancel") changing = f.service.cancelLogin(started.login.attemptId);
+        if (action === "replace") changing = f.service.startLogin();
+        if (action === "pause") { f.service.pause(); changing = f.service.snapshot().then(githubAccount => ({ githubAccount })); }
+        if (action === "disconnect") changing = f.service.disconnect().then(githubAccount => ({ githubAccount }));
+        changing = changing.then(value => { replied = true; events.push("reply"); return value; });
+        if (action === "replace") await nextFlow;
+        await new Promise(resolve => setImmediate(resolve));
+        const repliedBeforeRelease = replied;
+        release();
+        const response = await changing;
+        const poll = await outcome;
+        const selected = await f.vault.selection();
+        assert.equal(repliedBeforeRelease, false, "reply must join the admitted storage/publication section");
+        assert.equal(response.githubAccount.account?.id ?? null, selected?.account.id ?? null);
+        if (action === "disconnect") {
+          assert.equal(selected, null);
+          assert.equal(response.githubAccount.status, "disconnected");
+        } else if (phase === "selection" || phase === "save") {
+          assert.equal(selected.id, original.id);
+          assert.equal(selected.account.id, 11);
+          assert.ok(poll.error);
+          assert.equal(await access(f.vault.credentialFile(original.id)).then(() => true, () => false), true);
+        } else {
+          assert.equal(selected.account.id, 211);
+          assert.equal(poll.value.githubAccount.account.id, 211);
+          assert.equal(events.indexOf("published") < events.indexOf("reply"), true);
+          assert.equal(await access(f.vault.credentialFile(original.id)).then(() => true, () => false), false);
+        }
+        if (phase === "selection" || phase === "save") {
+          assert.equal(events.includes("published"), false);
+          assert.equal((await readdir(f.directory)).filter(x => /^connection-/u.test(x)).length, action === "disconnect" ? 0 : 1);
+        }
+      } finally { release(); await Promise.allSettled([outcome, changing]); }
+    });
+  }
+}
+
+for (const committed of [false, true]) test(`OAuth cancelled publication ${committed ? "lost ACK" : "refusal"} reports actual winner and preserves credential custody`, async t => {
+  const f = await fixture(t);
+  await f.service.connect(oldToken);
+  const original = await f.vault.selection();
+  const started = await f.service.startLogin(); f.advance(5000);
+  let reachedResolve, release;
+  const reached = new Promise(resolve => { reachedResolve = resolve; });
+  const barrier = new Promise(resolve => { release = resolve; });
+  const publish = f.vault.publish.bind(f.vault);
+  f.vault.publish = async row => {
+    if (committed) await publish(row);
+    reachedResolve(); await barrier;
+    throw new Error("controlled publication acknowledgement failure");
+  };
+  const outcome = f.service.pollLogin(started.login.attemptId).then(value => ({ value }), error => ({ error }));
+  let cancelling;
+  try {
+    await reached;
+    cancelling = f.service.cancelLogin(started.login.attemptId);
+    release();
+    const reply = await cancelling, poll = await outcome, selected = await f.vault.selection();
+    assert.equal(reply.githubAccount.account.id, committed ? 211 : 11);
+    assert.equal(selected.account.id, reply.githubAccount.account.id);
+    assert.equal(Boolean(poll.error), !committed);
+    assert.equal(await access(f.vault.credentialFile(original.id)).then(() => true, () => false), !committed);
+    f.vault.publish = publish;
+    const reopened = await new GitHubAccountService({ directory: f.directory, vault: f.vault }).initialize();
+    assert.equal((await reopened.snapshot()).account.id, selected.account.id);
+  } finally { release(); await Promise.allSettled([outcome, cancelling]); }
 });

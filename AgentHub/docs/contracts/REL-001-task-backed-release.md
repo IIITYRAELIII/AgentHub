@@ -15,6 +15,12 @@ is verified through the same account owner before atomic selection. The granted
 OAuth scopes intersect account rights; missing permissions remain explicit refusals.
 Persisted expiry is enforced at the shared Git/gh/API credential owner and requires
 sign-in again. Application registration and real grants are owner actions, not tests.
+Cancellation/replacement invalidate pending authorization immediately, but replies
+join the existing credential writer through publication/readback and cleanup.
+Pre-publication cancellation preserves the original selection; a publication that
+wins is reported as the actual selected account. A completed reply cannot report
+an old account and then be followed by that cancelled attempt's publication.
+Quiesced snapshots join the same section; ordinary live reads stay independent.
 
 Internal commit/merge/commit-tree writers and both provider launch paths consume
 that same profile for new work. A persistent provider reads the latest atomic profile
