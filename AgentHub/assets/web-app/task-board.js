@@ -42,6 +42,10 @@
 
   function taskCleanupConfirmationText(confirmation = {}) {
     const preview = confirmation.preview ?? {};
+    if (preview.archive && preview.remainingArtifacts?.length) {
+      return ["Останутся файлы и ветки:", ...preview.remainingArtifacts.map(item =>
+        item.path ?? [item.name, item.repositoryRoot].filter(Boolean).join(" · "))].join("\n");
+    }
     const lines = [cleanupValue(confirmation.warning, "Подтвердите удаление артефактов Task."), "", "Состояние Task Git:"];
     const workspaces = Array.isArray(preview.workspaces) ? preview.workspaces : [];
     if (!workspaces.length) lines.push("  <managed worktree отсутствует>");
@@ -84,7 +88,7 @@
 
   let dismissCleanupConfirmation = null;
 
-  function showTaskCleanupConfirmation(text, { action, task } = {}) {
+  function showTaskCleanupConfirmation(text, { action, task, remaining = false } = {}) {
     dismissCleanupConfirmation?.();
     return new Promise((resolve, reject) => {
       const dialog = document.createElement("dialog");
@@ -96,6 +100,7 @@
       title.id = "task-cleanup-title";
       const label = action === "board-task-remove" ? "Удалить задачу" : "Закрыть задачу";
       title.textContent = `${label}${task?.taskNumber ? ` ${task.taskNumber}` : ""}?`;
+      if (remaining) title.textContent = "Всё равно закрыть?";
       const preview = document.createElement("pre");
       preview.className = "task-cleanup-preview";
       preview.textContent = text;
@@ -109,7 +114,7 @@
       const accept = document.createElement("button");
       accept.type = "button";
       accept.className = "task-delete-confirm";
-      accept.textContent = label;
+      accept.textContent = remaining ? "Да" : label;
       accept.setAttribute("data-task-cleanup-confirm", "");
       footer.append(cancel, accept);
       dialog.append(section, footer);
@@ -147,13 +152,18 @@
   async function confirmTaskCleanup({ confirmation, action, params = {}, request, confirm = showTaskCleanupConfirmation } = {}) {
     if (typeof request !== "function") throw new TypeError("Task cleanup request is required");
     if (typeof confirm !== "function") throw new TypeError("Task cleanup confirmation UI is required");
+    if (confirmation?.previewOmitted) throw new Error("Список артефактов слишком велик для подтверждения");
     const text = taskCleanupConfirmationText(confirmation);
     const confirmedParams = structuredClone({
       ...params,
       confirmCleanup: true,
       expectedCleanupToken: confirmation?.cleanupToken,
+      ...(confirmation?.preview?.archive ? {
+        completionMode: "archive", retainArtifacts: confirmation.preview.retainArtifacts,
+      } : {}),
     });
-    if (!await confirm(text, { action, task: confirmation?.task })) return { confirmed: false, text, result: null };
+    const remaining = Boolean(confirmation?.preview?.archive && confirmation.preview.remainingArtifacts?.length);
+    if (!await confirm(text, { action, task: confirmation?.task, remaining })) return { confirmed: false, text, result: null };
     const result = await request(action, confirmedParams);
     return { confirmed: true, text, result };
   }

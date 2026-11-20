@@ -227,3 +227,18 @@ physical input must first match its exact published Git blob through the existin
 sourceMatches line-ending/binary policy; their exact build hash must then equal
 the installed manifest-bound Host source hash. No hash/Host verification is
 skipped and no Git source code is executed as a verifier.
+
+## Closing the card independently of delivery
+
+Dashboard and MCP use the same Complete owner in archive mode. Archiving sets
+the card's presentation status and retains its workflow and all Task history.
+Archive cleanup uses existing durable publication evidence, the exact Task
+branch/current commit and worktree ownership. The installed runtime is not used
+as evidence about old published branches. When this proof is unavailable, the
+card may still be archived with the listed artifacts preserved.
+
+A cleanup attempt persists the admitted plan before Git. If work remains after
+cleanup, its durable outcome is another confirmation, rather than an archived
+card. The same original can be read after reconnect without repeating cleanup.
+Later explicit confirmation binds the newly observed leftovers. Only the MCP
+adapter adds an imperative agent instruction to this neutral result.

@@ -1,5 +1,17 @@
 # REL-001 — Task Git integration
 
+## Task card archive (ADR-HUB-466)
+
+Ordinary card archive does not attest delivery. It can clean exact, clean,
+Task-owned branches and worktrees using the existing published-result proof
+independently of which runtime is currently installed. Unverified repositories,
+later or foreign branches, and dirty or ignored data are preserved. Confirmation
+binds current Task revision, the exact cleanup preview and any retained
+artifacts. Partial cleanup leaves its originally admitted plan for readback,
+and an addressed continuation observes the remaining artifacts without
+repeating the deletion. Closure with unapproved leftovers requires a fresh
+explicit confirmation.
+
 ## Verified manual delivery (ADR-HUB-466)
 
 RM Task Complete may explicitly verify a real manual installation instead of

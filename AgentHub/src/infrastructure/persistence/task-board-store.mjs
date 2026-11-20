@@ -3660,7 +3660,9 @@ export class TaskBoardStore {
     });
   }
 
-  finalizeCleanupTransition(operationId, { deleteTask = false, receiptEvidence = null, preserveCompletedTask = false } = {}) {
+  finalizeCleanupTransition(operationId, {
+    deleteTask = false, receiptEvidence = null, preserveCompletedTask = false, archiveConfirmation = null,
+  } = {}) {
     const operation = String(operationId ?? "").trim();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
@@ -3685,12 +3687,18 @@ export class TaskBoardStore {
           database.prepare("DELETE FROM hub_board_tasks WHERE id = ? AND row_revision = ?")
             .run(transition.task_id, transition.expected_task_revision);
         } else {
-          const changed = preserveCompletedTask && current.status === "done" ? { changes: 1 } : database.prepare(`
+          const evidence = JSON.parse(transition.evidence_json ?? "{}");
+          if (archiveConfirmation && (transition.kind !== "complete" || evidence.archive !== true
+              || archiveConfirmation.task?.id !== transition.task_id
+              || archiveConfirmation.task?.revision !== Number(transition.expected_task_revision))) {
+            throw new Error("Task archive confirmation does not match the admitted cleanup");
+          }
+          const changed = archiveConfirmation || (preserveCompletedTask && current.status === "done") ? { changes: 1 } : database.prepare(`
             UPDATE hub_board_tasks SET status = 'done', completed_at_ms = ?, updated_at_ms = ?
             WHERE id = ? AND row_revision = ?
           `).run(this.now(), this.now(), transition.task_id, transition.expected_task_revision);
           if (!Number(changed.changes)) throw new Error("Task complete CAS failed");
-          result = this.#taskWithRelease(database, this.#taskRow(database, transition.task_id));
+          result = archiveConfirmation ?? this.#taskWithRelease(database, this.#taskRow(database, transition.task_id));
           database.prepare(`
             INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
               operation_id, task_id, kind, result_json, completed_at_ms

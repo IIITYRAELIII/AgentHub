@@ -4350,8 +4350,9 @@ document.addEventListener("agenthub:board-action", (event) => {
     if (!action) return;
     const { type: _type, ...params } = detail;
     if (lastSnapshot && ["move", "status"].includes(detail.type)) params.responseView = "task-board";
+    if (detail.type === "complete") params.completionMode = "archive";
     let result = await control(action, params);
-    if (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
+    while (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
       const decision = await window.AgentHubTaskCleanupConfirmation.confirm({
         confirmation: result.lifecycleResult,
         action,

@@ -109,6 +109,7 @@ function confirmation(task, action, preview) {
     ...(preview.publishedDelivery ? { publishedDelivery: preview.publishedDelivery,
       publishedCleanupReferences: preview.publishedCleanupReferences ?? [] } : {}),
     deleting: preview.deleting ?? [],
+    ...(preview.archive ? { archive: true, retainArtifacts: preview.retainArtifacts, remainingArtifacts: preview.remainingArtifacts } : {}),
   })).digest("hex");
   return {
     confirmationRequired: true,
@@ -2188,11 +2189,73 @@ export class TaskLifecycleService {
     });
   }
 
+  async #archiveTask({ taskId, operationId, confirmCleanup, expectedCleanupToken, retainArtifacts, originalArguments }) {
+    const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
+    if (outcome?.taskId === taskId && outcome.kind === "complete" && outcome.result?.evidence?.archive
+        && JSON.stringify(outcome.result.evidence.originalArguments) === JSON.stringify(originalArguments)) {
+      return outcome.result.result.confirmationRequired ? outcome.result.result
+        : { ...outcome.result.result, archive: { remainingArtifacts: outcome.result.evidence.remainingArtifacts } };
+    }
+    return this.#withLock(taskId, async lease => {
+      const task = this.#task(taskId);
+      const transition = this.taskBoard.lifecycleTransition?.(operationId);
+      const admitted = transition?.evidence;
+      if (transition && (transition.taskId !== taskId || transition.kind !== "complete" || transition.phase !== "cleanup"
+          || transition.expectedRevision !== task.revision || admitted?.archive !== true
+          || JSON.stringify(admitted.originalArguments) !== JSON.stringify(originalArguments))) {
+        throw new Error("Original Task archive authority changed");
+      }
+      const read = async (retain) => {
+        const plan = await this.taskGitWorkspaces.archiveCleanupPreview(task, { retainArtifacts: retain });
+        return { ...plan, confirmation: confirmation(task, "complete", {
+          ...(plan.cleanup ?? {}), archive: true, retainArtifacts: retain,
+          remainingArtifacts: plan.remainingArtifacts,
+        }) };
+      };
+      // Once cleanup was admitted, an interrupted owner may only observe it.
+      // A new explicit confirmation is needed before closing with leftovers.
+      const plan = await read(retainArtifacts || Boolean(transition));
+      if (!confirmCleanup) return plan.confirmation;
+      if (!transition && expectedCleanupToken !== plan.confirmation.cleanupToken) {
+        throw new TaskCleanupConfirmationRejectedError(task.id, "complete");
+      }
+      const evidence = admitted ?? { archive: true, originalArguments, cleanup: plan.cleanup,
+        remainingArtifacts: plan.remainingArtifacts };
+      if (!transition) {
+        await this.#assertOwned(lease);
+        await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+          id: task.id, operationId, kind: "complete", expectedRevision: task.revision, evidence,
+        }), operationId);
+      }
+      let current = plan;
+      if (plan.cleanup) {
+        try {
+          await this.taskGitWorkspaces.cleanupOwned(task.id, { lease, allowDirty: false, requirePublished: true,
+            gitReferences: task.gitReferences, squashAbsorbedBy: task.squashAbsorbedBy,
+            archiveTaskNumber: task.taskNumber ?? "", expectedPreview: plan.cleanup });
+        } catch {
+          await this.#assertOwned(lease);
+        }
+        current = await read(true);
+      }
+      await this.#assertOwned(lease);
+      const remainingArtifacts = current.remainingArtifacts;
+      const approved = !remainingArtifacts.length || (!plan.cleanup && (!transition
+        || JSON.stringify(remainingArtifacts) === JSON.stringify(evidence.remainingArtifacts)));
+      const result = await this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+        preserveCompletedTask: task.status === "done",
+        archiveConfirmation: approved ? null : current.confirmation,
+        receiptEvidence: { ...evidence, remainingArtifacts },
+      }), operationId);
+      return approved ? { ...result, archive: { remainingArtifacts } } : result;
+    });
+  }
+
   async complete({
-    taskId, operationId, confirmCleanup = false, expectedCleanupToken = null,
+    taskId, operationId, confirmCleanup = false, expectedCleanupToken = null, retainArtifacts = false,
     absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, manualDelivery = null, retainedRepositories = [], originalArguments = null, completedOperationRequestId = null,
   } = {}) {
-    if (completionMode != null && !["published_release_service", "published_delivery", "operational", "manual_delivery"].includes(completionMode)) {
+    if (completionMode != null && !["published_release_service", "published_delivery", "operational", "manual_delivery", "archive"].includes(completionMode)) {
       throw new Error("Unsupported Task completion mode");
     }
     if (completionMode && (absorptionMode || absorbedIntoTaskId)) {
@@ -2202,6 +2265,10 @@ export class TaskLifecycleService {
     if (manualDelivery && completionMode !== "manual_delivery") throw Error("Manual delivery requires its explicit completion mode");
     if (retainedRepositories.length && completionMode !== "manual_delivery") throw Error("Repository retention pins require manual delivery mode");
     if (completedOperationRequestId && !["operational", "manual_delivery"].includes(completionMode)) throw Error("Historical completion proof requires operational or manual cleanup mode");
+    if (retainArtifacts && completionMode !== "archive") throw Error("Artifact retention requires archive mode");
+    if (completionMode === "archive") return this.#archiveTask({
+      taskId, operationId, confirmCleanup, expectedCleanupToken, retainArtifacts, originalArguments,
+    });
     if (completionMode === "manual_delivery") return this.#completeManualDelivery({ taskId, operationId,
       confirmCleanup, expectedCleanupToken, manualDelivery, originalArguments, retainedRepositories, completedOperationRequestId });
     if (["published_delivery", "operational"].includes(completionMode)) return this.#completePublishedDelivery({ taskId, operationId,

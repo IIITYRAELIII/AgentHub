@@ -1161,3 +1161,130 @@ test("manual standalone sync merges disjoint object stores through existing isol
   assert.equal(sha(await readFile(path.join(f.repo, ".git/index"))), indexBefore);
   assert.equal((await service.synchronizeMainIntoDev(args)).headCommit, resolved);
 });
+
+test("Task archive preserves unpublished work and reports the agent instruction only on MCP", async t => {
+  const f = await publicFixture(t);
+  const ignored = path.join(f.managed.projectRoot, "WIP", "evidence");
+  await mkdir(path.dirname(ignored));
+  await writeFile(ignored, "only copy");
+  const original = f.board.task(f.task.id);
+  const args = { task_id: original.id, completion_mode: "archive" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "archive-unpublished-preview" });
+  const remaining = preview.preview.remainingArtifacts;
+  assert.ok(remaining.some(item => item.path === f.managed.projectRoot));
+  assert.ok(remaining.some(item => item.name === f.managed.branch && item.headCommit === f.base));
+  assert.equal(preview.agentInstruction, "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС");
+  assert.equal(f.hub.readDesktopTaskOperation(original, "archive-unpublished-preview").result.agentInstruction, undefined);
+  assert.equal(f.board.task(original.id).status, original.status);
+  const result = await f.call("hub_task_complete", { ...args, request_id: "archive-unpublished-confirm",
+    confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken });
+  assert.equal(result.status, "done");
+  assert.equal(result.workflowStatus, original.workflowStatus);
+  assert.deepEqual(result.gitReferences, original.gitReferences);
+  assert.equal(result.description, original.description);
+  assert.deepEqual(result.archive.remainingArtifacts, remaining);
+  assert.equal(result.agentInstruction, preview.agentInstruction);
+  assert.equal(f.hub.readDesktopTaskOperation(original, "archive-unpublished-confirm").result.agentInstruction, undefined);
+  assert.equal(await readFile(ignored, "utf8"), "only copy");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("Task archive removes its exact published branch and worktree without an installed-delivery proof", async t => {
+  const f = await publicFixture(t);
+  f.taskGit.readPublication = async () => ({ generation: "public-previous", repositories: [{ root: f.repo, revision: f.base }] });
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "archive-tested", targetWorkflowStatus: "testing", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "archive-tested", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const args = { task_id: f.task.id, completion_mode: "archive" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "archive-published-preview" });
+  assert.ok(preview.preview.deleting.some(item => item.name === f.managed.branch));
+  const confirmed = { ...args, request_id: "archive-published-confirm", confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken };
+  const result = await f.call("hub_task_complete", confirmed);
+  assert.equal(result.status, "done");
+  assert.equal(result.workflowStatus, "testing");
+  assert.deepEqual(result.archive.remainingArtifacts, []);
+  await assert.rejects(f.git(["rev-parse", "--verify", "refs/heads/" + f.managed.branch]));
+  assert.deepEqual(await f.taskGit.describe(f.task.id), []);
+  assert.deepEqual(await f.call("hub_task_complete", confirmed), JSON.parse(JSON.stringify(result)));
+});
+
+test("Task archive shows surviving branch after partial cleanup and persists the exact prompt across reopen", async t => {
+  const f = await publicFixture(t);
+  f.taskGit.readPublication = async () => ({ generation: "public-previous", repositories: [{ root: f.repo, revision: f.base }] });
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "archive-tested-partial", targetWorkflowStatus: "testing", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "archive-tested-partial", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const args = { task_id: f.task.id, completion_mode: "archive" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "archive-partial-preview" });
+  const run = f.taskGit.runCommand;
+  let partial = 0;
+  f.taskGit.runCommand = async (argv, options) => {
+    if (argv[0] === "update-ref" && argv[1] === "-d" && argv[2] === "refs/heads/" + f.managed.branch) {
+      partial += 1;
+      throw new Error("fixture interruption after worktree removal");
+    }
+    return run(argv, options);
+  };
+  const original = { ...args, request_id: "archive-partial-original", confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken };
+  const paused = await f.call("hub_task_complete", original);
+  assert.equal(partial, 1);
+  assert.equal(paused.confirmationRequired, true);
+  assert.equal(paused.preview.retainArtifacts, true);
+  assert.equal(paused.preview.remainingArtifacts.some(item => item.path === f.managed.projectRoot), false);
+  assert.ok(paused.preview.remainingArtifacts.some(item => item.kind === "branch" && item.name === f.managed.branch));
+  const reopened = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite") });
+  f.beforeCleanup.push(() => reopened.close());
+  f.board.store = reopened;
+  assert.notEqual(f.board.task(f.task.id).status, "done");
+  assert.deepEqual(await f.call("hub_task_complete", original), JSON.parse(JSON.stringify(paused)));
+  const result = await f.call("hub_task_complete", { ...args, request_id: "archive-partial-accept",
+    confirm_cleanup: true, retain_artifacts: true, expected_cleanup_token: paused.cleanupToken });
+  assert.equal(result.status, "done");
+  assert.equal(result.workflowStatus, "testing");
+  assert.deepEqual(result.archive.remainingArtifacts, paused.preview.remainingArtifacts);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  assert.equal(partial, 1);
+});
+
+test("Task archive reconciles a lost partial outcome without rerunning Git and refuses stale leftover consent", async t => {
+  const f = await publicFixture(t);
+  f.taskGit.readPublication = async () => ({ generation: "public-previous", repositories: [{ root: f.repo, revision: f.base }] });
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "archive-reopen-tested", targetWorkflowStatus: "testing", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "archive-reopen-tested", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const args = { task_id: f.task.id, completion_mode: "archive" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "archive-reopen-preview" });
+  const run = f.taskGit.runCommand;
+  let attempts = 0;
+  f.taskGit.runCommand = async (argv, options) => {
+    if (argv[0] === "update-ref" && argv[1] === "-d" && argv[2] === "refs/heads/" + f.managed.branch) {
+      attempts += 1;
+      throw new Error("fixture branch is retained");
+    }
+    return run(argv, options);
+  };
+  f.raw.finalizeCleanupTransition = () => { throw new Error("fixture refuses final commit"); };
+  const original = { ...args, request_id: "archive-reopen-original", confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken };
+  await assert.rejects(f.call("hub_task_complete", original), /fixture refuses final commit/u);
+  assert.equal(f.catalog.mcpOperation(original.request_id).status, "unknown");
+  assert.equal(f.board.lifecycleTransition(original.request_id).phase, "cleanup");
+  const reopened = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite") });
+  f.beforeCleanup.push(() => reopened.close());
+  f.board.store = reopened;
+  const recovered = await f.call("hub_task_operation_reconcile", { task_id: f.task.id,
+    request_id: "archive-reopen-reconcile", operation_request_id: original.request_id, confirm_reconcile: true });
+  assert.equal(recovered.outcome, "CONFIRMATION_REQUIRED");
+  assert.equal(f.catalog.mcpOperation(original.request_id).status, "succeeded");
+  assert.notEqual(f.board.task(f.task.id).status, "done");
+  assert.equal(attempts, 1);
+  const late = path.join(path.dirname(f.managed.projectRoot), "late-data");
+  await writeFile(late, "preserve this");
+  await assert.rejects(f.call("hub_task_complete", { ...args, request_id: "archive-reopen-stale",
+    confirm_cleanup: true, retain_artifacts: true, expected_cleanup_token: recovered.result.cleanupToken }), /stale/u);
+  assert.equal(await readFile(late, "utf8"), "preserve this");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  assert.notEqual(f.board.task(f.task.id).status, "done");
+});
