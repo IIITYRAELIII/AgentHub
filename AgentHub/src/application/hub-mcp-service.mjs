@@ -853,7 +853,10 @@ export class HubMcpService {
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
         absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
-        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery"], description: "Release Manager-only closure. manual_delivery verifies the actual installation and exact main/origin while preserving all Task artifacts." },
+        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery", "abandoned_release_service"], description: "Release Manager-only closure. abandoned_release_service archives only the exact FAILED release service and preserves its history." },
+        abandoned_release: { type: "object", properties: {
+          operationId: { type: "string" }, expectedRevision: { type: "integer", minimum: 1 }, expectedGeneration: { type: "integer", minimum: 1 },
+        }, required: ["operationId", "expectedRevision", "expectedGeneration"], additionalProperties: false },
         retained_repositories: { type: "array", description: "Manual mode only: exact managed worktree/head pins for historical repositories no longer represented by the canonical Task result. Retained, not certified delivered or deleted.", items: { type: "object", additionalProperties: false, required: ["project_root", "head_commit"], properties: {
           project_root: { type: "string" }, head_commit: { type: "string", pattern: "^[a-f0-9]{40}$" },
         } } },
@@ -2247,13 +2250,18 @@ export class HubMcpService {
     manual_delivery: manualDelivery = null,
     retained_repositories: retainedRepositories = [],
     completed_operation_request_id: completedOperationRequestId = null,
+    abandoned_release: abandonedRelease = null,
     } = args;
     const task = this.#task(context, taskId);
     this.#validateCleanupToken(task, args, "complete");
+    if (completionMode === "abandoned_release_service" && !this.#isReleaseManager(context)) {
+      throw new Error("Abandoned release service closure requires a Release Manager Stream");
+    }
     const result = await this.taskLifecycle.complete({
       taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
       absorptionMode, completionMode, publishedDelivery, manualDelivery, retainedRepositories, completedOperationRequestId,
-      originalArguments: ["published_delivery", "operational", "manual_delivery"].includes(completionMode)
+      abandonedRelease, releaseActor: { workspaceId: context.workspaceId, streamId: context.streamId },
+      originalArguments: ["published_delivery", "operational", "manual_delivery", "abandoned_release_service"].includes(completionMode)
         ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) : null,
     });
     return result?.confirmationRequired
@@ -3201,6 +3209,11 @@ export class HubMcpService {
 
   async #reconcilePublishedDeliveryComplete(context, args) {
     const refuse = message => { throw new TaskOperationReconciliationRefusedError(new Error(message)); };
+    const previewOriginal = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+    if (previewOriginal?.taskExecution?.arguments?.completion_mode === "abandoned_release_service"
+        && previewOriginal.taskExecution.arguments.confirm_cleanup !== true) {
+      return this.#reconcileAbandonedReleasePreview(context, args, previewOriginal);
+    }
     if (args.manual_preview_arguments) {
       const captured = args.manual_preview_arguments;
       const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
@@ -3231,12 +3244,17 @@ export class HubMcpService {
     const outcome = this.taskBoard.lifecycleOutcome?.(args.operation_request_id);
     const evidence = outcome?.result?.evidence ?? transition?.evidence;
     const captured = evidence?.originalArguments;
-    const deliveredTaskId = captured?.completion_mode === "manual_delivery"
-      ? evidence?.manualDelivery?.taskId : evidence?.publishedDelivery?.taskId;
+    const abandoned = captured?.completion_mode === "abandoned_release_service"
+      && evidence?.releaseService?.mode === "abandoned_release_service";
+    if (abandoned && (original?.streamId !== context.streamId || original?.provider !== context.provider
+        || original?.threadId !== context.auditThreadId
+        || (original.actorKind ?? "provider") !== (context.actorKind ?? "provider"))) refuse("Abandoned release closure belongs to a different actor");
+    const deliveredTaskId = abandoned ? evidence.releaseService.source?.taskId
+      : captured?.completion_mode === "manual_delivery" ? evidence?.manualDelivery?.taskId : evidence?.publishedDelivery?.taskId;
     if (!original || original.workspaceId !== context.workspaceId || original.toolName !== "hub_task_complete"
         || deliveredTaskId !== args.task_id || !captured
         || captured.task_id !== args.task_id || captured.request_id !== original.requestId
-        || !["published_delivery", "operational", "manual_delivery"].includes(captured.completion_mode) || captured.confirm_cleanup !== true
+        || !["published_delivery", "operational", "manual_delivery", "abandoned_release_service"].includes(captured.completion_mode) || captured.confirm_cleanup !== true
         || argumentsHash(captured) !== original.argumentsHash
         || (transition && (transition.taskId !== args.task_id || transition.kind !== "complete" || transition.phase !== "cleanup"))
         || (outcome && (outcome.taskId !== args.task_id || outcome.kind !== "complete"))) {
@@ -3247,11 +3265,55 @@ export class HubMcpService {
     if (result?.id !== args.task_id || result?.status !== "done") throw Error("Original direct cleanup did not finish");
     if (original.status === "unknown") await this.workspaceCatalog.completeUnknownMcpOperation(original.requestId, {
       workspaceId: context.workspaceId, toolName: "hub_task_complete", result,
-      reconciliation: { kind: captured.completion_mode === "manual_delivery"
-        ? "manual-delivery-completion-original-v1" : "direct-published-cleanup-original-v1", lifecycleOperationId: original.requestId },
+      reconciliation: { kind: abandoned ? "abandoned-release-service-original-v1"
+        : captured.completion_mode === "manual_delivery" ? "manual-delivery-completion-original-v1"
+        : "direct-published-cleanup-original-v1", lifecycleOperationId: original.requestId },
     });
     else if (original.status !== "succeeded") await this.workspaceCatalog.completeMcpOperation(original.requestId, result);
     return { taskId: args.task_id, operationId: original.requestId, outcome: "COMPLETED", result };
+  }
+
+  async #reconcileAbandonedReleasePreview(context, args, original) {
+    const refuse = message => { throw new TaskOperationReconciliationRefusedError(new Error(message)); };
+    const execution = original.taskExecution, captured = execution?.arguments, input = captured?.abandoned_release;
+    if (Object.keys(args).some(key => !["context_token", "request_id", "task_id", "operation_request_id",
+      "expected_arguments_hash", "confirm_reconcile"].includes(key))
+        || original.toolName !== "hub_task_complete" || original.workspaceId !== context.workspaceId
+        || original.streamId !== context.streamId || original.provider !== context.provider
+        || original.threadId !== context.auditThreadId || (original.actorKind ?? "provider") !== (context.actorKind ?? "provider")
+        || args.expected_arguments_hash !== original.argumentsHash || execution?.protocol !== "task-operation-interruption-v1"
+        || !execution.ownerId || execution.cancellation || execution.taskId !== args.task_id
+        || execution.taskWorkspaceId !== context.workspaceId || !captured || captured.task_id !== args.task_id
+        || captured.request_id !== original.requestId || argumentsHash(captured) !== original.argumentsHash
+        || captured.completion_mode !== "abandoned_release_service"
+        || (captured.confirm_cleanup !== undefined && captured.confirm_cleanup !== false)
+        || Object.keys(captured).some(key => !["request_id", "task_id", "completion_mode", "abandoned_release", "confirm_cleanup"].includes(key))
+        || !input || Array.isArray(input) || Object.keys(input).some(key => !["operationId", "expectedRevision", "expectedGeneration"].includes(key))
+        || this.taskBoard.lifecycleTransition?.(original.requestId) || this.taskBoard.lifecycleOutcome?.(original.requestId)
+        || !["unknown", "succeeded"].includes(original.status)) {
+      refuse("Abandoned preview original identity or arguments differ");
+    }
+    if (original.status === "succeeded") {
+      if (original.result?.confirmationRequired !== true || !original.result.cleanupToken) refuse("Abandoned preview has no exact stored readback");
+      return { taskId: args.task_id, operationId: original.requestId, outcome: "PREVIEW_RECOVERED", result: original.result };
+    }
+    // This exact argument family can only read a preview. Never dispatch a
+    // confirmed Complete, create an archive intent or adopt operational UNKNOWN.
+    const result = await this.#completeTask(context, captured);
+    if (result?.confirmationRequired !== true || !result.cleanupToken || result.preview?.deleting?.length !== 0
+        || result.preview?.releaseService?.mode !== "abandoned_release_service"
+        || result.preview.releaseService.actor?.streamId !== context.streamId
+        || this.taskBoard.lifecycleTransition?.(original.requestId) || this.taskBoard.lifecycleOutcome?.(original.requestId)
+        || JSON.stringify(this.workspaceCatalog.mcpOperation(original.requestId)) !== JSON.stringify(original)) {
+      refuse("Abandoned preview original changed during readback");
+    }
+    const completed = await this.workspaceCatalog.completeUnknownMcpOperation(original.requestId, {
+      workspaceId: context.workspaceId, toolName: original.toolName, result,
+      reconciliation: { kind: "abandoned-release-preview-readback-v1", originalArguments: captured,
+        priorReceipt: { status: original.status, error: original.error, result: original.result,
+          createdAtMs: original.createdAtMs, completedAtMs: original.completedAtMs } },
+    });
+    return { taskId: args.task_id, operationId: original.requestId, outcome: "PREVIEW_RECOVERED", result: completed.result };
   }
 
   async #reconcileSealedClaimRefusal(context, args) {

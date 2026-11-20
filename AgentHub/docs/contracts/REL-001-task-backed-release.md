@@ -147,6 +147,15 @@ worker or new publication authority. Missing, ambiguous, foreign or tampered
 facts refuse; reads never create a database or settle historical outcomes.
 Legacy database tables, archived artifacts and retained runtime records remain.
 
+A Release Manager may preview and confirm an archive-only Complete for the
+service card of an explicitly abandoned attempt. The historical owner checks
+the exact original revision, idle FAILED state, immutable generation, actor and
+original selection against the service checklist. The confirmation binds the
+same Task revision and custody. The archive keeps the card's workflow status,
+member Tasks, all source custody and the original failure and effects as
+recorded. It does not produce a release result or delete a worktree. The Task
+lifecycle owns the archive receipt, and the legacy decoder is read-only.
+
 ## Build, installation and manual delivery
 
 Standalone build/package tools consume the explicitly pinned external tool

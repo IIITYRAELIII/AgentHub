@@ -50,7 +50,7 @@ import {
 } from "../process/system-boot-identity.mjs";
 import { publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
 import { parseGitHubRemote, sourceOnlyGitPublication } from "../persistence/github-publication-baseline.mjs";
-import { readNativePublishedSelectedComposition, readOwnGitPublicationOrigin, readPublishedReleaseServiceGeneration } from "../persistence/task-publication-history.mjs";
+import { readAbandonedReleaseServiceGeneration, readNativePublishedSelectedComposition, readOwnGitPublicationOrigin, readPublishedReleaseServiceGeneration } from "../persistence/task-publication-history.mjs";
 import {
   normalizedTaskId,
   TASK_BRANCH_PREFIX,
@@ -6265,6 +6265,52 @@ export class TaskGitWorkspaceService {
     };
     workspaces.sort((a, b) => a.repositoryRoot.localeCompare(b.repositoryRoot));
     return visit(0, lease);
+  }
+
+  async abandonedReleaseServiceEvidenceOwned({ source, input, lease, actor } = {}) {
+    this.#assertAvailable("abandonedReleaseServiceEvidenceOwned");
+    await requiredGuardLease(lease).assertOwned();
+    if (!actor?.streamId || actor.workspaceId !== source.workspaceId
+        || (source.streamId != null && source.streamId !== actor.streamId)) {
+      throw new Error("Abandoned release service actor or assigned Stream differs");
+    }
+    if ((source.gitReferences ?? []).length || (source.gitAdoptions ?? []).length || source.squashTransfer || source.squashAbsorbedBy) {
+      throw new Error("Abandoned release service must not own implementation evidence");
+    }
+    const readOriginal = () => readAbandonedReleaseServiceGeneration({ dataDir: this.dataDir,
+      workspaceId: source.workspaceId, streamId: actor.streamId, input, checklist: source.checklist });
+    const original = readOriginal(), workspaces = await this.describe(source.id);
+    if (workspaces.length > 1 || workspaces.some(item => item.dirty)) throw new Error("Abandoned release source custody is not clean");
+    if (!workspaces.length) {
+      const unexpected = await lstat(path.join(this.taskWorktreesRoot, normalizedTaskId(source.id))).catch(error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (unexpected) throw new Error("Abandoned release has unregistered source custody");
+      for (const repositoryRoot of original.repositoryRoots) {
+        const refs = String(await runGit(["for-each-ref", "--format=%(refname)"], { cwd: repositoryRoot })).split(/\r?\n/u);
+        const branches = [taskBranchName(source.id, repositoryRoot), taskBranchName(source.id, repositoryRoot, source.taskNumber)];
+        if (refs.some(ref => branches.some(branch => ref === `refs/heads/${branch}`)
+            || ref.includes(`/${source.id}/`) || ref.endsWith(`/${source.id}`))) {
+          throw new Error("Abandoned release has unregistered source references");
+        }
+      }
+    }
+    for (const workspace of workspaces) {
+      if (!original.repositoryRoots.some(root => samePath(root, workspace.repositoryRoot))
+          || !samePath(await this.managedRepositoryRoot(workspace.projectRoot, { taskId: source.id, taskNumber: source.taskNumber }), workspace.repositoryRoot)
+          || workspace.headCommit !== await runGit(["rev-parse", `${this.#custodyBaseRef(source.id, workspace.repositoryKey)}^{commit}`], { cwd: workspace.repositoryRoot })) {
+        throw new Error("Abandoned release service has own source work");
+      }
+    }
+    if (JSON.stringify(await this.describe(source.id)) !== JSON.stringify(workspaces)
+        || JSON.stringify(readOriginal()) !== JSON.stringify(original)) throw new Error("Abandoned release custody changed");
+    await lease.assertOwned();
+    return { version: 1, mode: "abandoned_release_service", disposition: "abandoned",
+      source: { taskId: source.id, taskRevision: source.revision, workflowStatus: source.workflowStatus, streamId: source.streamId ?? null },
+      actor: { workspaceId: actor.workspaceId, streamId: actor.streamId },
+      original, cleanupPlan: { strategy: workspaces.length ? "preserve_managed_source" : "metadata_only", deleting: [] },
+      preserving: workspaces.map(item => ({ kind: "managed_source", projectRoot: item.projectRoot, headCommit: item.headCommit })) };
   }
 
   async publishedReleaseServiceEvidenceOwned({ source, selectedTasks, lease } = {}) {
