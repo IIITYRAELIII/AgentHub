@@ -386,6 +386,9 @@ test("gh content URLs remain exact body, notes, title, formatting and query payl
     ["repo", "new", "owner/repo", "--template", "github.com/template/project", "--description", "https://example.org/docs"],
     ["repo", "deploy-key", "add", "foreign.ghe.com/local/key.pub"],
     ["release", "create", "v-fixture", "foreign.ghe.com/local/archive.zip", "--notes", "https://example.org/docs"],
+    ["cache", "delete", "--succeed-on-no-caches", "--repo", "owner/repo", "--all"],
+    ["browse", "--commit", "--repo", "owner/repo"],
+    ["browse", "-c=Rforeign.ghe.com/owner/repo", "--repo", "owner/repo"],
   ];
   for (const args of commands) {
     const result = await f.run(args);
@@ -424,35 +427,74 @@ test("gh destination host controls still reject actual foreign selectors and pos
     ["repo", "create", "owner/repo", "--template=https://foreign.ghe.com/owner/repo"],
     ["issue", "develop", "123", "--branch-repo", "foreign.ghe.com/owner/repo"],
     ["extension", "install", "https://foreign.ghe.com/owner/repo"],
+    ["cache", "delete", "--succeed-on-no-caches", "--repo", "foreign.ghe.com/owner/repo", "--all"],
+    ["cache", "delete", "--succeed-on-no-caches", "-Rforeign.ghe.com/owner/repo", "--all"],
+    ["cache", "delete", "--succeed-on-no-caches=true", "--repo", "foreign.ghe.com/owner/repo", "--all"],
+    ["browse", "--commit", "--repo", "foreign.ghe.com/owner/repo"],
+    ["browse", "-c", "-Rforeign.ghe.com/owner/repo"],
   ]) await assert.rejects(f.run(args), /limited to github.com/u);
   await assert.rejects(f.run(["api", "user"], { ...process.env, GH_HOST: "foreign.invalid" }), /limited to github.com/u);
   await assert.rejects(f.run(["issue", "list"], { ...process.env, GH_REPO: "foreign.ghe.com/owner/repo" }), /limited to github.com/u);
   assert.equal(f.starts(), 0);
 });
 
-test("gh built-in value option grammar matches the installed CLI reference across commands and shorthand forms", async t => {
+test("gh option arity follows actual pflag consumption and NoOptDefVal rather than rendered help", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-gh-arity-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
   const env = withoutGithubAccountEnvironment(process.env);
-  for (const key of Object.keys(env)) if (/^(?:GH|GITHUB)_(?:ENTERPRISE_)?TOKEN$/iu.test(key)) delete env[key];
+  for (const key of Object.keys(env)) if (/^(?:GH|GITHUB)_(?:ENTERPRISE_)?TOKEN$/iu.test(key)
+    || /^GIT_CONFIG/iu.test(key) || ["GH_DEBUG", "DEBUG", "GH_HOST", "GH_REPO"].includes(key)) delete env[key];
+  const gitConfig = path.join(directory, "gitconfig");
+  await writeFile(gitConfig, "");
+  Object.assign(env, { GH_CONFIG_DIR: path.join(directory, "gh"), HOME: directory, USERPROFILE: directory,
+    XDG_CONFIG_HOME: directory, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1", GH_PROMPT_DISABLED: "1", GH_ACTIVE_HELP: "0" });
   let reference;
-  try { reference = (await execute("gh", ["help", "reference"], { env, windowsHide: true, maxBuffer: 1024 * 1024 })).stdout; }
+  try { reference = (await execute("gh", ["help", "reference"], { cwd: directory, env, windowsHide: true, maxBuffer: 1024 * 1024 })).stdout; }
   catch (error) { if (error.code === "ENOENT") { t.skip("GitHub CLI is not installed; its command metadata cannot be checked"); return; } throw error; }
-  let command, options = 0;
+  let command;
+  const declarations = [];
   for (const line of reference.split(/\r?\n/u)) {
     const heading = line.match(/^#{2,} gh ([a-z0-9][a-z0-9-]*(?: [a-z0-9][a-z0-9-]*)*)/u);
     if (heading) { command = heading[1].split(" "); continue; }
-    const flag = line.match(/^  (?:(-[A-Za-z0-9?]), *)? *(--[A-Za-z0-9-]+)(.*)$/u);
-    if (!command || !flag || !/^ [^ ]/u.test(flag[3])) continue;
-    for (const name of [flag[1], flag[2]].filter(Boolean)) {
-      const value = "https://example.org/opaque-content", target = "resource-sentinel";
-      for (const argv of [[...command, name, value, target], [...command, name + "=" + value, target],
-        [...command, name + "=", target], ...(name.startsWith("--") ? [] : [[...command, name + value, target]])]) {
-        assert.deepEqual(githubInvocation(argv).operands, [target], `Valued option ${command.join(" ")} ${name}`);
-      }
-      options++;
-    }
+    // Help supplies only names. Nothing after the long name determines arity.
+    const flag = line.match(/^  (?:(-[A-Za-z0-9?]), *)? *(--[A-Za-z0-9-]+)/u);
+    if (command && flag) declarations.push({ command, short: flag[1], long: flag[2] });
   }
-  assert.ok(options > 500, "Full built-in reference was not read");
-  t.diagnostic(`Checked ${options} documented value-option names and shorthand aliases against the actual installed CLI`);
+  let next = 0, probes = 0;
+  const workers = await Promise.allSettled(Array.from({ length: 4 }, async () => {
+    while (next < declarations.length) {
+      const { command, short, long } = declarations[next++];
+      // gh copilot disables pflag parsing; --remove is a decorative Bool in
+      // exact upstream source. Do not launch/probe the delegated Copilot CLI.
+      if (command.join(" ") === "copilot") {
+        assert.equal(long, "--remove");
+        assert.deepEqual(githubInvocation([...command, long, "content", "resource-sentinel"]).operands, ["content", "resource-sentinel"]);
+        continue;
+      }
+      const first = "--__hub254_arity_value", last = "--__hub254_arity_stop";
+      const { stderr } = await execute("gh", ["__complete", ...command, long, first, last, ""],
+        { cwd: directory, env, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 });
+      // Cobra returns at this ParseFlags failure, before RunE/custom completion.
+      // A required value consumes first; NoOptDefVal leaves it as the error.
+      assert.match(stderr, /Error while parsing flags from args /u);
+      const noNext = stderr.includes("unknown flag: " + first);
+      assert.ok(noNext || stderr.includes("unknown flag: " + last)
+        || stderr.includes('invalid argument "' + first + '" for '), "Arity probe did not reach either exact parser marker");
+      for (const name of [short, long].filter(Boolean)) {
+        const value = "https://example.org/opaque-content", target = "resource-sentinel";
+        assert.deepEqual(githubInvocation([...command, name, value, target]).operands,
+          noNext ? [value, target] : [target], `Actual arity ${command.join(" ")} ${name}`);
+        for (const argv of [[...command, name + "=" + value, target], [...command, name + "=", target],
+          ...(!noNext && short === name ? [[...command, name + value, target]] : [])]) {
+          assert.deepEqual(githubInvocation(argv).operands, [target], `Explicit value ${command.join(" ")} ${name}`);
+        }
+      }
+      probes++;
+    }
+  }));
+  for (const result of workers) if (result.status === "rejected") throw result.reason;
+  assert.ok(probes > 500, "Full built-in parser declaration set was not checked");
+  t.diagnostic(`Actual compiled pflag probes ${probes}; help only supplied names, not types or arity`);
 });
 
 test("test/child runtime isolation removes only the inherited Hub account include and gh path", () => {

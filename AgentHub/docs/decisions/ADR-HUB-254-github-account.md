@@ -50,9 +50,14 @@ The gh boundary checks host/repository selectors and the command's positional
 repository or API/resource address. Body, notes, title, formatting and query
 values remain opaque content, including external links; they are not destinations
 for the connected account. The pure argument reader uses complete value-option
-roles and aliases from GitHub CLI 2.96.0's built-in reference, including nested
-commands, attached/equals short values and boolean clusters. A focused test checks
-these roles against the actual installed CLI reference. The data is source grammar,
+roles and aliases for GitHub CLI 2.96.0, including nested commands, attached/equals
+short values and boolean clusters. Help identifies command/flag names only;
+actual compiled pflag parser probes establish next-value consumption, including
+NoOptDefVal. Rendered help descriptions are not type/arity authority. A focused
+test independently checks those roles through parse-failing completion probes
+before command execution. The decorative Copilot --remove Bool is source-verified
+because that command disables pflag parsing; the delegated program is not launched.
+The data is source grammar,
 not a runtime help query/cache or a command allowlist; unknown commands are still
 forwarded to gh. Positional resource slots are distinct from local key/archive
 paths, release tags/assets and query text. Named template/source repository options

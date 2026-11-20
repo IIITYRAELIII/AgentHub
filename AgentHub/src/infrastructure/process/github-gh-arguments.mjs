@@ -1,6 +1,7 @@
 // Value-consuming option roles from GitHub CLI 2.96.0 `gh help reference`.
 // Reference SHA256: 95ee5d73dfab28405d8f134b5747ef2337f07ab3d0b3eed112325e5f48f095d2
-// All built-in commands and aliases are represented; booleans consume no next value.
+// Actual parser proof SHA256: fd624d7e39d4660f0ef8f7a7190f725b19a0a4afa8b38326c9535641a26ba232
+// Help identifies names only; actual NoOptDefVal/argument consumption determines arity.
 // This is source grammar metadata, not a runtime query/cache or a command allowlist.
 const valuedOptions = {
   "agent-task": "",
@@ -21,13 +22,13 @@ const valuedOptions = {
   "auth login": "--git-protocol --hostname --scopes -h=--hostname -p=--git-protocol -s=--scopes",
   "auth logout": "--hostname --user -h=--hostname -u=--user",
   "auth refresh": "--hostname --remove-scopes --scopes -h=--hostname -r=--remove-scopes -s=--scopes",
-  "auth setup-git": "--force --hostname -f=--force -h=--hostname",
+  "auth setup-git": "--hostname -h=--hostname",
   "auth status": "--hostname --jq --json --template -h=--hostname",
   "auth switch": "--hostname --user -h=--hostname -u=--user",
   "auth token": "--hostname --user -h=--hostname -u=--user",
-  "browse": "--branch --commit -b=--branch -c=--commit",
+  "browse": "--branch -b=--branch",
   "cache": "",
-  "cache delete": "--ref --succeed-on-no-caches -r=--ref",
+  "cache delete": "--ref -r=--ref",
   "cache list": "--jq --json --key --limit --order --ref --sort --template -L=--limit -O=--order -S=--sort -k=--key -q=--jq -r=--ref -t=--template",
   "co": "",
   "codespace": "",
@@ -337,7 +338,12 @@ export function githubInvocation(args) {
       // characters (or the next argv), including literal flag-shaped content.
       for (let offset = 1; offset < argument.length; offset++) {
         const flag = "-" + argument[offset], role = flag === "-R" ? "--repo" : options.get(flag);
-        if (!role) continue;
+        if (!role) {
+          // Even a boolean/NoOpt shorthand owns an explicit =value. Its
+          // contents are never interpreted as more clustered flags.
+          if (argument[offset + 1] === "=") break;
+          continue;
+        }
         let value = argument.slice(offset + 1);
         const attached = value.length > 0;
         if (value.startsWith("=")) value = value.slice(1);
