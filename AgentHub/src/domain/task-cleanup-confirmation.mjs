@@ -23,9 +23,26 @@ export function cleanupConfirmationCapsule(result) {
     previewIdentity: { sha256: createHash("sha256").update(previewBytes).digest("hex"), bytes: Buffer.byteLength(previewBytes) },
     ...(absorbed ? { absorption: { taskId: absorbed.taskId, taskRevision: absorbed.taskRevision } } : {}),
     warning: result.warning, receiptCompacted: true,
+    ...(result.preview?.archive ? { archivePreview: true,
+      archiveArtifactsRemain: result.preview.remainingArtifacts.length > 0 } : {}),
     ...(result.previewRecovery ? { previewRecovery: result.previewRecovery } : {}) };
   const complete = { ...capsule, preview: result.preview };
   return Buffer.byteLength(JSON.stringify(complete)) <= 65536 ? complete : { ...capsule, previewOmitted: true };
+}
+
+export function archivedArtifactPreview(result) {
+  return result?.status === "done" && Array.isArray(result.archive?.remainingArtifacts)
+    ? { archive: true, remainingArtifacts: result.archive.remainingArtifacts } : null;
+}
+
+export function archivedArtifactCapsule(result) {
+  const preview = archivedArtifactPreview(result);
+  if (!preview || !/^[a-f0-9]{64}$/u.test(result.cleanupToken ?? "")) return null;
+  const raw = JSON.stringify(preview);
+  return { id: result.id, taskId: result.id, status: result.status, workflowStatus: result.workflowStatus,
+    cleanupToken: result.cleanupToken, archivePreview: true, archiveArtifactsRemain: preview.remainingArtifacts.length > 0,
+    receiptCompacted: true, previewOmitted: true,
+    previewIdentity: { sha256: createHash("sha256").update(raw).digest("hex"), bytes: Buffer.byteLength(raw) } };
 }
 
 export function cleanupConfirmationOriginal(receipt, confirm) {

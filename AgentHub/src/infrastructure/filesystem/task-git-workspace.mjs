@@ -6821,7 +6821,7 @@ export class TaskGitWorkspaceService {
     return { references, staleWorktrees };
   }
 
-  async archiveCleanupPreview(task, { retainArtifacts = false } = {}) {
+  async archiveCleanupPreview(task, { retainArtifacts = false, registeredProjectRoot = null } = {}) {
     const id = normalizedTaskId(task.id);
     const root = path.join(this.taskWorktreesRoot, id);
     const missing = error => { if (error.code === "ENOENT") return null; throw error; };
@@ -6846,6 +6846,37 @@ export class TaskGitWorkspaceService {
     }
     let safe = !opaqueRoot && !custody && entries.length === workspaces.length;
     const references = task.gitReferences ?? [];
+    const registered = registeredProjectRoot ? await repositoryRoot(registeredProjectRoot).catch(() => null) : null;
+    const repositories = new Set([registered, ...workspaces.map(w => w.repositoryRoot)].filter(Boolean));
+    for (const repository of repositories) {
+      const registrations = parseWorktrees(await runGit(["worktree", "list", "--porcelain"], { cwd: repository }));
+      const managedRoot = path.join(root, taskRepositoryKey(repository));
+      const missingRegistration = registrations.find(w => samePath(w.path, managedRoot)
+        && !workspaces.some(live => samePath(live.projectRoot, w.path)));
+      if (missingRegistration) {
+        const present = await lstat(missingRegistration.path).catch(missing);
+        artifacts.push({ kind: present ? "path" : "worktree_registration",
+          path: missingRegistration.path, repositoryRoot: repository });
+        if (missingRegistration.branchRef?.startsWith("refs/heads/")) {
+          const branch = missingRegistration.branchRef.slice("refs/heads/".length);
+          const head = await gitMaybe(["rev-parse", "--verify", missingRegistration.branchRef + "^{commit}"], { cwd: repository });
+          if (head) addBranch(repository, branch, head);
+        }
+        safe = false;
+      }
+      const ownedBranches = new Set([taskBranchName(id, repository), taskBranchName(id, repository, task.taskNumber)]);
+      for (const branch of ownedBranches) {
+        if (workspaces.some(w => samePath(w.repositoryRoot, repository) && w.branch === branch)
+            || references.some(r => samePath(r.projectRoot, repository) && r.branch === branch)) continue;
+        const head = await gitMaybe(["rev-parse", "--verify", "refs/heads/" + branch + "^{commit}"], { cwd: repository });
+        if (!head) continue;
+        addBranch(repository, branch, head);
+        const checkout = registrations.find(w => w.branchRef === "refs/heads/" + branch)?.path;
+        if (checkout) artifacts.push({ kind: await lstat(checkout).catch(missing) ? "path" : "worktree_registration",
+          path: checkout, repositoryRoot: repository });
+        safe = false;
+      }
+    }
     for (const reference of references) {
       const repository = canonicalPath(reference.projectRoot);
       const branch = reference.branch;

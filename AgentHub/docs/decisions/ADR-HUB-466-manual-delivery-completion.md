@@ -241,4 +241,8 @@ A cleanup attempt persists the admitted plan before Git. If work remains after
 cleanup, its durable outcome is another confirmation, rather than an archived
 card. The same original can be read after reconnect without repeating cleanup.
 Later explicit confirmation binds the newly observed leftovers. Only the MCP
-adapter adds an imperative agent instruction to this neutral result.
+adapter adds an imperative agent instruction to this neutral result. Larger
+plans stay in the original Task lifecycle outcome and can be read in bounded
+pages from the same receipt, without repeating the preview or cleanup. Early
+Task branches and remaining worktree registrations are inventoried even before
+a Test reference exists. Their names alone do not grant cleanup authority.

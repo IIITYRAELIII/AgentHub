@@ -442,6 +442,10 @@ export class TaskBoardService {
     return this.store.resumeConfirmedDeleteTransition(operationId, payload);
   }
 
+  recordArchivePreview(taskId, operationId, result, evidence) {
+    return this.store.recordArchivePreview(taskId, operationId, result, evidence);
+  }
+
   finalizeCleanupTransition(operationId, payload = {}) {
     requiredMethod(this.store, "finalizeCleanupTransition");
     return this.store.finalizeCleanupTransition(operationId, payload);

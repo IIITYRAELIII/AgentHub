@@ -1,6 +1,6 @@
 import { TaskOperationInterruption, INTERRUPTIBLE_TASK_TOOLS, taskOperationInterrupted } from "./task-operation-interruption.mjs";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { TaskCleanupConfirmationRejectedError, cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../domain/task-cleanup-confirmation.mjs";
+import { TaskCleanupConfirmationRejectedError, archivedArtifactPreview, cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../domain/task-cleanup-confirmation.mjs";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -402,19 +402,23 @@ function compactTask(task) {
 }
 
 function withArchiveCleanupInstruction(result) {
+  if (["CONFIRMATION_REQUIRED", "COMPLETED"].includes(result?.outcome) && result.result) {
+    return { ...result, result: withArchiveCleanupInstruction(result.result) };
+  }
   const remaining = result?.archive?.remainingArtifacts ?? result?.preview?.remainingArtifacts;
-  return remaining?.length ? { ...result, agentInstruction: "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС" } : result;
+  return remaining?.length || result?.archiveArtifactsRemain
+    ? { ...result, agentInstruction: "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС" } : result;
 }
 
 function compactCompleteResult(result) {
   if (result?.confirmationRequired) return { ...result, task: compactTask(result.task) };
-  return result?.archive ? { ...compactTask(result), archive: result.archive } : compactTask(result);
+  return result?.archive ? { ...compactTask(result), archive: result.archive, cleanupToken: result.cleanupToken } : compactTask(result);
 }
 
 function completedLifecycleResult(outcome) {
   const { result, evidence } = outcome.result;
   return evidence?.archive && !result.confirmationRequired
-    ? { ...result, archive: { remainingArtifacts: evidence.remainingArtifacts } } : result;
+    ? { ...result, archive: { remainingArtifacts: evidence.remainingArtifacts }, cleanupToken: evidence.originalArguments.expected_cleanup_token } : result;
 }
 
 function cleanupConfirmation(task, action, preview) {
@@ -795,6 +799,12 @@ export class HubMcpService {
         expected_arguments_hash: { type: "string" },
         original_arguments: { type: "object", additionalProperties: true },
         task_id: { type: "string" },
+        archive_preview_page: { type: "object", additionalProperties: false,
+          required: ["cleanupToken", "previewSha256", "offset"], properties: {
+            cleanupToken: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            previewSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            offset: { type: "integer", minimum: 0 },
+          }, description: "Read one bounded page of an omitted archive preview. Include the exact operation arguments hash and Task id." },
       }, ["operation_request_id"]),
       tool("hub_task_operation_cancel", "Explicitly stop one exact claim/Test/Await worker, preserving its original receipt and prior unknown effects. Own Stream or RM only. Historical workers require verified retirement; a requested cancellation is not yet stopped.", {
         task_id: { type: "string" }, operation_request_id: { type: "string" },
@@ -1012,6 +1022,34 @@ export class HubMcpService {
     }, result: row.status === "succeeded" ? row.result : null };
   }
 
+  #archivePreviewPage(actor, identity, { cleanupToken, previewSha256, offset } = {}) {
+    const { taskOperation: operation, result: capsule } = this.#taskOperationReadback(actor, identity);
+    if (operation?.toolName !== "hub_task_complete" || identity.task_id !== operation.taskId || !identity.expected_arguments_hash
+        || operation.status !== "succeeded" || !capsule?.archivePreview || !capsule.previewOmitted
+        || capsule.cleanupToken !== cleanupToken || capsule.previewIdentity?.sha256 !== previewSha256
+        || !Number.isSafeInteger(offset) || offset < 0) throw new Error("Archive preview reference differs");
+    const outcome = this.taskBoard.lifecycleOutcome(operation.requestId);
+    const original = outcome?.result?.evidence?.originalArguments;
+    if (outcome?.taskId !== operation.taskId || outcome.kind !== "complete" || !outcome.result.evidence.archive
+        || !original || argumentsHash(original) !== operation.argumentsHash) throw new Error("Original archive preview unavailable");
+    const result = completedLifecycleResult(outcome);
+    const preview = result.confirmationRequired ? result.preview : archivedArtifactPreview(result);
+    if (result.cleanupToken !== cleanupToken || !preview?.archive) throw new Error("Original archive preview unavailable");
+    const raw = JSON.stringify(preview);
+    const sha256 = createHash("sha256").update(raw).digest("hex");
+    if (sha256 !== previewSha256 || Buffer.byteLength(raw) !== capsule.previewIdentity.bytes || offset >= raw.length) {
+      throw new Error("Archive preview content differs");
+    }
+    const chunk = raw.slice(offset, offset + 8192);
+    return { offset, chunk, nextOffset: offset + chunk.length < raw.length ? offset + chunk.length : null };
+  }
+
+  readDesktopArchivePreviewPage(task, operationId, expectedHash, page) {
+    return this.#archivePreviewPage({ actorKind: "authenticated-user" }, {
+      operation_request_id: operationId, expected_arguments_hash: expectedHash, task_id: task.id,
+    }, page);
+  }
+
   readDesktopTaskOperation(task, operationId, expectedHash) {
     return this.#taskOperationReadback({ actorKind: "authenticated-user" }, {
       operation_request_id: operationId, expected_arguments_hash: expectedHash, task_id: task.id,
@@ -1188,7 +1226,9 @@ export class HubMcpService {
 
   async call(name, args = {}, { onAdmission = null } = {}) {
     if (name === "hub_task_operation_get") {
-      const receipt = this.#taskOperationReadback(this.#authorize(args.context_token), args);
+      const actor = this.#authorize(args.context_token);
+      if (args.archive_preview_page) return { archivePreviewPage: this.#archivePreviewPage(actor, args, args.archive_preview_page) };
+      const receipt = this.#taskOperationReadback(actor, args);
       return { ...receipt, result: withArchiveCleanupInstruction(receipt.result) };
     }
     await this.#startupReconciliation;
@@ -1203,7 +1243,8 @@ export class HubMcpService {
       const operation = (admissionReceipt) => this.#dispatch({ ...context, admissionReceipt }, toolName, args);
 
       const result = await this.#mutate(context, toolName, args, operation, { onAdmission });
-      return toolName === "hub_task_complete" ? withArchiveCleanupInstruction(result) : result;
+      return ["hub_task_complete", "hub_task_operation_reconcile"].includes(toolName)
+        ? withArchiveCleanupInstruction(result) : result;
     }
     return this.#dispatch(context, toolName, args);
   }
@@ -3259,7 +3300,7 @@ export class HubMcpService {
       else if (originalArchive.status !== "succeeded") await this.workspaceCatalog.completeMcpOperation(originalArchive.requestId, result);
       return { taskId: args.task_id, operationId: originalArchive.requestId,
         outcome: result.confirmationRequired ? "CONFIRMATION_REQUIRED" : "COMPLETED",
-        result: withArchiveCleanupInstruction(result) };
+        result };
     }
     if (args.manual_preview_arguments) {
       const captured = args.manual_preview_arguments;

@@ -1014,7 +1014,11 @@ leftovers after an incomplete cleanup. An exact original reconciles by
 readback and cannot rerun its deletion. The agent result includes the remaining
 artifacts and "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС".
 This instruction is projected after receipt lookup and is absent from
-authenticated Desktop results and stored outcomes.
+authenticated Desktop results and stored outcomes. If a full archive preview
+or archived artifact list exceeds the receipt cap, the original Task outcome
+keeps it. Desktop Task read or MCP operation get reads bounded pages under the
+same Task, original arguments hash, confirmation token and preview digest.
+Dashboard verifies the complete digest before rendering the confirmation.
 
 Successful complete/delete preview compaction preserves action, token, exact
 Task identity/revision and the complete preview digest/length within 64 KiB.

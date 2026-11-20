@@ -3660,6 +3660,16 @@ export class TaskBoardStore {
     });
   }
 
+  recordArchivePreview(taskId, operationId, result, evidence) {
+    return this.#withDatabase(database => {
+      const recorded = database.prepare(`
+        INSERT INTO hub_task_lifecycle_outcomes (operation_id, task_id, kind, result_json, completed_at_ms)
+        SELECT ?, id, 'complete', ?, ? FROM hub_board_tasks WHERE id = ? AND row_revision = ?
+      `).run(operationId, JSON.stringify({ result, evidence }), this.now(), taskId, result.task.revision);
+      if (!Number(recorded.changes)) throw new Error("Task changed while archiving preview");
+    });
+  }
+
   finalizeCleanupTransition(operationId, {
     deleteTask = false, receiptEvidence = null, preserveCompletedTask = false, archiveConfirmation = null,
   } = {}) {

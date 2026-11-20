@@ -11,6 +11,7 @@ import { TaskGitWorkspaceService, runTaskGitCommand } from "../../../src/infrast
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { HubMcpService } from "../../../src/application/hub-mcp-service.mjs";
 import { DesktopControlServer, readDesktopControlEndpoint, desktopControlEndpointFile, desktopControlSecretFile } from "../../../src/infrastructure/process/desktop-control.mjs";
@@ -1277,6 +1278,11 @@ test("Task archive reconciles a lost partial outcome without rerunning Git and r
   const recovered = await f.call("hub_task_operation_reconcile", { task_id: f.task.id,
     request_id: "archive-reopen-reconcile", operation_request_id: original.request_id, confirm_reconcile: true });
   assert.equal(recovered.outcome, "CONFIRMATION_REQUIRED");
+  assert.equal(recovered.result.agentInstruction, "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС");
+  const outer = f.catalog.mcpOperation("archive-reopen-reconcile");
+  assert.equal(outer.result.result.agentInstruction, undefined);
+  const outerReadback = await f.call("hub_task_operation_get", { operation_request_id: outer.requestId, expected_arguments_hash: outer.argumentsHash });
+  assert.equal(outerReadback.result.result.agentInstruction, recovered.result.agentInstruction);
   assert.equal(f.catalog.mcpOperation(original.request_id).status, "succeeded");
   assert.notEqual(f.board.task(f.task.id).status, "done");
   assert.equal(attempts, 1);
@@ -1287,4 +1293,106 @@ test("Task archive reconciles a lost partial outcome without rerunning Git and r
   assert.equal(await readFile(late, "utf8"), "preserve this");
   assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
   assert.notEqual(f.board.task(f.task.id).status, "done");
+});
+
+test("Task archive inventories a pre-Test branch and its missing worktree registration", async t => {
+  const f = await publicFixture(t);
+  assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
+  // Delete only the disposable fixture's owned worktree directory. Keep Git's
+  // registration and branch, as after an interrupted historical cleanup.
+  assert.equal(path.dirname(f.managed.projectRoot), path.join(f.root, "data", "task-worktrees", f.task.id));
+  await rm(f.managed.projectRoot, { recursive: true });
+  assert.deepEqual(await f.taskGit.describe(f.task.id), []);
+  const args = { task_id: f.task.id, completion_mode: "archive" };
+  const result = await f.call("hub_task_complete", { ...args, request_id: "archive-pretest-preview" });
+  assert.ok(result.preview.remainingArtifacts.some(item => item.kind === "branch" && item.name === f.managed.branch
+    && item.headCommit === f.base));
+  assert.ok(result.preview.remainingArtifacts.some(item => item.kind === "worktree_registration"
+    && path.resolve(item.path) === f.managed.projectRoot));
+  const closed = await f.call("hub_task_complete", { ...args, request_id: "archive-pretest-confirm",
+    confirm_cleanup: true, expected_cleanup_token: result.cleanupToken });
+  assert.equal(closed.status, "done");
+  assert.equal(closed.workflowStatus, f.task.workflowStatus);
+  assert.deepEqual(closed.archive.remainingArtifacts, result.preview.remainingArtifacts);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("large Task archive preview reaches the real Desktop reader and confirmation UI", { timeout: 75_000 }, async t => {
+  const f = await publicFixture(t);
+  const files = Array.from({ length: 1000 }, (_, index) => "file-" + String(index).padStart(4, "0") + "-" + "x".repeat(23));
+  for (const name of files) await writeFile(path.join(f.managed.projectRoot, name), "preserve");
+  const controller = new DesktopTaskBoardController({ taskBoard: f.board, workspaceCatalog: f.catalog,
+    taskLifecycle: f.lifecycle, hubMcpService: f.hub, snapshot: async () => ({}), taskLauncher: {} });
+  async function complete(params) {
+    const admitted = await controller.complete({ id: f.task.id, completionMode: "archive", ...params },
+      { taskOperationReceipt: true });
+    const identity = admitted.taskOperation;
+    const query = { id: f.task.id, argumentsHash: identity.argumentsHash, operationRequestId: identity.requestId };
+    let operation = admitted;
+    for (let n = 0; !operation.taskOperation.terminal && operation.taskOperation.status !== "unknown" && n < 300; n += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      operation = controller.read(query).operation;
+    }
+    assert.equal(operation.taskOperation.status, "succeeded", operation.taskOperation.error);
+    return { query, result: operation.result };
+  }
+  const original = await complete({ operationId: "large-archive-preview" });
+  const capsule = original.result;
+  assert.equal(capsule.previewOmitted, true);
+  assert.ok(capsule.previewIdentity.bytes > 64 * 1024);
+  assert.equal(capsule.agentInstruction, undefined);
+  const pageInput = { cleanupToken: capsule.cleanupToken, previewSha256: capsule.previewIdentity.sha256, offset: 0 };
+  assert.throws(() => controller.read({ ...original.query, archivePreviewPage: { ...pageInput, previewSha256: "0".repeat(64) } }),
+    /preview reference differs/u);
+  assert.throws(() => controller.read({ ...original.query, archivePreviewPage: { ...pageInput, cleanupToken: "0".repeat(64) } }),
+    /preview reference differs/u);
+
+  const { chromium } = await import("playwright-core");
+  const browser = await chromium.launch(process.platform === "win32" ? { channel: "msedge", headless: true } : { headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
+    await page.route("http://localhost/archive-fixture", route => route.fulfill({
+      contentType: "text/html", body: "<title>Large archive fixture</title><main>Dashboard</main>",
+    }));
+    await page.goto("http://localhost/archive-fixture");
+    for (const file of ["modal-overlays.js", "task-board.js"]) {
+      await page.addScriptTag({ content: await readFile(new URL("../../../assets/web-app/" + file, import.meta.url), "utf8") });
+    }
+    await page.exposeFunction("readArchiveFixturePage", archivePreviewPage =>
+      controller.read({ ...original.query, archivePreviewPage }).archivePreviewPage);
+    await page.exposeFunction("confirmArchiveFixture", (_action, params) => complete({ ...params, operationId: "large-archive-confirm" }));
+    await page.evaluate(capsule => {
+      const api = window.AgentHubTaskCleanupConfirmation;
+      window.archiveResult = api.readArchivePreview(capsule, window.readArchiveFixturePage).then(confirmation => api.confirm({
+        action: "board-task-complete", params: { id: capsule.task.id }, confirmation, request: window.confirmArchiveFixture,
+      }));
+    }, capsule);
+    const dialog = page.getByRole("dialog", { name: "Всё равно закрыть?" });
+    await dialog.waitFor();
+    const previewText = await dialog.locator("pre").textContent();
+    assert.ok(files.every(name => previewText.includes(path.join(f.managed.projectRoot, name))));
+    assert.doesNotMatch(previewText, /УДАЛИ ФАЙЛЫ САМ/u);
+    await dialog.getByRole("button", { name: "Да", exact: true }).click();
+    const confirmed = await page.evaluate(() => window.archiveResult);
+    assert.equal(confirmed.confirmed, true);
+    const closed = confirmed.result.result;
+    assert.equal(closed.status, "done");
+    assert.equal(closed.previewOmitted, true);
+    assert.equal(closed.agentInstruction, undefined);
+    const terminal = await f.call("hub_task_operation_get", {
+      task_id: f.task.id, operation_request_id: confirmed.result.query.operationRequestId,
+      expected_arguments_hash: confirmed.result.query.argumentsHash,
+    });
+    assert.equal(terminal.result.agentInstruction, "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС");
+    const read = await f.call("hub_task_operation_get", {
+      task_id: f.task.id, operation_request_id: confirmed.result.query.operationRequestId,
+      expected_arguments_hash: confirmed.result.query.argumentsHash,
+      archive_preview_page: { cleanupToken: closed.cleanupToken, previewSha256: closed.previewIdentity.sha256, offset: 0 },
+    });
+    assert.match(read.archivePreviewPage.chunk, /remainingArtifacts/u);
+    assert.equal(f.board.task(f.task.id).status, "done");
+    assert.equal(await readFile(path.join(f.managed.projectRoot, files.at(-1)), "utf8"), "preserve");
+  } finally {
+    await browser.close();
+  }
 });
