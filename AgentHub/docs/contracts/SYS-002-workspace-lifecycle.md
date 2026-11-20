@@ -1,5 +1,19 @@
 # SYS-002 — Workspace cards and permanent archive
 
+## Local file links
+
+The existing authenticated local-file APIs resolve links independently of the
+Workspace/project folder roots, including when no roots are configured. Location
+does not require a folder allowlist, per-file grant or confirmation. Local browser
+download/copy and local/trusted-device runtime reveal retain their current
+authentication modes. Trusted-device downloads retain their existing one-time
+File Bridge tickets; they do not gain the direct local-browser endpoint.
+Path syntax, real-file/size checks and operating-system errors retain their
+existing behavior. Workspace roots may still resolve relative link text; they
+are not an access boundary for these actions. Creating a public external share
+is a separate action with its existing owner and publication policy.
+See [ADR-HUB-447](../decisions/ADR-HUB-447-local-file-location.md).
+
 ## Archive and deletion
 
 Native release membership references preserve the unique checklist decomposition

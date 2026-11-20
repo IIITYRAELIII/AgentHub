@@ -17,7 +17,6 @@ export function createRuntimeTimersComposition({
   scheduleQueuedInput,
   scheduleDeliveryOutboxFlush,
   turnEndDelivery = null,
-  selectedTaskWatch,
   scheduleCodexTerminalAudit,
   scheduleBugReportScan,
   rateLimitTelemetry,
@@ -52,7 +51,6 @@ export function createRuntimeTimersComposition({
     }
     if (telegramEnabled) scheduleDeliveryOutboxFlush(1_000);
     turnEndDelivery?.startProjectionRecovery?.();
-    selectedTaskWatch.schedule(500);
     scheduleCodexTerminalAudit(500);
     scheduleBugReportScan(500);
     rateLimitTelemetry.schedule(1_000);

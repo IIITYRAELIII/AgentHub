@@ -1,4 +1,4 @@
-import { codexAssistantResponseProjection } from "../../domain/codex-response-annotation.mjs";
+import { assistantTraceAnnotationPresentation, codexAssistantResponseProjection } from "../../domain/codex-response-annotation.mjs";
 import { receiptUserDisplay, receiptUserOrigin, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import {
@@ -409,7 +409,7 @@ export function createDesktopSnapshotFactory({
         detail: `${cloned.detail.slice(0, MAX_COMPACT_ACTIVITY_DETAIL_CHARS)}…`,
       };
     };
-    const activityGroups = (Array.isArray(run.activityGroups) ? run.activityGroups : []).map((group) => ({
+    const activityGroups = (Array.isArray(run.activityGroups) ? run.activityGroups : []).map((group) => assistantTraceAnnotationPresentation({
       ...structuredClone(group),
       activities: (Array.isArray(group?.activities) ? group.activities : []).map(compactActivity),
     }));
@@ -557,7 +557,8 @@ export function createDesktopSnapshotFactory({
       responseAttachments: Array.isArray(run.responseAttachments)
         ? run.responseAttachments.map((attachment) => ({ ...attachment }))
         : [],
-      ...(responseProjection.responseAnnotationReferences.length
+      ...(responseProjection.text.trim() && !["analysis", "commentary", "reasoning"].includes(responseItem?.phase)
+        && responseProjection.responseAnnotationReferences.length
         ? {
           responseAnnotationReferences: responseProjection.responseAnnotationReferences,
         }

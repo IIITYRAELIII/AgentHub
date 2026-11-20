@@ -4,7 +4,6 @@ export async function restorePreviousBotAfterFailedReplacement({
   startCommandServer,
   setStopping,
   restoreProvider,
-  recoverRuns,
   updateMessage,
   failRestartOperation,
   clearRestartRequest,
@@ -16,7 +15,6 @@ export async function restorePreviousBotAfterFailedReplacement({
   await startCommandServer();
   setStopping(false);
   await restoreProvider();
-  await recoverRuns();
   await updateMessage(
     `⚠️ Новая копия бота не запустилась: ${replacementError.message}\n\nСтарая копия восстановлена и продолжает работу.`,
   );

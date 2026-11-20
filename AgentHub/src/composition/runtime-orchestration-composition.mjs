@@ -22,7 +22,6 @@ export function createRuntimeOrchestrationComposition({
   ports,
 }) {
   const {
-    selectedTaskWatchIntervalMs,
     terminalAuditIntervalMs,
     externalPollIntervalMs,
     managedPollIntervalMs,
@@ -228,7 +227,6 @@ export function createRuntimeOrchestrationComposition({
       dismissedExternalTasks,
       lastSeenTaskTurnIds,
       runtimeTimers,
-      selectedTaskWatchIntervalMs,
       selectedTask,
       selectedTasks: selectedTaskCandidates,
       chatId: () => hostState.chatId,
@@ -246,7 +244,6 @@ export function createRuntimeOrchestrationComposition({
     saveState,
     isStopping: () => hostState.stopping,
     runtimeTimers,
-    selectedTaskWatchIntervalMs,
     attachmentImporter: importCodexDesktopAttachments,
     terminalAuditIntervalMs,
     logger: taskObserverLogger,
@@ -254,8 +251,6 @@ export function createRuntimeOrchestrationComposition({
   const {
     claudeRunController,
     taskObserver,
-    runRecovery,
-    selectedTaskWatch,
   } = providerRuntimeWiring;
 
   const timers = createRuntimeTimersComposition({
@@ -273,7 +268,6 @@ export function createRuntimeOrchestrationComposition({
     scheduleQueuedInput,
     scheduleDeliveryOutboxFlush,
     turnEndDelivery,
-    selectedTaskWatch,
     scheduleCodexTerminalAudit,
     scheduleBugReportScan,
     rateLimitTelemetry,
@@ -408,7 +402,6 @@ export function createRuntimeOrchestrationComposition({
       taskRuns,
       startCodexAppServer,
       initializeCodex,
-      runRecovery,
       updateRestartMessage: (message) => restartWiring.updateRestartMessage(message),
       startRuntimeTimers: timers.startRuntimeTimers,
       delay: runtime.delay,
@@ -419,7 +412,6 @@ export function createRuntimeOrchestrationComposition({
     ...timers,
     claudeRunController,
     taskObserver,
-    runRecovery,
     runtimeResources: restartWiring.runtimeResources,
   };
 }

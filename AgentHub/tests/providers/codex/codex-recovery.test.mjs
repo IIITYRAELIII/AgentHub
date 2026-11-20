@@ -1,144 +1,57 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { activeTurnMissing, needsThreadResume, startCodexTurnWithRecovery,
+  interruptCodexTurnWithRecovery, steerCodexTurnWithRecovery,
+  updateCodexThreadSettingsWithRecovery } from "../../../src/providers/codex/codex-recovery.mjs";
 
-import {
-  activeTurnMissing,
-  interruptCodexTurnWithRecovery,
-  needsInterruptedTurnRollback,
-  needsThreadResume,
-  startCodexTurnWithRecovery,
-  steerCodexTurnWithRecovery,
-  updateCodexThreadSettingsWithRecovery,
-} from "../../../src/providers/codex/codex-recovery.mjs";
-
-test("recognizes a turn broken while a custom tool call was pending", () => {
-  assert.equal(needsInterruptedTurnRollback(
-    new Error("Custom tool call output is missing for call id: call_123"),
-  ), true);
-  assert.equal(needsInterruptedTurnRollback(new Error("network unavailable")), false);
+test("definite missing identities are distinct from transport failures", () => {
   assert.equal(needsThreadResume(new Error("thread not found: thread-1")), true);
   assert.equal(needsThreadResume(new Error("network unavailable")), false);
   assert.equal(activeTurnMissing(new Error("no active turn to interrupt")), true);
   assert.equal(activeTurnMissing(new Error("network unavailable")), false);
 });
 
-test("resumes an unloaded thread before retrying an interrupt", async () => {
-  const events = [];
-  let attempts = 0;
-  const result = await interruptCodexTurnWithRecovery({
-    threadId: "thread-1",
-    turnId: "turn-1",
-    interrupt: async ({ threadId, turnId }) => {
-      attempts += 1;
-      events.push(`interrupt-${threadId}-${turnId}`);
-      if (attempts === 1) throw new Error("thread not found: thread-1");
-      return { accepted: true };
-    },
-    resume: async ({ threadId }) => events.push(`resume-${threadId}`),
-  });
-  assert.deepEqual(events, [
-    "interrupt-thread-1-turn-1",
-    "resume-thread-1",
-    "interrupt-thread-1-turn-1",
-  ]);
-  assert.equal(result.accepted, true);
+for (const [name, operation, port] of [
+  ["interrupt", interruptCodexTurnWithRecovery, "interrupt"],
+  ["steer", steerCodexTurnWithRecovery, "steer"],
+]) test(`${name} does not resume an unloaded old turn`, async () => {
+  const calls = [];
+  await assert.rejects(operation({ threadId: "thread-1", turnId: "turn-1",
+    [port]: async () => { calls.push(name); throw new Error("thread not found: thread-1"); },
+    resume: async () => calls.push("resume"),
+  }), /thread not found/);
+  assert.deepEqual(calls, [name]);
 });
 
-test("resumes an unloaded thread before retrying a steer exactly once", async () => {
-  const events = [];
-  let attempts = 0;
-  const result = await steerCodexTurnWithRecovery({
-    threadId: "thread-1",
-    steer: async () => {
-      attempts += 1;
-      events.push(`steer-${attempts}`);
-      if (attempts < 3) throw new Error("thread not found: thread-1");
-      return { turnId: "turn-1" };
-    },
-    resume: async ({ threadId }) => events.push(`resume-${threadId}`),
-  }).catch((error) => error);
-
-  assert.deepEqual(events, ["steer-1", "resume-thread-1", "steer-2"]);
-  assert.match(result.message, /thread not found: thread-1/u);
+test("explicit settings failure does not load old execution", async () => {
+  const calls = [];
+  await assert.rejects(updateCodexThreadSettingsWithRecovery({ threadId: "thread-1",
+    update: async () => { calls.push("update"); throw new Error("thread not found: thread-1"); },
+    resume: async () => calls.push("resume"),
+  }), /thread not found/);
+  assert.deepEqual(calls, ["update"]);
 });
 
-test("resumes an unloaded thread before retrying a settings update exactly once", async () => {
-  const events = [];
-  let attempts = 0;
-  const result = await updateCodexThreadSettingsWithRecovery({
-    threadId: "thread-1",
-    update: async () => {
-      attempts += 1;
-      events.push(`update-${attempts}`);
-      if (attempts === 1) throw new Error("thread not found: thread-1");
-      return { accepted: true };
-    },
-    resume: async ({ threadId }) => events.push(`resume-${threadId}`),
-  });
-
-  assert.deepEqual(events, ["update-1", "resume-thread-1", "update-2"]);
-  assert.equal(result.accepted, true);
-});
-
-test("rolls back only the broken tail turn and retries once", async () => {
-  let attempts = 0;
-  const rollbacks = [];
-  const result = await startCodexTurnWithRecovery({
-    threadId: "thread-1",
+test("only new explicit input can load saved context after definite not-found", async () => {
+  const calls = [];
+  const result = await startCodexTurnWithRecovery({ threadId: "thread-1",
     startTurn: async () => {
-      attempts += 1;
-      if (attempts === 1) {
-        throw new Error("Custom tool call output is missing for call id: call_123");
-      }
-      return { turn: { id: "turn-2" } };
-    },
-    resume: async () => {},
-    rollback: async (params) => rollbacks.push(params),
+      calls.push("new-input");
+      if (calls.length === 1) throw new Error("thread not found: thread-1");
+      return { turn: { id: "new-turn" } };
+    }, resume: async () => calls.push("load-context"),
+    rollback: async () => assert.fail("No history deletion"),
   });
-
-  assert.equal(attempts, 2);
-  assert.deepEqual(rollbacks, [{ threadId: "thread-1", numTurns: 1 }]);
-  assert.equal(result.turn.id, "turn-2");
+  assert.deepEqual(calls, ["new-input", "load-context", "new-input"]);
+  assert.equal(result.turn.id, "new-turn");
 });
 
-test("does not alter history for unrelated start errors", async () => {
-  let rolledBack = false;
-  await assert.rejects(
-    startCodexTurnWithRecovery({
-      threadId: "thread-1",
-      startTurn: async () => { throw new Error("network unavailable"); },
-      resume: async () => {},
-      rollback: async () => { rolledBack = true; },
-    }),
-    /network unavailable/,
-  );
-  assert.equal(rolledBack, false);
-});
-
-test("resumes an unloaded thread before recovering its interrupted tail", async () => {
-  const events = [];
-  let attempts = 0;
-  const result = await startCodexTurnWithRecovery({
-    threadId: "thread-1",
-    startTurn: async () => {
-      attempts += 1;
-      events.push(`start-${attempts}`);
-      if (attempts === 1) throw new Error("thread not found: thread-1");
-      if (attempts === 2) {
-        throw new Error("Custom tool call output is missing for call id: call_123");
-      }
-      return { turn: { id: "turn-3" } };
-    },
-    resume: async (params) => events.push(`resume-${params.threadId}`),
-    rollback: async (params) => events.push(`rollback-${params.numTurns}`),
+for (const message of ["Custom tool call output is missing for call id: old", "network unavailable", "401 Unauthorized"])
+  test(`new input failure preserves history: ${message}`, async () => {
+    const calls = [];
+    await assert.rejects(startCodexTurnWithRecovery({ threadId: "thread-1",
+      startTurn: async () => { calls.push("new-input"); throw new Error(message); },
+      resume: async () => calls.push("resume"), rollback: async () => calls.push("rollback"),
+    }), { message });
+    assert.deepEqual(calls, ["new-input"]);
   });
-
-  assert.deepEqual(events, [
-    "start-1",
-    "resume-thread-1",
-    "start-2",
-    "rollback-1",
-    "start-3",
-  ]);
-  assert.equal(result.turn.id, "turn-3");
-});

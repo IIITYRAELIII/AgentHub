@@ -73,12 +73,32 @@ same original; elapsed time or a CLI exit is not evidence of a settled effect.
 Existing task-operation reads, supported stop and retained-unknown semantics
 remain authoritative. No new global queue or lock serializes unrelated Tasks.
 
-The legacy settings keys `releaseWorkflowEnabled` and `releaseManager` remain
-for persisted Task branch opt-in and Task acceptance/cleanup authority. They
-are presented as "Ветки задач" and "Приёмка задач". They grant no release API
-or worker capability. Auto-review and Team Lead instruction composition remain;
-automatic release workflow/manager instruction injection is removed. Stored
-authored copies remain ordinary user content and are never recognized/deleted.
+The persisted settings keys `releaseWorkflowEnabled` and `releaseManager` keep
+their Task branch opt-in and acceptance/cleanup authority. The visible labels are
+"Релизный процесс" and "Релиз-менеджер". Their built-in instructions describe the
+user-agreed manual process, not an API or worker capability (ADR-HUB-463-policy).
+Literal true enables each corresponding policy independently; Auto-review and
+Team Lead composition retain their own settings. Generated blocks precede raw
+rules and are never persisted back into authored Workspace/Stream content.
+Stored authored copies remain ordinary user content and are never recognized,
+rewritten or deleted. Thread rotation and catalog reopen preserve this boundary.
+
+The historical Task title rule (36 characters unless meaning requires more),
+claim/dependency ensure/verify, native integration/absorption guards, resource
+locks, primary protection and explicit user exceptions remain intact. Before
+creating a Task, inspect all Workspace Tasks and their results; continue matching
+unfinished work, account for completed work, clarify contradictions, and link
+related results and differences for a new Task.
+
+Manual delivery pins the checked PreRelease composition without stopping
+executors: prepare version/common notes, build an installer, install FROM it,
+verify actual Ready/source/affected behavior, and correct failures directly in
+PreRelease before a new build/install. Only failed/affected checks repeat without
+another concrete reason. After success: exact checked main push, main-to-dev
+sync, GitHub Release only if Workspace rules require it, verification of all
+Workspace-required delivery stages, and Task Done/Complete. Cleanup and
+backup retention are separate. Post-publication corrections belong to a later
+release; published source, assets and original outcomes are preserved.
 
 ## Managed claim, Test and Await
 

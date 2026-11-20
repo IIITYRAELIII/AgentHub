@@ -10,6 +10,59 @@ import { LocalTaskSyncStore } from "../../../src/infrastructure/persistence/task
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { TaskRunRegistry, markProviderTurnRequested } from "../../../src/domain/task-runs.mjs";
+
+test("late old turn callbacks cannot capture the next input before its provider acknowledgement", async () => {
+  const registry = new TaskRunRegistry();
+  const old = { id: "old-run", provider: "codex", threadId: "thread-1", turnId: "old-turn", status: "running" };
+  registry.add(old);
+  old.status = "completed";
+  registry.remove(old);
+  const next = { id: "next-run", provider: "codex", threadId: "thread-1", turnId: null,
+    status: "running", clientUserMessageId: "next-client" };
+  registry.add(next);
+  markProviderTurnRequested(next);
+  let completions = 0;
+  const service = createService(null, { forEvent: identity => registry.forEvent(identity),
+    reindexRun: run => registry.reindex(run), completeManaged: async () => { completions++; } });
+  await service.handle({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "old-turn" } } });
+  assert.equal(next.turnId, null);
+  assert.equal(next.providerStart.state, "requesting");
+  await service.handle({ method: "turn/completed", params: { threadId: "thread-1",
+    turn: { id: "old-turn", status: "interrupted", items: [] } } });
+  assert.equal(completions, 0);
+  await service.handle({ method: "turn/started", params: { threadId: "thread-1",
+    clientUserMessageId: "next-client", turn: { id: "next-turn" } } });
+  assert.equal(next.turnId, "next-turn");
+  assert.equal(next.providerStart.state, "accepted-awaiting-first-event");
+  assert.equal(registry.forTask(next), next);
+});
+
+test("late commentary phase keeps the native item's pre-steer annotation target through SQLite", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub469-native-target-"));
+  const filePath = path.join(directory, "tasks.json"); let store;
+  try {
+    const a = { role: "user", itemId: "user-A", clientUserMessageId: "client-A", responseAnnotations: [{ text: "same", annotation: "same" }] };
+    const b = { ...a, itemId: "user-B", clientUserMessageId: "client-B" };
+    const run = { id: "run", provider: "codex", threadId: "thread", turnId: "turn", status: "running", userMessages: [a] };
+    const service = createService(run, { upsertReasoningBlock: upsertRunReasoningBlock });
+    const send = (method, params) => service.handle({ method, params: { threadId: "thread", turnId: "turn", ...params } });
+    await send("item/started", { item: { id: "answer-A", type: "agentMessage" } });
+    run.userMessages.push(b);
+    await send("item/completed", { item: { id: "answer-A", type: "agentMessage", phase: "commentary", text: 'A :agent-annotation{index="1"}' } });
+    await send("item/completed", { item: { id: "answer-B", type: "agentMessage", phase: "commentary", text: 'B :agent-annotation{index="1"}' } });
+    assert.deepEqual(run.activityGroups.map(group => group.responseAnnotationTarget.clientUserMessageId), ["client-A", "client-B"]);
+    assert.equal(run.activityGroups[0].reasoning, 'A :agent-annotation{index="1"}',
+      "native commentary retains the original provider source for the existing citation projection");
+    const recovered = {}; replaceRunActivityGroups(recovered, run.activityGroups);
+    assert.deepEqual(recovered.activityGroups, run.activityGroups);
+    const task = { provider: "codex", threadId: "thread", projectRoot: directory };
+    store = new LocalTaskSyncStore({ filePath }); await store.load();
+    await store.recordHistory(task, [{ id: "turn", prompt: "Check", answer: "", active: true, activityGroups: run.activityGroups }]);
+    store.close(); store = new LocalTaskSyncStore({ filePath }); await store.load();
+    assert.deepEqual(store.history(task)[0].activityGroups.map(group => group.responseAnnotationTarget.clientUserMessageId), ["client-A", "client-B"]);
+  } finally { store?.close(); await rm(directory, { recursive: true, force: true }); }
+});
 
 test("active quote native item provenance agrees across event rollout history and SQLite reopen",async()=>{
   const temp=await mkdtemp(path.join(os.tmpdir(),'quote-native-')); let store;

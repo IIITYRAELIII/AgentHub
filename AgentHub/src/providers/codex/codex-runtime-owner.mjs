@@ -285,7 +285,9 @@ export async function resolveCodexTaskActivity({
       return { state: "unknown", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
     }
     const runtime = await observedRuntimeProbe({ ...options, forceFresh: true });
-    if (!runtime.known || !["idle", "active"].includes(threadStatus?.type)) {
+    // notLoaded describes only this App Server. A fresh native probe must
+    // still rule out another runtime holding the same rollout.
+    if (!runtime.known || !["idle", "active", "notLoaded"].includes(threadStatus?.type)) {
       return { state: "unknown", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
     }
     return threadActive || runtime.hasLiveProcess

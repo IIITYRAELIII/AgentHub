@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { ManagedRunLifecycleService } from "../../src/application/managed-run-lifecycle-service.mjs";
-import { RunRecoveryCoordinator } from "../../src/application/run-recovery-coordinator.mjs";
+import { persistedLocalExecutionIdentity } from "../../src/domain/task-runs.mjs";
 import { ProviderRunTerminalStore } from "../../src/infrastructure/persistence/provider-run-terminal-store.mjs";
 import {
   ClaudeCompletionService,
@@ -684,31 +684,8 @@ test("recovery read failure stays unknown until exact Codex or Claude terminal e
         process: provider === "claude" && expectedStatus === "aborted" ? {} : null,
       };
       const { lifecycle, taskRuns } = terminalLifecycle(run, store);
-      const recovery = new RunRecoveryCoordinator({
-        taskRuns,
-        providers: {
-          get: () => ({ name: provider }),
-          call: async (_provider, operation) => {
-            if (operation === "readRecoverySnapshot") {
-              throw new Error("temporary provider read failure");
-            }
-            return null;
-          },
-        },
-        runCoordinator: { recoverProviderRun: async () => {} },
-        observer: {
-          update() {}, schedule() {},
-          finish: async () => {}, finishUnknown: async () => {},
-        },
-        progress: {
-          replace: async () => {}, clear: async () => {}, finish: async () => {},
-        },
-        startTyping() {}, saveState: async () => {},
-        safeDeliver: async (_run, send) => send(), sendRunMessage: async () => {},
-        completeRun: (value) => lifecycle.complete(value), logError() {},
-      });
-
-      await recovery.recoverAll();
+      await store.recordLocalExecutionRetirement({ identity: persistedLocalExecutionIdentity(run),
+        proof: { kind: "previous-hub-local-execution", source: "canonical-runtime-snapshot", restoredAt: new Date().toISOString() } });
       await new Promise((resolve) => setTimeout(resolve, 650));
       assert.equal(child.exitCode, null, `${provider} ${expectedStatus} holder survives unknown recovery`);
       assert.equal((await readManualTestContourLockStatus({ root })).status, "held");

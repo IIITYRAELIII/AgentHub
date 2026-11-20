@@ -14,6 +14,22 @@ const row = (index, text = `block-${index}`) => ({ type: "response_item", payloa
 } });
 const jsonl = rows => `${rows.map(value => JSON.stringify(value)).join("\n")}\n`;
 
+test("large non-trace tool results cannot hide a later exact streaming quote source", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub469-tool-result-"));
+  const file = path.join(directory, "rollout.jsonl");
+  try {
+    const output = "image or tool result ".repeat(230_000);
+    const ignored = ["custom_tool_call_output", "customToolCallOutput", "function_call_output", "functionCallOutput"]
+      .map(type => ({ type: "response_item", payload: { type, call_id: "old-tool", output } }));
+    const source = jsonl([meta, ...ignored, row(7, "Exact currently visible source")]);
+    await writeFile(file, source);
+    const page = await readCodexTracePageInWorker(file, { turnId, groupId: "commentary:analysis-7" });
+    assert.equal(page.groups[0].reasoning, "Exact currently visible source");
+    assert.equal(page.groups.length, 1);
+    assert.equal(await readFile(file, "utf8"), source);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("oversized compacted history cannot hide an exact current commentary source", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub237-trace-"));
   const file = path.join(directory, "rollout.jsonl");

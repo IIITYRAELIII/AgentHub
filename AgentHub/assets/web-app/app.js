@@ -6870,9 +6870,14 @@ function patchRenderedMessage(node, message) {
 
 function messageRenderSpec(message, index, lastAgentIndex, taskDiff, citationPresentations = []) {
   const withDiff = index === lastAgentIndex && Boolean(taskDiff);
-  const renderedMessage = citationPresentations.length
+  let renderedMessage = citationPresentations.length
     ? { ...message, responseCitationPresentations: citationPresentations }
     : message;
+  if (message.role === "agent" && message.activityGroups?.some((group) => group.responseAnnotationPresentation)) {
+    renderedMessage = { ...renderedMessage,
+      activityGroups: message.activityGroups.map((group) => traceCitationPresentation(group, message)),
+    };
+  }
   return {
     key: MessageView.messageKey(message, index),
     signature: MessageView.messageContentSignature(renderedMessage, {
@@ -7606,9 +7611,42 @@ function visibleTurnTraceGroups(groups) {
 
 const traceDetailSources = new WeakMap();
 
-function traceReasoningNode(group) {
+function traceCitationPresentation(group, identity) {
+  const presentation = group.responseAnnotationPresentation;
+  if (!presentation || typeof presentation.text !== "string") return group;
+  const messages = state.messages.get(state.selectedId) ?? [];
+  const ownerIndex = identity ? messages.findIndex((message) => (
+    MessageView.messageKey(message) === MessageView.messageKey(identity)
+  )) : -1;
+  const live = state.live.get(state.selectedId);
+  const currentLive = identity && live && MessageView.messageKey({ ...identity, role: "agent" })
+    === MessageView.messageKey({ ...live, role: "agent" });
+  const preceding = ownerIndex >= 0 ? messages.slice(0, ownerIndex) : currentLive ? messages : [];
+  const message = { ...identity, ...presentation, role: "agent",
+    ...(group.responseAnnotationTarget ? { responseAnnotationReferences: (presentation.responseAnnotationReferences ?? [])
+      .map(reference => ({ ...reference, target: group.responseAnnotationTarget })) } : {}),
+  };
+  return { ...group, responseAnnotationPresentation: { ...presentation,
+    responseCitationPresentations: MessageView.responseCitationPresentations(
+      [...preceding, message], preceding.length,
+    ),
+  } };
+}
+
+function traceGroupWithCitationContext(group, identity) {
+  const matches = (identity?.activityGroups ?? []).filter((candidate) => candidate.id === group.id
+    && String(candidate.sourceItemId ?? "") === String(group.sourceItemId ?? ""));
+  const target = matches.length === 1 ? matches[0].responseAnnotationTarget : null;
+  return target ? { ...group, responseAnnotationTarget: target } : group;
+}
+
+function traceReasoningNode(group, identity = null) {
   const node = el("div", { class: "turn-trace-reasoning", "data-trace-group-id": group.id });
-  renderMarkdown(node, group.reasoning);
+  const presentation = traceCitationPresentation(group, identity).responseAnnotationPresentation;
+  if (presentation && typeof presentation.text === "string") {
+    const message = { ...identity, ...presentation, role: "agent" };
+    renderAgentResponseBody(node, message, presentation.text);
+  } else renderMarkdown(node, group.reasoning);
   traceDetailSources.set(node, group);
   return node;
 }
@@ -7644,7 +7682,7 @@ function traceArchiveNode(identity) {
       if (direction === "previous") offsets.pop();
       page = result;
       content.replaceChildren(...page.groups.map((group) => el("section", {}, [
-        ...(group.reasoning ? [traceReasoningNode(group)] : []),
+        ...(group.reasoning ? [traceReasoningNode(group, identity)] : []),
         ...group.activities.map(activityItemNode),
       ])));
       status.textContent = "";
@@ -7680,7 +7718,7 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [], identi
       class: "turn-trace-block",
       "data-trace-index": String(index),
     });
-    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
+    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index], identity);
     section.append(reasoningNode);
     return section;
   });
@@ -7730,7 +7768,7 @@ function turnTraceNode(groups, identity = null) {
     const omission = traceOmissionNode(values, identity);
     if (omission) target.append(omission);
     content.reasoningBlocks.forEach((reasoning, index) => {
-      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
+      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index], identity);
       target.append(el("section", {
         class: "turn-trace-block",
         "data-trace-index": String(index),
@@ -8204,11 +8242,11 @@ async function focusResponseCitationSource(button) {
         const page = await requestTracePage(projection.message, { turnId: source.turnId, groupId: source.traceGroupId });
         if (!article.isConnected) return false;
         if (page.groups?.length !== 1 || page.groups[0].id !== source.traceGroupId) return false;
-        group = page.groups[0];
+        group = traceGroupWithCitationContext(page.groups[0], projection.message);
         const candidate = { ...projection.message, activityGroups: [group] };
         if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
         article.querySelector("[data-citation-trace]")?.remove();
-        recoveredTraceSurface = traceReasoningNode(group);
+        recoveredTraceSurface = traceReasoningNode(group, projection.message);
         const target = el("section", { "data-citation-trace": "" }, [recoveredTraceSurface]);
         article.append(target);
       } catch { return false; }
@@ -8299,7 +8337,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     durationNode.textContent = durationLabel;
     durationNode.hidden = !durationLabel;
   }
-  const groups = visibleTurnTraceGroups(live.activityGroups);
+  const groups = visibleTurnTraceGroups(live.activityGroups).map((group) => traceCitationPresentation(group, live));
   const stageDetail = node.querySelector("[data-live-stage-detail]");
   const standaloneStageDetail = standaloneLiveStageDetail({ stage: live.stage, traceGroups: groups });
   stageDetail.textContent = standaloneStageDetail;
@@ -8663,7 +8701,7 @@ function renderQueueForTask(taskId, container) {
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
       (entry.waitReason === "managed-run-activity-unknown"
         || task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running"))
-        ? el("div", { class: "queue-status", text: "Поток занят исходным ходом: состояние уточняется после потери связи. Доступен Stop; сообщение повторно не отправляется." }) : null,
+        ? el("div", { class: "queue-status", text: "Состояние прежнего хода не подтверждено. Автоматическое продолжение отключено; новый ввод сохранён до проверки завершения. Доступен Stop." }) : null,
       entry.state === "paused" && entry.waitReason === "task-running"
         ? el("div", { class: "queue-status", text: 'Сообщение на паузе; нажми "Продолжить", чтобы вернуть его в очередь.' }) : null,
       entry.waitReason === "provider-thread-active"
@@ -9639,7 +9677,7 @@ function intersectedQuotableSelection(range) {
   return matches[0] ?? null;
 }
 
-function selectedQuotableSelection() {
+function selectedMessageDomRange() {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) return null;
   const range = selection.getRangeAt(0);
@@ -9656,12 +9694,18 @@ function selectedQuotableSelection() {
   });
   if (!scope) return null;
   if (scope.startSurface !== scope.endSurface) return null;
-  const offsets = domRangeOffsets(scope.startSurface, range);
+  return { ...scope, range, rangeCount: selection.rangeCount };
+}
+
+function selectedQuotableSelection() {
+  const scope = selectedMessageDomRange();
+  if (!scope) return null;
+  const offsets = domRangeOffsets(scope.startSurface, scope.range);
   if (!offsets) return null;
   const exactRange = domRangeFromOffsets(scope.startSurface, offsets.start, offsets.end);
   const quote = quotableSelectionText({
     text: exactRange?.toString(),
-    rangeCount: selection.rangeCount,
+    rangeCount: scope.rangeCount,
     startMessage: scope.message,
     endMessage: scope.message,
     startSurface: scope.startSurface,
@@ -9694,6 +9738,24 @@ function selectedQuotableSelectionAt(target) {
 function normalizedAnnotationQuote(value) {
   return String(value ?? "").trim();
 }
+
+function selectedMessageClipboard(selection) {
+  const scope = selectedMessageDomRange();
+  if (!scope || scope.rangeCount !== 1 || (selection && scope.startSurface !== selection.surface)) return null;
+  return MessageView.messageSelectionClipboard(scope.startSurface, scope.range);
+}
+
+document.addEventListener("copy", (event) => {
+  if (event.defaultPrevented || !event.clipboardData) return;
+  if (document.activeElement?.matches("input, textarea, [contenteditable]:not([contenteditable='false'])")) return;
+  const selection = selectedMessageDomRange();
+  if (!selection || selection.rangeCount !== 1 || !selection.message.closest("[data-chat-log], [data-chat-live]")) return;
+  const clipboard = MessageView.messageSelectionClipboard(selection.startSurface, selection.range);
+  if (!clipboard) return;
+  event.clipboardData.setData("text/plain", clipboard.text);
+  event.clipboardData.setData("text/html", clipboard.html);
+  event.preventDefault();
+});
 
 function meaningfulAnnotationSelection(value) {
   return Boolean(String(value ?? "").trim());
@@ -9779,8 +9841,9 @@ async function responseAnnotationFromSelection(selection) {
     if (page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return responseAnnotationRefusal("source-group-mismatch");
     const selectedNativeItemId = traceDetailSources.get(selection.surface)?.sourceItemId;
     if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return responseAnnotationRefusal("source-item-mismatch");
-    sourceMessage = { ...current, activityGroups: page.groups };
-    sourceSurface = traceReasoningNode(page.groups[0]);
+    const fullGroup = traceGroupWithCitationContext(page.groups[0], current);
+    sourceMessage = { ...current, activityGroups: [fullGroup] };
+    sourceSurface = traceReasoningNode(fullGroup, sourceMessage);
     // A cut Markdown construct may render differently. Do not guess a new range.
     if (!sourceSurface.textContent.startsWith(selectedSurfaceText.trimEnd())) return responseAnnotationRefusal("rendered-prefix-mismatch");
     if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return responseAnnotationRefusal("selected-range-mismatch");
@@ -9823,7 +9886,11 @@ async function addAnnotation(selection) {
   annotationOperationSequences.set(operation.taskId, operationSequence);
   let next;
   try {
-    next = await responseAnnotationFromSelection(selection);
+    const validate = () => responseAnnotationFromSelection(selection);
+    next = window.AgentHubCommandTrace
+      ? await window.AgentHubCommandTrace.measure("ui-interaction", "annotation-source", validate,
+        undefined, result => ({ outcome: result ? "succeeded" : "failed" }))
+      : await validate();
   } catch {
     next = responseAnnotationRefusal("source-error");
   }
@@ -9860,7 +9927,10 @@ function closeAnnotationContextMenu() {
 }
 
 function openAnnotationContextMenu(event, selection) {
-  pendingAnnotationSelection = selection;
+  pendingAnnotationSelection = {
+    ...selection,
+    clipboardText: selectedMessageClipboard(selection)?.text ?? selection.quote,
+  };
   annotationContextMenu.hidden = false;
   const menuRect = annotationContextMenu.getBoundingClientRect();
   const chatRect = event.target.closest?.("[data-chat]")?.getBoundingClientRect();
@@ -9902,7 +9972,7 @@ annotationContextMenu.addEventListener("click", (event) => {
   const quote = selection?.quote ?? "";
   closeAnnotationContextMenu();
   if (action === "annotate-selection") void addAnnotation(selection);
-  else emit("clipboard:write", { text: quote });
+  else emit("clipboard:write", { text: selection?.clipboardText ?? quote });
 });
 
 document.addEventListener("pointerdown", (event) => {

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, link, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, symlink } from "node:fs/promises";
 import path from "node:path";
+import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 
 const MARKER = ".agent-hub-task-dependencies.json";
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -19,9 +20,16 @@ async function exclusive(file, bytes) {
   const h = await open(file, "wx");
   try { await h.writeFile(bytes); await h.sync(); } finally { await h.close(); }
 }
-async function inventory(root, limits) {
+async function inventory(root, limits, payloads = new Map()) {
+  return measureTaskOperation("dependency-inventory", () => inventoryOwned(root, limits, payloads), { detail: true });
+}
+
+async function inventoryOwned(root, limits, payloads) {
   const files = [], directories = [], pending = [""];
   let entries = 0;
+  let payloadReadBytes = 0;
+  let payloadReads = 0;
+  let reusedPayloads = 0;
   while (pending.length) {
     const relative = pending.pop(), dir = path.join(root, relative);
     await plainRoot(dir);
@@ -37,12 +45,24 @@ async function inventory(root, limits) {
         files.push({ path: key, target });
       } else if (before.isDirectory()) { directories.push(key); pending.push(key); }
       else if (before.isFile()) {
-        const bytes = await readFile(file), after = await lstat(file);
-        if (!same(physical(before), physical(after)) || before.mtimeMs !== after.mtimeMs || bytes.length !== after.size) throw fail("Dependency input changed while read");
-        files.push({ path: key, bytes: bytes.length, sha256: digest(bytes), identity: physical(after) });
+        const identity = physical(before);
+        const payloadKey = JSON.stringify([identity, before.size, before.mtimeMs, before.ctimeMs]);
+        let payload = payloads.get(payloadKey);
+        if (!payload) {
+          const bytes = await readFile(file);
+          payload = { bytes: bytes.length, sha256: digest(bytes) };
+          payloadReads += 1;
+          payloadReadBytes += bytes.length;
+        } else reusedPayloads += 1;
+        const after = await lstat(file);
+        if (!same(identity, physical(after)) || before.mtimeMs !== after.mtimeMs
+            || before.ctimeMs !== after.ctimeMs || payload.bytes !== after.size) throw fail("Dependency input changed while read");
+        payloads.set(payloadKey, payload);
+        files.push({ path: key, ...payload, identity: physical(after) });
       } else throw fail("Dependency input contains an unsupported file");
     }
   }
+  recordTaskOperationTiming("dependency-inventory-result", { entries, payloadReads, payloadReadBytes, reusedPayloads }, { detail: true });
   return { directories: directories.sort(), files: files.sort((a,b) => a.path.localeCompare(b.path)) };
 }
 
@@ -63,9 +83,14 @@ if (!/^[a-f0-9]{64}$/u.test(previous.lockfileSha256 ?? "")
 // existing TaskGit durable process-tree owner for this exact compatibility key.
 export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, manifestContent, lockfileContent,
   withOwner, lease, limits, prepare, assertSourceContext = async () => {} }) {
-  return withOwner(fingerprint, async ({ root, lease: sharedLease }) => {
+  return withOwner(fingerprint, async ({ root, lease: sharedLease, coveredLease }) => {
+    const payloads = new Map();
+    const assertOwners = async () => {
+      if (coveredLease !== lease) await lease?.assertOwned();
+      await sharedLease.assertOwned();
+    };
     const assertCurrent = async () => {
-      await lease?.assertOwned(); await sharedLease.assertOwned();
+      await assertOwners();
       await assertSourceContext();
       if (!(await readFile(path.join(packageRoot, "package.json"))).equals(manifestContent)
           || !(await readFile(path.join(packageRoot, "package-lock.json"))).equals(lockfileContent)) throw fail("Task dependency inputs changed");
@@ -80,7 +105,7 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
       await exclusive(path.join(root, "intent.json"), JSON.stringify({ fingerprint }));
       await prepare(root, sharedLease);
       await assertCurrent();
-      const modules = path.join(root, "node_modules"), content = await inventory(modules, limits);
+      const modules = path.join(root, "node_modules"), content = await inventory(modules, limits, payloads);
       // Package payload is immutable. Every Task owns its own directory, stamp
       // and mutable .cache; package/bin aliases retain their relative layout.
       for (const file of content.files) if (!file.target) await chmod(path.join(modules, file.path), 0o444);
@@ -94,7 +119,7 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
     const modules = path.join(root, "node_modules");
     if (slot.fingerprint !== fingerprint || slot.manifestSha256 !== digest(manifestContent)
         || slot.lockSha256 !== digest(lockfileContent) || !same(slot.root, await plainRoot(root))
-        || !same(slot.modules, await plainRoot(modules)) || !same(slot.content, await inventory(modules, limits))
+        || !same(slot.modules, await plainRoot(modules)) || !same(slot.content, await inventory(modules, limits, payloads))
         || slot.markerSha256 !== digest(await readFile(path.join(modules, MARKER)))) throw fail("Published dependency input custody changed");
     await assertCurrent();
     const target = path.join(packageRoot, "node_modules"), stamp = path.join(target, MARKER);
@@ -116,7 +141,7 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
       await exclusive(stamp, JSON.stringify({ ...original, sharedStorage, attaching: true }));
       for (const dir of slot.content.directories) await mkdir(path.join(target, dir), { recursive: true });
       for (const file of slot.content.files) {
-        await lease?.assertOwned(); await sharedLease.assertOwned();
+        await assertOwners();
         const from = path.join(modules, file.path), to = path.join(target, file.path);
         await plainRoot(path.dirname(from)); await plainRoot(path.dirname(to));
         if (file.target) await symlink(file.target, to);
@@ -130,7 +155,7 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
     }
     const marker = JSON.parse(await readFile(stamp));
     if (marker.attaching || !same(marker.sharedStorage, sharedStorage)) throw fail("Incomplete dependency alias attachment; retained");
-    const attached = await inventory(target, limits);
+    const attached = await inventory(target, limits, payloads);
     if (!same(attached, slot.content)) throw fail("Task dependency aliases or content differ from their input; retained");
     await assertCurrent();
     return { prepared, reused: true, sharedStorage, linkedBytes, copiedPackageBytes: 0 };

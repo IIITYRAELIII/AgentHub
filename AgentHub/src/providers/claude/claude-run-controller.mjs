@@ -38,7 +38,6 @@ export class ClaudeRunController {
   constructor({
     dataDir,
     processAuthority = null,
-    onRecoveryUnavailable = async () => {},
     pollIntervalMs = 250,
     isCurrentRun = () => true,
     isStopping = () => false,
@@ -46,7 +45,6 @@ export class ClaudeRunController {
     onComplete = async () => {},
     onPersist = async () => {},
     onActive = () => {},
-    onReconnect = () => {},
     onReadError = (run, error) => console.error(`Cannot read Claude output for task ${run.threadId}:`, error.message),
     processAlive = processIsAlive,
     processFingerprintLookup = readProcessFingerprint,
@@ -58,7 +56,6 @@ export class ClaudeRunController {
   }) {
     this.dataDir = dataDir;
     this.processAuthority = processAuthority;
-    this.onRecoveryUnavailable = onRecoveryUnavailable;
     this.pollIntervalMs = pollIntervalMs;
     this.isCurrentRun = isCurrentRun;
     this.isStopping = isStopping;
@@ -66,7 +63,6 @@ export class ClaudeRunController {
     this.onComplete = onComplete;
     this.onPersist = onPersist;
     this.onActive = onActive;
-    this.onReconnect = onReconnect;
     this.onReadError = onReadError;
     this.processAlive = processAlive;
     this.processFingerprintLookup = processFingerprintLookup;
@@ -153,8 +149,8 @@ export class ClaudeRunController {
       this.#write(run, claudeStreamInputMessage(input));
     }
     // Win32_Process may not expose a just-created child on its first WMI
-    // query. Capture the fingerprint before persisting the run so a later
-    // Hub restart can safely reattach it instead of treating it as unknown.
+    // query. Capture the fingerprint before persisting the run so its current
+    // cancellation owner retains the exact process identity.
     await this.onPersist(run);
     callbacksEnabled = true;
     if (spawnError) {
@@ -722,38 +718,6 @@ export class ClaudeRunController {
     if (this.processAuthority && !this.processAuthority.owns(run)) return false;
     const deadline = Date.now() + Math.max(1, Number(this.completionStopTimeoutMs) || 1);
     return (await this.#stopOwnedTree(run, deadline)) === true;
-  }
-
-  async attachAfterRestart(run) {
-    if (this.processAuthority && !this.processAuthority.owns(run)) {
-      run.contourRecoveryExclusion = "captured-process-and-output-not-owned";
-      await this.onPersist(run);
-      await this.onRecoveryUnavailable(run);
-      return false;
-    }
-    const alive = this.processAlive(run.pid) && await this.#ownsProcess(run, run.pid);
-    // Канал ввода перезапуск Hub не переживает: ход дочитывается, но отправка
-    // в него уже недоступна.
-    Object.assign(run, {
-      process: null,
-      claudeInput: null,
-      claudeInputClosed: true,
-      claudeSteer: null,
-      claudeReader: null,
-      claudeSettled: false,
-      claudeExited: !alive,
-      claudeExitCode: null,
-      claudeReadOffset: 0,
-      claudeThinkingPeak: 0,
-      claudeFailureText: "",
-      claudeResult: null,
-      responseText: "",
-    });
-    this.onReconnect(run, alive);
-    if (alive) this.onActive(run);
-    await this.onPersist(run);
-    await this.drain(run);
-    return alive;
   }
 
   async #lookupFingerprint(pid) {

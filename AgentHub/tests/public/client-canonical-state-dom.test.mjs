@@ -19,8 +19,9 @@ async function fixture(body, initial = snapshot(), options = {}) {
   const browser = await launchBrowser();
   let page;
   try {
-    page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-    const errors = await openClientEventFixture(page, { fixtureSnapshot: initial, ...options });
+    const { pageOptions = {}, ...fixtureOptions } = options;
+    page = await browser.newPage({ viewport: { width: 1280, height: 900 }, ...pageOptions });
+    const errors = await openClientEventFixture(page, { fixtureSnapshot: initial, ...fixtureOptions });
     await body(page);
     assert.deepEqual(errors, []);
   } finally {
@@ -136,6 +137,64 @@ test("complete client keeps compaction operation identity, unknown measurement a
     assert.deepEqual(unchanged, records);
     assert.equal(await page.evaluate(() => window.__maintenanceWrites), writes, "unchanged polling does not alternate two persisted projections");
   });
+});
+
+test("mobile maintenance preserves terminal revision across replay and reload and notifies actual starts once", { timeout: 45_000 }, async () => {
+  await fixture(async page => {
+    let revision = 0;
+    const startedAt = new Date().toISOString();
+    const observe = async compaction => {
+      const value = snapshot();
+      value.version = `maintenance-replay-${++revision}`;
+      value.tasks[0].context = { compaction: { operationId: "operation-replay", origin: "automatic",
+        dedicatedProviderTurn: true, startedAt, ...compaction } };
+      value.deferredInputs = [{ id: "saved-input", clientUserMessageId: "preserved-original", provider: "codex",
+        threadId: "thread-a", streamId: "stream-a", state: "paused", paused: true,
+        conflictKind: "message-intake", waitReason: "provider-thread-active", text: "Продолжай",
+        createdAt: startedAt }];
+      await page.evaluate(value => {
+        window.__agentHubFixture.snapshot = value;
+        localStorage.setItem("fixture:snapshot", JSON.stringify(value));
+        return window.__dispatchClientFixture("connection:retry");
+      }, value);
+      await page.waitForFunction(version => window.__clientAppliedVersion === version, value.version);
+    };
+    const toasts = () => page.evaluate(() => window.__clientProjectionFixture.toasts.filter(text => text.startsWith("Началась автосвёртка")));
+    await observe({ revision: 1, status: "running", turnId: null });
+    assert.equal((await toasts()).length, 0, "RPC preparation is not a confirmed provider start");
+    await page.locator('.msg-maintenance').filter({ hasText: "Запуск обслуживания контекста…" }).waitFor({ state: "visible" });
+    await observe({ revision: 2, status: "running", turnId: "maintenance-turn" });
+    assert.equal((await toasts()).length, 1);
+    const failed = { revision: 3, status: "failed", turnId: "maintenance-turn", completedAt: new Date().toISOString() };
+    await observe(failed);
+    for (const observation of [failed, { revision: 1, status: "running", turnId: null }, { revision: 2, status: "running", turnId: "maintenance-turn" }, failed]) {
+      await observe(observation);
+      const records = (await messages(page)).filter(item => item.kind === "maintenance");
+      assert.equal(records.length, 1);
+      assert.equal(records[0].maintenanceStatus, "failed");
+      await page.locator('.msg-maintenance').filter({ hasText: "Автосвёртка контекста не завершилась" }).waitFor({ state: "visible" });
+    }
+    assert.equal((await toasts()).length, 1, "reordered observations do not restart an operation");
+    await page.reload();
+    await page.waitForFunction(() => Boolean(window.__clientAppliedVersion));
+    await observe({ revision: 2, status: "running", turnId: "maintenance-turn" });
+    assert.equal((await messages(page)).filter(item => item.kind === "maintenance")[0].maintenanceStatus, "failed");
+    assert.equal((await toasts()).length, 0, "reload does not announce an already observed operation");
+    await page.getByText("Продолжай", { exact: true }).waitFor({ state: "visible" });
+    await page.getByText("Сохранённый запрос", { exact: true }).waitFor({ state: "visible" });
+    await page.getByText("Полный финальный ответ", { exact: true }).waitFor({ state: "visible" });
+    assert.equal(await page.locator('.msg').filter({ hasText: "Сохранённый запрос" }).count(), 1);
+    assert.equal(await page.locator('.msg').filter({ hasText: "Полный финальный ответ" }).count(), 1);
+    if (process.env.AGENT_HUB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.AGENT_HUB_TEST_SCREENSHOT });
+    await observe({ operationId: "new-operation", revision: 1, status: "running", turnId: "new-maintenance-turn" });
+    assert.equal((await toasts()).length, 1, "a different actual start remains visible");
+  }, snapshot(), { surface: "web", followSelection: true,
+    fixtureHistory: { provider: "codex", threadId: "thread-a", streamId: "stream-a",
+      items: [{ id: "history-turn", completed: true, terminalRevision: 1, messages: [
+        { role: "user", itemId: "user-item", clientUserMessageId: "history-user", text: "Сохранённый запрос" },
+        { role: "agent", itemId: "final-item", phase: "final", text: "Полный финальный ответ" },
+      ] }], start: 0, end: 1, total: 1, messageTotal: 2, nextBefore: null, version: "history-stable" },
+    pageOptions: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } });
 });
 
 test("failed pending intake exposes decisions only in the exact Stream despite a shared Thread", { timeout: 30_000 }, async () => {
@@ -284,7 +343,7 @@ test("automatic compaction feedback names the actual displayed Task and falls ba
       const value = snapshot();
       value.version = `named-compaction-${index}`;
       Object.assign(value.tasks[0], names, { context: { compaction: { operationId: `named-operation-${index}`,
-        status: "running", turnId: null, origin: "automatic", startedAt: new Date().toISOString() } } });
+        status: "running", turnId: `named-provider-turn-${index}`, origin: "automatic", startedAt: new Date().toISOString() } } });
       await apply(page, value);
       await page.waitForFunction(name => window.__clientProjectionFixture.toasts.some(text => text.endsWith(`· ${name}`)), expected);
     }

@@ -427,6 +427,7 @@ export async function createHubInfrastructure({
     logFile: path.join(logDirectory, "agent-hub.log"), maxBytes: config.logMaxBytes,
     maxFiles: config.logMaxFiles, mirror: process.stdout.isTTY || process.stderr.isTTY,
   });
+  await recordTaskTiming.restore();
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
     runtimeRoot: runtimeCommandRoot,
     contourExternalEffects, recordTiming: recordTaskTiming,
@@ -515,7 +516,6 @@ export async function createHubInfrastructure({
       ),
     },
     usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
-    workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
     fileTransferPolicy,
     fileTransferService,
     recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,

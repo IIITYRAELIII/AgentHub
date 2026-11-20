@@ -53,11 +53,11 @@ for (const stage of ["naming", "resume-timeout", "save"]) {
   });
 }
 
-test("startup still replaces a definitively missing provider Thread, but never from naming failure", async () => {
+test("startup preserves a definitively missing saved Thread without replacement or provider execution", async () => {
   const { service, calls } = fixture({
     getThreadId: () => "missing-thread",
     sendRpc: async () => { throw new Error("thread not found: missing-thread"); },
   });
-  assert.equal(await service.attachCodexThread(), true);
-  assert.equal(calls.filter(([event]) => event === "create").length, 1);
+  assert.equal(await service.attachCodexThread(), false);
+  assert.equal(calls.filter(([event]) => event === "create").length, 0);
 });

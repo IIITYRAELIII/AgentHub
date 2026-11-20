@@ -207,7 +207,6 @@ export class CodexTurnService {
           ...params,
           ...codexThreadSandboxSettings(d.sandboxMode()),
         }),
-        rollback: (params) => d.sendRpc("thread/rollback", params),
       });
       const turnId = String(result?.turn?.id ?? result?.turnId ?? "").trim();
       if (!turnId) throw turnNotMaterializedError("");
@@ -320,6 +319,7 @@ export class CodexTurnService {
         error = unconfirmedTurnStartError(error);
       }
       await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
+      if (!ambiguousTurnStart(error)) rememberProviderRunTerminalStatus(run, "failed");
       await d.finishProgress(run, `Ошибка запуска: ${error.message}`);
       await d.completeRun(run);
       throw error;
@@ -367,10 +367,6 @@ export class CodexTurnService {
     return steerCodexTurnWithRecovery({
       threadId: target.threadId,
       steer: () => this.#d.sendRpc("turn/steer", request),
-      resume: ({ threadId }) => this.#d.sendRpc("thread/resume", {
-        threadId,
-        ...codexThreadSandboxSettings(this.#d.sandboxMode()),
-      }),
     });
   }
 
@@ -390,10 +386,6 @@ export class CodexTurnService {
       threadId: run.threadId,
       turnId: run.turnId,
       interrupt: (params) => this.#d.sendRpc("turn/interrupt", params),
-      resume: ({ threadId }) => this.#d.sendRpc("thread/resume", {
-        threadId,
-        ...codexThreadSandboxSettings(this.#d.sandboxMode()),
-      }),
     });
   }
 
@@ -419,7 +411,6 @@ export class CodexTurnService {
 
 export class ProviderCancellationService {
   #d;
-  #recoveryAttempts = new WeakMap();
 
   constructor(dependencies = {}) {
     for (const name of [
@@ -442,44 +433,6 @@ export class ProviderCancellationService {
         stopRequested: false,
       };
     }
-  }
-
-  recoverCodex(run) {
-    if (this.#recoveryAttempts.has(run)) return this.#recoveryAttempts.get(run);
-    const identity = { threadId: run.threadId, turnId: run.turnId };
-    const current = () => this.#d.runForTask(run) === run
-      && run.threadId === identity.threadId && run.turnId === identity.turnId;
-    let attempted = false;
-    const pending = (async () => {
-      if (run.observer || !identity.turnId || !current()) return false;
-      try {
-        const activity = await this.#recoveryStep(run, "recovery-activity-before",
-          () => this.#d.taskExternalActivity(run, { forceFresh: true }));
-        if (activity.state !== "inactive" || !current()) return false;
-        try {
-          attempted = true;
-          await this.#recoveryStep(run, "recovery-interrupt", () => this.#d.interruptCodex(run));
-          // An accepted interrupt still needs its exact terminal event.
-          return false;
-        } catch (error) {
-          if (!activeTurnMissing(error) || !current()) return false;
-          // A definite rejection is a non-effect. A later observation may retry
-          // the unchanged original if its snapshot/persistence is unavailable.
-          attempted = false;
-        }
-        return await this.#reconcileInactiveCodexRun(run, { identity });
-      } catch (error) {
-        this.#d.logError?.(`Cannot recover inactive Codex task ${identity.threadId}:`, error.message);
-        return false;
-      }
-    })().finally(() => {
-      // UNKNOWN/live prechecks must not cache a settled false forever. Retain
-      // an accepted/ambiguous interrupt fence: ACK is not terminal, and polling
-      // cannot repeat that external effect.
-      if (!attempted && this.#recoveryAttempts.get(run) === pending) this.#recoveryAttempts.delete(run);
-    });
-    this.#recoveryAttempts.set(run, pending);
-    return pending;
   }
 
   async #recoveryStep(run, stage, operation) {
@@ -546,7 +499,7 @@ export class ProviderCancellationService {
   async #reconcileInactiveCodexRun(run, { identity = null } = {}) {
     const d = this.#d;
     const current = () => d.runForTask(run) === run && (!identity
-      || (run.threadId === identity.threadId && run.turnId === identity.turnId));
+      || Object.keys(identity).every(key => run[key] === identity[key]));
     if (identity && !current()) return false;
     if (d.runForTask(run) !== run) return true;
     if (["finishing", "completed"].includes(run.status)) {

@@ -5,6 +5,8 @@ const context = new AsyncLocalStorage();
 const MAX_DETAIL_SPANS = 512;
 // Fixed diagnostic classes only; no argv, paths or caller-provided stage labels.
 const AGGREGATE_STAGES = new Set(["git-child", "owned-command", "lease-assert", "process-guard",
+  "dependency-project", "dependency-inventory", "dependency-full-proof", "dependency-npm",
+  "dependency-installed-lock-proof", "lock-local-acquire", "task-binding", "mcp:receipt",
   "native-retire:owned-setup", "native-retire:current", "native-retire:source-pins", "native-retire:archive-read",
   "native-retire:archive-lease-wait", "native-retire:archive-intake", "native-retire:archive-verification", "native-retire:native-call",
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
@@ -153,8 +155,22 @@ export async function measureTaskOperation(stage, operation, { detail = false, .
   }
 }
 
-export function recordTaskOperationTiming(stage, metadata = {}) {
-  emit(context.getStore(), { stage, phase: "checkpoint", ...metadata });
+export function recordTaskOperationTiming(stage, metadata = {}, { detail = false, critical = false } = {}) {
+  const state = context.getStore();
+  if (state && critical && state.criticalCheckpoints++ >= 16) {
+    state.suppressed += 1;
+    return;
+  }
+  if (state && detail && state.details++ >= MAX_DETAIL_SPANS) {
+    state.suppressed += 1;
+    return;
+  }
+  emit(state, { stage, phase: "checkpoint", ...metadata });
+}
+
+export function taskOperationTimingIdentity() {
+  const state = context.getStore();
+  return state ? { operationId: state.operationId, taskId: state.taskId, traceId: state.traceId } : null;
 }
 
 export function withTaskOperationTiming({ operationId, taskId, generation, releaseOperationId, ownerEpoch, record }, operation) {
@@ -164,7 +180,7 @@ export function withTaskOperationTiming({ operationId, taskId, generation, relea
       ...(Number.isSafeInteger(ownerEpoch) ? { ownerEpoch } : {}) } : {}),
     ...(Number.isSafeInteger(generation) && generation > 0 ? { generation } : {}),
     traceId: ++nextTraceId,
-    record, sequence: 0, details: 0, suppressed: 0, closed: false, aggregates: new Map(),
+    record, sequence: 0, details: 0, criticalCheckpoints: 0, suppressed: 0, closed: false, aggregates: new Map(),
     synchronousRecordMs: 0, maxSynchronousRecordMs: 0 };
   return context.run(state, async () => {
     const loopDelay = monitorEventLoopDelay({ resolution: 20 });

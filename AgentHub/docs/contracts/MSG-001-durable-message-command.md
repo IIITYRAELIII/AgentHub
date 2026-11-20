@@ -84,6 +84,12 @@ The durable command ledger owns acceptance and dispatch state. UI cards,
 in-memory receipts and runtime snapshots are projections.
 
 A scheduled restart does not reserve admission or pause queued/steer delivery.
+An explicitly admitted autonomous installation is a separate stopping intent:
+its existing maintenance original closes provider admission in both selected
+installer modes. New inputs retain their original durable queue identity and
+attachments. Existing runs may finish; pending admission is joined before the
+wait mode reports idle. Completion does not launch new post-turn automation.
+An uncertain current run never becomes proof of idle. See ADR-HUB-467.
 Only the runtime's actual stopping fence retains new commands for the replacement,
 durably and under their original IDs; storage acceptance is not provider start.
 The restart owner checks in-flight admission and active work synchronously before

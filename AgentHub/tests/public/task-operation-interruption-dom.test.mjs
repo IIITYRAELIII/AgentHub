@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 import test from "node:test";
 import { launchBrowser, openFixture, snapshot } from "./composer-production.fixture.mjs";
 import { claimCustodyFixture } from "../fixtures/claim-custody-public-fixture.mjs";
@@ -17,6 +18,9 @@ for (const width of [1366, 390]) test(`Task card interrupts a held Test through 
     started();
     await new Promise((_, reject) => lease.signal.addEventListener("abort", () => reject(lease.signal.reason), { once: true }));
   };
+  let liveProgress = true;
+  f.workspaces.readOperationProgress = () => ({ stage: "dependency-project", phase: "running",
+    live: liveProgress, canonicalOutcome: null });
   const lifecycle = new TaskLifecycleService({ taskBoard: f.tasks, workspaceCatalog: f.catalog,
     taskGitWorkspaces: f.workspaces,
     releasePreflight: { withAwaitTransition: async (_id, operation) => operation() } });
@@ -60,6 +64,17 @@ for (const width of [1366, 390]) test(`Task card interrupts a held Test through 
     await page.locator(`#${menuId} [data-value="testing"]`).click();
     await entered;
     await panel.getByRole('button', { name: "Операции задачи", exact: true }).click();
+    await panel.getByText(/этап: зависимости проекта/u).waitFor();
+    assert.equal(f.catalog.mcpOperation(operationId).status, "pending");
+    liveProgress = false;
+    await panel.getByRole('button', { name: "Операции задачи", exact: true }).click();
+    await panel.getByText(/последний известный этап: зависимости проекта/u).waitFor();
+    if (process.env.HUB253_EVIDENCE_DIR) {
+      await mkdir(process.env.HUB253_EVIDENCE_DIR, { recursive: true });
+      const screenshot = path.join(process.env.HUB253_EVIDENCE_DIR, `progress-${width}.png`);
+      await page.screenshot({ path: screenshot, fullPage: true });
+      t.diagnostic(`progress screenshot: ${screenshot}`);
+    }
     await panel.getByRole('button', { name: "Прервать операцию", exact: true }).click();
     await panel.getByText("Операция прервана. Уже выполненные действия сохранены.", { exact: true }).waitFor();
     assert.equal(f.catalog.mcpOperation(operationId).taskExecution.cancellation.phase, "stopped");

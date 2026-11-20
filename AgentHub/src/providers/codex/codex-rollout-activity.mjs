@@ -19,6 +19,8 @@ import {
 } from "../../domain/codex-trace-budget.mjs";
 import {
   codexAssistantResponseProjection,
+  bindResponseAnnotationTarget,
+  responseAnnotationTargetForMessages,
   normalizedCodexResponseAnnotationReferences,
   visibleCodexAssistantText,
 } from "../../domain/codex-response-annotation.mjs";
@@ -378,7 +380,8 @@ function rememberCodexTurnMessage(metadata, turnId, message, item = null, rollou
     if (phase) {
       const rawText = String(message);
       const rawProviderText = rawText.slice(-CODEX_AGENT_MESSAGE_CHARS);
-      const nativeProjection = codexAssistantResponseProjection(rawProviderText);
+      const nativeProjection = bindResponseAnnotationTarget(codexAssistantResponseProjection(rawProviderText),
+        responseAnnotationTargetForMessages(metadata.userMessages.get(turnId)));
       metadata.latestAgentMessages.set(turnId, {
         id: String(item.id ?? ""), type: "agentMessage", phase,
         rawProviderText, text: nativeProjection.text.replace(/\r\n?/gu, "\n").trim(),
@@ -386,6 +389,7 @@ function rememberCodexTurnMessage(metadata, turnId, message, item = null, rollou
         ...(rolloutRecord ? { rolloutRecord } : {}),
         ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
         responseAnnotationReferences: structuredClone(nativeProjection.responseAnnotationReferences),
+        ...(nativeProjection.responseAnnotationTarget ? { responseAnnotationTarget: nativeProjection.responseAnnotationTarget } : {}),
       });
       while (metadata.latestAgentMessages.size > 8) {
         metadata.latestAgentMessages.delete(metadata.latestAgentMessages.keys().next().value);
@@ -864,6 +868,8 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
     }
     else {
       const group = { id, reasoning, activities: [], ...(projected.sourceItemId ? { sourceItemId: projected.sourceItemId } : {}) };
+      const target = responseAnnotationTargetForMessages(metadata.userMessages.get(turnId));
+      if (target) group.responseAnnotationTarget = target;
       groups.push(group);
       index.byId.set(id, group);
     }
@@ -1073,7 +1079,6 @@ function observeCodexEntry(
   ) {
     activeTurnIds.add(turnId);
   }
-  rememberCodexTraceEntry(metadata, turnId, entry);
   const completedUserMessage = codexCompletedUserMessage(entry);
   const completedSourceOccurrenceId = bindCompletedCodexUserProjection(
     metadata,
@@ -1101,6 +1106,7 @@ function observeCodexEntry(
   if ((entry?.type === "turn_context" || entry?.type === "response_item" || lifecycle) && turnId) {
     metadata.latestTurnId = turnId;
   }
+  rememberCodexTraceEntry(metadata, turnId, entry);
   const responseItemMessage = codexResponseItemMessage(entry, "assistant");
   if (turnId && responseItemMessage) {
     // response_item duplicates the neighbouring unscoped agent_message, but it
@@ -1165,7 +1171,8 @@ function observeCodexEntry(
     }
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "task_complete" && turnId) {
-    const projection = codexAssistantResponseProjection(entry.payload?.last_agent_message);
+    const projection = bindResponseAnnotationTarget(codexAssistantResponseProjection(entry.payload?.last_agent_message),
+      responseAnnotationTargetForMessages(metadata.userMessages.get(turnId)));
     const message = projection.text.replace(/\r\n?/gu, "\n").trim();
     if (typeof entry.payload?.last_agent_message === "string") {
       // An explicit new final owns both its text and an empty reference map.

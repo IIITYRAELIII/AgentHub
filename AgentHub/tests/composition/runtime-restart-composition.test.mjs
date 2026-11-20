@@ -235,7 +235,12 @@ test("deferred restart recovery settles durable cutover before readiness and per
         events.push("ready");
       },
     },
-    isCodex: () => false,
+    isCodex: () => true,
+    startCodexAppServer: async () => events.push("provider-start"),
+    initializeCodex: async options => {
+      assert.deepEqual(options, { attachSelectedThread: false });
+      events.push("provider-initialize");
+    },
     taskRuns: { values: () => [] },
     runRecovery: { recoverAll: noop },
     updateRestartMessage: async () => {
@@ -259,7 +264,7 @@ test("deferred restart recovery settles durable cutover before readiness and per
   assert.deepEqual(recovered.blockers, []);
   assert.equal(restartUiProjection(recovered).pending, false);
   assert.equal(reopenedStore.activeFor({ kind: "restart", ...target }), null);
-  assert.deepEqual(events, ["lock", "message", "ready", "timers"]);
+  assert.deepEqual(events, ["lock", "provider-start", "provider-initialize", "message", "ready", "timers"]);
   const next = await service.fromDesktop();
   assert.equal(next.accepted, true);
   assert.notEqual(next.operationId, operation.operationId);

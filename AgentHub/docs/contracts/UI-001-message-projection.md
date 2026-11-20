@@ -29,6 +29,10 @@ retires stale queued intake membership even when its wait reason is retained
 and canonical history has not arrived. Explicit identity conflicts cannot
 consume another command's wait. Unresolved intake ACKs, unknown outcomes and
 manual pause retain their existing queue guards, including after reload.
+The original send ACK can arrive after that exact confirmation. Its local queue
+membership is derived after the existing canonical entity reducer, so an older
+intake result cannot restore a saved card while the entity remains accepted or
+terminal. Equal text with a different command identity keeps its own wait.
 
 The Task card's operation action exposes explicit interruption of a bound
 claim/workflow attempt, including pending and UNKNOWN. It reaches the same
@@ -135,6 +139,15 @@ to truncate or infer an annotation source.
 
 ## Invariants
 
+- Copying a selected ordered list inside one message preserves its visible
+  ordinals in plain text, including a non-one start, selected item values,
+  nesting and selected line breaks. Partial selection includes only the selected
+  item text and retains its source ordinal. Ctrl+C and the message selection
+  menu share this clipboard projection. Quote source offsets/hashes and the
+  whole-message Markdown copy remain unchanged. Editable controls, selections
+  outside messages and plain text without ordered items keep native copying;
+  this introduces no keyboard shortcut or general clipboard interception.
+
 A message, live-answer or queue update in one supplementary visible Stream
 refreshes that column without replacing the other current columns. Their scroll,
 expanded disclosures and the selected composer remain intact. A changed layout,
@@ -228,6 +241,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   commands; inter-Stream authorship must not leak into another user message.
 - Context compaction and maintenance operations have separate kinds and never
   create user-turn cards. Context estimates are observations, not generated turns.
+  A dedicated compaction awaiting its provider turn is preparation, not a
+  confirmed start notification. Repeated snapshots and reconnect retain the
+  same operation's terminal revision; an older running projection cannot revive
+  it. Reload reuses the existing terminal maintenance marker. Notifications of
+  observed automatic starts occur once per exact operation in the current
+  client session, with the initial snapshot as its baseline; new operations and
+  real failures remain visible.
 - The ordinary browser shell never waits on the third-party Telegram runtime.
   A same-origin parser bootstrap requests that runtime only when Telegram launch
   parameters or a native Telegram bridge are already present, preserving the
@@ -271,8 +291,20 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   ordinary prose, before validating the payload (ADR-0036);
   invalid payloads retain only a readable generic fallback and do not enter
   structured state. Partial markers remain hidden while streaming. The UI
-  resolves each valid index to the nearest preceding annotated user entity by
-  its canonical message key,
+  resolves each valid index to its captured annotated user entity by exact
+  client command, source occurrence or native item identity within the same
+  provider/Thread/turn. Native items and trace groups retain that target across
+  steer, observation, terminal storage and reload; a new input does not retarget
+  an existing item. Missing, foreign or ambiguous explicit targets fail closed.
+  A native item-start capture takes precedence over a target inferred from
+  completion order. Observation, hydration and existing SQLite history merges
+  retain it only for the same provider/Thread/turn and native item/group identity;
+  a later completion after steer B cannot replace item A's captured target.
+  Incoming reference positions and explicit empty lists remain authoritative.
+  Native commentary is projected from its original provider text; its hidden
+  response body must not create a second detached citation.
+  Legacy references without target metadata retain the nearest preceding
+  annotated-user compatibility mapping by canonical message key. The renderer
   renders the user's annotation/comment text and exposes a keyboard-operable
   jump to that exact annotation card only when the target annotation exists.
   Missing mappings render non-interactive
@@ -287,6 +319,15 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   without coordinates retain an explicit compatibility list until their trusted
   original is reprojected through the existing history owner; no stored source
   or user text is rewritten. See ADR-HUB-401.
+  Commentary shown in live and historical trace groups, including addressed
+  trace pages, carries a read-only presentation from that same assistant parser.
+  The original reasoning, provider item and source-generation/hash fields stay
+  intact. Rendering and citation navigation use the group's presentation in the
+  exact owning message context; a later annotated user cannot become its target.
+  Addressed full-source reconstruction retains only the selected exact group's
+  captured target, after group/native-item validation. An empty answer has no
+  citation surface: commentary references cannot create a detached answer card.
+  Distinct native items and equal-text user commands remain distinct links.
 - A new user-created annotation records its exact source user command or agent
   provider item, including an active non-final agent item. A user with a durable
   `clientUserMessageId` uses the client namespace scoped by provider and Thread,

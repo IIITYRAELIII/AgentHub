@@ -108,14 +108,14 @@ availability. See ADR-0138.
   can activate it automatically at an idle provider boundary: no live Codex run,
   pending RPC, queued RPC or stopping/restarting owner. A synchronous provider
   RPC fence retains new requests and their original identities through healthy
-  initialize; selected Thread restoration uses the existing resume owner and
-  never creates a replacement Thread in this idle update. Background
+  initialize. This idle update does not attach or recover a saved user Thread;
+  an explicit new input owns any later context load (ADR-HUB-476). Background
   failure never replaces the active/selected identity or degrades a working
   provider. Shutdown disables scheduling and fences late background results.
 - A healthy transport is never replaced while a Codex run is active or requires
   recovery. A definitively unavailable recorded bundle with no running provider
   child may be replaced through the same verified owner while saved run lanes
-  remain occupied; canonical recovery then inspects those exact runs. Missing
+  retain their own current-process identity; activation never recovers an old turn. Missing
   binaries never authorize clearing custody, inventing terminal state or replaying
   input. Discovery alone remains deferred while a healthy provider is busy.
 - Successful startup atomically advances both `active` and `lastKnownGood`.
@@ -142,8 +142,9 @@ Background progress/failure and the prepared identity are separate diagnostics;
 they do not masquerade as a provider initialization failure.
 Successful real initialize reconciles its failed provider startup operation and
 capability at the canonical startup coordinator, without replaying completed
-startup work. Running alone is insufficient. A separate failed recovery remains
-failed until that exact canonical recovery succeeds; other failures are retained.
+startup work. Running alone is insufficient. Unrelated failed startup stages
+retain their exact failure; there is no old-user-turn recovery stage or retry
+(ADR-HUB-476).
 The startup screen exposes current backend capability errors separately from
 completed historical startup stages instead of replacing them with a generic
 unfinished-stage message. It obtains details through the existing authenticated

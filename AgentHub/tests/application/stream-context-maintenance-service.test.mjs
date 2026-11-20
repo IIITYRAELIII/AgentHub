@@ -163,6 +163,20 @@ test("provider-internal compaction is active without becoming a Hub-owned reserv
   assert.equal(service.isManagedActive(source), false);
 });
 
+test("rejected or unconfirmed launch cleanup cannot reserve post-turn maintenance", async () => {
+  const state = fixture();
+  try {
+    for (const providerStart of [undefined, { state: "requested" }, { state: "unconfirmed" }]) {
+      const attempt = { ...state.source, id: "attempt", turnId: null, providerStart };
+      assert.equal(state.service.reserveAfterTurn(attempt), false);
+      assert.equal(await state.service.maintainAfterTurn(attempt), null);
+      assert.equal(state.registry.activeCount(), 0);
+    }
+    assert.equal(state.events.some(([kind]) => kind === "compact"), false);
+    assert.equal(state.service.reserveAfterTurn(state.source), true, "a real completed turn retains automatic maintenance");
+  } finally { state.tracker.dispose(); }
+});
+
 test("unregistered completed turn rotates only its bound above-threshold compaction once", async () => {
   const state = fixture({ observedCompaction: true, observedAfterPercent: 28 });
   const identity = { threadId: state.source.threadId, turnId: state.source.turnId };
