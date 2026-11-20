@@ -1,12 +1,12 @@
 import { preserveRunActivityAnnotationTargets } from "../../domain/run-activity.mjs";
-import { preferredResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
+import { codexAssistantResponseProjection, preferredResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
 import {
   codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
   codexSubagentAuthor,
   codexTurnHasExplicitFinalAnswer,
 } from "../../application/task-history.mjs";
-import { codexTurnAnswer } from "./codex-turn-answers.mjs";
+import { codexTurnAnswer, codexTurnAnswerItems } from "./codex-turn-answers.mjs";
 import { codexAgentMessageRevision, observeCodexAgentMessage } from "./codex-agent-message-reducer.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
@@ -216,9 +216,14 @@ export class CodexTaskSnapshotService {
       }
     }
 
+    // Only an existing current managed execution can reach this read. After
+    // uncertainty, confirm its exact native turn freshly: a retained rollout
+    // task_started marker alone must not restore a running display.
+    const confirmCurrentActivity = run.observer !== true && run.activityUnknown === true;
     const result = threadResult ?? await d.readThread(run.threadId, {
-      fresh,
-      includeTurns: false,
+      fresh: fresh || confirmCurrentActivity,
+      includeTurns: confirmCurrentActivity,
+      ...(confirmCurrentActivity ? { turnLimit: 1, turnPageSize: 1 } : {}),
       priority: "interactive",
     });
     const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
@@ -253,7 +258,7 @@ export class CodexTaskSnapshotService {
         responseObservationRevision,
         active: state.active,
         completed: state.completed,
-        activityUnknown: !state.active && !state.completed,
+        activityUnknown: (!state.active || confirmCurrentActivity) && !state.completed,
         status: state.completed ? state.terminalStatus : state.active ? "inProgress" : "unknown",
         stage: state.active
           ? "Выполняется следующий этап…"
@@ -294,7 +299,22 @@ export class CodexTaskSnapshotService {
         : d.hubOwner(),
     };
     if (activity.activeTurnIds.includes(turn.id)) {
-      return { ...snapshot, completed: false, active: true, stage: d.describeItem(turn.items?.at(-1), false) };
+      const nativeCurrentActive = result.thread?.id === run.threadId
+        && result.thread?.status?.type === "active" && turn.status === "inProgress";
+      const messages = codexThreadHistory([turn]).at(-1)?.messages ?? [];
+      const responseItems = codexTurnAnswerItems(turn).filter(item => item.id).map(item => {
+        const matches = messages.filter(message => message.role === "agent" && message.itemId === item.id);
+        const projection = codexAssistantResponseProjection(item.text);
+        return { ...structuredClone(item), ...projection, rawProviderText: item.text,
+          ...(matches.length === 1 ? { responseAnnotationReferences:
+            structuredClone(matches[0].responseAnnotationReferences ?? []) } : {}) };
+      });
+      const responseItem = responseItems.at(-1) ?? rolloutState.responseItem;
+      return { ...snapshot, completed: false, active: true,
+        ...(responseItem?.id ? { responseItem: structuredClone(responseItem), responseObservationRevision } : {}),
+        ...(responseItems.length ? { responseItems } : {}),
+        ...(confirmCurrentActivity && !nativeCurrentActive ? { activityUnknown: true } : {}),
+        stage: d.describeItem(turn.items?.at(-1), false) };
     }
     if (!rolloutState.completed) {
       return {
@@ -381,8 +401,16 @@ export class CodexTaskSnapshotService {
     const observedItem = snapshot?.active && snapshot.responseItem?.id && run.turnId === snapshot.turnId
       ? snapshot.responseItem : null;
     if (observedItem) {
-      observeCodexAgentMessage(run, { turnId: snapshot.turnId, item: observedItem,
-        expectedRevision: snapshot.responseObservationRevision });
+      const items = snapshot.responseItems?.length ? snapshot.responseItems : [observedItem];
+      // Reject the whole held read before observing its ordered legacy items.
+      // The synchronous batch itself advances the existing reducer revision.
+      if (snapshot.responseObservationRevision !== codexAgentMessageRevision(run)) {
+        observeCodexAgentMessage(run, { turnId: snapshot.turnId, item: observedItem,
+          expectedRevision: snapshot.responseObservationRevision });
+      } else for (const item of items) {
+        observeCodexAgentMessage(run, { turnId: snapshot.turnId, item,
+          expectedRevision: codexAgentMessageRevision(run) });
+      }
       run.responseText = codexTurnAnswer({ items: run.responseItems });
     }
     if (snapshot?.model) run.model = this.#d.modelLabel(snapshot.model);
