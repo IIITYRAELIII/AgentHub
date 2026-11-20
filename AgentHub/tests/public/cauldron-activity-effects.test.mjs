@@ -21,8 +21,8 @@ async function setting(page, key, value) {
   await frames(page);
 }
 
-async function publish(page, { tick = 0, running = true, unread = false, revision = 0 } = {}) {
-  await page.evaluate(({ tick, running, unread, revision }) => {
+async function publish(page, { tick = 0, running = true, unread = false, revision = 0, interstreamCompaction = false } = {}) {
+  await page.evaluate(({ tick, running, unread, revision, interstreamCompaction }) => {
     window.AgentHub.setWorkspaces([{ id: "workspace-0", name: "Workspace", settings: {} }], ["workspace:workspace-0", "notes"]);
     window.AgentHub.setTasks([0, 1].map((index) => ({
       id: `task-${index}`, provider: "codex", agentLabel: "Codex",
@@ -32,9 +32,10 @@ async function publish(page, { tick = 0, running = true, unread = false, revisio
       unread: index === 0 && unread, openQuestion: index === 0 && unread,
       streamSettings: {}, progressStage: `stage-${tick}`,
       lastActivity: new Date().toISOString(),
-      latestFinal: index === 0 && revision ? { provider: "codex", threadId: "thread-0", turnId: "turn-0", revision } : null,
+      context: index === 0 && interstreamCompaction ? { compaction: { status: "running" } } : undefined,
+      latestFinal: index === 0 && revision ? { provider: "codex", threadId: "thread-0", turnId: "turn-0", revision, interstreamOnly: interstreamCompaction } : null,
     })));
-  }, { tick, running, unread, revision });
+  }, { tick, running, unread, revision, interstreamCompaction });
   await frames(page);
 }
 
@@ -78,28 +79,54 @@ async function launch() {
     : { headless: true });
 }
 
-async function paintChange(page, before, after) {
-  return page.evaluate(async (encoded) => {
+async function paintChange(page, before, after, { inset = 8, minBrightContrast = 0 } = {}) {
+  return page.evaluate(async ({ encoded, inset, minBrightContrast }) => {
     const images = await Promise.all(encoded.map(async (value) => createImageBitmap(await (await fetch(`data:image/png;base64,${value}`)).blob())));
     const [image] = images;
     const canvas = new OffscreenCanvas(image.width, image.height);
     const ctx = canvas.getContext("2d");
     const data = images.map((value) => { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(value, 0, 0); return ctx.getImageData(0, 0, canvas.width, canvas.height).data; });
     let changed = 0;
-    // Inspect the interior, not a moving sliver outside the ceramic frame.
-    for (let y = 8; y < image.height - 8; y += 1) for (let x = 8; x < image.width - 8; x += 1) {
+    function luminance(pixels, offset) {
+      const linear = channel => channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+      return [0.2126, 0.7152, 0.0722].reduce((sum, weight, k) => sum + weight * linear(pixels[offset + k] / 255), 0);
+    }
+    for (let y = inset; y < image.height - inset; y += 1) for (let x = inset; x < image.width - inset; x += 1) {
       const i = (y * image.width + x) * 4;
-      if (Math.max(...[0, 1, 2].map((channel) => Math.abs(data[0][i + channel] - data[1][i + channel]))) > 8) changed += 1;
+      if (Math.max(...[0, 1, 2].map(channel => Math.abs(data[0][i + channel] - data[1][i + channel]))) <= 8) continue;
+      if (!minBrightContrast || (luminance(data[0], i) + .05) / (luminance(data[1], i) + .05) >= minBrightContrast) changed += 1;
     }
     for (const value of images) value.close();
     return changed;
-  }, [before.toString("base64"), after.toString("base64")]);
+  }, { encoded: [before.toString("base64"), after.toString("base64")], inset, minBrightContrast });
 }
 
 async function evidence(name, bytes) {
   const directory = process.env.AGENT_HUB_TEST_EVIDENCE_DIR;
   if (directory) { await mkdir(directory, { recursive: true }); await writeFile(join(directory, name), bytes); }
 }
+
+test("Meadow: dotted ready and compaction tracks contrast with a sunlit background", async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } });
+    await open(page);
+    await page.locator("[data-theme-select]").selectOption("meadow", { force: true });
+    await setting(page, "streamStatusEffect", "static");
+    await publish(page, { unread: true, revision: 1, interstreamCompaction: true });
+    const card = page.locator(RAIL);
+    // Use one bright field so a dark patch in the photograph cannot mask a regression.
+    await card.locator(".stream-tab-card").evaluate(node => node.style.setProperty("background", "#d7c568", "important"));
+    for (const selector of [".stream-ready-strike", ".stream-maintenance-track"]) {
+      const track = card.locator(selector);
+      const visible = await card.screenshot();
+      await track.evaluate(node => node.style.visibility = "hidden");
+      const background = await card.screenshot();
+      await track.evaluate(node => node.style.visibility = "");
+      assert.ok(await paintChange(page, visible, background, { inset: 3, minBrightContrast: 3 }) > 12, selector);
+    }
+  } finally { await browser.close(); }
+});
 
 test("Ready strike remains visible on every theme", async () => {
   const browser = await launch();
