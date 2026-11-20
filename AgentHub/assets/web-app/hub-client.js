@@ -187,6 +187,7 @@ const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
 const completionOverlaysByTask = new Map();
 const queueActionsInFlight = new Set();
+const acknowledgedQueueCancels = new Set();
 const optimisticQueueSteerIds = new Set();
 const optimisticDeferredClientUserMessageIds = new Set();
 const requestedContextCompactions = new Set();
@@ -2642,6 +2643,12 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       appliedSnapshotGeneration += 1;
     }
     lastSnapshot = snapshot;
+    if (acknowledgedQueueCancels.size && Array.isArray(snapshot.deferredInputs)) {
+      const currentQueueIds = new Set(snapshot.deferredInputs.map((item) => String(item.id ?? "").trim()));
+      for (const id of acknowledgedQueueCancels) {
+        if (!currentQueueIds.has(id)) acknowledgedQueueCancels.delete(id);
+      }
+    }
     const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
     const maintenanceTasks = reconcileContextCompactions(snapshot.tasks);
     // Pending/retry identities belong to the current canonical final. Capacity
@@ -4779,19 +4786,32 @@ agentHub.on("queue:remove", ({ id, taskId: taskIdValue }) => runAction(async () 
       return;
     }
   }
-  const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
-  // Keep this intent's diagnostic UUID through transport/ACK, independently
-  // of the addressed message's opaque business idempotency identity.
-  const result = await control("deferred-input", { id: deferred?.itemId ?? deferred?.id ?? id, action: "cancel",
-    clientTraceId: commandTrace.currentId(),
-    ...(clientUserMessageId ? { clientUserMessageId } : {}) });
-  if (clientUserMessageId) {
-    const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
-    outgoingMessages(deferredTaskId).delete(clientUserMessageId);
-    renderTaskMessages(deferredTaskId);
+  const addressedId = deferred?.itemId ?? deferred?.id ?? id;
+  const key = String(addressedId ?? "").trim();
+  if (!key || queueActionsInFlight.has(key) || acknowledgedQueueCancels.has(key)) return;
+  queueActionsInFlight.add(key);
+  try {
+    const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
+    // Keep this intent's diagnostic UUID through transport/ACK, independently
+    // of the addressed message's opaque business idempotency identity.
+    const result = await control("deferred-input", { id: addressedId, action: "cancel",
+      clientTraceId: commandTrace.currentId(),
+      ...(clientUserMessageId ? { clientUserMessageId } : {}) });
+    if (result?.accepted === true && result?.cancelled === true && result.id === addressedId
+        && (!clientUserMessageId || result.clientUserMessageId === clientUserMessageId)) {
+      // A failed readback does not undo an exact positive acknowledgement.
+      acknowledgedQueueCancels.add(key);
+    }
+    if (clientUserMessageId) {
+      const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
+      outgoingMessages(deferredTaskId).delete(clientUserMessageId);
+      renderTaskMessages(deferredTaskId);
+    }
+    applySnapshot(await control("snapshot"));
+    agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
+  } finally {
+    queueActionsInFlight.delete(key);
   }
-  applySnapshot(await control("snapshot"));
-  agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
 }));
 async function runQueueAction(id, taskIdValue, operation) {
   const key = String(id ?? "").trim();

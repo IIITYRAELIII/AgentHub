@@ -11,8 +11,12 @@ requested identity sets cannot reuse a cached response for another set.
 Explicit canonical cancellation removes the exact queue card and count while
 preserving command history and unknown past provider effects. A known canonical
 queued receipt keeps its public cancellation action when its RAM item is absent.
-Unknown/provider-accepted states do not gain that action. Existing snapshot
-generation fencing still rejects late responses.
+Unknown/provider-accepted states do not gain that action. One addressed cancel
+holds its queue action slot through the snapshot readback. An exact positive
+cancel acknowledgement suppresses a repeated click until a snapshot removes
+that item, even if its first readback fails. An unknown cancel result does not
+create that suppression. Existing snapshot generation fencing still rejects
+late responses.
 
 Desktop snapshots carry Task titles and revisioned deferred presentation, with
 full raw text and descriptions available through the existing addressed Task
