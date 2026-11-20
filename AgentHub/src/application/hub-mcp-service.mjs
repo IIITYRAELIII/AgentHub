@@ -1,6 +1,6 @@
 import { TaskOperationInterruption, INTERRUPTIBLE_TASK_TOOLS, taskOperationInterrupted } from "./task-operation-interruption.mjs";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { TaskCleanupConfirmationRejectedError, archivedArtifactPreview, cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../domain/task-cleanup-confirmation.mjs";
+import { TaskCleanupConfirmationRejectedError, archivedArtifactCapsule, archivedArtifactPreview, cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../domain/task-cleanup-confirmation.mjs";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -1023,18 +1023,19 @@ export class HubMcpService {
   }
 
   #archivePreviewPage(actor, identity, { cleanupToken, previewSha256, offset } = {}) {
-    const { taskOperation: operation, result: capsule } = this.#taskOperationReadback(actor, identity);
+    const { taskOperation: operation, result } = this.#taskOperationReadback(actor, identity);
+    const capsule = result?.archivePreview ? result : cleanupConfirmationCapsule(result) ?? archivedArtifactCapsule(result);
     if (operation?.toolName !== "hub_task_complete" || identity.task_id !== operation.taskId || !identity.expected_arguments_hash
-        || operation.status !== "succeeded" || !capsule?.archivePreview || !capsule.previewOmitted
+        || operation.status !== "succeeded" || !capsule?.archivePreview
         || capsule.cleanupToken !== cleanupToken || capsule.previewIdentity?.sha256 !== previewSha256
         || !Number.isSafeInteger(offset) || offset < 0) throw new Error("Archive preview reference differs");
     const outcome = this.taskBoard.lifecycleOutcome(operation.requestId);
     const original = outcome?.result?.evidence?.originalArguments;
     if (outcome?.taskId !== operation.taskId || outcome.kind !== "complete" || !outcome.result.evidence.archive
         || !original || argumentsHash(original) !== operation.argumentsHash) throw new Error("Original archive preview unavailable");
-    const result = completedLifecycleResult(outcome);
-    const preview = result.confirmationRequired ? result.preview : archivedArtifactPreview(result);
-    if (result.cleanupToken !== cleanupToken || !preview?.archive) throw new Error("Original archive preview unavailable");
+    const originalResult = completedLifecycleResult(outcome);
+    const preview = originalResult.confirmationRequired ? originalResult.preview : archivedArtifactPreview(originalResult);
+    if (originalResult.cleanupToken !== cleanupToken || !preview?.archive) throw new Error("Original archive preview unavailable");
     const raw = JSON.stringify(preview);
     const sha256 = createHash("sha256").update(raw).digest("hex");
     if (sha256 !== previewSha256 || Buffer.byteLength(raw) !== capsule.previewIdentity.bytes || offset >= raw.length) {
