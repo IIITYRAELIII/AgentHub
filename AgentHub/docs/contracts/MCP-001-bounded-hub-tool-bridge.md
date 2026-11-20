@@ -136,6 +136,17 @@ The existing operation-reconcile CLI exposes the same cancel command via
 request waiting for legacy retirement is not silently restarted or published.
 See [Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
 
+## Archive the service card of an abandoned attempt
+
+Release Manager-only `hub_task_complete completion_mode=abandoned_release_service`
+requires `abandoned_release` with the exact original operation ID, revision and
+generation. Its preview reads retained facts and binds the same actor, Task,
+custody and original selection for a separate confirmation. It archives the
+service card with its existing workflow status. Original release outcomes,
+member Tasks and any retained source are preserved. Confirmed reconciliation
+requires the same admitted original and lifecycle evidence; unproven historical
+outcomes remain unknown.
+
 ## Historical direct publication cleanup
 
 Release Manager-only `hub_task_complete completion_mode=published_delivery`

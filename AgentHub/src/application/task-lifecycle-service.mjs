@@ -2017,6 +2017,49 @@ export class TaskLifecycleService {
     });
   }
 
+  async #completeAbandonedReleaseService({ taskId, operationId, confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, releaseActor }) {
+    requiredMethod(this.taskGitWorkspaces, "abandonedReleaseServiceEvidenceOwned");
+    requiredMethod(this.releasePreflight, "withAwaitTransition");
+    const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
+    if (outcome?.taskId === taskId && outcome.kind === "complete"
+        && outcome.result?.evidence?.releaseService?.mode === "abandoned_release_service"
+        && JSON.stringify(outcome.result.evidence.originalArguments) === JSON.stringify(originalArguments)) return outcome.result.result;
+    const workspaceId = this.#task(taskId).workspaceId;
+    // Same resource/order as release continuation and composition. This path only
+    // archives the service card; it neither schedules nor mutates the release.
+    return this.releasePreflight.withAwaitTransition(workspaceId, () => this.#withLock(taskId, async lease => {
+      const task = this.#task(taskId), resumed = this.taskBoard.lifecycleTransition?.(operationId), prior = resumed?.evidence;
+      if (task.status === "done" || !["new", "in_progress", "blocked"].includes(task.workflowStatus)) throw new Error("Abandoned release service must remain open outside Test/Await");
+      const read = async () => {
+        const actor = releaseActor && this.workspaceCatalog.stream(releaseActor.streamId);
+        if (!actor || releaseActor.workspaceId !== task.workspaceId || actor.workspaceId !== task.workspaceId
+            || actor.settings?.releaseManager !== true) throw new Error("Abandoned release requires its current Workspace RM actor");
+        const proof = await this.taskGitWorkspaces.abandonedReleaseServiceEvidenceOwned({ source: task, input: abandonedRelease, lease, actor: releaseActor });
+        return proof;
+      };
+      const releaseService = await read();
+      const cleanup = { taskId, workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [],
+        preserving: releaseService.preserving, releaseService };
+      const preview = confirmation(task, "complete", cleanup);
+      preview.warning = "Archive this abandoned release service card only. FAILED and unknown effects remain unchanged; no publication or source deletion.";
+      if (confirmCleanup !== true) {
+        if (resumed) throw new Error("Closure already admitted; reconcile the original confirmed operation");
+        return preview;
+      }
+      if (expectedCleanupToken !== preview.cleanupToken) throw new Error("Abandoned release confirmation is stale");
+      if (resumed && (resumed.taskId !== taskId || resumed.kind !== "complete" || resumed.phase !== "cleanup"
+          || resumed.expectedRevision !== task.revision || JSON.stringify(prior?.releaseService) !== JSON.stringify(releaseService)
+          || JSON.stringify(prior?.originalArguments) !== JSON.stringify(originalArguments))) throw new Error("Original abandoned release closure differs");
+      const evidence = prior ?? { releaseService, cleanup, originalArguments };
+      await this.#assertOwned(lease);
+      if (!resumed) await this.#mutation(() => this.taskBoard.beginLifecycleTransition({ id: taskId, operationId,
+        kind: "complete", expectedRevision: task.revision, evidence }), operationId);
+      if (JSON.stringify(await read()) !== JSON.stringify(releaseService)) throw new Error("Abandoned release changed before archive");
+      await this.#assertOwned(lease);
+      return this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, { receiptEvidence: evidence }), operationId);
+    }));
+  }
+
   async #completePublishedDelivery({ taskId, operationId, confirmCleanup, expectedCleanupToken, publishedDelivery, originalArguments, operational = false, completedOperationRequestId = null }) {
     requiredMethod(this.taskGitWorkspaces, "publishedDeliveryPreviewOwned");
     const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
@@ -2141,8 +2184,9 @@ export class TaskLifecycleService {
   async complete({
     taskId, operationId, confirmCleanup = false, expectedCleanupToken = null,
     absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, manualDelivery = null, retainedRepositories = [], originalArguments = null, completedOperationRequestId = null,
+    abandonedRelease = null, releaseActor = null,
   } = {}) {
-    if (completionMode != null && !["published_release_service", "published_delivery", "operational", "manual_delivery"].includes(completionMode)) {
+    if (completionMode != null && !["published_release_service", "published_delivery", "operational", "manual_delivery", "abandoned_release_service"].includes(completionMode)) {
       throw new Error("Unsupported Task completion mode");
     }
     if (completionMode && (absorptionMode || absorbedIntoTaskId)) {
@@ -2152,6 +2196,9 @@ export class TaskLifecycleService {
     if (manualDelivery && completionMode !== "manual_delivery") throw Error("Manual delivery requires its explicit completion mode");
     if (retainedRepositories.length && completionMode !== "manual_delivery") throw Error("Repository retention pins require manual delivery mode");
     if (completedOperationRequestId && completionMode !== "operational") throw Error("Historical completion proof requires operational cleanup mode");
+    if (abandonedRelease && completionMode !== "abandoned_release_service") throw Error("Abandoned release proof requires its explicit completion mode");
+    if (completionMode === "abandoned_release_service") return this.#completeAbandonedReleaseService({ taskId, operationId,
+      confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, releaseActor });
     if (completionMode === "manual_delivery") return this.#completeManualDelivery({ taskId, operationId,
       confirmCleanup, expectedCleanupToken, manualDelivery, originalArguments, retainedRepositories });
     if (["published_delivery", "operational"].includes(completionMode)) return this.#completePublishedDelivery({ taskId, operationId,

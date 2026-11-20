@@ -7,6 +7,70 @@ import { normalizedOwnGitPublication } from "../../domain/release-base-provenanc
 import { runtimeDatabasePath } from "./runtime-state-store.mjs";
 import { releaseIdentitySha256, completedReleaseGenerationEvidence, restoreReleaseOperation, releaseApprovedTargets } from "../../domain/legacy-task-publication-proof.mjs";
 
+// A point read of the explicitly named failed original, never latest release or
+// publication eligibility. Closing its service card does not settle its effects.
+export function readAbandonedReleaseServiceGeneration({ dataDir, workspaceId, streamId, input, checklist } = {}) {
+  if (!input?.operationId || !Number.isSafeInteger(input.expectedRevision)
+      || input.expectedRevision < 1 || !Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 1) {
+    throw new Error("Abandoned release requires exact original revision and generation");
+  }
+  const file = runtimeDatabasePath(dataDir);
+  if (!existsSync(file)) throw new Error("Abandoned release history is absent");
+  const database = new DatabaseSync(file, { readOnly: true });
+  try {
+    database.exec("BEGIN");
+    if (database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('release_operations','release_candidate_generations')").get().count !== 2) {
+      throw new Error("Abandoned release history is absent");
+    }
+    const row = database.prepare("SELECT operation_json FROM release_operations WHERE operation_id=? AND workspace_id=? AND state='failed'")
+      .get(input.operationId, workspaceId);
+    const operation = row && JSON.parse(row.operation_json);
+    if (!operation || operation.operationId !== input.operationId || operation.workspaceId !== workspaceId || operation.streamId !== streamId
+        || operation.revision !== input.expectedRevision || operation.currentGeneration !== input.expectedGeneration
+        || operation.state !== "failed" || operation.owner != null || !operation.completedAt) {
+      throw new Error("Abandoned release original is not the exact idle FAILED boundary");
+    }
+    const { fingerprint, ...authorization } = operation.authorization;
+    if (releaseIdentitySha256(authorization) !== fingerprint) throw new Error("Abandoned release authorization changed");
+    const record = database.prepare("SELECT generation_json,identity_sha256 FROM release_candidate_generations WHERE operation_id=? AND generation=?")
+      .get(operation.operationId, operation.currentGeneration);
+    const generation = record && JSON.parse(record.generation_json);
+    const { identitySha256, ...contents } = generation ?? {};
+    if (!generation || !generation.candidates?.length || generation.operationId !== operation.operationId || generation.generation !== operation.currentGeneration
+        || identitySha256 !== record.identity_sha256 || releaseIdentitySha256(contents) !== identitySha256) {
+      throw new Error("Abandoned release immutable generation changed");
+    }
+    const selected = items => items.map(item => `${item.taskId}:${item.resultCommit}`).sort();
+    const expected = selected(generation.selectedResults);
+    if (JSON.stringify(selected(operation.selectedResults)) !== JSON.stringify(expected)
+        || JSON.stringify([...(generation.authorizedTaskIds ?? authorization.taskIds)].sort())
+          !== JSON.stringify(generation.selectedResults.map(item => item.taskId).sort())) {
+      throw new Error("Abandoned release original selection changed");
+    }
+    const rootKey = value => path.resolve(String(value)).replaceAll("\\", "/").toLowerCase();
+    const roots = [...new Set(generation.candidates.map(candidate => rootKey(candidate.repositoryRoot)))].sort();
+    const references = (checklist ?? []).map(item => {
+      const links = [...String(item.text ?? "").matchAll(/agent-hub:\/\/task\/([0-9a-f-]{36})/gu)];
+      const taskId = item.linkedTaskId ?? links[0]?.[1];
+      const refs = item.releaseReference?.gitReferences;
+      if (!taskId || links.length > 1 || links.length && links[0][1] !== taskId || refs?.length !== 1
+          || !roots.includes(rootKey(refs[0].projectRoot))) throw new Error("Abandoned release service reference is not exact");
+      return { taskId, resultCommit: refs[0].resultCommit };
+    });
+    if (!references.length || new Set(references.map(item => item.taskId)).size !== references.length
+        || JSON.stringify(selected(references)) !== JSON.stringify(expected)) {
+      throw new Error("Abandoned release service checklist differs from the original selection");
+    }
+    return { operationId: operation.operationId, revision: operation.revision, generation: operation.currentGeneration,
+      state: operation.state, completedAt: operation.completedAt, lastError: operation.lastError,
+      identitySha256: releaseIdentitySha256(operation), generationIdentitySha256: identitySha256,
+      selectedResults: generation.selectedResults, repositoryRoots: generation.candidates.map(item => item.repositoryRoot),
+      effectsDisposition: "retained_without_settlement" };
+  } finally {
+    try { database.exec("ROLLBACK"); } finally { database.close(); }
+  }
+}
+
 // Address only the original operations indexed by the selected Tasks. No global
 // latest-publication substitution, filesystem scan, migration or store writes.
 export function readPublishedReleaseServiceGeneration({ dataDir, workspaceId, repositoryRoot, selectedTasks } = {}) {
