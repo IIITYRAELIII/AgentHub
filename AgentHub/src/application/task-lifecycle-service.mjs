@@ -2237,7 +2237,7 @@ export class TaskLifecycleService {
     if (outcome?.taskId === taskId && outcome.kind === "complete" && outcome.result?.evidence?.archive
         && JSON.stringify(outcome.result.evidence.originalArguments) === JSON.stringify(originalArguments)) {
       return outcome.result.result.confirmationRequired ? outcome.result.result
-        : { ...outcome.result.result, archive: { remainingArtifacts: outcome.result.evidence.remainingArtifacts } };
+        : { ...outcome.result.result, archive: { remainingArtifacts: outcome.result.evidence.remainingArtifacts }, cleanupToken: expectedCleanupToken };
     }
     return this.#withLock(taskId, async lease => {
       const task = this.#task(taskId);
@@ -2249,7 +2249,9 @@ export class TaskLifecycleService {
         throw new Error("Original Task archive authority changed");
       }
       const read = async (retain) => {
-        const plan = await this.taskGitWorkspaces.archiveCleanupPreview(task, { retainArtifacts: retain });
+        const plan = await this.taskGitWorkspaces.archiveCleanupPreview(task, {
+          retainArtifacts: retain, registeredProjectRoot: this.#projectRoot(task),
+        });
         return { ...plan, confirmation: confirmation(task, "complete", {
           ...(plan.cleanup ?? {}), archive: true, retainArtifacts: retain,
           remainingArtifacts: plan.remainingArtifacts,
@@ -2258,7 +2260,14 @@ export class TaskLifecycleService {
       // Once cleanup was admitted, an interrupted owner may only observe it.
       // A new explicit confirmation is needed before closing with leftovers.
       const plan = await read(retainArtifacts || Boolean(transition));
-      if (!confirmCleanup) return plan.confirmation;
+      if (!confirmCleanup) {
+        if (Buffer.byteLength(JSON.stringify(plan.confirmation.preview)) > 48 * 1024) {
+          await this.#assertOwned(lease);
+          await this.#mutation(() => this.taskBoard.recordArchivePreview(task.id, operationId, plan.confirmation,
+            { archive: true, originalArguments }), operationId);
+        }
+        return plan.confirmation;
+      }
       if (!transition && expectedCleanupToken !== plan.confirmation.cleanupToken) {
         throw new TaskCleanupConfirmationRejectedError(task.id, "complete");
       }
@@ -2290,7 +2299,7 @@ export class TaskLifecycleService {
         archiveConfirmation: approved ? null : current.confirmation,
         receiptEvidence: { ...evidence, remainingArtifacts },
       }), operationId);
-      return approved ? { ...result, archive: { remainingArtifacts } } : result;
+      return approved ? { ...result, archive: { remainingArtifacts }, cleanupToken: expectedCleanupToken } : result;
     });
   }
 

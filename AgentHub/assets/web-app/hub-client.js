@@ -1919,7 +1919,15 @@ async function waitTaskOperationResult(admission, params) {
   if (operation.status !== "succeeded") throw Object.assign(new Error(
     operation.cancellation?.phase === "stopped" ? "Операция прервана. Незавершённая работа сохранена."
       : operation.error || `Операция ${original.requestId} требует восстановления исходного результата`), { taskOperation: operation });
-  return { ...await control("snapshot"), lifecycleResult: receipt.result };
+  let lifecycleResult = receipt.result;
+  if (lifecycleResult?.confirmationRequired && lifecycleResult.archivePreview && lifecycleResult.previewOmitted) {
+    lifecycleResult = await window.AgentHubTaskCleanupConfirmation.readArchivePreview(lifecycleResult, async (archivePreviewPage) => {
+      const value = await control("board-task-read", { id: operation.taskId,
+        operationRequestId: operation.requestId, argumentsHash: operation.argumentsHash, archivePreviewPage });
+      return value.archivePreviewPage;
+    });
+  }
+  return { ...await control("snapshot"), lifecycleResult };
 }
 
 async function control(action, params = {}) {

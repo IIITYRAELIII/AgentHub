@@ -43,8 +43,11 @@
   function taskCleanupConfirmationText(confirmation = {}) {
     const preview = confirmation.preview ?? {};
     if (preview.archive && preview.remainingArtifacts?.length) {
-      return ["Останутся файлы и ветки:", ...preview.remainingArtifacts.map(item =>
-        item.path ?? [item.name, item.repositoryRoot].filter(Boolean).join(" · "))].join("\n");
+      return ["Останутся файлы и ветки:", ...preview.remainingArtifacts.map(item => {
+        if (item.kind === "worktree_registration") return "Запись worktree: " + item.path;
+        if (item.kind === "unverified_repository") return ["Репозиторий не проверен", item.path, item.name].filter(Boolean).join(" · ");
+        return item.path ?? [item.name, item.repositoryRoot].filter(Boolean).join(" · ");
+      })].join("\n");
     }
     const lines = [cleanupValue(confirmation.warning, "Подтвердите удаление артефактов Task."), "", "Состояние Task Git:"];
     const workspaces = Array.isArray(preview.workspaces) ? preview.workspaces : [];
@@ -168,8 +171,37 @@
     return { confirmed: true, text, result };
   }
 
+  async function readArchiveCleanupPreview(capsule, readPage) {
+    const { cleanupToken, previewIdentity } = capsule;
+    if (!capsule.archivePreview || !capsule.previewOmitted || !previewIdentity?.sha256) {
+      throw new Error("Не удалось прочитать список артефактов задачи");
+    }
+    const chunks = [];
+    let offset = 0;
+    do {
+      const page = await readPage({ cleanupToken, previewSha256: previewIdentity.sha256, offset });
+      if (page?.offset !== offset || typeof page.chunk !== "string" || !page.chunk.length
+          || (page.nextOffset !== null && page.nextOffset !== offset + page.chunk.length)) {
+        throw new Error("Страница списка артефактов не соответствует исходному предпросмотру");
+      }
+      chunks.push(page.chunk);
+      offset = page.nextOffset;
+    } while (offset !== null);
+    const raw = chunks.join("");
+    const bytes = new TextEncoder().encode(raw);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const hash = Array.from(digest, value => value.toString(16).padStart(2, "0")).join("");
+    if (bytes.length !== previewIdentity.bytes || hash !== previewIdentity.sha256) {
+      throw new Error("Список артефактов не соответствует исходному предпросмотру");
+    }
+    const preview = JSON.parse(raw);
+    if (preview.archive !== true) throw new Error("Ответ не является предпросмотром архивации");
+    return { ...capsule, preview, previewOmitted: false };
+  }
+
   window.AgentHubTaskCleanupConfirmation = Object.freeze({
     confirm: confirmTaskCleanup,
+    readArchivePreview: readArchiveCleanupPreview,
     format: taskCleanupConfirmationText,
   });
 

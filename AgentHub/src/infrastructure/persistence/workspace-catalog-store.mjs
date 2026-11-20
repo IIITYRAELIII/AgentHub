@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../../domain/task-cleanup-confirmation.mjs";
+import { archivedArtifactCapsule, cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../../domain/task-cleanup-confirmation.mjs";
 import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
 import { McpAdmissionContentionError } from "../../domain/mcp-admission-contention.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
@@ -516,8 +516,18 @@ function mcpOperationFromRow(row) {
 function compactMcpOperationResult(result, { outcome = "succeeded" } = {}) {
   const serialized = JSON.stringify(result ?? null);
   if (Buffer.byteLength(serialized, "utf8") <= 64 * 1024) return serialized;
-  const confirmation = cleanupConfirmationCapsule(result);
+  const confirmation = cleanupConfirmationCapsule(result) ?? archivedArtifactCapsule(result);
   if (confirmation) return JSON.stringify(confirmation);
+  if (["CONFIRMATION_REQUIRED", "COMPLETED"].includes(result?.outcome)
+      && /^[a-f0-9]{64}$/u.test(result.originalArgumentsHash ?? "")) {
+    const nested = cleanupConfirmationCapsule(result.result) ?? archivedArtifactCapsule(result.result);
+    if (nested?.archivePreview) {
+      const { preview: _omitted, ...capsule } = nested;
+      return JSON.stringify({ taskId: result.taskId, operationId: result.operationId,
+        originalArgumentsHash: result.originalArgumentsHash, outcome: result.outcome, receiptCompacted: true,
+        result: { ...capsule, previewOmitted: true } });
+    }
+  }
   const taskId = String(result?.task?.id ?? result?.taskId ?? "").trim() || null;
   return JSON.stringify({
     receiptCompacted: true,

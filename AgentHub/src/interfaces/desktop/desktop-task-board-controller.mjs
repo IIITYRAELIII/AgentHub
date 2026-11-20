@@ -41,7 +41,10 @@ export class DesktopTaskBoardController {
     };
   }
 
-  read({ id, operationRequestId, argumentsHash } = {}) {
+  read({ id, operationRequestId, argumentsHash, archivePreviewPage } = {}) {
+    if (archivePreviewPage) return { archivePreviewPage: this.hubMcpService.readDesktopArchivePreviewPage(
+      { id }, operationRequestId, argumentsHash, archivePreviewPage,
+    ) };
     const operation = operationRequestId
       ? this.hubMcpService.readDesktopTaskOperation({ id }, operationRequestId, argumentsHash) : null;
     let task = null;
