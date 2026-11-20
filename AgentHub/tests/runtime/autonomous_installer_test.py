@@ -1,8 +1,9 @@
 """Recipient installer checks. Run: python -m unittest discover -s tests/runtime -p autonomous_installer_test.py"""
 import importlib.util
 import hashlib
-from contextlib import closing, ExitStack
+from contextlib import closing, ExitStack, redirect_stderr, redirect_stdout
 from copy import deepcopy
+import io
 import json
 import os
 from pathlib import Path
@@ -825,7 +826,16 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                     with self.assertRaisesRegex(RuntimeError,'independence unproved'):
                         installer.independent_worker([sys.executable,'-c',"from pathlib import Path;Path("+repr(str(marker))+").touch()"],base,installer.clean_installer_environment())
                 self.assertEqual(len(retained),1);self.assertEqual(k.WaitForSingleObject(retained[0],0),0)
-                self.assertFalse(marker.exists());self.assertTrue((base/'worker-dispatch-failure.json').exists())
+                self.assertFalse(marker.exists())
+                record = installer._read_record(base/'worker-dispatch-failure.json')
+                checks = record["checks"]
+                self.assertEqual(checks["stage"], "worker-job-check")
+                self.assertEqual(checks["callerOutsideAllJobs"], real(k.GetCurrentProcess()))
+                self.assertEqual(checks["providerReturnValue"], 0)
+                self.assertIs(checks["workerIdentityVerified"], True)
+                self.assertIs(checks["workerOutsideAllJobs"], False)
+                self.assertIs(checks["resumeAttempted"], False)
+                self.assertIs(checks["workerJoined"], True)
             finally:
                 for handle in retained:k.CloseHandle(handle)
                 k.CloseHandle(job)
@@ -863,6 +873,58 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             self.assertEqual(installer._read_record(base/'worker-create-intent.json')['operationId'],'same-original')
             self.assertFalse((base/'worker-verified-suspended.json').exists())
             self.assertTrue((base/'worker-dispatch-failure.json').exists())
+
+    def test_cli_reports_dispatch_failure_without_private_input_or_second_creation(self):
+        for record_saved in (True, False):
+            with self.subTest(record_saved=record_saved), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp)
+                root = base / "private-installation-path"
+                (root / "data").mkdir(parents=True)
+                archive = base / "private-archive-name.zip"
+                archive.touch()
+                args = [str(SOURCE), "--archive", str(archive), "--sha256", installer.file_hash(archive),
+                        "--runtime-root", str(root), "--scratch-root", str(base / "scratch"),
+                        "--mode", "force", "--operation-id", "same-original"]
+                write_record = installer._write_record
+
+                def write_or_refuse(path, value):
+                    if not record_saved and path.name == "worker-dispatch-failure.json":
+                        raise OSError("private record path unavailable")
+                    write_record(path, value)
+
+                def refuse_provider(command, **kwargs):
+                    reply = dict(returnValue=2, pid=None)
+                    write_record(Path(json.loads(kwargs["input"])["result"]), reply)
+                    return subprocess.CompletedProcess(command, 0, json.dumps(reply), "private provider output")
+
+                def invoke():
+                    err, out = io.StringIO(), io.StringIO()
+                    with redirect_stderr(err), redirect_stdout(out), self.assertRaises(SystemExit) as outcome:
+                        installer.autonomous_main()
+                    self.assertEqual(outcome.exception.code, 1)
+                    self.assertEqual(out.getvalue(), "")
+                    self.assertNotIn("private", err.getvalue())
+                    return json.loads(err.getvalue())
+
+                with patch.object(sys, "argv", args), patch.object(installer, "_write_record", side_effect=write_or_refuse), \
+                     patch.object(installer.subprocess, "run", side_effect=refuse_provider) as provider:
+                    report = invoke()
+                    self.assertEqual(report["kind"], "installer-worker-dispatch-failed")
+                    self.assertEqual(report["operationId"], "same-original")
+                    self.assertEqual(report["installerSha256"], installer.file_hash(SOURCE))
+                    self.assertEqual(report["stage"], "wmi-reply")
+                    self.assertEqual(report["providerExitCode"], 0)
+                    self.assertEqual(report["providerReturnValue"], 2)
+                    self.assertIs(report["failureRecordSaved"], record_saved)
+                    self.assertIs(type(report["callerOutsideAllJobs"]), bool)
+                    self.assertIs(report["workerIdentityVerified"], False)
+                    self.assertIsNone(report["workerOutsideAllJobs"])
+                    self.assertIsNone(report["workerJoined"])
+                    self.assertIs(report["resumeAttempted"], False)
+                    if record_saved:
+                        self.assertEqual(invoke(), report)
+                    self.assertEqual(provider.call_count, 1)
+                self.assertIsNone(installer.read_update_original(root, "same-original"))
 
 
 if __name__ == "__main__":
