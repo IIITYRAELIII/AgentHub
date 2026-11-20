@@ -10,50 +10,58 @@
     if (!root) return;
     let view = states.get(root);
     if (!view) {
+      const heading = element("div", "", "github-account-heading");
       const title = element("strong", "GitHub");
+      const help = element("details", "", "workspace-task-workflow-help-popover");
+      const question = element("summary", "?", "workspace-task-workflow-help");
+      question.setAttribute("aria-label", "О подключении GitHub");
+      question.setAttribute("aria-describedby", "github-account-help");
+      const note = element("div", "Общий Git-профиль Hub и агентов. Вход подтверждается на GitHub по одноразовому коду. Hub запрашивает доступ к репозиториям и чтение профиля/email; операции ограничены выданным доступом и правами аккаунта. Для изменения Actions нужны отдельные права. После истечения авторизации войди снова.", "workspace-task-workflow-tooltip");
+      note.id = "github-account-help";
+      note.setAttribute("role", "tooltip");
+      help.append(question, note);
+      help.addEventListener("pointerenter", event => { if (event.pointerType === "mouse") help.open = true; });
+      help.addEventListener("pointerleave", () => { if (!help.contains(document.activeElement)) help.open = false; });
+      help.addEventListener("keydown", event => { if (event.key === "Escape") { help.open = false; question.blur(); } });
+      heading.append(title, help);
       const status = element("span", "", "server-component-status");
       const identity = element("small");
-      const note = element("small", "Общий Git-профиль Hub и агентов. Доступ ограничен правами вашего токена.");
       const localNote = element("small", "Для подключения откройте Hub на этом компьютере.");
-      const form = element("form", "", "server-account-code-row");
-      const label = element("label", "Personal access token");
-      const input = element("input", "", "server-account-code");
-      input.type = "password";
-      input.autocomplete = "off";
-      input.spellcheck = false;
-      input.setAttribute("aria-label", "GitHub personal access token");
-      const help = element("a", "Создать токен на GitHub");
-      help.href = "https://github.com/settings/personal-access-tokens/new";
-      help.target = "_blank";
-      help.rel = "noopener noreferrer";
-      const connect = element("button", "Подключить", "chip-button");
-      connect.type = "submit";
+      const connect = element("button", "Войти через GitHub", "chip-button");
+      connect.type = "button";
       const disconnect = element("button", "Отключить", "chip-button ghost");
       disconnect.type = "button";
+      const login = element("div", "", "github-device-login");
+      const instruction = element("small", "Введи этот код на GitHub:");
+      const code = element("code");
+      code.setAttribute("aria-label", "Код входа GitHub");
+      const link = element("a", "Открыть GitHub", "chip-button");
+      link.href = "https://github.com/login/device";
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      const cancel = element("button", "Отменить вход", "chip-button ghost");
+      cancel.type = "button";
+      login.append(instruction, code, link, cancel);
+      login.hidden = true;
       const error = element("small");
       error.setAttribute("role", "status");
       const actions = element("div", "", "server-account-actions");
       actions.append(connect, disconnect);
-      label.append(input);
-      form.append(label, help, actions);
-      root.append(title, status, identity, note, localNote, form, error);
-      view = { status, identity, input, connect, disconnect, error, localNote, busy: false, localAccess: false };
+      root.append(heading, status, identity, localNote, actions, login, error);
+      view = { status, identity, connect, disconnect, error, localNote, login, code, busy: false, localAccess: false, waiting: false };
       states.set(root, view);
-      form.addEventListener("submit", event => {
-        event.preventDefault();
-        const token = input.value.trim();
-        if (!token || view.busy || !view.localAccess) return;
-        input.value = "";
+      connect.addEventListener("click", () => {
+        if (view.busy || !view.localAccess) return;
         view.busy = true;
-        error.textContent = "Проверка подключения…";
-        input.disabled = connect.disabled = disconnect.disabled = true;
-        emit("server:github-connect", { token });
+        error.textContent = "Подготовка входа через GitHub…";
+        connect.disabled = disconnect.disabled = true;
+        emit("server:github-connect", {});
       });
+      cancel.addEventListener("click", () => emit("server:github-cancel", {}));
       disconnect.addEventListener("click", () => {
         if (view.busy || !view.localAccess) return;
-        input.value = "";
         view.busy = true;
-        input.disabled = connect.disabled = disconnect.disabled = true;
+        connect.disabled = disconnect.disabled = true;
         emit("server:github-disconnect", {});
       });
     }
@@ -61,21 +69,29 @@
     view.localAccess = localAccess === true;
     view.localNote.hidden = view.localAccess;
     view.status.textContent = ({ connected: "Подключён", disconnected: "Не подключён",
-      expired: "Авторизация истекла — переподключите аккаунт" })[accountState.status] ?? "Подключение недоступно";
+      expired: "Авторизация истекла — войди через GitHub снова" })[accountState.status] ?? "Подключение недоступно";
     view.identity.textContent = account ? `${account.login} · ${account.name} <${account.email}>` : "";
-    view.connect.textContent = account ? "Переподключить" : "Подключить";
+    view.connect.textContent = account ? "Войти через GitHub снова" : "Войти через GitHub";
     view.disconnect.hidden = !account;
-    view.input.disabled = view.busy || !view.localAccess;
+    view.connect.hidden = view.waiting;
     view.connect.disabled = view.busy || !view.localAccess || accountState.status === "unavailable";
     view.disconnect.disabled = view.busy || !view.localAccess;
+  }
+  function setLogin(root, login) {
+    const view = states.get(root);
+    if (!view) return;
+    view.waiting = Boolean(login);
+    view.login.hidden = !login;
+    view.code.textContent = login?.userCode ?? "";
+    view.connect.hidden = view.waiting;
+    if (login) view.error.textContent = "Ожидание подтверждения на GitHub…";
   }
   function finish(root, message = "") {
     const view = states.get(root);
     if (!view) return;
     view.busy = false;
-    view.input.disabled = view.connect.disabled = view.disconnect.disabled = !view.localAccess;
+    view.connect.disabled = view.disconnect.disabled = !view.localAccess;
     view.error.textContent = message;
-    view.input.value = "";
   }
-  window.AgentHubGitHubAccountPanel = { render, finish };
+  window.AgentHubGitHubAccountPanel = { render, finish, setLogin };
 })();

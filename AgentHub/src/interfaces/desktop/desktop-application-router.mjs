@@ -38,6 +38,8 @@ const LOCAL_ONLY_ACTIONS = Object.freeze([
   "start-provider-login",
   "connect-github-account",
   "disconnect-github-account",
+  "poll-github-account-login",
+  "cancel-github-account-login",
   "submit-provider-login-code",
   "refresh-model-catalog",
   "cancel-provider-login",
@@ -135,6 +137,8 @@ export function createDesktopApplicationRouter({
         if (!handlers.connectGitHub) throw new Error("Подключение GitHub недоступно");
         return handlers.connectGitHub(params);
       },
+      "poll-github-account-login": (params) => handlers.pollGitHubLogin(params),
+      "cancel-github-account-login": (params) => handlers.cancelGitHubLogin(params),
       "disconnect-github-account": () => {
         if (!handlers.disconnectGitHub) throw new Error("Подключение GitHub недоступно");
         return handlers.disconnectGitHub();

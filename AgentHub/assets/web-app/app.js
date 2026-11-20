@@ -12315,6 +12315,9 @@ const AgentHub = {
     githubLocalAccess = value === true;
     window.AgentHubGitHubAccountPanel?.render(githubAccountPanel, lastServerPayload?.githubAccount, emit, githubLocalAccess);
   },
+  setGitHubLogin(login) {
+    window.AgentHubGitHubAccountPanel?.setLogin(githubAccountPanel, login);
+  },
   /** Попытка и ссылка входа из локального ответа на запуск; снапшот их не содержит. */
   setProviderLoginUrl(provider, { attemptId = null, authUrl = null } = {}) {
     providerLoginCodeDrafts.delete(provider);

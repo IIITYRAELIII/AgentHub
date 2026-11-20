@@ -5409,22 +5409,66 @@ void localSessionReady.then(() => hasLocalWorkspaceFileAccess()).then(
   allowed => agentHub.setGitHubLocalAccess(allowed),
   () => agentHub.setGitHubLocalAccess(false),
 );
-agentHub.on("server:github-connect", ({ token }) => runAction(async () => {
+let githubLoginEpoch = 0;
+let githubLogin = null;
+let githubLoginTimer = null;
+function clearGitHubLogin() {
+  ++githubLoginEpoch;
+  clearTimeout(githubLoginTimer);
+  githubLogin = null;
+  agentHub.setGitHubLogin(null);
+}
+function pollGitHubLogin(epoch, waitMs) {
+  githubLoginTimer = setTimeout(async () => {
+    if (epoch !== githubLoginEpoch || !githubLogin) return;
+    try {
+      if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+      const result = await control("poll-github-account-login", { attemptId: githubLogin.attemptId });
+      if (epoch !== githubLoginEpoch) return;
+      if (result.login?.status === "pending") return pollGitHubLogin(epoch, result.login.waitMs);
+      clearGitHubLogin();
+      agentHub.setGitHubAccount(result.githubAccount, result.login?.message ?? "");
+    } catch (error) {
+      if (epoch !== githubLoginEpoch) return;
+      clearGitHubLogin();
+      agentHub.setGitHubAccount(null, error.message);
+    }
+  }, waitMs);
+}
+agentHub.on("server:github-connect", () => runAction(async () => {
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
   try {
     if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
-    const result = await control("connect-github-account", { token });
+    const result = await control("connect-github-account", {});
+    if (epoch !== githubLoginEpoch) return;
     agentHub.setGitHubAccount(result?.githubAccount);
+    githubLogin = result.login;
+    agentHub.setGitHubLogin(githubLogin);
+    pollGitHubLogin(epoch, result.login.waitMs);
   } catch (error) {
-    agentHub.setGitHubAccount(null, error.message);
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message);
   }
 }));
+agentHub.on("server:github-cancel", () => runAction(async () => {
+  const previous = githubLogin;
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("cancel-github-account-login", { attemptId: previous?.attemptId });
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(result?.githubAccount);
+  } catch (error) { if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message); }
+}));
 agentHub.on("server:github-disconnect", () => runAction(async () => {
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
   try {
     if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
     const result = await control("disconnect-github-account", {});
-    agentHub.setGitHubAccount(result?.githubAccount);
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(result?.githubAccount);
   } catch (error) {
-    agentHub.setGitHubAccount(null, error.message);
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message);
   }
 }));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {

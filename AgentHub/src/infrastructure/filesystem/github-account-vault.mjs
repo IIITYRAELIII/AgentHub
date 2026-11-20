@@ -63,6 +63,7 @@ export class GitHubAccountVault {
       if (row.version !== 1 || !/^[0-9a-f-]{36}$/u.test(row.id) || !row.account?.login
         || !row.account.name || !row.account.email || typeof row.secret !== "string"
         || !/^[A-Za-z0-9+/]+={0,2}$/u.test(row.secret)
+        || row.expiresAt != null && (!Number.isSafeInteger(row.expiresAt) || row.expiresAt <= 0)
         || row.id !== selected.id || JSON.stringify(row.account) !== JSON.stringify(selected.account)) throw new Error();
       return row;
     }
@@ -90,13 +91,14 @@ export class GitHubAccountVault {
   // Per-connection rejection cannot be overwritten by a late older Git helper.
   async reject(id) { await atomicAccountFile(this.#rejectionFile(id), JSON.stringify({ id })); }
   async token(row) {
-    if (!row?.id || !row.secret || await this.rejected(row.id)) throw new Error("Переподключите GitHub-аккаунт");
+    if (!row?.id || !row.secret || await this.rejected(row.id)
+        || row.expiresAt != null && Date.now() >= row.expiresAt) throw new Error("Переподключите GitHub-аккаунт");
     return (await this.crypt(Buffer.from(row.secret, "base64"), true)).toString("utf8");
   }
-  async save({ id, account, token }) {
+  async save({ id, account, token, expiresAt = null }) {
     const secret = (await this.crypt(Buffer.from(token))).toString("base64");
     const handle = await open(this.credentialFile(id), "wx", 0o600);
-    try { await handle.writeFile(JSON.stringify({ version: 1, id, account, secret })); await handle.sync(); }
+    try { await handle.writeFile(JSON.stringify({ version: 1, id, account, secret, ...(expiresAt == null ? {} : { expiresAt }) })); await handle.sync(); }
     finally { await handle.close(); }
   }
   async remove(id) {

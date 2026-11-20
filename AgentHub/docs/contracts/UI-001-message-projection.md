@@ -2,11 +2,15 @@
 
 The Server accounts panel projects the shared GitHub account's public identity and
 connected/disconnected/expired state. Connect, reconnect and disconnect use protected
-local control; remote clients cannot submit credentials. The password field stays in
-page memory until explicit submission and is cleared immediately on submission.
-Snapshot refresh does not erase an unsent input. Credentials are never persisted as
-a client draft, command receipt or shared snapshot. A failed request is displayed
-without reflecting the submitted token. See ADR-HUB-254.
+local control; remote clients cannot start or poll authorization. Primary sign-in
+is OAuth device authorization on GitHub, without a visible PAT field. The existing
+"?" disclosure next to the GitHub title contains the explanatory text and opens
+by hover, keyboard or touch. Actual state, action, errors and pending confirmation
+remain visible. The short-lived user code comes only from the local start response
+and stays in page memory across snapshot refresh; the private device code and token
+never enter the page. Cancellation/replacement fences late responses. Credentials
+are never persisted as a client draft, command receipt or shared snapshot. A failed
+request is displayed without reflecting response secrets. See ADR-HUB-254.
 
 ## Addressed queue receipts and deferred Task presentation
 

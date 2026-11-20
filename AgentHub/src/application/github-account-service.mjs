@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GitHubAccountVault } from "../infrastructure/filesystem/github-account-vault.mjs";
+import { GitHubDeviceAuthorization } from "../infrastructure/network/github-device-authorization.mjs";
 
 const safeText = (value, name) => {
   const text = String(value ?? "").trim();
@@ -12,9 +13,12 @@ export class GitHubAccountService {
   #pending = new Set();
   #paused = false;
   #disposed = false;
-  constructor({ directory, vault = new GitHubAccountVault({ directory }), fetchImpl = fetch } = {}) {
+  #login = null;
+  constructor({ directory, vault = new GitHubAccountVault({ directory }), fetchImpl = fetch,
+    clientId = "", deviceAuthorization = new GitHubDeviceAuthorization({ clientId, fetchImpl }) } = {}) {
     this.vault = vault;
     this.fetch = fetchImpl;
+    this.deviceAuthorization = deviceAuthorization;
   }
   async initialize() {
     await this.vault.initialize();
@@ -34,7 +38,7 @@ export class GitHubAccountService {
     result.then(() => this.#pending.delete(result), () => this.#pending.delete(result));
     return result;
   }
-  pause() { this.#paused = true; }
+  pause() { this.#paused = true; if (this.#login) { this.#login = null; ++this.#revision; } }
   resume() { if (!this.#disposed) this.#paused = false; }
   async drain() { await Promise.allSettled([...this.#pending]); }
   async dispose() { this.#disposed = true; this.pause(); await this.drain(); }
@@ -51,8 +55,46 @@ export class GitHubAccountService {
   async snapshot() {
     const row = await this.vault.read();
     const account = row ? { id: row.account.id, login: row.account.login, name: row.account.name, email: row.account.email } : null;
-    return { status: !row ? "disconnected" : await this.vault.rejected(row.id) ? "expired" : "connected", account };
+    return { status: !row ? "disconnected" : await this.vault.rejected(row.id)
+      || row.expiresAt != null && Date.now() >= row.expiresAt ? "expired" : "connected", account,
+      oauthConfigured: this.deviceAuthorization.configured };
   }
+  startLogin() { return this.#admit(async () => {
+    const revision = ++this.#revision;
+    this.#login = null;
+    const flow = await this.deviceAuthorization.start();
+    if (revision !== this.#revision || this.#paused) throw new Error("Вход GitHub заменён более новым действием");
+    const attemptId = randomUUID();
+    this.#login = { attemptId, revision, flow, pending: null };
+    return { githubAccount: await this.snapshot(), login: { attemptId, userCode: flow.userCode,
+      verificationUri: flow.verificationUri, expiresAt: flow.expiresAt, waitMs: flow.intervalMs } };
+  }); }
+  pollLogin(attemptId) { return this.#admit(async () => {
+    const login = this.#login;
+    if (!login || login.attemptId !== attemptId) throw new Error("Вход GitHub уже завершён или заменён");
+    if (!login.pending) login.pending = (async () => {
+      let keep = false;
+      try {
+        const result = await this.deviceAuthorization.poll(login.flow);
+        if (this.#login !== login || login.revision !== this.#revision || this.#paused) throw new Error("Вход GitHub заменён более новым действием");
+        if (result.status === "pending") {
+          keep = true;
+          return { githubAccount: await this.snapshot(), login: { status: "pending", waitMs: result.waitMs } };
+        }
+        if (result.status === "authorized") {
+          await this.#connect(result.token, { revision: login.revision, expiresAt: result.expiresAt });
+          return { githubAccount: await this.snapshot(), login: { status: "connected" } };
+        }
+        return { githubAccount: await this.snapshot(), login: { status: result.status, message: result.message } };
+      } finally { if (!keep && this.#login === login) this.#login = null; }
+    })();
+    try { return await login.pending; }
+    finally { login.pending = null; }
+  }); }
+  cancelLogin(attemptId) { return this.#admit(async () => {
+    if (this.#login?.attemptId === attemptId) { ++this.#revision; this.#login = null; }
+    return { githubAccount: await this.snapshot() };
+  }); }
   async #request(pathname, token, options = {}) {
     if (!/^\/(?!\/)/u.test(pathname)) throw new Error("GitHub API requires a relative path");
     let response;
@@ -88,9 +130,9 @@ export class GitHubAccountService {
     } catch { throw new Error("GitHub returned an unreadable account response"); }
   }
   connect(token) { return this.#admit(() => this.#connect(token)); }
-  async #connect(token) {
+  async #connect(token, { revision = null, expiresAt = null } = {}) {
     if (typeof token !== "string" || !/^[A-Za-z0-9_]{20,255}$/u.test(token)) throw new Error("Укажите GitHub personal access token");
-    const revision = ++this.#revision;
+    revision ??= ++this.#revision;
     const user = await this.#json("/user", token);
     if (!Number.isSafeInteger(user.id) || user.id <= 0 || !/^[A-Za-z0-9-]{1,39}$/u.test(user.login)) throw new Error("GitHub returned an invalid account");
     let email = `${user.id}+${user.login}@users.noreply.github.com`;
@@ -110,7 +152,7 @@ export class GitHubAccountService {
       if (revision !== this.#revision) throw new Error("Подключение GitHub заменено более новым действием");
       const previous = await this.vault.selection();
       const id = randomUUID();
-      await this.vault.save({ id, account, token });
+      await this.vault.save({ id, account, token, expiresAt });
       try { await this.#profile({ id, account }); }
       catch (error) { await this.vault.remove(id).catch(() => {}); throw error; }
       if (previous?.id) {
@@ -123,6 +165,7 @@ export class GitHubAccountService {
   disconnect() { return this.#admit(() => this.#disconnect()); }
   async #disconnect() {
     ++this.#revision;
+    this.#login = null;
     return this.#serialize(async () => {
       const previous = await this.vault.selection();
       await this.#profile(null);

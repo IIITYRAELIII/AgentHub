@@ -86,7 +86,17 @@ export class ServerControlController {
 
   async connectGitHub(params) {
     if (!this.githubAccount) throw new Error("Подключение GitHub недоступно");
-    return { accepted: true, githubAccount: await this.githubAccount.connect(params?.token) };
+    return { accepted: true, ...await this.githubAccount.startLogin() };
+  }
+
+  async pollGitHubLogin(params) {
+    if (!this.githubAccount) throw new Error("Подключение GitHub недоступно");
+    return { accepted: true, ...await this.githubAccount.pollLogin(params?.attemptId) };
+  }
+
+  async cancelGitHubLogin(params) {
+    if (!this.githubAccount) throw new Error("Подключение GitHub недоступно");
+    return { accepted: true, ...await this.githubAccount.cancelLogin(params?.attemptId) };
   }
 
   async disconnectGitHub() {

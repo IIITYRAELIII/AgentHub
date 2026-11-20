@@ -5658,6 +5658,17 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
   position: static;
 }
 
+.github-account-heading {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  position: relative;
+}
+
+.github-device-login { display: grid; gap: 0.5rem; }
+.github-device-login[hidden] { display: none; }
+.github-device-login code { font-size: 1.15rem; letter-spacing: 0.1em; user-select: all; }
+
 .workspace-task-workflow-help {
   align-items: center;
   background: transparent;

@@ -1,5 +1,6 @@
 {
   "usageSyncServerUrl": "",
+  "githubOAuthClientId": "",
   "components": {
     "telegram": true,
     "miniApp": true,

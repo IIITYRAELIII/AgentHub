@@ -4,9 +4,44 @@
 
 The revised user request replaces the historical signing/participant/server-rules
 proposal. No repository plan, signing key, GitHub App, server rule or Utilities
-change is required by this implementation.
+change is introduced by the original PAT implementation. The later OAuth request
+adds an owner-registered OAuth App, not the historical signing/server-rule design.
 
-In the local Server/Accounts panel the user supplies a personal access token.
+The local Server/Accounts panel now starts GitHub OAuth device authorization with
+"Войти через GitHub". The public `githubOAuthClientId` configuration names the
+owner's registered OAuth App with Device Flow enabled. There is no bundled client
+secret, borrowed GitHub CLI client identity or change to the user's gh/global Git
+configuration. The existing client/vault/profile consumers remain the base; only
+the token acquisition path changes. A missing Client ID gives an explicit setup
+error without making an authorization request. Registration is external owner work.
+
+The requested scopes are `repo read:user user:email`: repository Git/REST/gh work
+plus verified identity/email. `repo` includes public/private repository writes and
+other repository permissions; it is not restricted to one selected repository.
+GitHub organization policies/SSO can further restrict it. This is not every account
+permission: workflow editing, deletion, packages and other additional scopes are
+not silently requested. Their operations keep actual permission errors. GitHub
+Apps offer finer per-repository installation permissions, but require a separate
+installation/permission design and are not silently substituted here.
+
+The protocol stores the device code only in the current local service invocation,
+returns only the user code/constant GitHub verification URL to the protected local
+page, and respects interval/slow_down/deadline/denial. Each poll is bound to its exact
+attempt; concurrent polls share one request. Shutdown, cancellation, disconnect and
+newer sign-in fence late completion before atomic publication. No background flow
+is restored after restart. Network errors are fixed messages, never raw responses.
+Only explicit local sign-in starts a replacement attempt.
+
+OAuth access-token expiry is stored with the existing encrypted credential row;
+all Git/gh/API token consumers refuse expired authorization. The UI offers sign-in
+again. Refresh tokens are neither requested explicitly nor retained: if GitHub
+returns one under default expiring-token settings, it is discarded and the user
+signs in again after expiry. No second refresh-token lifecycle/store is introduced.
+The old PAT service primitive remains the verified token/identity publication path
+and supports existing fixture/programmatic callers; the public UI/control starts
+OAuth rather than collecting a PAT. The approved PAT source/review/Test remain
+history under their original identities.
+
 Hub verifies `/user`, uses the account's Git-compatible name (or login), and selects its verified
 Git-compatible primary email when permitted. Without that email it uses GitHub's numeric
 account noreply address. The account is shared across Streams. The selected account
@@ -100,8 +135,10 @@ isolated deterministic model executables, a real managed Task snapshot, immutabl
 historical objects, reconnect/disconnect, DPAPI, native credential plumbing,
 generation/host refusals and private HTTP authorization statuses. These are isolated
 checks, not real model turns or a claim that a user's account is already connected.
-Production browser files are exercised in Edge at desktop/mobile sizes, with token
-clearing, draft retention, expiry/reconnect, localStorage and overflow checks.
+Production browser files are exercised in Edge at desktop/mobile sizes, with the
+existing question disclosure, device-code waiting/cancel/reconnect, no PAT input,
+localStorage and overflow checks. Private HTTP fixtures exercise the actual device
+protocol and shared token consumers without GitHub registration/grants/publication.
 
 Independent review and ordinary Task Test remain required. Actual installation and
 the user's connection to GitHub are separate Root-owned/application actions. No
@@ -111,6 +148,9 @@ changed while preparing this source.
 ## Protocol references
 
 - [GitHub personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+- [GitHub OAuth device flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow)
+- [GitHub OAuth scopes](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps)
+- [OAuth App registration](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app)
 - [Git credential helpers](https://git-scm.com/docs/gitcredentials)
 - [GitHub CLI credential environment](https://cli.github.com/manual/gh_help_environment)
 - [OpenAI Docs: shell environment policy](https://learn.chatgpt.com/docs/config-file/config-advanced#shell-environment-policy)

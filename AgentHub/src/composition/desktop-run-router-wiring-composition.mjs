@@ -273,6 +273,8 @@ export function createDesktopRunRouterWiring({
       updateServerConfiguration: services.updateServerConfiguration,
       startProviderLogin: services.startProviderLogin,
       connectGitHub: services.connectGitHub,
+      pollGitHubLogin: services.pollGitHubLogin,
+      cancelGitHubLogin: services.cancelGitHubLogin,
       disconnectGitHub: services.disconnectGitHub,
       submitProviderLoginCode: services.submitProviderLoginCode,
       cancelProviderLogin: services.cancelProviderLogin,

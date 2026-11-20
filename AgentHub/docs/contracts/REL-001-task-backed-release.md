@@ -8,6 +8,13 @@ Windows DPAPI and the existing private-directory ACL. No credential enters a Tas
 command receipt, agent instruction, provider environment or ordinary diagnostic.
 The shared public profile contains only name/email and a generation-bound credential
 helper locator. GitHub permissions remain those of the user's access token.
+OAuth device authorization uses the registered public Client ID, not a client
+secret or another application's identity. Only explicit local sign-in starts it;
+polling respects GitHub's interval, slow-down, denial and deadline. The final token
+is verified through the same account owner before atomic selection. The granted
+OAuth scopes intersect account rights; missing permissions remain explicit refusals.
+Persisted expiry is enforced at the shared Git/gh/API credential owner and requires
+sign-in again. Application registration and real grants are owner actions, not tests.
 
 Internal commit/merge/commit-tree writers and both provider launch paths consume
 that same profile for new work. A persistent provider reads the latest atomic profile
