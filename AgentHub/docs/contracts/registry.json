@@ -443,7 +443,13 @@
         "tests/helpers/fixture-allocation.mjs",
         "tests/infrastructure/filesystem/native-object-consumer-production.test.mjs",
         "tests/infrastructure/filesystem/native-detached-reuse-production.test.mjs",
-        "tests/infrastructure/filesystem/selected-git-bundle.test.mjs"
+        "tests/infrastructure/filesystem/selected-git-bundle.test.mjs",
+        "src/application/test-contour-journal-sync-service.mjs",
+        "src/application/work-log-usage-store.mjs",
+        "src/composition/runtime-orchestration-composition.mjs",
+        "src/runtime/work-log-usage-sync-worker*.mjs",
+        "tests/perf/test-contour-journal-import.bench.mjs",
+        "tests/runtime/test-contour-journal-import.test.mjs"
       ]
     },
     {
