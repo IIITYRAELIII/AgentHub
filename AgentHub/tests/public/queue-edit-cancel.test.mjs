@@ -228,6 +228,62 @@ test("a second cancel click after the ACK and before snapshot readback sends no 
   } finally { await browser.close(); }
 });
 
+test("a receipt-only local queue card cancels the exact item once while snapshot is delayed", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    const errors = await openEditFixture(page);
+    const stale = await page.evaluate(() => {
+      const h = window.__editQueue;
+      const bridge = window.__fixtureBridge;
+      const post = bridge.postMessage.bind(bridge);
+      const held = [];
+      bridge.postMessage = (message) => {
+        if (message.action === "snapshot") held.push(message);
+        else post(message);
+      };
+      window.__heldReceiptOnlySnapshots = held;
+      window.__releaseReceiptOnlySnapshots = () => {
+        bridge.postMessage = post;
+        for (const message of held) post(message);
+      };
+      const stale = { ...h.snapshot(), deferredInputs: [], version: "receipt-only-queue" };
+      h.applySnapshotContent(stale);
+      h.renderTaskQueue("stream-a");
+      return stale;
+    });
+    const alias = `local:${originalId}`;
+    const button = page.locator(`[data-queue-id='${alias}'] [data-action='queue-remove']`);
+    try {
+      await button.click();
+      await page.waitForFunction((id) => window.__heldReceiptOnlySnapshots.length > 0
+        && window.__agentHubFixture.snapshot.messageReceipts[0].cancelled === true
+        && !window.__editQueue.outgoingByTask.get("stream-a")?.has(id), originalId);
+      if (await button.isVisible()) await button.click();
+      else await page.evaluate((id) => window.__editQueue.handlers["queue:remove"]({
+        id, taskId: "stream-a",
+      }), alias);
+      const calls = (await bridgeCalls(page, "deferred-input")).filter((entry) => entry.params.action === "cancel");
+      assert.equal(calls.length, 1, "receipt-only card sent a second cancel using its local alias");
+      assert.equal(calls[0].params.id, originalItem);
+      assert.equal(calls[0].params.clientUserMessageId, originalId);
+      assert.ok(calls[0].params.clientTraceId);
+      await button.waitFor({ state: "detached" });
+      await page.evaluate((oldSnapshot) => {
+        const h = window.__editQueue;
+        h.applySnapshotContent(oldSnapshot);
+        h.renderTaskQueue("stream-a");
+      }, stale);
+      assert.equal(await button.count(), 0, "stale queued receipt restored a card after exact cancel acknowledgement");
+    } finally {
+      await page.evaluate(() => window.__releaseReceiptOnlySnapshots());
+    }
+    await page.waitForFunction(() => window.__editQueue.snapshot().messageReceipts[0].cancelled === true);
+    assert.equal(await button.count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
 for (const evidence of ["unknown", "foreign"]) {
   test(`${evidence} receipt cannot certify an old local card cancelled`, { timeout: 30_000 }, async () => {
     const browser = await launchBrowser();

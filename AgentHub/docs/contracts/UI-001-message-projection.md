@@ -12,11 +12,13 @@ Explicit canonical cancellation removes the exact queue card and count while
 preserving command history and unknown past provider effects. A known canonical
 queued receipt keeps its public cancellation action when its RAM item is absent.
 Unknown/provider-accepted states do not gain that action. One addressed cancel
-holds its queue action slot through the snapshot readback. An exact positive
-cancel acknowledgement suppresses a repeated click until a snapshot removes
-that item, even if its first readback fails. An unknown cancel result does not
-create that suppression. Existing snapshot generation fencing still rejects
-late responses.
+holds its queue action slot through the snapshot readback. A receipt-only
+card's local display alias requires a known canonical item in that Task.
+An exact positive cancel acknowledgement removes that local card immediately
+and suppresses another cancel until neither the queue rows nor the queued
+receipts retain the item, even if its first readback fails. An unknown cancel
+result does not create that suppression. Existing snapshot generation fencing
+still rejects late responses.
 
 Desktop snapshots carry Task titles and revisioned deferred presentation, with
 full raw text and descriptions available through the existing addressed Task

@@ -901,6 +901,7 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
   return [...outgoingMessages(taskIdValue).values()]
     .filter((message) => (
       !acceptedHistoryIds.has(String(message?.clientUserMessageId ?? "").trim())
+      && !acknowledgedQueueCancels.has(String(message.itemId ?? "").trim())
       && (
         optimisticDeferredClientUserMessageIds.has(message.clientUserMessageId)
         || serverClientIds.has(message.clientUserMessageId)
@@ -2645,6 +2646,12 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     lastSnapshot = snapshot;
     if (acknowledgedQueueCancels.size && Array.isArray(snapshot.deferredInputs)) {
       const currentQueueIds = new Set(snapshot.deferredInputs.map((item) => String(item.id ?? "").trim()));
+      for (const receipt of snapshot.messageReceipts ?? []) {
+        const id = String(receipt?.id ?? "").trim();
+        if (acknowledgedQueueCancels.has(id) && queueHistoryReceiptProjection(receipt).ownsDeferredQueue) {
+          currentQueueIds.add(id);
+        }
+      }
       for (const id of acknowledgedQueueCancels) {
         if (!currentQueueIds.has(id)) acknowledgedQueueCancels.delete(id);
       }
@@ -4765,12 +4772,15 @@ agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async (
   applySnapshot(await control("snapshot"));
 }));
 agentHub.on("queue:remove", ({ id, taskId: taskIdValue }) => runAction(async () => {
-  const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id)
-    ?? [...(outgoingByTask.get(taskIdValue)?.values() ?? [])].find((item) => (
-      item.itemId === id || item.id === id || `local:${item.clientUserMessageId}` === id
-    ))
-    ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()])
-      .find(item => item.itemId === id || item.id === id);
+  const displayId = String(id ?? "");
+  const localAlias = displayId.startsWith("local:");
+  const localMessages = outgoingByTask.get(taskIdValue);
+  const matchesItem = (item) => item.itemId === id || item.id === id;
+  const deferred = localAlias
+    ? localMessages?.get(displayId.slice("local:".length))
+    : (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id)
+      ?? [...(localMessages?.values() ?? [])].find(matchesItem)
+      ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()]).find(matchesItem);
   const cancellationTaskId = deferred
     ? taskId(deferred.provider, deferred.threadId, deferred.streamId) : taskIdValue;
   const cancellationClientId = String(deferred?.clientUserMessageId ?? "");
@@ -4786,9 +4796,10 @@ agentHub.on("queue:remove", ({ id, taskId: taskIdValue }) => runAction(async () 
       return;
     }
   }
-  const addressedId = deferred?.itemId ?? deferred?.id ?? id;
+  // A receipt-only card displays a local alias, which is never an RPC address.
+  const addressedId = localAlias ? deferred?.itemId : deferred?.itemId ?? deferred?.id ?? id;
   const key = String(addressedId ?? "").trim();
-  if (!key || queueActionsInFlight.has(key) || acknowledgedQueueCancels.has(key)) return;
+  if (!key || key.startsWith("local:") || queueActionsInFlight.has(key) || acknowledgedQueueCancels.has(key)) return;
   queueActionsInFlight.add(key);
   try {
     const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
@@ -4797,8 +4808,9 @@ agentHub.on("queue:remove", ({ id, taskId: taskIdValue }) => runAction(async () 
     const result = await control("deferred-input", { id: addressedId, action: "cancel",
       clientTraceId: commandTrace.currentId(),
       ...(clientUserMessageId ? { clientUserMessageId } : {}) });
-    if (result?.accepted === true && result?.cancelled === true && result.id === addressedId
-        && (!clientUserMessageId || result.clientUserMessageId === clientUserMessageId)) {
+    const cancelled = result?.accepted === true && result?.cancelled === true && result.id === addressedId
+      && (!clientUserMessageId || result.clientUserMessageId === clientUserMessageId);
+    if (cancelled) {
       // A failed readback does not undo an exact positive acknowledgement.
       acknowledgedQueueCancels.add(key);
     }
@@ -4807,6 +4819,7 @@ agentHub.on("queue:remove", ({ id, taskId: taskIdValue }) => runAction(async () 
       outgoingMessages(deferredTaskId).delete(clientUserMessageId);
       renderTaskMessages(deferredTaskId);
     }
+    if (cancelled && localAlias) renderTaskQueue(cancellationTaskId);
     applySnapshot(await control("snapshot"));
     agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
   } finally {

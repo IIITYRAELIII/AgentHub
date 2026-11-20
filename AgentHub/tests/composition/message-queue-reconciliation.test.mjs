@@ -21,6 +21,7 @@ function harness() {
       messageAwaitsProviderAcceptance, rememberBounded: rememberBoundedMessage } = AgentHubMessageLifecycle;
     const outgoingByTask = new Map();
     const historyByTask = new Map();
+    const acknowledgedQueueCancels = new Set();
     const optimisticDeferredClientUserMessageIds = new Set();
     let deferredClientUserMessageIds = new Set();
     const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
