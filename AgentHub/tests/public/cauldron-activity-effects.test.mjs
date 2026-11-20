@@ -116,15 +116,26 @@ test("Ready strike remains visible on every theme", async () => {
       for (const selector of [TAB, RAIL]) {
         const target = page.locator(selector);
         const clearance = await target.evaluate(node => {
-          const line = node.querySelector(".stream-ready-strike").getBoundingClientRect();
+          const strike = node.querySelector(".stream-ready-strike");
+          const line = strike.getBoundingClientRect();
+          const probe = document.createElement("span");
+          probe.style.color = "var(--accent)";
+          node.append(probe);
+          const accent = getComputedStyle(probe).color;
+          probe.remove();
           const title = node.querySelector(".stream-tab-title");
           const time = node.querySelector(".task-time");
           return {
+            accent,
+            readyColor: getComputedStyle(strike).stroke,
+            maintenanceColor: getComputedStyle(node.querySelector(".stream-maintenance-track")).stroke,
             question: getComputedStyle(title, "::before").content,
             gap: line.top - Math.max(title.getBoundingClientRect().bottom, time.getBoundingClientRect().bottom),
           };
         });
         assert.equal(clearance.question, '"?"');
+        assert.equal(clearance.readyColor, clearance.accent, `${theme.id}/${selector}: ready color`);
+        assert.equal(clearance.maintenanceColor, clearance.accent, `${theme.id}/${selector}: maintenance color`);
         assert.ok(clearance.gap >= 2, `${theme.id}/${selector}: ready line clearance ${clearance.gap}px`);
       }
       const strike = card.locator(".stream-ready-strike");
