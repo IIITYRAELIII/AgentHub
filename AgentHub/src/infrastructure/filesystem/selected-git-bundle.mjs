@@ -1,6 +1,13 @@
 import { lstat, open } from "node:fs/promises";
 import path from "node:path";
 
+export async function hasExactGitCommitObjects(git, commits) {
+  if (!commits.length) return true;
+  const types = String(await git(["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+    { input: commits.join("\n") + "\n" })).trimEnd().split(/\r?\n/u);
+  return types.length === commits.length && types.every((line, i) => line === `${commits[i]} commit`);
+}
+
 // Documented gitformat-bundle header + Git's complete pack stream. The caller
 // owns the output descriptor before Git starts; no temporary bare repository,
 // source ref mutation, pack buffering or recursive scratch deletion is needed.
@@ -25,9 +32,7 @@ export async function createSelectedGitBundle({ root, sourceRoot, bundle, inputs
   }
   if (required.length) {
     await verifyPrerequisites();
-    const types = String(await gitAt(sourceRoot, ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
-      { input: required.join("\n") + "\n" })).split(/\r?\n/u);
-    if (types.length !== required.length || types.some((line, i) => line !== `${required[i]} commit`)) {
+    if (!await hasExactGitCommitObjects((args, options) => gitAt(sourceRoot, args, options), required)) {
       throw new Error("Incremental transport source prerequisites changed");
     }
   }

@@ -6,6 +6,7 @@ import { MaintenanceOperationStore } from "../persistence/maintenance-operation-
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { unlinkOwnedNativeObjectAlias, retireSealedNativeCapture } from "./sealed-native-capture.mjs";
 import { inventoryNativeCapture } from "./native-capture-inventory.mjs";
+import { hasExactGitCommitObjects } from "./selected-git-bundle.mjs";
 
 export const NATIVE_OBJECT_STORAGE = "owned-immutable-git-objects-v1";
 const digest = value => createHash("sha256").update(value).digest("hex");
@@ -205,7 +206,9 @@ export class OwnedNativeObjectStore {
     }
     const grafts = String(await this.#git(sourceRoot, ["rev-parse", "--path-format=absolute", "--git-path", "info/grafts"]));
     if (!await absent(path.resolve(sourceRoot, grafts))) throw fail("Source contains rewritten graft history");
-    for (const c of inputs) await this.#git(sourceRoot, ["cat-file", "-e", c + "^{commit}"]);
+    if (!await hasExactGitCommitObjects((args, options) => this.#git(sourceRoot, args, options), inputs)) {
+      throw fail("Source is missing an exact object-store input commit");
+    }
     const objects = String(await this.#git(sourceRoot, ["rev-list", "--objects", "--no-object-names", ...inputs])).split(/\r?\n/u).filter(Boolean).sort();
     if (!objects.length || objects.some(x => !oid(x)) || new Set(objects).size !== objects.length) throw fail("Source object closure is malformed");
     const closureSha256 = digest(objects.join("\n") + "\n");
@@ -214,7 +217,9 @@ export class OwnedNativeObjectStore {
     let row = await this.#create(id, binding);
     row = await this.#transfer(sourceRoot, objects, id, row);
     if (row.status !== "succeeded") {
-      for (const c of inputs) await this.#git(this.repository, ["cat-file", "-e", c + "^{commit}"]);
+      if (!await hasExactGitCommitObjects((args, options) => this.#git(this.repository, args, options), inputs)) {
+        throw fail("Object store is missing an exact input commit");
+      }
       await this.#git(this.repository, ["fsck", "--connectivity-only", "--no-dangling", ...inputs]);
       const refRoot = "refs/agent-hub/objects/" + digest(id);
       for (const [i, c] of inputs.entries()) {
@@ -337,7 +342,9 @@ export class OwnedNativeObjectStore {
         if (process.platform === "win32") await this.#git(repository, ["config", "core.longpaths", "true"]);
         await this.#git(repository, ["config", "gc.auto", "0"]);
         await this.#linkObjects(repository, required);
-        for (const c of inputs) await this.#git(repository, ["cat-file", "-e", c + "^{commit}"]);
+        if (!await hasExactGitCommitObjects((args, options) => this.#git(repository, args, options), inputs)) {
+          throw fail("Object consumer is missing an exact input commit");
+        }
         await this.#git(repository, ["fsck", "--connectivity-only", "--no-dangling", ...inputs]);
         row = await this.#patch(row, "linked", { physicalRepository: physical(await plain(repository, true)),
           physicalGit: physical(await plain(path.join(repository, ".git"), true)) }, true);

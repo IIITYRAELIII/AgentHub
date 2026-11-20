@@ -147,15 +147,17 @@ function ownerPayload(value, extra = {}) {
   })}\n`;
 }
 
-async function readOwner(lockPath) {
+async function readOwner(lockPath, fileName = null) {
   try {
-    const entries = await measureTaskOperationAwait("lock-owner-readdir-await", () => readdir(lockPath));
-    const candidates = entries.filter((entry) => entry === "owner.json" || /^owner-[a-f0-9]{64}\.json$/u.test(entry));
-    if (candidates.length === 0) {
-      return entries.length === 0 ? null : { unresolved: true };
+    if (fileName === null) {
+      const entries = await measureTaskOperationAwait("lock-owner-readdir-await", () => readdir(lockPath));
+      const candidates = entries.filter((entry) => entry === "owner.json" || /^owner-[a-f0-9]{64}\.json$/u.test(entry));
+      if (candidates.length === 0) {
+        return entries.length === 0 ? null : { unresolved: true };
+      }
+      if (candidates.length !== 1) return { unresolved: true };
+      [fileName] = candidates;
     }
-    if (candidates.length !== 1) return { unresolved: true };
-    const fileName = candidates[0];
     const value = JSON.parse(await measureTaskOperationAwait("lock-owner-read-await",
       () => readFile(path.join(lockPath, fileName), "utf8")));
     const token = String(value?.token ?? "");
@@ -200,7 +202,9 @@ function sameOwner(expected, actual) {
 
 async function renewLease(lockPath, token, _staleMs, ownership = null) {
   const expected = ownership?.owner ?? { token };
-  const owner = await readOwner(lockPath);
+  // Admission and recovery discover the owner. A held lease rereads its already
+  // bound token file at the canonical path, including at every Git fence.
+  const owner = await readOwner(lockPath, expected.fileName);
   if (ownership?.owner) return sameOwner(expected, owner);
   return owner?.token === token && !owner?.unresolved && !Number.isFinite(owner?.releasedAt);
 }
@@ -632,11 +636,16 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
     leaseError = error instanceof Error ? error : new Error(String(error));
     leaseController.abort(leaseError);
   };
-  const assertOwned = async () => {
+  const assertOwned = async (checks) => {
     if (leaseError) throw leaseError;
-    const ownership = await Promise.all(acquired.map((record) => (
-      renewLease(record.lockPath, record.token, 0, record)
-    )));
+    // Share an identical physical assertion only within the current compound
+    // fence. Each subsequent call starts with fresh reads at the caller.
+    let reads = checks?.get(assertOwned);
+    if (!reads) {
+      reads = Promise.all(acquired.map(record => renewLease(record.lockPath, record.token, 0, record)));
+      checks?.set(assertOwned, reads);
+    }
+    const ownership = await reads;
     const lostIndex = ownership.findIndex((owned) => !owned);
     if (lostIndex >= 0) {
       loseLease(new Error(`interprocess lock durable ownership was lost: ${acquired[lostIndex].lockPath}`));
