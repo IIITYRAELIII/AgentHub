@@ -6783,6 +6783,12 @@ export class TaskGitWorkspaceService {
     }
     const references = [...gitReferences];
     for (const w of source.workspaces) {
+      // Old Complete evidence could capture a foreign live branch. Once its
+      // directory is absent, neither the old pin nor a published HEAD owns it.
+      if (w.branch !== taskBranchName(taskId, w.repositoryRoot)
+          && !(isTaskNumberBranch(state.taskNumber) && w.branch === state.taskNumber)) {
+        throw Error("Manual cleanup historical branch ownership changed");
+      }
       if (!references.some(r => samePath(r.projectRoot, w.repositoryRoot) && r.branch === w.branch)) {
         references.push({ projectRoot: w.repositoryRoot, branch: w.branch, resultCommit: w.headCommit, artifactOnly: true });
       }

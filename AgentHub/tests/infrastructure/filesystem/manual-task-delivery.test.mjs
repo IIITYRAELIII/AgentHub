@@ -168,6 +168,52 @@ test("manual cleanup retains current numbered Task branch ownership through conf
   await assert.rejects(f.git(["rev-parse", "--verify", `refs/heads/${task.taskNumber}`]));
 });
 
+test("manual cleanup refuses an unowned historical artifact branch after checkout and registration disappeared", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "absent-foreign-done", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "absent-foreign-done", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const task = f.board.task(f.task.id);
+  const source = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  await runTaskGitCommand(["switch", "-c", "independent-absent-branch"], { cwd: f.managed.projectRoot });
+  source.workspaces = await f.taskGit.describe(task.id); // Exact old-reader evidence shape.
+  f.raw.beginLifecycleTransition(task.id, { operationId: "absent-foreign-close", kind: "complete", expectedRevision: task.revision });
+  f.raw.finalizeCleanupTransition("absent-foreign-close", { receiptEvidence: { manualDelivery: source } });
+  const archived = f.board.task(task.id);
+  await f.git(["worktree", "remove", f.managed.projectRoot]);
+  assert.deepEqual(await f.taskGit.describe(task.id), []);
+  assert.ok(!(await f.git(["worktree", "list", "--porcelain"])).includes("refs/heads/independent-absent-branch"));
+  await assert.rejects(f.call("hub_task_complete", { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input,
+    completed_operation_request_id: "absent-foreign-close", request_id: "absent-foreign-preview" }), /branch ownership/u);
+  assert.deepEqual(f.board.task(task.id), archived);
+  assert.equal(await f.git(["rev-parse", "independent-absent-branch"]), f.base);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("manual cleanup preserves numbered Task ownership for an absent canonical no-Test source", async t => {
+  const f = await publicFixture(t);
+  f.raw.updatePresentation(f.task.id, { title: f.task.title, description: f.task.description, taskNumber: "HUB-466" });
+  await runTaskGitCommand(["branch", "-m", "HUB-466"], { cwd: f.managed.projectRoot });
+  f.raw.setWorkflowStatus(f.task.id, "done");
+  const task = f.board.task(f.task.id);
+  const source = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  f.raw.beginLifecycleTransition(task.id, { operationId: "numbered-absent-close", kind: "complete", expectedRevision: task.revision });
+  f.raw.finalizeCleanupTransition("numbered-absent-close", { receiptEvidence: { manualDelivery: source } });
+  const archived = f.board.task(task.id);
+  await rm(path.dirname(f.managed.projectRoot), { recursive: true });
+  const args = { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input,
+    completed_operation_request_id: "numbered-absent-close" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "numbered-absent-preview" });
+  assert.equal(preview.preview.staleWorktrees.length, 1);
+  assert.ok(preview.preview.deleting.some(x => x.kind === "branch" && x.name === "HUB-466"));
+  await f.call("hub_task_complete", { ...args, request_id: "numbered-absent-confirm", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken });
+  await assert.rejects(f.git(["rev-parse", "--verify", "refs/heads/HUB-466"]));
+  assert.deepEqual(f.board.task(task.id), archived);
+  assert.deepEqual(f.board.task(task.id).gitReferences, []);
+});
+
 test("manual cleanup resumes the SAME admitted original after worktree removal and SQLite reopen", async t => {
   const f = await publicFixture(t);
   f.raw.beginLifecycleTransition(f.task.id, { operationId: "done-before-partial", targetWorkflowStatus: "done", expectedRevision: f.task.revision });

@@ -13,6 +13,9 @@ verification, then archives the card. Every present worktree must independently
 pass current Task ownership before planning and again when consuming cleanup,
 including repositories with canonical Git refs and historical source pins.
 A published HEAD alone grants no ref ownership.
+An absent historical workspace can supply an artifact-only branch only when its
+name matches the existing Task UUID/repository branch or current numbered Task
+branch. This check also applies on consumption/reopen; old evidence is not a waiver.
 Ignored WIP/dependency receipts and dirty or unpublished/later work block cleanup
 and remain intact. Their artifact owner retires them separately.
 A partial cleanup retains its admitted original intent;

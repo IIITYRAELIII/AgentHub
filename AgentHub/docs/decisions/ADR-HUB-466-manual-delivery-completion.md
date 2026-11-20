@@ -45,6 +45,11 @@ All present worktrees pass the existing Task ownership reader both before the
 preview plan and at cleanup consumption. Canonical Git refs and old Complete
 source pins do not exempt a live checkout: an unrelated branch at the same
 published HEAD remains unowned and cannot become an artifact-only cleanup ref.
+The same applies after the directory and registration disappeared. Before any
+historical workspace supplies a branch ref, its name must match the existing
+Task UUID/repository-derived branch or the Task's current numbered branch.
+This reuses the live ownership model, not a new branch allowlist. Historical
+source pins, path absence and published content alone cannot establish ownership.
 The original durable cleanup intent retains the source/publication pins and
 confirmation token. Partial removal or lost SQL/MCP reply keeps that phase for
 the existing addressed reconciliation, which re-proves delivery, accepts only
