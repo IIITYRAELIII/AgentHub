@@ -209,6 +209,26 @@ test("manual cleanup retires only an exact missing owned worktree registration a
   assert.equal(await g.git(["rev-parse", g.managed.branch]), g.base);
 });
 
+test("manual cleanup recovers canonical old no-Test-ref source pins after its whole directory disappeared", async t => {
+  const f = await publicFixture(t); f.raw.setWorkflowStatus(f.task.id, "done");
+  const task = f.board.task(f.task.id);
+  const source = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  f.raw.beginLifecycleTransition(task.id, { operationId: "historical-no-ref-close", kind: "complete", expectedRevision: task.revision });
+  f.raw.finalizeCleanupTransition("historical-no-ref-close", { receiptEvidence: { manualDelivery: source } });
+  const archived = f.board.task(task.id);
+  await rm(path.dirname(f.managed.projectRoot), { recursive: true });
+  const args = { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input,
+    completed_operation_request_id: "historical-no-ref-close" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "old-no-ref-preview" });
+  assert.equal(preview.preview.staleWorktrees.length, 1);
+  assert.equal(preview.preview.publishedCleanupReferences[0].resultCommit, f.base);
+  await f.call("hub_task_complete", { ...args, request_id: "old-no-ref-clean", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken });
+  await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
+  assert.deepEqual(f.board.task(task.id), archived);
+  assert.deepEqual(f.board.task(task.id).gitReferences, []);
+});
+
 test("manual cleanup previews an already closed archive with no old Complete receipt without rewriting its lifecycle", async t => {
   const f = await publicFixture(t);
   f.raw.complete(f.task.id); // Historical archive form, not a delivered-workflow assertion.

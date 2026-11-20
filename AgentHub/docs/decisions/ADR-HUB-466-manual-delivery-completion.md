@@ -62,6 +62,10 @@ managed parent. It invokes native `git worktree remove` on that exact missing
 path before the existing branch CAS. Existing replacement directories, foreign
 paths and changed registrations refuse. This does not use global prune, force
 or raw administrative-file editing.
+For an old canonical manual Complete without Test refs, its exact source pins
+remain authoritative after physical removal. The same reader re-proves those
+heads against the current actual installation/publication before cleanup; it
+does not treat the missing directory as empty source or manufacture a Test ref.
 
 Native manual release membership also survives verified source retirement.
 Its existing canonical Done proof is paired with a successful canonical cleanup

@@ -6721,31 +6721,40 @@ export class TaskGitWorkspaceService {
 
   async manualDeliveryCleanupPreviewOwned({ task, input, lease, retainedRepositories = [], admitted = null, acceptedSource = null }) {
     await requiredGuardLease(lease).assertOwned();
-    const source = admitted?.source ?? await this.manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories });
+    let source = admitted?.source ?? acceptedSource
+      ?? await this.manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories });
     if (source.taskId !== task.id || JSON.stringify(source.gitReferences) !== JSON.stringify(task.gitReferences ?? [])) {
       throw Error("Manual cleanup Task results changed");
     }
     if (source.retainedUnrepresented?.length) return { ...source,
       unpublished: source.retainedUnrepresented.map(w => ({ ...w, reason: "unrepresented historical repository must be retained" })) };
-    if (acceptedSource && (JSON.stringify(source.workspaces.map(w => [w.projectRoot, w.repositoryRoot, w.branch, w.headCommit]))
-        !== JSON.stringify(acceptedSource.workspaces.map(w => [w.projectRoot, w.repositoryRoot, w.branch, w.headCommit]))
-        || JSON.stringify(source.gitReferences) !== JSON.stringify(acceptedSource.gitReferences))) {
-      throw Error("Manual cleanup source differs from its original completed delivery");
+    if (acceptedSource) {
+      const pin = w => JSON.stringify([w.projectRoot, w.repositoryRoot, w.branch, w.headCommit]);
+      const current = await this.describe(task.id);
+      if (current.some(w => !acceptedSource.workspaces.some(p => pin(p) === pin(w)))
+          || JSON.stringify(source.gitReferences) !== JSON.stringify(acceptedSource.gitReferences)) {
+        throw Error("Manual cleanup source differs from its original completed delivery");
+      }
     }
-    const proof = admitted ?? { kind: "verified-manual-task-cleanup-v1", taskId: task.id, input, source };
-    if (proof.kind !== "verified-manual-task-cleanup-v1" || proof.taskId !== task.id
-        || JSON.stringify(proof.input) !== JSON.stringify(input)) throw Error("Manual cleanup original delivery changed");
+    if (admitted && (admitted.kind !== "verified-manual-task-cleanup-v1" || admitted.taskId !== task.id
+        || JSON.stringify(admitted.input) !== JSON.stringify(input)
+        || Boolean(admitted.historicalSource) !== Boolean(acceptedSource))) throw Error("Manual cleanup original delivery changed");
     // Reopen re-proves the actual installation and published repository with the
     // original source pins, even after a worktree or branch was already removed.
-    for (const d of admitted ? source.manualDelivery : []) {
+    const deliveries = [];
+    for (const d of admitted || acceptedSource ? source.manualDelivery : []) {
       const results = [...source.gitReferences.filter(r => samePath(r.projectRoot, d.repositoryRoot)).map(r => r.resultCommit),
         ...source.workspaces.filter(w => samePath(w.repositoryRoot, d.repositoryRoot)).map(w => w.headCommit)];
       const current = await withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${taskRepositoryKey(d.repositoryRoot)}`)],
         releaseLease => this.#readManualDeliveryOwned(d.repositoryRoot, input, [...new Set(results)], combinedLease(lease, releaseLease)),
         { signal: taskOperationExecution()?.signal });
-      if (JSON.stringify(current) !== JSON.stringify(d.delivery)) throw Error("Manual cleanup publication or runtime changed");
+      if (admitted && JSON.stringify(current) !== JSON.stringify(d.delivery)) throw Error("Manual cleanup publication or runtime changed");
+      deliveries.push({ ...d, delivery: current });
     }
-    this.#manualCleanupProofs.set(proof, { lease, allowMissing: Boolean(admitted) });
+    if (!admitted && acceptedSource) source = { ...source, manualDelivery: deliveries };
+    const proof = admitted ?? { kind: "verified-manual-task-cleanup-v1", taskId: task.id, input, source,
+      ...(acceptedSource ? { historicalSource: true } : {}) };
+    this.#manualCleanupProofs.set(proof, { lease, allowMissing: Boolean(admitted || acceptedSource) });
     return this.cleanupPreview(task.id, { gitReferences: task.gitReferences, manualCleanup: proof });
   }
 
@@ -6759,6 +6768,10 @@ export class TaskGitWorkspaceService {
         || !state.allowMissing && source.workspaces.some(p => !workspaces.some(w => pin(p) === pin(w)))) {
       throw Error("Manual cleanup worktree changed or has later work");
     }
+    for (const old of source.workspaces.filter(p => !workspaces.some(w => pin(p) === pin(w)))) {
+      const present = await lstat(old.projectRoot).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; });
+      if (present) throw Error("Manual cleanup worktree changed or has later work");
+    }
     const references = [...gitReferences];
     for (const w of source.workspaces) {
       if (!references.some(r => samePath(r.projectRoot, w.repositoryRoot) && r.branch === w.branch)) {
@@ -6769,7 +6782,7 @@ export class TaskGitWorkspaceService {
     for (const r of references) {
       const head = await gitMaybe(["rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`], { cwd: r.projectRoot });
       const expected = source.workspaces.find(w => samePath(w.repositoryRoot, r.projectRoot) && w.branch === r.branch)?.headCommit ?? r.resultCommit;
-      if (head && (head !== expected || head !== r.resultCommit) || !head && !state.allowMissing) {
+      if (head && (head !== expected || !proof.historicalSource && head !== r.resultCommit) || !head && !state.allowMissing) {
         throw Error("Manual cleanup branch changed or has later work");
       }
       const checkedOut = await worktreeForBranch(r.projectRoot, r.branch);
