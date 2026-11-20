@@ -736,6 +736,20 @@
           <section class="activity-streams" aria-label="Потоки, требующие внимания">
             <header class="activity-section-head">
               <strong data-activity-rail-count>Активно</strong>
+              <button type="button" class="activity-read-button" data-action="clear-ready-interstream"
+                title="Снять отметки с межпоточных ответов" aria-label="Снять отметки с межпоточных ответов">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/>
+                  <circle cx="12" cy="12" r="2.5"/><path d="M3 3h7m-2-2 2 2-2 2"/>
+                </svg>
+              </button>
+              <button type="button" class="activity-read-button" data-action="clear-ready-all"
+                title="Снять отметки со всех готовых ответов" aria-label="Снять отметки со всех готовых ответов">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/>
+                  <circle cx="12" cy="12" r="2.5"/>
+                </svg>
+              </button>
             </header>
             <div class="activity-stream-list" data-activity-stream-list></div>
             <p class="activity-stream-empty" data-activity-stream-empty>Нет активных потоков</p>

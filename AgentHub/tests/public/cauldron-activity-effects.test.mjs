@@ -10,7 +10,7 @@ const { loadThemeRegistry, renderThemeHtml } = createRequire(import.meta.url)(".
 const registry = loadThemeRegistry(fileURLToPath(ROOT));
 const TAB = '.stream-tab[data-stream-tab-id="stream-0"]';
 const RAIL = '.activity-stream-item[data-activity-task-id="task-0"]';
-const effects = ["calm", "impulse", "scanner", "energy", "breath", "thread", "sediment", "echo"];
+
 
 async function frames(page) {
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -100,38 +100,27 @@ async function evidence(name, bytes) {
   if (directory) { await mkdir(directory, { recursive: true }); await writeFile(join(directory, name), bytes); }
 }
 
-test("Cauldron: shared status effects paint the active rail interior", async () => {
+test("Ready strike remains visible on every theme", async () => {
   const browser = await launch();
   try {
     const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } });
     const errors = []; page.on("pageerror", (error) => errors.push(error.message));
     await open(page);
-    const geometry = await page.locator(RAIL).boundingBox();
-    for (const style of ["edge", "fill"]) {
-      await setting(page, "streamStatusStyle", style);
-      await setting(page, "streamStatusEffect", "off");
-      const off = await page.locator(RAIL).screenshot({ animations: "allow" });
-      for (const effect of effects) {
-        await setting(page, "streamStatusEffect", effect);
-        assert.equal(await page.evaluate(() => document.documentElement.dataset.streamStatusEffect), effect);
-        if (effect !== "calm") {
-          const before = await page.locator(RAIL).evaluate((node) => Number(node.getAnimations({ subtree: true })[0]?.currentTime));
-          await page.waitForFunction(({ selector, before }) => Number(document.querySelector(selector).getAnimations({ subtree: true })[0]?.currentTime) > before + 100, { selector: RAIL, before });
-        }
-        // Deterministic frames in this isolated rendering test only. Live QA never seeks animations.
-        let peak = 0;
-        for (const phase of [0.25, 0.5, 0.7]) {
-          await page.locator(RAIL).evaluate((node, phase) => {
-            for (const animation of node.getAnimations({ subtree: true })) { animation.pause(); animation.currentTime = Number(animation.effect.getTiming().duration) * phase; }
-          }, phase);
-          await frames(page);
-          const image = await page.locator(RAIL).screenshot({ animations: "allow" });
-          peak = Math.max(peak, await paintChange(page, off, image));
-          await evidence(`${style}-${effect}-${phase}.png`, image);
-        }
-        assert.ok(peak > 6, `${style}/${effect}: status paint hidden by rail card (0 -> ${peak})`);
-        assert.deepEqual(await page.locator(RAIL).boundingBox(), geometry, "status changes must not move or resize the hit target");
-      }
+    await setting(page, "streamStatusEffect", "static");
+    await publish(page, { running: true, unread: true, revision: 1 });
+    for (const theme of registry.themes) {
+      await page.locator("[data-theme-select]").selectOption(theme.id, { force: true });
+      await frames(page);
+      const card = page.locator(RAIL);
+      const strike = card.locator(".stream-ready-strike");
+      const geometry = await card.boundingBox();
+      const visible = await card.screenshot();
+      await strike.evaluate(node => { node.style.visibility = "hidden"; });
+      const hidden = await card.screenshot();
+      await strike.evaluate(node => { node.style.visibility = ""; });
+      assert.ok(await paintChange(page, visible, hidden) > 6, theme.id);
+      assert.deepEqual(await card.boundingBox(), geometry);
+      await evidence(theme.id + "-ready.png", visible);
     }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
@@ -141,7 +130,7 @@ test("Cauldron: rail keeps node/finite-final identity and idle/reduced-motion ru
   const browser = await launch();
   try {
     const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } }); await open(page);
-    await page.evaluate(() => { document.documentElement.dataset.streamStatusEffect = "impulse"; window.keptRail = document.querySelector('.activity-stream-item[data-activity-task-id="task-0"]'); });
+    await page.evaluate(() => { document.documentElement.dataset.streamStatusEffect = "dynamic"; window.keptRail = document.querySelector('.activity-stream-item[data-activity-task-id="task-0"]'); });
     await frames(page);
     const initial = await page.locator(RAIL).evaluate((node) => Number(node.getAnimations({ subtree: true })[0].currentTime));
     for (let tick = 1; tick <= 3; tick += 1) await publish(page, { tick });

@@ -202,6 +202,16 @@ test("production app returns the exact queued draft to the main composer and exp
 
     const first = page.locator("[data-queue-id='queued-1']");
     const second = page.locator("[data-queue-id='queued-2']");
+    for (const [label, symbol] of [
+      ["В текущий ход", "⇈"], ["Изменить", "✎"], ["Пауза", "Ⅱ"], ["Отменить", "×"],
+    ]) {
+      const button = first.getByRole("button", { name: label, exact: true });
+      assert.equal(await button.textContent(), symbol);
+      assert.equal(await button.getAttribute("title"), label);
+    }
+    assert.equal(await first.getByRole("button", { name: "Отменить" }).isEnabled(), true);
+    assert.equal(await first.getByRole("button", { name: "В текущий ход" }).isDisabled(), true);
+    assert.equal(await second.getByRole("button", { name: "Продолжить" }).textContent(), "▶");
     assert.equal(await first.locator("[data-direction='up']").isDisabled(), true);
     assert.equal(await first.locator("[data-direction='down']").isDisabled(), false);
     assert.equal(await second.locator("[data-direction='up']").isDisabled(), false);

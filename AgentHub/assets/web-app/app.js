@@ -757,47 +757,17 @@ function applyActivityRailVisibility(value, { persist = false } = {}) {
   if (persist) activityRailPreference.persist(localStorage, selected);
 }
 
-function savedStreamStatusStyle() {
-  try {
-    const value = localStorage.getItem("agent-hub-stream-status-style")
-      ?? localStorage.getItem("agent-hub-context-flash-style");
-    return value === "fill" ? "fill" : "edge";
-  } catch {
-    return "edge";
-  }
-}
-
-function applyStreamStatusStyle(value, { persist = false } = {}) {
-  const style = value === "fill" ? "fill" : "edge";
-  root.dataset.streamStatusStyle = style;
-  if (persist) {
-    try {
-      localStorage.setItem("agent-hub-stream-status-style", style);
-      localStorage.removeItem("agent-hub-context-flash-style");
-    } catch {
-      // Настройка останется активной до закрытия WebView.
-    }
-  }
-}
-
-const STREAM_STATUS_EFFECTS = new Set([
-  "calm", "impulse", "scanner", "energy",
-  /* Наборы из stream-status.css: дыхание, нить, осадок и эхо. */
-  "breath", "thread", "sediment", "echo",
-  "off",
-]);
-
 function savedStreamStatusEffect() {
   try {
     const value = localStorage.getItem("agent-hub-stream-status-effect");
-    return STREAM_STATUS_EFFECTS.has(value) ? value : "impulse";
+    return window.AgentHubStreamTabs.normalizeStatusEffect(value);
   } catch {
-    return "impulse";
+    return "dynamic";
   }
 }
 
 function applyStreamStatusEffect(value, { persist = false } = {}) {
-  const effect = STREAM_STATUS_EFFECTS.has(value) ? value : "impulse";
+  const effect = window.AgentHubStreamTabs.normalizeStatusEffect(value);
   root.dataset.streamStatusEffect = effect;
   if (persist) {
     try {
@@ -973,7 +943,7 @@ applyActivityRailVisibility(activityRailPreference.stored(localStorage));
 const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
   document, storage: () => globalThis.localStorage, overlays: modalOverlays,
 });
-applyStreamStatusStyle(savedStreamStatusStyle());
+root.dataset.streamStatusStyle = "edge";
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
 applyStreamOrderMode("activity");
@@ -1338,11 +1308,11 @@ function el(tag, props = {}, children = []) {
   return node;
 }
 
-/* Анимации состояния живут на псевдоэлементах карточки, поэтому новый узел
+/* При обновлении карточки новый узел
    начинает их заново. Списки пересобираются целиком, и при частых обновлениях
    полоса активности не успевает пройти свой цикл. Узел с тем же ключом
    переиспользуется, а его анимации продолжаются с накопленного времени. */
-const STREAM_STATUS_LAYER_SELECTOR = ".stream-tab-status-layer";
+const STREAM_STATUS_LAYER_SELECTOR = ".stream-effect-layer";
 const STREAM_STATUS_ANIMATION_NAME = /(?:^|-)stream-/u;
 let reusableWorkspaceCards = new Map();
 let reusableStreamTabs = new Map();
@@ -1350,7 +1320,7 @@ let adoptedCardAnimations = [];
 const renderedCardAnswerIdentities = new WeakMap();
 
 function statusAnimationKey(animation) {
-  return `${animation.animationName} ${animation.effect?.pseudoElement ?? ""}`;
+  return `${animation.animationName} ${animation.effect?.target?.getAttribute("class") ?? ""} ${animation.effect?.pseudoElement ?? ""}`;
 }
 
 function statusAnimationSnapshot(node) {
@@ -1400,7 +1370,7 @@ function adoptRenderedCard(index, key, next, answerIdentity = "") {
   const sameAnswer = Boolean(answerIdentity) && previous.answerIdentity === answerIdentity;
   // Обновление той же непрочитанной ревизии не обрывает конечную вспышку.
   // После её завершения, чтения или смены final прежний эффект не переносится.
-  if (sameAnswer && previous.answerAnimating && !next.hasAttribute("data-running")
+  if (sameAnswer && previous.answerAnimating
     && (next.hasAttribute("data-unread") || next.hasAttribute("data-answer-ready"))) {
     next.setAttribute("data-answer-arrived", "");
   }
@@ -1418,9 +1388,6 @@ function adoptRenderedCard(index, key, next, answerIdentity = "") {
   }
   /* У вкладки Stream анимацию несёт собственный слой статуса, поэтому он
      переносится в обновлённое содержимое вместо заново созданного. */
-  const keptLayer = node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
-  const nextLayer = next.querySelector(STREAM_STATUS_LAYER_SELECTOR);
-  if (keptLayer && nextLayer) nextLayer.replaceWith(keptLayer);
   node.replaceChildren(...next.childNodes);
   const times = next.hasAttribute("data-answer-arrived") && !sameAnswer
     ? new Map([...previous.times].filter(([key]) => !previous.answerKeys.has(key)))
@@ -4089,6 +4056,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
     "data-answer-arrived": tasks.some((task) => transientAnswerArrivalTaskIds.has(task.id)) ? "" : null,
     "data-running": running ? "" : null,
     "data-maintenance": maintenance || null,
+    ...streamEffectAttributes(tasks),
     "data-folder-member": folderMember ? "" : null,
     role: "button",
     tabindex: "0",
@@ -4096,6 +4064,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
     "aria-label": folderMember ? name : null,
     title: "ПКМ — редактировать Workspace",
   }, [
+    streamEffectLayer(reusableWorkspaceCards.get(id)),
     el("span", { class: "task-workspace-name", text: name }),
     el("span", {
       class: "task-workspace-time",
@@ -4133,6 +4102,7 @@ function streamAttentionKind(task, now = Date.now()) {
   if (task?.activityUnknown) return "unknown";
   if (task?.unread && !task?.running) return "completed";
   if (task?.running) return "running";
+  if (task?.openQuestion || streamMaintenanceKind(task)) return "running";
   const activityTime = streamActivityTime(task);
   const recentWindow = activityRecentPeriodMinutes * 60_000;
   if (recentWindow > 0 && activityTime > 0 && Math.max(0, now - activityTime) <= recentWindow) {
@@ -4173,6 +4143,26 @@ function streamPresentation(task) {
     ? formatRunningDuration(task.startedAt)
     : formatRelativeTime(task?.lastActivity);
   return { provider, agentLabel, running, answerReady, time, statusLabel };
+}
+
+function streamEffectAttributes(tasks) {
+  const active = tasks.filter(task => task?.running);
+  const ready = tasks.filter(task => task?.unread);
+  return {
+    "data-interstream-run": active.length && active.every(task => task.interstreamRun) ? "" : null,
+    "data-interstream-ready": ready.length && ready.every(task => task.latestFinal?.interstreamOnly) ? "" : null,
+    "data-open-question": tasks.some(task => task?.openQuestion) ? "" : null,
+  };
+}
+
+function streamEffectLayer(previousCard) {
+  const existing = previousCard?.node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
+  if (existing) return existing;
+  return svgEl("svg", { class: "stream-effect-layer", "aria-hidden": "true" }, [
+    svgEl("rect", { class: "stream-run-track", pathLength: 100, rx: 5 }),
+    svgEl("rect", { class: "stream-maintenance-track", pathLength: 100, rx: 4 }),
+    svgEl("line", { class: "stream-ready-strike", x1: "4%", x2: "96%", y1: "50%", y2: "50%" }),
+  ]);
 }
 
 function renderStreamStatusCard(task, title, presentation) {
@@ -4292,6 +4282,7 @@ function renderActivityRail() {
       "data-stream-title": title,
       "data-current": task.id === state.selectedId ? "" : null,
       "data-running": presentation.running ? "" : null,
+      ...streamEffectAttributes([task]),
       "data-answer-ready": presentation.answerReady ? "" : null,
       "data-answer-arrived": transientAnswerArrivalTaskIds.has(task.id) ? "" : null,
       "data-recent": streamAttentionKind(task) === "recent" ? "" : null,
@@ -4301,7 +4292,7 @@ function renderActivityRail() {
         .filter(Boolean).join(". "),
       title,
     }, [
-      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      streamEffectLayer(reusableActivityCards.get(task.id)),
       renderStreamStatusCard(task, activityTitle, presentation),
     ]), cardAnswerIdentity([task]));
   };
@@ -4446,6 +4437,7 @@ function renderStreamTabs() {
       "aria-pressed": String(open.has(stream.id)),
       "data-current": task?.id === selected.id ? "" : null,
       "data-running": running ? "" : null,
+      ...streamEffectAttributes([task]),
       "data-answer-ready": answerReady ? "" : null,
       "data-answer-arrived": transientAnswerArrivalTaskIds.has(task?.id) ? "" : null,
       "data-state": statusState,
@@ -4477,7 +4469,7 @@ function renderStreamTabs() {
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
     }, [
-      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      streamEffectLayer(reusableStreamTabs.get(stream.id)),
       el("span", { class: "stream-tab-card" }, content()),
     ]), cardAnswerIdentity(task ? [task] : []));
     overflowItems.push(el("button", {
@@ -8499,6 +8491,13 @@ function renderApprovals() {
   });
 }
 
+function queueActionButton(label, symbol, attributes) {
+  return el("button", {
+    type: "button", class: "queue-action", title: label, "aria-label": label,
+    text: symbol, ...attributes,
+  });
+}
+
 function renderQueueForTask(taskId, container) {
   const queued = (state.queue.get(taskId) ?? [])
     .slice()
@@ -8535,9 +8534,9 @@ function renderQueueForTask(taskId, container) {
       }));
       if (entry.uploadState) {
         for (const action of entry.uploadState === "paused" ? ["resume", "cancel"] : ["cancel"]) {
-          const button = el("button", {
-            type: "button", class: "queue-accept", [`data-upload-${action}`]: "",
-            text: action === "resume" ? "Продолжить загрузку" : "Отменить отправку",
+          const resume = action === "resume";
+          const button = queueActionButton(resume ? "Продолжить загрузку" : "Отменить отправку", resume ? "▶" : "×", {
+            [`data-upload-${action}`]: "",
           });
           button.addEventListener("click", () => emit(`message:upload-${action}`, {
             taskId, clientUserMessageId: entry.clientUserMessageId,
@@ -8546,10 +8545,9 @@ function renderQueueForTask(taskId, container) {
         }
       }
       if (entry.admissionRetryAvailable) {
-        const retry = el("button", {
-          type: "button", class: "queue-accept", "data-message-retry-unconfirmed": "",
-          text: "Повторить отправку",
-          title: "Повторить исходный запрос с тем же идентификатором; приём Hub пока не подтверждён",
+        const retry = queueActionButton("Повторить отправку", "↻", {
+          "data-message-retry-unconfirmed": "",
+          "aria-description": "Повторить исходный запрос с тем же идентификатором; приём Hub пока не подтверждён",
         });
         retry.addEventListener("click", () => emit("message:retry-unconfirmed", {
           taskId, clientUserMessageId: entry.clientUserMessageId,
@@ -8557,9 +8555,9 @@ function renderQueueForTask(taskId, container) {
         actions.push(retry);
       }
       if (entry.cancellationAvailable) {
-        actions.push(el("button", {
-          type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-          title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
+        actions.push(queueActionButton("Отменить", "×", {
+          "data-action": "queue-remove", "data-queue-id": entry.id,
+          "aria-description": "Отменить отложенное сообщение",
         }));
       }
     } else {
@@ -8568,87 +8566,64 @@ function renderQueueForTask(taskId, container) {
         && entry.attentionRequired === true
         && entry.conflictKind === "message-steer";
       if (!exactSteerDecision) {
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-steer",
+        actions.push(queueActionButton("В текущий ход", "⇈", {
           "data-action": "queue-steer",
           "data-queue-id": entry.id,
-          title: steerAvailable
+          "aria-description": steerAvailable
             ? (task.provider === "claude"
               ? "Прервать текущий ход и продолжить его этим сообщением"
               : "Добавить это сообщение в текущий ход")
             : "Доступно, пока эта задача выполняет ход",
           disabled: !steerAvailable,
-          text: "В текущий ход",
         }));
       }
-      actions.push(el("button", {
-        type: "button",
-        class: "queue-edit",
+      actions.push(queueActionButton("Изменить", "✎", {
         "data-action": "queue-edit",
         "data-queue-id": entry.id,
-        title: "Вернуть весь исходный черновик в основной композер",
-        text: "Изменить",
+        "aria-description": "Вернуть весь исходный черновик в основной композер",
       }));
       if (["queued", "paused"].includes(entry.state)) {
         const movableIndex = movable.findIndex((candidate) => candidate.id === entry.id);
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-move",
+        actions.push(queueActionButton("Поднять сообщение в очереди", "↑", {
           "data-action": "queue-move",
           "data-direction": "up",
           "data-queue-id": entry.id,
-          title: "Поднять сообщение в очереди",
-          "aria-label": "Поднять сообщение в очереди",
           disabled: movableIndex <= 0,
-          text: "↑",
         }));
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-move",
+        actions.push(queueActionButton("Опустить сообщение в очереди", "↓", {
           "data-action": "queue-move",
           "data-direction": "down",
           "data-queue-id": entry.id,
-          title: "Опустить сообщение в очереди",
-          "aria-label": "Опустить сообщение в очереди",
           disabled: movableIndex < 0 || movableIndex >= movable.length - 1,
-          text: "↓",
         }));
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-pause",
-          "data-action": entry.state === "paused" ? "queue-resume" : "queue-pause",
+        const paused = entry.state === "paused";
+        const recheck = paused && entry.waitReason === "provider-thread-active";
+        const pauseLabel = recheck ? "Проверить снова" : paused ? "Продолжить" : "Пауза";
+        const pauseIcon = recheck ? "↻" : paused ? "▶" : "Ⅱ";
+        actions.push(queueActionButton(pauseLabel, pauseIcon, {
+          "data-action": paused ? "queue-resume" : "queue-pause",
           "data-queue-id": entry.id,
-          text: entry.state === "paused"
-            ? entry.waitReason === "provider-thread-active" ? "Проверить снова" : "Продолжить"
-            : "Пауза",
         }));
       }
       if (entry.state === "pending") {
         if (entry.lastError) {
-          actions.push(el("button", {
-            type: "button",
-            class: "queue-accept",
+          actions.push(queueActionButton("Повторить", "↻", {
             "data-action": "queue-retry",
             "data-queue-id": entry.id,
-            title: "Повторить доставку в исходный ход с тем же идентификатором",
-            text: "Повторить",
+            "aria-description": "Повторить доставку в исходный ход с тем же идентификатором",
           }));
         }
         if (!entry.lastError || entry.queueAfterTurnAvailable === true) {
-          actions.push(el("button", {
-            type: "button",
-            class: "queue-accept",
+          actions.push(queueActionButton("После хода", "⇥", {
             "data-action": "queue-accept",
             "data-queue-id": entry.id,
-            title: "Явно разрешить отправку после завершения текущего хода",
-            text: "После хода",
+            "aria-description": "Явно разрешить отправку после завершения текущего хода",
           }));
         }
       }
-      actions.push(el("button", {
-        type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-        title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
+      actions.push(queueActionButton("Отменить", "×", {
+        "data-action": "queue-remove", "data-queue-id": entry.id,
+        "aria-description": "Отменить отложенное сообщение",
       }));
     }
     const entryAnnotations = Array.isArray(entry.annotations) ? entry.annotations : [];
@@ -11578,6 +11553,10 @@ async function handleAction(action, trigger) {
       });
       break;
     }
+    case "clear-ready-interstream":
+    case "clear-ready-all":
+      emit("activity:clear-ready", { interstreamOnly: action === "clear-ready-interstream" });
+      break;
     case "queue-remove":
       emit("queue:remove", { taskId, id: trigger.dataset.queueId });
       break;
@@ -12439,8 +12418,7 @@ document.addEventListener("agenthub:stream-view-settings-change", (event) => {
   const value = event.detail?.value;
   if (key === "streamStatusEffect") {
     applyStreamStatusEffect(value, { persist: true });
-  } else if (key === "streamStatusStyle") {
-    applyStreamStatusStyle(value, { persist: true });
+
   } else if (key === "activityStreamDetailedCards") {
     applyActivityStreamDetailedCards(value, { persist: true });
   } else if (key === "activityRailVisibility") {

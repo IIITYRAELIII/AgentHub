@@ -2040,7 +2040,10 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
       : task.lastAnswerAt,
     lastAnswer: task.lastAnswer ?? null,
     startedAt: running ? activeRunSubmissionTiming(task.run).startedAt : null,
-    unread: !running && unread,
+    unread,
+    interstreamRun: task.run?.interstreamOnly === true,
+    openQuestion: window.AgentHubApprovalForm.approvalsForTask(snapshot.pendingApprovals, task, { serverSelected })
+      .some(approval => approval.questions?.length && approval.state !== "dispatching"),
     running,
     selected: id === effectiveSelectedId,
     maintenance: task.maintenance ?? null,
@@ -3204,6 +3207,40 @@ function projectReadReceipt(id, entry) {
     });
 }
 
+async function acknowledgeTaskFinal(id, entry) {
+  const final = entry.final;
+  const result = await control("mark-task-read", { final, streamId: id, clientTraceId: entry.commandId });
+  const confirmed = result?.marked === true
+    && readMarker.finalIdentity(result.final) === entry.identity
+    && readMarker.cursorCovers(entry.final, result);
+  commandTrace.record("ui-render", "read-marker-receipt", commandTrace.now() - entry.viewedAt,
+    entry.commandId, { ...readMarkerMetadata(id, final), render: confirmed ? "confirmed" : "unconfirmed" });
+  entry.phase = confirmed ? "confirmed" : "retry";
+  if (confirmed) {
+    const key = readMarker.threadIdentity(final);
+    if ((lastSnapshot?.tasks ?? []).some((task) => task.provider === final.provider && task.threadId === final.threadId)) {
+      retainReadMarker(confirmedReadCursorByThread, key,
+        readMarker.newerReceipt(confirmedReadCursorByThread.get(key), { final: result.final, cursor: result.cursor }));
+    }
+    projectReadReceipt(id, entry);
+  } else if (result?.reason === "stale-final") void refresh();
+  return result;
+}
+
+agentHub.on("activity:clear-ready", ({ interstreamOnly }) => runAction(async () => {
+  const targets = (lastSnapshot?.tasks ?? []).filter(task => task.unread && task.latestFinal
+    && (!interstreamOnly || task.latestFinal.interstreamOnly)
+    && !readMarker.cursorCovers(task.latestFinal, confirmedReadCursorByThread.get(readMarker.threadIdentity(task.latestFinal))));
+  const results = await Promise.allSettled(targets.map(task => {
+    const final = task.latestFinal;
+    return acknowledgeTaskFinal(taskId(task.provider, task.threadId, task.streamId), {
+      final, identity: readMarker.finalIdentity(final), commandId: commandTrace.newId(), viewedAt: commandTrace.now(),
+    });
+  }));
+  const failed = results.find(result => result.status === "rejected");
+  if (failed) throw failed.reason;
+}));
+
 function considerDisplayedFinal(id) {
   const task = snapshotTask(lastSnapshot, id);
   const final = task?.latestFinal;
@@ -3232,22 +3269,7 @@ function considerDisplayedFinal(id) {
       entry.phase = "pending";
       entry.viewedAt = commandTrace.now();
       const rect = card.getBoundingClientRect();
-      void control("mark-task-read", { final: entry.final, streamId: id, clientTraceId: entry.commandId }).then((result) => {
-        const confirmed = result?.marked === true
-          && readMarker.finalIdentity(result.final) === entry.identity
-          && readMarker.cursorCovers(entry.final, result);
-        commandTrace.record("ui-render", "read-marker-receipt", commandTrace.now() - entry.viewedAt,
-          entry.commandId, { ...readMarkerMetadata(id, final), render: confirmed ? "confirmed" : "unconfirmed" });
-        entry.phase = confirmed ? "confirmed" : "retry";
-        if (confirmed) {
-          const key = readMarker.threadIdentity(final);
-          if ((lastSnapshot?.tasks ?? []).some((task) => task.provider === final.provider && task.threadId === final.threadId)) {
-            retainReadMarker(confirmedReadCursorByThread, key,
-              readMarker.newerReceipt(confirmedReadCursorByThread.get(key), { final: result.final, cursor: result.cursor }));
-          }
-          projectReadReceipt(id, entry);
-        } else if (result?.reason === "stale-final") void refresh();
-      }).catch(() => { entry.phase = "retry"; });
+      void acknowledgeTaskFinal(id, entry).catch(() => { entry.phase = "retry"; });
       commandTrace.record("ui-render", "read-marker-view", commandTrace.now() - entry.paintStarted,
         entry.commandId, { ...readMarkerMetadata(id, final), render: "viewed",
           viewport: rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth });

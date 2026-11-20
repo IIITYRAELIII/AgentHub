@@ -1634,8 +1634,8 @@ test("background status changes rerender visible top Stream tabs", async () => {
       const releaseManagerTab = document.querySelector(
         '.stream-tabs-track .stream-tab[data-stream-name="Release Manager"]',
       );
-      const effect = topS2?.querySelector(".stream-tab-status-layer")
-        ? getComputedStyle(topS2.querySelector(".stream-tab-status-layer"), "::after")
+      const effect = topS2?.querySelector(".stream-run-track")
+        ? getComputedStyle(topS2.querySelector(".stream-run-track"))
         : null;
       const setTasksAfter = {
         topRunning: topS2?.hasAttribute("data-running") ?? null,
@@ -1681,8 +1681,8 @@ test("background status changes rerender visible top Stream tabs", async () => {
         rightRunning: true,
         rightCurrent: false,
         releaseManagerCurrent: true,
-        effectAnimation: "stream-running-wave",
-        effectDisplay: "block",
+        effectAnimation: "stream-track-clockwise",
+        effectDisplay: "inline",
       },
       patchTaskAfter: {
         topRunning: true,

@@ -995,3 +995,17 @@ New Spark selection and Task retry controls/routing are removed. Historical
 Spark messages, Task records and accounting remain readable; ordinary available
 model actions are preserved. There is no replacement setting or silent model
 substitution. The provider owner also refuses new Spark dispatch.
+
+## Stream status and explicit read actions
+
+The two eye controls beside the activity heading acknowledge the exact displayed
+ready identities on explicit user action. One selects finals of purely
+inter-Stream turns and the other selects all ready finals. Both use the existing
+account-scoped read cursor and exact-revision receipt. Automatic acknowledgement
+continues to require a rendered final. A newer revision retains its own marker.
+
+Stream cards show running, compaction, unread final and outstanding question
+independently. The static and dynamic modes share their geometry. A verified
+inter-Stream root stays dotted only while every accepted user input in that turn
+has inter-Stream origin. Legacy finals without this evidence use the ordinary
+stroke. See ADR-HUB-420.

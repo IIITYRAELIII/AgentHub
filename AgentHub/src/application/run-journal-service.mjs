@@ -3,7 +3,7 @@ import { normalizeProviderRunTerminalStatus } from "../domain/provider-run-termi
 import { stat } from "node:fs/promises";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
-import { normalizeInterstreamClientUserMessageId } from "../domain/interstream-message.mjs";
+import { isInterstreamOnlyTurn, normalizeInterstreamClientUserMessageId } from "../domain/interstream-message.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 
@@ -100,6 +100,9 @@ export class RunJournalService {
     ) return false;
     const next = {
       text: value,
+      ...(isInterstreamOnlyTurn(run)
+        || (sameTurn && !run.messageOrigin && !run.userMessages && current?.interstreamOnly)
+        ? { interstreamOnly: true } : {}),
       ...(terminalStatus ? { status: terminalStatus } : {}),
       provider: String(run.provider ?? "").trim() || null,
       threadId: String(run.threadId ?? "").trim(),
@@ -115,6 +118,7 @@ export class RunJournalService {
     };
     if (
       current
+      && current.interstreamOnly === next.interstreamOnly
       && current.text === next.text
       && current.status === next.status
       && current.provider === next.provider
