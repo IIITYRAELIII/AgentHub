@@ -110,10 +110,19 @@ export async function createRuntimeStateRestorationComposition({
           // The single-instance owner has acquired this data root before this
           // canonical snapshot read. Retire only its former local admission;
           // do not inspect or decide the provider's current execution/outcome.
-          const record = () => lifecycleStore.recordLocalExecutionRetirement({ identity, proof: {
-            kind: "previous-hub-local-execution", source: "canonical-runtime-snapshot",
-            restoredAt: new Date().toISOString(),
-          } });
+          const revisedStart = saved.localExecutionRetirement?.proof?.kind === "previous-hub-local-execution"
+            && (saved.startedAt ?? null) !== identity.startedAt;
+          const record = () => {
+            if (revisedStart) {
+              const existing = lifecycleStore.getLocalExecutionRetirement(identity);
+              if (!existing) throw new Error("Prior local execution retirement record is missing");
+              return existing;
+            }
+            return lifecycleStore.recordLocalExecutionRetirement({ identity, proof: {
+              kind: "previous-hub-local-execution", source: "canonical-runtime-snapshot",
+              restoredAt: new Date().toISOString(),
+            } });
+          };
           if (commandTrace?.measureBestEffort) await commandTrace.measureBestEffort({
             commandId: identity.commandId ?? identity.runId,
             stage: "startup-local-execution-retirement", transport: "lifecycle",
