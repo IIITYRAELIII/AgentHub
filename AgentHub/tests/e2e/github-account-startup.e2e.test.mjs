@@ -9,7 +9,7 @@ import { cleanupE2eTemporaryRoot, E2eChildProcessOwner, waitFor } from "../../e2
 
 const source = path.resolve(import.meta.dirname, "../..");
 
-test("running Hub exposes GitHub account state and starts device authorization through local control", { timeout: 30_000 }, async () => {
+test("running Hub exposes GitHub account state and starts browser authorization through local control", { timeout: 30_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-github-startup-"));
   const configFile = path.join(root, "config.json");
   const projectRoot = path.join(root, "project");
@@ -18,21 +18,20 @@ test("running Hub exposes GitHub account state and starts device authorization t
     await mkdir(projectRoot);
     await writeFile(configFile, JSON.stringify({
       components: { telegram: false, miniApp: false, androidApp: false, codexContextCleanup: false },
-      provider: "codex", projectRoot, dataDir: path.join(root, "data"), githubOAuthClientId: "fixture-client",
+      provider: "codex", projectRoot, dataDir: path.join(root, "data"),
       codexExecutable: process.execPath,
       codexExecutableArgs: [path.join(source, "e2e/fake-codex-app-server.mjs"), "--state", path.join(root, "provider.json")],
       codexExecutableAutoUpdate: false, createInitialThreadOnStartup: false,
       codexRolloutContext: { enabled: false }, codexRateLimitPolling: false, claudeRateLimitPolling: false,
       diagnostics: { sentry: { enabled: false, dsn: "" } },
     }));
-    // Keep actual application startup and local control. Replace only the GitHub network response.
+    // Keep actual application startup and local control. Replace only the OAuth broker response.
     const network = `const original = globalThis.fetch;
       globalThis.fetch = (url, options) => {
-        if (String(url) === "https://github.com/login/device/code") {
-          const form = new URLSearchParams(options.body);
-          if (options.method !== "POST" || form.get("client_id") !== "fixture-client") throw Error("Unexpected device request");
-          return Promise.resolve(Response.json({device_code:"fixture-private-device-code", user_code:"ABCD-EFGH",
-            verification_uri:"https://github.com/login/device", expires_in:900, interval:5}));
+        if (String(url) === "https://auth.darksanctuary.ru/github/start") {
+          const body = JSON.parse(options.body);
+          if (options.method !== "POST" || !/^[A-Za-z0-9_-]{43}$/.test(body.challenge)) throw Error("Unexpected browser start");
+          return Promise.resolve(Response.json({state:"s".repeat(43)}));
         }
         if (new URL(String(url)).hostname.endsWith("github.com")) throw Error("Unexpected GitHub request");
         return original(url, options);
@@ -56,9 +55,10 @@ test("running Hub exposes GitHub account state and starts device authorization t
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot: root });
     assert.equal(snapshot.server.githubAccount.status, "disconnected");
     const result = await callDesktopControl("connect-github-account", {}, { runtimeRoot: root });
-    assert.equal(result.login.userCode, "ABCD-EFGH");
-    assert.equal(result.login.verificationUri, "https://github.com/login/device");
-    assert.equal(JSON.stringify(result).includes("fixture-private-device-code"), false);
+    const authorization = new URL(result.login.authorizationUrl);
+    assert.equal(authorization.origin + authorization.pathname, "https://github.com/login/oauth/authorize");
+    assert.equal(authorization.searchParams.get("redirect_uri"), "https://auth.darksanctuary.ru/github/callback");
+    assert.deepEqual(Object.keys(result.login).sort(), ["attemptId", "authorizationUrl", "expiresAt", "waitMs"]);
     await callDesktopControl("cancel-github-account-login", { attemptId: result.login.attemptId }, { runtimeRoot: root });
   } finally {
     await owner.stop();

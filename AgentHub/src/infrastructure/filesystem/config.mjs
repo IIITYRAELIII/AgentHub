@@ -769,7 +769,6 @@ export async function loadConfig() {
 
   return {
     configPath,
-    githubOAuthClientId: String(raw.githubOAuthClientId ?? "").trim(),
     usageSyncServerUrl: Object.hasOwn(raw, "usageSyncServerUrl")
       ? normalizeUsageSyncServerUrl(raw.usageSyncServerUrl) : undefined,
     testContourRecording,

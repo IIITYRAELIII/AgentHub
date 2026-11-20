@@ -7,13 +7,13 @@ proposal. No repository plan, signing key, GitHub App, server rule or Utilities
 change is introduced by the original PAT implementation. The later OAuth request
 adds an owner-registered OAuth App, not the historical signing/server-rule design.
 
-The local Server/Accounts panel now starts GitHub OAuth device authorization with
-"Войти через GitHub". The public `githubOAuthClientId` configuration names the
-owner's registered OAuth App with Device Flow enabled. There is no bundled client
-secret, borrowed GitHub CLI client identity or change to the user's gh/global Git
-configuration. The existing client/vault/profile consumers remain the base; only
-the token acquisition path changes. A missing Client ID gives an explicit setup
-error without making an authorization request. Registration is external owner work.
+The local Server/Accounts panel starts OAuth in the default browser with "Войти".
+The VS Code panel uses its existing external-link host bridge. The Agent Hub OAuth
+App is registered once, and each user authorizes their own account. The released
+client uses its public identity and the fixed OAuth broker at
+`https://auth.darksanctuary.ru`. The separate Cloudflare Worker keeps the client
+secret as a deployment secret. The existing client/vault/profile consumers own
+the token and Git identity after sign-in.
 
 The requested scopes are `gist read:org repo workflow`, matching the existing
 Git and GitHub CLI authorization verified for this change. These cover gists,
@@ -22,13 +22,16 @@ files. The actual grant remains subject to GitHub consent, account permissions,
 and organization policies including SSO. The Hub uses the authenticated account's
 numeric noreply address when the grant cannot read private email addresses.
 
-The protocol stores the device code only in the current local service invocation,
-returns only the user code/constant GitHub verification URL to the protected local
-page, and respects interval/slow_down/deadline/denial. Each poll is bound to its exact
-attempt; concurrent polls share one request. Shutdown, cancellation, disconnect and
-newer sign-in fence late completion before atomic publication. No background flow
-is restored after restart. Network errors are fixed messages, never raw responses.
-Only explicit local sign-in starts a replacement attempt.
+The initiating local Hub generates the PKCE verifier and gives the Worker its
+challenge. The Worker creates an expiring random state and stores the callback code
+in that attempt's Durable Object. The protected UI receives only the public
+authorization URL. The local Hub polls outbound and presents the verifier. The
+Worker deletes the code from its active state and commits admission before exchanging
+with GitHub. It returns the token in the consuming response without storing it.
+An unknown exchange is not retried; the user can explicitly start another login.
+Shutdown, cancellation, disconnect and newer sign-in fence late completion before
+atomic publication. No flow is restored after a local restart. Network errors use
+fixed messages, and the callback redirects to a clean result URL.
 
 OAuth access-token expiry is stored with the existing encrypted credential row;
 all Git/gh/API token consumers refuse expired authorization. The UI offers sign-in
@@ -143,9 +146,9 @@ historical objects, reconnect/disconnect, DPAPI, native credential plumbing,
 generation/host refusals and private HTTP authorization statuses. These are isolated
 checks, not real model turns or a claim that a user's account is already connected.
 Production browser files are exercised in Edge at desktop/mobile sizes, with the
-existing question disclosure, device-code waiting/cancel/reconnect, no PAT input,
-localStorage and overflow checks. Private HTTP fixtures exercise the actual device
-protocol and shared token consumers without GitHub registration/grants/publication.
+existing question disclosure, browser waiting/cancel/reconnect, VS Code external
+launch, localStorage and overflow checks. Private HTTP and native workerd fixtures
+exercise the callback, PKCE binding, one exchange and shared token consumers.
 
 Independent review and ordinary Task Test remain required. Actual installation and
 the user's connection to GitHub are separate Root-owned/application actions. No
@@ -155,7 +158,8 @@ changed while preparing this source.
 ## Protocol references
 
 - [GitHub personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
-- [GitHub OAuth device flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow)
+- [GitHub OAuth browser flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#web-application-flow)
+- [Cloudflare Worker custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
 - [GitHub OAuth scopes](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps)
 - [OAuth App registration](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app)
 - [Git credential helpers](https://git-scm.com/docs/gitcredentials)

@@ -5405,8 +5405,9 @@ agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async ()
 // Local control only, no durable command receipt or draft persistence for PATs.
 // Reuse the existing protected-local-session owner before collecting/submitting
 // a credential; remote command relays must never receive a token-bearing body.
+let githubLocalAccess = false;
 void localSessionReady.then(() => hasLocalWorkspaceFileAccess()).then(
-  allowed => agentHub.setGitHubLocalAccess(allowed),
+  allowed => { githubLocalAccess = allowed; agentHub.setGitHubLocalAccess(allowed); },
   () => agentHub.setGitHubLocalAccess(false),
 );
 let githubLoginEpoch = 0;
@@ -5438,17 +5439,29 @@ function pollGitHubLogin(epoch, waitMs) {
 agentHub.on("server:github-connect", () => runAction(async () => {
   clearGitHubLogin();
   const epoch = githubLoginEpoch;
+  // Reserve a tab during the local click so delayed start cannot trip popup blocking.
+  const tab = githubLocalAccess && !vscode ? window.open("about:blank", "_blank") : null;
+  if (tab) tab.opener = null;
+  let opened = false;
   try {
     if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
     const result = await control("connect-github-account", {});
     if (epoch !== githubLoginEpoch) return;
+    const url = new URL(result.login.authorizationUrl);
+    if (url.origin !== "https://github.com" || url.pathname !== "/login/oauth/authorize" || url.username || url.password) {
+      throw new Error("Сервис вернул неверный адрес входа GitHub");
+    }
     agentHub.setGitHubAccount(result?.githubAccount);
     githubLogin = result.login;
     agentHub.setGitHubLogin(githubLogin);
     pollGitHubLogin(epoch, result.login.waitMs);
+    if (tab && !tab.closed) { tab.location.replace(url.href); opened = true; }
+    if (vscode) await openProviderLoginPage(url.href).catch(() => {
+      if (epoch === githubLoginEpoch) agentHub.toast("Открой GitHub по ссылке рядом с кнопкой отмены");
+    });
   } catch (error) {
     if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message);
-  }
+  } finally { if (tab && !opened) tab.close(); }
 }));
 agentHub.on("server:github-cancel", () => runAction(async () => {
   const previous = githubLogin;

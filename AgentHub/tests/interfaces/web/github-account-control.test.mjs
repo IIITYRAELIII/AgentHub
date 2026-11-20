@@ -7,24 +7,26 @@ import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/
 import { ServerControlController } from "../../../src/interfaces/web/server-control-controller.mjs";
 import { GitHubAccountService } from "../../../src/application/github-account-service.mjs";
 import { GitHubAccountVault } from "../../../src/infrastructure/filesystem/github-account-vault.mjs";
-import { GitHubDeviceAuthorization } from "../../../src/infrastructure/network/github-device-authorization.mjs";
+import { GitHubBrowserAuthorization } from "../../../src/infrastructure/network/github-browser-authorization.mjs";
 import { createRuntimeRestartComposition } from "../../../src/composition/runtime-restart-composition.mjs";
 
 test("protected local control connects/disconnects shared account without secret receipts or command dispatch", async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub-github-control-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const token = "github_pat_SYNTHETIC_CONTROL_VALUE_123456";
-  const deviceCode = "synthetic_device_code_12345678901234567890";
+  let verifier;
   let now = Date.now();
-  const fetchImpl = async url => {
-    if (url.endsWith("/login/device/code")) return Response.json({ device_code: deviceCode, user_code: "ABCD-EFGH",
-      verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 });
-    if (url.endsWith("/login/oauth/access_token")) return Response.json({ access_token: token, token_type: "bearer" });
+  const fetchImpl = async (url, options) => {
+    if (url.endsWith("/github/start")) return Response.json({ state: "s".repeat(43) });
+    if (url.endsWith("/github/poll")) {
+      verifier = JSON.parse(options.body).verifier;
+      return Response.json({ status: "authorized", token, expiresAt: null });
+    }
     return url.endsWith("/user") ? Response.json({ id: 111, login: "hub-account", name: "Hub Account" }) : new Response("", { status: 403 });
   };
   const vault = new GitHubAccountVault({ directory, crypt: async bytes => Buffer.from(bytes).reverse(), protect: async () => {} });
   const service = await new GitHubAccountService({ directory, vault,
-    fetchImpl, deviceAuthorization: new GitHubDeviceAuthorization({ clientId: "public_fixture", fetchImpl, now: () => now }),
+    fetchImpl, authorization: new GitHubBrowserAuthorization({ fetchImpl, now: () => now }),
   }).initialize();
   const controller = new ServerControlController({ config: { projectRoot: directory, components: {}, miniApp: {} },
     desktopSnapshot: async () => ({}), spawnCapture: async () => ({}), preTurnInstructions: {},
@@ -41,8 +43,7 @@ test("protected local control connects/disconnects shared account without secret
   const submit = source => router.handleDesktopControl({ action: "connect-github-account", params: {}, context: { source, commandId: "github-connect" } });
   for (const source of ["trusted-device", "telegram-mini-app", "remote"]) await assert.rejects(submit(source), /локальному/u);
   const started = await submit("desktop-control");
-  assert.equal(started.login.userCode, "ABCD-EFGH");
-  assert.equal(JSON.stringify(started).includes(deviceCode), false);
+  assert.equal(new URL(started.login.authorizationUrl).pathname, "/login/oauth/authorize");
   for (const source of ["trusted-device", "telegram-mini-app", "remote"]) {
     for (const action of ["poll-github-account-login", "cancel-github-account-login"]) {
       await assert.rejects(router.handleDesktopControl({ action, params: { attemptId: started.login.attemptId }, context: { source } }), /локальному/u);
@@ -51,6 +52,8 @@ test("protected local control connects/disconnects shared account without secret
   now += 5000;
   const response = await router.handleDesktopControl({ action: "poll-github-account-login", params: { attemptId: started.login.attemptId }, context: { source: "desktop-control" } });
   assert.equal(response.githubAccount.status, "connected");
+  assert.match(verifier, /^[A-Za-z0-9_-]{43}$/u);
+  assert.equal(JSON.stringify(started).includes(verifier), false);
   assert.equal(JSON.stringify(response).includes(token), false);
   assert.equal(JSON.stringify(await controller.snapshot()).includes(token), false);
   assert.equal(JSON.stringify(traces).includes(token), false);

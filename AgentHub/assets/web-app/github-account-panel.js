@@ -16,7 +16,7 @@
       const question = element("summary", "?", "workspace-task-workflow-help");
       question.setAttribute("aria-label", "О подключении GitHub");
       question.setAttribute("aria-describedby", "github-account-help");
-      const note = element("div", "Общий Git-профиль Hub и агентов. Вход по одноразовому коду.", "workspace-task-workflow-tooltip");
+      const note = element("div", "Общий Git-профиль Hub и агентов. Подтверди вход в браузере.", "workspace-task-workflow-tooltip");
       note.id = "github-account-help";
       note.setAttribute("role", "tooltip");
       help.append(question, note);
@@ -30,24 +30,20 @@
       connect.type = "button";
       const disconnect = element("button", "Отключить", "chip-button ghost");
       disconnect.type = "button";
-      const login = element("div", "", "github-device-login");
-      const instruction = element("small", "Введи этот код на GitHub:");
-      const code = element("code");
-      code.setAttribute("aria-label", "Код входа GitHub");
+      const login = element("div", "", "github-browser-login");
       const link = element("a", "Открыть GitHub", "chip-button");
-      link.href = "https://github.com/login/device";
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       const cancel = element("button", "Отменить вход", "chip-button ghost");
       cancel.type = "button";
-      login.append(instruction, code, link, cancel);
+      login.append(link, cancel);
       login.hidden = true;
       const error = element("small");
       error.setAttribute("role", "status");
       const actions = element("div", "", "server-account-actions");
       actions.append(connect, disconnect);
       root.append(heading, status, identity, actions, login, error);
-      view = { status, identity, connect, disconnect, error, login, code, busy: false, localAccess: false, waiting: false };
+      view = { status, identity, connect, disconnect, error, login, link, busy: false, localAccess: false, waiting: false };
       states.set(root, view);
       connect.addEventListener("click", () => {
         if (view.busy || !view.localAccess) return;
@@ -79,7 +75,8 @@
     if (!view) return;
     view.waiting = Boolean(login);
     view.login.hidden = !login;
-    view.code.textContent = login?.userCode ?? "";
+    if (login?.authorizationUrl) view.link.href = login.authorizationUrl;
+    else view.link.removeAttribute("href");
     view.connect.hidden = view.waiting;
     if (login) view.error.textContent = "Ожидание подтверждения на GitHub…";
   }

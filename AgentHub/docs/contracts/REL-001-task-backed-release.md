@@ -8,10 +8,12 @@ Windows DPAPI and the existing private-directory ACL. No credential enters a Tas
 command receipt, agent instruction, provider environment or ordinary diagnostic.
 The shared public profile contains only name/email and a generation-bound credential
 helper locator. GitHub permissions remain those of the user's access token.
-OAuth device authorization uses the registered public Client ID, not a client
-secret or another application's identity. Only explicit local sign-in starts it;
-polling respects GitHub's interval, slow-down, denial and deadline. The final token
-is verified through the same account owner before atomic selection. The OAuth
+Browser OAuth uses the shared registered application. Only explicit local sign-in
+starts it. The GitHub callback marks its bounded attempt at the isolated OAuth Worker.
+The initiating Hub polls over HTTPS and proves its possession of the PKCE verifier.
+The exchange uses the Worker's secret, redeems only once, and sends the token only to
+that caller without storing it at the Worker. The existing account owner verifies
+the final token before atomic selection. The OAuth
 request matches the existing Git and GitHub CLI scope set
 `gist read:org repo workflow`. Actual permissions are the intersection of the grant,
 account rights, and organization policies. No separate private email scope is

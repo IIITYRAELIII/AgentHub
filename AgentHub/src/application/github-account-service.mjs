@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GitHubAccountVault } from "../infrastructure/filesystem/github-account-vault.mjs";
-import { GitHubDeviceAuthorization } from "../infrastructure/network/github-device-authorization.mjs";
+import { GitHubBrowserAuthorization } from "../infrastructure/network/github-browser-authorization.mjs";
 
 const safeText = (value, name) => {
   const text = String(value ?? "").trim();
@@ -15,10 +15,10 @@ export class GitHubAccountService {
   #disposed = false;
   #login = null;
   constructor({ directory, vault = new GitHubAccountVault({ directory }), fetchImpl = fetch,
-    clientId = "", deviceAuthorization = new GitHubDeviceAuthorization({ clientId, fetchImpl }) } = {}) {
+    authorization = new GitHubBrowserAuthorization({ fetchImpl }) } = {}) {
     this.vault = vault;
     this.fetch = fetchImpl;
-    this.deviceAuthorization = deviceAuthorization;
+    this.authorization = authorization;
   }
   async initialize() {
     await this.vault.initialize();
@@ -62,19 +62,18 @@ export class GitHubAccountService {
     const row = await this.vault.read();
     const account = row ? { id: row.account.id, login: row.account.login, name: row.account.name, email: row.account.email } : null;
     return { status: !row ? "disconnected" : await this.vault.rejected(row.id)
-      || row.expiresAt != null && Date.now() >= row.expiresAt ? "expired" : "connected", account,
-      oauthConfigured: this.deviceAuthorization.configured };
+      || row.expiresAt != null && Date.now() >= row.expiresAt ? "expired" : "connected", account };
   }
   startLogin() { return this.#admit(async () => {
     const revision = ++this.#revision;
     this.#login = null;
-    const flow = await this.deviceAuthorization.start();
+    const flow = await this.authorization.start();
     return this.#serialize(async () => {
       if (revision !== this.#revision || this.#paused) throw new Error("Вход GitHub заменён более новым действием");
       const attemptId = randomUUID();
       this.#login = { attemptId, revision, flow, pending: null };
-      return { githubAccount: await this.#snapshot(), login: { attemptId, userCode: flow.userCode,
-        verificationUri: flow.verificationUri, expiresAt: flow.expiresAt, waitMs: flow.intervalMs } };
+      return { githubAccount: await this.#snapshot(), login: { attemptId, authorizationUrl: flow.authorizationUrl,
+        expiresAt: flow.expiresAt, waitMs: flow.intervalMs } };
     });
   }); }
   pollLogin(attemptId) { return this.#admit(async () => {
@@ -83,7 +82,7 @@ export class GitHubAccountService {
     if (!login.pending) login.pending = (async () => {
       let keep = false;
       try {
-        const result = await this.deviceAuthorization.poll(login.flow);
+        const result = await this.authorization.poll(login.flow);
         if (this.#login !== login || login.revision !== this.#revision || this.#paused) throw new Error("Вход GitHub заменён более новым действием");
         if (result.status === "pending") {
           keep = true;

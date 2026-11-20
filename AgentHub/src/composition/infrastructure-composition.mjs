@@ -257,7 +257,7 @@ export async function createHubInfrastructure({
     const environment = withoutGithubAccountEnvironment(process.env);
     for (const key of Object.keys(process.env)) if (!(key in environment)) delete process.env[key];
     Object.assign(process.env, environment);
-    githubAccount = new GitHubAccountService({ directory: path.join(config.dataDir, "github-account"), clientId: config.githubOAuthClientId });
+    githubAccount = new GitHubAccountService({ directory: path.join(config.dataDir, "github-account") });
     await githubAccount.initialize();
     await prepareGitHubAgentTools(githubAccount.vault.directory);
     // One Hub process owns one data root. This public process locator is consumed

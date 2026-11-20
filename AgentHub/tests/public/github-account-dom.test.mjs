@@ -5,6 +5,45 @@ import path from "node:path";
 import { launchBrowser, snapshot } from "./composer-production.fixture.mjs";
 import { openClientEventFixture } from "./client-event.fixture.mjs";
 
+test("local browser opens GitHub from the sign-in click and updates the same panel", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    const url = "https://github.com/login/oauth/authorize?state=local-fixture";
+    await page.context().route(url, route => route.fulfill({ status: 200, body: "GitHub OAuth test fixture" }));
+    const fixtureSnapshot = snapshot();
+    const githubAccount = { status: "disconnected", account: null };
+    fixtureSnapshot.server.githubAccount = githubAccount;
+    const errors = await openClientEventFixture(page, { fixtureSnapshot, surface: "web", localWeb: true });
+    await page.evaluate(authorizationUrl => {
+      const bridge = window.__fixtureBridge;
+      const send = bridge.postMessage.bind(bridge);
+      bridge.postMessage = message => {
+        let result;
+        if (message.action === "connect-github-account") {
+          result = { githubAccount: window.__agentHubFixture.snapshot.server.githubAccount,
+            login: { attemptId: "local-attempt", authorizationUrl, waitMs: 100 } };
+        } else if (message.action === "poll-github-account-login") {
+          const githubAccount = { status: "connected", account: { id: 22, login: "local-user", name: "Local User", email: "local@example.invalid" } };
+          window.__agentHubFixture.snapshot.server.githubAccount = githubAccount;
+          result = { githubAccount, login: { status: "connected" } };
+        } else return send(message);
+        window.dispatchEvent(new MessageEvent("message", { data: {
+          type: "agenthub:control-result", id: message.id, ok: true, result,
+        } }));
+      };
+    }, url);
+    await page.locator('[data-view-button="server"]').click();
+    const panel = page.locator("[data-github-account]");
+    const [popup] = await Promise.all([page.waitForEvent("popup"), panel.getByRole("button", { name: "Войти", exact: true }).click()]);
+    await popup.waitForURL(url);
+    await panel.getByText("local-user · Local User <local@example.invalid>", { exact: true }).waitFor();
+    assert.equal(await popup.evaluate(() => window.opener), null);
+    assert.equal(await panel.getByLabel("Код входа GitHub").count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
 for (const width of [1366, 390]) test(`GitHub connection controls preserve secret-free page state at ${width}px`, { timeout: 45_000 }, async () => {
   const browser = await launchBrowser();
   try {
@@ -17,12 +56,17 @@ for (const width of [1366, 390]) test(`GitHub connection controls preserve secre
       const send = bridge.postMessage.bind(bridge);
       window.__githubActions = [];
       bridge.postMessage = message => {
+        if (message.action === "open-link") {
+          window.__githubOpened = message.params.href;
+          window.dispatchEvent(new MessageEvent("message", { data: { type: "agenthub:control-result", id: message.id, ok: true, result: {} } }));
+          return;
+        }
         if (!["connect-github-account", "disconnect-github-account", "poll-github-account-login", "cancel-github-account-login"].includes(message.action)) return send(message);
         window.__githubActions.push({ action: message.action, tokenPresent: Boolean(message.params.token) });
         let githubAccount = window.__agentHubFixture.snapshot.server.githubAccount;
         let login;
         if (message.action === "connect-github-account") {
-          login = { attemptId: "device-fixture", userCode: "ABCD-EFGH", verificationUri: "https://github.com/login/device", expiresAt: Date.now() + 900000, waitMs: 25 };
+          login = { attemptId: "browser-fixture", authorizationUrl: "https://github.com/login/oauth/authorize?state=fixture", expiresAt: Date.now() + 300000, waitMs: 25 };
         } else if (message.action === "poll-github-account-login") {
           login = window.__githubAllow ? { status: "connected" } : { status: "pending", waitMs: 25 };
           if (window.__githubAllow) githubAccount = { status: "connected", account: { id: 22, login: "hub-user", name: "Hub User", email: "hub-user@example.invalid" } };
@@ -43,7 +87,7 @@ for (const width of [1366, 390]) test(`GitHub connection controls preserve secre
     assert.equal(await tooltip.isVisible(), false);
     await help.hover();
     await tooltip.waitFor({ state: "visible" });
-    assert.equal(await tooltip.textContent(), "Общий Git-профиль Hub и агентов. Вход по одноразовому коду.");
+    assert.equal(await tooltip.textContent(), "Общий Git-профиль Hub и агентов. Подтверди вход в браузере.");
     await page.mouse.move(1, 1);
     await help.focus();
     await help.press("Enter");
@@ -57,18 +101,21 @@ for (const width of [1366, 390]) test(`GitHub connection controls preserve secre
       await help.tap();
     }
     await panel.getByRole("button", { name: "Войти", exact: true }).click();
-    await panel.getByLabel("Код входа GitHub").waitFor({ state: "visible" });
-    assert.equal(await panel.getByLabel("Код входа GitHub").textContent(), "ABCD-EFGH");
-    assert.equal(await panel.getByRole("link", { name: "Открыть GitHub" }).getAttribute("href"), "https://github.com/login/device");
+    const link = panel.getByRole("link", { name: "Открыть GitHub" });
+    await link.waitFor({ state: "visible" });
+    const authorizationUrl = "https://github.com/login/oauth/authorize?state=fixture";
+    assert.equal(await link.getAttribute("href"), authorizationUrl);
+    await page.waitForFunction(expected => window.__githubOpened === expected, authorizationUrl);
+    assert.equal(await panel.getByLabel("Код входа GitHub").count(), 0);
     await page.evaluate(() => window.AgentHub.setServerStatus(window.__agentHubFixture.snapshot.server));
-    assert.equal(await panel.getByLabel("Код входа GitHub").textContent(), "ABCD-EFGH");
+    assert.equal(await link.getAttribute("href"), authorizationUrl);
     if (process.env.AGENT_HUB_TEST_SCREENSHOTS) {
       await mkdir(process.env.AGENT_HUB_TEST_SCREENSHOTS, { recursive: true });
-      await panel.screenshot({ path: path.join(process.env.AGENT_HUB_TEST_SCREENSHOTS, `github-device-${width}.png`) });
+      await panel.screenshot({ path: path.join(process.env.AGENT_HUB_TEST_SCREENSHOTS, `github-browser-${width}.png`) });
     }
     await page.evaluate(() => { window.__githubAllow = true; });
     await panel.getByText("Подключён", { exact: true }).waitFor();
-    assert.equal(await panel.locator(".github-device-login").isVisible(), false);
+    assert.equal(await link.isVisible(), false);
     assert.equal((await panel.textContent()).includes("Hub User <hub-user@example.invalid>"), true);
     await page.evaluate(() => {
       window.__githubAllow = false;
@@ -92,7 +139,7 @@ for (const width of [1366, 390]) test(`GitHub connection controls preserve secre
       storage: JSON.stringify({ ...localStorage, ...sessionStorage }), actions: window.__githubActions,
       overflow: document.documentElement.scrollWidth > innerWidth }));
     assert.equal(state.text.includes("Personal access token"), false);
-    assert.equal(state.storage.includes("ABCD-EFGH"), false);
+    assert.equal(state.storage.includes("state=fixture"), false);
     assert.deepEqual(state.actions.filter(value => value.action !== "poll-github-account-login").map(value => value.action), ["connect-github-account", "connect-github-account", "cancel-github-account-login", "connect-github-account", "disconnect-github-account"]);
     assert.equal(state.actions.some(value => value.tokenPresent), false);
     assert.equal(state.overflow, false);
@@ -118,7 +165,7 @@ test("late response from a cancelled OAuth attempt cannot replace the next conne
         if (!/github-account/u.test(message.action)) return send(message);
         if (message.action === "connect-github-account") return reply(message, {
           githubAccount: { status: "disconnected", account: null },
-          login: { attemptId: `attempt-${++attempt}`, userCode: "ABCD-EFGH", verificationUri: "https://github.com/login/device", waitMs: 10 },
+          login: { attemptId: `attempt-${++attempt}`, authorizationUrl: "https://github.com/login/oauth/authorize?state=fixture", waitMs: 10 },
         });
         if (message.action === "cancel-github-account-login") return reply(message, { githubAccount: { status: "disconnected", account: null } });
         if (message.action === "poll-github-account-login") {

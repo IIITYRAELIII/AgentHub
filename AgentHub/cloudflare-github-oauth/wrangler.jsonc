@@ -1,0 +1,13 @@
+{
+  "name": "agent-hub-github-oauth",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-07-28",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "durable_objects": {
+    "bindings": [{ "name": "ATTEMPTS", "class_name": "GitHubOAuthAttempt" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GitHubOAuthAttempt"] }],
+  "routes": [{ "pattern": "auth.darksanctuary.ru", "custom_domain": true }]
+}
