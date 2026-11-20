@@ -758,6 +758,16 @@ function nonEmptyAttachmentPatch(values) {
   return attachments.length ? { attachments } : {};
 }
 
+function retireAcceptedOutgoingQueue(message) {
+  if (message?.providerAccepted !== true || !String(message.turnId ?? "").trim()) return;
+  const clientId = String(message.clientUserMessageId ?? "").trim();
+  const optimistic = optimisticDeferredClientUserMessageIds.delete(clientId);
+  const deferred = deferredClientUserMessageIds.delete(clientId);
+  if (optimistic || deferred) commandTrace.record("ui-snapshot", "accepted-queue-retired", 0, clientId, {
+    provider: message.provider, threadId: message.threadId, streamId: message.streamId, turnId: message.turnId,
+  });
+}
+
 function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   const resolvedTaskId = outgoingTaskId(outgoingByTask, clientUserMessageId, taskIdValue);
   if (!resolvedTaskId) return "";
@@ -768,6 +778,7 @@ function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   Object.assign(message, patch.projectionState && absorbingProjection
     ? window.AgentHubMessageProjection.reduceProjectionEntity(message, { ...message, ...patch })
     : patch);
+  retireAcceptedOutgoingQueue(message);
   if (patch.projectionAuthority === "canonical" || ["accepted", "rejected"].includes(patch.deliveryState)) {
     queueMicrotask(() => window.AgentHubPruneComposerFiles?.());
   }
@@ -1053,15 +1064,32 @@ function applyMessageReceipts(snapshot) {
     const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
     const provider = String(receipt?.provider ?? "").trim();
     const threadId = String(receipt?.threadId ?? "").trim();
-    const stableTaskId = exactSnapshotTaskId(receipt, snapshot?.tasks);
+    let stableTaskId = exactSnapshotTaskId(receipt, snapshot?.tasks);
+    const receiptStreamId = String(receipt?.streamId ?? "").trim();
+    if (!stableTaskId && receiptStreamId) {
+      // A rotated source Thread may leave the bounded snapshot. Its receipt
+      // can reconcile an already-owned occurrence, not restore a guessed one.
+      const local = outgoingByTask.get(receiptStreamId)?.get(clientUserMessageId);
+      const streamExists = (snapshot?.tasks ?? []).some((task) => (
+        String(task.streamId ?? "").trim() === receiptStreamId
+      ));
+      if (streamExists && local?.provider === provider && local?.threadId === threadId
+        && (!local.streamId || local.streamId === receiptStreamId)) stableTaskId = receiptStreamId;
+    }
     if (!clientUserMessageId || !stableTaskId) continue;
     const matchedTask = snapshot.tasks.find((task) => (
       conversationTaskId(task, snapshot.tasks) === stableTaskId
       && task.provider === provider && task.threadId === threadId
     ));
-    const streamId = String(matchedTask?.streamId ?? "").trim();
+    const streamId = String(matchedTask?.streamId ?? receiptStreamId).trim();
+    const localTaskId = outgoingTaskId(outgoingByTask, clientUserMessageId, stableTaskId);
+    const local = outgoingByTask.get(localTaskId)?.get(clientUserMessageId);
+    if (local && (localTaskId !== stableTaskId || local.provider !== provider
+      || (local.streamId && local.streamId !== streamId))) continue;
     const projection = queueHistoryReceiptProjection(receipt);
     if (!projection.ownsDeferredQueue) {
+      retireAcceptedOutgoingQueue({ clientUserMessageId, provider, threadId, streamId,
+        providerAccepted: projection.providerAccepted, turnId: receipt.turnId });
       optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
       deferredClientUserMessageIds.delete(clientUserMessageId);
     }
@@ -2662,7 +2690,9 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       ...observeStreamRotations(previousTasks, snapshot.tasks),
       ...syncActiveMaintenanceMessages(representativeSnapshotTasks(maintenanceTasks)),
     ]);
-    if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts) applyMessageReceipts(snapshot);
+    if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts
+      || snapshot.tasks !== previousSnapshot?.tasks
+      || optimisticDeferredClientUserMessageIds.size) applyMessageReceipts(snapshot);
     const serverDeferredClientUserMessageIds = new Set(queuedCommandClientUserMessageIds(
       snapshot.deferredInputs,
       snapshot.messageReceipts,
@@ -2673,6 +2703,10 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     );
     activeRunClientUserMessageIds = nextActiveRunClientUserMessageIds;
     for (const clientUserMessageId of optimisticDeferredClientUserMessageIds) {
+      for (const messages of outgoingByTask.values()) {
+        const message = messages.get(clientUserMessageId);
+        if (message) retireAcceptedOutgoingQueue(message);
+      }
       if (
         serverDeferredClientUserMessageIds.has(clientUserMessageId)
         || activeRunClientUserMessageIds.has(clientUserMessageId)
@@ -4723,10 +4757,28 @@ agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async (
   await control("resolve-approval", { key: id, decision, ...(answers ? { answers } : {}) });
   applySnapshot(await control("snapshot"));
 }));
-agentHub.on("queue:remove", ({ id }) => runAction(async () => {
+agentHub.on("queue:remove", ({ id, taskId: taskIdValue }) => runAction(async () => {
   const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id)
+    ?? [...(outgoingByTask.get(taskIdValue)?.values() ?? [])].find((item) => (
+      item.itemId === id || item.id === id || `local:${item.clientUserMessageId}` === id
+    ))
     ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()])
       .find(item => item.itemId === id || item.id === id);
+  const cancellationTaskId = deferred
+    ? taskId(deferred.provider, deferred.threadId, deferred.streamId) : taskIdValue;
+  const cancellationClientId = String(deferred?.clientUserMessageId ?? "");
+  const messages = outgoingByTask.get(cancellationTaskId);
+  if (messages?.has(cancellationClientId)) {
+    // An old queue projection may outlive its canonical transfer/cancellation.
+    // Let the existing receipt owner settle it before another server command.
+    applyMessageReceipts(lastSnapshot);
+    if (!messages.has(cancellationClientId)) {
+      renderTaskQueue(cancellationTaskId);
+      renderTaskMessages(cancellationTaskId);
+      agentHub.toast("Сообщение уже отменено");
+      return;
+    }
+  }
   const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
   // Keep this intent's diagnostic UUID through transport/ACK, independently
   // of the addressed message's opaque business idempotency identity.

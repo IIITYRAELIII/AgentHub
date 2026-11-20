@@ -192,6 +192,20 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
 
 - Optimistic, queued, active and historical forms of one command are one entity
   keyed by `clientUserMessageId`, not separately appendable cards.
+- Exact provider acceptance with its original turn retires that command's local
+  optimistic queue membership, including after a cached receipt, Thread rotation
+  or a late intake response. A bounded snapshot may omit the old Thread: an
+  explicitly Stream-bound receipt may reconcile only an already-owned occurrence
+  with the same provider, source Thread and client ID while that Stream exists.
+  It cannot create an old occurrence or modify another Stream's local command.
+  Unknown receipts and unrelated drafts remain intact. Focused history preserves
+  its supplied client ID. Queue retirement tracing contains only those identities,
+  never message text, attachment contents or transport secrets.
+- A cancel action first reconciles a retained local queue card through the same
+  exact receipt owner. If that owner proves the original already cancelled,
+  the stale card retires without another cancellation command. An unknown or
+  foreign receipt cannot certify cancellation; ordinary live queue cancellation
+  still crosses the existing server owner.
 - Provider entities use `provider + threadId + turnId`; items additionally use
   `itemId + role`.
 - `clientUserMessageId` is the sole Hub ownership signal for a user message.
