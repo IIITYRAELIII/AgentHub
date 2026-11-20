@@ -869,9 +869,14 @@ class WorkerDispatchError(RuntimeError):
 
 
 WORKER_DISPATCH_STAGES = (
-    "caller-job-check", "creation-intent", "wmi-launch", "wmi-reply",
+    "prepare-worker", "working-directory", "native-api", "caller-job-check",
+    "creation-intent", "wmi-launch", "wmi-reply",
     "worker-identity", "worker-security", "worker-job-check", "worker-thread",
     "record-worker-proof", "resume-thread",
+)
+WMI_REPLY_FAILURE_REASONS = (
+    "wmi-reply-invalid", "wmi-result-unreadable", "wmi-reply-mismatch",
+    "wmi-create-refused", "wmi-worker-pid-invalid",
 )
 
 
@@ -879,10 +884,17 @@ def report_worker_dispatch_failure(selection, checks, record_saved):
     # A retained file is local evidence, not trusted console text. Print only
     # known stages and scalar observations, never exception messages or paths.
     stage = checks.get("stage")
+    stage = stage if stage in WORKER_DISPATCH_STAGES else None
+    reason = checks.get("reason")
+    if stage != "wmi-reply" or reason not in WMI_REPLY_FAILURE_REASONS:
+        if stage == "worker-job-check" and checks.get("workerOutsideAllJobs") is False:
+            reason = "worker-in-job"
+        else:
+            reason = f"{stage}-failed" if stage is not None else None
     report = dict(kind="installer-worker-dispatch-failed", schema=1,
                   operationId=selection["operationId"], installerSha256=selection["installerSha256"],
                   mechanism="Win32_Process.Create", failureRecordSaved=record_saved,
-                  stage=stage if stage in WORKER_DISPATCH_STAGES else None)
+                  stage=stage, reason=reason)
     for key in ("callerOutsideAllJobs", "workerIdentityVerified", "workerOutsideAllJobs",
                 "workerJoined", "resumeAttempted"):
         value = checks.get(key)
@@ -895,6 +907,17 @@ def report_worker_dispatch_failure(selection, checks, record_saved):
     raise SystemExit(1)
 
 
+def retain_worker_dispatch_failure(directory, error, checks, started):
+    try:
+        _write_record(directory/"worker-dispatch-failure.json",dict(code=type(error).__name__,
+            diagnostic=str(error)[:1000],elapsedMs=(time.monotonic()-started)*1000,
+            workerIdentityVerified=checks["workerIdentityVerified"], checks=checks))
+    except OSError:
+        # Console diagnostics must survive failure to write the scratch record.
+        return False
+    return True
+
+
 def independent_worker(command, directory, environment):
     """Use the local Windows process provider; prove independence before Resume.
 
@@ -902,8 +925,6 @@ def independent_worker(command, directory, environment):
     is explicitly escaped, not accepted as independent merely because it is WMI.
     There is one creation attempt. A lost reply retains its original transport.
     """
-    c, w, k = native_api(); directory = directory.resolve(strict=True)
-    k.ResumeThread.argtypes = [w.HANDLE]; k.ResumeThread.restype = w.DWORD
     # JSON stdin is data; argv, paths and environment are never shell source.
     script = r'''$ErrorActionPreference='Stop';
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);
@@ -918,10 +939,17 @@ try {$b=[Text.UTF8Encoding]::new($false).GetBytes($v);$f.Write($b,0,$b.Length);$
 [Console]::WriteLine($v);'''
     process = thread = None
     owned = False
-    checks = dict(stage="caller-job-check", windowsBuild=sys.getwindowsversion().build,
+    checks = dict(stage="working-directory", windowsBuild=sys.getwindowsversion().build,
                   workerIdentityVerified=False, resumeAttempted=False)
+    resolved_directory = None
     started = time.monotonic()
     try:
+        resolved_directory = directory.resolve(strict=True)
+        directory = resolved_directory
+        checks["stage"] = "native-api"
+        c, w, k = native_api()
+        k.ResumeThread.argtypes = [w.HANDLE]; k.ResumeThread.restype = w.DWORD
+        checks["stage"] = "caller-job-check"
         checks["callerOutsideAllJobs"] = outside_jobs(k.GetCurrentProcess())
         checks["stage"] = "creation-intent"
         intent = dict(schema=1, mechanism="Win32_Process.Create", creationFlags=0x01000004,
@@ -946,13 +974,26 @@ try {$b=[Text.UTF8Encoding]::new($false).GetBytes($v);$f.Write($b,0,$b.Length);$
             (directory/"worker-provider.stderr").write_text(result.stderr[:4000],encoding="utf-8")
             raise RuntimeError("Windows process provider failed: exit "+str(result.returncode))
         checks["stage"] = "wmi-reply"
+        checks["reason"] = "wmi-reply-invalid"
         reply = json.loads(result.stdout)
-        if reply != _read_record(reply_file): raise RuntimeError("Windows process provider reply changed")
+        if not isinstance(reply, dict): raise ValueError("Invalid Windows process provider reply")
+        checks["reason"] = "wmi-result-unreadable"
+        retained_reply = _read_record(reply_file)
+        checks["reason"] = "wmi-reply-mismatch"
+        if reply != retained_reply: raise RuntimeError("Windows process provider reply changed")
         return_value = reply.get("returnValue")
         if type(return_value) is int:
             checks["providerReturnValue"] = return_value
-        if reply.get("returnValue") != 0 or type(reply.get("pid")) is not int or reply["pid"] <= 0:
+        if type(return_value) is not int:
+            checks["reason"] = "wmi-reply-invalid"
+            raise ValueError("Invalid Windows process provider return value")
+        if return_value != 0:
+            checks["reason"] = "wmi-create-refused"
             raise RuntimeError("Windows process provider refused creation: "+str(reply.get("returnValue")))
+        if type(reply.get("pid")) is not int or reply["pid"] <= 0:
+            checks["reason"] = "wmi-worker-pid-invalid"
+            raise RuntimeError("Windows process provider did not return a valid worker PID")
+        checks.pop("reason")
         checks["stage"] = "worker-identity"
         process = k.OpenProcess(0x1000 | 0x100000 | 1, False, reply["pid"])
         if not process: raise c.WinError(c.get_last_error())
@@ -997,15 +1038,8 @@ try {$b=[Text.UTF8Encoding]::new($false).GetBytes($v);$f.Write($b,0,$b.Length);$
             checks["workerJoined"] = k.WaitForSingleObject(process, 10000) == 0
             if not checks["workerJoined"]:
                 failure = RuntimeError("Installer dispatch refusal could not join its exact worker")
-        record_saved = False
-        try:
-            _write_record(directory/"worker-dispatch-failure.json",dict(code=type(error).__name__,
-                diagnostic=str(error)[:1000],elapsedMs=(time.monotonic()-started)*1000,
-                workerIdentityVerified=owned, checks=checks))
-            record_saved = True
-        except OSError:
-            # Console diagnostics must survive failure to write the scratch record.
-            pass
+        record_saved = (resolved_directory is not None
+                        and retain_worker_dispatch_failure(resolved_directory, error, checks, started))
         if isinstance(error, Exception):
             raise WorkerDispatchError(failure, checks, record_saved) from error
         raise
@@ -2035,9 +2069,20 @@ def autonomous_main():
             report_worker_dispatch_failure(selection, checks if isinstance(checks, dict) else {}, True)
         print(json.dumps(dict(operationId=op,retained=str(cache),effectsReplayed=False,
                              result=_read_record(retained_result) if retained_result.exists() else None))); return
-    cache.mkdir(); _write_record(cache/'request.json',selection)
-    worker=cache/'install_release.py'; shutil.copyfile(Path(__file__).resolve(),worker)
-    if file_hash(worker)!=selection['installerSha256']: raise RuntimeError("Retained installer differs")
+    request_written = False
+    started = time.monotonic()
+    try:
+        cache.mkdir()
+        _write_record(cache/'request.json',selection)
+        request_written = True
+        worker=cache/'install_release.py'
+        shutil.copyfile(Path(__file__).resolve(),worker)
+        if file_hash(worker)!=selection['installerSha256']: raise RuntimeError("Retained installer differs")
+    except (OSError, ValueError, RuntimeError) as error:
+        checks = dict(stage="prepare-worker", windowsBuild=sys.getwindowsversion().build,
+                      workerIdentityVerified=False, resumeAttempted=False, winerror=getattr(error,"winerror",None))
+        record_saved = request_written and retain_worker_dispatch_failure(cache, error, checks, started)
+        report_worker_dispatch_failure(selection, checks, record_saved)
     try:
         proof=independent_worker([sys.executable,'-X','utf8','-B',str(worker),'--autonomous-worker',str(cache/'request.json')],cache,clean_installer_environment())
     except WorkerDispatchError as error:
