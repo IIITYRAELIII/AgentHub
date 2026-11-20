@@ -4161,7 +4161,7 @@ function streamEffectLayer(previousCard) {
   return svgEl("svg", { class: "stream-effect-layer", "aria-hidden": "true" }, [
     svgEl("rect", { class: "stream-run-track", pathLength: 100, rx: 5 }),
     svgEl("rect", { class: "stream-maintenance-track", pathLength: 100, rx: 4 }),
-    svgEl("line", { class: "stream-ready-strike", x1: "4%", x2: "96%", y1: "50%", y2: "50%" }),
+    svgEl("line", { class: "stream-ready-strike", x1: "4%", x2: "96%", y1: "calc(100% - 9px)", y2: "calc(100% - 9px)" }),
   ]);
 }
 

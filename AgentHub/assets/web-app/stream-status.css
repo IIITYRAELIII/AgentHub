@@ -48,6 +48,12 @@
   filter: drop-shadow(0 1px 1px var(--bg));
 }
 
+/* Reserve a clear band inside the two perimeter tracks for either ready pattern. */
+:is([data-unread], [data-answer-ready]) > .stream-tab-card > *,
+.task-workspace-item[data-unread] > :is(.task-workspace-name, .task-workspace-time) {
+  margin-block-end: 12px;
+}
+
 [data-interstream-ready] > .stream-effect-layer > .stream-ready-strike {
   stroke-linecap: round;
   stroke-dasharray: .1 5;
@@ -96,7 +102,7 @@
   width: 1.6rem;
   height: 1.6rem;
   padding: .15rem;
-  background: transparent;
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--radius-chip);
   color: var(--text);

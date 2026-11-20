@@ -9026,7 +9026,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 .queue-action {
   align-items: center;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
   border: 1px solid var(--accent-line);
   border-radius: var(--radius-chip);
   box-sizing: border-box;
@@ -9044,7 +9044,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 }
 
 .queue-action:hover:not(:disabled) {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
 }
 
 .queue-action:disabled {
@@ -9054,7 +9054,9 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 .queue-action[data-action="queue-remove"],
 .queue-action[data-upload-cancel] {
-  color: var(--danger, #ff7b7b);
+  color: oklch(from var(--text) clamp(.42, l, .76) .2 25);
+  font-size: 1.15rem;
+  font-weight: 700;
 }
 
 .attachment-remove,

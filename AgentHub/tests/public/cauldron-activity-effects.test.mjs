@@ -29,7 +29,8 @@ async function publish(page, { tick = 0, running = true, unread = false, revisio
       workspaceId: "workspace-0", workspaceName: "Workspace", streamId: `stream-${index}`,
       streamName: index ? "Idle" : "Active", streamOrdinal: index + 1, selected: index === 0,
       status: index || !running ? "ready" : "running", running: index === 0 && running,
-      unread: index === 0 && unread, streamSettings: {}, progressStage: `stage-${tick}`,
+      unread: index === 0 && unread, openQuestion: index === 0 && unread,
+      streamSettings: {}, progressStage: `stage-${tick}`,
       lastActivity: new Date().toISOString(),
       latestFinal: index === 0 && revision ? { provider: "codex", threadId: "thread-0", turnId: "turn-0", revision } : null,
     })));
@@ -112,6 +113,20 @@ test("Ready strike remains visible on every theme", async () => {
       await page.locator("[data-theme-select]").selectOption(theme.id, { force: true });
       await frames(page);
       const card = page.locator(RAIL);
+      for (const selector of [TAB, RAIL]) {
+        const target = page.locator(selector);
+        const clearance = await target.evaluate(node => {
+          const line = node.querySelector(".stream-ready-strike").getBoundingClientRect();
+          const title = node.querySelector(".stream-tab-title");
+          const time = node.querySelector(".task-time");
+          return {
+            question: getComputedStyle(title, "::before").content,
+            gap: line.top - Math.max(title.getBoundingClientRect().bottom, time.getBoundingClientRect().bottom),
+          };
+        });
+        assert.equal(clearance.question, '"?"');
+        assert.ok(clearance.gap >= 2, `${theme.id}/${selector}: ready line clearance ${clearance.gap}px`);
+      }
       const strike = card.locator(".stream-ready-strike");
       const geometry = await card.boundingBox();
       const visible = await card.screenshot();
