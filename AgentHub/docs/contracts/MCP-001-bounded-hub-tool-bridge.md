@@ -1019,6 +1019,8 @@ or archived artifact list exceeds the receipt cap, the original Task outcome
 keeps it. Desktop Task read or MCP operation get reads bounded pages under the
 same Task, original arguments hash, confirmation token and preview digest.
 Dashboard verifies the complete digest before rendering the confirmation.
+A compacted reconciliation keeps its business outcome and the original
+operation ID and arguments hash for the same page reads.
 
 Successful complete/delete preview compaction preserves action, token, exact
 Task identity/revision and the complete preview digest/length within 64 KiB.

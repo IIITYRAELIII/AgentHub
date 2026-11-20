@@ -3299,6 +3299,7 @@ export class HubMcpService {
       });
       else if (originalArchive.status !== "succeeded") await this.workspaceCatalog.completeMcpOperation(originalArchive.requestId, result);
       return { taskId: args.task_id, operationId: originalArchive.requestId,
+        originalArgumentsHash: originalArchive.argumentsHash,
         outcome: result.confirmationRequired ? "CONFIRMATION_REQUIRED" : "COMPLETED",
         result };
     }

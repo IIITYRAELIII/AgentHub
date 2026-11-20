@@ -518,6 +518,16 @@ function compactMcpOperationResult(result, { outcome = "succeeded" } = {}) {
   if (Buffer.byteLength(serialized, "utf8") <= 64 * 1024) return serialized;
   const confirmation = cleanupConfirmationCapsule(result) ?? archivedArtifactCapsule(result);
   if (confirmation) return JSON.stringify(confirmation);
+  if (["CONFIRMATION_REQUIRED", "COMPLETED"].includes(result?.outcome)
+      && /^[a-f0-9]{64}$/u.test(result.originalArgumentsHash ?? "")) {
+    const nested = cleanupConfirmationCapsule(result.result) ?? archivedArtifactCapsule(result.result);
+    if (nested?.archivePreview) {
+      const { preview: _omitted, ...capsule } = nested;
+      return JSON.stringify({ taskId: result.taskId, operationId: result.operationId,
+        originalArgumentsHash: result.originalArgumentsHash, outcome: result.outcome, receiptCompacted: true,
+        result: { ...capsule, previewOmitted: true } });
+    }
+  }
   const taskId = String(result?.task?.id ?? result?.taskId ?? "").trim() || null;
   return JSON.stringify({
     receiptCompacted: true,

@@ -1275,14 +1275,29 @@ test("Task archive reconciles a lost partial outcome without rerunning Git and r
   const reopened = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite") });
   f.beforeCleanup.push(() => reopened.close());
   f.board.store = reopened;
+  const taskDirectory = path.dirname(f.managed.projectRoot);
+  for (let index = 0; index < 1000; index += 1) {
+    await writeFile(path.join(taskDirectory, "retained-" + String(index).padStart(4, "0")), "preserve");
+  }
   const recovered = await f.call("hub_task_operation_reconcile", { task_id: f.task.id,
     request_id: "archive-reopen-reconcile", operation_request_id: original.request_id, confirm_reconcile: true });
   assert.equal(recovered.outcome, "CONFIRMATION_REQUIRED");
   assert.equal(recovered.result.agentInstruction, "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС");
   const outer = f.catalog.mcpOperation("archive-reopen-reconcile");
   assert.equal(outer.result.result.agentInstruction, undefined);
+  assert.equal(outer.result.outcome, "CONFIRMATION_REQUIRED");
+  assert.equal(outer.result.result.previewOmitted, true);
   const outerReadback = await f.call("hub_task_operation_get", { operation_request_id: outer.requestId, expected_arguments_hash: outer.argumentsHash });
   assert.equal(outerReadback.result.result.agentInstruction, recovered.result.agentInstruction);
+  assert.equal(outerReadback.result.outcome, "CONFIRMATION_REQUIRED");
+  const { operationId, originalArgumentsHash, result: capsule } = outerReadback.result;
+  assert.equal(operationId, original.request_id);
+  assert.equal(originalArgumentsHash, f.catalog.mcpOperation(original.request_id).argumentsHash);
+  const page = await f.call("hub_task_operation_get", {
+    task_id: f.task.id, operation_request_id: operationId, expected_arguments_hash: originalArgumentsHash,
+    archive_preview_page: { cleanupToken: capsule.cleanupToken, previewSha256: capsule.previewIdentity.sha256, offset: 0 },
+  });
+  assert.match(page.archivePreviewPage.chunk, /retained-0000/u);
   assert.equal(f.catalog.mcpOperation(original.request_id).status, "succeeded");
   assert.notEqual(f.board.task(f.task.id).status, "done");
   assert.equal(attempts, 1);
