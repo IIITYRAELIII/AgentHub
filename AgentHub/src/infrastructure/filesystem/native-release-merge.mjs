@@ -444,8 +444,9 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
   const patch = String(await git(["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv",
     "--no-renames", "--no-color", "--unified=0", head, replayTree, "--", file], { rawOutput: true }));
   if (/^(?:old mode|new mode|deleted file|new file|Binary files)/mu.test(patch)) return false;
-  const body = String(await git(["show", `${head}:${file}`], { rawOutput: true }));
-  let block = null, additions = 0;
+  const rawBody = await git(["show", `${head}:${file}`], { rawOutput: true });
+  const body = String(rawBody);
+  let block = null, additions = 0, removed = false;
   const retained = () => block !== null && block.length > 0 && body.includes(block.join("\n") + "\n");
   for (const line of patch.split("\n")) {
     if (line.startsWith("@@ ")) {
@@ -453,10 +454,30 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
       block = []; additions += 1;
     } else if (block !== null) {
       if (line.startsWith("+")) block.push(line.slice(1));
-      else if (line.startsWith("-") && line.slice(1).trim() !== "" || line.startsWith("\\")) return false;
+      else if (line.startsWith("-")) {
+        removed = true;
+        if (line.slice(1).trim() !== "") return false;
+      } else if (line.startsWith("\\")) return false;
     }
   }
-  return additions > 0 && retained();
+  if (additions > 0 && retained()) return true;
+  if (additions !== 1 || removed) return false;
+  // Git can slide an insertion across an identical method header. Prove one
+  // literal insertion against the complete bytes, rather than its hunk layout.
+  const current = Buffer.from(rawBody);
+  const replay = Buffer.from(await git(["show", `${replayTree}:${file}`], { rawOutput: true }));
+  if (replay.length <= current.length || current.includes(0) || replay.includes(0)
+      || !Buffer.from(body).equals(current) || !Buffer.from(String(replay)).equals(replay)) return false;
+  const currentEntry = await metadataEntry(git, head, file);
+  const replayEntry = await metadataEntry(git, replayTree, file);
+  if (!/^100(?:644|755) [a-f0-9]{40}$/u.test(currentEntry ?? "")
+      || currentEntry.split(" ")[0] !== replayEntry?.split(" ")[0]) return false;
+  let suffix = 0;
+  while (suffix < current.length && current[current.length - 1 - suffix] === replay[replay.length - 1 - suffix]) suffix++;
+  const offset = current.length - suffix;
+  const insertion = replay.subarray(offset, offset + replay.length - current.length);
+  return current.includes(insertion)
+    && Buffer.concat([current.subarray(0, offset), insertion, current.subarray(offset)]).equals(replay);
 }
 
 // A later selected automatic edit can change a file whose earlier owned
