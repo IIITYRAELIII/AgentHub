@@ -6693,8 +6693,9 @@ export class TaskGitWorkspaceService {
         || extra.some(w => !retainedRepositories.some(r => samePath(r.project_root, w.projectRoot) && r.head_commit === w.headCommit))) {
       throw Error("Manual delivery has an unrepresented Task repository; exact preservation pins are required");
     }
-    for (const w of references.length ? extra : workspaces) {
-      if (!samePath(await this.managedRepositoryRoot(w.projectRoot, { taskId: task.id, taskNumber: task.taskNumber }), w.repositoryRoot)) {
+    for (const w of workspaces) {
+      const managedRoot = await this.managedRepositoryRoot(w.projectRoot, { taskId: task.id, taskNumber: task.taskNumber });
+      if (!managedRoot || !samePath(managedRoot, w.repositoryRoot)) {
         throw Error("Manual delivery managed source or retained repository ownership changed");
       }
     }
@@ -6754,7 +6755,7 @@ export class TaskGitWorkspaceService {
     if (!admitted && acceptedSource) source = { ...source, manualDelivery: deliveries };
     const proof = admitted ?? { kind: "verified-manual-task-cleanup-v1", taskId: task.id, input, source,
       ...(acceptedSource ? { historicalSource: true } : {}) };
-    this.#manualCleanupProofs.set(proof, { lease, allowMissing: Boolean(admitted || acceptedSource) });
+    this.#manualCleanupProofs.set(proof, { lease, taskNumber: task.taskNumber, allowMissing: Boolean(admitted || acceptedSource) });
     return this.cleanupPreview(task.id, { gitReferences: task.gitReferences, manualCleanup: proof });
   }
 
@@ -6763,6 +6764,14 @@ export class TaskGitWorkspaceService {
     if (!state || proof.taskId !== taskId || source?.taskId !== taskId
         || JSON.stringify(source.gitReferences) !== JSON.stringify(gitReferences)) throw Error("Missing manual cleanup owner or changed Task results");
     await state.lease.assertOwned();
+    // Publication and retained source pins bind content, not ownership of a
+    // live checkout. Recheck even represented repositories and old outcomes.
+    for (const w of workspaces) {
+      const managedRoot = await this.managedRepositoryRoot(w.projectRoot, { taskId, taskNumber: state.taskNumber });
+      if (!managedRoot || !samePath(managedRoot, w.repositoryRoot)) {
+        throw Error("Manual cleanup live worktree ownership changed");
+      }
+    }
     const pin = w => JSON.stringify([w.projectRoot, w.repositoryRoot, w.branch, w.headCommit]);
     if (workspaces.some(w => !source.workspaces.some(p => pin(p) === pin(w)))
         || !state.allowMissing && source.workspaces.some(p => !workspaces.some(w => pin(p) === pin(w)))) {

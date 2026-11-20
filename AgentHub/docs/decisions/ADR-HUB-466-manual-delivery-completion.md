@@ -41,6 +41,10 @@ The existing Git cleanup owner removes clean published managed branches/worktree
 before SQLite archives the card. Ignored data and unrepresented historical
 repositories remain explicit obstacles; their artifact owner retires data
 separately. Later HEADs, foreign worktrees and dirty/unpublished work refuse.
+All present worktrees pass the existing Task ownership reader both before the
+preview plan and at cleanup consumption. Canonical Git refs and old Complete
+source pins do not exempt a live checkout: an unrelated branch at the same
+published HEAD remains unowned and cannot become an artifact-only cleanup ref.
 The original durable cleanup intent retains the source/publication pins and
 confirmation token. Partial removal or lost SQL/MCP reply keeps that phase for
 the existing addressed reconciliation, which re-proves delivery, accepts only

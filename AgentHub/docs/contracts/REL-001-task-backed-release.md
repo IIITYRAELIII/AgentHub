@@ -9,9 +9,13 @@ closing. Ready requires the existing authenticated live desktop control owner,
 matching PID/release and a stable endpoint, not a retained Ready lock alone.
 Preview/confirmation uses existing Task CAS. Complete removes only the listed
 clean managed branches/worktrees after exact published result/current HEAD
-verification, then archives the card. Ignored WIP/dependency receipts, dirty or
-unpublished/later work block cleanup and remain intact. Their artifact owner
-retires them separately. A partial cleanup retains its admitted original intent;
+verification, then archives the card. Every present worktree must independently
+pass current Task ownership before planning and again when consuming cleanup,
+including repositories with canonical Git refs and historical source pins.
+A published HEAD alone grants no ref ownership.
+Ignored WIP/dependency receipts and dirty or unpublished/later work block cleanup
+and remain intact. Their artifact owner retires them separately.
+A partial cleanup retains its admitted original intent;
 addressed reconciliation checks the remaining subset and finishes that original.
 An already closed archive can receive a fresh read-only cleanup preview and
 confirmation without rewriting its status, workflow or completion time. An old

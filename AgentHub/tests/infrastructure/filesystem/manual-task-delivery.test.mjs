@@ -109,6 +109,65 @@ test("manual Complete removes the verified clean branch and worktree before clos
   assert.ok(f.board.lifecycleOutcome("delivered"));
 });
 
+test("manual cleanup refuses a live checkout whose branch is not owned by the Task", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, {operationId:"ownership-done",targetWorkflowStatus:"done",expectedRevision:f.task.revision});
+  f.raw.commitWorkflowTransition({operationId:"ownership-done",gitReferences:[
+    {projectRoot:f.repo,branch:f.managed.branch,resultCommit:f.base}
+  ]});
+  const original=f.board.task(f.task.id);
+  await runTaskGitCommand(["switch","-c","independent-branch"],{cwd:f.managed.projectRoot});
+  assert.equal(await f.git(["rev-parse","independent-branch"]),f.base);
+  assert.equal(await f.git(["rev-parse",f.managed.branch]),f.base);
+  assert.equal(await f.taskGit.managedRepositoryRoot(f.managed.projectRoot,{taskId:f.task.id,taskNumber:original.taskNumber}),null);
+  const call=f.call("hub_task_complete",{task_id:f.task.id,completion_mode:"manual_delivery",manual_delivery:f.input,request_id:"foreign-live-branch-preview"});
+  const observed=await call.then(value=>({plan:value.preview?.deleting?.filter(x=>x.kind==="branch").map(x=>x.name).sort()}),error=>({error:error.message}));
+  assert.deepEqual(f.board.task(f.task.id),original);
+  assert.equal(await f.git(["rev-parse","independent-branch"]),f.base);
+  assert.ok(observed.error && /source|own|branch|worktree/iu.test(observed.error), JSON.stringify(observed));
+});
+
+test("manual cleanup rechecks live Task ownership for canonical historical source pins", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "historical-owner-done", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "historical-owner-done", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const task = f.board.task(f.task.id);
+  const source = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  await runTaskGitCommand(["switch", "-c", "independent-historical-branch"], { cwd: f.managed.projectRoot });
+  // Retained evidence from the old reader could include this unowned checkout.
+  // Its durable outcome must not supply current branch-deletion authority.
+  source.workspaces = await f.taskGit.describe(task.id);
+  f.raw.beginLifecycleTransition(task.id, { operationId: "historical-unowned-close", kind: "complete", expectedRevision: task.revision });
+  f.raw.finalizeCleanupTransition("historical-unowned-close", { receiptEvidence: { manualDelivery: source } });
+  const archived = f.board.task(task.id);
+  await assert.rejects(f.call("hub_task_complete", { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input,
+    completed_operation_request_id: "historical-unowned-close", request_id: "historical-unowned-preview" }), /ownership/u);
+  assert.deepEqual(f.board.task(task.id), archived);
+  assert.equal(await f.git(["rev-parse", "independent-historical-branch"]), f.base);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("manual cleanup retains current numbered Task branch ownership through confirmation", async t => {
+  const f = await publicFixture(t);
+  f.raw.updatePresentation(f.task.id, { title: f.task.title, description: f.task.description, taskNumber: "HUB-466" });
+  const task = f.board.task(f.task.id);
+  assert.match(task.taskNumber, /^HUB-\d+$/u);
+  await runTaskGitCommand(["branch", "-m", task.taskNumber], { cwd: f.managed.projectRoot });
+  f.raw.beginLifecycleTransition(task.id, { operationId: "numbered-done", targetWorkflowStatus: "done", expectedRevision: task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "numbered-done", gitReferences: [
+    { projectRoot: f.repo, branch: task.taskNumber, resultCommit: f.base },
+  ] });
+  const args = { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "numbered-preview" });
+  assert.ok(preview.preview.deleting.some(x => x.kind === "branch" && x.name === task.taskNumber));
+  await f.call("hub_task_complete", { ...args, request_id: "numbered-confirm", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken });
+  assert.equal(f.board.task(task.id).status, "done");
+  await assert.rejects(f.git(["rev-parse", "--verify", `refs/heads/${task.taskNumber}`]));
+});
+
 test("manual cleanup resumes the SAME admitted original after worktree removal and SQLite reopen", async t => {
   const f = await publicFixture(t);
   f.raw.beginLifecycleTransition(f.task.id, { operationId: "done-before-partial", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
