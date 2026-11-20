@@ -7427,6 +7427,8 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
   const disclosureState = MessageView.captureMarkdownDetailsState(target);
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  const headingPattern = /^\s*(#{1,6})\s+(.+)$/u;
+  const listItemPattern = /^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u;
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
@@ -7473,7 +7475,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(renderTechnicalRows(rows));
       continue;
     }
-    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/u);
+    const heading = line.match(headingPattern);
     if (heading) {
       const node = document.createElement(`h${heading[1].length}`);
       appendInlineMarkdown(node, heading[2], fileContext);
@@ -7487,13 +7489,13 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       index = table.nextIndex;
       continue;
     }
-    const list = line.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+    const list = line.match(listItemPattern);
     if (list) {
       const ordered = Boolean(list[2]);
       const node = document.createElement(ordered ? "ol" : "ul");
       if (ordered && Number(list[2]) !== 1) node.start = Number(list[2]);
       while (index < lines.length) {
-        const item = lines[index].match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+        const item = lines[index].match(listItemPattern);
         if (!item || Boolean(item[2]) !== ordered) break;
         const entry = el("li");
         appendInlineMarkdown(entry, item[3], fileContext);
@@ -7501,7 +7503,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
         index += 1;
         let nextIndex = index;
         while (nextIndex < lines.length && !lines[nextIndex].trim()) nextIndex += 1;
-        const nextItem = lines[nextIndex]?.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+        const nextItem = lines[nextIndex]?.match(listItemPattern);
         if (nextItem && Boolean(nextItem[2]) === ordered) index = nextIndex;
       }
       target.append(node);
@@ -7520,12 +7522,16 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(quote);
       continue;
     }
-    const paragraph = [];
+    // An unrecognized block marker is literal text. Consume the first line
+    // before looking for the next block so every pass advances the cursor.
+    const paragraph = [lines[index++]];
     while (index < lines.length
       && lines[index].trim()
       && !MessageView.markdownFenceStart(lines[index])
-      && !/^\s*(?:#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
-      && !(paragraph.length && detailsDepth < 32 && MessageView.markdownDetailsAt(lines, index))
+      && !headingPattern.test(lines[index])
+      && !listItemPattern.test(lines[index])
+      && !/^\s*>\s?/u.test(lines[index])
+      && !(detailsDepth < 32 && MessageView.markdownDetailsAt(lines, index))
       && !markdownTableAt(lines, index)) {
       paragraph.push(lines[index++]);
     }
