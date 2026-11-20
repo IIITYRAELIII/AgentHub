@@ -50,7 +50,7 @@ const TASK_READS = new Set([
   "committedNativeTestForDev",
   "returnedNativeTestPriorResult",
   "assertSelectedAbsorptionState",
-  "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
+  "checklistRequestResult", "manualDeliveryReleaseReference", "awaitRebuildPending", "releaseFinalizationOutcome",
 ]);
 
 const READ_PROPERTIES = new Set(["revision", "snapshotRevision"]);

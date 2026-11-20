@@ -3,8 +3,14 @@
 RM-only `hub_task_complete` supports explicit `manual_delivery` with exact
 revision/release/manifest hash and the configured installation root. Existing
 authenticated mutation, original receipt, preview token and Task CAS remain
-owners. It closes a verified Done card while preserving its artifacts; WIP
-cleanup and publication history remain separate (ADR-HUB-466).
+owners. It removes the previewed clean published Task branches/worktrees before
+closing a verified Done card. Local/ignored/unpublished/later work blocks cleanup;
+card/history/publication evidence remain (ADR-HUB-466). An already closed card
+can preview and confirm its remaining cleanup without a new workflow transition
+or completion timestamp. Optional completed_operation_request_id in this mode
+binds an old canonical manual Complete's exact source. No old completed operation
+is replayed. A partial new cleanup uses its admitted original and the existing
+addressed reconciliation; a changed source or remaining artifact set refuses.
 Exact `retained_repositories` pins preserve unrepresented historical worktrees
 without claiming them delivered. RM Done may accept the same `manual_delivery`
 proof plus exact Task/status CAS for owned source without a Test reference.
@@ -549,6 +555,16 @@ decomposition owner and all archived rows. The existing request hash includes
 this binding only when supplied; old receipt identities remain unchanged.
 No alternate CLI, historical UNKNOWN replay, publication or absorption credit is
 introduced. Desktop checklist mutations cannot author or change this RM relation.
+For an already canonical manual Done without Test refs, the same reference may
+instead name `manualDelivery: { requestId, argumentsHash }` with the fresh Task
+revision. The existing successful status-operation receipt and workflow outcome
+must prove verified manual delivery of that Task's exact owned source. The Task
+owner freshly verifies unchanged clean managed heads under its lock before the
+short checklist transaction rechecks the receipt, Done state,
+empty refs, revision and Workspace. Empty refs or analysis Done alone never supply
+membership authority. The accepted outcome retains its actual publication proof;
+a later runtime or publication does not have to remain that historical release.
+The ordinary full-Git-reference form stays unchanged.
 
 Checklist event delivery is an internally managed effect (ADR-0029): its
 single-flight durable outbox drain invokes delivery outside SQL retry and queues
@@ -1002,6 +1018,14 @@ establishes business completion. Existing domain, source, actor, CAS, Task/repo
 lease, cleanup and publication guards remain mandatory.
 
 ## Durable cleanup confirmation capsules (ADR-HUB-434)
+
+Task Complete in explicit archive mode uses the same preview and receipt
+protocol. The receipt distinguishes card closure from a confirmation describing
+leftovers after an incomplete cleanup. An exact original reconciles by
+readback and cannot rerun its deletion. The agent result includes the remaining
+artifacts and "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС".
+This instruction is projected after receipt lookup and is absent from
+authenticated Desktop results and stored outcomes.
 
 Successful complete/delete preview compaction preserves action, token, exact
 Task identity/revision and the complete preview digest/length within 64 KiB.

@@ -10,6 +10,19 @@ receipts also outlive Git clean status and must not be discarded to close a card
 
 ## Decision
 
+The existing native checklist release-reference relation also supports a real
+manual Done without Test refs. Its alternative input names the original Done
+request ID and argument hash with the fresh member revision. The existing Task
+owner reads that successful canonical MCP receipt and workflow outcome, verifies
+the current clean owned source, then the existing short
+checklist transaction rechecks the same receipt, Done state, empty refs and CAS.
+Only its exact accepted managed heads/publication tuple count as membership;
+analysis Done or an empty Git array alone does not. The unique decomposition
+owner, archived rows, original receipt identities and ordinary Git-ref form stay
+intact. The outcome retains the actual publication evidence already checked at
+Done; later runtime/publication state need not stay at that historical release.
+This uses the existing relation and outcome tables, with no new ledger.
+
 The existing RM-only Task Complete surface has explicit `manual_delivery` mode.
 Revision, release ID and raw manifest hash are pinned; the runtime root comes
 from the configured installation owner. The reader uses the existing installed
@@ -22,10 +35,52 @@ to Git using the existing source line-ending/LFS policy and compiled Host hash.
 Pointer, manifest and process identity are rechecked. Evidence belongs only to
 the Task outcome; publication state and original outcomes are unchanged.
 
-Workflow Done precedes closing. Preview and confirmation bind the Task revision
-and delivery/retained-artifact description. Existing SQLite lifecycle closes the
-card while preserving all branches, worktrees, ignored files and receipts.
-Dirty or unrepresented later work refuses. Cleanup remains a separate operation.
+Workflow Done precedes closing an open implementation card. Preview and
+confirmation bind the Task revision, actual delivery and exact cleanup plan.
+The existing Git cleanup owner removes clean published managed branches/worktrees
+before SQLite archives the card. Ignored data and unrepresented historical
+repositories remain explicit obstacles; their artifact owner retires data
+separately. Later HEADs, foreign worktrees and dirty/unpublished work refuse.
+All present worktrees pass the existing Task ownership reader both before the
+preview plan and at cleanup consumption. Canonical Git refs and old Complete
+source pins do not exempt a live checkout: an unrelated branch at the same
+published HEAD remains unowned and cannot become an artifact-only cleanup ref.
+The same applies after the directory and registration disappeared. Before any
+historical workspace supplies a branch ref, its name must match the existing
+Task UUID/repository-derived branch or the Task's current numbered branch.
+This reuses the live ownership model, not a new branch allowlist. Historical
+source pins, path absence and published content alone cannot establish ownership.
+The original durable cleanup intent retains the source/publication pins and
+confirmation token. Partial removal or lost SQL/MCP reply keeps that phase for
+the existing addressed reconciliation, which re-proves delivery, accepts only
+the remaining pinned subset, and finishes the same original. Old preserve-only
+admitted confirmations and completed outcomes keep their original meaning.
+
+Already closed archives use the same manual preview/confirmation for remaining
+cleanup; their card/workflow/completion time remain unchanged. An optional
+completed_operation_request_id binds a real old manual Complete's source so
+later work cannot borrow it. A historical card with no lifecycle receipt needs
+the full fresh actual delivery/source proof. Closed status and Git ancestry
+alone authorize no deletion. Absorbed unpublished work remains preserved until
+publication proof supports its exact source.
+
+Historical partial cleanup can leave a Git registration for a missing worktree.
+The same cleanup owner previews only the exact Task UUID/repository-key managed
+path with positive ENOENT, unchanged published branch/head and a non-reparse
+managed parent. It invokes native `git worktree remove` on that exact missing
+path before the existing branch CAS. Existing replacement directories, foreign
+paths and changed registrations refuse. This does not use global prune, force
+or raw administrative-file editing.
+For an old canonical manual Complete without Test refs, its exact source pins
+remain authoritative after physical removal. The same reader re-proves those
+heads against the current actual installation/publication before cleanup; it
+does not treat the missing directory as empty source or manufacture a Test ref.
+
+Native manual release membership also survives verified source retirement.
+Its existing canonical Done proof is paired with a successful canonical cleanup
+outcome/receipt for the same source. Fresh filesystem checks require the retired
+branch and worktree to remain absent. Recreated/later source refuses; a missing
+worktree without that cleanup outcome grants no authority.
 
 The retained `synchronizeMainIntoDev` service accepts explicit `manualSync` with
 that verified installation, original operation ID, Workspace and expected dev.
@@ -34,6 +89,41 @@ fences and dev CAS. Conflicts leave dev unchanged and expose the isolated
 checkout; a normal reviewed resolution is consumed under the unchanged binding
 and fresh delivery checks. Partial delivery stays with its original journal.
 No generation, publication receipt, orchestrator or implicit adoption is added.
+
+## Explicit reviewed manual-native compatibility
+
+The removed generic native-review gate left a recovery-only argument reader;
+it supplied no review input to manual-main-dev-sync-v1. Step-level owned
+resolution can preserve legitimate compatibility while the full selected
+consumer correctly refuses unaccounted automatic-path deltas. A step PASS is
+not full-content acceptance.
+
+Reuse the original native-merge-review-v1 inter-Stream message format for this
+explicit manual compatibility case only. Task Git reads the existing catalog
+and Task stores read-only: the original MCP receipt must be successful, have
+accepted the message, bind its exact content hash and independent non-Astra
+same-provider sender to the current RM receiver and owning Task. No caller
+approval callback, scalar flag, new registry or new signature scheme is used.
+Provider equality is read from the owning Task's current executor Stream and
+active Thread, not inferred only from the reviewer and RM or a historical claim.
+This current executor binding is rechecked when a stored proof is reopened.
+
+The evidence binds the original manual identity/delivery, native namespace,
+raw original journal hash, issued index/stages, all best bases and parents,
+canonical automatic tree/inventory, candidate commit/tree, binary diff hash
+and every full before/after entry. The service accepts that separate evidence
+without changing manualSync business arguments or identity. The existing native
+journal stores the original review pair/binding before continuation and carries
+it through the full selected-content consumer and reopen. The consumer recomputes
+the same binding and reauthenticates its genuine receipt; omission cannot erase
+stored authority, and changing the candidate, context, entry or review refuses.
+Delivery fences recheck current authority before normal dev CAS/readback.
+
+Ordinary conflict-only sync/Test/Await keeps its existing behavior without a
+review requirement. The full proof still rejects arbitrary extra code, missing
+selected content, stale/foreign inputs and unaccepted additional changes.
+Compatibility acceptance does not publish the source or change an UNKNOWN
+effect disposition. The Root/application owner alone consumes the same original.
 
 The actual manual main/dev history has multiple best merge bases. The retained
 native virtual-base check accepts the manual policy as well as the historical
@@ -99,3 +189,56 @@ resolved and reviewed. Dev remains unchanged. After review, the owner repeats
 the exact same inputs; changed main/origin/runtime, expected dev or directory
 identity refuses. UNKNOWN uses the same journal and effect readback. This
 service input does not create a release tool or a public synchronization API.
+
+## Published standalone authority after a later manual installation
+
+The actual 2.1.9-r2 installation and owned release clone use commit 43d272db,
+while the protected registered primary remains at 1038b7d9 and lacks the new
+commit object. Its old origin tracking is not current remote publication proof.
+The existing primary-bound reader therefore refuses before completion, and
+the old sync cannot compute both input histories in either repository alone.
+
+The Task owner discovers the existing release-repositories layout/clone marker
+from configured dataDir and the registered repository key. It holds the existing
+release-git lease (before dev lease for sync), checks physical directory/marker
+bindings, matching primary/release origins, clean main checkout and exact
+main/origin plus fresh ls-remote origin main. It repeats this binding around
+the existing full installed source/Host/authenticated Ready verifier. No path
+is added to user inputs and no checkpoint/publication history is manufactured.
+An existing invalid/stale/foreign clone refuses rather than falling back to the
+old primary. The historical primary-only form remains for repositories with no
+managed clone. Git children requested concurrently by the reader are serialized
+only within its process-tree guard and joined before a refusal returns.
+
+For sync, the existing owned immutable-object store imports the exact dev closure
+from registered primary and exact published closure from the verified clone.
+Its existing lease-held invocation math view combines those objects. All native
+merge/base-set checks run there; the resulting isolated capture is self-contained.
+The normal sync journal and original operation identity, expected dev CAS,
+primary main/directory pin and repeated installation/origin proof remain.
+Only the existing dev delivery owner writes dev after resolution. Primary and
+published clone HEAD/index/tree/refs are retained. No raw primary repair, fake
+Test or new release pipeline is involved.
+
+The actual standalone checkout has CRLF-only Host C# source, while its Git blob
+uses LF. The old raw-Git-only Host build hash refused this legitimate installed
+package. The discovered clean clone supplies the compiled Host inputs: every
+physical input must first match its exact published Git blob through the existing
+sourceMatches line-ending/binary policy; their exact build hash must then equal
+the installed manifest-bound Host source hash. No hash/Host verification is
+skipped and no Git source code is executed as a verifier.
+
+## Closing the card independently of delivery
+
+Dashboard and MCP use the same Complete owner in archive mode. Archiving sets
+the card's presentation status and retains its workflow and all Task history.
+Archive cleanup uses existing durable publication evidence, the exact Task
+branch/current commit and worktree ownership. The installed runtime is not used
+as evidence about old published branches. When this proof is unavailable, the
+card may still be archived with the listed artifacts preserved.
+
+A cleanup attempt persists the admitted plan before Git. If work remains after
+cleanup, its durable outcome is another confirmation, rather than an archived
+card. The same original can be read after reconnect without repeating cleanup.
+Later explicit confirmation binds the newly observed leftovers. Only the MCP
+adapter adds an imperative agent instruction to this neutral result.

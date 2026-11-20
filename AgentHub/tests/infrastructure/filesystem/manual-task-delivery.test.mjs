@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { readManualTaskDelivery } from "../../../src/infrastructure/filesystem/manual-task-delivery.mjs";
+import { createManualDevResolutionBinding, assertNativeMergedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
+import { verifyManualDevResolutionReview } from "../../../src/infrastructure/persistence/manual-dev-resolution-review.mjs";
 import { TaskGitWorkspaceService, runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
@@ -14,6 +16,8 @@ import { HubMcpService } from "../../../src/application/hub-mcp-service.mjs";
 import { DesktopControlServer, readDesktopControlEndpoint, desktopControlEndpointFile, desktopControlSecretFile } from "../../../src/infrastructure/process/desktop-control.mjs";
 import { runtimeStatus } from "../../../src/runtime/runtime-manager.mjs";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
+import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+import { runtimeHostSourceHash } from "../../../src/infrastructure/process/runtime-host-source-identity.mjs";
 
 const sha = b => createHash("sha256").update(b).digest("hex");
 async function fixture(t) {
@@ -37,10 +41,10 @@ async function fixture(t) {
   await git(["update-ref", "refs/remotes/origin/main", base]);
   let observed = { pid: 1, running: true, ready: true, current: "manual", runningRelease: "manual", restartRequired: false };
   const ports = { verifyInstalled: async () => true, status: async () => ({ ...observed }) };
-  const install = async revision => {
+  const install = async (revision, sourceGit = git) => {
     const release = path.join(runtimeRoot, "releases/manual");
     await mkdir(release, { recursive: true });
-    const body = Buffer.from(await git(["show", `${revision}:AgentHub/app.mjs`], { rawOutput: true }));
+    const body = Buffer.from(await sourceGit(["show", `${revision}:AgentHub/app.mjs`], { rawOutput: true }));
     await writeFile(path.join(release, "app.mjs"), body);
     const raw = JSON.stringify({ releaseId: "manual", publicationRevision: revision,
       files: [{ path: "app.mjs", bytes: body.length, sha256: sha(body) }] });
@@ -84,6 +88,313 @@ async function publicFixture(t) {
     call: (name, args) => hub.call(name, { context_token: token, ...args }) };
 }
 
+test("manual Complete removes the verified clean branch and worktree before closing; original readback preserves history", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "delivered", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  const refs = [{ projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base }];
+  f.raw.commitWorkflowTransition({ operationId: "delivered", gitReferences: refs });
+  const args = { task_id: f.task.id, completion_mode: "manual_delivery", manual_delivery: f.input };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "cleanup-preview" });
+  assert.ok(preview.preview.deleting.some(x => x.kind === "branch" && x.name === f.managed.branch));
+  const result = await f.call("hub_task_complete", { ...args, request_id: "cleanup-confirm", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken });
+  assert.equal(result.status, "done");
+  await assert.rejects(f.git(["rev-parse", "--verify", `refs/heads/${f.managed.branch}`]));
+  assert.deepEqual(await f.taskGit.describe(f.task.id), []);
+  assert.deepEqual(f.board.task(f.task.id).gitReferences, refs);
+  const closed = f.board.task(f.task.id);
+  assert.deepEqual(await f.call("hub_task_complete", { ...args, request_id: "cleanup-confirm", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken }), JSON.parse(JSON.stringify(result)));
+  assert.deepEqual(f.board.task(f.task.id), closed);
+  assert.ok(f.board.lifecycleOutcome("delivered"));
+});
+
+test("manual cleanup refuses a live checkout whose branch is not owned by the Task", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, {operationId:"ownership-done",targetWorkflowStatus:"done",expectedRevision:f.task.revision});
+  f.raw.commitWorkflowTransition({operationId:"ownership-done",gitReferences:[
+    {projectRoot:f.repo,branch:f.managed.branch,resultCommit:f.base}
+  ]});
+  const original=f.board.task(f.task.id);
+  await runTaskGitCommand(["switch","-c","independent-branch"],{cwd:f.managed.projectRoot});
+  assert.equal(await f.git(["rev-parse","independent-branch"]),f.base);
+  assert.equal(await f.git(["rev-parse",f.managed.branch]),f.base);
+  assert.equal(await f.taskGit.managedRepositoryRoot(f.managed.projectRoot,{taskId:f.task.id,taskNumber:original.taskNumber}),null);
+  const call=f.call("hub_task_complete",{task_id:f.task.id,completion_mode:"manual_delivery",manual_delivery:f.input,request_id:"foreign-live-branch-preview"});
+  const observed=await call.then(value=>({plan:value.preview?.deleting?.filter(x=>x.kind==="branch").map(x=>x.name).sort()}),error=>({error:error.message}));
+  assert.deepEqual(f.board.task(f.task.id),original);
+  assert.equal(await f.git(["rev-parse","independent-branch"]),f.base);
+  assert.ok(observed.error && /source|own|branch|worktree/iu.test(observed.error), JSON.stringify(observed));
+});
+
+test("manual cleanup rechecks live Task ownership for canonical historical source pins", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "historical-owner-done", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "historical-owner-done", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const task = f.board.task(f.task.id);
+  const source = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  await runTaskGitCommand(["switch", "-c", "independent-historical-branch"], { cwd: f.managed.projectRoot });
+  // Retained evidence from the old reader could include this unowned checkout.
+  // Its durable outcome must not supply current branch-deletion authority.
+  source.workspaces = await f.taskGit.describe(task.id);
+  f.raw.beginLifecycleTransition(task.id, { operationId: "historical-unowned-close", kind: "complete", expectedRevision: task.revision });
+  f.raw.finalizeCleanupTransition("historical-unowned-close", { receiptEvidence: { manualDelivery: source } });
+  const archived = f.board.task(task.id);
+  await assert.rejects(f.call("hub_task_complete", { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input,
+    completed_operation_request_id: "historical-unowned-close", request_id: "historical-unowned-preview" }), /ownership/u);
+  assert.deepEqual(f.board.task(task.id), archived);
+  assert.equal(await f.git(["rev-parse", "independent-historical-branch"]), f.base);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("manual cleanup retains current numbered Task branch ownership through confirmation", async t => {
+  const f = await publicFixture(t);
+  f.raw.updatePresentation(f.task.id, { title: f.task.title, description: f.task.description, taskNumber: "HUB-466" });
+  const task = f.board.task(f.task.id);
+  assert.match(task.taskNumber, /^HUB-\d+$/u);
+  await runTaskGitCommand(["branch", "-m", task.taskNumber], { cwd: f.managed.projectRoot });
+  f.raw.beginLifecycleTransition(task.id, { operationId: "numbered-done", targetWorkflowStatus: "done", expectedRevision: task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "numbered-done", gitReferences: [
+    { projectRoot: f.repo, branch: task.taskNumber, resultCommit: f.base },
+  ] });
+  const args = { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "numbered-preview" });
+  assert.ok(preview.preview.deleting.some(x => x.kind === "branch" && x.name === task.taskNumber));
+  await f.call("hub_task_complete", { ...args, request_id: "numbered-confirm", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken });
+  assert.equal(f.board.task(task.id).status, "done");
+  await assert.rejects(f.git(["rev-parse", "--verify", `refs/heads/${task.taskNumber}`]));
+});
+
+test("manual cleanup refuses an unowned historical artifact branch after checkout and registration disappeared", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "absent-foreign-done", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "absent-foreign-done", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const task = f.board.task(f.task.id);
+  const source = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  await runTaskGitCommand(["switch", "-c", "independent-absent-branch"], { cwd: f.managed.projectRoot });
+  source.workspaces = await f.taskGit.describe(task.id); // Exact old-reader evidence shape.
+  f.raw.beginLifecycleTransition(task.id, { operationId: "absent-foreign-close", kind: "complete", expectedRevision: task.revision });
+  f.raw.finalizeCleanupTransition("absent-foreign-close", { receiptEvidence: { manualDelivery: source } });
+  const archived = f.board.task(task.id);
+  await f.git(["worktree", "remove", f.managed.projectRoot]);
+  assert.deepEqual(await f.taskGit.describe(task.id), []);
+  assert.ok(!(await f.git(["worktree", "list", "--porcelain"])).includes("refs/heads/independent-absent-branch"));
+  await assert.rejects(f.call("hub_task_complete", { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input,
+    completed_operation_request_id: "absent-foreign-close", request_id: "absent-foreign-preview" }), /branch ownership/u);
+  assert.deepEqual(f.board.task(task.id), archived);
+  assert.equal(await f.git(["rev-parse", "independent-absent-branch"]), f.base);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("manual cleanup preserves numbered Task ownership for an absent canonical no-Test source", async t => {
+  const f = await publicFixture(t);
+  f.raw.updatePresentation(f.task.id, { title: f.task.title, description: f.task.description, taskNumber: "HUB-466" });
+  await runTaskGitCommand(["branch", "-m", "HUB-466"], { cwd: f.managed.projectRoot });
+  f.raw.setWorkflowStatus(f.task.id, "done");
+  const task = f.board.task(f.task.id);
+  const source = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  f.raw.beginLifecycleTransition(task.id, { operationId: "numbered-absent-close", kind: "complete", expectedRevision: task.revision });
+  f.raw.finalizeCleanupTransition("numbered-absent-close", { receiptEvidence: { manualDelivery: source } });
+  const archived = f.board.task(task.id);
+  await rm(path.dirname(f.managed.projectRoot), { recursive: true });
+  const args = { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input,
+    completed_operation_request_id: "numbered-absent-close" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "numbered-absent-preview" });
+  assert.equal(preview.preview.staleWorktrees.length, 1);
+  assert.ok(preview.preview.deleting.some(x => x.kind === "branch" && x.name === "HUB-466"));
+  await f.call("hub_task_complete", { ...args, request_id: "numbered-absent-confirm", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken });
+  await assert.rejects(f.git(["rev-parse", "--verify", "refs/heads/HUB-466"]));
+  assert.deepEqual(f.board.task(task.id), archived);
+  assert.deepEqual(f.board.task(task.id).gitReferences, []);
+});
+
+test("manual cleanup resumes the SAME admitted original after worktree removal and SQLite reopen", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "done-before-partial", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "done-before-partial", gitReferences: [] });
+  const args = { task_id: f.task.id, completion_mode: "manual_delivery", manual_delivery: f.input };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "partial-preview" });
+  const run = f.taskGit.runCommand;
+  let interrupted = false;
+  f.taskGit.runCommand = async (argv, options) => {
+    if (!interrupted && argv[0] === "update-ref" && argv[1] === "-d" && argv[2] === `refs/heads/${f.managed.branch}`) {
+      interrupted = true; throw Error("controlled failure after worktree removal");
+    }
+    return run(argv, options);
+  };
+  await assert.rejects(f.call("hub_task_complete", { ...args, request_id: "partial-original", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken }), /controlled failure/u);
+  assert.equal(interrupted, true);
+  assert.deepEqual(await f.taskGit.describe(f.task.id), []);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  assert.notEqual(f.board.task(f.task.id).status, "done");
+  assert.equal(f.board.lifecycleTransition("partial-original").phase, "cleanup");
+  assert.equal(f.catalog.mcpOperation("partial-original").status, "unknown");
+  const reopened = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite") });
+  f.beforeCleanup.push(() => reopened.close());
+  f.board.store = reopened;
+  f.taskGit.runCommand = run;
+  const late = await f.git(["commit-tree", `${f.base}^{tree}`, "-p", f.base, "-m", "late owned work"],
+    { env: { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid" } });
+  await f.git(["update-ref", `refs/heads/${f.managed.branch}`, late, f.base]);
+  await assert.rejects(f.call("hub_task_operation_reconcile", { task_id: f.task.id, request_id: "partial-drift-refuse",
+    operation_request_id: "partial-original", confirm_reconcile: true }), /changed or has later work/u);
+  assert.equal(f.catalog.mcpOperation("partial-original").status, "unknown");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), late);
+  await f.git(["update-ref", `refs/heads/${f.managed.branch}`, f.base, late]); // Restore only controlled fixture drift.
+  const recovered = await f.call("hub_task_operation_reconcile", { task_id: f.task.id, request_id: "partial-reconcile",
+    operation_request_id: "partial-original", confirm_reconcile: true });
+  assert.equal(recovered.outcome, "COMPLETED");
+  assert.equal(f.catalog.mcpOperation("partial-original").status, "succeeded");
+  await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
+  assert.equal(f.board.task(f.task.id).status, "done");
+});
+
+test("manual cleanup refuses local tracked/untracked work and stale source after a clean preview", async t => {
+  const f = await publicFixture(t); f.raw.setWorkflowStatus(f.task.id, "done");
+  const task = f.board.task(f.task.id);
+  const args = { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "before-local-preview" });
+  const local = path.join(f.managed.projectRoot, "unique-local.txt");
+  await writeFile(local, "unique local payload\n");
+  await assert.rejects(f.call("hub_task_complete", { ...args, request_id: "local-confirm", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken }), /unfinished Task work/u);
+  assert.equal(await readFile(local, "utf8"), "unique local payload\n");
+  assert.deepEqual(f.board.task(task.id), task);
+  await unlink(local); // Controlled untracked fixture only.
+  const tracked = path.join(f.managed.projectRoot, "AgentHub/app.mjs");
+  await writeFile(tracked, "unpublished tracked work\n");
+  await assert.rejects(f.call("hub_task_complete", { ...args, request_id: "tracked-preview" }), /unfinished Task work/u);
+  assert.equal(await readFile(tracked, "utf8"), "unpublished tracked work\n");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("manual cleanup retires only an exact missing owned worktree registration and preserves replacement or foreign paths", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "missing-done", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "missing-done", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  f.raw.complete(f.task.id);
+  const archived = f.board.task(f.task.id);
+  await rm(path.dirname(f.managed.projectRoot), { recursive: true }); // Historical whole-Task physical cleanup; Git registration remains.
+  const args = { task_id: f.task.id, completion_mode: "manual_delivery", manual_delivery: f.input };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "missing-preview" });
+  assert.equal(preview.preview.staleWorktrees.length, 1);
+  assert.equal(path.resolve(preview.preview.staleWorktrees[0].projectRoot), path.resolve(f.managed.projectRoot));
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  await mkdir(f.managed.projectRoot, { recursive: true });
+  const replacement = path.join(f.managed.projectRoot, "replacement.txt"); await writeFile(replacement, "preserve new directory\n");
+  await assert.rejects(f.call("hub_task_complete", { ...args, request_id: "replacement-confirm", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken }), /foreign|changed/u);
+  assert.equal(await readFile(replacement, "utf8"), "preserve new directory\n");
+  assert.deepEqual(f.board.task(f.task.id), archived);
+  await rm(f.managed.projectRoot, { recursive: true }); // Controlled replacement fixture only.
+  const fresh = await f.call("hub_task_complete", { ...args, request_id: "missing-fresh-preview" });
+  await f.call("hub_task_complete", { ...args, request_id: "missing-clean", confirm_cleanup: true,
+    expected_cleanup_token: fresh.cleanupToken });
+  await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
+  assert.ok(!(await f.git(["worktree", "list", "--porcelain"])).includes(f.managed.branch));
+  assert.deepEqual(f.board.task(f.task.id), archived);
+  const g = await publicFixture(t);
+  g.raw.beginLifecycleTransition(g.task.id, { operationId: "foreign-missing-done", targetWorkflowStatus: "done", expectedRevision: g.task.revision });
+  g.raw.commitWorkflowTransition({ operationId: "foreign-missing-done", gitReferences: [
+    { projectRoot: g.repo, branch: g.managed.branch, resultCommit: g.base },
+  ] });
+  const foreign = path.join(g.root, "foreign-missing");
+  await g.git(["worktree", "move", g.managed.projectRoot, foreign]); await rm(foreign, { recursive: true });
+  await assert.rejects(g.call("hub_task_complete", { task_id: g.task.id, completion_mode: "manual_delivery", manual_delivery: g.input,
+    request_id: "foreign-missing-preview" }), /foreign worktree/u);
+  assert.equal(await g.git(["rev-parse", g.managed.branch]), g.base);
+});
+
+test("manual cleanup recovers canonical old no-Test-ref source pins after its whole directory disappeared", async t => {
+  const f = await publicFixture(t); f.raw.setWorkflowStatus(f.task.id, "done");
+  const task = f.board.task(f.task.id);
+  const source = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  f.raw.beginLifecycleTransition(task.id, { operationId: "historical-no-ref-close", kind: "complete", expectedRevision: task.revision });
+  f.raw.finalizeCleanupTransition("historical-no-ref-close", { receiptEvidence: { manualDelivery: source } });
+  const archived = f.board.task(task.id);
+  await rm(path.dirname(f.managed.projectRoot), { recursive: true });
+  const args = { task_id: task.id, completion_mode: "manual_delivery", manual_delivery: f.input,
+    completed_operation_request_id: "historical-no-ref-close" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "old-no-ref-preview" });
+  assert.equal(preview.preview.staleWorktrees.length, 1);
+  assert.equal(preview.preview.publishedCleanupReferences[0].resultCommit, f.base);
+  await f.call("hub_task_complete", { ...args, request_id: "old-no-ref-clean", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken });
+  await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
+  assert.deepEqual(f.board.task(task.id), archived);
+  assert.deepEqual(f.board.task(task.id).gitReferences, []);
+});
+
+test("manual cleanup previews an already closed archive with no old Complete receipt without rewriting its lifecycle", async t => {
+  const f = await publicFixture(t);
+  f.raw.complete(f.task.id); // Historical archive form, not a delivered-workflow assertion.
+  const archived = f.board.task(f.task.id);
+  const args = { task_id: f.task.id, completion_mode: "manual_delivery", manual_delivery: f.input };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "archive-preview" });
+  assert.deepEqual(f.board.task(f.task.id), archived);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  await f.call("hub_task_complete", { ...args, request_id: "archive-clean", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken });
+  assert.deepEqual(f.board.task(f.task.id), archived);
+  await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
+});
+
+test("manual cleanup never upgrades a previously admitted preserve-only confirmation or replays its completed outcome", async t => {
+  const f = await publicFixture(t); f.raw.setWorkflowStatus(f.task.id, "done");
+  const task = f.board.task(f.task.id);
+  const retained = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  const originalArguments = { request_id: "old-preserve-original", task_id: task.id, completion_mode: "manual_delivery",
+    manual_delivery: f.input, confirm_cleanup: true, expected_cleanup_token: "old-token" };
+  f.raw.beginLifecycleTransition(task.id, { operationId: "old-preserve-original", kind: "complete", expectedRevision: task.revision,
+    evidence: { manualDelivery: retained, originalArguments, confirmationToken: "old-token" } });
+  const args = { taskId: task.id, operationId: "old-preserve-original", completionMode: "manual_delivery", manualDelivery: f.input,
+    confirmCleanup: true, expectedCleanupToken: "old-token", originalArguments };
+  const result = await f.lifecycle.complete(args);
+  assert.equal(result.status, "done");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  f.taskGit.manualDeliveryPreviewOwned = () => assert.fail("completed old original is readback only");
+  assert.deepEqual(await f.lifecycle.complete(args), result);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("manual cleanup pins an old canonical preservation outcome and refuses later or foreign checked-out work", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "old-done", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "old-done", gitReferences: [] });
+  const source = await f.taskGit.withTaskLock(f.task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task: f.board.task(f.task.id), input: f.input, lease }));
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "old-preserving-complete", kind: "complete", expectedRevision: f.board.task(f.task.id).revision });
+  f.raw.finalizeCleanupTransition("old-preserving-complete", { receiptEvidence: { manualDelivery: source } });
+  const archived = f.board.task(f.task.id);
+  const args = { task_id: f.task.id, completion_mode: "manual_delivery", manual_delivery: f.input,
+    completed_operation_request_id: "old-preserving-complete" };
+  await assert.rejects(f.call("hub_task_complete", { ...args, request_id: "wrong-archive", completed_operation_request_id: "old-done" }), /canonical completed outcome/u);
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "old-archive-preview" });
+  await writeFile(path.join(f.managed.projectRoot, "late.txt"), "late unique work\n");
+  const late = await f.commit(f.managed.projectRoot);
+  await f.git(["merge", "--ff-only", late]); await f.git(["update-ref", "refs/remotes/origin/main", late]);
+  const laterDelivery = await f.install(late);
+  await assert.rejects(f.call("hub_task_complete", { ...args, manual_delivery: laterDelivery, request_id: "late-published-preview" }), /original completed delivery/u);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), late);
+  assert.deepEqual(f.board.task(f.task.id), archived);
+  // Separate clean fixture checks a branch moved into a foreign checkout.
+  const g = await publicFixture(t); g.raw.setWorkflowStatus(g.task.id, "done");
+  const foreign = path.join(g.root, "foreign-worktree");
+  await g.git(["worktree", "move", g.managed.projectRoot, foreign]);
+  await assert.rejects(g.call("hub_task_complete", { task_id: g.task.id, completion_mode: "manual_delivery", manual_delivery: g.input,
+    request_id: "foreign-preview" }), /owned managed source|foreign|outside|managed/u);
+  assert.equal(await g.git(["rev-parse", g.managed.branch]), g.base);
+  assert.ok(preview.preview.deleting.some(x => x.kind === "branch"));
+});
+
 test("manual delivery verifies actual Git containment and rejects source/manifest/pointer/ready/installation drift", async t => {
   const f = await fixture(t);
   assert.equal((await f.read({ resultCommits: [f.base] })).revision, f.base);
@@ -99,6 +410,183 @@ test("manual delivery verifies actual Git containment and rejects source/manifes
   await assert.rejects(f.read({ verifyInstalled: async () => {
     await writeFile(path.join(f.runtimeRoot, "current.json"), '{"current":"other"}'); return true;
   } }), /changed during/u);
+});
+
+async function reviewedSyncFixture(t) {
+  const f = await fixture(t), dataDir = path.join(f.root, "reviewed-data");
+  const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(dataDir, "journal.sqlite") }); await catalog.load();
+  const raw = new TaskBoardStore({ databaseFile: path.join(dataDir, "journal.sqlite") });
+  f.beforeCleanup.push(() => { raw.close(); catalog.close(); });
+  const workspace = await catalog.runMutation(() => catalog.createWorkspace({ name: "Manual sync", settings: {
+    workingDirectory: f.repo, releaseWorkflowEnabled: true,
+  } }));
+  const streams = {};
+  for (const [name, settings] of [["author", {}], ["reviewer", { model: "gpt-6.1-sol" }], ["operator", { releaseManager: true }]]) {
+    streams[name] = await catalog.runMutation(() => catalog.createStream({ workspaceId: workspace.id, name, settings }));
+    await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: name, streamId: streams[name].id }));
+  }
+  const task = raw.create({ text: "Retain Task compatibility", bucket: "workspace", workspaceId: workspace.id });
+  raw.claim(task.id, { workspaceId: workspace.id, streamId: streams.author.id, provider: "codex", threadId: "author",
+    turnId: "author-turn", operationId: "own-task" });
+  const board = new TaskBoardService({ store: raw, workspaceCatalog: catalog });
+  const hub = new HubMcpService({ workspaceCatalog: catalog, taskBoard: board, workLog: { threadTurns: () => [] },
+    attachmentDirectory: f.root, secret: "private-review-fixture", reconcilePendingOnStartup: false });
+  // Only recipient transport is controlled. Authentication, origin content hash
+  // and durable inter-Stream receipt are the actual public MCP owner, not a
+  // callback claiming that a native review is valid.
+  hub.setStreamMessenger(async input => ({ accepted: true, id: input.clientUserMessageId, provider: input.provider }));
+  const send = async (binding, requestId, sender = "reviewer", recipient = "operator") => {
+    const text = `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>`;
+    const thread = catalog.activeThread(streams[sender].id);
+    const result = await hub.call("hub_stream_message_send", { context_token: hub.contextToken(thread),
+      request_id: requestId, stream_id: streams[recipient].id, mode: "steer", text, confirm_send: true });
+    assert.equal(result.delivery.accepted, true);
+    assert.equal(catalog.mcpOperation(requestId).status, "succeeded");
+    return { requestId, text };
+  };
+  const service = new TaskGitWorkspaceService({ dataDir, runtimeRoot: f.runtimeRoot, recordTiming: () => {},
+    readManualDelivery: args => readManualTaskDelivery({ ...args, ...f.ports }) });
+  const dev = await service.prepareDev(f.repo);
+  await writeFile(path.join(dev.projectRoot, "left.txt"), "left Task\n");
+  const left = await f.commit(dev.projectRoot);
+  await writeFile(path.join(f.repo, "right.txt"), "published side\n");
+  const right = await f.commit();
+  const merge = (cwd, revision) => runTaskGitCommand(["-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid",
+    "merge", "--no-ff", "-m", "real criss-cross context", revision], { cwd });
+  await merge(dev.projectRoot, right); await merge(f.repo, left);
+  await writeFile(path.join(dev.projectRoot, "AgentHub/app.mjs"), "export const version = 'later-dev';\n");
+  await writeFile(path.join(dev.projectRoot, "later.txt"), "later Task remains\n");
+  const oldDev = await f.commit(dev.projectRoot);
+  await writeFile(path.join(f.repo, "AgentHub/app.mjs"), "export const version = 'published';\n");
+  const main = await f.commit(); await f.git(["update-ref", "refs/remotes/origin/main", main]);
+  assert.deepEqual((await f.git(["merge-base", "--all", oldDev, main])).split("\n").sort(), [left, right].sort());
+  const delivery = await f.install(main);
+  const args = { projectRoot: f.repo, publishedRevision: main, manualSync: {
+    operationId: "same-manual-sync", workspaceId: workspace.id, expectedDevCommit: oldDev, delivery } };
+  const issued = await service.synchronizeMainIntoDev(args), native = issued.nativeConflictRoot;
+  assert.equal(issued.status, "review_required");
+  await writeFile(path.join(native, "AgentHub/app.mjs"), "export const version = 'published';\nexport const later = 'later-dev';\n");
+  await writeFile(path.join(native, "compatibility.mjs"), "export const retainedTaskOwner = true;\n");
+  const commit = await f.commit(native), journalFile = path.join(native, "../merge.json");
+  const git = (a, opts) => runTaskGitCommand(a, { ...opts, cwd: native });
+  const binding = async () => {
+    const bytes = await readFile(journalFile), journal = JSON.parse(bytes);
+    return createManualDevResolutionBinding({ git, root: path.dirname(native), identity: journal.identity,
+      commit: await git(["rev-parse", "HEAD"]), taskId: task.id, originalJournalSha256: sha(bytes) });
+  };
+  return { ...f, dataDir, service, args, native, oldDev, dev, main, commit, journalFile, nativeGit: git, binding, send, catalog, task, streams };
+}
+
+test("manual sync authenticates exact independent review at the full consumer and retains it through SAME CAS recovery", async t => {
+  const f = await reviewedSyncFixture(t);
+  // The original full production selected consumer refuses the extra native
+  // compatibility contribution. This is not a fabricated private-export error.
+  await assert.rejects(f.service.synchronizeMainIntoDev(f.args), error => error.code === "RELEASE_SELECTED_CONTENT_MISSING");
+  assert.equal(await f.nativeGit(["rev-parse", "HEAD"]), f.commit);
+  assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
+  const binding = await f.binding(), review = await f.send(binding, "real-review");
+  const before = await readFile(f.journalFile), run = f.service.runCommand;
+  let lost = false;
+  f.service.runCommand = async (args, options) => {
+    const value = await run(args, options);
+    if (!lost && args[0] === "update-ref" && args[1] === "refs/heads/dev") {
+      lost = true; throw Object.assign(Error("lost reviewed sync CAS reply"), { processTreeStopped: true });
+    }
+    return value;
+  };
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), error => error.code === "PUBLISHED_DEV_SYNC_UNKNOWN");
+  assert.equal(lost, true);
+  const journal = JSON.parse(await readFile(f.journalFile));
+  assert.deepEqual(journal.manualCompatibilityReview, { review, binding });
+  assert.deepEqual(journal.identity, JSON.parse(before).identity);
+  f.service.runCommand = run;
+  // Omission cannot drop stored authority: the real read-only receipt verifier
+  // and full content consumer run again before same-original readback.
+  const result = await f.service.synchronizeMainIntoDev(f.args);
+  assert.equal(result.integrated, true); assert.equal(result.headCommit, f.commit);
+  assert.equal(await readFile(path.join(f.dev.projectRoot, "later.txt"), "utf8"), "later Task remains\n");
+  assert.equal(await readFile(path.join(f.dev.projectRoot, "compatibility.mjs"), "utf8"), "export const retainedTaskOwner = true;\n");
+  assert.equal(await f.git(["rev-parse", "main"]), f.main);
+  assert.equal(await f.git(["status", "--porcelain"]), "");
+  await assertNativeMergedResults({ git: f.nativeGit, baseCommit: journal.identity.devCommit,
+    tasks: [{ taskId: `published:${journal.identity.operationId}`, mergeBases: journal.identity.mergeBases, resultCommit: f.main }],
+    merges: journal.merges, head: f.commit, tree: binding.tree, identity: journal.identity,
+    manualCompatibilityReview: journal.manualCompatibilityReview, root: path.dirname(f.native),
+    verifyManualReview: (review, binding) => verifyManualDevResolutionReview({ dataDir: f.dataDir, review, binding }) });
+});
+
+test("manual sync refuses authored/forged/stale/foreign review and an additional delta before any dev promotion", async t => {
+  const f = await reviewedSyncFixture(t), binding = await f.binding(), original = await readFile(f.journalFile);
+  const authored = await f.send(binding, "authored", "author");
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: authored }), /independent authority/);
+  for (const [name, settings] of [["foreignReviewer", { model: "claude-sonnet-4-5" }], ["foreignOperator", { releaseManager: true }]]) {
+    f.streams[name] = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId: binding.workspaceId, name, settings }));
+    await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: name, streamId: f.streams[name].id }));
+  }
+  const foreign = await f.send(binding, "genuine-foreign-provider", "foreignReviewer", "foreignOperator");
+  assert.equal(f.catalog.mcpOperation(foreign.requestId).provider, "claude");
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: foreign }), /independent authority/);
+  assert.deepEqual(await readFile(f.journalFile), original);
+  assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
+  // Provider equality follows the canonical current executor, not a Codex
+  // constant or its historical claim. Same-provider Claude is valid too.
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: "author-claude", streamId: f.streams.author.id }));
+  await verifyManualDevResolutionReview({ dataDir: f.dataDir, review: foreign, binding });
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "author-returned", streamId: f.streams.author.id }));
+  const review = await f.send(binding, "independent");
+  await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.reviewer.id, { model: "gpt-6-astra" }));
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /independent authority/);
+  await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.reviewer.id, { model: "gpt-6.1-sol" }));
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args,
+    nativeResolutionReview: { ...review, requestId: "not-admitted" } }), /independent authority/);
+  let variant = 0;
+  for (const patch of [{ tree: "a".repeat(40) }, { identityHash: "b".repeat(64) }, { nativeRoot: path.join(f.root, "foreign") },
+    { originalJournalSha256: "c".repeat(64) }, { changes: [] }]) {
+    const text = `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding: { ...binding, ...patch } })}</native-merge-review>`;
+    await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: { requestId: review.requestId, text } }));
+    const signedForeign = await f.send({ ...binding, ...patch }, `signed-other-context-${variant++}`);
+    await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: signedForeign }));
+    assert.deepEqual(await readFile(f.journalFile), original);
+  }
+  await writeFile(f.journalFile, Buffer.concat([original, Buffer.from("\n")]));
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /original capture changed/);
+  await writeFile(f.journalFile, original);
+  await writeFile(path.join(f.native, "not-reviewed.txt"), "must not be accepted\n");
+  await runTaskGitCommand(["add", "not-reviewed.txt"], { cwd: f.native });
+  await runTaskGitCommand(["-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "--amend", "--no-edit"], { cwd: f.native });
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /binding changed/);
+  assert.deepEqual(await readFile(f.journalFile), original);
+  assert.equal(await runTaskGitCommand(["rev-parse", "dev"], { cwd: f.repo }), f.oldDev);
+  assert.equal(await f.git(["rev-parse", "main"]), f.main);
+});
+
+test("manual sync rechecks genuine review authority before dev CAS and resumes the retained SAME proof", async t => {
+  const f = await reviewedSyncFixture(t), review = await f.send(await f.binding(), "delivery-review");
+  const run = f.service.runCommand;
+  let changed = false;
+  f.service.runCommand = async (args, options) => {
+    const value = await run(args, options);
+    if (!changed && args[0] === "fetch" && options.cwd === f.dev.projectRoot) {
+      changed = true;
+      await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.operator.id, { releaseManager: false }));
+    }
+    return value;
+  };
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /independent authority/);
+  assert.equal(changed, true);
+  assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
+  assert.equal(await f.git(["rev-parse", "main"]), f.main);
+  const journal = JSON.parse(await readFile(f.journalFile));
+  assert.deepEqual(journal.manualCompatibilityReview.review, review);
+  await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.operator.id, { releaseManager: true }));
+  f.service.runCommand = run;
+  // A stored proof must also re-read current executor authority on reopen.
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: "author-provider-drift", streamId: f.streams.author.id }));
+  await assert.rejects(f.service.synchronizeMainIntoDev(f.args), /independent authority/);
+  assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "author-provider-restored", streamId: f.streams.author.id }));
+  assert.equal((await f.service.synchronizeMainIntoDev(f.args)).headCommit, f.commit);
+  assert.equal(await readFile(path.join(f.dev.projectRoot, "later.txt"), "utf8"), "later Task remains\n");
 });
 
 test("manual delivery requires authenticated live control matching the Ready PID/release and stable endpoint", async t => {
@@ -142,7 +630,7 @@ test("manual delivery requires authenticated live control matching the Ready PID
   await assert.rejects(read(), /ENOENT/u);
 });
 
-test("manual completion closes through SQLite lifecycle while retaining ignored data, branch and worktree; exact retry survives reopen", async t => {
+test("manual completion preserves ignored data by refusing cleanup; verified retirement permits closure and exact retry after reopen", async t => {
   const f = await fixture(t);
   let raw = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite") });
   f.beforeCleanup.push(() => raw.close());
@@ -159,18 +647,26 @@ test("manual completion closes through SQLite lifecycle while retaining ignored 
   const lifecycle = () => new TaskLifecycleService({ taskBoard: new TaskBoardService({ store: raw, workspaceCatalog: catalog }),
     workspaceCatalog: catalog, taskGitWorkspaces: service });
   const args = { taskId: task.id, completionMode: "manual_delivery", manualDelivery: f.input };
-  const preview = await lifecycle().complete({ ...args, operationId: "preview" });
-  assert.deepEqual(preview.preview.deleting, []);
-  assert.ok(preview.preview.retainedIgnored.some(x => x.path === "WIP/"));
+  let preview = await lifecycle().complete({ ...args, operationId: "preview" });
+  assert.ok(preview.preview.deleting.some(x => x.kind === "branch"));
+  assert.ok(preview.preview.retainedIgnored.some(x => x.paths.includes("WIP/")));
   await assert.rejects(lifecycle().complete({ ...args, operationId: "bad", confirmCleanup: true, expectedCleanupToken: "bad" }), /confirmation/u);
   const confirmed = { ...args, operationId: "close", confirmCleanup: true, expectedCleanupToken: preview.cleanupToken };
   confirmed.originalArguments = { task_id: task.id, request_id: "close", completion_mode: "manual_delivery",
     manual_delivery: f.input, confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken };
-  const result = await lifecycle().complete(confirmed);
-  assert.equal(result.status, "done"); assert.equal(result.workflowStatus, "done");
+  await assert.rejects(lifecycle().complete(confirmed), /local data/u);
+  assert.notEqual(raw.task(task.id).status, "done");
   assert.equal(await readFile(wip, "utf8"), "unique evidence");
   assert.equal(await f.git(["rev-parse", source.branch]), f.base);
-  assert.equal((await service.describe(task.id))[0].headCommit, f.base);
+  // Synthetic artifact-owner retirement; product cleanup never removes WIP.
+  await rm(path.dirname(wip), { recursive: true });
+  preview = await lifecycle().complete({ ...args, operationId: "preview-retired" });
+  confirmed.expectedCleanupToken = preview.cleanupToken;
+  confirmed.originalArguments.expected_cleanup_token = preview.cleanupToken;
+  const result = await lifecycle().complete(confirmed);
+  assert.equal(result.status, "done"); assert.equal(result.workflowStatus, "done");
+  await assert.rejects(f.git(["rev-parse", "--verify", source.branch]));
+  assert.deepEqual(await service.describe(task.id), []);
   raw.close(); raw = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite") });
   assert.deepEqual(await lifecycle().complete(confirmed), result);
   assert.ok(raw.lifecycleOutcome("close").result.evidence.manualDelivery);
@@ -224,7 +720,7 @@ test("manual main-to-dev sync retains an isolated conflict, refuses origin drift
   assert.equal(await f.git(["status", "--porcelain"]), "");
 });
 
-test("public manual Complete reconciles its exact lost reply without replaying completion or deleting artifacts", async t => {
+test("public manual Complete reconciles its exact lost reply without replaying closure or finished cleanup", async t => {
   const f = await fixture(t);
   const databaseFile = path.join(f.root, "journal.sqlite");
   const catalog = new WorkspaceCatalogStore({ databaseFile });
@@ -266,8 +762,8 @@ test("public manual Complete reconciles its exact lost reply without replaying c
   assert.equal(recovered.result.id, task.id);
   assert.equal(catalog.mcpOperation("original").status, "succeeded");
   assert.deepEqual(board.lifecycleOutcome("original"), outcome);
-  assert.equal(await f.git(["rev-parse", managed.branch]), f.base);
-  assert.equal((await taskGit.describe(task.id))[0].headCommit, f.base);
+  await assert.rejects(f.git(["rev-parse", "--verify", managed.branch]));
+  assert.deepEqual(await taskGit.describe(task.id), []);
 });
 
 test("manual sync binds all criss-cross merge bases and retains its original conflict context", async t => {
@@ -347,7 +843,106 @@ test("manual Done and Complete verify delivered owned source without manufacturi
   assert.equal(p.preview.manualDelivery[0].sourceKind, "owned-managed-source-without-test-ref");
   const closed = await f.call("hub_task_complete", { ...args, request_id: "delivered-close", confirm_cleanup: true, expected_cleanup_token: p.cleanupToken });
   assert.equal(closed.status, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
-  assert.equal(await readFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "utf8"), "export const version = 'own-delivered-change';\n");
+  assert.deepEqual(await f.taskGit.describe(f.task.id), []);
+  await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
+});
+
+test("release membership accepts only canonical manual Done without Test refs and preserves archived decomposition", async t => {
+  const f = await publicFixture(t);
+  await writeFile(path.join(f.repo, "already-published.txt"), "published context\n");
+  const published = await f.commit(); await f.git(["update-ref", "refs/remotes/origin/main", published]);
+  const delivery = await f.install(published);
+  const create = text => f.raw.create({ text, workspaceId: f.task.workspaceId, bucket: "workspace" });
+  const old = create("Old release"), parent = create("Delivered release");
+  const add = (task, id) => f.board.updateChecklist({ id: task.id, operation: "add", text: "Delivered member",
+    expectedRevision: task.revision, requestId: id });
+  const oldItem = await add(old, "old-owner-item");
+  await f.board.updateChecklist({ id: old.id, operation: "link", itemId: oldItem.itemId, linkedTaskId: f.task.id,
+    expectedRevision: oldItem.task.revision, requestId: "old-owner-link" });
+  f.raw.complete(old.id);
+  const before = f.board.task(f.task.id);
+  const done = await f.call("hub_task_status_update", { request_id: "manual-member-done", task_id: f.task.id,
+    status: "done", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus });
+  assert.equal(done.workflowStatus, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
+  // Capture the archive after Done's legitimate linked-Task projection change.
+  const archived = f.board.task(old.id);
+  const receipt = f.catalog.mcpOperation("manual-member-done"); assert.equal(receipt.status, "succeeded");
+  const item = await add(parent, "manual-member-item"), child = f.board.task(f.task.id);
+  const reference = { taskRevision: child.revision, manualDelivery: {
+    requestId: receipt.requestId, argumentsHash: receipt.argumentsHash } };
+  const { createPersistenceMutationCapabilities } = await import("../../../src/composition/persistence-mutation-composition.mjs");
+  const owners = createPersistenceMutationCapabilities({ rawWorkspaceCatalogStore: f.catalog, rawTaskBoardStore: f.raw });
+  f.board.store = owners.taskBoardStore;
+  f.board.workspaceCatalog = owners.workspaceCatalogStore;
+  f.lifecycle.workspaceCatalog = owners.workspaceCatalogStore;
+  f.hub.workspaceCatalog = owners.workspaceCatalogStore;
+  const input = { task_id: parent.id, expected_task_revision: item.task.revision, operation: "link",
+    item_id: item.itemId, linked_task_id: child.id, release_reference: reference };
+  const rejects = async (id, patch, pattern) => {
+    await assert.rejects(f.call("hub_task_checklist_update", { ...input, ...patch, request_id: id }), pattern);
+    assert.equal(f.board.task(parent.id).revision, item.task.revision);
+  };
+  await rejects("missing-manual-receipt", { release_reference: { ...reference,
+    manualDelivery: { ...reference.manualDelivery, requestId: "not-a-manual-Done" } } }, /canonical manual Done/u);
+  await rejects("wrong-manual-hash", { release_reference: { ...reference,
+    manualDelivery: { ...reference.manualDelivery, argumentsHash: "f".repeat(64) } } }, /canonical manual Done/u);
+  await rejects("stale-manual-child", { release_reference: { ...reference, taskRevision: child.revision + 1 } }, /revision/u);
+  await rejects("empty-refs-not-proof", { release_reference: { taskRevision: child.revision, gitReferences: [] } }, /Git references/u);
+  const analysis = create("Analysis Done"); f.raw.setWorkflowStatus(analysis.id, "done");
+  await rejects("analysis-not-manual", { linked_task_id: analysis.id,
+    release_reference: { ...reference, taskRevision: f.board.task(analysis.id).revision } }, /canonical manual Done/u);
+  const foreignWorkspace = await f.catalog.runMutation(() => f.catalog.createWorkspace({ name: "Foreign", settings: { releaseWorkflowEnabled: true } }));
+  const foreign = f.raw.create({ text: "Foreign release", bucket: "workspace", workspaceId: foreignWorkspace.id });
+  const foreignItem = await add(foreign, "foreign-manual-item");
+  await rejects("foreign-manual-parent", { task_id: foreign.id, expected_task_revision: foreignItem.task.revision,
+    item_id: foreignItem.itemId }, /Release Manager/u);
+  const archivedParent = create("Archived target release"), archivedItem = await add(archivedParent, "archived-target-item");
+  f.raw.complete(archivedParent.id);
+  await rejects("archived-manual-parent", { task_id: archivedParent.id, item_id: archivedItem.itemId,
+    expected_task_revision: f.board.task(archivedParent.id).revision }, /Archived release/u);
+  const submitted = { ...input, request_id: "manual-member-link",
+    context_token: f.hub.contextToken({ provider: "codex", threadId: "rm" }) };
+  // Association uses already accepted publication evidence; a later runtime
+  // state is not new authority and cannot erase that historical Done receipt.
+  f.setStatus({ ready: false });
+  await f.hub.submitTaskOperation("hub_task_checklist_update", submitted);
+  const receiptResult = await f.hub.joinSubmittedTaskOperation(submitted);
+  f.setStatus({ ready: true });
+  assert.equal(receiptResult.taskOperation.status, "succeeded");
+  const linked = receiptResult.result;
+  assert.equal(linked.task.checklist[0].linkedTaskId, child.id);
+  assert.deepEqual(linked.task.checklist[0].releaseReference, { ...reference, taskRevision: String(child.revision) });
+  assert.deepEqual(f.board.task(old.id), archived);
+  assert.deepEqual(f.board.task(child.id), child);
+  const reopened = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite"), readOnly: true });
+  try { assert.deepEqual(reopened.task(parent.id).checklist, f.board.task(parent.id).checklist); }
+  finally { reopened.close(); }
+  const replay = await f.call("hub_task_checklist_update", { ...input, request_id: "manual-member-link" });
+  assert.deepEqual(replay.task.checklist, linked.task.checklist);
+  const closeArgs = { task_id: child.id, completion_mode: "manual_delivery", manual_delivery: delivery };
+  const second = create("Another release"), secondItem = await add(second, "another-manual-item");
+  await runTaskGitCommand(["merge", "--ff-only", published], { cwd: f.managed.projectRoot });
+  await assert.rejects(f.call("hub_task_checklist_update", { ...input, task_id: second.id,
+    item_id: secondItem.itemId, expected_task_revision: secondItem.task.revision, request_id: "changed-manual-source",
+    release_reference: { ...reference, taskRevision: child.revision } }), /current source or delivery changed/u);
+  await runTaskGitCommand(["reset", "--hard", f.base], { cwd: f.managed.projectRoot });
+  const closePreview = await f.call("hub_task_complete", { ...closeArgs, request_id: "manual-member-close-preview" });
+  await f.call("hub_task_complete", { ...closeArgs, request_id: "manual-member-close", confirm_cleanup: true,
+    expected_cleanup_token: closePreview.cleanupToken });
+  const closedChild = f.board.task(child.id);
+  assert.equal(closedChild.status, "done"); assert.equal(closedChild.workflowStatus, "done");
+  const closedParent = create("Reference after closure"), closedItem = await add(closedParent, "closed-member-item");
+  await f.call("hub_task_checklist_update", { ...input, task_id: closedParent.id, item_id: closedItem.itemId,
+    expected_task_revision: closedItem.task.revision, request_id: "closed-member-link",
+    release_reference: { ...reference, taskRevision: closedChild.revision } });
+  assert.deepEqual(f.board.task(child.id), closedChild);
+  await f.git(["branch", f.managed.branch, published]);
+  await assert.rejects(f.call("hub_task_checklist_update", { ...input, task_id: second.id,
+    item_id: secondItem.itemId, expected_task_revision: secondItem.task.revision, request_id: "recreated-manual-source",
+    release_reference: { ...reference, taskRevision: closedChild.revision } }), /current source or delivery changed/u);
+  assert.equal(f.board.task(second.id).revision, secondItem.task.revision);
+  assert.equal(f.board.task(child.id).revision, closedChild.revision);
+  assert.deepEqual(f.board.task(child.id).gitReferences, []);
 });
 
 test("manual completion pins and preserves an unrepresented legacy repository and reconciles only its hash-bound read-only preview", async t => {
@@ -380,8 +975,9 @@ test("manual completion pins and preserves an unrepresented legacy repository an
   const p = await f.call("hub_task_complete", { ...args, request_id: "preserved-preview" });
   assert.equal(p.preview.retainedUnrepresented[0].headCommit, legacyHead);
   assert.equal(p.preview.manualDelivery.length, 1); assert.deepEqual(p.preview.deleting, []);
-  const done = await f.call("hub_task_complete", { ...args, request_id: "preserved-close", confirm_cleanup: true, expected_cleanup_token: p.cleanupToken });
-  assert.equal(done.status, "done");
+  await assert.rejects(f.call("hub_task_complete", { ...args, request_id: "preserved-close", confirm_cleanup: true,
+    expected_cleanup_token: p.cleanupToken }), /unpublished or local data/u);
+  assert.notEqual(f.board.task(task.id).status, "done");
   assert.equal(await readFile(evidence, "utf8"), "preserve me");
   assert.equal(await runTaskGitCommand(["rev-parse", historical.branch], { cwd: legacy }), legacyHead);
   assert.equal(await readFile(path.join(historical.projectRoot, "legacy.txt"), "utf8"), "unique historical work\n");
@@ -402,4 +998,293 @@ test("read-only preview reconciliation refuses a real confirmed UNKNOWN even wit
   assert.equal(f.catalog.mcpOperation(original.request_id).status, "unknown");
   assert.equal(f.board.task(task.id).status, "open");
   assert.equal(await readFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "utf8"), "unsaved source\n");
+});
+
+
+async function standalonePublication(f, dataDir, { hostCRLF = false } = {}) {
+  const remote = path.join(f.root, "origin.git");
+  await f.git(["init", "--bare", "--initial-branch=main", remote]);
+  await f.git(["remote", "add", "origin", remote]);
+  await f.git(["push", "origin", "main"]);
+  const managedRoot = path.join(dataDir, "release-repositories");
+  const root = path.join(managedRoot, taskRepositoryKey(f.repo), "repository");
+  await mkdir(path.dirname(root), { recursive: true });
+  await f.git(["clone", "--no-local", "--no-hardlinks", remote, root]);
+  const git = (args, options = {}) => runTaskGitCommand(args, { ...options, cwd: root });
+  await git(["config", "core.autocrlf", "false"]);
+  const markerFile = path.join(root, ".git/agent-hub-release-clone.json");
+  const marker = { schemaVersion: 1, kind: "agent-hub-owned-release-clone", managedRoot,
+    primaryRoot: f.repo, primaryGitCommonDir: path.join(f.repo, ".git"),
+    releaseRoot: root, releaseGitCommonDir: path.join(root, ".git") };
+  await writeFile(markerFile, JSON.stringify(marker));
+  await writeFile(path.join(root, "AgentHub/app.mjs"), "export const version = 'published-standalone';\n");
+  if (hostCRLF) {
+    await mkdir(path.join(root, "AgentHub/RuntimeHost"), { recursive: true });
+    await mkdir(path.join(root, "AgentHub/VSCodeExtension/media"), { recursive: true });
+    await writeFile(path.join(root, ".gitattributes"), "*.cs text eol=crlf\n");
+    for (const file of ["AgentHub.RuntimeHost.cs", "AgentHub.IconBuilder.cs", "app.manifest"]) {
+      await writeFile(path.join(root, "AgentHub/RuntimeHost", file), "fixture Host source\nsecond line\n");
+    }
+    await writeFile(path.join(root, "AgentHub/VSCodeExtension/media/agent-hub-mark.png"), Buffer.from([137, 80, 78, 71, 0, 13, 10]));
+  }
+  const revision = await f.commit(root);
+  await git(["push", "origin", "main"]);
+  let delivery = await f.install(revision, git);
+  if (hostCRLF) {
+    for (const file of ["AgentHub.RuntimeHost.cs", "AgentHub.IconBuilder.cs"]) {
+      await unlink(path.join(root, "AgentHub/RuntimeHost", file));
+    }
+    await git(["checkout-index", "--force", "-u", "--all"]);
+    assert.equal(await git(["status", "--porcelain=v1"]), "");
+    assert.ok((await readFile(path.join(root, "AgentHub/RuntimeHost/AgentHub.RuntimeHost.cs"))).includes(Buffer.from("\r\n")));
+    const hash = Buffer.from(await runtimeHostSourceHash(path.join(root, "AgentHub")) + "\n");
+    const installed = path.join(f.runtimeRoot, "releases/manual");
+    await writeFile(path.join(installed, "AgentHub.RuntimeHost.source.sha256"), hash);
+    const manifest = JSON.parse(await readFile(path.join(installed, "runtime-manifest.json"), "utf8"));
+    manifest.files.push({ path: "AgentHub.RuntimeHost.source.sha256", bytes: hash.length, sha256: sha(hash) });
+    const raw = JSON.stringify(manifest);
+    await writeFile(path.join(installed, "runtime-manifest.json"), raw);
+    delivery = { ...delivery, manifestSha256: sha(raw) };
+  }
+  return { root, git, remote, revision, delivery, markerFile, marker };
+}
+
+test("manual completion proves the owned published standalone without changing protected primary or retained Task source", async t => {
+  const f = await publicFixture(t), published = await standalonePublication(f, f.taskGit.dataDir);
+  const wip = path.join(f.managed.projectRoot, "WIP/evidence.txt");
+  await mkdir(path.dirname(wip), { recursive: true }); await writeFile(wip, "keep original evidence");
+  const primary = async () => ({ head: await f.git(["rev-parse", "HEAD"]),
+    index: sha(await readFile(path.join(f.repo, ".git/index"))),
+    status: await f.git(["status", "--porcelain=v1"]), main: await f.git(["rev-parse", "main"]),
+    origin: await f.git(["rev-parse", "origin/main"]) });
+  const before = await primary();
+  await assert.rejects(f.read({ input: published.delivery }), /exact main\/origin/u);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "done-standalone", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "done-standalone", gitReferences: [{ projectRoot: f.repo,
+    branch: f.managed.branch, resultCommit: f.base }] });
+  const args = { taskId: f.task.id, completionMode: "manual_delivery", manualDelivery: published.delivery };
+  const preview = await f.lifecycle.complete({ ...args, operationId: "standalone-preview" });
+  assert.equal(preview.preview.manualDelivery[0].repositoryRoot, f.repo);
+  assert.equal(preview.preview.manualDelivery[0].delivery.publishedRepository.root, published.root);
+  assert.ok(preview.preview.deleting.some(x => x.kind === "branch"));
+  const confirmation = p => ({ ...args, operationId: "standalone-close", confirmCleanup: true,
+    expectedCleanupToken: p.cleanupToken, originalArguments: { task_id: f.task.id, request_id: "standalone-close",
+      completion_mode: "manual_delivery", manual_delivery: published.delivery,
+      confirm_cleanup: true, expected_cleanup_token: p.cleanupToken } });
+  await assert.rejects(f.lifecycle.complete(confirmation(preview)), /local data/u);
+  assert.equal(await readFile(wip, "utf8"), "keep original evidence");
+  assert.deepEqual(await primary(), before);
+  await rm(path.dirname(wip), { recursive: true }); // Synthetic artifact-owner retirement.
+  const cleanPreview = await f.lifecycle.complete({ ...args, operationId: "standalone-clean-preview" });
+  const result = await f.lifecycle.complete(confirmation(cleanPreview));
+  assert.equal(result.status, "done");
+  assert.deepEqual(await primary(), before);
+  assert.deepEqual(await f.taskGit.describe(f.task.id), []);
+});
+
+test("manual standalone compiled Host proof retains exact permitted checkout line endings", async t => {
+  const f = await publicFixture(t), published = await standalonePublication(f, f.taskGit.dataDir, { hostCRLF: true });
+  const git = published.git;
+  await assert.rejects(f.read({ input: published.delivery, git }), /compiled Host source differs/u);
+  const read = () => f.taskGit.withTaskLock(f.task.id, lease => f.taskGit.manualDeliveryPreviewOwned({
+    task: { ...f.task, gitReferences: [{ projectRoot: f.repo, resultCommit: f.base }] }, input: published.delivery, lease }));
+  assert.equal((await read()).manualDelivery[0].delivery.revision, published.revision);
+  const hashPath = path.join(f.runtimeRoot, "releases/manual/AgentHub.RuntimeHost.source.sha256");
+  const original = await readFile(hashPath);
+  await writeFile(hashPath, Buffer.from("0".repeat(64) + "\n"));
+  await assert.rejects(read(), /compiled Host source differs/u);
+  await writeFile(hashPath, original);
+  await writeFile(path.join(published.root, "AgentHub/RuntimeHost/AgentHub.RuntimeHost.cs"), "different Host input\n");
+  await assert.rejects(read(), /main\/origin\/current/u);
+});
+
+test("manual standalone authority refuses foreign markers/remotes, stale tracking and proof drift", async t => {
+  const f = await publicFixture(t), published = await standalonePublication(f, f.taskGit.dataDir);
+  const read = () => f.taskGit.withTaskLock(f.task.id, lease => f.taskGit.manualDeliveryPreviewOwned({
+    task: { ...f.task, gitReferences: [{ projectRoot: f.repo, resultCommit: f.base }] }, input: published.delivery, lease }));
+  for (const wrong of [{ primaryRoot: f.root }, { primaryGitCommonDir: f.root },
+    { releaseRoot: f.repo }, { managedRoot: f.root }, { kind: "foreign" }]) {
+    await writeFile(published.markerFile, JSON.stringify({ ...published.marker, ...wrong }));
+    await assert.rejects(read(), /registered primary/u);
+  }
+  await writeFile(published.markerFile, JSON.stringify(published.marker));
+  await published.git(["remote", "set-url", "origin", f.repo]);
+  await assert.rejects(read(), /origin differs/u);
+  await published.git(["remote", "set-url", "origin", published.remote]);
+  await published.git(["update-ref", "refs/remotes/origin/main", f.base]);
+  await assert.rejects(read(), /main\/origin/u);
+  await published.git(["update-ref", "refs/remotes/origin/main", published.revision]);
+  await f.git(["--git-dir", published.remote, "update-ref", "refs/heads/main", f.base]);
+  await assert.rejects(read(), /current remote/u);
+  await f.git(["--git-dir", published.remote, "update-ref", "refs/heads/main", published.revision]);
+  const original = f.taskGit.readManualDelivery;
+  f.taskGit.readManualDelivery = async args => {
+    const proof = await original(args);
+    await writeFile(published.markerFile, JSON.stringify({ ...published.marker, primaryRoot: f.root }));
+    return proof;
+  };
+  await assert.rejects(read(), /registered primary/u);
+  await writeFile(published.markerFile, JSON.stringify(published.marker));
+  f.taskGit.readManualDelivery = original;
+  await assert.rejects(f.taskGit.withTaskLock(f.task.id, lease => f.taskGit.manualDeliveryPreviewOwned({
+    task: { ...f.task, gitReferences: [{ projectRoot: f.repo, resultCommit: f.base }] }, input: f.input, lease })), /main\/origin/u);
+});
+
+test("manual standalone sync merges disjoint object stores through existing isolated owner and preserves primary and later dev", async t => {
+  const f = await fixture(t), dataDir = path.join(f.root, "data");
+  const service = new TaskGitWorkspaceService({ dataDir, runtimeRoot: f.runtimeRoot, recordTiming: () => {},
+    readPublication: async () => { throw Error("No fabricated publication history"); },
+    readManualDelivery: args => readManualTaskDelivery({ ...args, ...f.ports }) });
+  const dev = await service.prepareDev(f.repo);
+  await writeFile(path.join(dev.projectRoot, "AgentHub/app.mjs"), "export const version = 'later-dev';\n");
+  await writeFile(path.join(dev.projectRoot, "later.txt"), "retain Task work\n");
+  const devCommit = await f.commit(dev.projectRoot);
+  const published = await standalonePublication(f, dataDir);
+  await assert.rejects(f.git(["cat-file", "-e", `${published.revision}^{commit}`]));
+  await assert.rejects(published.git(["cat-file", "-e", `${devCommit}^{commit}`]));
+  const indexBefore = sha(await readFile(path.join(f.repo, ".git/index")));
+  const args = { projectRoot: f.repo, publishedRevision: published.revision, manualSync: {
+    operationId: "standalone-main-to-dev", workspaceId: "workspace", expectedDevCommit: devCommit, delivery: published.delivery } };
+  const conflict = await service.synchronizeMainIntoDev(args);
+  assert.equal(conflict.status, "review_required"); assert.equal(await f.git(["rev-parse", "dev"]), devCommit);
+  await writeFile(path.join(conflict.nativeConflictRoot, "AgentHub/app.mjs"),
+    "export const version = 'published-standalone';\nexport const later = 'later-dev';\n");
+  const resolved = await f.commit(conflict.nativeConflictRoot);
+  const result = await service.synchronizeMainIntoDev(args);
+  assert.equal(result.integrated, true); assert.equal(result.headCommit, resolved); assert.equal(result.repositoryRoot, f.repo);
+  await runTaskGitCommand(["merge-base", "--is-ancestor", devCommit, resolved], { cwd: dev.projectRoot });
+  await runTaskGitCommand(["merge-base", "--is-ancestor", published.revision, resolved], { cwd: dev.projectRoot });
+  assert.equal(await readFile(path.join(dev.projectRoot, "later.txt"), "utf8"), "retain Task work\n");
+  assert.equal(await f.git(["rev-parse", "HEAD"]), f.base);
+  assert.equal(await f.git(["rev-parse", "main"]), f.base);
+  assert.equal(await f.git(["rev-parse", "origin/main"]), f.base);
+  assert.equal(sha(await readFile(path.join(f.repo, ".git/index"))), indexBefore);
+  assert.equal((await service.synchronizeMainIntoDev(args)).headCommit, resolved);
+});
+
+test("Task archive preserves unpublished work and reports the agent instruction only on MCP", async t => {
+  const f = await publicFixture(t);
+  const ignored = path.join(f.managed.projectRoot, "WIP", "evidence");
+  await mkdir(path.dirname(ignored));
+  await writeFile(ignored, "only copy");
+  const original = f.board.task(f.task.id);
+  const args = { task_id: original.id, completion_mode: "archive" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "archive-unpublished-preview" });
+  const remaining = preview.preview.remainingArtifacts;
+  assert.ok(remaining.some(item => item.path === f.managed.projectRoot));
+  assert.ok(remaining.some(item => item.name === f.managed.branch && item.headCommit === f.base));
+  assert.equal(preview.agentInstruction, "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС");
+  assert.equal(f.hub.readDesktopTaskOperation(original, "archive-unpublished-preview").result.agentInstruction, undefined);
+  assert.equal(f.board.task(original.id).status, original.status);
+  const result = await f.call("hub_task_complete", { ...args, request_id: "archive-unpublished-confirm",
+    confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken });
+  assert.equal(result.status, "done");
+  assert.equal(result.workflowStatus, original.workflowStatus);
+  assert.deepEqual(result.gitReferences, original.gitReferences);
+  assert.equal(result.description, original.description);
+  assert.deepEqual(result.archive.remainingArtifacts, remaining);
+  assert.equal(result.agentInstruction, preview.agentInstruction);
+  assert.equal(f.hub.readDesktopTaskOperation(original, "archive-unpublished-confirm").result.agentInstruction, undefined);
+  assert.equal(await readFile(ignored, "utf8"), "only copy");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("Task archive removes its exact published branch and worktree without an installed-delivery proof", async t => {
+  const f = await publicFixture(t);
+  f.taskGit.readPublication = async () => ({ generation: "public-previous", repositories: [{ root: f.repo, revision: f.base }] });
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "archive-tested", targetWorkflowStatus: "testing", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "archive-tested", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const args = { task_id: f.task.id, completion_mode: "archive" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "archive-published-preview" });
+  assert.ok(preview.preview.deleting.some(item => item.name === f.managed.branch));
+  const confirmed = { ...args, request_id: "archive-published-confirm", confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken };
+  const result = await f.call("hub_task_complete", confirmed);
+  assert.equal(result.status, "done");
+  assert.equal(result.workflowStatus, "testing");
+  assert.deepEqual(result.archive.remainingArtifacts, []);
+  await assert.rejects(f.git(["rev-parse", "--verify", "refs/heads/" + f.managed.branch]));
+  assert.deepEqual(await f.taskGit.describe(f.task.id), []);
+  assert.deepEqual(await f.call("hub_task_complete", confirmed), JSON.parse(JSON.stringify(result)));
+});
+
+test("Task archive shows surviving branch after partial cleanup and persists the exact prompt across reopen", async t => {
+  const f = await publicFixture(t);
+  f.taskGit.readPublication = async () => ({ generation: "public-previous", repositories: [{ root: f.repo, revision: f.base }] });
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "archive-tested-partial", targetWorkflowStatus: "testing", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "archive-tested-partial", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const args = { task_id: f.task.id, completion_mode: "archive" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "archive-partial-preview" });
+  const run = f.taskGit.runCommand;
+  let partial = 0;
+  f.taskGit.runCommand = async (argv, options) => {
+    if (argv[0] === "update-ref" && argv[1] === "-d" && argv[2] === "refs/heads/" + f.managed.branch) {
+      partial += 1;
+      throw new Error("fixture interruption after worktree removal");
+    }
+    return run(argv, options);
+  };
+  const original = { ...args, request_id: "archive-partial-original", confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken };
+  const paused = await f.call("hub_task_complete", original);
+  assert.equal(partial, 1);
+  assert.equal(paused.confirmationRequired, true);
+  assert.equal(paused.preview.retainArtifacts, true);
+  assert.equal(paused.preview.remainingArtifacts.some(item => item.path === f.managed.projectRoot), false);
+  assert.ok(paused.preview.remainingArtifacts.some(item => item.kind === "branch" && item.name === f.managed.branch));
+  const reopened = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite") });
+  f.beforeCleanup.push(() => reopened.close());
+  f.board.store = reopened;
+  assert.notEqual(f.board.task(f.task.id).status, "done");
+  assert.deepEqual(await f.call("hub_task_complete", original), JSON.parse(JSON.stringify(paused)));
+  const result = await f.call("hub_task_complete", { ...args, request_id: "archive-partial-accept",
+    confirm_cleanup: true, retain_artifacts: true, expected_cleanup_token: paused.cleanupToken });
+  assert.equal(result.status, "done");
+  assert.equal(result.workflowStatus, "testing");
+  assert.deepEqual(result.archive.remainingArtifacts, paused.preview.remainingArtifacts);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  assert.equal(partial, 1);
+});
+
+test("Task archive reconciles a lost partial outcome without rerunning Git and refuses stale leftover consent", async t => {
+  const f = await publicFixture(t);
+  f.taskGit.readPublication = async () => ({ generation: "public-previous", repositories: [{ root: f.repo, revision: f.base }] });
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "archive-reopen-tested", targetWorkflowStatus: "testing", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "archive-reopen-tested", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  const args = { task_id: f.task.id, completion_mode: "archive" };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "archive-reopen-preview" });
+  const run = f.taskGit.runCommand;
+  let attempts = 0;
+  f.taskGit.runCommand = async (argv, options) => {
+    if (argv[0] === "update-ref" && argv[1] === "-d" && argv[2] === "refs/heads/" + f.managed.branch) {
+      attempts += 1;
+      throw new Error("fixture branch is retained");
+    }
+    return run(argv, options);
+  };
+  f.raw.finalizeCleanupTransition = () => { throw new Error("fixture refuses final commit"); };
+  const original = { ...args, request_id: "archive-reopen-original", confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken };
+  await assert.rejects(f.call("hub_task_complete", original), /fixture refuses final commit/u);
+  assert.equal(f.catalog.mcpOperation(original.request_id).status, "unknown");
+  assert.equal(f.board.lifecycleTransition(original.request_id).phase, "cleanup");
+  const reopened = new TaskBoardStore({ databaseFile: path.join(f.root, "journal.sqlite") });
+  f.beforeCleanup.push(() => reopened.close());
+  f.board.store = reopened;
+  const recovered = await f.call("hub_task_operation_reconcile", { task_id: f.task.id,
+    request_id: "archive-reopen-reconcile", operation_request_id: original.request_id, confirm_reconcile: true });
+  assert.equal(recovered.outcome, "CONFIRMATION_REQUIRED");
+  assert.equal(f.catalog.mcpOperation(original.request_id).status, "succeeded");
+  assert.notEqual(f.board.task(f.task.id).status, "done");
+  assert.equal(attempts, 1);
+  const late = path.join(path.dirname(f.managed.projectRoot), "late-data");
+  await writeFile(late, "preserve this");
+  await assert.rejects(f.call("hub_task_complete", { ...args, request_id: "archive-reopen-stale",
+    confirm_cleanup: true, retain_artifacts: true, expected_cleanup_token: recovered.result.cleanupToken }), /stale/u);
+  assert.equal(await readFile(late, "utf8"), "preserve this");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  assert.notEqual(f.board.task(f.task.id).status, "done");
 });

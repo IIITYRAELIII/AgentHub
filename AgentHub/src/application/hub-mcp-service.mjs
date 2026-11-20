@@ -401,6 +401,22 @@ function compactTask(task) {
   };
 }
 
+function withArchiveCleanupInstruction(result) {
+  const remaining = result?.archive?.remainingArtifacts ?? result?.preview?.remainingArtifacts;
+  return remaining?.length ? { ...result, agentInstruction: "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС" } : result;
+}
+
+function compactCompleteResult(result) {
+  if (result?.confirmationRequired) return { ...result, task: compactTask(result.task) };
+  return result?.archive ? { ...compactTask(result), archive: result.archive } : compactTask(result);
+}
+
+function completedLifecycleResult(outcome) {
+  const { result, evidence } = outcome.result;
+  return evidence?.archive && !result.confirmationRequired
+    ? { ...result, archive: { remainingArtifacts: evidence.remainingArtifacts } } : result;
+}
+
 function cleanupConfirmation(task, action, preview) {
   const token = createHash("sha256").update(JSON.stringify({
     action,
@@ -582,7 +598,7 @@ export class HubMcpService {
             ...(outcome.result?.evidence ?? {}),
           };
         } else {
-          result = compactTask(outcome.result?.result);
+          result = compactCompleteResult(completedLifecycleResult(outcome));
         }
         await this.workspaceCatalog.completeMcpOperation(receipt.requestId, result);
         reconciled += 1;
@@ -701,8 +717,12 @@ export class HubMcpService {
         before_item_id: { type: "string" },
         linked_task_id: { type: "string" },
         release_reference: { type: "object", description: "Release Manager-only membership reference; preserves decomposition ownership.",
-          additionalProperties: false, required: ["taskRevision", "gitReferences"], properties: {
+          additionalProperties: false, required: ["taskRevision"],
+          oneOf: [{ required: ["gitReferences"] }, { required: ["manualDelivery"] }], properties: {
             taskRevision: { type: "integer", minimum: 1 },
+            manualDelivery: { type: "object", additionalProperties: false, required: ["requestId", "argumentsHash"], properties: {
+              requestId: { type: "string", minLength: 1, maxLength: 200 }, argumentsHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            } },
             gitReferences: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false,
               required: ["projectRoot", "branch", "resultCommit"], properties: {
                 projectRoot: { type: "string" }, branch: { type: "string" }, resultCommit: { type: "string" },
@@ -853,7 +873,8 @@ export class HubMcpService {
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
         absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
-        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery", "abandoned_release_service"], description: "Release Manager-only closure. abandoned_release_service archives only the exact FAILED release service and preserves its history." },
+        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"], description: "Archive closes the card while retaining history and workflow status. Other modes require a Release Manager. manual_delivery verifies actual delivery. abandoned_release_service preserves exact failed release history." },
+        retain_artifacts: { type: "boolean", description: "For archive only. On confirmation use the exact retainArtifacts value returned in its preview." },
         abandoned_release: { type: "object", properties: {
           operationId: { type: "string" }, expectedRevision: { type: "integer", minimum: 1 }, expectedGeneration: { type: "integer", minimum: 1 },
         }, required: ["operationId", "expectedRevision", "expectedGeneration"], additionalProperties: false },
@@ -864,7 +885,7 @@ export class HubMcpService {
           revision: { type: "string", pattern: "^[a-f0-9]{40}$" }, releaseId: { type: "string" },
           manifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
         } },
-        completed_operation_request_id: { type: "string", description: "Original canonical published-service closure supplying historical repository proof for its already closed zero-own-delta source." },
+        completed_operation_request_id: { type: "string", description: "Original canonical closure for historical cleanup: published-service proof in operational mode, or exact original manually delivered source in manual_delivery mode. The old closure is not replayed." },
         published_delivery: { type: "object", properties: {
           runtimeRoot: { type: "string" }, publicationRunSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
           publicationJournalPath: { type: "string", description: "Explicit retained original journal; its raw hash and original runtime identity remain required." },
@@ -1169,7 +1190,10 @@ export class HubMcpService {
   }
 
   async call(name, args = {}, { onAdmission = null } = {}) {
-    if (name === "hub_task_operation_get") return this.#taskOperationReadback(this.#authorize(args.context_token), args);
+    if (name === "hub_task_operation_get") {
+      const receipt = this.#taskOperationReadback(this.#authorize(args.context_token), args);
+      return { ...receipt, result: withArchiveCleanupInstruction(receipt.result) };
+    }
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
     const toolName = String(name ?? "");
@@ -1181,7 +1205,8 @@ export class HubMcpService {
       }
       const operation = (admissionReceipt) => this.#dispatch({ ...context, admissionReceipt }, toolName, args);
 
-      return this.#mutate(context, toolName, args, operation, { onAdmission });
+      const result = await this.#mutate(context, toolName, args, operation, { onAdmission });
+      return toolName === "hub_task_complete" ? withArchiveCleanupInstruction(result) : result;
     }
     return this.#dispatch(context, toolName, args);
   }
@@ -1420,7 +1445,7 @@ export class HubMcpService {
         if (args.absorption_mode === "published_duplicate" && !this.#isReleaseManager(context)) {
           throw new Error("published duplicate closure requires a Release Manager Stream");
         }
-        if (args.completion_mode != null && !this.#isReleaseManager(context)) {
+        if (args.completion_mode != null && args.completion_mode !== "archive" && !this.#isReleaseManager(context)) {
           throw new Error("published release service closure requires a Release Manager Stream");
         }
         return this.#completeTask(context, args);
@@ -1666,7 +1691,13 @@ export class HubMcpService {
     const payload = this.#taskChecklistPayload(context, {
       taskId, expectedRevision, operation, itemId, text, completed, beforeItemId, linkedTaskId, releaseReference, requestId,
     });
-    return this.#taskChecklistResult(await this.taskBoard.updateChecklist(payload));
+    const mutate = async () => this.#taskChecklistResult(await this.taskBoard.updateChecklist(payload));
+    if (payload.releaseReference?.manualDelivery) {
+      if (typeof this.taskLifecycle.withManualDeliveryReleaseReference !== "function") throw Error("Manual release reference owner is unavailable");
+      return this.taskLifecycle.withManualDeliveryReleaseReference({ taskId: payload.linkedTaskId,
+        reference: payload.releaseReference, operationId: requestId }, mutate);
+    }
+    return mutate();
   }
 
   #taskChecklistPayload(context, {
@@ -2246,6 +2277,7 @@ export class HubMcpService {
     absorbed_into_task_id: absorbedIntoTaskId = null,
     absorption_mode: absorptionMode = null,
     completion_mode: completionMode = null,
+    retain_artifacts: retainArtifacts = false,
     published_delivery: publishedDelivery = null,
     manual_delivery: manualDelivery = null,
     retained_repositories: retainedRepositories = [],
@@ -2259,14 +2291,12 @@ export class HubMcpService {
     }
     const result = await this.taskLifecycle.complete({
       taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
-      absorptionMode, completionMode, publishedDelivery, manualDelivery, retainedRepositories, completedOperationRequestId,
+      absorptionMode, completionMode, publishedDelivery, manualDelivery, retainedRepositories, completedOperationRequestId, retainArtifacts,
       abandonedRelease, releaseActor: { workspaceId: context.workspaceId, streamId: context.streamId },
-      originalArguments: ["published_delivery", "operational", "manual_delivery", "abandoned_release_service"].includes(completionMode)
+      originalArguments: ["published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"].includes(completionMode)
         ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) : null,
     });
-    return result?.confirmationRequired
-      ? { ...result, task: compactTask(result.task) }
-      : compactTask(result);
+    return compactCompleteResult(result);
   }
 
   async #deleteTask(context, args = {}) {
@@ -3213,6 +3243,36 @@ export class HubMcpService {
     if (previewOriginal?.taskExecution?.arguments?.completion_mode === "abandoned_release_service"
         && previewOriginal.taskExecution.arguments.confirm_cleanup !== true) {
       return this.#reconcileAbandonedReleasePreview(context, args, previewOriginal);
+    }
+    const originalArchive = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+    const archiveTransition = this.taskBoard.lifecycleTransition?.(args.operation_request_id);
+    const archiveOutcome = this.taskBoard.lifecycleOutcome?.(args.operation_request_id);
+    const archiveEvidence = archiveOutcome?.result?.evidence ?? archiveTransition?.evidence;
+    if (archiveEvidence?.archive === true) {
+      const captured = archiveEvidence.originalArguments;
+      if (Object.keys(args).some(key => !["context_token", "request_id", "task_id", "operation_request_id",
+        "confirm_reconcile", "expected_arguments_hash"].includes(key))
+        || !originalArchive || originalArchive.workspaceId !== context.workspaceId
+        || originalArchive.toolName !== "hub_task_complete" || captured?.completion_mode !== "archive"
+        || captured.task_id !== args.task_id || captured.request_id !== originalArchive.requestId
+        || captured.confirm_cleanup !== true || argumentsHash(captured) !== originalArchive.argumentsHash
+        || (args.expected_arguments_hash && args.expected_arguments_hash !== originalArchive.argumentsHash)
+        || (archiveTransition && (archiveTransition.taskId !== args.task_id || archiveTransition.kind !== "complete"
+          || archiveTransition.phase !== "cleanup"))
+        || (archiveOutcome && (archiveOutcome.taskId !== args.task_id || archiveOutcome.kind !== "complete"))
+        || !["pending", "reconciling", "unknown", "succeeded"].includes(originalArchive.status)) {
+        refuse("Archive requires its exact admitted original");
+      }
+      const result = archiveOutcome ? compactCompleteResult(completedLifecycleResult(archiveOutcome))
+        : await this.#completeTask(context, captured);
+      if (originalArchive.status === "unknown") await this.workspaceCatalog.completeUnknownMcpOperation(originalArchive.requestId, {
+        workspaceId: context.workspaceId, toolName: "hub_task_complete", result,
+        reconciliation: { kind: "task-archive-original-v1", lifecycleOperationId: originalArchive.requestId },
+      });
+      else if (originalArchive.status !== "succeeded") await this.workspaceCatalog.completeMcpOperation(originalArchive.requestId, result);
+      return { taskId: args.task_id, operationId: originalArchive.requestId,
+        outcome: result.confirmationRequired ? "CONFIRMATION_REQUIRED" : "COMPLETED",
+        result: withArchiveCleanupInstruction(result) };
     }
     if (args.manual_preview_arguments) {
       const captured = args.manual_preview_arguments;

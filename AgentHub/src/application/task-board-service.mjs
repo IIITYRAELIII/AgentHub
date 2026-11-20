@@ -233,6 +233,11 @@ export class TaskBoardService {
     return this.#deliverChecklistEvents();
   }
 
+  manualDeliveryReleaseReference(input) {
+    requiredMethod(this.store, "manualDeliveryReleaseReference");
+    return this.store.manualDeliveryReleaseReference(input);
+  }
+
   async updateChecklist(payload = {}) {
     requiredMethod(this.store, "updateChecklist");
     await this.#checklistEventRecovery;
