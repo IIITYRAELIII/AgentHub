@@ -10,8 +10,7 @@ import test from "node:test";
 import {
   withInterprocessLocks,
 } from "../../../src/infrastructure/process/interprocess-lock.mjs";
-import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import { withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
+import { runOwnedGit, runTaskGitCommand, TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 
 function ownerPath(lock, token) {
   const digest = createHash("sha256").update(String(token)).digest("hex");
@@ -33,37 +32,42 @@ async function currentOwner(lock) {
   return JSON.parse(await readFile(path.join(lock, file), "utf8"));
 }
 
-test("held lock checks share only one fresh exact owner read per compound fence", async t => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-fences-"));
-  const target = path.join(root, "ledger.json");
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const events = [];
-  await withInterprocessLocks([target], lease => withTaskOperationTiming({
-    operationId: "held-lock-fences", taskId: "fixture", record: event => events.push(event),
-  }, async () => {
-    const compound = new Map();
-    await lease.assertOwned(compound);
-    await lease.assertOwned(compound);
-    await lease.assertOwned();
-  }));
-  const counts = new Map(events.find(event => event.stage === "trace-summary").stageAggregates
-    .map(entry => [entry.stage, entry.count]));
-  assert.equal(counts.get("lock-owner-read-await"), 2);
-  assert.equal(counts.has("lock-owner-readdir-await"), false);
-});
-
-test("a fresh held-lock fence rejects an owner now marked released", async t => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-lost-fence-"));
+test("held ownership fences an ambiguous extra owner before allowing work", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-ambiguous-fence-"));
   const target = path.join(root, "ledger.json");
   const lock = `${target}.lock`;
   t.after(() => rm(root, { recursive: true, force: true }));
+  let effected = false;
   await assert.rejects(withInterprocessLocks([target], async lease => {
-    await lease.assertOwned(new Map());
-    const owner = await currentOwner(lock);
-    await writeOwner(lock, { ...owner, releasedAt: Date.now() });
-    await lease.assertOwned(new Map());
-    assert.fail("the changed owner must prevent the next effect");
+    await lease.assertOwned();
+    await writeOwner(lock, { ...await currentOwner(lock), token: "another-owner" });
+    await lease.assertOwned();
+    effected = true;
   }), /durable ownership was lost/u);
+  assert.equal(effected, false);
+});
+
+test("owned Git rechecks primary ownership after waiting for another fence", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-child-fence-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repository = path.join(root, "repository");
+  await runTaskGitCommand(["init", repository], { cwd: root });
+  const taskGit = new TaskGitWorkspaceService({ dataDir: root });
+  const lock = path.join(root, "locks", "task-lifecycle-fixture.lock");
+  await assert.rejects(taskGit.withTaskRecoveryLock("fixture", async primary => {
+    const compound = {
+      ...primary,
+      async assertOwned(checks) {
+        await primary.assertOwned(checks);
+        // The primary ownership changes while the secondary fence is waiting.
+        await writeOwner(lock, { ...await currentOwner(lock), releasedAt: Date.now() });
+      },
+    };
+    await runOwnedGit(["config", "--local", "hub.fence", "must-not-write"],
+      { cwd: repository, lease: compound });
+  }), /durable ownership was lost/u);
+  await assert.rejects(runTaskGitCommand(["config", "--local", "--get", "hub.fence"],
+    { cwd: repository }));
 });
 
 test("interprocess lock recovers a stale dead owner", async () => {

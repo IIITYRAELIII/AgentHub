@@ -44,9 +44,8 @@ export const assertPreparationProcessOwned = async () => contexts.getStore()?.le
 export const preparationObjectStore = () => contexts.getStore()?.objects ?? null;
 export function withPreparationGitIsolation(dataDir, operation, lease = null, objects = null) {
   const parent = contexts.getStore();
-  const owner = lease && parent?.lease ? { ...lease, assertOwned: async (checks = new Map()) => {
-    await parent.lease.assertOwned(checks);
-    await lease.assertOwned(checks);
+  const owner = lease && parent?.lease && parent.lease !== lease ? { ...lease, assertOwned: async () => {
+    await parent.lease.assertOwned(); await lease.assertOwned();
   } } : lease ?? parent?.lease ?? null;
   return contexts.run({ dataDir, lease: owner, objects: objects ?? parent?.objects ?? null, gitTail: Promise.resolve() }, operation);
 }

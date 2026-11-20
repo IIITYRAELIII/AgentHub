@@ -6,11 +6,8 @@ export function interruptibleTaskLease(lease) {
   if (!current) return lease;
   return { ...lease,
     signal: lease.signal ? AbortSignal.any([lease.signal, current.signal]) : current.signal,
-    async assertOwned(checks) { current.assertExecuting(); await lease.assertOwned(checks); current.assertExecuting(); },
-    async beginProcessTreeGuard(input, checks) {
-      current.assertExecuting();
-      return lease.beginProcessTreeGuard(input, checks);
-    },
+    async assertOwned() { current.assertExecuting(); await lease.assertOwned(); current.assertExecuting(); },
+    async beginProcessTreeGuard(input) { current.assertExecuting(); return lease.beginProcessTreeGuard(input); },
   };
 }
 

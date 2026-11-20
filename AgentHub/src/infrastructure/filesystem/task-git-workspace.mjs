@@ -340,18 +340,17 @@ function combinedLease(primary, secondary, { repositoryKey = null } = {}) {
     ownerId: `${primary.ownerId}|${secondary.ownerId}`,
     repositoryLockKeys,
     signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] ?? null,
-    async assertOwned(checks = new Map()) {
-      await primary.assertOwned(checks);
-      await secondary.assertOwned(checks);
+    async assertOwned() {
+      await primary.assertOwned();
+      await secondary.assertOwned();
     },
   };
 }
 
 export async function runOwnedGit(args, { lease = null, ...options } = {}) {
   const owner = interruptibleTaskLease(requiredGuardLease(lease));
-  const checks = new Map();
-  await owner.assertOwned(checks);
-  const guard = await owner.beginProcessTreeGuard({ args, cwd: options.cwd }, checks);
+  await owner.assertOwned();
+  const guard = await owner.beginProcessTreeGuard({ args, cwd: options.cwd });
   try {
     const result = await runGit(args, { ...options, signal: owner.signal ?? null });
     await guard.clear({ proof: "natural-process-tree-completion" });
@@ -742,10 +741,9 @@ export class TaskGitWorkspaceService {
 
   async #runOwnedTraced(args, { lease, guardCommand, guardScope, guardRepositoryRoot, ...options }) {
     const owner = interruptibleTaskLease(requiredGuardLease(lease));
-    const checks = new Map();
-    await owner.assertOwned(checks);
+    await owner.assertOwned();
     const guard = await owner.beginProcessTreeGuard({ args: guardCommand ?? args, cwd: options.cwd,
-      scope: guardScope, repositoryRoot: guardRepositoryRoot }, checks);
+      scope: guardScope, repositoryRoot: guardRepositoryRoot });
     try {
       const result = await this.runCommand(args, { ...options, signal: owner.signal ?? null });
       await guard.clear({ proof: "natural-process-tree-completion" });
@@ -1350,9 +1348,9 @@ export class TaskGitWorkspaceService {
     }
   }
 
-  async #beginProcessTreeGuard(taskId, lease, { args, cwd, scope = "repository", repositoryRoot: guardRepositoryRoot } = {}, state, checks) {
+  async #beginProcessTreeGuard(taskId, lease, { args, cwd, scope = "repository", repositoryRoot: guardRepositoryRoot } = {}, state) {
     if (typeof lease?.assertOwned !== "function") throw new Error("Task Git guard owner lease is required");
-    await measureTaskOperationAwait("process-guard-lease-await", () => lease.assertOwned(checks));
+    await measureTaskOperationAwait("process-guard-lease-await", () => lease.assertOwned());
     if (state.unresolved) throw state.unresolved;
     const repositoryRoot = await measureTaskOperationAwait("process-guard-identity-await",
       () => repositoryIdentityFromPath(guardRepositoryRoot ?? cwd));
@@ -1448,9 +1446,9 @@ export class TaskGitWorkspaceService {
       return withInterprocessLocks([path.join(this.dataDir, "locks", scope)], async lockLease => {
         await this.#assertNoProcessTreeGuard(scope);
         const owner = this.#guardedLease(scope, combinedLease(outerLease, lockLease));
-        const lease = { ...owner, beginProcessTreeGuard: (context, checks) => owner.beginProcessTreeGuard({
+        const lease = { ...owner, beginProcessTreeGuard: context => owner.beginProcessTreeGuard({
           ...context, repositoryRoot: canonicalPath(sourceRoot),
-        }, checks) };
+        }) };
         return operation({ root, lease, coveredLease: outerLease });
       }, { signal: taskOperationExecution()?.signal });
     };
@@ -1467,9 +1465,9 @@ export class TaskGitWorkspaceService {
       await this.#assertNoProcessTreeGuard(scope);
       await this.#assertRepositoryProcessTreeClear(source);
       const owner = this.#guardedLease(scope, lockLease);
-      const lease = { ...owner, beginProcessTreeGuard: (context, checks) => owner.beginProcessTreeGuard({
+      const lease = { ...owner, beginProcessTreeGuard: context => owner.beginProcessTreeGuard({
         ...context, repositoryRoot: source,
-      }, checks) };
+      }) };
       return operation({ lease,
         objects: this.createNativeObjectStore({ sourceRoot: source, lease }),
         gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd,
@@ -1520,12 +1518,11 @@ export class TaskGitWorkspaceService {
     return {
       ...lease,
       taskId: id,
-      assertOwned: checks => measureTaskOperation("lease-assert", async () => {
-        await lease.assertOwned(checks);
+      assertOwned: () => measureTaskOperation("lease-assert", async () => {
+        await lease.assertOwned();
         if (state.unresolved) throw state.unresolved;
       }, { detail: true }),
-      beginProcessTreeGuard: (context, checks) => measureTaskOperation("process-guard",
-        () => this.#beginProcessTreeGuard(id, lease, context, state, checks), { detail: true }),
+      beginProcessTreeGuard: (context) => measureTaskOperation("process-guard", () => this.#beginProcessTreeGuard(id, lease, context, state), { detail: true }),
     };
   }
 
