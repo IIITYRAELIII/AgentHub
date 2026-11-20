@@ -16,7 +16,7 @@
       const question = element("summary", "?", "workspace-task-workflow-help");
       question.setAttribute("aria-label", "О подключении GitHub");
       question.setAttribute("aria-describedby", "github-account-help");
-      const note = element("div", "Общий Git-профиль Hub и агентов. Вход подтверждается на GitHub по одноразовому коду. Hub запрашивает доступ к репозиториям и чтение профиля/email; операции ограничены выданным доступом и правами аккаунта. Для изменения Actions нужны отдельные права. После истечения авторизации войди снова.", "workspace-task-workflow-tooltip");
+      const note = element("div", "Общий Git-профиль Hub и агентов. Вход по одноразовому коду.", "workspace-task-workflow-tooltip");
       note.id = "github-account-help";
       note.setAttribute("role", "tooltip");
       help.append(question, note);
@@ -26,8 +26,7 @@
       heading.append(title, help);
       const status = element("span", "", "server-component-status");
       const identity = element("small");
-      const localNote = element("small", "Для подключения откройте Hub на этом компьютере.");
-      const connect = element("button", "Войти через GitHub", "chip-button");
+      const connect = element("button", "Войти", "chip-button");
       connect.type = "button";
       const disconnect = element("button", "Отключить", "chip-button ghost");
       disconnect.type = "button";
@@ -47,8 +46,8 @@
       error.setAttribute("role", "status");
       const actions = element("div", "", "server-account-actions");
       actions.append(connect, disconnect);
-      root.append(heading, status, identity, localNote, actions, login, error);
-      view = { status, identity, connect, disconnect, error, localNote, login, code, busy: false, localAccess: false, waiting: false };
+      root.append(heading, status, identity, actions, login, error);
+      view = { status, identity, connect, disconnect, error, login, code, busy: false, localAccess: false, waiting: false };
       states.set(root, view);
       connect.addEventListener("click", () => {
         if (view.busy || !view.localAccess) return;
@@ -67,11 +66,9 @@
     }
     const account = accountState.account;
     view.localAccess = localAccess === true;
-    view.localNote.hidden = view.localAccess;
     view.status.textContent = ({ connected: "Подключён", disconnected: "Не подключён",
       expired: "Авторизация истекла — войди через GitHub снова" })[accountState.status] ?? "Подключение недоступно";
     view.identity.textContent = account ? `${account.login} · ${account.name} <${account.email}>` : "";
-    view.connect.textContent = account ? "Войти через GitHub снова" : "Войти через GitHub";
     view.disconnect.hidden = !account;
     view.connect.hidden = view.waiting;
     view.connect.disabled = view.busy || !view.localAccess || accountState.status === "unavailable";

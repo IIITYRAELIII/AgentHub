@@ -43,6 +43,7 @@ for (const width of [1366, 390]) test(`GitHub connection controls preserve secre
     assert.equal(await tooltip.isVisible(), false);
     await help.hover();
     await tooltip.waitFor({ state: "visible" });
+    assert.equal(await tooltip.textContent(), "Общий Git-профиль Hub и агентов. Вход по одноразовому коду.");
     await page.mouse.move(1, 1);
     await help.focus();
     await help.press("Enter");
@@ -55,7 +56,7 @@ for (const width of [1366, 390]) test(`GitHub connection controls preserve secre
       await tooltip.waitFor({ state: "visible" });
       await help.tap();
     }
-    await panel.getByRole("button", { name: "Войти через GitHub", exact: true }).click();
+    await panel.getByRole("button", { name: "Войти", exact: true }).click();
     await panel.getByLabel("Код входа GitHub").waitFor({ state: "visible" });
     assert.equal(await panel.getByLabel("Код входа GitHub").textContent(), "ABCD-EFGH");
     assert.equal(await panel.getByRole("link", { name: "Открыть GitHub" }).getAttribute("href"), "https://github.com/login/device");
@@ -75,10 +76,10 @@ for (const width of [1366, 390]) test(`GitHub connection controls preserve secre
       window.AgentHub.setGitHubAccount(state);
     });
     await panel.getByText("Авторизация истекла — войди через GitHub снова", { exact: true }).waitFor();
-    await panel.getByRole("button", { name: "Войти через GitHub снова", exact: true }).click();
+    await panel.getByRole("button", { name: "Войти", exact: true }).click();
     await panel.getByRole("button", { name: "Отменить вход" }).click();
-    await panel.getByRole("button", { name: "Войти через GitHub снова", exact: true }).waitFor();
-    await panel.getByRole("button", { name: "Войти через GitHub снова", exact: true }).click();
+    await panel.getByRole("button", { name: "Войти", exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Войти", exact: true }).click();
     await page.evaluate(() => { window.__githubAllow = true; });
     await panel.getByText("Подключён", { exact: true }).waitFor();
     if (process.env.AGENT_HUB_TEST_SCREENSHOTS) {
@@ -132,10 +133,10 @@ test("late response from a cancelled OAuth attempt cannot replace the next conne
     });
     await page.locator('[data-mobile-button="server"]').click();
     const panel = page.locator("[data-github-account]");
-    await panel.getByRole("button", { name: "Войти через GitHub", exact: true }).click();
+    await panel.getByRole("button", { name: "Войти", exact: true }).click();
     await page.waitForFunction(() => Boolean(window.__releaseOldGithubPoll));
     await panel.getByRole("button", { name: "Отменить вход" }).click();
-    await panel.getByRole("button", { name: "Войти через GitHub", exact: true }).click();
+    await panel.getByRole("button", { name: "Войти", exact: true }).click();
     await panel.getByText("new-user · new-user <new-user@example.invalid>", { exact: true }).waitFor();
     await page.evaluate(async () => { window.__releaseOldGithubPoll(); await new Promise(resolve => setTimeout(resolve, 0)); });
     assert.equal(await panel.getByText("new-user · new-user <new-user@example.invalid>", { exact: true }).isVisible(), true);
@@ -153,8 +154,10 @@ test("remote browser cannot collect or relay a GitHub token, including forged cl
     const errors = await openClientEventFixture(page, { fixtureSnapshot, surface: "web" });
     assert.equal(await page.locator('[data-mobile-button="server"]').isVisible(), false);
     const panel = page.locator("[data-github-account]");
-    await panel.getByText("Для подключения откройте Hub на этом компьютере.", { exact: true }).waitFor({ state: "attached" });
-    assert.equal(await panel.getByRole("button", { name: "Войти через GitHub", exact: true, includeHidden: true }).isDisabled(), true);
+    const signIn = panel.getByRole("button", { name: "Войти", exact: true, includeHidden: true });
+    await signIn.waitFor({ state: "attached" });
+    assert.equal(await signIn.isDisabled(), true);
+    assert.equal(await panel.getByText("Для подключения откройте Hub на этом компьютере.", { exact: true }).count(), 0);
     assert.equal(await panel.locator("input").count(), 0);
     await page.evaluate(async () => {
       // Even a forged presentation flag cannot replace actual local auth.
