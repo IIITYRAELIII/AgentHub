@@ -2149,7 +2149,9 @@ export class TaskLifecycleService {
           admitted: prior?.cleanup?.manualCleanup ?? null, acceptedSource });
       const cleanup = await read(), retained = cleanup.manualCleanup?.source ?? cleanup;
       const preview = confirmation(task, "complete", cleanup);
-      preview.warning = "Remove only the listed verified published clean Task branches/worktrees, then close the card. Local data or later work blocks cleanup; history remains.";
+      preview.warning = legacy
+        ? "Finish the original preserve-only confirmation; its branches, worktrees and local data remain preserved."
+        : "Remove only the listed verified published clean Task branches/worktrees, then close the card. Local data or later work blocks cleanup; history remains.";
       if (!confirmCleanup) return preview;
       if (expectedCleanupToken !== (prior?.confirmationToken ?? preview.cleanupToken)) throw new TaskCleanupConfirmationRejectedError(taskId, "complete");
       if (originalArguments?.task_id !== taskId || originalArguments.request_id !== operationId

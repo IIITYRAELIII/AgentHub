@@ -170,6 +170,45 @@ test("manual cleanup refuses local tracked/untracked work and stale source after
   assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
 });
 
+test("manual cleanup retires only an exact missing owned worktree registration and preserves replacement or foreign paths", async t => {
+  const f = await publicFixture(t);
+  f.raw.beginLifecycleTransition(f.task.id, { operationId: "missing-done", targetWorkflowStatus: "done", expectedRevision: f.task.revision });
+  f.raw.commitWorkflowTransition({ operationId: "missing-done", gitReferences: [
+    { projectRoot: f.repo, branch: f.managed.branch, resultCommit: f.base },
+  ] });
+  f.raw.complete(f.task.id);
+  const archived = f.board.task(f.task.id);
+  await rm(path.dirname(f.managed.projectRoot), { recursive: true }); // Historical whole-Task physical cleanup; Git registration remains.
+  const args = { task_id: f.task.id, completion_mode: "manual_delivery", manual_delivery: f.input };
+  const preview = await f.call("hub_task_complete", { ...args, request_id: "missing-preview" });
+  assert.equal(preview.preview.staleWorktrees.length, 1);
+  assert.equal(path.resolve(preview.preview.staleWorktrees[0].projectRoot), path.resolve(f.managed.projectRoot));
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  await mkdir(f.managed.projectRoot, { recursive: true });
+  const replacement = path.join(f.managed.projectRoot, "replacement.txt"); await writeFile(replacement, "preserve new directory\n");
+  await assert.rejects(f.call("hub_task_complete", { ...args, request_id: "replacement-confirm", confirm_cleanup: true,
+    expected_cleanup_token: preview.cleanupToken }), /foreign|changed/u);
+  assert.equal(await readFile(replacement, "utf8"), "preserve new directory\n");
+  assert.deepEqual(f.board.task(f.task.id), archived);
+  await rm(f.managed.projectRoot, { recursive: true }); // Controlled replacement fixture only.
+  const fresh = await f.call("hub_task_complete", { ...args, request_id: "missing-fresh-preview" });
+  await f.call("hub_task_complete", { ...args, request_id: "missing-clean", confirm_cleanup: true,
+    expected_cleanup_token: fresh.cleanupToken });
+  await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
+  assert.ok(!(await f.git(["worktree", "list", "--porcelain"])).includes(f.managed.branch));
+  assert.deepEqual(f.board.task(f.task.id), archived);
+  const g = await publicFixture(t);
+  g.raw.beginLifecycleTransition(g.task.id, { operationId: "foreign-missing-done", targetWorkflowStatus: "done", expectedRevision: g.task.revision });
+  g.raw.commitWorkflowTransition({ operationId: "foreign-missing-done", gitReferences: [
+    { projectRoot: g.repo, branch: g.managed.branch, resultCommit: g.base },
+  ] });
+  const foreign = path.join(g.root, "foreign-missing");
+  await g.git(["worktree", "move", g.managed.projectRoot, foreign]); await rm(foreign, { recursive: true });
+  await assert.rejects(g.call("hub_task_complete", { task_id: g.task.id, completion_mode: "manual_delivery", manual_delivery: g.input,
+    request_id: "foreign-missing-preview" }), /foreign worktree/u);
+  assert.equal(await g.git(["rev-parse", g.managed.branch]), g.base);
+});
+
 test("manual cleanup previews an already closed archive with no old Complete receipt without rewriting its lifecycle", async t => {
   const f = await publicFixture(t);
   f.raw.complete(f.task.id); // Historical archive form, not a delivered-workflow assertion.
@@ -182,6 +221,24 @@ test("manual cleanup previews an already closed archive with no old Complete rec
     expected_cleanup_token: preview.cleanupToken });
   assert.deepEqual(f.board.task(f.task.id), archived);
   await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
+});
+
+test("manual cleanup never upgrades a previously admitted preserve-only confirmation or replays its completed outcome", async t => {
+  const f = await publicFixture(t); f.raw.setWorkflowStatus(f.task.id, "done");
+  const task = f.board.task(f.task.id);
+  const retained = await f.taskGit.withTaskLock(task.id, lease => f.taskGit.manualDeliveryPreviewOwned({ task, input: f.input, lease }));
+  const originalArguments = { request_id: "old-preserve-original", task_id: task.id, completion_mode: "manual_delivery",
+    manual_delivery: f.input, confirm_cleanup: true, expected_cleanup_token: "old-token" };
+  f.raw.beginLifecycleTransition(task.id, { operationId: "old-preserve-original", kind: "complete", expectedRevision: task.revision,
+    evidence: { manualDelivery: retained, originalArguments, confirmationToken: "old-token" } });
+  const args = { taskId: task.id, operationId: "old-preserve-original", completionMode: "manual_delivery", manualDelivery: f.input,
+    confirmCleanup: true, expectedCleanupToken: "old-token", originalArguments };
+  const result = await f.lifecycle.complete(args);
+  assert.equal(result.status, "done");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  f.taskGit.manualDeliveryPreviewOwned = () => assert.fail("completed old original is readback only");
+  assert.deepEqual(await f.lifecycle.complete(args), result);
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
 });
 
 test("manual cleanup pins an old canonical preservation outcome and refuses later or foreign checked-out work", async t => {

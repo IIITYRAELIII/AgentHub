@@ -6765,6 +6765,7 @@ export class TaskGitWorkspaceService {
         references.push({ projectRoot: w.repositoryRoot, branch: w.branch, resultCommit: w.headCommit, artifactOnly: true });
       }
     }
+    const staleWorktrees = [];
     for (const r of references) {
       const head = await gitMaybe(["rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`], { cwd: r.projectRoot });
       const expected = source.workspaces.find(w => samePath(w.repositoryRoot, r.projectRoot) && w.branch === r.branch)?.headCommit ?? r.resultCommit;
@@ -6772,9 +6773,24 @@ export class TaskGitWorkspaceService {
         throw Error("Manual cleanup branch changed or has later work");
       }
       const checkedOut = await worktreeForBranch(r.projectRoot, r.branch);
-      if (checkedOut && !workspaces.some(w => samePath(w.projectRoot, checkedOut))) throw Error("Manual cleanup branch is checked out in a foreign worktree");
+      if (checkedOut && !workspaces.some(w => samePath(w.projectRoot, checkedOut))) {
+        const taskRoot = path.join(this.taskWorktreesRoot, taskId);
+        const expectedRoot = path.join(taskRoot, taskRepositoryKey(r.projectRoot));
+        const absent = await lstat(checkedOut).then(() => false, error => {
+          if (error.code === "ENOENT") return true;
+          throw error;
+        });
+        const parent = await lstat(taskRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+        const anchor = parent ? taskRoot : this.taskWorktreesRoot;
+        const anchorInfo = parent ?? await lstat(anchor);
+        if (!absent || !samePath(checkedOut, expectedRoot) || !anchorInfo.isDirectory() || anchorInfo.isSymbolicLink()
+            || !samePath(await realpath(anchor), anchor)) throw Error("Manual cleanup branch is checked out in a foreign worktree");
+        // Only this Task's exact missing registered path. Native Git removes its
+        // registration; no global prune, force removal or guessed legacy path.
+        staleWorktrees.push({ projectRoot: checkedOut, repositoryRoot: r.projectRoot, branch: r.branch, headCommit: head });
+      }
     }
-    return { references };
+    return { references, staleWorktrees };
   }
 
   async cleanupPreview(taskId, { gitReferences = [], squashAbsorbedBy = null, publishedDelivery = null, manualCleanup = null } = {}) {
@@ -6908,6 +6924,7 @@ export class TaskGitWorkspaceService {
         deleting.push({ kind: "release_wait_ref", name: waitRef, repositoryRoot: reference.projectRoot });
       }
     }
+    for (const stale of manual?.staleWorktrees ?? []) deleting.push({ kind: "worktree_registration", ...stale });
     const uniqueDeleting = [...new Map(deleting.map((item) => [
       `${item.kind}\0${item.repositoryRoot ?? ""}\0${item.path ?? item.name ?? ""}`, item,
     ])).values()];
@@ -6917,7 +6934,7 @@ export class TaskGitWorkspaceService {
       gitReferences: references.filter(r => !r.artifactOnly),
       ...(delivery ? { publishedCleanupReferences: references.filter(r => r.artifactOnly), publishedDelivery } : {}),
       ...(manual ? { publishedCleanupReferences: references.filter(r => r.artifactOnly), manualCleanup,
-        manualDelivery: manualCleanup.source.manualDelivery } : {}),
+        manualDelivery: manualCleanup.source.manualDelivery, staleWorktrees: manual.staleWorktrees } : {}),
       dirty: workspaces.some((item) => item.dirty),
       retainedIgnored: workspaces.filter(item => item.ignoredPaths.length)
         .map(item => ({ projectRoot: item.projectRoot, paths: item.ignoredPaths })),
@@ -7004,6 +7021,7 @@ export class TaskGitWorkspaceService {
       workspaces: value.workspaces.filter((item) => samePath(item.repositoryRoot, repoRoot)),
       gitReferences: value.gitReferences.filter((item) => samePath(item.projectRoot, repoRoot)),
       deleting: value.deleting.filter((item) => item.repositoryRoot && samePath(item.repositoryRoot, repoRoot)),
+      ...(manualCleanup ? { staleWorktrees: value.staleWorktrees.filter(item => samePath(item.repositoryRoot, repoRoot)) } : {}),
     });
     const assertCurrentRepository = async (repoRoot) => {
       const current = await this.cleanupPreview(id, { gitReferences, squashAbsorbedBy, publishedDelivery, manualCleanup });
@@ -7056,6 +7074,8 @@ export class TaskGitWorkspaceService {
       const branch = String(reference.branch ?? "").trim();
       await this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
         await assertCurrentRepository(repoRoot);
+        const stale = preview.staleWorktrees?.find(item => samePath(item.repositoryRoot, repoRoot) && item.branch === branch);
+        if (stale) await this.#runOwned(["worktree", "remove", stale.projectRoot], { cwd: repoRoot, lease: ownedLease });
         if (branch && await branchExists(repoRoot, branch)) {
           if (await worktreeForBranch(repoRoot, branch)) throw new Error("Task cleanup blocked: branch is still checked out");
           const expectedHead = [...preview.gitReferences, ...(preview.publishedCleanupReferences ?? [])].find((item) => samePath(item.projectRoot, repoRoot) && item.branch === branch)?.branchHeadCommit;

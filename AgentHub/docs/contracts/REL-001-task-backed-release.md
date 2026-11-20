@@ -18,6 +18,11 @@ confirmation without rewriting its status, workflow or completion time. An old
 canonical manual Complete can pin its source via completed_operation_request_id;
 missing receipts require the full fresh delivery proof, never archive status or
 ancestry alone. Preserve-only old confirmations retain their original meaning.
+If physical cleanup already removed the exact owned Task/repository-key path,
+its still-registered Git worktree can be listed separately in the same preview.
+Positive path absence, unchanged branch/head and the exact non-reparse managed
+Task parent are checked again before targeted native worktree removal and branch
+CAS. Existing/replaced/foreign paths refuse. No global worktree prune is used.
 When the registered primary remains behind an already published main, the
 configured Hub-owned standalone clone is the read-only delivery authority.
 Its existing marker must bind this primary/common directory and managed layout;

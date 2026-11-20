@@ -55,6 +55,14 @@ the full fresh actual delivery/source proof. Closed status and Git ancestry
 alone authorize no deletion. Absorbed unpublished work remains preserved until
 publication proof supports its exact source.
 
+Historical partial cleanup can leave a Git registration for a missing worktree.
+The same cleanup owner previews only the exact Task UUID/repository-key managed
+path with positive ENOENT, unchanged published branch/head and a non-reparse
+managed parent. It invokes native `git worktree remove` on that exact missing
+path before the existing branch CAS. Existing replacement directories, foreign
+paths and changed registrations refuse. This does not use global prune, force
+or raw administrative-file editing.
+
 Native manual release membership also survives verified source retirement.
 Its existing canonical Done proof is paired with a successful canonical cleanup
 outcome/receipt for the same source. Fresh filesystem checks require the retired

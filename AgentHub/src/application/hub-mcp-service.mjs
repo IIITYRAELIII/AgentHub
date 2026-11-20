@@ -865,7 +865,7 @@ export class HubMcpService {
           revision: { type: "string", pattern: "^[a-f0-9]{40}$" }, releaseId: { type: "string" },
           manifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
         } },
-        completed_operation_request_id: { type: "string", description: "Original canonical published-service closure supplying historical repository proof for its already closed zero-own-delta source." },
+        completed_operation_request_id: { type: "string", description: "Original canonical closure for historical cleanup: published-service proof in operational mode, or exact original manually delivered source in manual_delivery mode. The old closure is not replayed." },
         published_delivery: { type: "object", properties: {
           runtimeRoot: { type: "string" }, publicationRunSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
           publicationJournalPath: { type: "string", description: "Explicit retained original journal; its raw hash and original runtime identity remain required." },
