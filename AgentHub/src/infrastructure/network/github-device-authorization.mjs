@@ -1,6 +1,6 @@
 // GitHub's public device client: no client secret, loopback listener or browser
 // credential relay. The device code and token never leave the local owner.
-export const GITHUB_OAUTH_SCOPES = "repo read:user user:email";
+export const GITHUB_OAUTH_SCOPES = "gist read:org repo workflow";
 
 async function responseJson(response) {
   const reader = response.body.getReader(), chunks = [];

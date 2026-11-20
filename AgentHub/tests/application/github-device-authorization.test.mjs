@@ -5,7 +5,7 @@ import { mkdtemp, rm, readFile, writeFile, access, readdir } from "node:fs/promi
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { GitHubDeviceAuthorization, GITHUB_OAUTH_SCOPES } from "../../src/infrastructure/network/github-device-authorization.mjs";
+import { GitHubDeviceAuthorization } from "../../src/infrastructure/network/github-device-authorization.mjs";
 import { GitHubAccountService } from "../../src/application/github-account-service.mjs";
 import { GitHubAccountVault } from "../../src/infrastructure/filesystem/github-account-vault.mjs";
 import { githubCredential } from "../../src/infrastructure/process/github-credential-helper.mjs";
@@ -18,7 +18,7 @@ const grant = { device_code: deviceCode, user_code: "ABCD-EFGH", verification_ur
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub-oauth-"));
   const requests = [], replies = [];
-  let clock = Date.now(), held = null, apiDenied = 0;
+  let clock = Date.now(), held = null, apiDenied = 0, emailDenied = false;
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -33,7 +33,10 @@ async function fixture(t) {
     if (req.url === "/user") return res.end(JSON.stringify(req.headers.authorization === `Bearer ${oldToken}`
       ? { id: 11, login: "original-user", name: "Original User" }
       : { id: 211, login: "oauth-user", name: "OAuth User" }));
-    if (req.url === "/user/emails") return res.end(JSON.stringify([{ primary: true, verified: true, email: "oauth@example.invalid" }]));
+    if (req.url === "/user/emails") {
+      if (emailDenied) { res.statusCode = 403; return res.end("{}"); }
+      return res.end(JSON.stringify([{ primary: true, verified: true, email: "oauth@example.invalid" }]));
+    }
     return res.end(JSON.stringify({ authorized: req.headers.authorization === `Bearer ${token}` }));
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -48,12 +51,13 @@ async function fixture(t) {
   const vault = new GitHubAccountVault({ directory, crypt: async b => Buffer.from(b).reverse(), protect: async () => {} });
   const service = await new GitHubAccountService({ directory, vault, fetchImpl, deviceAuthorization: oauth }).initialize();
   return { directory, service, vault, oauth, requests, replies,
-    advance: ms => { clock += ms; }, hold: wait => { held = wait; }, deny: status => { apiDenied = status; } };
+    advance: ms => { clock += ms; }, hold: wait => { held = wait; }, deny: status => { apiDenied = status; },
+    denyPrivateEmail: () => { emailDenied = true; } };
 }
 
 test("device interval, slow-down and deadline govern actual private HTTP without early token requests", async t => {
   const f = await fixture(t), flow = await f.oauth.start();
-  assert.equal(f.requests[0].body.get("scope"), GITHUB_OAUTH_SCOPES);
+  assert.deepEqual(f.requests[0].body.get("scope").split(/\s+/u).sort(), ["gist", "read:org", "repo", "workflow"]);
   assert.equal(f.requests[0].body.has("client_secret"), false);
   assert.equal((await f.oauth.poll(flow)).status, "pending");
   assert.equal(f.requests.length, 1);
@@ -75,6 +79,7 @@ test("device interval, slow-down and deadline govern actual private HTTP without
 
 test("OAuth completion reuses actual protected selection for Git credential, gh child and API; expiry refuses all", async t => {
   const f = await fixture(t);
+  f.denyPrivateEmail();
   const started = await f.service.startLogin();
   assert.equal(started.login.userCode, "ABCD-EFGH");
   assert.equal(JSON.stringify(await f.service.snapshot()).includes(deviceCode), false);
@@ -82,7 +87,7 @@ test("OAuth completion reuses actual protected selection for Git credential, gh 
   f.advance(5000);
   const result = await f.service.pollLogin(started.login.attemptId);
   assert.equal(result.githubAccount.status, "connected");
-  assert.equal(result.githubAccount.account.email, "oauth@example.invalid");
+  assert.equal(result.githubAccount.account.email, "211+oauth-user@users.noreply.github.com");
   assert.equal(JSON.stringify(result).includes(token), false);
   const row = await f.vault.read();
   assert.equal((await githubCredential({ directory: f.directory, vault: f.vault, id: row.id, operation: "get", input: "protocol=https\nhost=github.com\n\n" })).includes(token), true);

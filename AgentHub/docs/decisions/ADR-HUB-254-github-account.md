@@ -15,14 +15,12 @@ configuration. The existing client/vault/profile consumers remain the base; only
 the token acquisition path changes. A missing Client ID gives an explicit setup
 error without making an authorization request. Registration is external owner work.
 
-The requested scopes are `repo read:user user:email`: repository Git/REST/gh work
-plus verified identity/email. `repo` includes public/private repository writes and
-other repository permissions; it is not restricted to one selected repository.
-GitHub organization policies/SSO can further restrict it. This is not every account
-permission: workflow editing, deletion, packages and other additional scopes are
-not silently requested. Their operations keep actual permission errors. GitHub
-Apps offer finer per-repository installation permissions, but require a separate
-installation/permission design and are not silently substituted here.
+The requested scopes are `gist read:org repo workflow`, matching the existing
+Git and GitHub CLI authorization verified for this change. These cover gists,
+organization read access, repository operations, and changes to Actions workflow
+files. The actual grant remains subject to GitHub consent, account permissions,
+and organization policies including SSO. The Hub uses the authenticated account's
+numeric noreply address when the grant cannot read private email addresses.
 
 The protocol stores the device code only in the current local service invocation,
 returns only the user code/constant GitHub verification URL to the protected local

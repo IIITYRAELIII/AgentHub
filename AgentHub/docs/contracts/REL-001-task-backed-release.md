@@ -11,8 +11,11 @@ helper locator. GitHub permissions remain those of the user's access token.
 OAuth device authorization uses the registered public Client ID, not a client
 secret or another application's identity. Only explicit local sign-in starts it;
 polling respects GitHub's interval, slow-down, denial and deadline. The final token
-is verified through the same account owner before atomic selection. The granted
-OAuth scopes intersect account rights; missing permissions remain explicit refusals.
+is verified through the same account owner before atomic selection. The OAuth
+request matches the existing Git and GitHub CLI scope set
+`gist read:org repo workflow`. Actual permissions are the intersection of the grant,
+account rights, and organization policies. No separate private email scope is
+requested; the authenticated account's numeric noreply address is the fallback.
 Persisted expiry is enforced at the shared Git/gh/API credential owner and requires
 sign-in again. Application registration and real grants are owner actions, not tests.
 Cancellation/replacement invalidate pending authorization immediately, but replies
