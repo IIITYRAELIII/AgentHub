@@ -96,14 +96,19 @@ function samePath(left, right) {
 }
 
 async function dirtyState(root) {
-  const [unstaged, staged, untracked, indexEntries] = await Promise.all([
+  const [status, indexEntries] = await Promise.all([
+    runGit(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all",
+      "--ignore-submodules=none", "--no-renames"], { cwd: root }),
+    runGit(["ls-files", "--stage", "-z"], { cwd: root }),
+  ]);
+  // Preserve the existing path/fingerprint format for dirty or unmerged
+  // primary checkouts. Nothing has to be enumerated again on a clean checkout.
+  const changed = status ? await Promise.all([
     runGit(["diff", "--name-only", "-z", "--"], { cwd: root }),
     runGit(["diff", "--cached", "--name-only", "-z", "--"], { cwd: root }),
     runGit(["ls-files", "--others", "--exclude-standard", "-z"], { cwd: root }),
-    runGit(["ls-files", "--stage", "-z"], { cwd: root }),
-  ]);
-  const paths = [...new Set([unstaged, staged, untracked]
-    .flatMap((value) => value.split("\0").filter(Boolean)))].sort();
+  ]) : [];
+  const paths = [...new Set(changed.flatMap(value => value.split("\0").filter(Boolean)))].sort();
   const files = [];
   for (const relativePath of paths) {
     const bytes = await readFile(path.join(root, relativePath)).catch((error) => {

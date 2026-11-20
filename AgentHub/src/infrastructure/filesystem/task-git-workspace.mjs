@@ -4535,11 +4535,15 @@ export class TaskGitWorkspaceService {
           await this.#assertSelectedAbsorptionGit(nativeAbsorptionInput, snapshot.repositoryRoot, ownedLease);
         }
         await this.#assertNoProcessTreeGuard(snapshot.taskId);
-        if (await git(["rev-parse", "HEAD^{commit}"], snapshot.projectRoot) !== snapshot.headCommit
-            || await git(["symbolic-ref", "-q", "HEAD"], snapshot.projectRoot) !== `refs/heads/${snapshot.branch}`
-            || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], snapshot.projectRoot)
-            || await localMainCommit(snapshot.repositoryRoot) !== record.mainCommit
-            || await git(["rev-parse", `${this.#custodyBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot))}^{commit}`], snapshot.repositoryRoot) !== snapshot.baseCommit) {
+        const status = String(await git(["--no-optional-locks", "status", "--porcelain=v2", "--branch",
+          "--no-ahead-behind", "--no-show-stash", "-z", "--untracked-files=all"], snapshot.projectRoot, { rawOutput: true })).split("\0");
+        const [oidHeader, branchHeader, ...details] = status;
+        const clean = details.pop() === "" && details.every(line => /^# branch\.(?:upstream|ab) /u.test(line));
+        const baseRef = this.#custodyBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot));
+        if (!clean || oidHeader !== `# branch.oid ${snapshot.headCommit}`
+            || branchHeader !== `# branch.head ${snapshot.branch}`
+            || await git(["rev-parse", "--revs-only", "refs/heads/main^{commit}", `${baseRef}^{commit}`],
+              snapshot.repositoryRoot) !== `${record.mainCommit}\n${snapshot.baseCommit}`) {
           throw Object.assign(new Error("Native Test source/main changed; original remains unresolved"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
         }
         await this.#nativeHistoryOrigin(snapshot, record.nativeHistoryAuthority, ownedLease);
