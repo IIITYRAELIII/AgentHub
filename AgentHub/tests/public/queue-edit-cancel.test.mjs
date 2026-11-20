@@ -68,7 +68,9 @@ async function openEditFixture(page) {
           };
           fixture.snapshot.version = "canonical-old-cancelled";
           localStorage.setItem("fixture:snapshot", JSON.stringify(fixture.snapshot));
-          return respond(message, { accepted: true, id: originalItem, committed: true });
+          return respond(message, params.action === "cancel"
+            ? { accepted: true, id: originalItem, clientUserMessageId: originalId, cancelled: true }
+            : { accepted: true, id: originalItem, committed: true });
         }
         return respond(message, {});
       }
@@ -172,6 +174,112 @@ test("ordinary cancel addresses the live queue item once and keeps an unrelated 
     assert.equal(calls[0].params.id, originalItem);
     assert.equal((await bridgeCalls(page, "send-message")).length, 0);
     assert.equal(await page.locator("[data-composer-input]").inputValue(), "Independent unsent draft");
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test("a second cancel click after the ACK and before snapshot readback sends no duplicate", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    const errors = await openEditFixture(page);
+    await page.evaluate(() => {
+      const bridge = window.__fixtureBridge;
+      const post = bridge.postMessage.bind(bridge);
+      const held = [];
+      bridge.postMessage = (message) => {
+        if (message.action === "snapshot") held.push(message);
+        else post(message);
+      };
+      window.__heldQueueSnapshots = held;
+      window.__failQueueSnapshots = () => {
+        for (const message of held.splice(0)) window.dispatchEvent(new MessageEvent("message", {
+          data: { type: "agenthub:control-result", id: message.id, ok: false, error: "Queue readback interrupted" },
+        }));
+      };
+      window.__releaseQueueSnapshots = () => {
+        bridge.postMessage = post;
+        for (const message of held) post(message);
+      };
+    });
+    const button = page.locator(`[data-queue-id='${originalItem}'] [data-action='queue-remove']`);
+    await button.click();
+    await page.waitForFunction((id) => window.__heldQueueSnapshots.some((request) => (
+      request.action === "snapshot"
+    )) && window.__agentHubFixture.snapshot.messageReceipts[0].cancelled === true
+      && !window.__editQueue.outgoingByTask.get("stream-a")?.has(id), originalId);
+    try {
+      if (await button.isVisible()) await button.click();
+      await page.evaluate(() => window.__failQueueSnapshots());
+      await page.waitForFunction(() => window.__toastHistory?.includes("Queue readback interrupted"));
+      await button.click();
+    } finally {
+      await page.evaluate(() => window.__releaseQueueSnapshots());
+    }
+    const next = await page.evaluate(() => window.__agentHubFixture.snapshot);
+    await applyFixtureSnapshot(page, next);
+    await button.waitFor({ state: "detached" });
+    const calls = (await bridgeCalls(page, "deferred-input")).filter((entry) => entry.params.action === "cancel");
+    assert.equal(calls.length, 1, "already cancelled item was sent to the owner twice");
+    assert.equal(calls[0].params.id, originalItem);
+    assert.equal(calls[0].params.clientUserMessageId, originalId);
+    assert.ok(calls[0].params.clientTraceId);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test("a receipt-only local queue card cancels the exact item once while snapshot is delayed", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    const errors = await openEditFixture(page);
+    const stale = await page.evaluate(() => {
+      const h = window.__editQueue;
+      const bridge = window.__fixtureBridge;
+      const post = bridge.postMessage.bind(bridge);
+      const held = [];
+      bridge.postMessage = (message) => {
+        if (message.action === "snapshot") held.push(message);
+        else post(message);
+      };
+      window.__heldReceiptOnlySnapshots = held;
+      window.__releaseReceiptOnlySnapshots = () => {
+        bridge.postMessage = post;
+        for (const message of held) post(message);
+      };
+      const stale = { ...h.snapshot(), deferredInputs: [], version: "receipt-only-queue" };
+      h.applySnapshotContent(stale);
+      h.renderTaskQueue("stream-a");
+      return stale;
+    });
+    const alias = `local:${originalId}`;
+    const button = page.locator(`[data-queue-id='${alias}'] [data-action='queue-remove']`);
+    try {
+      await button.click();
+      await page.waitForFunction((id) => window.__heldReceiptOnlySnapshots.length > 0
+        && window.__agentHubFixture.snapshot.messageReceipts[0].cancelled === true
+        && !window.__editQueue.outgoingByTask.get("stream-a")?.has(id), originalId);
+      if (await button.isVisible()) await button.click();
+      else await page.evaluate((id) => window.__editQueue.handlers["queue:remove"]({
+        id, taskId: "stream-a",
+      }), alias);
+      const calls = (await bridgeCalls(page, "deferred-input")).filter((entry) => entry.params.action === "cancel");
+      assert.equal(calls.length, 1, "receipt-only card sent a second cancel using its local alias");
+      assert.equal(calls[0].params.id, originalItem);
+      assert.equal(calls[0].params.clientUserMessageId, originalId);
+      assert.ok(calls[0].params.clientTraceId);
+      await button.waitFor({ state: "detached" });
+      await page.evaluate((oldSnapshot) => {
+        const h = window.__editQueue;
+        h.applySnapshotContent(oldSnapshot);
+        h.renderTaskQueue("stream-a");
+      }, stale);
+      assert.equal(await button.count(), 0, "stale queued receipt restored a card after exact cancel acknowledgement");
+    } finally {
+      await page.evaluate(() => window.__releaseReceiptOnlySnapshots());
+    }
+    await page.waitForFunction(() => window.__editQueue.snapshot().messageReceipts[0].cancelled === true);
+    assert.equal(await button.count(), 0);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });
