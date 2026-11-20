@@ -35,10 +35,31 @@ to Git using the existing source line-ending/LFS policy and compiled Host hash.
 Pointer, manifest and process identity are rechecked. Evidence belongs only to
 the Task outcome; publication state and original outcomes are unchanged.
 
-Workflow Done precedes closing. Preview and confirmation bind the Task revision
-and delivery/retained-artifact description. Existing SQLite lifecycle closes the
-card while preserving all branches, worktrees, ignored files and receipts.
-Dirty or unrepresented later work refuses. Cleanup remains a separate operation.
+Workflow Done precedes closing an open implementation card. Preview and
+confirmation bind the Task revision, actual delivery and exact cleanup plan.
+The existing Git cleanup owner removes clean published managed branches/worktrees
+before SQLite archives the card. Ignored data and unrepresented historical
+repositories remain explicit obstacles; their artifact owner retires data
+separately. Later HEADs, foreign worktrees and dirty/unpublished work refuse.
+The original durable cleanup intent retains the source/publication pins and
+confirmation token. Partial removal or lost SQL/MCP reply keeps that phase for
+the existing addressed reconciliation, which re-proves delivery, accepts only
+the remaining pinned subset, and finishes the same original. Old preserve-only
+admitted confirmations and completed outcomes keep their original meaning.
+
+Already closed archives use the same manual preview/confirmation for remaining
+cleanup; their card/workflow/completion time remain unchanged. An optional
+completed_operation_request_id binds a real old manual Complete's source so
+later work cannot borrow it. A historical card with no lifecycle receipt needs
+the full fresh actual delivery/source proof. Closed status and Git ancestry
+alone authorize no deletion. Absorbed unpublished work remains preserved until
+publication proof supports its exact source.
+
+Native manual release membership also survives verified source retirement.
+Its existing canonical Done proof is paired with a successful canonical cleanup
+outcome/receipt for the same source. Fresh filesystem checks require the retired
+branch and worktree to remain absent. Recreated/later source refuses; a missing
+worktree without that cleanup outcome grants no authority.
 
 The retained `synchronizeMainIntoDev` service accepts explicit `manualSync` with
 that verified installation, original operation ID, Workspace and expected dev.

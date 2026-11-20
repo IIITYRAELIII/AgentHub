@@ -7,8 +7,17 @@ consulting an old publication generation. Exact runtime/manifest/source,
 main/origin and Task-result containment are mandatory. Workflow Done precedes
 closing. Ready requires the existing authenticated live desktop control owner,
 matching PID/release and a stable endpoint, not a retained Ready lock alone.
-Preview/confirmation uses existing Task CAS. All Task Git artifacts,
-ignored WIP and dependency receipts are preserved. Cleanup is separate.
+Preview/confirmation uses existing Task CAS. Complete removes only the listed
+clean managed branches/worktrees after exact published result/current HEAD
+verification, then archives the card. Ignored WIP/dependency receipts, dirty or
+unpublished/later work block cleanup and remain intact. Their artifact owner
+retires them separately. A partial cleanup retains its admitted original intent;
+addressed reconciliation checks the remaining subset and finishes that original.
+An already closed archive can receive a fresh read-only cleanup preview and
+confirmation without rewriting its status, workflow or completion time. An old
+canonical manual Complete can pin its source via completed_operation_request_id;
+missing receipts require the full fresh delivery proof, never archive status or
+ancestry alone. Preserve-only old confirmations retain their original meaning.
 When the registered primary remains behind an already published main, the
 configured Hub-owned standalone clone is the read-only delivery authority.
 Its existing marker must bind this primary/common directory and managed layout;
@@ -47,7 +56,8 @@ actual installation/managed-head evidence without manufacturing a Test result.
 An unrepresented historical repository may only be explicitly retained with
 its exact managed path/head pin. Its contents are preserved, not certified
 published. Canonical referenced repositories and managed source still require
-the full delivery proof; retention cannot exclude them from it.
+the full delivery proof; retention cannot exclude them from it. A cleanup preview
+identifies this retained repository as an obstacle instead of deleting it.
 
 ## Scope after removal of the release mechanism (ADR-HUB-463)
 

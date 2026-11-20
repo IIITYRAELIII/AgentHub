@@ -3,8 +3,14 @@
 RM-only `hub_task_complete` supports explicit `manual_delivery` with exact
 revision/release/manifest hash and the configured installation root. Existing
 authenticated mutation, original receipt, preview token and Task CAS remain
-owners. It closes a verified Done card while preserving its artifacts; WIP
-cleanup and publication history remain separate (ADR-HUB-466).
+owners. It removes the previewed clean published Task branches/worktrees before
+closing a verified Done card. Local/ignored/unpublished/later work blocks cleanup;
+card/history/publication evidence remain (ADR-HUB-466). An already closed card
+can preview and confirm its remaining cleanup without a new workflow transition
+or completion timestamp. Optional completed_operation_request_id in this mode
+binds an old canonical manual Complete's exact source. No old completed operation
+is replayed. A partial new cleanup uses its admitted original and the existing
+addressed reconciliation; a changed source or remaining artifact set refuses.
 Exact `retained_repositories` pins preserve unrepresented historical worktrees
 without claiming them delivered. RM Done may accept the same `manual_delivery`
 proof plus exact Task/status CAS for owned source without a Test reference.

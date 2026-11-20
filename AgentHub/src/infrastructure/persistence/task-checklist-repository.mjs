@@ -348,7 +348,7 @@ function checklistItem(database, taskId, itemId) {
 
 export function manualDeliveryReleaseReferenceEvidence(database, { taskId, reference }) {
   const ref = normalizedReleaseReference(reference), original = ref.manualDelivery;
-  const task = database.prepare(`SELECT id, workspace_id, workflow_status, CAST(row_revision AS TEXT) revision
+  const task = database.prepare(`SELECT id, workspace_id, status, workflow_status, CAST(row_revision AS TEXT) revision
     FROM hub_board_tasks WHERE id = ?`).get(taskId);
   if (!original || !task || task.workflow_status !== "done" || task.revision !== ref.taskRevision) {
     throw Error("Manual release reference Task/status/revision changed");
@@ -373,6 +373,23 @@ export function manualDeliveryReleaseReferenceEvidence(database, { taskId, refer
     throw Error("Manual release reference requires its successful canonical manual Done receipt");
   }
   manualDeliveryReferenceSourceBinding(proof);
+  if (task.status === "done") {
+    const rows = database.prepare(`SELECT o.result_json FROM hub_task_lifecycle_outcomes o
+      JOIN hub_mcp_operations m ON m.request_id = o.operation_id
+      WHERE o.task_id = ? AND o.kind = 'complete' AND m.tool_name = 'hub_task_complete'
+        AND m.workspace_id = ? AND m.status = 'succeeded' AND m.receipt_state = 'succeeded'
+        AND json_extract(o.result_json, '$.evidence.cleanup.manualCleanup.kind') = 'verified-manual-task-cleanup-v1'
+      ORDER BY o.completed_at_ms DESC, o.operation_id LIMIT 1`).all(taskId, task.workspace_id);
+    if (rows.length) {
+      const completed = JSON.parse(rows[0].result_json), cleanup = completed.evidence.cleanup.manualCleanup;
+      const pins = value => manualDeliveryReferenceSourceBinding(value).workspaces;
+      if (cleanup.taskId !== taskId || completed.result?.id !== taskId || completed.result.status !== "done"
+          || JSON.stringify(pins(cleanup.source)) !== JSON.stringify(pins(proof))) {
+        throw Error("Manual release reference completed cleanup differs from the accepted source");
+      }
+      return { ...proof, completedCleanup: cleanup };
+    }
+  }
   return proof;
 }
 

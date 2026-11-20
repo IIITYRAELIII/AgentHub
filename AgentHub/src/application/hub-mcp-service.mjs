@@ -857,7 +857,7 @@ export class HubMcpService {
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
         absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
-        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery"], description: "Release Manager-only closure. manual_delivery verifies the actual installation and exact main/origin while preserving all Task artifacts." },
+        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery"], description: "Release Manager-only closure. manual_delivery verifies actual installation/main/origin, previews exact clean published branch/worktree cleanup and preserves history; local or later work blocks cleanup." },
         retained_repositories: { type: "array", description: "Manual mode only: exact managed worktree/head pins for historical repositories no longer represented by the canonical Task result. Retained, not certified delivered or deleted.", items: { type: "object", additionalProperties: false, required: ["project_root", "head_commit"], properties: {
           project_root: { type: "string" }, head_commit: { type: "string", pattern: "^[a-f0-9]{40}$" },
         } } },
