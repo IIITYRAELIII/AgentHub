@@ -4,6 +4,7 @@ import path from "node:path";
 import { acquireCodexExecutableCustody, validBundleMemberName } from "./codex-executable-custody.mjs";
 
 export const CODEX_BUNDLE_SIGNATURE_REJECTED = "CODEX_BUNDLE_SIGNATURE_REJECTED";
+export const CODEX_REQUIRED_HELPER_MISSING = "required-helper-missing";
 const signatureStatuses = "Valid|UnknownError|NotSigned|HashMismatch|NotTrusted|NotSupportedFileFormat|Incompatible|unknown";
 const memberPattern = "[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*";
 const versionPattern = "[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.+-]+)?";
@@ -88,7 +89,9 @@ export async function inspectCodexExecutableBundle(candidate, {
   }
   const codeModeHost = features.codeModeHost === true;
   if (codeModeHost && !files.some(file => file.name.toLowerCase() === "codex-code-mode-host.exe")) {
-    throw Object.assign(new Error("Required Codex code-mode host is missing from the selected bundle"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
+    throw Object.assign(new Error("Required Codex code-mode host is missing from the selected bundle"), {
+      code: "CODEX_BUNDLE_UNAVAILABLE", reason: CODEX_REQUIRED_HELPER_MISSING,
+    });
   }
   return { schemaVersion: 1, installRoot, root, files, codeModeHost, digest: codexBundleDigest(files, codeModeHost) };
 }

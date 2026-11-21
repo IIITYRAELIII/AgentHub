@@ -52,7 +52,10 @@ function service(stateFile, {
   });
 }
 
-for (const policy of ["fallback", "no-candidate", "pinned", "disabled", "timeout", "rejected-alternative"]) {
+for (const policy of [
+  "fallback", "no-candidate", "pinned", "disabled", "timeout",
+  "rejected-alternative", "custody-unavailable", "missing-required-helper",
+]) {
   test(`a rejected recorded bundle preserves trust and upgrade policy: ${policy}`, {
     skip: process.platform !== "win32",
   }, async context => {
@@ -97,6 +100,9 @@ for (const policy of ["fallback", "no-candidate", "pinned", "disabled", "timeout
       acquireInspectionCustody: async ({ files }) => {
         assert.ok(files.some(member => member.name === "codex.exe"));
         assert.equal(custodyHeld, false);
+        if (policy === "custody-unavailable") {
+          throw Object.assign(new Error("Codex bundle custody could not be established"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
+        }
         custodyHeld = true;
         return { assertAlive() { assert.equal(custodyHeld, true); }, async release() { custodyHeld = false; } };
       },
@@ -110,7 +116,7 @@ for (const policy of ["fallback", "no-candidate", "pinned", "disabled", "timeout
         assert.equal(file, nextPath);
         assert.equal(custodyHeld, true);
         checkedFeatures.push(file);
-        return { codeModeHost: false };
+        return { codeModeHost: policy === "missing-required-helper" };
       },
     };
     const canaries = [];
@@ -122,11 +128,13 @@ for (const policy of ["fallback", "no-candidate", "pinned", "disabled", "timeout
       runCanary: async entry => { canaries.push(entry.path); return { ok: true }; },
     });
     const check = await owner.inspectUpgradeReadiness();
-    const expectedStatus = { fallback: "eligible", timeout: "unchecked" }[policy] ?? "blocked";
+    const incomplete = ["timeout", "custody-unavailable"].includes(policy);
+    const expectedStatus = policy === "fallback" ? "eligible" : incomplete ? "unchecked" : "blocked";
     assert.equal(check.status, expectedStatus);
-    if (policy === "timeout") assert.equal(check.reason, "inspection-incomplete");
+    if (incomplete) assert.equal(check.reason, "inspection-incomplete");
+    if (policy === "missing-required-helper") assert.equal(check.reason, "no-eligible-trusted-codex");
     assert.equal(custodyHeld, false);
-    if (["timeout", "rejected-alternative"].includes(policy)) {
+    if (incomplete || policy === "rejected-alternative") {
       assert.deepEqual(checkedVersions, []);
       assert.deepEqual(checkedFeatures, []);
     }

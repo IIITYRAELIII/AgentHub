@@ -4,7 +4,8 @@ import { createReadStream } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { CODEX_BUNDLE_SIGNATURE_REJECTED, inspectCodexExecutableBundle, isCodexBundleSignatureRejectionMessage } from "./codex-executable-bundle.mjs";
+import { CODEX_BUNDLE_SIGNATURE_REJECTED, CODEX_REQUIRED_HELPER_MISSING,
+  inspectCodexExecutableBundle, isCodexBundleSignatureRejectionMessage } from "./codex-executable-bundle.mjs";
 
 const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 const CODEX_VERSION_OUTPUT = /\bcodex-cli\s+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/i;
@@ -14,8 +15,9 @@ const CODEX_CANDIDATE_MISSING = "CODEX_CANDIDATE_MISSING";
 const installPathMissing = error => ["ENOENT", "ENOTDIR"].includes(error?.code);
 
 function definitiveDiscoveryRejection(error) {
+  if (error?.code === "CODEX_BUNDLE_UNAVAILABLE") return error.reason === CODEX_REQUIRED_HELPER_MISSING;
   return [CODEX_CANDIDATE_MISSING, CODEX_EXECUTABLE_SIGNATURE_REJECTED,
-    CODEX_BUNDLE_SIGNATURE_REJECTED, "CODEX_BUNDLE_UNAVAILABLE"].includes(error?.code);
+    CODEX_BUNDLE_SIGNATURE_REJECTED].includes(error?.code);
 }
 
 export function codexExecutableRejectionMessage(error) {
