@@ -908,8 +908,10 @@ only after the exact Ready Host and its Node are positively bound to the named
 Job of the selected runtime and the suspended worker is proved outside that
 Job. The selected runtime release/manifest and both process identities are
 retained and rechecked at entry and before retirement. A changed or unavailable
-scope refuses; unrelated Jobs never become eligible for termination. Historical
-continuation requests and proof of an already stopped installation are unchanged.
+scope refuses without retiring or relaunching a foreign Host. Recovery can
+retire only the previously bound Host or its own exact replacement, once its
+native identity is available. Historical continuation requests and proof of an
+already stopped installation are unchanged.
 
 Native handles, creation time, image and actual selected-tree ownership bind
 termination. The existing maintenance original, stopped backup, verified package

@@ -14,6 +14,10 @@ Retain the real Job membership and selected scope in all worker ownership
 records. Recheck the scope before retiring the selected process tree. Do not
 retire any unidentified new Host or the installer itself.
 
+If the retire preflight finds a different Host, retain that refusal and skip
+rollback and relaunch. Other recovery after scoped admission keeps the old
+Host identity until the updater starts and pins its own exact replacement.
+
 Retain the existing job-free route and the separate stopped-only installer.
 An unproved runtime, unavailable Job, replaced Host or worker in the selected
 Job still refuses before retirement. Previously retained original operations

@@ -1057,6 +1057,70 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                         with self.assertRaisesRegex(RuntimeError, 'belongs to the selected runtime Job'):
                             installer.selected_runtime_job_scope(base, node_handle)
 
+    def test_scoped_stop_refusal_cannot_retire_or_replace_a_changed_host_during_recovery(self):
+        for mode in ("force", "wait"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp).resolve()
+                root, cache = base/"hub", base/"cache"
+                root.mkdir()
+                cache.mkdir()
+                request = cache/"request.json"
+                image = str(root/"AgentHub.RuntimeHost.exe")
+                host = dict(pid=101, created="1000", image=image)
+                node = dict(pid=102, created="1100", image=str(base/"node.exe"))
+                previous = dict(releaseId="old", manifestSha256="a"*64)
+                retired_scope = dict(kind="selected-runtime-job-v1", host=host, node=node, **previous)
+                installer._write_record(request, dict(
+                    runtimeRoot=str(root), runtimeIdentity=installer._directory_identity(root),
+                    archive=str(base/"archive.zip"), operationId="same-original", mode=mode,
+                    installerSha256="c"*64, sha256="d"*64))
+                (base/"archive.zip").touch()
+                (cache/"verified").mkdir()
+                (cache/"verified/package-manifest.json").touch()
+                calls = []
+
+                def owner(args, **options):
+                    if args[1] == "-e":
+                        return subprocess.CompletedProcess(args, 0, "", "")
+                    action = args[5]
+                    calls.append(action)
+                    if action == "create":
+                        value = installer._read_record(Path(args[6]))
+                        result = dict(metadata=dict(autonomousInstaller=value))
+                    else:
+                        result = {
+                            "previous": previous,
+                            "wait-probe": dict(live=True, ready=True, installerCutover=dict(protocol=1), process=node),
+                            "wait-complete": {},
+                            "unknown": {},
+                        }[action]
+                    return subprocess.CompletedProcess(args, 0, json.dumps(result), "")
+
+                new_host = dict(ProcessId=202, ParentProcessId=33, Created="2000", ExecutablePath=image)
+                with ExitStack() as mocks:
+                    for name, kwargs in {
+                        "verified_worker_scope": dict(return_value=dict(pid=os.getpid(), outsideAllJobs=False,
+                                                                         retirementScope=retired_scope)),
+                        "selected_runtime_job_scope": dict(return_value=retired_scope),
+                        "read_update_original": dict(return_value=None),
+                        "ready_process_proof": dict(return_value=([host, node], root)),
+                        "wait_for_current_turns": dict(return_value=dict(activeCount=0)),
+                        "process_snapshot": dict(return_value=[new_host]),
+                        "extract_verified": dict(return_value=dict(releaseId="new")),
+                    }.items():
+                        mocks.enter_context(patch.object(installer, name, **kwargs))
+                    mocks.enter_context(patch.object(installer.subprocess, "run", side_effect=owner))
+                    launch = mocks.enter_context(patch.object(installer.subprocess, "Popen"))
+                    stop = mocks.enter_context(patch.object(installer, "stop_selected", wraps=installer.stop_selected))
+                    with self.assertRaisesRegex(installer.RetirementScopeChanged, "Host changed"):
+                        installer.autonomous_worker(request)
+                    stop.assert_called_once()
+                    self.assertEqual(stop.call_args.kwargs["expected_host"], host)
+                    launch.assert_not_called()
+                self.assertEqual(calls, ["previous","create","unknown"] if mode == "force"
+                                 else ["previous","wait-probe","create","wait-complete","unknown"])
+                self.assertTrue((cache/"failure.json").exists())
+
     def test_worker_does_not_require_an_interactive_desktop_shell(self):
         with tempfile.TemporaryDirectory() as temp:
             base=Path(temp);marker=base/'completed';c,w,k=installer.native_api()

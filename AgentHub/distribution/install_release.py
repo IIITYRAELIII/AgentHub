@@ -1254,6 +1254,10 @@ def terminate_retained(pid, handle, identity):
     return dict(pid=pid, **identity, forced=True)
 
 
+class RetirementScopeChanged(RuntimeError):
+    """The updater has no authority to retire or replace the current Host."""
+
+
 def stop_selected(root, *, inspect_only=False, trace=None, capture=None, scope=None, expected_host=None):
     c, w, k = native_api(); records = []
     retained = scope.setdefault("handles",{}) if scope is not None else {}
@@ -1267,7 +1271,14 @@ def stop_selected(root, *, inspect_only=False, trace=None, capture=None, scope=N
     def snapshot():
         budget(); before = time.monotonic()
         try:
-            return {int(r["ProcessId"]): r for r in process_snapshot()}
+            rows = {int(row["ProcessId"]): row for row in process_snapshot()}
+            if expected_host is not None:
+                for pid, row in rows.items():
+                    image = row.get("ExecutablePath")
+                    if image and Path(image).resolve() == root/"AgentHub.RuntimeHost.exe" and (
+                            pid != expected_host["pid"] or int(row["Created"])//10 != int(expected_host["created"])//10):
+                        raise RetirementScopeChanged("Selected native Host changed before retirement")
+            return rows
         finally:
             metrics["snapshotCalls"] += 1
             metrics["snapshotMs"] += (time.monotonic()-before)*1000
@@ -1285,12 +1296,6 @@ def stop_selected(root, *, inspect_only=False, trace=None, capture=None, scope=N
         # parents are stopped. A foreign Hub root cuts off that branch.
         while True:
             bypid = snapshot()
-            if expected_host is not None:
-                for pid, row in bypid.items():
-                    image = row.get("ExecutablePath")
-                    if image and Path(image).resolve() == root/"AgentHub.RuntimeHost.exe" and (
-                            pid != expected_host["pid"] or int(row["Created"])//10 != int(expected_host["created"])//10):
-                        raise RuntimeError("Selected native Host changed before retirement")
             for pid, (handle, _) in list(retained.items()):
                 if process_exited(handle) or pid not in authorized:
                     k.CloseHandle(handle); del retained[pid]
@@ -1952,11 +1957,12 @@ def autonomous_worker(request_file):
     worker_handle = k.GetCurrentProcess()
     def recheck_job_scope():
         if job_scope is not None and selected_runtime_job_scope(root, worker_handle) != job_scope:
-            raise RuntimeError("Selected runtime changed before retirement")
+            raise RetirementScopeChanged("Selected runtime changed before retirement")
     lock = ExitStack()
     admitted = False; previous = None; install_started = False; descriptor = None
     waiting = False
     retirement_scope = {}
+    replacement_host = None
     environment = clean_installer_environment()
     log = (cache/"worker.log").open("a", encoding="utf-8")
     def stage(name):
@@ -2073,8 +2079,8 @@ def autonomous_worker(request_file):
         with (cache/"host.stdout").open("w",encoding="utf-8") as out, (cache/"host.stderr").open("w",encoding="utf-8") as err:
             host=subprocess.Popen([str(root/"AgentHub.RuntimeHost.exe")],cwd=str(root),env=environment,
                                   stdin=subprocess.DEVNULL,stdout=out,stderr=err,creationflags=0x08000000)
-        host_created=process_identity(int(host._handle))["created"]
-        ready=owner("ready",dict(releaseId=descriptor["releaseId"],hostPid=host.pid,hostCreated=host_created,
+        replacement_host = root_process_identity(host.pid, int(host._handle))
+        ready=owner("ready",dict(releaseId=descriptor["releaseId"],hostPid=host.pid,hostCreated=replacement_host["created"],
                                 python=sys.executable,installer=str(Path(__file__).resolve())))
         _write_record(cache/"result.json",ready); stage("ready")
     except BaseException as error:
@@ -2082,7 +2088,7 @@ def autonomous_worker(request_file):
         if waiting:
             # A failed observation is not permission to kill/restore a live Hub.
             owner("wait-failed",dict(code=type(error).__name__,diagnostic=str(error)[:1000]))
-        if admitted and previous:
+        if admitted and previous and not isinstance(error, RetirementScopeChanged):
             # The synchronous installer child is already joined. Retire only
             # this selected installation, restore verified prior code through
             # its existing installation owner, and leave all data in place.
@@ -2097,8 +2103,12 @@ def autonomous_worker(request_file):
                         _write_record(cache/"result.json",restored); stage("previous-version-still-ready"); return
                 retirement_unknown = False
                 try:
-                    stop_selected(root,trace=stop_trace,capture=stop_capture,scope=retirement_scope)
+                    expected_host = (replacement_host or job_scope["host"]) if job_scope is not None else None
+                    stop_selected(root,trace=stop_trace,capture=stop_capture,scope=retirement_scope,
+                                  expected_host=expected_host)
                     stop_selected(root,inspect_only=True)
+                except RetirementScopeChanged:
+                    raise
                 except (OSError,RuntimeError):
                     if install_started: raise
                     # No code installation was invoked. Availability can recover
