@@ -108,13 +108,25 @@ export async function sealAutonomousInstallerStorage({ runtimeRoot, operation, c
   const binding = operation?.metadata?.autonomousInstaller;
   const worker = JSON.parse(await readFile(path.join(cache, "worker-started.json"), "utf8"));
   const dispatch = binding?.storageScope?.worker ?? JSON.parse(await readFile(path.join(cache, "dispatch.json"), "utf8"));
+  const keys = ["pid", "created", "image", "outsideAllJobs"];
+  const matchesWorker = proof => keys.every(key => proof[key] === worker[key]);
+  let independent = worker.outsideAllJobs === true;
+  if (worker.outsideAllJobs === false) {
+    const suspended = JSON.parse(await readFile(path.join(cache, "worker-verified-suspended.json"), "utf8"));
+    const scope = worker.retirementScope;
+    independent = Boolean(binding?.storageScope && scope?.kind === "selected-runtime-job-v1"
+      && scope.releaseId === binding.previous?.releaseId
+      && scope.manifestSha256 === binding.previous?.manifestSha256
+      && matchesWorker(suspended)
+      && isDeepStrictEqual(scope, suspended.retirementScope)
+      && isDeepStrictEqual(scope, dispatch.retirementScope));
+  }
   if (operation.kind !== "restart" || operation.streamId !== "agent-hub-installer" || !binding
     || !equalPath(operation.threadId, binding.runtimeRoot) || !equalPath(installerPhysicalRuntimeRoot(binding), runtime.file)
     || !equalPath(request.runtimeRoot, runtime.file) || request.operationId !== operation.operationId
     || !sameDevice(request.runtimeIdentity?.dev, runtime.dev) || request.runtimeIdentity?.ino !== runtime.ino
     || request.installerSha256 !== (await packageFile(path.join(cache, "install_release.py"))).sha256
-    || worker.outsideAllJobs !== true || worker.pid !== dispatch.pid || worker.created !== dispatch.created
-    || worker.image !== dispatch.image || dispatch.outsideAllJobs !== true) throw Error("installer-storage-origin-unproven");
+    || !independent || !matchesWorker(dispatch)) throw Error("installer-storage-origin-unproven");
   if (binding.storageScope && (!sameDevice(binding.storageScope.cache.dev, cacheRoot.dev) || binding.storageScope.cache.ino !== cacheRoot.ino
     || !equalPath(binding.storageScope.cache.path, cache) || binding.storageScope.requestSha256 !== (await packageFile(path.join(cache, "request.json"))).sha256))
     throw Error("installer-storage-cache-changed");

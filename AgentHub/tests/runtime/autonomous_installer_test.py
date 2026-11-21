@@ -201,8 +201,9 @@ class AutonomousInstallerTests(unittest.TestCase):
             base=Path(temp); root=base/'hub'; (root/'data').mkdir(parents=True); scratch=base/'scratch'
             archive=base/'package.zip'; archive.write_bytes(b'Not executed: transport selection fixture')
             dispatched=[]
-            def dispatch(arguments,cache,environment):
+            def dispatch(arguments,cache,environment,*,runtime_root):
                 request=installer._read_record(cache/'request.json')
+                self.assertEqual(runtime_root, root.resolve())
                 self.assertEqual(installer.file_hash(cache/'install_release.py'),installer.file_hash(SOURCE))
                 self.assertEqual(arguments[-1],str(cache/'request.json'))
                 dispatched.append(request)
@@ -430,6 +431,28 @@ console.log(JSON.stringify(await sealAutonomousInstallerStorage({runtimeRoot:roo
             self.assertEqual(result.returncode,0,result.stderr)
             evidence=json.loads(result.stdout); self.assertEqual(len(evidence['artifacts']),1)
             self.assertGreaterEqual(len(evidence['backup']['retentionFiles']),3)
+
+            scoped_script = script.replace(
+                "console.log(JSON.stringify",
+                """const worker = JSON.parse(await (await import('node:fs/promises')).readFile(cache+'/worker-started.json','utf8'));
+op.metadata.autonomousInstaller.storageScope.worker = worker;
+op.metadata.autonomousInstaller.previous = {releaseId:'old', manifestSha256:'b'.repeat(64)};
+console.log(JSON.stringify""")
+            scope = dict(kind="selected-runtime-job-v1", releaseId="old", manifestSha256="b"*64,
+                         host=dict(pid=1,created="10",image="old-host"),node=dict(pid=2,created="11",image="old-node"))
+            scoped_worker = dict(identity, outsideAllJobs=False, retirementScope=scope)
+            (cache/'worker-started.json').write_text(json.dumps(scoped_worker),encoding='utf-8')
+            for dispatch_scope in (scope, dict(scope, releaseId="other")):
+                (cache/'worker-verified-suspended.json').write_text(
+                    json.dumps(dict(scoped_worker, retirementScope=dispatch_scope)),encoding='utf-8')
+                checked=subprocess.run([shutil.which('node'),'--input-type=module','-e',scoped_script,
+                                        str(SOURCE.parents[1]),str(root),str(cache)],
+                    capture_output=True,encoding='utf-8',timeout=30,creationflags=0x08000000)
+                if dispatch_scope == scope:
+                    self.assertEqual(checked.returncode,0,checked.stderr)
+                else:
+                    self.assertNotEqual(checked.returncode,0)
+                    self.assertIn('installer-storage-origin-unproven',checked.stderr)
 
     def test_flat_continuation_avoids_real_sqlite_backup_path_failure(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -992,6 +1015,47 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             finally:
                 for handle in retained:k.CloseHandle(handle)
                 k.CloseHandle(job)
+
+    def test_scoped_job_is_bound_to_live_host_and_node_before_worker_can_proceed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            release = base/"releases/old"
+            release.mkdir(parents=True)
+            installer._write_record(base/"current.json",dict(current="old"))
+            installer._write_record(release/"runtime-manifest.json",dict(releaseId="old"))
+            child_args = [sys.executable, "-c", "import time; time.sleep(30)"]
+            host_args = [sys.executable, "-c",
+                         "import subprocess,time; child=subprocess.Popen("+repr(child_args)+"); "
+                         "print(child.pid,flush=True); child.wait()"]
+            c, w, k = installer.native_api()
+            k.CreateJobObjectW.argtypes = [c.c_void_p, w.LPCWSTR]
+            k.CreateJobObjectW.restype = w.HANDLE
+            k.AssignProcessToJobObject.argtypes = [w.HANDLE, w.HANDLE]
+            k.TerminateJobObject.argtypes = [w.HANDLE, w.UINT]
+            k.ResumeThread.argtypes = [w.HANDLE]
+            k.ResumeThread.restype = w.DWORD
+            with subprocess.Popen(host_args, stdout=subprocess.PIPE, text=True, creationflags=4|0x08000000) as host:
+                job = k.CreateJobObjectW(None, f"Local\\IIITYRAELIII.AgentHub.{host.pid}")
+                self.assertTrue(job)
+                with ExitStack() as cleanup:
+                    cleanup.callback(k.CloseHandle, job)
+                    cleanup.callback(k.TerminateJobObject, job, 1)
+                    self.assertTrue(k.AssignProcessToJobObject(job, int(host._handle)))
+                    thread = installer.suspended_worker_thread(host.pid)
+                    cleanup.callback(k.CloseHandle, thread)
+                    self.assertEqual(k.ResumeThread(thread), 1)
+                    node_pid = int(host.stdout.readline())
+                    node_handle = k.OpenProcess(0x1000|0x100000, False, node_pid)
+                    self.assertTrue(node_handle)
+                    cleanup.callback(k.CloseHandle, node_handle)
+                    host_identity = installer.root_process_identity(host.pid, int(host._handle))
+                    node_identity = installer.root_process_identity(node_pid, node_handle)
+                    with patch.object(installer, 'ready_process_proof', return_value=[host_identity, node_identity]):
+                        scope = installer.selected_runtime_job_scope(base, k.GetCurrentProcess())
+                        self.assertEqual(scope['host'], host_identity)
+                        self.assertEqual(scope['node'], node_identity)
+                        with self.assertRaisesRegex(RuntimeError, 'belongs to the selected runtime Job'):
+                            installer.selected_runtime_job_scope(base, node_handle)
 
     def test_worker_does_not_require_an_interactive_desktop_shell(self):
         with tempfile.TemporaryDirectory() as temp:

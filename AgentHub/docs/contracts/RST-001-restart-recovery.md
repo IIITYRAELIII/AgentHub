@@ -893,14 +893,23 @@ Windows `Win32_Process.Create`, using explicit breakaway and suspended creation.
 Provider success, a shell PID or a scheduler acknowledgement is not independence
 proof. Fresh process birth/image/exact command, live retained process handle,
 same user/logon/session/elevation, absence of every Job and the single native
-thread's process binding are verified before Resume. The resumed worker checks
-Job absence again. Unavailable, changed or unproved creation refuses before
+thread's process binding are verified before Resume, except for the explicitly
+proved selected-runtime Job scope below. The resumed worker rechecks the proof.
+Unavailable, changed or unproved creation refuses before
 selected-Hub retirement; there is one creation attempt and no launch fallback.
 Only the positively bound new worker may be cleaned up, and its exit is joined.
 An unverified returned PID grants no termination authority. Intent, provider
 result, native proof and early refusal remain under the same retained request.
 A lost reply cannot bypass its existing same-original dispatch fence. The
 RuntimeHost cold-start/replacement native owner above is unchanged.
+
+ADR-HUB-487 allows an ordinary autonomous installer worker in a Windows Job
+only after the exact Ready Host and its Node are positively bound to the named
+Job of the selected runtime and the suspended worker is proved outside that
+Job. The selected runtime release/manifest and both process identities are
+retained and rechecked at entry and before retirement. A changed or unavailable
+scope refuses; unrelated Jobs never become eligible for termination. Historical
+continuation requests and proof of an already stopped installation are unchanged.
 
 Native handles, creation time, image and actual selected-tree ownership bind
 termination. The existing maintenance original, stopped backup, verified package
