@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import { validBundleMemberName } from "./codex-executable-custody.mjs";
+import { acquireCodexExecutableCustody, validBundleMemberName } from "./codex-executable-custody.mjs";
 
 export const CODEX_BUNDLE_SIGNATURE_REJECTED = "CODEX_BUNDLE_SIGNATURE_REJECTED";
 const signatureStatuses = "Valid|UnknownError|NotSigned|HashMismatch|NotTrusted|NotSupportedFileFormat|Incompatible|unknown";
@@ -43,6 +43,8 @@ export function validCodexBundle(bundle) {
 export async function inspectCodexExecutableBundle(candidate, {
   hashFile, verifySignature, readFeatures, executableArgs = [], trustedBundle = candidate.bundle,
   installRoot = path.dirname(path.dirname(candidate.path)),
+  beforeFeatures = async () => {},
+  acquireInspectionCustody = acquireCodexExecutableCustody,
 } = {}) {
   const root = path.dirname(candidate.path), files = [];
   const walk = async directory => {
@@ -72,7 +74,18 @@ export async function inspectCodexExecutableBundle(candidate, {
   };
   await walk(root);
   files.sort((left, right) => left.name.localeCompare(right.name, "en"));
-  const features = await readFeatures(candidate.path, { executableArgs });
+  // Probe the executable only while the complete verified bundle is held.
+  const custody = await acquireInspectionCustody({ installRoot, root, files });
+  let features;
+  try {
+    custody.assertAlive();
+    await beforeFeatures();
+    custody.assertAlive();
+    features = await readFeatures(candidate.path, { executableArgs });
+    custody.assertAlive();
+  } finally {
+    await custody.release();
+  }
   const codeModeHost = features.codeModeHost === true;
   if (codeModeHost && !files.some(file => file.name.toLowerCase() === "codex-code-mode-host.exe")) {
     throw Object.assign(new Error("Required Codex code-mode host is missing from the selected bundle"), { code: "CODEX_BUNDLE_UNAVAILABLE" });

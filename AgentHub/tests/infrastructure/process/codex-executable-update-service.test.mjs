@@ -52,7 +52,7 @@ function service(stateFile, {
   });
 }
 
-for (const policy of ["fallback", "no-candidate", "pinned", "disabled"]) {
+for (const policy of ["fallback", "no-candidate", "pinned", "disabled", "timeout", "rejected-alternative"]) {
   test(`a rejected recorded bundle preserves trust and upgrade policy: ${policy}`, {
     skip: process.platform !== "win32",
   }, async context => {
@@ -72,29 +72,44 @@ for (const policy of ["fallback", "no-candidate", "pinned", "disabled"]) {
     const lastKnownGood = { ...candidate("0.151.0"), path: oldPath, sha256, publisher };
     const persisted = JSON.stringify({ schemaVersion: 1, lastKnownGood });
     await writeFile(stateFile, persisted);
-    let nextPath;
+    let nextPath, nextHelper;
     if (policy !== "no-candidate") {
       await mkdir(newRoot, { recursive: true });
       nextPath = path.join(await realpath(newRoot), "codex.exe");
       await writeFile(nextPath, "inert replacement fixture");
+      if (policy === "rejected-alternative") {
+        nextHelper = path.join(path.dirname(nextPath), "unsigned.dll");
+        await writeFile(nextHelper, "inert replacement sidecar");
+      }
     }
     const genuineRejection = await verifyOpenAiAuthenticode(helperPath);
     assert.equal(genuineRejection.valid, false);
-    const checkedVersions = [];
+    const checkedVersions = [], checkedFeatures = [];
+    let custodyHeld = false;
     const inspected = {
       environment,
       verifySignature: async file => {
-        if (file === helperPath) return genuineRejection;
+        if (file === helperPath || file === nextHelper) return genuineRejection;
         assert.equal(file, nextPath);
+        if (policy === "timeout") throw new Error("Process timed out after 5000 ms");
         return { valid: true, status: "Valid", publisher };
+      },
+      acquireInspectionCustody: async ({ files }) => {
+        assert.ok(files.some(member => member.name === "codex.exe"));
+        assert.equal(custodyHeld, false);
+        custodyHeld = true;
+        return { assertAlive() { assert.equal(custodyHeld, true); }, async release() { custodyHeld = false; } };
       },
       readVersion: async file => {
         assert.equal(file, nextPath);
+        assert.equal(custodyHeld, true);
         checkedVersions.push(file);
         return "0.152.0";
       },
       readFeatures: async file => {
         assert.equal(file, nextPath);
+        assert.equal(custodyHeld, true);
+        checkedFeatures.push(file);
         return { codeModeHost: false };
       },
     };
@@ -107,7 +122,14 @@ for (const policy of ["fallback", "no-candidate", "pinned", "disabled"]) {
       runCanary: async entry => { canaries.push(entry.path); return { ok: true }; },
     });
     const check = await owner.inspectUpgradeReadiness();
-    assert.equal(check.status, policy === "fallback" ? "eligible" : "blocked");
+    const expectedStatus = { fallback: "eligible", timeout: "unchecked" }[policy] ?? "blocked";
+    assert.equal(check.status, expectedStatus);
+    if (policy === "timeout") assert.equal(check.reason, "inspection-incomplete");
+    assert.equal(custodyHeld, false);
+    if (["timeout", "rejected-alternative"].includes(policy)) {
+      assert.deepEqual(checkedVersions, []);
+      assert.deepEqual(checkedFeatures, []);
+    }
     assert.match(check.rejection, /member=codex-code-mode-host\.exe, status=\w+, reason=signature-invalid, version=0\.151\.0/u);
     assert.equal(await readFile(stateFile, "utf8"), persisted);
     assert.deepEqual(canaries, []);

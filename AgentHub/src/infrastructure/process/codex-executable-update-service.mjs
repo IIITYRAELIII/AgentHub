@@ -228,10 +228,12 @@ export class CodexExecutableUpdateService {
       ? !sameIdentity(candidate, state.failedIdentity) || sameIdentity(candidate, state.active)
         || sameIdentity(candidate, verifiedLkg) || Boolean(fallback && !sameIdentity(fallback, candidate))
       : Boolean(fallback);
-    return candidate && compatiblePolicy
-      ? { status: "eligible", rejection }
-      : { status: "blocked", rejection, reason: this.versionPin ? "pin-unavailable"
-        : this.autoUpdateEnabled ? "no-eligible-trusted-codex" : "automatic-update-disabled" };
+    if (candidate && compatiblePolicy) return { status: "eligible", rejection };
+    if (discovery.inspectionComplete !== true) {
+      return { status: "unchecked", reason: "inspection-incomplete", rejection };
+    }
+    return { status: "blocked", rejection, reason: this.versionPin ? "pin-unavailable"
+      : this.autoUpdateEnabled ? "no-eligible-trusted-codex" : "automatic-update-disabled" };
   }
 
   #hasActiveCodexRuns() {
