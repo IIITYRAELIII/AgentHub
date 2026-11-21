@@ -78,3 +78,52 @@ test("Nexus light follows panel geometry and retires with motion, visibility or 
     await page.close();
   } finally { await browser.close(); }
 });
+
+test("Nexus lights traverse the upper ribbon without flashing the neighboring edge", { timeout: 25_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1672, height: 941 }, reducedMotion: "no-preference" });
+    await page.route("http://nexus.test/**", route => route.fulfill({ contentType: "text/html", body: "<!doctype html>" }));
+    await page.goto("http://nexus.test/");
+    await page.setContent(`<html data-theme="nexus" data-background="nexus" data-view="chat" data-surface="desktop">
+      <style>body { margin: 0 } .chat { width: 100vw; height: 100vh }</style><body><main class="chat"></main></body></html>`);
+    const assets = new URL("../../assets/web-app/", import.meta.url);
+    await page.addStyleTag({ content: await readFile(new URL("themes/nexus/theme.css", assets), "utf8") });
+    await page.addScriptTag({ content: await readFile(new URL("background-motion-preference.js", assets), "utf8") });
+    await page.addScriptTag({ content: await readFile(new URL("themes/nexus/motion.js", assets), "utf8") });
+    const glints = page.locator(".chat .nexus-edge-glint");
+    assert.equal(await glints.count(), 6);
+    const focus = async (progress, lightIndex = 4) => {
+      await glints.evaluateAll(async (nodes, { progress, lightIndex }) => {
+        nodes.forEach((node, index) => {
+          const [animation] = node.getAnimations();
+          const { duration } = animation.effect.getTiming();
+          animation.pause();
+          animation.effect.updateTiming({ delay: 0 });
+          animation.currentTime = index === lightIndex ? progress * duration : 0;
+        });
+        await Promise.all(nodes.map(node => node.getAnimations()[0].ready));
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }, { progress, lightIndex });
+    };
+    const crop = (x, y) => page.screenshot({ clip: { x: x - 1, y: y - 1, width: 3, height: 3 } });
+    await focus(0);
+    const own = await crop(1347, 587);
+    const neighbor = await crop(1365, 584);
+    const seam = await crop(680, 676);
+    // Sample the same light before, inside and past the former 12-unit break.
+    for (const [phase, expectedX] of [[0.152, 668], [0.162, 680], [0.175, 695]]) {
+      await focus(phase, 3);
+      const center = await glints.nth(3).evaluate(node => {
+        const box = node.getBoundingClientRect();
+        return { x: box.x + box.width / 2, opacity: Number(getComputedStyle(node).opacity) };
+      });
+      assert.ok(Math.abs(center.x - expectedX) < 2 && center.opacity > 0.99, "the same bright glint crosses the seam");
+      if (expectedX === 680) assert.notDeepEqual(await crop(680, 676), seam, "the mask passes light through the join");
+    }
+    // The fifth glint passes a separate ribbon here on its way to the right.
+    await focus(0.763);
+    assert.notDeepEqual(await crop(1347, 587), own, "the moving glint illuminates its own ribbon");
+    assert.deepEqual(await crop(1365, 584), neighbor, "the neighboring ribbon retains its original brightness");
+  } finally { await browser.close(); }
+});

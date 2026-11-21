@@ -111,6 +111,11 @@ html[data-theme="nexus"] .nexus-contour-scene {
   mask-size: 100% 100%;
   mask-repeat: no-repeat;
 }
+html[data-theme="nexus"] .nexus-ribbon-track {
+  position: absolute;
+  mask-size: 100% 100%;
+  mask-repeat: no-repeat;
+}
 html[data-theme="nexus"] .nexus-edge-glint {
   position: absolute;
   left: 0;
