@@ -182,9 +182,10 @@ html[data-theme="cauldron"][data-view="chat"][data-surface] .chat.chat {
    clipping its paint keeps their glow inside the frame without replacing them. */
 html[data-theme="cauldron"][data-view][data-surface] .task-list .task-workspace-item {
   border-color: transparent;
-  clip-path: polygon(7px 0, calc(100% - 7px) 0, 100% 7px,
-    100% calc(100% - 7px), calc(100% - 7px) 100%, 7px 100%,
-    0 calc(100% - 7px), 0 7px);
+  --stream-frame-cut: 7px;
+  clip-path: polygon(var(--stream-frame-cut) 0, calc(100% - var(--stream-frame-cut)) 0, 100% var(--stream-frame-cut),
+    100% calc(100% - var(--stream-frame-cut)), calc(100% - var(--stream-frame-cut)) 100%, var(--stream-frame-cut) 100%,
+    0 calc(100% - var(--stream-frame-cut)), 0 var(--stream-frame-cut));
 }
 
 html[data-theme="cauldron"] :is(.task-workspace-item, .board-task-card):hover {
