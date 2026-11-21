@@ -4,7 +4,7 @@ import { createReadStream } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { inspectCodexExecutableBundle } from "./codex-executable-bundle.mjs";
+import { inspectCodexExecutableBundle, isCodexBundleSignatureRejectionMessage } from "./codex-executable-bundle.mjs";
 
 const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 const CODEX_VERSION_OUTPUT = /\bcodex-cli\s+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/i;
@@ -12,7 +12,7 @@ const MAX_PROCESS_OUTPUT_BYTES = 64 * 1024;
 
 export function codexExecutableRejectionMessage(error) {
   const message = String(error?.message ?? error ?? "");
-  if (/^Process timed out after \d{1,9} ms$/.test(message)
+  if (isCodexBundleSignatureRejectionMessage(message) || /^Process timed out after \d{1,9} ms$/.test(message)
     || /^Process exited with code=(?:-?\d{1,12}|null) signal=(?:SIG[A-Z0-9]{1,12}|none)$/.test(message)
     || /^Codex executable signature is not trusted \((?:Valid|UnknownError|NotSigned|HashMismatch|NotTrusted|NotSupportedFileFormat|Incompatible|unknown)\)$/.test(message)
     || [

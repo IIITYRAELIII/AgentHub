@@ -86,8 +86,10 @@ availability. See ADR-0138.
   previously background-prepared candidate, including its complete bundle and
   effective features. Unchanged bytes reuse recorded publisher/version trust.
   Missing main/helper files are not usable recorded identities: existing
-  official discovery and canary may select a trusted replacement. Unknown trust
-  failures still refuse. A legacy main-only record is enriched once; an enabled
+  official discovery and canary may select a trusted replacement. A recorded
+  bundle with a definitively rejected member signature follows the same
+  recovery path; the rejected identity cannot supply launch authority. Unknown
+  verification failures still refuse. A legacy main-only record is enriched once; an enabled
   code-mode bundle without exact safe-tool canary evidence must pass that
   strengthened check once before use. This migration ends when all retained
   identities carry their bundle and exact safe-tool proof.
@@ -138,6 +140,17 @@ Runtime health exposes the configured policy, selected active identity,
 last-known-good identity, highest trusted candidate, canary result, deferred or
 blocked reason, and last error. It never exposes auth material or executable
 contents.
+A rejected bundle signature retains the bounded relative member name,
+Authenticode status, publisher-mismatch or signature reason, and attempted
+Codex version separately from the next successful selection. The autonomous
+Windows installer may observe this same rejection before stopping the old
+runtime. If no eligible independently verified candidate remains under the
+existing pin and adoption policy, the original installer receipt records a
+pre-stop refusal. A positive preflight is availability evidence only; normal
+startup still verifies custody, canary requirements and Ready, with existing
+rollback. The preflight neither runs a compatibility canary nor updates
+the executable selection state (ADR-0017).
+
 Background progress/failure and the prepared identity are separate diagnostics;
 they do not masquerade as a provider initialization failure.
 Successful real initialize reconciles its failed provider startup operation and

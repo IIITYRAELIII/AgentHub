@@ -366,6 +366,10 @@ def original_status(operation_id: str, original) -> dict:
     result = {"operationId": operation_id, "status": original.get("status"), "phase": original.get("phase"),
               "outcome": original.get("outcome"), "effectsReplayed": False}
     metadata = original.get("metadata") or {}
+    if metadata.get("autonomousCodexPreflight"):
+        result["codexPreflight"] = metadata["autonomousCodexPreflight"]
+    if metadata.get("autonomousCodexStartupRejection"):
+        result["codexStartupRejection"] = metadata["autonomousCodexStartupRejection"]
     envelope = metadata.get("packageHandoff") or {}
     binding = envelope.get("binding") or {}
     if (original.get("status") in {"requested", "blocked", "running"} and original.get("outcome") is None
@@ -1786,6 +1790,24 @@ if(action==='previous') {
   console.log(JSON.stringify({releaseId:pointer.current,manifestSha256:createHash('sha256').update(manifest).digest('hex')}));
   process.exit(0);
 }
+if(action==='codex-preflight') {
+  try {
+    process.env.AGENT_HUB_CONFIG=path.join(root,'config.json');
+    process.env.AGENT_HUB_RUNTIME_ROOT=root;
+    const {loadConfig}=await load('src/infrastructure/filesystem/config.mjs');
+    const {CodexExecutableUpdateService}=await load('src/infrastructure/process/codex-executable-update-service.mjs');
+    const config=await loadConfig();
+    const selector=new CodexExecutableUpdateService({stateFile:path.join(config.dataDir,'codex-executable-state.json'),
+      requestedExecutable:config.codexExecutable, autoUpdateEnabled:config.codexExecutableAutoUpdate,
+      versionPin:config.codexExecutableVersionPin, executableArgs:config.codexExecutableArgs,
+      runCanary:()=>{throw Error('Pre-stop inspection cannot launch a compatibility canary');}});
+    console.log(JSON.stringify(await selector.inspectUpgradeReadiness()));
+  } catch {
+    // An inconclusive observation cannot replace the installed runtime's checks.
+    console.log(JSON.stringify({status:'unchecked',reason:'inspection-inconclusive'}));
+  }
+  process.exit(0);
+}
 const {MaintenanceOperationStore} = await load('src/infrastructure/persistence/maintenance-operation-store.mjs');
 const store = new MaintenanceOperationStore({dataDir:path.join(root,'data')});
 // A live replacement shares SQLite with the installer. Contention must wait
@@ -1834,6 +1856,16 @@ if(action==='wait-probe') {
   const {callDesktopControl}=await load('src/infrastructure/process/desktop-control.mjs');
   console.log(JSON.stringify(await callDesktopControl('runtime-health',{}, {runtimeRoot:root,timeoutMs:5000})));
   process.exit(0);
+} else if(action==='codex-preflight-blocked') {
+  const {isCodexBundleSignatureRejectionMessage}=await load('src/infrastructure/process/codex-executable-bundle.mjs');
+  if(!op || op.status!=='running' || !['installer-waiting','installer-stopping'].includes(op.phase)
+     || !op.metadata?.autonomousInstaller || value.status!=='blocked'
+     || !['pin-unavailable','no-eligible-trusted-codex','automatic-update-disabled'].includes(value.reason)
+     || !isCodexBundleSignatureRejectionMessage(value.rejection)) throw Error('Invalid Codex pre-stop refusal');
+  const changed=await mutate(()=>store.transition(id,{status:'failed',outcome:'codex-preflight-refused',
+    phase:'codex-preflight-blocked',metadata:{autonomousCodexPreflight:{status:value.status,reason:value.reason,rejection:value.rejection}}},
+    {expectedRevision:op.revision}));
+  if(!changed.applied) throw Error('Codex pre-stop checkpoint changed'); op=changed.operation;
 } else if(action==='wait-failed') {
   if(!op || op.phase!=='installer-waiting' || op.metadata?.autonomousInstaller?.mode!=='wait')
     throw Error('Not a pre-stop waiting original');
@@ -1907,20 +1939,42 @@ if(action==='wait-probe') {
   const {waitForRuntimeReplacement}=await load('src/runtime/publication-readiness.mjs');
   const {processIsAlive}=await load('src/infrastructure/process/process-liveness.mjs');
   const {callDesktopControl}=await load('src/infrastructure/process/desktop-control.mjs');
-  let startupFailed=false;
-  await waitForRuntimeReplacement({runtimeRoot:root,expectedReleaseId:value.releaseId,timeoutMs:Number.POSITIVE_INFINITY,
-    probe:async(...args)=>{
-      const health=await callDesktopControl(...args);
-      startupFailed=health.capabilities?.some(item=>item.state==='failed' && (item.critical || item.name==='mini_app'))===true;
-      return health;
-    },
-    now:()=>processIsAlive(value.hostPid) && !startupFailed?Date.now():Number.POSITIVE_INFINITY});
+  let startupFailed=false, signatureRejection=null;
+  try {
+    await waitForRuntimeReplacement({runtimeRoot:root,expectedReleaseId:value.releaseId,timeoutMs:Number.POSITIVE_INFINITY,
+      probe:async(...args)=>{
+        const health=await callDesktopControl(...args);
+        const diagnostic=health.diagnostics?.codexExecutableUpdate?.recordedSignatureRejection;
+        if(action==='ready' && health.process?.releaseId===value.releaseId && typeof diagnostic==='string') {
+          const {isCodexBundleSignatureRejectionMessage}=await load('src/infrastructure/process/codex-executable-bundle.mjs');
+          if(isCodexBundleSignatureRejectionMessage(diagnostic)) signatureRejection=diagnostic;
+        }
+        startupFailed=health.capabilities?.some(item=>item.state==='failed' && (item.critical || item.name==='mini_app'))===true;
+        return health;
+      },
+      now:()=>processIsAlive(value.hostPid) && !startupFailed?Date.now():Number.POSITIVE_INFINITY});
+  } catch(error) {
+    if(signatureRejection) {
+      try { await mutate(()=>store.transition(id,{metadata:{autonomousCodexStartupRejection:signatureRejection}},
+        {expectedRevision:op.revision})); }
+      catch { /* Preserve the actual readiness failure and rollback route. */ }
+    }
+    throw error;
+  }
   const health=await callDesktopControl('runtime-health',{}, {runtimeRoot:root,timeoutMs:10000});
   await assertReadyEndpoint(health,value.releaseId,value.hostPid,value.hostCreated);
   const lock=JSON.parse(await fs.readFile(path.join(root,'data/bot.lock'),'utf8'));
   const recovered=action==='recovered';
   const unresolved=recovered && value.retirementUnknown===true;
-  const metadata={...await storageCheckpoint(),[recovered?'autonomousRecovery':'autonomousReady']:{releaseId:value.releaseId,pid:lock.pid,hostPid:value.hostPid,
+  let codexPreflight;
+  if(value.codexPreflight?.status==='eligible' && typeof value.codexPreflight.rejection==='string') {
+    const {isCodexBundleSignatureRejectionMessage}=await load('src/infrastructure/process/codex-executable-bundle.mjs');
+    if(isCodexBundleSignatureRejectionMessage(value.codexPreflight.rejection))
+      codexPreflight={status:'eligible',rejection:value.codexPreflight.rejection};
+  }
+  const metadata={...await storageCheckpoint(),...(signatureRejection?{autonomousCodexStartupRejection:signatureRejection}:{}),
+    ...(codexPreflight?{autonomousCodexPreflight:codexPreflight}:{}),
+    [recovered?'autonomousRecovery':'autonomousReady']:{releaseId:value.releaseId,pid:lock.pid,hostPid:value.hostPid,
       ...(unresolved?{retirementUnknown:true}: {})}};
   const changed=await mutate(()=>store.transition(id,{status:unresolved?'reconciling':recovered?'failed':'succeeded',outcome:unresolved?'unknown':recovered?'rolled-back':'succeeded',phase:recovered?'previous-ready':'ready',
     metadata},{expectedRevision:op.revision}));
@@ -1963,6 +2017,7 @@ def autonomous_worker(request_file):
     waiting = False
     retirement_scope = {}
     replacement_host = None
+    codex_preflight = None
     environment = clean_installer_environment()
     log = (cache/"worker.log").open("a", encoding="utf-8")
     def stage(name):
@@ -2052,6 +2107,14 @@ def autonomous_worker(request_file):
                 recheck_job_scope()
             op = owner("create",binding)
             if op["metadata"].get("autonomousInstaller") != binding: raise RuntimeError("Original installer binding differs")
+        stage("checking-codex-before-stop")
+        codex_preflight = owner("codex-preflight")
+        _write_record(cache/"codex-preflight.json",codex_preflight)
+        if codex_preflight.get("status") == "blocked":
+            refused = owner("codex-preflight-blocked",codex_preflight)
+            _write_record(cache/"result.json",refused)
+            stage("codex-preflight-blocked")
+            return
         if mode == "wait":
             waiting = True; stage("waiting-current-turns")
             settled = wait_for_current_turns(lambda: owner("wait-probe"),request["operationId"],wait_process,
@@ -2081,7 +2144,7 @@ def autonomous_worker(request_file):
                                   stdin=subprocess.DEVNULL,stdout=out,stderr=err,creationflags=0x08000000)
         replacement_host = root_process_identity(host.pid, int(host._handle))
         ready=owner("ready",dict(releaseId=descriptor["releaseId"],hostPid=host.pid,hostCreated=replacement_host["created"],
-                                python=sys.executable,installer=str(Path(__file__).resolve())))
+                                python=sys.executable,installer=str(Path(__file__).resolve()),codexPreflight=codex_preflight))
         _write_record(cache/"result.json",ready); stage("ready")
     except BaseException as error:
         stage("error "+type(error).__name__+": "+str(error))
@@ -2126,7 +2189,7 @@ def autonomous_worker(request_file):
                         stdin=subprocess.DEVNULL,stdout=out,stderr=err,creationflags=0x08000000)
                 restored=owner("recovered",dict(releaseId=previous["releaseId"],hostPid=recovered_host.pid,
                     hostCreated=process_identity(int(recovered_host._handle))["created"],python=sys.executable,
-                    installer=str(Path(__file__).resolve()),retirementUnknown=retirement_unknown))
+                    installer=str(Path(__file__).resolve()),retirementUnknown=retirement_unknown,codexPreflight=codex_preflight))
                 _write_record(cache/"result.json",restored)
                 stage("previous-version-ready")
                 return

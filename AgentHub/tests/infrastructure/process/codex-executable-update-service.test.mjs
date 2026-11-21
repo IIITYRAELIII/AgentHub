@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { CodexExecutableUpdateService } from "../../../src/infrastructure/process/codex-executable-update-service.mjs";
+import { discoverOfficialCodexExecutables, verifyOpenAiAuthenticode, verifyRecordedCodexExecutable }
+  from "../../../src/infrastructure/process/codex-executable.mjs";
 
 function candidate(version, source = "desktop") {
   return {
@@ -46,6 +49,83 @@ function service(stateFile, {
     readFileImpl,
     writeFileImpl,
     mkdirImpl,
+  });
+}
+
+for (const policy of ["fallback", "no-candidate", "pinned", "disabled"]) {
+  test(`a rejected recorded bundle preserves trust and upgrade policy: ${policy}`, {
+    skip: process.platform !== "win32",
+  }, async context => {
+    const stateFile = await fixture(context);
+    const stateDirectory = path.dirname(stateFile);
+    const installRoot = path.join(stateDirectory, "OpenAI", "Codex", "bin");
+    const environment = { LOCALAPPDATA: stateDirectory };
+    const oldRoot = path.join(installRoot, "old");
+    const newRoot = path.join(installRoot, "new");
+    await mkdir(oldRoot, { recursive: true });
+    const oldPath = path.join(await realpath(oldRoot), "codex.exe");
+    const helperPath = path.join(path.dirname(oldPath), "codex-code-mode-host.exe");
+    await writeFile(oldPath, "inert previous fixture");
+    await writeFile(helperPath, "inert unsigned helper fixture");
+    const sha256 = createHash("sha256").update(await readFile(oldPath)).digest("hex").toUpperCase();
+    const publisher = 'CN="OpenAI Opco, LLC", O=OpenAI';
+    const lastKnownGood = { ...candidate("0.151.0"), path: oldPath, sha256, publisher };
+    const persisted = JSON.stringify({ schemaVersion: 1, lastKnownGood });
+    await writeFile(stateFile, persisted);
+    let nextPath;
+    if (policy !== "no-candidate") {
+      await mkdir(newRoot, { recursive: true });
+      nextPath = path.join(await realpath(newRoot), "codex.exe");
+      await writeFile(nextPath, "inert replacement fixture");
+    }
+    const genuineRejection = await verifyOpenAiAuthenticode(helperPath);
+    assert.equal(genuineRejection.valid, false);
+    const checkedVersions = [];
+    const inspected = {
+      environment,
+      verifySignature: async file => {
+        if (file === helperPath) return genuineRejection;
+        assert.equal(file, nextPath);
+        return { valid: true, status: "Valid", publisher };
+      },
+      readVersion: async file => {
+        assert.equal(file, nextPath);
+        checkedVersions.push(file);
+        return "0.152.0";
+      },
+      readFeatures: async file => {
+        assert.equal(file, nextPath);
+        return { codeModeHost: false };
+      },
+    };
+    const canaries = [];
+    const owner = new CodexExecutableUpdateService({ stateFile,
+      autoUpdateEnabled: policy !== "disabled", versionPin: policy === "pinned" ? "0.151.0" : "",
+      verifyRecorded: (entry, options) => verifyRecordedCodexExecutable(entry, { ...options, ...inspected }),
+      discover: options => discoverOfficialCodexExecutables({ ...options, ...inspected }),
+      acquireCustody: async () => ({ assertAlive() {}, async release() {} }),
+      runCanary: async entry => { canaries.push(entry.path); return { ok: true }; },
+    });
+    const check = await owner.inspectUpgradeReadiness();
+    assert.equal(check.status, policy === "fallback" ? "eligible" : "blocked");
+    assert.match(check.rejection, /member=codex-code-mode-host\.exe, status=\w+, reason=signature-invalid, version=0\.151\.0/u);
+    assert.equal(await readFile(stateFile, "utf8"), persisted);
+    assert.deepEqual(canaries, []);
+    if (policy === "fallback") {
+      assert.equal(await owner.selectForStart(), nextPath);
+      await owner.verifySelectedForLaunch(nextPath);
+      await owner.markStartupSuccess();
+      await owner.releaseUnboundSelection();
+      assert.deepEqual(canaries, [nextPath]);
+      assert.equal(owner.diagnostics().lastKnownGood.path, nextPath);
+      assert.ok(checkedVersions.length > 0);
+    } else {
+      await assert.rejects(owner.selectForStart(), /trusted|disabled/u);
+      assert.deepEqual(canaries, []);
+      assert.equal(owner.diagnostics().lastKnownGood.path, oldPath);
+    }
+    assert.equal(owner.diagnostics().recordedSignatureRejection, check.rejection);
+    assert.equal(JSON.parse(await readFile(stateFile, "utf8")).recordedSignatureRejection, check.rejection);
   });
 }
 
