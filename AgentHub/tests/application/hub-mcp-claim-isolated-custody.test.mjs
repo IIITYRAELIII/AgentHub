@@ -155,8 +155,9 @@ test("two isolated intents have one winner; fresh claims follow ordinary executo
   // executor is active. The historical custody identity adds no restriction.
   await assert.rejects(f.hub.call("hub_task_claim", { request_id: "foreign-fresh-claim", task_id: f.prior.id,
     dependency_mode: "ensure", context_token: f.managerToken }), /active|EXECUTOR_BUSY/i);
-  f.hub.setActiveRuns(() => [{ id: "manager-run", streamId: f.manager.id, provider: "codex",
-    threadId: `${f.manager.id}-thread`, turnId: "manager-turn", status: "running" }]);
+  const managerRun = { id: "manager-run", streamId: f.manager.id, provider: "codex",
+    threadId: `${f.manager.id}-thread`, turnId: "manager-turn", status: "running" };
+  f.hub.setActiveRuns(() => [managerRun]);
   const reassigned = await f.hub.call("hub_task_claim", { request_id: "idle-fresh-claim", task_id: f.prior.id,
     context_token: f.managerToken });
   assert.equal(reassigned.streamId, f.manager.id);
