@@ -1,5 +1,15 @@
 # ADR-0131 — Forward custody of an unsealed claim
 
+## Ordinary work after the fence
+
+A fence withdraws one invocation. Ordinary claim uses the existing Task access
+and executor checks and returns the established checkout. It does not require the
+declared successor ID or the historical conversational identity. Description
+edits do not affect ordinary claim. If an ordinary claim binds first, its
+binding invalidates the old declared successor's assignment CAS in the same
+transaction. The original receipt, source isolation, and late binding/result
+write protection continue to apply.
+
 Status: proposed; exact source and operational recovery require independent review.
 
 ## Problem and authority
@@ -33,8 +43,8 @@ Prepare does not transfer the Task or reserve the Workspace. The RM's independen
 turn may run then. The default fence requires positive retirement of the complete legacy runtime
 cohort. The explicitly authorized `isolated-source-v1` alternative below instead
 requires independent successor authority. Both retain real Task lease/process
-guards and unchanged source/WIP/original/Task pins. Only the successor claim assigns the Task. It retains the
-general previous-executor active/queued-work guard, freshly repeated inside the
+guards and unchanged source/WIP/original/Task pins. The addressed successor
+claim retains the general previous-executor active/queued-work guard, freshly repeated inside the
 canonical SQLite claim transaction. No global busy-guard exemption is added.
 
 The successor calls ordinary `hub_task_claim` with its predeclared request ID and

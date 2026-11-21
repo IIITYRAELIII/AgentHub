@@ -150,7 +150,11 @@ Task Git still validates exact main/publication baseline, registered repository
 identity, branch, commit, selected content and worktree state. It does not adopt
 rolling dev, another checkout or a broader operational aggregate as Task source.
 Dependency ensure, explicit reviewed custody recovery, empty-WIP fencing and
-committed claim readback retain their existing checks and receipts.
+committed claim readback retain their existing checks and receipts. A historical
+forward fence does not reserve the working copy against ordinary claims. Task
+Git uses the established Task checkout and its existing locks. The withdrawn
+request remains fenced from assignment and result writes. A new ordinary binding
+also supersedes an unconsumed declared successor.
 
 Test integrates the addressed Task result into dev through the existing native
 Git owner. A conflict issues a bound native checkout; a normal resolution commit

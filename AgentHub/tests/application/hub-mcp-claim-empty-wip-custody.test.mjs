@@ -139,6 +139,129 @@ async function ownClaimantFixture(t) {
   return { ...f, prior, current };
 }
 
+
+test("ordinary claim after the Vega-style thread rotation opens the staged checkout for editing", { timeout: 90000 }, async t => {
+  const f = await ownClaimantFixture(t);
+  await assert.rejects(f.hub.call("hub_task_claim", f.consume), /no exact active run/);
+  const historicalSuccessor = f.catalog.mcpOperation(f.consume.request_id);
+  assert.equal(historicalSuccessor.status, "unknown");
+  for (const description of ["note 1", "note 2", "note 3"]) {
+    await f.tasks.update({ id: f.prior.id, title: f.prior.title, description });
+  }
+  assert.equal(f.tasks.task(f.prior.id).revision, f.prior.revision + 3);
+  const threadId = "rotated-vega-thread";
+  await f.catalog.bindThread({ streamId: f.successor.id, provider: "codex", threadId, projectRoot: f.source.projectRoot });
+  const contextToken = f.hub.contextToken({ provider: "codex", threadId });
+  const active = createManagedTaskRun({ ...f.current, threadId, turnId: "rotated-vega-turn" });
+  f.hub.setActiveRuns(() => [active]);
+  const claim = { context_token: contextToken, request_id: "ordinary-after-rotation", task_id: f.prior.id };
+  const staged = f.catalog.claimCustodyNamespaceForTask(f.prior.id).namespace.workspace;
+  const originalBytes = await readFile(path.join(f.source.projectRoot, "source.txt"));
+  assert.equal(staged.baseCommit, f.source.headCommit);
+  assert.equal(await f.git(staged.projectRoot, "status", "--porcelain=v1"), "");
+
+  const claimed = await f.hub.call("hub_task_claim", claim);
+  assert.equal(claimed.claimedTurnId, active.turnId);
+  assert.deepEqual(claimed.gitWorkspace, { branch: staged.branch, projectRoot: staged.projectRoot,
+    baseCommit: staged.baseCommit, headCommit: staged.headCommit });
+  await writeFile(path.join(staged.projectRoot, "source.txt"), "work after rotation\n");
+  const next = await f.hub.call("hub_task_claim", { ...claim, request_id: "ordinary-after-file-edit" });
+  assert.equal(next.gitWorkspace.projectRoot, staged.projectRoot);
+  assert.equal(await readFile(path.join(staged.projectRoot, "source.txt"), "utf8"), "work after rotation\n");
+  assert.deepEqual(await readFile(path.join(f.source.projectRoot, "source.txt")), originalBytes);
+
+  const reopened = await f.open();
+  assert.deepEqual(await f.service(reopened).call("hub_task_claim", claim), JSON.parse(JSON.stringify(claimed)));
+  assert.deepEqual(reopened.catalog.mcpOperation(f.original.requestId), f.original);
+  assert.deepEqual(reopened.catalog.mcpOperation(f.consume.request_id), historicalSuccessor);
+});
+
+test("a withdrawn request cannot reassign the Task or replace its result after an ordinary claim", { timeout: 90000 }, async t => {
+  const f = await ownClaimantFixture(t);
+  f.hub.setActiveRuns(() => [f.current]);
+  const live = await f.hub.call("hub_task_claim", {
+    context_token: f.successorToken, request_id: "ordinary-winner", task_id: f.prior.id,
+  });
+  assert.equal(live.gitWorkspace.projectRoot, f.catalog.claimCustodyNamespaceForTask(f.prior.id).namespace.workspace.projectRoot);
+  const original = f.catalog.mcpOperation(f.original.requestId);
+  const fence = f.catalog.mcpOperation(f.consume.forward_custody_request_id);
+  await assert.rejects(f.hub.call("hub_task_claim", f.consume), /Pinned Task owner or revision changed/);
+  await writeFile(path.join(live.gitWorkspace.projectRoot, "source.txt"), "current result\n");
+  const root = live.gitWorkspace.projectRoot;
+  await f.git(root, "add", "source.txt");
+  await f.git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "current result");
+  const current = await f.workspaces.snapshot({ taskId: f.prior.id, taskNumber: f.prior.taskNumber, projectRoot: root });
+  await f.tasks.recordTaskGitReference({ taskId: f.prior.id, projectRoot: current.repositoryRoot,
+    branch: current.branch, resultSnapshot: current.resultSnapshot });
+  const before = f.tasks.task(f.prior.id);
+  assert.deepEqual(before.gitReferences.map(result => result.resultCommit), [current.headCommit]);
+  await assert.rejects(f.hub.call("hub_task_claim", { ...f.originalArgs, context_token: f.successorToken }), /future continuation was withdrawn/);
+  // Use the existing Task owners, as a stale callback with the pre-fence source would.
+  await assert.rejects(async () => f.tasks.claim({
+    id: before.id, workspaceId: before.workspaceId, streamId: f.successor.id,
+    provider: "codex", threadId: f.original.threadId, turnId: "late-original-turn", operationId: f.original.requestId,
+    gitBaseline: f.source.gitBaseline,
+  }), /authority|withdrawn/);
+  await assert.rejects(async () => f.tasks.recordTaskGitReference({
+    taskId: before.id, projectRoot: f.source.repositoryRoot, branch: f.source.branch,
+    resultSnapshot: { resultCommit: f.source.headCommit },
+  }), /Historical result reference/);
+  const reopened = await f.open();
+  assert.deepEqual(reopened.tasks.task(before.id), before);
+  assert.deepEqual(reopened.catalog.mcpOperation(f.original.requestId), original);
+  assert.deepEqual(reopened.catalog.mcpOperation(fence.requestId), fence);
+  assert.equal(reopened.tasks.claimBindingForOperation(f.original.requestId), null);
+});
+
+
+for (const change of ["replaced", "changed in place", "ended"]) {
+  test(`ordinary claim does not bind a claimant ${change} during Git preparation`, { timeout: 90000 }, async t => {
+    const f = await fixture(t);
+    const plan = await f.hub.call("hub_task_operation_reconcile", f.prepare);
+    const fence = await f.hub.call("hub_task_operation_reconcile", f.fence(plan));
+    const custody = f.catalog.claimCustodyNamespaceForTask(f.prior.id);
+    const historicalFence = f.catalog.mcpOperation(fence.requestId);
+    const oldRun = createManagedTaskRun({ workspaceId: f.prior.workspaceId, streamId: f.successor.id,
+      provider: "codex", threadId: f.original.threadId, turnId: "old-turn", projectRoot: f.source.projectRoot, status: "running" });
+    const nextRun = { ...oldRun, id: "next-run", turnId: "next-turn" };
+    const oldBaseline = oldRun.gitBaseline;
+    let runs = [oldRun];
+    f.hub.setActiveRuns(() => runs);
+    const prepareOwned = f.workspaces.prepareOwned.bind(f.workspaces);
+    let atGitBoundary, release;
+    const prepared = new Promise(resolve => { atGitBoundary = resolve; });
+    const resume = new Promise(resolve => { release = resolve; });
+    t.after(release);
+    f.workspaces.prepareOwned = async args => {
+      const result = await prepareOwned(args);
+      atGitBoundary();
+      await resume;
+      return result;
+    };
+    const args = { context_token: f.successorToken, task_id: f.prior.id, request_id: "ordinary-during-turn-change" };
+    const rejected = assert.rejects(f.hub.call("hub_task_claim", args), /run changed|no exact active run/);
+    await Promise.race([prepared, rejected.then(() => assert.fail("Claim refused before the Git boundary"))]);
+    if (change === "replaced") runs = [nextRun];
+    if (change === "changed in place") oldRun.turnId = "next-turn";
+    if (change === "ended") runs = [];
+    release();
+    await rejected;
+    const reopened = await f.open();
+    assert.equal(reopened.tasks.claimBindingForOperation(args.request_id), null);
+    assert.deepEqual(reopened.tasks.task(f.prior.id), f.prior);
+    assert.equal(oldRun.gitBaseline, oldBaseline);
+    assert.deepEqual(reopened.catalog.mcpOperation(f.original.requestId), f.original);
+    assert.deepEqual(reopened.catalog.mcpOperation(fence.requestId), historicalFence);
+
+    runs = [nextRun];
+    const fresh = await f.hub.call("hub_task_claim", { ...args, request_id: "ordinary-from-current-turn" });
+    assert.equal(fresh.claimedTurnId, "next-turn");
+    assert.equal(fresh.gitWorkspace.projectRoot, custody.namespace.workspace.projectRoot);
+    assert.equal(nextRun.gitBaseline.custodyEpoch, custody.namespace.epoch);
+    assert.equal(f.tasks.claimBindingForOperation("ordinary-from-current-turn").turnId, "next-turn");
+  });
+}
+
 test("same-owner custody resumes the SAME unknown successor through MCP with a full current run", { timeout: 60000 }, async t => {
   const f = await ownClaimantFixture(t);
   const server = new HubMcpServer({ service: f.hub, secret: "fixture-server", logger: { log() {}, error() {} } });

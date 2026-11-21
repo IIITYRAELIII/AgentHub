@@ -129,7 +129,7 @@ for (const legacy of [false, true]) test(`independent fence/assignment survive r
   assert.deepEqual(reopened.catalog.mcpOperation(f.original.requestId), f.original);
 });
 
-test("two isolated intents have one winner; queued old owner and foreign calls cannot enter the namespace", { timeout: 90000 }, async t => {
+test("two isolated intents have one winner; fresh claims follow ordinary executor checks", { timeout: 90000 }, async t => {
   const f = await fixture(t);
   const second = structuredClone(f.prepare);
   second.request_id = "second-isolated-plan";
@@ -151,10 +151,62 @@ test("two isolated intents have one winner; queued old owner and foreign calls c
   await assert.rejects(f.hub.call("hub_task_claim", { ...f.originalArgs, context_token: f.successorToken }), /future continuation was withdrawn/);
   const result = await f.hub.call("hub_task_claim", consume);
   assert.equal(result.revision, f.prior.revision + 1);
+  // A fresh ordinary claim observes the ordinary busy guard while the
+  // executor is active. The historical custody identity adds no restriction.
   await assert.rejects(f.hub.call("hub_task_claim", { request_id: "foreign-fresh-claim", task_id: f.prior.id,
-    dependency_mode: "ensure", context_token: f.managerToken }), /Foreign claim/);
+    dependency_mode: "ensure", context_token: f.managerToken }), /active|EXECUTOR_BUSY/i);
+  f.hub.setActiveRuns(() => [{ id: "manager-run", streamId: f.manager.id, provider: "codex",
+    threadId: `${f.manager.id}-thread`, turnId: "manager-turn", status: "running" }]);
+  const reassigned = await f.hub.call("hub_task_claim", { request_id: "idle-fresh-claim", task_id: f.prior.id,
+    context_token: f.managerToken });
+  assert.equal(reassigned.streamId, f.manager.id);
+  assert.equal(reassigned.gitWorkspace.projectRoot, result.gitWorkspace.projectRoot);
   await assert.rejects(f.hub.call("hub_task_claim", { ...consume, dependency_mode: "skip" }), /another operation/);
   assert.equal(f.prepares(), 0);
+  assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
+});
+
+
+test("an ordinary claim waiting on the Task lease checks the newly assigned active executor", { timeout: 90000 }, async t => {
+  const f = await fixture(t);
+  const plan = await f.hub.call("hub_task_operation_reconcile", f.prepare);
+  await f.hub.call("hub_task_operation_reconcile", f.fence(plan));
+  const manager = { id: "manager-run", streamId: f.manager.id, provider: "codex",
+    threadId: `${f.manager.id}-thread`, turnId: "manager-turn", status: "running" };
+  const next = { id: "next-run", streamId: f.successor.id, provider: "codex",
+    threadId: f.original.threadId, turnId: "next-turn", status: "running" };
+  f.hub.setActiveRuns(() => [manager, next]);
+  const prepareOwned = f.workspaces.prepareOwned.bind(f.workspaces);
+  const withTaskLock = f.workspaces.withTaskLock.bind(f.workspaces);
+  let hold, reached, queued;
+  const locked = new Promise(resolve => { reached = resolve; });
+  const waiting = new Promise(resolve => { queued = resolve; });
+  const blocked = new Promise(resolve => { hold = resolve; });
+  t.after(() => hold());
+  let n = 0;
+  f.workspaces.withTaskLock = (...args) => {
+    if (++n === 2) queued();
+    return withTaskLock(...args);
+  };
+  f.workspaces.prepareOwned = async args => {
+    const workspace = await prepareOwned(args);
+    reached();
+    await blocked;
+    return workspace;
+  };
+  const first = f.hub.call("hub_task_claim", { request_id: "first-ordinary", task_id: f.prior.id, context_token: f.managerToken });
+  await locked;
+  const second = f.hub.call("hub_task_claim", { request_id: "second-ordinary", task_id: f.prior.id, context_token: f.successorToken });
+  const both = Promise.allSettled([first, second]);
+  await waiting;
+  hold();
+  const [winner, other] = await both;
+  assert.equal(winner.status, "fulfilled");
+  assert.equal(winner.value.streamId, f.manager.id);
+  assert.equal(other.status, "rejected");
+  assert.equal(other.reason.code, "TASK_CLAIM_EXECUTOR_BUSY");
+  assert.equal(f.tasks.task(f.prior.id).streamId, f.manager.id);
+  assert.equal(f.tasks.claimBindingForOperation("second-ordinary"), null);
   assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
 });
 

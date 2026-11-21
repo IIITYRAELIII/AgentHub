@@ -199,7 +199,7 @@ export function captureClaimCustodySqlAuthorities(database, method, args) {
       .get(first.operationId, first.provider, first.threadId, first.turnId)?.task_id;
     if (taskId === state.taskId && method === "claim") {
       const input = args[1];
-      if (input?.streamId !== state.original.streamId || input?.gitBaseline?.custodyEpoch !== state.namespace.epoch
+      if (input?.gitBaseline?.custodyEpoch !== state.namespace.epoch
           || (input.forwardCustodyRequestId !== state.requestId && input.operationId === state.successorClaimRequestId)) {
         throw new TaskClaimCustodyRejectedError("Claim does not carry current source custody authority");
       }

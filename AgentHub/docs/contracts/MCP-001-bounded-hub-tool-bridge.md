@@ -852,13 +852,18 @@ late supported legacy writes are rejected or confined to the old checkout.
 The historical UNKNOWN is unchanged. This is the exact authorized historical
 claim scope in ADR-0131, not a default substitute for missing retirement proof.
 
-Only ordinary successor `hub_task_claim` with the declared ID and
-`forward_custody_request_id` assigns the Task. It retains the current executor's
+The addressed successor `hub_task_claim` continues with the declared ID and
+`forward_custody_request_id`. It retains the current executor's
 active/queued-work guard through the SQL commit and uses the existing managed
 Git owner for read-only source reuse. Original dependency preparation is not
 replayed, and its response says so. Late originals are fenced before any binding
 or baseline update, including receipt writes; exact post-commit retry reuses the
-same binding and assignment. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).
+same binding and assignment. An ordinary claim can use the established Task
+checkout even when that successor has not bound. It uses the ordinary Task
+access and busy checks, independent of the fence's historical actor or Task
+revision. The binding transaction checks the claimant's captured run is still
+current. Its new binding prevents an unconsumed declared successor from later
+assigning the Task. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).
 
 If the pinned current executor is already the successor Stream, only the exact
 current claimant run is excluded from that busy check. Its nonempty run ID,

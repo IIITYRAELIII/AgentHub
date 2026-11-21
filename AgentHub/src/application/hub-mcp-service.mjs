@@ -1827,7 +1827,7 @@ export class HubMcpService {
 
   #assertClaimContinuation(taskId, operationId, fenceId = null) {
     if (this.workspaceCatalog.claimCustodyForOriginal?.(operationId)) throw new TaskClaimContinuationWithdrawnError();
-    const reserved = this.workspaceCatalog.claimCustodyForTask?.(taskId);
+    const reserved = fenceId ? this.workspaceCatalog.claimCustodyForTask?.(taskId) : null;
     if (reserved && (reserved.requestId !== fenceId || reserved.successorClaimRequestId !== operationId)) {
       throw new TaskClaimCustodyRejectedError("Task has an unconsumed forward custody fence");
     }
@@ -1972,16 +1972,13 @@ export class HubMcpService {
       if (committedReadbackOnly) throw new TaskClaimCustodyRejectedError("Committed custody binding is missing");
       this.#custodyTask(context, task.id, fence.envelope);
       const active = this.#currentRun(context);
-      const identity = Object.fromEntries(["id", "workspaceId", "streamId", "provider", "threadId", "turnId"].map(key => [key, active[key]]));
+      const assertCurrentRun = this.#claimRunValidator(context, active);
       const validateAdmission = (beforeCommit = false) => {
-        const current = this.#currentRun(context);
-        if (current !== active || Object.entries(identity).some(([key, value]) => current[key] !== value)) {
-          throw new Error("Current custody claimant run changed");
-        }
+        assertCurrentRun();
         const own = task.streamId === context.streamId;
-        if (own && (!String(identity.id ?? "").trim() || identity.workspaceId !== context.workspaceId
-            || identity.streamId !== context.streamId || identity.provider !== context.provider
-            || identity.threadId !== context.threadId || !String(identity.turnId ?? "").trim())) {
+        if (own && (!String(active.id ?? "").trim() || active.workspaceId !== context.workspaceId
+            || active.streamId !== context.streamId || active.provider !== context.provider
+            || active.threadId !== context.threadId || !String(active.turnId ?? "").trim())) {
           throw new Error("Current custody claimant requires a complete exact run identity");
         }
         // Only the exact current run is the claimant. Other runs and queued
@@ -1996,34 +1993,42 @@ export class HubMcpService {
     });
   }
 
+  #claimExecutorBusyReason(task, claimantStreamId) {
+    if (!task.streamId || task.streamId === claimantStreamId) return null;
+    if (this.#activeRuns().some(run => run.streamId === task.streamId)) return "active";
+    const queued = this.#deferredInputs().some(input => input.streamId === task.streamId
+      || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({
+        provider: input.provider, threadId: input.threadId,
+      })?.streamId === task.streamId));
+    return queued ? "queued" : null;
+  }
+
+  async #requireClaimExecutorIdle(context, args, task) {
+    const busyReason = this.#claimExecutorBusyReason(task, context.streamId);
+    if (!busyReason) return;
+    requiredMethod(this.workspaceCatalog, "recordClaimAdmissionRefusal");
+    await this.workspaceCatalog.recordClaimAdmissionRefusal({ receipt: context.admissionReceipt, task, busyReason,
+      claimArguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) });
+    throw new TaskClaimExecutorBusyError();
+  }
+
   async #claimTask(context, args = {}, { committedReadbackOnly = false } = {}) {
     const { task_id: taskId, request_id: operationId, dependency_mode: dependencyMode = "skip", dependency_override_reason: dependencyOverrideReason = null } = args;
     const task = this.#task(context, taskId);
     const namespace = this.workspaceCatalog.claimCustodyNamespaceForTask?.(taskId);
-    if (namespace && context.streamId !== namespace.original.streamId) {
-      throw new TaskClaimCustodyRejectedError("Foreign claim cannot prepare the successor source namespace");
-    }
     const active = this.#currentRun(context);
+    const assertCurrentRun = namespace ? this.#claimRunValidator(context, active) : null;
     if (task.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
     if (args.forward_custody_request_id) return this.#consumeClaimCustody(context, args, { committedReadbackOnly });
-    if (task.streamId && task.streamId !== context.streamId) {
-      const busyReason = this.#activeRuns().some(run => run.streamId === task.streamId) ? "active"
-        : this.#deferredInputs().some(input => input.streamId === task.streamId
-          || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({
-            provider: input.provider, threadId: input.threadId,
-          })?.streamId === task.streamId)) ? "queued" : null;
-      if (busyReason) {
-        requiredMethod(this.workspaceCatalog, "recordClaimAdmissionRefusal");
-        await this.workspaceCatalog.recordClaimAdmissionRefusal({ receipt: context.admissionReceipt, task, busyReason,
-          claimArguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) });
-        throw new TaskClaimExecutorBusyError();
-      }
-    }
-    const projectRoot = this.#taskProjectRoot(context);
+    if (!namespace) await this.#requireClaimExecutorIdle(context, args, task);
+    if (namespace && task.workspaceId !== context.workspaceId) throw new Error("Task is outside the current Workspace");
+    const projectRoot = namespace?.namespace.workspace.projectRoot ?? this.#taskProjectRoot(context);
     if (this.taskGitWorkspaces?.withTaskLock && projectRoot) {
       return this.taskGitWorkspaces.withTaskLock(task.id, async lease => {
         const guarded = this.#claimLease(lease, task.id, operationId);
         await guarded.assertOwned();
+        // An ordinary claim may have become the executor while this one waited.
+        if (namespace) await this.#requireClaimExecutorIdle(context, args, this.#task(context, taskId));
         let workspace;
         try {
           workspace = await this.taskGitWorkspaces.prepareOwned({ taskId: task.id, taskNumber: task.taskNumber,
@@ -2041,7 +2046,11 @@ export class HubMcpService {
           throw error;
         }
         await guarded.assertOwned();
-        return this.#writeClaim(context, task, active, operationId, workspace);
+        const validateAdmission = assertCurrentRun ? () => {
+          assertCurrentRun();
+          if (this.#claimExecutorBusyReason(this.#task(context, taskId), context.streamId)) throw new TaskClaimExecutorBusyError();
+        } : null;
+        return this.#writeClaim(context, task, active, operationId, workspace, null, validateAdmission);
       });
     }
     const gitWorkspace = this.taskGitWorkspaces && projectRoot
@@ -2050,27 +2059,29 @@ export class HubMcpService {
     return this.#writeClaim(context, task, active, operationId, gitWorkspace);
   }
 
-  async #writeClaim(context, task, active, operationId, gitWorkspace, forwardCustodyRequestId = null, validateCustodyAdmission = null) {
+  async #writeClaim(context, task, active, operationId, gitWorkspace, forwardCustodyRequestId = null, validateClaimAdmission = null) {
     this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
-    if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
+    const turnId = active.turnId;
+    const gitBaseline = (gitWorkspace ? gitWorkspace.gitBaseline : active.gitBaseline) ?? null;
     const claimed = await this.measureOperation("task-binding", () => this.taskBoard.claim({
       id: task.id,
       workspaceId: context.workspaceId,
       streamId: context.streamId,
       provider: context.provider,
       threadId: context.threadId,
-      turnId: active.turnId,
+      turnId,
       operationId,
       operationKind: "claim",
-      gitBaseline: active.gitBaseline ?? null, forwardCustodyRequestId,
-      validateClaimAdmission: forwardCustodyRequestId ? () => {
-        validateCustodyAdmission(true);
+      gitBaseline, forwardCustodyRequestId,
+      validateClaimAdmission: validateClaimAdmission ? () => {
+        validateClaimAdmission(true);
         this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
       } : null,
     }));
+    if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     return {
       ...compactTask(claimed),
-      claimedTurnId: active.turnId,
+      claimedTurnId: turnId,
       ...(forwardCustodyRequestId ? { claimCustody: { fenceRequestId: forwardCustodyRequestId,
         sourceReuse: "readonly", dependencyPreparation: "not-replayed" } } : {}),
       gitWorkspace: gitWorkspace ? {
@@ -2079,6 +2090,16 @@ export class HubMcpService {
         baseCommit: gitWorkspace.baseCommit,
         headCommit: gitWorkspace.headCommit,
       } : null,
+    };
+  }
+
+  #claimRunValidator(context, active) {
+    const identity = Object.fromEntries(["id", "workspaceId", "streamId", "provider", "threadId", "turnId"].map(key => [key, active[key]]));
+    return () => {
+      const current = this.#currentRun(context);
+      if (current !== active || Object.entries(identity).some(([key, value]) => current[key] !== value)) {
+        throw new Error("Current claimant run changed before Task binding");
+      }
     };
   }
 
