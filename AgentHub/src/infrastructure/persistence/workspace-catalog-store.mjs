@@ -49,18 +49,13 @@ function migrateAuthenticatedUserOperations(database) {
     const definition = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='hub_mcp_operations'").get().sql;
     const objects = database.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='hub_mcp_operations' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
     const names = columns.map(row => '"' + row.name.replaceAll('"', '""') + '"').join(",");
-    database.exec("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE");
-    try {
-      database.exec(`CREATE TEMP TABLE hub_mcp_identity_migration AS SELECT * FROM hub_mcp_operations;
-        DROP TABLE hub_mcp_operations;`);
-      database.exec(definition.replace(/(workspace_id|stream_id|provider|provider_thread_id) TEXT NOT NULL/g, "$1 TEXT"));
-      database.exec(`INSERT INTO hub_mcp_operations (${names}) SELECT ${names} FROM hub_mcp_identity_migration;
-        DROP TABLE hub_mcp_identity_migration;`);
-      for (const object of objects) database.exec(object.sql);
-      if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("MCP user identity migration foreign key check failed");
-      database.exec("COMMIT");
-    } catch (error) { database.exec("ROLLBACK"); throw error; }
-    finally { database.exec("PRAGMA foreign_keys=ON"); }
+    database.exec(`CREATE TEMP TABLE hub_mcp_identity_migration AS SELECT * FROM hub_mcp_operations;
+      DROP TABLE hub_mcp_operations;`);
+    database.exec(definition.replace(/(workspace_id|stream_id|provider|provider_thread_id) TEXT NOT NULL/g, "$1 TEXT"));
+    database.exec(`INSERT INTO hub_mcp_operations (${names}) SELECT ${names} FROM hub_mcp_identity_migration;
+      DROP TABLE hub_mcp_identity_migration;`);
+    for (const object of objects) database.exec(object.sql);
+    if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("MCP user identity migration foreign key check failed");
   }
   if (!columns.some(row => row.name === "actor_kind")) {
     database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN actor_kind TEXT NOT NULL DEFAULT 'provider'");
@@ -68,11 +63,28 @@ function migrateAuthenticatedUserOperations(database) {
 }
 
 function configure(database) {
+  // Keep contention in the existing asynchronous queue. The legacy MCP table
+  // rebuild needs foreign keys disabled on this connection, before BEGIN.
   database.exec(`
+    PRAGMA busy_timeout = 0;
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 0;
-    PRAGMA foreign_keys = ON;
+    PRAGMA foreign_keys = OFF;
+  `);
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    configureSchema(database);
+    database.exec("COMMIT");
+  } catch (error) {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    throw error;
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+function configureSchema(database) {
+  database.exec(`
     CREATE TABLE IF NOT EXISTS hub_workspace_catalog_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -216,8 +228,6 @@ function configure(database) {
   if (!executionColumns.some(column => column.name === "task_execution_json")) {
     database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN task_execution_json TEXT");
   }
-  database.exec("BEGIN IMMEDIATE");
-  try {
   for (const event of ["INSERT", "UPDATE"]) database.exec(`
     DROP TRIGGER IF EXISTS hub_mcp_actor_${event.toLowerCase()};
     CREATE TRIGGER hub_mcp_actor_${event.toLowerCase()}
@@ -242,8 +252,6 @@ function configure(database) {
       OR json_extract(NEW.task_execution_json,'$.taskId') IS NOT json_extract(OLD.task_execution_json,'$.taskId')
       OR json_extract(NEW.task_execution_json,'$.arguments') IS NOT json_extract(OLD.task_execution_json,'$.arguments'))
     BEGIN SELECT RAISE(ABORT, 'Authenticated-user operation identity is immutable'); END;`);
-  database.exec("COMMIT");
-  } catch (error) { database.exec("ROLLBACK"); throw error; }
   database.exec(`CREATE INDEX IF NOT EXISTS hub_task_execution_task_idx
     ON hub_mcp_operations(json_extract(task_execution_json, '$.taskId'))`);
   database.exec(`CREATE TRIGGER IF NOT EXISTS hub_interrupted_operation_history
@@ -574,13 +582,21 @@ export class WorkspaceCatalogStore {
     this.#idFactory = idFactory;
   }
 
-  async load() {
-    await this.#open();
-    if (this.#readOnly) return this;
-    this.#migratePermanentWorkspaceArchive();
-    this.#migrateArchitectStreamSettings();
-    this.#migrateReleaseManagerStreamSettings();
-    this.ensureExperiments();
+  async load({ onTiming } = {}) {
+    if (this.#readOnly) {
+      this.#open();
+      return this;
+    }
+    await mkdir(path.dirname(this.#databaseFile), { recursive: true });
+    await this.runMutation(() => {
+      this.#open();
+      this.#transaction(() => {
+        this.#migratePermanentWorkspaceArchive();
+        this.#migrateArchitectStreamSettings();
+        this.#migrateReleaseManagerStreamSettings();
+        this.ensureExperiments();
+      });
+    }, { onTiming });
     return this;
   }
 
@@ -597,9 +613,8 @@ export class WorkspaceCatalogStore {
     return `${this.revision}:${externalRevision}`;
   }
 
-  async #open() {
+  #open() {
     if (this.#database) return this.#database;
-    if (!this.#readOnly) await mkdir(path.dirname(this.#databaseFile), { recursive: true });
     let database;
     try {
       database = new DatabaseSync(

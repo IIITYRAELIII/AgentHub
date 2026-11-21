@@ -405,8 +405,12 @@ labelled lock wait. Only fixed phase/outcome and elapsed/UTC scalars are retaine
 without database paths, owner tokens or SQL content. Successful phase observations
 flush through the same trace worker; failure before that worker remains in the
 ordinary startup log. Diagnostic failure cannot change recovery or admission.
-Missing terminal phases and a passing private restart do not establish a
-historical holder or resolve the original stalled startup.
+Workspace catalog startup reports the existing asynchronous SQLite mutation
+queue's attempt count, queue wait, contention wait and SQL attempt duration
+under the same workspace-catalog-load startup identity. Contention retries
+only catalog SQLite work. Catalog schema changes commit atomically; an exhausted
+or unrelated SQLite failure remains a startup failure. Missing terminal phases
+and a passing private restart do not establish a historical lock holder.
 
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
