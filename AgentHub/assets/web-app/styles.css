@@ -5015,7 +5015,8 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
 }
 
 .task-lifecycle-actions,
-[data-task-delete-modal] {
+[data-task-delete-modal],
+[data-task-cleanup-action="remove"] {
   --task-lifecycle-danger: var(--danger, var(--dialog-danger));
   --task-lifecycle-danger: oklch(from var(--danger, var(--dialog-danger)) l c 25);
 }
@@ -5029,31 +5030,77 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
 .task-lifecycle-button:disabled { cursor: default; opacity: 0.6; }
 
 .task-lifecycle-button:focus-visible,
-[data-task-delete-modal] button:focus-visible {
+:is([data-task-delete-modal], [data-task-cleanup-modal]) button:focus-visible,
+.task-cleanup-technical > summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-[data-task-delete-modal] {
+:is([data-task-delete-modal], [data-task-cleanup-modal]) {
   box-sizing: border-box;
   max-height: min(80dvh, 44rem);
   width: min(26rem, calc(100% - 24px));
 }
 
-[data-task-delete-modal][open] { display: flex; flex-direction: column; }
-[data-task-delete-modal] > section { min-height: 0; overflow: auto; }
-[data-task-delete-modal] p { overflow-wrap: anywhere; }
-[data-task-delete-modal] > footer { flex: none; padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
-[data-task-delete-modal] button { min-height: 44px; min-width: 44px; }
-[data-task-delete-modal] .eyebrow,
-[data-task-delete-modal] .board-task-quiet { color: var(--text-soft); }
-[data-task-delete-modal] .task-delete-confirm {
+:is([data-task-delete-modal], [data-task-cleanup-modal])[open] { display: flex; flex-direction: column; }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) > section { min-height: 0; overflow: auto; }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) p { overflow-wrap: anywhere; }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) > footer { flex: none; padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) button { min-height: 44px; min-width: 44px; }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) .eyebrow,
+:is([data-task-delete-modal], [data-task-cleanup-modal]) .board-task-quiet { color: var(--text-soft); }
+:is([data-task-delete-modal], [data-task-cleanup-action="remove"]) .task-delete-confirm {
   background: color-mix(in srgb, var(--task-lifecycle-danger) 18%, var(--bg));
   border-color: var(--task-lifecycle-danger);
   color: color-mix(in srgb, var(--task-lifecycle-danger) 80%, var(--text));
 }
 [data-task-delete-modal] .task-delete-error { color: color-mix(in srgb, var(--task-lifecycle-danger) 80%, var(--text)); }
-[data-task-delete-modal] [hidden] { display: none; }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) [hidden] { display: none; }
+
+[data-task-cleanup-action="complete"] .board-task-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+[data-task-cleanup-action="complete"] .board-task-primary:hover {
+  background: color-mix(in srgb, var(--accent) 92%, var(--text));
+}
+
+.task-cleanup-technical {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  min-width: 0;
+}
+
+.task-cleanup-technical > summary {
+  align-content: center;
+  cursor: pointer;
+  font-size: 0.78rem;
+  min-height: 44px;
+  padding: 0.5rem;
+}
+
+.task-cleanup-technical > pre {
+  border-top: 1px solid var(--line);
+  color: var(--text-soft);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  max-height: none;
+  overflow: visible;
+  padding: 0.6rem;
+}
+
+[data-task-cleanup-modal] #task-cleanup-summary,
+[data-task-cleanup-modal] #task-cleanup-helper,
+[data-task-cleanup-modal] .task-cleanup-error {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+[data-task-cleanup-modal] .task-cleanup-error { border-inline-start: 2px solid var(--accent); padding-inline-start: 0.5rem; }
 
 .task-lifecycle-status {
   clip-path: inset(50%);
@@ -5067,8 +5114,8 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
 @media (max-width: 600px) {
   .task-lifecycle-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .task-lifecycle-button { width: 100%; }
-  [data-task-delete-modal] > footer { align-items: stretch; flex-direction: column; }
-  [data-task-delete-modal] > footer > button { width: 100%; }
+  :is([data-task-delete-modal], [data-task-cleanup-modal]) > footer { align-items: stretch; flex-direction: column; }
+  :is([data-task-delete-modal], [data-task-cleanup-modal]) > footer > button { width: 100%; }
 }
 
 .task-card-modal h2,

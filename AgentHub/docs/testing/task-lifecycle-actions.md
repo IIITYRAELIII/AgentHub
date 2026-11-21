@@ -39,3 +39,32 @@ test, manual screen-reader review or full accessibility certification.
 UI-001 canonical Task outcomes, SYS-002 retained archive ownership and REL-001
 original command/cleanup authority are preserved. No backend or transport
 protocol is replaced.
+
+## Git cleanup confirmation
+
+The server cleanup preview is a separate mandatory confirmation. Its shared
+dialog uses the canonical delete-dialog shell with an explicit operation scope:
+archiving has an ordinary accent confirmation; deletion retains the local
+danger treatment. Russian summary and Git consequences stay visible outside a
+collapsed technical disclosure. The helper depends on the server's actual
+deletion list. Raw paths, hashes, branch names, unknown kinds and the optional
+server warning remain available in that disclosure with Russian labels.
+The cleanup token is not displayed.
+
+Confirmation locks the modal while its single original request is pending.
+Failure leaves the server error visible with safe cancellation and does not
+create an implicit retry. Custom confirmation adapters retain the same exact
+request/token contract.
+
+Run the focused corrective matrix with:
+
+```sh
+node --test --test-concurrency=1 tests/public/task-cleanup-dialog-dom.test.mjs tests/public/task-cleanup-production.test.mjs tests/public/task-delete-dialog.test.mjs
+```
+
+The matrix covers both actions on Web 1280, WebView 390/520 and Mobile Web
+320/390/430 in Nebula/Orange, including focus, hover, pending, expanded technical
+data, cancellation, errors, short height and enlarged text. Every run creates
+its own mutable directory under ignored `WIP/cleanup-dialog-runs/`. Review
+bundles are copied to a separate frozen directory; subsequent test executions
+never write into that bundle.

@@ -31,8 +31,8 @@
   });
 
   function cleanupValue(value, fallback = "<нет>") {
-    const text = String(value ?? "").trim();
-    return text || fallback;
+    const text = String(value ?? "");
+    return text.trim() ? text : fallback;
   }
 
   function cleanupPaths(title, values) {
@@ -49,65 +49,97 @@
         return item.path ?? [item.name, item.repositoryRoot].filter(Boolean).join(" · ");
       })].join("\n");
     }
-    const lines = [cleanupValue(confirmation.warning, "Подтвердите удаление артефактов Task."), "", "Состояние Task Git:"];
+    const lines = ["Состояние Git задачи:"];
     const workspaces = Array.isArray(preview.workspaces) ? preview.workspaces : [];
-    if (!workspaces.length) lines.push("  <managed worktree отсутствует>");
+    if (!workspaces.length) lines.push("  Управляемая рабочая копия отсутствует");
     for (const [index, workspace] of workspaces.entries()) {
       lines.push(
-        `  Checkout ${index + 1}:`,
+        `  Рабочая копия ${index + 1}:`,
         `    Ветка: ${cleanupValue(workspace.branch)}`,
-        `    Worktree: ${cleanupValue(workspace.projectRoot)}`,
-        `    HEAD: ${cleanupValue(workspace.headCommit)}`,
-        `    Состояние: ${workspace.dirty === true ? "dirty" : "clean"}`,
+        `    Путь рабочей копии: ${cleanupValue(workspace.projectRoot)}`,
+        `    Коммит HEAD: ${cleanupValue(workspace.headCommit)}`,
+        `    Состояние: ${workspace.dirty === true ? "есть изменения" : "без изменений"}`,
         ...cleanupPaths("    Изменённые пути", workspace.changedPaths),
-        ...cleanupPaths("    Untracked пути", workspace.untrackedPaths),
-        ...cleanupPaths("    Игнорируемые данные (сохранить)", workspace.ignoredPaths),
+        ...cleanupPaths("    Неотслеживаемые пути", workspace.untrackedPaths),
+        ...cleanupPaths("    Игнорируемые данные (будут сохранены)", workspace.ignoredPaths),
       );
     }
-    lines.push("", `Общее dirty-состояние: ${preview.dirty === true ? "dirty" : "clean"}`, "", "Результат и публикация:");
+    lines.push("", `Общее состояние Git: ${preview.dirty === true ? "есть изменения" : "без изменений"}`, "", "Результат и публикация:");
     const references = Array.isArray(preview.gitReferences) ? preview.gitReferences : [];
-    if (!references.length) lines.push("  <result commit отсутствует>");
+    if (!references.length) lines.push("  Результирующий коммит отсутствует");
     for (const [index, reference] of references.entries()) {
       lines.push(
         `  Результат ${index + 1}:`,
         `    Репозиторий: ${cleanupValue(reference.projectRoot)}`,
         `    Ветка: ${cleanupValue(reference.branch)}`,
-        `    Result commit: ${cleanupValue(reference.resultCommit)}`,
-        `    Publication state: ${reference.published === true ? "published" : "unpublished"}`,
-        `    Publication revision: ${cleanupValue(reference.publishedRevision)}`,
-        `    Publication generation: ${cleanupValue(reference.publicationGeneration)}`,
+        `    Результирующий коммит: ${cleanupValue(reference.resultCommit)}`,
+        `    Состояние публикации: ${reference.published === true ? "опубликован" : "не опубликован"}`,
+        `    Ревизия публикации: ${cleanupValue(reference.publishedRevision)}`,
+        `    Поколение публикации: ${cleanupValue(reference.publicationGeneration)}`,
       );
     }
     lines.push("", "Будет удалено:");
     const deleting = Array.isArray(preview.deleting) ? preview.deleting : [];
-    if (!deleting.length) lines.push("  - <ничего>");
+    if (!deleting.length) lines.push("  ничего");
     for (const item of deleting) {
       const target = cleanupValue(item.path ?? item.name);
       const repository = cleanupValue(item.repositoryRoot, "");
-      lines.push(`  - [${cleanupValue(item.kind, "artifact")}] ${target}${repository ? ` (repo: ${repository})` : ""}`);
+      lines.push(`  Тип: ${cleanupValue(item.kind, "неизвестно")}`,
+        `  ${item.path != null ? "Путь" : "Имя"}: ${target}`);
+      if (repository) lines.push(`  Репозиторий: ${repository}`);
     }
+    if (confirmation.warning) lines.push("", "Сообщение сервера:", String(confirmation.warning));
     return lines.join("\n");
   }
 
   let dismissCleanupConfirmation = null;
 
-  function showTaskCleanupConfirmation(text, { action, task, remaining = false } = {}) {
-    dismissCleanupConfirmation?.();
+  function showTaskCleanupConfirmation(text, { action, task, deletingCount, remaining, submit } = {}) {
+    if (dismissCleanupConfirmation?.() === false) throw new Error("Дождитесь завершения текущего подтверждения.");
     return new Promise((resolve, reject) => {
+      const removing = action === "board-task-remove";
+      const opener = document.activeElement;
       const dialog = document.createElement("dialog");
       dialog.className = "task-delete-modal";
       dialog.setAttribute("data-task-cleanup-modal", "");
+      dialog.setAttribute("data-task-cleanup-action", removing ? "remove" : "complete");
       dialog.setAttribute("aria-labelledby", "task-cleanup-title");
+      dialog.setAttribute("aria-describedby", "task-cleanup-summary task-cleanup-helper");
+      dialog.tabIndex = -1;
       const section = document.createElement("section");
+      const eyebrow = document.createElement("p");
+      eyebrow.className = "eyebrow";
+      eyebrow.textContent = removing ? "Удаление задачи" : "Закрытие задачи";
       const title = document.createElement("h2");
       title.id = "task-cleanup-title";
-      const label = action === "board-task-remove" ? "Удалить задачу" : "Закрыть задачу";
-      title.textContent = `${label}${task?.taskNumber ? ` ${task.taskNumber}` : ""}?`;
-      if (remaining) title.textContent = "Всё равно закрыть?";
+      const label = removing ? "Удалить задачу" : "Закрыть задачу";
+      const confirmLabel = remaining ? "Да" : label;
+      title.textContent = remaining ? "Всё равно закрыть?"
+        : `${label}${task?.taskNumber ? ` ${task.taskNumber}` : ""}${removing ? " безвозвратно" : ""}?`;
+      const summary = document.createElement("p");
+      summary.id = "task-cleanup-summary";
+      summary.textContent = removing
+        ? "Задача и её карточка будут удалены без возможности восстановления."
+        : "Задача будет закрыта и останется доступной в архиве.";
+      const helper = document.createElement("p");
+      helper.id = "task-cleanup-helper";
+      helper.textContent = deletingCount > 0
+        ? "Будут удалены только Git-артефакты, перечисленные в предпросмотре."
+        : "Git-артефакты не будут удалены.";
+      const technical = document.createElement("details");
+      technical.className = "task-cleanup-technical";
+      technical.open = remaining;
+      const technicalHeading = document.createElement("summary");
+      technicalHeading.textContent = "Технические сведения";
       const preview = document.createElement("pre");
       preview.className = "task-cleanup-preview";
       preview.textContent = text;
-      section.append(title, preview);
+      technical.append(technicalHeading, preview);
+      const errorMessage = document.createElement("p");
+      errorMessage.className = "task-cleanup-error";
+      errorMessage.setAttribute("role", "alert");
+      errorMessage.hidden = true;
+      section.append(eyebrow, title, summary, helper, technical, errorMessage);
       const footer = document.createElement("footer");
       const cancel = document.createElement("button");
       cancel.type = "button";
@@ -116,12 +148,14 @@
       cancel.setAttribute("data-task-cleanup-cancel", "");
       const accept = document.createElement("button");
       accept.type = "button";
-      accept.className = "task-delete-confirm";
-      accept.textContent = remaining ? "Да" : label;
+      accept.className = removing ? "task-delete-confirm" : "board-task-primary";
+      accept.textContent = confirmLabel;
       accept.setAttribute("data-task-cleanup-confirm", "");
       footer.append(cancel, accept);
       dialog.append(section, footer);
       let settled = false;
+      let busy = false;
+      let failed = false;
       let uninstall = () => {};
       const settle = (confirmed) => {
         if (settled) return;
@@ -130,14 +164,55 @@
         if (dismissCleanupConfirmation === dismiss) dismissCleanupConfirmation = null;
         if (dialog.open) dialog.close();
         dialog.remove();
+        if (opener?.isConnected && !opener.disabled) opener.focus();
         resolve(confirmed);
+        return true;
       };
-      const dismiss = () => settle(false);
+      const dismiss = () => {
+        if (busy) { modalOverlays.activateOverlay(dialog); return false; }
+        return settle(false);
+      };
       dismissCleanupConfirmation = dismiss;
       cancel.addEventListener("click", dismiss);
-      accept.addEventListener("click", () => settle(true));
+      accept.addEventListener("click", async () => {
+        if (busy || failed || settled) return;
+        busy = true;
+        dialog.setAttribute("aria-busy", "true");
+        cancel.disabled = accept.disabled = true;
+        technical.inert = true;
+        accept.textContent = removing ? "Удаляю…" : "Закрываю…";
+        dialog.focus();
+        try {
+          await submit();
+          busy = false;
+          settle(true);
+        } catch (error) {
+          busy = false;
+          failed = true;
+          dialog.setAttribute("aria-busy", "false");
+          cancel.disabled = false;
+          technical.inert = false;
+          accept.textContent = confirmLabel;
+          errorMessage.textContent = "Не удалось выполнить действие. Отмените подтверждение и откройте его заново.";
+          preview.textContent += `\n\nОшибка сервера:\n${String(error?.message ?? error)}`;
+          errorMessage.hidden = false;
+          cancel.focus();
+          // The original command has settled as an error. Keep its explanation
+          // visible, but never create an implicit retry with a fresh identity.
+          reject(error);
+        }
+      });
+      dialog.addEventListener("keydown", event => {
+        if (event.key !== "Tab") return;
+        const controls = [technicalHeading, cancel, accept].filter(n => !n.disabled && !n.closest("[inert]"));
+        if (busy || (event.shiftKey && document.activeElement === controls[0])) {
+          event.preventDefault(); (controls.at(-1) ?? dialog).focus();
+        } else if (!event.shiftKey && document.activeElement === controls.at(-1)) {
+          event.preventDefault(); controls[0]?.focus();
+        }
+      });
       dialog.addEventListener("close", dismiss);
-      uninstall = modalOverlays.installDismissibleOverlay({ dialog, close: dismiss });
+      uninstall = modalOverlays.installDismissibleOverlay({ dialog, close: dismiss, returnFocus: () => opener });
       document.body.append(dialog);
       try {
         dialog.showModal();
@@ -166,8 +241,12 @@
       } : {}),
     });
     const remaining = Boolean(confirmation?.preview?.archive && confirmation.preview.remainingArtifacts?.length);
-    if (!await confirm(text, { action, task: confirmation?.task, remaining })) return { confirmed: false, text, result: null };
-    const result = await request(action, confirmedParams);
+    let submission;
+    const submit = () => submission ??= Promise.resolve().then(() => request(action, confirmedParams));
+    if (!await confirm(text, { action, task: structuredClone(confirmation?.task), remaining,
+      deletingCount: Array.isArray(confirmation?.preview?.deleting) ? confirmation.preview.deleting.length : 0,
+      submit })) return { confirmed: false, text, result: null };
+    const result = await submit();
     return { confirmed: true, text, result };
   }
 
