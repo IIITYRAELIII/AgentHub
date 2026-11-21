@@ -1403,7 +1403,24 @@ def verify_retired_worker(retained, pid):
     return worker
 
 
-def ready_process_proof(root, previous, *, before_ms=None):
+def wait_admission_root(root, release_id, entrypoint):
+    # RuntimeHost passes this lexical root to Node in AGENT_HUB_CONFIG.
+    # The running owner uses its config's data directory without realpath.
+    if not entrypoint or not entrypoint.is_absolute():
+        raise RuntimeError("Waiting Hub has no absolute native entry point")
+    launch_root = entrypoint.parent
+    if entrypoint.resolve().parent == root/"releases"/release_id:
+        launch_root = entrypoint.parents[2]
+    if not launch_root.samefile(root):
+        raise RuntimeError("Waiting Hub launch root has different physical ownership")
+    configured_data = _read_record(root/"config.json").get("dataDir")
+    data = Path(os.path.abspath(launch_root/("data" if configured_data is None else configured_data)))
+    if not data.samefile(root/"data") or not data.parent.samefile(root):
+        raise RuntimeError("Waiting Hub data root has different physical ownership")
+    return data.parent
+
+
+def ready_process_proof(root, previous, *, before_ms=None, for_wait=False):
     if (_read_record(root/"current.json").get("current") != previous["releaseId"]
             or file_hash(root/"releases"/previous["releaseId"]/"runtime-manifest.json") != previous["manifestSha256"]):
         raise RuntimeError("Previous installation changed")
@@ -1428,6 +1445,8 @@ def ready_process_proof(root, previous, *, before_ms=None):
         finally: k.CloseHandle(handle)
     if Path(proof[0]["image"]) != root/"AgentHub.RuntimeHost.exe":
         raise RuntimeError("Previous native Host identity differs")
+    if for_wait:
+        return proof, wait_admission_root(root, previous["releaseId"], node_entrypoint(node))
     return proof
 
 
@@ -1712,12 +1731,18 @@ if(action==='wait-probe') {
 } else if(action==='wait-complete') {
   if(!op || op.phase!=='installer-waiting' || op.metadata?.autonomousInstaller?.mode!=='wait')
     throw Error('Not a waiting original');
+  if(process.platform==='win32' && (await fs.realpath(op.metadata.autonomousInstaller.runtimeRoot)).toLowerCase()!==root.toLowerCase())
+    throw Error('Waiting admission root changed before stopping');
   const changed=await mutate(()=>store.transition(id,{phase:'installer-stopping',metadata:{autonomousWait:value}},
     {expectedRevision:op.revision}));
   if(!changed.applied) throw Error('Waiting checkpoint changed'); op=changed.operation;
 } else if(action==='create') {
+  if(value.physicalRuntimeRoot!==undefined && (value.mode!=='wait'
+     || value.physicalRuntimeRoot!==root
+     || (await fs.realpath(value.runtimeRoot)).toLowerCase()!==root.toLowerCase()))
+    throw Error('Waiting admission root is outside the selected runtime');
   if(!op) op=await mutate(()=>store.create({operationId:id,kind:'restart',streamId:'agent-hub-installer',
-    threadId:value.mode && process.platform==='win32'?root.toLowerCase():root,
+    threadId:value.mode && process.platform==='win32'?(value.physicalRuntimeRoot ? value.runtimeRoot : root).toLowerCase():root,
     status:'running',phase:value.mode==='wait'?'installer-waiting':'installer-stopping',metadata:{autonomousInstaller:value}}));
 } else if(action==='resume-prestop' || action==='resume-partialstop') {
   const {isDeepStrictEqual}=await import('node:util');
@@ -1868,6 +1893,7 @@ def autonomous_worker(request_file):
         mode = request["mode"]
         if mode not in INSTALL_MODES: raise ValueError("Missing explicit installation mode")
         wait_process = None
+        admission_root = root
         if mode == "wait":
             # Old APIs cannot promise a fenced drain. Never silently fall back
             # to force; keep the old Hub running and offer the explicit mode.
@@ -1876,7 +1902,7 @@ def autonomous_worker(request_file):
                     or support.get("installerCutover",{}).get("protocol") != 1):
                 raise RuntimeError("This Hub cannot confirm wait-current mode; choose --mode force explicitly")
             wait_process = support.get("process")
-            proof = ready_process_proof(root,previous)
+            proof, admission_root = ready_process_proof(root,previous,for_wait=True)
             if not wait_process or wait_process.get("pid") != proof[1]["pid"]:
                 raise RuntimeError("Waiting endpoint is not the selected native Hub")
         binding = dict(runtimeRoot=str(root),archiveSha256=file_hash(archive),releaseId=descriptor["releaseId"],previous=previous,
@@ -1885,6 +1911,8 @@ def autonomous_worker(request_file):
                        packageManifestSha256=file_hash(package/"package-manifest.json"),
                        storageScope=dict(cache=_directory_identity(cache),worker=dict(pid=os.getpid(),outsideAllJobs=True,**process_identity(k.GetCurrentProcess())),
                                          requestSha256=file_hash(request_file)))
+        if admission_root != root:
+            binding.update(runtimeRoot=str(admission_root),physicalRuntimeRoot=str(root))
         old = read_update_original(root,request["operationId"])
         if request.get("resumePartial"):
             if old != request["resumePartial"]["original"]: raise RuntimeError("Original changed before partial-stop continuation")
@@ -1907,8 +1935,9 @@ def autonomous_worker(request_file):
             waiting = True; stage("waiting-current-turns")
             settled = wait_for_current_turns(lambda: owner("wait-probe"),request["operationId"],wait_process,
                 record=lambda state: stop_trace(dict(stage="waiting-current-turns",state=state)))
-            proof = ready_process_proof(root,previous)
-            if proof[1]["pid"] != wait_process["pid"]: raise RuntimeError("Waiting Hub changed before stop")
+            proof, current_admission_root = ready_process_proof(root,previous,for_wait=True)
+            if proof[1]["pid"] != wait_process["pid"] or current_admission_root != admission_root:
+                raise RuntimeError("Waiting Hub changed before stop")
             owner("wait-complete",dict(process=wait_process,state=settled,oldProcesses=proof))
             waiting = False
         admitted = True; stage("stopping-selected-runtime")

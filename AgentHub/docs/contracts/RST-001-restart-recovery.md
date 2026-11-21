@@ -864,6 +864,10 @@ for exact-process, same-original positive idle. Unknown activity, changed
 identity or unavailable protocol refuses before native retirement; this refusal
 does not restore or stop the old Hub. Old versions lacking fenced drain retain
 the separately explicit force option. They are not reported as safely drained.
+If the verified old Host uses a junction to the selected installation, wait
+uses the running Hub's config-based admission key. The physical installation
+and data directory must match before registration and again before retirement.
+The same original retains the physical root for backup and retention.
 Force uses the existing selected native handles and remains independent of old
 API availability. Neither mode resumes/replays an old provider turn. History,
 queued inputs, native/foreign guards, backup/rollback and real Ready remain.

@@ -29,7 +29,7 @@ async function fixture(t) {
   const store = new MaintenanceOperationStore({ dataDir: data });
   const archive = path.join(base, "borrowed.zip"); await writeFile(archive, "borrowed original must survive");
   const runtime = await installerDirectory(root);
-  async function create(id, { partial = false, unknown = false, historical = false, legacy = false, downloaded = false, creatorScope = false, unprovenPartial = false } = {}) {
+  async function create(id, { partial = false, unknown = false, historical = false, legacy = false, downloaded = false, creatorScope = false, unprovenPartial = false, admissionRoot = root } = {}) {
     const cache = path.join(base, id); await mkdir(cache); await mkdir(path.join(cache, "verified"));
     await writeFile(path.join(cache, "install_release.py"), "verified creator fixture");
     const installerSha256 = (await packageFile(path.join(cache, "install_release.py"))).sha256;
@@ -55,11 +55,12 @@ async function fixture(t) {
     await json(path.join(cache, "request.json"), request);
     const binding = { runtimeRoot: root, releaseId: id, installerSha256, workerPid: worker.pid,
       archiveSha256: "a".repeat(64), packageManifestSha256: (await packageFile(path.join(cache, "verified", "package-manifest.json"))).sha256 };
+    if (admissionRoot !== root) Object.assign(binding, { mode: "wait", runtimeRoot: admissionRoot, physicalRuntimeRoot: root });
     if (downloaded) binding.archiveSha256 = (await packageFile(path.join(cache, "release.zip"))).sha256;
     if (legacy) { delete binding.packageManifestSha256; binding.archiveSha256 = (await packageFile(request.archive)).sha256; }
     if (creatorScope) binding.storageScope = { cache: { path: cache, ...await installerDirectory(cache) }, worker,
       requestSha256: (await packageFile(path.join(cache, "request.json"))).sha256 };
-    let op = store.create({ operationId: id, kind: "restart", streamId: "agent-hub-installer", threadId: root, status: "running",
+    let op = store.create({ operationId: id, kind: "restart", streamId: "agent-hub-installer", threadId: admissionRoot, status: "running",
       createdAt: `2026-01-${id.match(/\d+/)?.[0]?.padStart(2, "0") ?? "01"}T00:00:00Z`, metadata: { autonomousInstaller: binding } });
     const backup = path.join(cache, "backup");
     if (partial) {
@@ -97,6 +98,22 @@ async function fixture(t) {
   }
   return { base, root, store, archive, create, make, drain };
 }
+
+test("wait admission through a junction keeps storage under the physical installation", async t => {
+  const f = await fixture(t);
+  const alias = path.join(f.base, "launch-path");
+  await symlink(f.root, alias, process.platform === "win32" ? "junction" : "dir");
+  const update = await f.create("wait-alias", { admissionRoot: alias, creatorScope: true });
+  assert.equal(update.original.threadId, alias);
+  assert.equal(update.evidence.runtime.file, f.root);
+  const { service } = f.make();
+  await f.drain(service, async () => !(await exists(path.join(update.cache, "verified"))));
+  assert.equal(await exists(update.backup), true);
+  const unbound = structuredClone(update.original);
+  unbound.metadata.autonomousInstaller.physicalRuntimeRoot = f.base;
+  await assert.rejects(sealAutonomousInstallerStorage({ runtimeRoot: f.root, operation: unbound, cache: update.cache }),
+    /installer-storage-origin-unproven/u);
+});
 
 test("six real SQLite backups converge to five; every owned payload retires, borrowed archive/data/history stay", async t => {
   const f = await fixture(t), updates = [];

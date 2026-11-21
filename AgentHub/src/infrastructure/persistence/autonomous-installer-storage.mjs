@@ -10,6 +10,8 @@ import { queryInstallerWorkerRetired } from "./windows-delete-verified-entry.mjs
 
 export const installerStorageDigest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const equalPath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+export const installerPhysicalRuntimeRoot = binding => binding?.mode === "wait"
+  ? binding.physicalRuntimeRoot ?? binding.runtimeRoot : binding?.runtimeRoot;
 const within = (a, b) => { const rel = path.relative(a, b); return !rel || (!path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${path.sep}`)); };
 const safe = name => typeof name === "string" && name && !path.isAbsolute(name)
   && name.split(/[/\\]/u).every(p => p && p !== "." && p !== ".." && !p.includes(":"));
@@ -107,7 +109,7 @@ export async function sealAutonomousInstallerStorage({ runtimeRoot, operation, c
   const worker = JSON.parse(await readFile(path.join(cache, "worker-started.json"), "utf8"));
   const dispatch = binding?.storageScope?.worker ?? JSON.parse(await readFile(path.join(cache, "dispatch.json"), "utf8"));
   if (operation.kind !== "restart" || operation.streamId !== "agent-hub-installer" || !binding
-    || !equalPath(operation.threadId, runtime.file) || !equalPath(binding.runtimeRoot, runtime.file)
+    || !equalPath(operation.threadId, binding.runtimeRoot) || !equalPath(installerPhysicalRuntimeRoot(binding), runtime.file)
     || !equalPath(request.runtimeRoot, runtime.file) || request.operationId !== operation.operationId
     || !sameDevice(request.runtimeIdentity?.dev, runtime.dev) || request.runtimeIdentity?.ino !== runtime.ino
     || request.installerSha256 !== (await packageFile(path.join(cache, "install_release.py"))).sha256
@@ -214,9 +216,9 @@ export async function registerLegacyInstallerCustody({ runtimeRoot, store, previ
   const successor = store.getReadonly(successorOperationId);
   const runtime = await installerDirectory(runtimeRoot), target = path.resolve(preview.target), cache = path.dirname(target);
   if (!isDeepStrictEqual(preview.original, operation) || operation?.status !== "failed" || !installerStorageDisposed(operation)
-    || operation.metadata?.autonomousInstaller?.runtimeRoot?.toLowerCase() !== runtime.file.toLowerCase()
+    || installerPhysicalRuntimeRoot(operation.metadata?.autonomousInstaller)?.toLowerCase() !== runtime.file.toLowerCase()
     || successor?.status !== "succeeded" || successor.outcome !== "succeeded"
-    || successor.metadata?.autonomousInstaller?.runtimeRoot?.toLowerCase() !== runtime.file.toLowerCase()
+    || installerPhysicalRuntimeRoot(successor.metadata?.autonomousInstaller)?.toLowerCase() !== runtime.file.toLowerCase()
     || path.basename(target) !== "backup" || within(runtime.file, target) || within(target, runtime.file)
     || preview.effects !== 0 || !Array.isArray(preview.files) || !Array.isArray(preview.directories))
     throw Error("installer-custody-origin-unproven");

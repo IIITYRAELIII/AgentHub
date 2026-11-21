@@ -92,9 +92,13 @@ class AutonomousInstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             base=Path(temp); root=base/'old-hub'; (root/'data').mkdir(parents=True)
             (root/'data/history-marker').write_text('retained history and input',encoding='utf-8')
+            (root/'config.json').write_text(json.dumps(dict(dataDir='data')),encoding='utf-8')
+            alias=base/'old-hub-alias'
             source=SOURCE.parents[1]; package=base/'package'; package.mkdir()
-            subprocess.run(['node','-e',"require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')",
-                           str(source),str(package/'runtime')],check=True,capture_output=True,creationflags=0x08000000)
+            junction="require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')"
+            for target, link in [(source,package/'runtime'),(root,alias)]:
+                subprocess.run(['node','-e',junction,str(target),str(link)],
+                               check=True,capture_output=True,creationflags=0x08000000)
             imports={name:(source/name).as_uri() for name in [
                 'src/infrastructure/process/desktop-control.mjs','src/infrastructure/persistence/maintenance-operation-store.mjs',
                 'src/application/installer-cutover.mjs','src/application/run-coordinator.mjs']}
@@ -123,7 +127,7 @@ const server=new DesktopControlServer({runtimeRoot:root,protectSecret:async()=>{
 await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
 """
             entry=root/'bot.mjs'; entry.write_text(code,encoding='utf-8')
-            child=subprocess.Popen(['node',str(entry),str(root),json.dumps(imports)],stdout=subprocess.PIPE,
+            child=subprocess.Popen(['node',str(alias/entry.name),str(alias),json.dumps(imports)],stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,encoding='utf-8',creationflags=0x08000000)
             try:
                 deadline=time.monotonic()+10
@@ -140,7 +144,10 @@ await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
                     result=subprocess.run(args,capture_output=True,encoding='utf-8',timeout=10,creationflags=0x08000000)
                     self.assertEqual(result.returncode,0,result.stderr); return json.loads(result.stdout)
                 initial=call('wait-probe'); self.assertEqual(initial['process']['pid'],child.pid)
-                original=call('create',dict(runtimeRoot=str(root),mode='wait'))
+                observed_process=next(row for row in installer.process_snapshot() if row['ProcessId']==child.pid)
+                admission_root=installer.wait_admission_root(root,'legacy',installer.node_entrypoint(observed_process))
+                self.assertEqual(admission_root,alias)
+                original=call('create',dict(runtimeRoot=str(admission_root),physicalRuntimeRoot=str(root),mode='wait'))
                 self.assertEqual(original['phase'],'installer-waiting')
                 def control(action):
                     script='import{callDesktopControl}from '+json.dumps(imports['src/infrastructure/process/desktop-control.mjs'])+";console.log(JSON.stringify(await callDesktopControl(process.argv[1],{},{runtimeRoot:process.argv[2]})));"
@@ -160,6 +167,21 @@ await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
             finally:
                 if child.poll() is None:child.kill(); child.wait(timeout=10)
                 child.stdout.close(); child.stderr.close()
+
+    @unittest.skipUnless(shutil.which('node'), 'Windows junction fixture')
+    def test_wait_admission_root_requires_selected_installation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); root=base/'hub'; foreign=base/'foreign'
+            release=root/'releases/revision'; release.mkdir(parents=True)
+            (root/'data').mkdir(); foreign.mkdir()
+            (release/'agent-hub-main.mjs').write_text('',encoding='utf-8')
+            (root/'config.json').write_text('{}',encoding='utf-8')
+            alias=base/'alias'
+            subprocess.run(['node','-e',"require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')",
+                           str(root),str(alias)],check=True,capture_output=True,creationflags=0x08000000)
+            self.assertEqual(installer.wait_admission_root(root,'revision',alias/'releases/revision/agent-hub-main.mjs'),alias)
+            with self.assertRaisesRegex(RuntimeError,'different physical ownership'):
+                installer.wait_admission_root(root,'revision',foreign/'bot.mjs')
 
     @unittest.skipUnless(shutil.which('node'), 'Real SQLite owner contention fixture')
     def test_ready_checkpoint_waits_for_real_writer_without_replaying_launch_and_keeps_cas(self):
