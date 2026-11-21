@@ -2243,13 +2243,17 @@ def autonomous_main():
         worker=cache/'install_release.py'
         shutil.copyfile(Path(__file__).resolve(),worker)
         if file_hash(worker)!=selection['installerSha256']: raise RuntimeError("Retained installer differs")
+        # A Windows virtual-environment redirector starts another Python
+        # process after Resume. Bind the actual interpreter we already run in.
+        _, _, kernel = native_api()
+        worker_executable = process_identity(kernel.GetCurrentProcess())["image"]
     except (OSError, ValueError, RuntimeError) as error:
         checks = dict(stage="prepare-worker", windowsBuild=sys.getwindowsversion().build,
                       workerIdentityVerified=False, resumeAttempted=False, winerror=getattr(error,"winerror",None))
         record_saved = request_written and retain_worker_dispatch_failure(cache, error, checks, started)
         report_worker_dispatch_failure(selection, checks, record_saved)
     try:
-        proof=independent_worker([sys.executable,'-X','utf8','-B',str(worker),'--autonomous-worker',str(cache/'request.json')],
+        proof=independent_worker([worker_executable,'-X','utf8','-B',str(worker),'--autonomous-worker',str(cache/'request.json')],
                                  cache,clean_installer_environment(),
                                  runtime_root=None if selection.get("resume") or selection.get("resumePartial") else root)
     except WorkerDispatchError as error:

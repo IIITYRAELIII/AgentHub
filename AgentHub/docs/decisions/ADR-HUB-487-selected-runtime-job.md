@@ -18,6 +18,10 @@ If the retire preflight finds a different Host, retain that refusal and skip
 rollback and relaunch. Other recovery after scoped admission keeps the old
 Host identity until the updater starts and pins its own exact replacement.
 
+Dispatch launches the current native Python image. The Windows virtual
+environment launcher redirects to a second process when resumed, which
+cannot satisfy the suspended worker identity.
+
 Retain the existing job-free route and the separate stopped-only installer.
 An unproved runtime, unavailable Job, replaced Host or worker in the selected
 Job still refuses before retirement. Previously retained original operations

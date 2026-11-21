@@ -201,9 +201,12 @@ class AutonomousInstallerTests(unittest.TestCase):
             base=Path(temp); root=base/'hub'; (root/'data').mkdir(parents=True); scratch=base/'scratch'
             archive=base/'package.zip'; archive.write_bytes(b'Not executed: transport selection fixture')
             dispatched=[]
+            _, _, kernel = installer.native_api()
+            native_python = installer.process_identity(kernel.GetCurrentProcess())["image"]
             def dispatch(arguments,cache,environment,*,runtime_root):
                 request=installer._read_record(cache/'request.json')
                 self.assertEqual(runtime_root, root.resolve())
+                self.assertEqual(arguments[0], native_python)
                 self.assertEqual(installer.file_hash(cache/'install_release.py'),installer.file_hash(SOURCE))
                 self.assertEqual(arguments[-1],str(cache/'request.json'))
                 dispatched.append(request)
@@ -211,7 +214,8 @@ class AutonomousInstallerTests(unittest.TestCase):
             for mode in ['wait','force']:
                 args=[str(SOURCE),'--archive',str(archive),'--sha256',installer.file_hash(archive),
                       '--runtime-root',str(root),'--scratch-root',str(scratch),'--mode',mode]
-                with patch.object(sys,'argv',args), patch.object(installer,'independent_worker',side_effect=dispatch):
+                with patch.object(sys,'argv',args), patch.object(sys,'executable',str(base/'venv/python.exe')), \
+                        patch.object(installer,'independent_worker',side_effect=dispatch):
                     installer.autonomous_main()
                 self.assertEqual(dispatched[-1]['mode'],mode)
             self.assertNotEqual(dispatched[0]['operationId'],dispatched[1]['operationId'])
