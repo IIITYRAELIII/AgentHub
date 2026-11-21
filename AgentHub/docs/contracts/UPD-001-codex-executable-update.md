@@ -28,8 +28,9 @@ availability. See ADR-0138.
   invocation, and must have a SHA-256 digest computed from the same file.
 - Authenticode and version results are bound to the accepted bytes by hashing
   immediately before and after signature verification, then hashing again
-  after the bounded version process. Any transition between those observations
-  rejects the identity.
+  after the bounded version process. Verify the complete bundle first and hold
+  its exact files and directories through version and feature probes. Any
+  transition between those observations rejects the identity.
 - Those expensive observations are retained by the executable owner for that
   exact canonical path, source and SHA-256. Unchanged bytes reuse the recorded
   OpenAI signer and version, including after a Hub restart; a path, size or
@@ -86,8 +87,10 @@ availability. See ADR-0138.
   previously background-prepared candidate, including its complete bundle and
   effective features. Unchanged bytes reuse recorded publisher/version trust.
   Missing main/helper files are not usable recorded identities: existing
-  official discovery and canary may select a trusted replacement. Unknown trust
-  failures still refuse. A legacy main-only record is enriched once; an enabled
+  official discovery and canary may select a trusted replacement. A recorded
+  bundle with a definitively rejected member signature follows the same
+  recovery path; the rejected identity cannot supply launch authority. Unknown
+  verification failures still refuse. A legacy main-only record is enriched once; an enabled
   code-mode bundle without exact safe-tool canary evidence must pass that
   strengthened check once before use. This migration ends when all retained
   identities carry their bundle and exact safe-tool proof.
@@ -138,6 +141,18 @@ Runtime health exposes the configured policy, selected active identity,
 last-known-good identity, highest trusted candidate, canary result, deferred or
 blocked reason, and last error. It never exposes auth material or executable
 contents.
+A rejected bundle signature retains the bounded relative member name,
+Authenticode status, publisher-mismatch or signature reason, and attempted
+Codex version separately from the next successful selection. The autonomous
+Windows installer may observe this same rejection before stopping the old
+runtime. If no eligible independently verified candidate remains under the
+existing pin and adoption policy after a complete inspection, the original
+installer receipt records a pre-stop refusal. Incomplete enumeration,
+signature timeouts and unavailable inspection do not establish absence. A positive preflight is availability evidence only; normal
+startup still verifies custody, canary requirements and Ready, with existing
+rollback. The preflight neither runs a compatibility canary nor updates
+the executable selection state (ADR-0017).
+
 Background progress/failure and the prepared identity are separate diagnostics;
 they do not masquerade as a provider initialization failure.
 Successful real initialize reconciles its failed provider startup operation and
