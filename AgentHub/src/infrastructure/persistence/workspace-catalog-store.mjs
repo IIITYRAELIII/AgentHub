@@ -644,9 +644,16 @@ export class WorkspaceCatalogStore {
       this.#database.exec(nested ? `RELEASE SAVEPOINT ${savepoint}` : "COMMIT");
       return result;
     } catch (error) {
-      this.#database.exec(nested
-        ? `ROLLBACK TO SAVEPOINT ${savepoint}; RELEASE SAVEPOINT ${savepoint}`
-        : "ROLLBACK");
+      // SQLite may already have undone the transaction, including its savepoints.
+      if (this.#database.isTransaction) {
+        try {
+          this.#database.exec(nested
+            ? `ROLLBACK TO SAVEPOINT ${savepoint}; RELEASE SAVEPOINT ${savepoint}`
+            : "ROLLBACK");
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], "Workspace catalog rollback failed", { cause: error });
+        }
+      }
       throw error;
     } finally {
       this.#transactionDepth -= 1;

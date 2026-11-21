@@ -130,6 +130,47 @@ test("Workspace catalog startup rolls back schema work on a non-contention error
   assert.equal(f.writer.prepare("PRAGMA quick_check").get().quick_check, "ok");
 });
 
+test("Workspace catalog startup preserves the SQLite error after automatic data rollback", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  f.writer.exec(`
+    UPDATE hub_workspaces SET name = 'Experiments' WHERE system_key = 'experiments';
+    CREATE TRIGGER fixture_refuses_legacy_name BEFORE UPDATE OF name ON hub_workspaces
+    WHEN OLD.system_key = 'experiments' AND NEW.name = 'Other'
+    BEGIN SELECT RAISE(ROLLBACK, 'fixture legacy name refusal'); END;
+  `);
+  const rows = () => f.writer.prepare("SELECT id, name FROM hub_workspaces ORDER BY id").all();
+  const before = rows();
+  const timings = [];
+  await assert.rejects(f.startup.load({ onTiming: timing => timings.push(timing) }),
+    error => error.errcode === 1811 && error.message === "fixture legacy name refusal");
+  assert.deepEqual(rows(), before);
+  assert.equal(timings[0]?.attempts, 1);
+  assert.equal(timings[0]?.outcome, "error");
+  assert.equal(f.writer.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  assert.deepEqual(f.writer.prepare("PRAGMA foreign_key_check").all(), []);
+  f.writer.exec("DROP TRIGGER fixture_refuses_legacy_name");
+  await f.startup.load();
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+});
+
+test("an automatic SQLite rollback unwinds nested catalog savepoints without masking the error", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  await f.startup.load();
+  const existing = f.startup.hierarchy().find(workspace => workspace.name === "Existing Workspace");
+  f.writer.exec(`
+    CREATE TRIGGER fixture_refuses_nested_name BEFORE UPDATE OF name ON hub_workspaces
+    WHEN NEW.name = 'Refused name'
+    BEGIN SELECT RAISE(ROLLBACK, 'fixture nested refusal'); END;
+  `);
+  assert.throws(() => f.startup.transaction(() => {
+    f.startup.createWorkspace({ name: "Uncommitted outer Workspace" });
+    f.startup.transaction(() => f.startup.renameWorkspace(existing.id, "Refused name"));
+  }), error => error.errcode === 1811 && error.message === "fixture nested refusal");
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+  f.startup.createWorkspace({ name: "After rollback" });
+  assert.ok(f.startup.hierarchy().some(workspace => workspace.name === "After rollback"));
+});
+
 test('exact Thread resolution retains current binding and bounded display semantics', async (t) => {
   const store = await fixture(t);
   const first = store.createWorkspaceWithStream({ name: 'First' });
