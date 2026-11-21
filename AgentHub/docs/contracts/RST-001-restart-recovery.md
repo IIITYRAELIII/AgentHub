@@ -881,7 +881,9 @@ unrelated Node processes remain outside its authority.
 
 The same recipient entry also exposes explicit `--offline` for an installation
 already stopped by its user. It checks native process ownership before package
-fetch and uses the existing stopped-only installer for the guarded write. It
+fetch and holds the same per-runtime native mutex as the autonomous installer
+until the stopped-only installer returns. It passes the originally verified
+physical root and rechecks its identity and the selected path before writing. It
 does not run the autonomous worker or start or stop a runtime. A joined,
 never-resumed worker rejected for Job membership can advertise this mode in
 its diagnostic. Retrying the same autonomous original only reads its refusal.

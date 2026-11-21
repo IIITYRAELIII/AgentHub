@@ -9,9 +9,10 @@ its original refusal. Other Windows launch providers do not establish
 independence merely by creating a process.
 
 Expose the existing stopped-only package installer via explicit `--offline`
-in the current distribution entry. Verify that the selected installation is
-stopped before fetching and keep the stopped-only owner's installation lease
-and recheck before mutation. This mode never stops or starts a Hub, and its
+in the current distribution entry. Hold the autonomous installer's mutex for
+the physical root from stopped preflight through installation. Recheck the
+selected path and physical root before passing the original root to the
+stopped-only owner's guarded write. This mode never stops or starts a Hub, and its
 availability never admits a second autonomous attempt.
 
 Relevant evidence is a refusal while the selected application is live, then

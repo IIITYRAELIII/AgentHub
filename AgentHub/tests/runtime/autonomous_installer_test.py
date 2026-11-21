@@ -1,6 +1,7 @@
 """Recipient installer checks. Run: python -m unittest discover -s tests/runtime -p autonomous_installer_test.py"""
 import importlib.util
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, ExitStack, redirect_stderr, redirect_stdout
 from copy import deepcopy
 import io
@@ -12,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from threading import Event
 import time
 import unittest
 from unittest.mock import patch
@@ -75,6 +77,94 @@ class AutonomousInstallerTests(unittest.TestCase):
             report = json.loads(output.getvalue())
             self.assertEqual(report["reason"], "worker-in-job")
             self.assertEqual(report.get("stoppedInstallAvailable", False), joined)
+
+    def test_offline_uses_autonomous_runtime_mutex_for_check_fetch_and_install(self):
+        with tempfile.TemporaryDirectory() as temp, ThreadPoolExecutor(max_workers=1) as pool:
+            base = Path(temp).resolve()
+            root = base / "hub"
+            root.mkdir()
+            scratch = base / "scratch"
+            args = [str(SOURCE), "--offline", "--release", "2.1.14",
+                    "--runtime-root", str(root), "--scratch-root", str(scratch)]
+            acquired, release = Event(), Event()
+
+            def hold_autonomous_mutex():
+                with installer.installer_runtime_mutex(root):
+                    acquired.set()
+                    if not release.wait(10):
+                        raise TimeoutError("Test did not release the installer mutex")
+
+            def verify_other_owner_excluded():
+                with self.assertRaisesRegex(RuntimeError, "Another installer owns this runtime"):
+                    pool.submit(hold_autonomous_mutex).result(timeout=5)
+
+            def fetch(*_):
+                verify_other_owner_excluded()
+                return base / "package.zip", "2.1.14", {"releaseId": "candidate", "sha256": "a" * 64}
+
+            def run(command, **_):
+                if command[1] != "-e":
+                    verify_other_owner_excluded()
+                    self.assertEqual(command[2:], ["install", str(root)])
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(sys, "argv", args), patch.object(installer, "stop_selected") as stopped, \
+                    patch.object(installer, "fetch_release", side_effect=fetch) as fetch_spy, \
+                    patch.object(installer, "extract_verified", return_value={"releaseId": "candidate"}), \
+                    patch.object(installer, "verify_release_descriptor"), patch.object(installer.shutil, "which", return_value="node"), \
+                    patch.object(installer.subprocess, "run", side_effect=run) as node, \
+                    patch.object(installer, "independent_worker", side_effect=AssertionError("offline dispatched a worker")):
+                busy = pool.submit(hold_autonomous_mutex)
+                try:
+                    self.assertTrue(acquired.wait(5))
+                    with self.assertRaisesRegex(RuntimeError, "Another installer owns this runtime"):
+                        installer.autonomous_main()
+                    stopped.assert_not_called()
+                    fetch_spy.assert_not_called()
+                    node.assert_not_called()
+                    self.assertFalse(scratch.exists())
+                finally:
+                    release.set()
+                busy.result(timeout=5)
+                installer.autonomous_main()
+                fetch_spy.assert_called_once()
+                self.assertEqual(node.call_count, 2)
+                pool.submit(hold_autonomous_mutex).result(timeout=5)
+
+    @unittest.skipUnless(shutil.which("node"), "Windows junction fixture")
+    def test_offline_refuses_retargeted_junction_or_replaced_physical_root(self):
+        node_path = shutil.which("node")
+        command = ["-e", "require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')"]
+        for change in ("junction", "root"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp).resolve()
+                root, other, link = (base / name for name in ("original", "other", "selected"))
+                root.mkdir()
+                other.mkdir()
+                subprocess.run([node_path, *command, str(root), str(link)], check=True, capture_output=True)
+                native_run = subprocess.run
+
+                def retarget(*_):
+                    if change == "junction":
+                        link.rmdir()
+                        native_run([node_path, *command, str(other), str(link)], check=True, capture_output=True)
+                    else:
+                        root.rename(base / "previous")
+                        root.mkdir()
+                    return {"releaseId": "candidate"}
+
+                args = [str(SOURCE), "--offline", "--release", "2.1.14",
+                        "--runtime-root", str(link), "--scratch-root", str(base / "scratch")]
+                with patch.object(sys, "argv", args), patch.object(installer, "stop_selected") as stopped, \
+                        patch.object(installer, "fetch_release",
+                                     return_value=(base / "package.zip", "2.1.14", {"releaseId": "candidate", "sha256": "a" * 64})), \
+                        patch.object(installer, "extract_verified", side_effect=retarget), \
+                        patch.object(installer, "verify_release_descriptor"), patch.object(installer.subprocess, "run") as run:
+                    with self.assertRaisesRegex(RuntimeError, "Selected offline runtime root changed"):
+                        installer.autonomous_main()
+                    stopped.assert_called_once_with(root, inspect_only=True)
+                    self.assertEqual(run.call_count, 1)
+                    self.assertEqual(run.call_args.args[0][1], "-e")
 
     def test_explicit_modes_and_cancel_never_default_to_force(self):
         for mode in ['wait','force']:

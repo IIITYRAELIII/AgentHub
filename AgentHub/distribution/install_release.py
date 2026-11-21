@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, ExitStack
 import hashlib
 import http.client
 import json
@@ -683,23 +683,37 @@ def historical_main():
         parser.error("--project-root belongs only to a first installation")
     if os.name != "nt":
         raise RuntimeError("Ready packages currently support Windows x64 only")
-    if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
-        raise ValueError("Runtime must be outside the disposable package scratch root")
     if args.offline:
         root = args.runtime_root.resolve(strict=True)
         _plain_chain(root)
-        if args.scratch_root.resolve().is_relative_to(root):
+        identity = _directory_identity(root)
+        args.scratch_root = args.scratch_root.resolve()
+        if root.is_relative_to(args.scratch_root) or args.scratch_root.is_relative_to(root):
             raise ValueError("Offline scratch must be outside the selected runtime")
-        # The stopped installer rechecks the runtime under its own installation
-        # lease. This early check avoids downloading on a live or unproven root.
-        stop_selected(root, inspect_only=True)
+        with installer_runtime_mutex(root):
+            assert_offline_root(args.runtime_root, root, identity)
+            stop_selected(root, inspect_only=True)
+            return install_recipient_package(args, offline=(root, identity))
+    if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
+        raise ValueError("Runtime must be outside the disposable package scratch root")
     if args.update_status:
         print(json.dumps(update_status(args.runtime_root.resolve(), args.operation_id)))
         return
-    args.scratch_root.mkdir(parents=True, exist_ok=True)
     if args.prepare_update:
+        args.scratch_root.mkdir(parents=True, exist_ok=True)
         prepare_update(args)
         return
+    return install_recipient_package(args)
+
+
+def assert_offline_root(selected, root, identity):
+    _plain_chain(root)
+    if selected.resolve(strict=True) != root or _directory_identity(root) != identity:
+        raise RuntimeError("Selected offline runtime root changed")
+
+
+def install_recipient_package(args, *, offline=None):
+    args.scratch_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="agenthub-package-", dir=windows_filesystem_path(args.scratch_root)) as temporary:
         scratch = Path(temporary)
         archive = args.archive
@@ -735,8 +749,13 @@ def historical_main():
             entry = "\\\\" + entry[8:] if entry.startswith("\\\\?\\UNC\\") else entry[4:]
         # Explicit offline update only; the existing owner checks live/unknown
         # process evidence. No automatic start, stop, autostart or retry.
+        if offline is None:
+            root = args.runtime_root.resolve()
+        else:
+            root, identity = offline
+            assert_offline_root(args.runtime_root, root, identity)
         result = subprocess.run([node, entry,
-                                 "rollback" if args.rollback else "install", str(args.runtime_root.resolve()),
+                                 "rollback" if args.rollback else "install", str(root),
                                  *(["--project-root", str(args.project_root.resolve())] if args.project_root else [])],
                                 check=False, env={k: v for k, v in os.environ.items()
                                                   if not k.startswith("AGENT_HUB_PUBLICATION_")})
@@ -773,6 +792,24 @@ def native_process_error(code, operation):
     error = c.WinError(code)
     error.native_operation = operation
     return error
+
+
+@contextmanager
+def installer_runtime_mutex(root):
+    c, _, k = native_api()
+    name = "Local\\AgentHubInstaller-" + hashlib.sha256(str(root).lower().encode()).hexdigest()
+    mutex = k.CreateMutexW(None, False, name)
+    if not mutex:
+        raise c.WinError(c.get_last_error())
+    try:
+        if k.WaitForSingleObject(mutex, 0) not in (0, 128):
+            raise RuntimeError("Another installer owns this runtime")
+        try:
+            yield
+        finally:
+            k.ReleaseMutex(mutex)
+    finally:
+        k.CloseHandle(mutex)
 
 
 def process_birth(handle):
@@ -1850,13 +1887,12 @@ def continuation_cache(scratch, root, operation_id, installer_sha256):
 
 def autonomous_worker(request_file):
     request = _read_record(request_file); cache = request_file.parent
-    c, w, k = native_api()
+    _, _, k = native_api()
     if not outside_jobs(k.GetCurrentProcess()): raise RuntimeError("Installer worker is in a Job")
     root = Path(request["runtimeRoot"]); _plain_chain(root)
     if _directory_identity(root) != request["runtimeIdentity"]: raise RuntimeError("Selected runtime root changed")
-    mutex = k.CreateMutexW(None, False, "Local\\AgentHubInstaller-"+hashlib.sha256(str(root).lower().encode()).hexdigest())
-    if not mutex: raise c.WinError(c.get_last_error())
-    acquired = False; admitted = False; previous = None; install_started = False; descriptor = None
+    lock = ExitStack()
+    admitted = False; previous = None; install_started = False; descriptor = None
     waiting = False
     retirement_scope = {}
     environment = clean_installer_environment()
@@ -1884,8 +1920,7 @@ def autonomous_worker(request_file):
             raise RuntimeError("Installer owner "+action+" exited "+str(result.returncode))
         return json.loads(result.stdout)
     try:
-        if k.WaitForSingleObject(mutex, 0) not in (0, 128): raise RuntimeError("Another installer owns this runtime")
-        acquired = True
+        lock.enter_context(installer_runtime_mutex(root))
         _write_record(cache/"worker-started.json",dict(pid=os.getpid(),outsideAllJobs=True,**process_identity(k.GetCurrentProcess())))
         stage("verifying-package")
         archive = Path(request["archive"]) if request.get("archive") else None
@@ -2021,10 +2056,11 @@ def autonomous_worker(request_file):
         _write_record(cache/"failure.json",dict(code=type(error).__name__,diagnostic=str(error)[:1000],effectsAdmitted=admitted))
         raise
     finally:
-        log.close()
-        for handle,_ in retirement_scope.get("handles",{}).values(): k.CloseHandle(handle)
-        if acquired: k.ReleaseMutex(mutex)
-        k.CloseHandle(mutex)
+        try:
+            log.close()
+            for handle,_ in retirement_scope.get("handles",{}).values(): k.CloseHandle(handle)
+        finally:
+            lock.close()
 
 
 def autonomous_main():
