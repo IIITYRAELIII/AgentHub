@@ -4155,12 +4155,36 @@ function streamEffectAttributes(tasks) {
   };
 }
 
+let streamFrameId = 0;
+
 function streamEffectLayer(previousCard) {
   const existing = previousCard?.node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
   if (existing) return existing;
+  const outline = `stream-frame-${++streamFrameId}`;
+  const trail = [];
+  // Overlapping strokes end at the same head. The tail grows brighter along
+  // the path itself, including through corners and across the loop seam.
+  const steps = 16;
+  for (let i = 0; i < steps; i += 1) {
+    const start = i * 30 / steps;
+    trail.push(svgEl("use", {
+      href: "#" + outline, class: "stream-run-solid",
+      "stroke-dasharray": `0 ${start} ${30 - start} 70`,
+      "stroke-opacity": 1 / (steps - i),
+    }));
+  }
+  for (let i = 0; i < 6; i += 1) {
+    const start = i * 3;
+    trail.push(svgEl("use", {
+      href: "#" + outline, class: "stream-run-dot",
+      style: `--dot-position: ${start}`,
+      "stroke-opacity": (i + 1) / 6,
+    }));
+  }
   return svgEl("svg", { class: "stream-effect-layer", "aria-hidden": "true" }, [
-    svgEl("rect", { class: "stream-run-track", pathLength: 100, rx: 5 }),
-    svgEl("rect", { class: "stream-maintenance-track", pathLength: 100, rx: 4 }),
+    svgEl("defs", {}, [svgEl("path", { id: outline, class: "stream-frame-outline", pathLength: 100 })]),
+    svgEl("g", { class: "stream-run-track" }, trail),
+    svgEl("path", { class: "stream-maintenance-track", pathLength: 100 }),
     svgEl("line", { class: "stream-ready-strike", x1: "4%", x2: "96%", y1: "calc(100% - 9px)", y2: "calc(100% - 9px)" }),
   ]);
 }
@@ -8535,11 +8559,20 @@ function renderApprovals() {
   });
 }
 
+const queueIconPaths = {
+  steer: "M3 8l5-5 5 5 M3 13l5-5 5 5",
+  pause: "M5.5 3.5v9 M10.5 3.5v9",
+  cancel: "M4 4l8 8 M12 4l-8 8",
+};
+
 function queueActionButton(label, symbol, attributes) {
+  const path = queueIconPaths[symbol];
+  const icon = path ? svgEl("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" }, [
+    svgEl("path", { d: path, "stroke-width": symbol === "pause" ? 3 : 2 }),
+  ]) : symbol;
   return el("button", {
-    type: "button", class: "queue-action", title: label, "aria-label": label,
-    text: symbol, ...attributes,
-  });
+    type: "button", class: "queue-action", title: label, "aria-label": label, ...attributes,
+  }, [icon]);
 }
 
 function renderQueueForTask(taskId, container) {
@@ -8579,7 +8612,7 @@ function renderQueueForTask(taskId, container) {
       if (entry.uploadState) {
         for (const action of entry.uploadState === "paused" ? ["resume", "cancel"] : ["cancel"]) {
           const resume = action === "resume";
-          const button = queueActionButton(resume ? "Продолжить загрузку" : "Отменить отправку", resume ? "▶" : "×", {
+          const button = queueActionButton(resume ? "Продолжить загрузку" : "Отменить отправку", resume ? "▶" : "cancel", {
             [`data-upload-${action}`]: "",
           });
           button.addEventListener("click", () => emit(`message:upload-${action}`, {
@@ -8599,7 +8632,7 @@ function renderQueueForTask(taskId, container) {
         actions.push(retry);
       }
       if (entry.cancellationAvailable) {
-        actions.push(queueActionButton("Отменить", "×", {
+        actions.push(queueActionButton("Отменить", "cancel", {
           "data-action": "queue-remove", "data-queue-id": entry.id,
           "aria-description": "Отменить отложенное сообщение",
         }));
@@ -8610,7 +8643,7 @@ function renderQueueForTask(taskId, container) {
         && entry.attentionRequired === true
         && entry.conflictKind === "message-steer";
       if (!exactSteerDecision) {
-        actions.push(queueActionButton("В текущий ход", "⇈", {
+        actions.push(queueActionButton("В текущий ход", "steer", {
           "data-action": "queue-steer",
           "data-queue-id": entry.id,
           "aria-description": steerAvailable
@@ -8643,7 +8676,7 @@ function renderQueueForTask(taskId, container) {
         const paused = entry.state === "paused";
         const recheck = paused && entry.waitReason === "provider-thread-active";
         const pauseLabel = recheck ? "Проверить снова" : paused ? "Продолжить" : "Пауза";
-        const pauseIcon = recheck ? "↻" : paused ? "▶" : "Ⅱ";
+        const pauseIcon = recheck ? "↻" : paused ? "▶" : "pause";
         actions.push(queueActionButton(pauseLabel, pauseIcon, {
           "data-action": paused ? "queue-resume" : "queue-pause",
           "data-queue-id": entry.id,
@@ -8665,7 +8698,7 @@ function renderQueueForTask(taskId, container) {
           }));
         }
       }
-      actions.push(queueActionButton("Отменить", "×", {
+      actions.push(queueActionButton("Отменить", "cancel", {
         "data-action": "queue-remove", "data-queue-id": entry.id,
         "aria-description": "Отменить отложенное сообщение",
       }));

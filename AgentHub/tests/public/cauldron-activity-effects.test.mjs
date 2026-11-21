@@ -106,6 +106,45 @@ async function evidence(name, bytes) {
   if (directory) { await mkdir(directory, { recursive: true }); await writeFile(join(directory, name), bytes); }
 }
 
+test("Cauldron: solid and dotted paths follow the painted tile through its corner", async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } });
+    await open(page);
+    for (const selector of [TAB, RAIL]) {
+      const card = page.locator(selector);
+      for (const dotted of [false, true]) {
+        await card.evaluate((node, dotted) => node.toggleAttribute("data-interstream-run", dotted), dotted);
+        await frames(page);
+        const distances = await card.evaluate(node => {
+          const tile = node.matches(".activity-stream-item") ? node : node.querySelector(".stream-tab-card");
+          const box = tile.getBoundingClientRect();
+          const style = getComputedStyle(tile);
+          const rim = getComputedStyle(tile, "::after");
+          const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(rim.right);
+          const top = box.top + parseFloat(style.borderTopWidth) + parseFloat(rim.top);
+          // Sample the center of the grey band in tile-frame.svg's 16-unit corner slice.
+          const scale = parseFloat(rim.borderImageWidth) / 16;
+          const targets = [[18, 4.5], [7.5, 7.5], [4.5, 18]]
+            .map(([x, y]) => ({ x: right - x * scale, y: top + y * scale }));
+          const path = node.querySelector(".stream-frame-outline");
+          const matrix = path.ownerSVGElement.getScreenCTM().multiply(path.transform.baseVal.consolidate().matrix);
+          const length = path.getTotalLength();
+          const nearest = targets.map(() => Infinity);
+          for (let offset = 0; offset < length; offset += .25) {
+            const sample = path.getPointAtLength(offset).matrixTransform(matrix);
+            targets.forEach(({ x, y }, index) => {
+              nearest[index] = Math.min(nearest[index], Math.hypot(sample.x - x, sample.y - y));
+            });
+          }
+          return nearest;
+        });
+        assert.ok(distances.every(value => value < .6), selector + " tile-edge distances " + distances);
+      }
+    }
+  } finally { await browser.close(); }
+});
+
 test("Meadow: dotted ready and compaction tracks contrast with a sunlit background", async () => {
   const browser = await launch();
   try {
@@ -229,5 +268,49 @@ test("Cauldron: rail keeps node/finite-final identity and idle/reduced-motion ru
     assert.equal(await page.locator(RAIL).evaluate((node) => node.getAnimations({ subtree: true }).length), 0);
     await page.locator(RAIL).click();
     assert.equal(await page.locator(RAIL).getAttribute("aria-pressed"), "true", "status paint must leave the original button clickable");
+  } finally { await browser.close(); }
+});
+
+test("The head leads a fading trail and the lower ready line fades at both ends", async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } });
+    await open(page);
+    await page.locator("[data-theme-select]").selectOption("nexus", { force: true });
+    await setting(page, "streamStatusEffect", "static");
+    await publish(page, { running: true, unread: true, revision: 1 });
+    const card = page.locator('.task-workspace-item[data-running]').first();
+    const probes = await card.evaluate(node => {
+      const layer = node.querySelector(".stream-effect-layer");
+      const frame = node.getBoundingClientRect();
+      const line = node.querySelector(".stream-ready-strike").getBoundingClientRect();
+      const path = node.querySelector(".stream-frame-outline");
+      const matrix = layer.getScreenCTM().multiply(path.transform.baseVal.consolidate().matrix);
+      const trail = [.025, .15, .28].map(fraction => {
+        const p = path.getPointAtLength(path.getTotalLength() * fraction).matrixTransform(matrix);
+        return [p.x - frame.left, p.y - frame.top];
+      });
+      const ready = [.04, .5, .96].map(fraction => [line.left + line.width * fraction - frame.left, line.top - frame.top]);
+      return [...trail, ...ready];
+    });
+    const painted = await card.screenshot();
+    await card.locator(".stream-effect-layer").evaluate(node => { node.style.visibility = "hidden"; });
+    const background = await card.screenshot();
+    const samples = await page.evaluate(async ({ pngs, probes }) => {
+      const rasters = await Promise.all(pngs.map(async png => {
+        const bitmap = await createImageBitmap(await (await fetch("data:image/png;base64," + png)).blob());
+        const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        return ctx;
+      }));
+      return probes.map(([x, y]) => {
+        const [a, b] = rasters.map(ctx => ctx.getImageData(Math.round(x) - 1, Math.round(y) - 1, 3, 3).data);
+        return a.reduce((max, channel, i) => i % 4 === 3 ? max : Math.max(max, Math.abs(channel - b[i])), 0);
+      });
+    }, { pngs: [painted, background].map(bytes => bytes.toString("base64")), probes });
+    const [tail, body, head, left, center, right] = samples;
+    assert.ok(tail < body && body < head, `trail intensity: ${samples}`);
+    assert.ok(center > 2 * Math.max(left, right) && center > 10, `ready intensity: ${samples}`);
   } finally { await browser.close(); }
 });
