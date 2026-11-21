@@ -141,7 +141,7 @@ test("Ready strike remains visible on every theme", async () => {
       await frames(page);
       const card = page.locator(RAIL);
       const eyes = await page.locator(".activity-read-button svg").evaluateAll(nodes =>
-        nodes.map(node => getComputedStyle(node).color));
+        nodes.map(node => getComputedStyle(node.querySelector("path")).fill));
       assert.equal(eyes.length, 2);
       for (const selector of [TAB, RAIL]) {
         const target = page.locator(selector);
