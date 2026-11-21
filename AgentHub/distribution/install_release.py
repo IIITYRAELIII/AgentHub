@@ -663,6 +663,7 @@ def historical_main():
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--scratch-root", type=Path, required=True, help="Private temporary area on the intended volume")
     parser.add_argument("--rollback", action="store_true")
+    parser.add_argument("--offline", action="store_true", help="Install into a fully stopped Hub without starting a worker")
     parser.add_argument("--inspect-package", action="store_true", help="Verify/extract public input only; no runtime effect")
     parser.add_argument("--prepare-update", action="store_true", help="Admit one exact package update through the existing runtime owner")
     parser.add_argument("--update-status", action="store_true", help="Read the exact original without replaying effects")
@@ -673,7 +674,7 @@ def historical_main():
         parser.error("--sha256 is required with --url or --archive")
     if args.sha256 and not re.fullmatch(r"[0-9a-f]{64}", args.sha256):
         parser.error("--sha256 must be 64 lowercase hexadecimal characters")
-    if sum((args.rollback, args.inspect_package, args.prepare_update, args.update_status)) > 1:
+    if sum((args.rollback, args.inspect_package, args.prepare_update, args.update_status, args.offline)) > 1:
         parser.error("Choose one installer operation")
     if args.prepare_update or args.update_status:
         if not args.release or args.release == "latest" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.operation_id or ""):
@@ -684,6 +685,14 @@ def historical_main():
         raise RuntimeError("Ready packages currently support Windows x64 only")
     if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
         raise ValueError("Runtime must be outside the disposable package scratch root")
+    if args.offline:
+        root = args.runtime_root.resolve(strict=True)
+        _plain_chain(root)
+        if args.scratch_root.resolve().is_relative_to(root):
+            raise ValueError("Offline scratch must be outside the selected runtime")
+        # The stopped installer rechecks the runtime under its own installation
+        # lease. This early check avoids downloading on a live or unproven root.
+        stop_selected(root, inspect_only=True)
     if args.update_status:
         print(json.dumps(update_status(args.runtime_root.resolve(), args.operation_id)))
         return
@@ -895,6 +904,8 @@ def report_worker_dispatch_failure(selection, checks, record_saved):
                   operationId=selection["operationId"], installerSha256=selection["installerSha256"],
                   mechanism="Win32_Process.Create", failureRecordSaved=record_saved,
                   stage=stage, reason=reason)
+    if reason == "worker-in-job" and checks.get("workerJoined") is True and checks.get("resumeAttempted") is False:
+        report["stoppedInstallAvailable"] = True
     for key in ("callerOutsideAllJobs", "workerIdentityVerified", "workerOutsideAllJobs",
                 "workerJoined", "resumeAttempted"):
         value = checks.get(key)
@@ -2038,7 +2049,14 @@ def autonomous_main():
     parser.add_argument("--resume-prestop",action="store_true",help="Continue the exact published pre-stop refusal, retaining its UNKNOWN history")
     parser.add_argument("--resume-partialstop",action="store_true",help="Continue the bound d148 partial-stop failure after previous Ready is restored")
     parser.add_argument("--inspect-package",action="store_true")
+    parser.add_argument("--offline",action="store_true",
+                        help="Install after Hub is fully stopped, without launching a worker or starting Hub")
     args=parser.parse_args()
+    if args.offline:
+        if (args.mode or args.operation_id or args.inspect_package or args.prepare_update or args.update_status
+                or args.resume_prestop or args.resume_partialstop):
+            parser.error("--offline is separate from autonomous installation, continuation and readback")
+        return historical_main()
     if args.inspect_package: return historical_main()
     if os.name!="nt": raise RuntimeError("This installer requires Windows")
     root=args.runtime_root.resolve(strict=True); _plain_chain(root)

@@ -873,11 +873,18 @@ API availability. Neither mode resumes/replays an old provider turn. History,
 queued inputs, native/foreign guards, backup/rollback and real Ready remain.
 
 The standalone recipient installer supersedes the legacy Enter/manual-stop
-window above. The requested update explicitly permits force stopping the
-selected installation and its active work. It first retains its input outside
+window above. Explicit force permits stopping the selected installation and
+its active work. The autonomous installer first retains its input outside
 the runtime and proves its worker is outside all old Jobs. Installed API/handoff
 availability and stdin are not admission requirements. Other installations and
 unrelated Node processes remain outside its authority.
+
+The same recipient entry also exposes explicit `--offline` for an installation
+already stopped by its user. It checks native process ownership before package
+fetch and uses the existing stopped-only installer for the guarded write. It
+does not run the autonomous worker or start or stop a runtime. A joined,
+never-resumed worker rejected for Job membership can advertise this mode in
+its diagnostic. Retrying the same autonomous original only reads its refusal.
 
 ADR-HUB-477 replaces only this recipient's desktop-parent creation with local
 Windows `Win32_Process.Create`, using explicit breakaway and suspended creation.

@@ -35,6 +35,47 @@ def foreign_layout(root, entries):
 
 @unittest.skipUnless(os.name == "nt", "Windows recipient installer")
 class AutonomousInstallerTests(unittest.TestCase):
+    def test_explicit_offline_install_uses_stopped_owner_without_worker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp).resolve()
+            root = base / "hub"
+            root.mkdir()
+            archive = base / "package.zip"
+            archive.write_bytes(b"verified-input fixture")
+            options = [str(SOURCE), "--offline", "--runtime-root", str(root), "--scratch-root", str(base / "scratch"),
+                       "--archive", str(archive), "--sha256", installer.file_hash(archive)]
+            with patch.object(sys, "argv", options), patch.object(installer, "stop_selected") as stopped, \
+                    patch.object(installer, "extract_verified", return_value={"releaseId": "candidate"}) as extract, \
+                    patch.object(installer.shutil, "which", return_value="node"), \
+                    patch.object(installer.subprocess, "run", side_effect=[None, subprocess.CompletedProcess([], 0)]) as run, \
+                    patch.object(installer, "independent_worker", side_effect=AssertionError("offline dispatched a worker")):
+                stopped.side_effect = RuntimeError("Hub still running")
+                with self.assertRaisesRegex(RuntimeError, "Hub still running"):
+                    installer.autonomous_main()
+                extract.assert_not_called()
+                run.assert_not_called()
+                stopped.side_effect = None
+                installer.autonomous_main()
+                stopped.assert_called_with(root, inspect_only=True)
+                extract.assert_called_once()
+                self.assertEqual(run.call_args.args[0][2:], ["install", str(root)])
+            for conflict in [["--mode", "force"], ["--update-status"], ["--operation-id", "old-attempt"]]:
+                with patch.object(sys, "argv", options + conflict), redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit):
+                    installer.autonomous_main()
+
+    def test_joined_worker_job_refusal_advertises_separate_stopped_install(self):
+        selection = {"operationId": "same-update", "installerSha256": "a" * 64}
+        checks = {"stage": "worker-job-check", "workerOutsideAllJobs": False, "workerJoined": True,
+                  "resumeAttempted": False}
+        for joined in (True, False):
+            output = io.StringIO()
+            with redirect_stderr(output), self.assertRaises(SystemExit):
+                installer.report_worker_dispatch_failure(selection, {**checks, "workerJoined": joined}, True)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["reason"], "worker-in-job")
+            self.assertEqual(report.get("stoppedInstallAvailable", False), joined)
+
     def test_explicit_modes_and_cancel_never_default_to_force(self):
         for mode in ['wait','force']:
             self.assertEqual(installer.choose_install_mode(mode),mode)
