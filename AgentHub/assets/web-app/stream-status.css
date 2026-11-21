@@ -101,11 +101,20 @@
   height: 1.6rem;
   padding: .15rem;
   background: var(--bg);
-  background: color-mix(in srgb, contrast-color(var(--accent)) 92%, var(--bg));
   border: 1px solid var(--line);
   border-radius: var(--radius-chip);
   color: var(--accent);
   cursor: pointer;
+}
+@supports (color: contrast-color(red)) {
+  .activity-read-button {
+    background: color-mix(in srgb, contrast-color(var(--accent)) 92%, var(--bg));
+  }
+}
+@supports not (color: contrast-color(red)) {
+  :is([data-theme="gothic"], [data-theme="bespin"], [data-theme="jedi-archives"]) .activity-read-button {
+    background: var(--text);
+  }
 }
 .activity-read-button svg { width: 100%; height: 100%; }
 .activity-section-head:has(.activity-read-button) { justify-content: flex-start; gap: .25rem; }

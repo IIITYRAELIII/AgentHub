@@ -143,6 +143,16 @@ test("Ready strike remains visible on every theme", async () => {
       const eyes = await page.locator(".activity-read-button svg").evaluateAll(nodes =>
         nodes.map(node => getComputedStyle(node.querySelector("path")).fill));
       assert.equal(eyes.length, 2);
+      const opaque = await page.locator(".activity-read-button").evaluateAll(buttons => {
+        const ctx = new OffscreenCanvas(1, 1).getContext("2d");
+        return buttons.every(button => {
+          ctx.clearRect(0, 0, 1, 1);
+          ctx.fillStyle = getComputedStyle(button).backgroundColor;
+          ctx.fillRect(0, 0, 1, 1);
+          return ctx.getImageData(0, 0, 1, 1).data[3] === 255;
+        });
+      });
+      assert.ok(opaque, theme.id + ": opaque read button backgrounds");
       for (const selector of [TAB, RAIL]) {
         const target = page.locator(selector);
         const clearance = await target.evaluate(node => {
