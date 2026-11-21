@@ -6840,279 +6840,6 @@ html[data-surface="mobile"]
   border-color: var(--accent-line);
 }
 
-:root[data-stream-status-style="fill"]:not([data-stream-status-effect="off"])
-  .task-workspace-item > *,
-:root[data-stream-status-style="fill"]:not([data-stream-status-effect="off"])
-  .stream-tab-card > * {
-  position: relative;
-  z-index: 1;
-}
-
-/* Спокойный: неподвижная сигнальная точка во время хода и зафиксированная
-   верхняя риска после ответа. */
-:root[data-stream-status-effect="calm"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="calm"] .stream-tab[data-running] .stream-tab-status-layer::before {
-  background: var(--accent);
-  border-radius: 50%;
-  box-shadow: 0 0 0.48rem color-mix(in srgb, var(--accent) 58%, transparent);
-  content: "";
-  height: 0.34rem;
-  opacity: 0.78;
-  pointer-events: none;
-  position: absolute;
-  right: 0.48rem;
-  top: calc(50% - 0.17rem);
-  width: 0.34rem;
-}
-
-:root[data-stream-status-effect="calm"] .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-effect="calm"] .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
-  background: linear-gradient(90deg, transparent, var(--accent) 20%, var(--accent) 80%, transparent);
-  content: "";
-  height: 1.5px;
-  inset: 0 0 auto;
-  opacity: 0.82;
-  pointer-events: none;
-  position: absolute;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .task-workspace-item[data-running]::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-running] .stream-tab-status-layer::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
-  background: var(--accent);
-  border-radius: inherit;
-  box-shadow: none;
-  height: auto;
-  inset: 0;
-  opacity: 0.08;
-  width: auto;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
-  opacity: 0.13;
-}
-
-/* Импульс: сигнал проходит по контуру, а готовый ответ дважды отвечает
-   коротким маяком и остаётся со спокойной световой отметкой. */
-:root[data-stream-status-effect="impulse"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-status-layer::after {
-  animation: stream-running-wave 2.2s linear infinite;
-  background: linear-gradient(90deg, transparent 0%, var(--accent) 44%, var(--accent) 56%, transparent 100%);
-  border-radius: inherit;
-  content: "";
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 70%, transparent));
-  inset: -1px;
-  padding: 4px;
-  pointer-events: none;
-  position: absolute;
-  transform: translateX(-110%);
-  width: 58%;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-}
-
-:root[data-stream-status-effect="impulse"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
-  --stream-status-peak: 1;
-  border: 2px solid var(--accent);
-  border-radius: inherit;
-  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 45%, transparent);
-  content: "";
-  inset: -1px;
-  opacity: 0.5;
-  pointer-events: none;
-  position: absolute;
-}
-
-:root[data-stream-status-effect="impulse"]
-  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
-:root[data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::before {
-  animation: stream-answer-ready 1.45s ease-out 2;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .task-workspace-item[data-running]::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .stream-tab[data-running] .stream-tab-status-layer::after {
-  filter: none;
-  inset: 0;
-  opacity: 0.34;
-  padding: 0;
-  -webkit-mask: none;
-  -webkit-mask-composite: initial;
-  mask: none;
-  mask-composite: initial;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
-  --stream-status-peak: 0.42;
-  background: var(--accent);
-  border: 0;
-  box-shadow: none;
-  inset: 0;
-  opacity: 0.26;
-}
-
-/* Сканер: узкий луч проверяет канал; готовность фиксируется быстрой
-   центральной развёрткой, которая не продолжает мигать. */
-:root[data-stream-status-effect="scanner"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-status-layer::after {
-  animation: stream-scanner-pass 1.85s linear infinite;
-  background: linear-gradient(90deg, transparent 0%, var(--accent) 40%, var(--accent) 60%, transparent 100%);
-  border-radius: inherit;
-  content: "";
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 78%, transparent));
-  inset: -1px;
-  opacity: 1;
-  padding: 4px;
-  pointer-events: none;
-  position: absolute;
-  transform: translateX(-145%);
-  width: 30%;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-}
-
-:root[data-stream-status-style="edge"][data-stream-status-effect="impulse"]
-  .task-workspace-item[data-running]::after,
-:root[data-stream-status-style="edge"][data-stream-status-effect="impulse"]
-  .stream-tab[data-running] .stream-tab-status-layer::after,
-:root[data-stream-status-style="edge"][data-stream-status-effect="scanner"]
-  .task-workspace-item[data-running]::after,
-:root[data-stream-status-style="edge"][data-stream-status-effect="scanner"]
-  .stream-tab[data-running] .stream-tab-status-layer::after {
-  padding: 0;
-  -webkit-mask:
-    linear-gradient(#000 0 0) top / 100% 2px no-repeat,
-    linear-gradient(#000 0 0) bottom / 100% 2px no-repeat;
-  -webkit-mask-composite: source-over;
-  mask:
-    linear-gradient(#000 0 0) top / 100% 2px no-repeat,
-    linear-gradient(#000 0 0) bottom / 100% 2px no-repeat;
-  mask-composite: add;
-}
-
-:root[data-stream-status-effect="scanner"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  background: linear-gradient(90deg, transparent, var(--accent) 14%, var(--accent) 86%, transparent);
-  border-radius: 2px;
-  box-shadow: 0 0 9px color-mix(in srgb, var(--accent) 55%, transparent);
-  content: "";
-  height: 3px;
-  inset: calc(50% - 1.5px) 6% auto;
-  opacity: 1;
-  pointer-events: none;
-  position: absolute;
-  transform: scaleX(1);
-}
-
-:root[data-stream-status-effect="scanner"]
-  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
-:root[data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::after {
-  animation: stream-scanner-lock 0.72s ease-out 2;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .task-workspace-item[data-running]::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .stream-tab[data-running] .stream-tab-status-layer::after {
-  filter: none;
-  inset: 0;
-  opacity: 0.28;
-  padding: 0;
-  -webkit-mask: none;
-  -webkit-mask-composite: initial;
-  mask: none;
-  mask-composite: initial;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
-  background: var(--accent);
-  border-radius: inherit;
-  content: "";
-  inset: 0;
-  opacity: 0.26;
-  pointer-events: none;
-  position: absolute;
-}
-
-/* Энергия: ход циклически набирает заряд слева направо; после ответа заряд
-   дважды расширяется и остаётся заполненным до открытия Stream. */
-:root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before,
-:root[data-stream-status-effect="energy"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 46%, transparent), var(--accent));
-  border-radius: 3px;
-  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 50%, transparent);
-  content: "";
-  height: 5px;
-  inset: auto 0 0;
-  opacity: 1;
-  pointer-events: none;
-  position: absolute;
-  transform: scaleX(1);
-  transform-origin: left center;
-}
-
-:root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before {
-  animation: stream-energy-charge 2.65s cubic-bezier(0.22, 0.65, 0.3, 1) infinite;
-}
-
-:root[data-stream-status-effect="energy"]
-  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
-:root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::before {
-  animation: stream-energy-ready 0.92s ease-out 2;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .task-workspace-item[data-running]::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-running] .stream-tab-status-layer::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
-  border-radius: inherit;
-  box-shadow: none;
-  height: auto;
-  inset: 0;
-  opacity: 0.28;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
-  opacity: 0.4;
-}
-
 /* Верхняя desktop-оболочка едина для всех тем. Shell применяет геометрию и
    разрешает темам выбирать только объявленные ниже радиусы и зазоры токенами. */
 @media (min-width: 860px) {
@@ -9297,41 +9024,41 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   margin-left: auto;
 }
 
-.queue-accept,
-.queue-steer,
-.queue-edit,
-.queue-move,
-.queue-pause {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+.queue-action {
+  align-items: center;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
   border: 1px solid var(--accent-line);
   border-radius: var(--radius-chip);
-  color: var(--text-soft);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.7rem;
-  padding: 0.2rem 0.55rem;
-}
-
-.queue-accept:hover,
-.queue-steer:hover,
-.queue-edit:hover,
-.queue-move:hover:not(:disabled),
-.queue-pause:hover {
+  box-sizing: border-box;
   color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 1rem;
+  height: 1.65rem;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 1.65rem;
 }
 
-.queue-move {
-  min-width: 1.7rem;
-  padding-inline: 0.35rem;
+.queue-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
 }
 
-.queue-steer:disabled,
-.queue-move:disabled {
+.queue-action:disabled {
   cursor: not-allowed;
   opacity: 0.52;
 }
 
-.queue-remove,
+.queue-action[data-action="queue-remove"],
+.queue-action[data-upload-cancel] {
+  color: oklch(from var(--text) clamp(.42, l, .76) .2 25);
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
 .attachment-remove,
 .annotation-remove {
   background: transparent;
@@ -9344,19 +9071,11 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   padding: 0.1rem 0.3rem;
 }
 
-.queue-remove:hover,
 .attachment-remove:hover,
 .annotation-remove:hover {
   color: #ff9d9d;
 }
 
-.queue-remove {
-  border: 1px solid color-mix(in srgb, #ff9d9d 38%, transparent);
-  border-radius: var(--radius-chip);
-  font-size: 0.7rem;
-  line-height: normal;
-  padding: 0.2rem 0.55rem;
-}
 
 /* ======================================================= композер === */
 
