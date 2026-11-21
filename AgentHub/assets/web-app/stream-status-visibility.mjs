@@ -32,6 +32,28 @@ function contourPath(width, height, corners, cut, inset) {
   ].join(" ");
 }
 
+// A theme may paint its visible frame on a pseudo-element inside the button.
+// Read its actual containing box and insets so compact or fixed-width tabs
+// keep the same outline as their ceramic tile.
+function paintedTileFrame(card, layer, owner) {
+  const tile = owner === "content" ? card.querySelector(":scope > .stream-tab-card") : card;
+  if (!tile) return null;
+  const frame = getComputedStyle(tile, "::after");
+  if (frame.content === "none") return null;
+  const box = tile.getBoundingClientRect();
+  const viewport = layer.getBoundingClientRect();
+  const style = getComputedStyle(tile);
+  const left = parseFloat(style.borderLeftWidth) + parseFloat(frame.left);
+  const top = parseFloat(style.borderTopWidth) + parseFloat(frame.top);
+  return {
+    x: box.left - viewport.left + left, y: box.top - viewport.top + top,
+    width: box.width - left - parseFloat(style.borderRightWidth) - parseFloat(frame.right),
+    height: box.height - top - parseFloat(style.borderBottomWidth) - parseFloat(frame.bottom),
+    cut: parseFloat(frame.getPropertyValue("--stream-frame-cut")),
+    edge: parseFloat(frame.getPropertyValue("--stream-frame-edge")),
+  };
+}
+
 function fitContour(card) {
   const layer = card.querySelector(":scope > .stream-effect-layer");
   if (!layer) return;
@@ -45,13 +67,17 @@ function fitContour(card) {
     .map(corner => Number.parseFloat(style[`border${corner}Radius`]));
   const left = Number.parseFloat(style.borderLeftWidth);
   const top = Number.parseFloat(style.borderTopWidth);
-  const outerWidth = width + left + Number.parseFloat(style.borderRightWidth);
-  const outerHeight = height + top + Number.parseFloat(style.borderBottomWidth);
-  // Absolute children start at the padding edge, including on thick image borders.
-  const transform = `translate(${-left} ${-top})`;
-  for (const [path, inset] of [[outline, card.hasAttribute("data-interstream-run") ? 1.75 : 1],
-    [layer.querySelector(".stream-maintenance-track"), 4.5]]) {
-    const d = contourPath(outerWidth, outerHeight, corners, cut, inset);
+  const tileOwner = style.getPropertyValue("--stream-frame-owner").trim();
+  const frame = (tileOwner && paintedTileFrame(card, layer, tileOwner)) || {
+    x: -left, y: -top,
+    width: width + left + Number.parseFloat(style.borderRightWidth),
+    height: height + top + Number.parseFloat(style.borderBottomWidth),
+    cut, edge: 0,
+  };
+  const transform = `translate(${frame.x} ${frame.y})`;
+  const runInset = Math.max(frame.edge, card.hasAttribute("data-interstream-run") ? 1.75 : 1);
+  for (const [path, inset] of [[outline, runInset], [layer.querySelector(".stream-maintenance-track"), 4.5]]) {
+    const d = contourPath(frame.width, frame.height, corners, frame.cut, inset);
     if (path.getAttribute("transform") !== transform) path.setAttribute("transform", transform);
     if (path.getAttribute("d") !== d) path.setAttribute("d", d);
   }
@@ -84,7 +110,8 @@ function start() {
   new MutationObserver(records => {
     for (const record of records) {
       if (record.type === "attributes") {
-        fitContour(record.target);
+        if (record.attributeName === "data-stream-card-width-mode") forCards(record.target, fitContour);
+        else fitContour(record.target);
         continue;
       }
       for (const node of record.removedNodes) {
@@ -94,7 +121,7 @@ function start() {
         if (node instanceof HTMLElement && node.isConnected) forCards(node, observe);
       }
     }
-  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-interstream-run"] });
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-interstream-run", "data-stream-card-width-mode"] });
   // A theme switch can change just the corners without resizing the card.
   new MutationObserver(() => forCards(document, fitContour)).observe(document.documentElement, {
     attributes: true, attributeFilter: ["data-theme", "data-view", "data-surface"],

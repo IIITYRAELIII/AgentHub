@@ -106,6 +106,45 @@ async function evidence(name, bytes) {
   if (directory) { await mkdir(directory, { recursive: true }); await writeFile(join(directory, name), bytes); }
 }
 
+test("Cauldron: solid and dotted paths follow the painted tile through its corner", async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } });
+    await open(page);
+    for (const selector of [TAB, RAIL]) {
+      const card = page.locator(selector);
+      for (const dotted of [false, true]) {
+        await card.evaluate((node, dotted) => node.toggleAttribute("data-interstream-run", dotted), dotted);
+        await frames(page);
+        const distances = await card.evaluate(node => {
+          const tile = node.matches(".activity-stream-item") ? node : node.querySelector(".stream-tab-card");
+          const box = tile.getBoundingClientRect();
+          const style = getComputedStyle(tile);
+          const rim = getComputedStyle(tile, "::after");
+          const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(rim.right);
+          const top = box.top + parseFloat(style.borderTopWidth) + parseFloat(rim.top);
+          // Sample the center of the grey band in tile-frame.svg's 16-unit corner slice.
+          const scale = parseFloat(rim.borderImageWidth) / 16;
+          const targets = [[18, 4.5], [7.5, 7.5], [4.5, 18]]
+            .map(([x, y]) => ({ x: right - x * scale, y: top + y * scale }));
+          const path = node.querySelector(".stream-frame-outline");
+          const matrix = path.ownerSVGElement.getScreenCTM().multiply(path.transform.baseVal.consolidate().matrix);
+          const length = path.getTotalLength();
+          const nearest = targets.map(() => Infinity);
+          for (let offset = 0; offset < length; offset += .25) {
+            const sample = path.getPointAtLength(offset).matrixTransform(matrix);
+            targets.forEach(({ x, y }, index) => {
+              nearest[index] = Math.min(nearest[index], Math.hypot(sample.x - x, sample.y - y));
+            });
+          }
+          return nearest;
+        });
+        assert.ok(distances.every(value => value < .6), selector + " tile-edge distances " + distances);
+      }
+    }
+  } finally { await browser.close(); }
+});
+
 test("Meadow: dotted ready and compaction tracks contrast with a sunlit background", async () => {
   const browser = await launch();
   try {
