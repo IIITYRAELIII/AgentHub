@@ -140,6 +140,9 @@ test("Ready strike remains visible on every theme", async () => {
       await page.locator("[data-theme-select]").selectOption(theme.id, { force: true });
       await frames(page);
       const card = page.locator(RAIL);
+      const eyes = await page.locator(".activity-read-button svg").evaluateAll(nodes =>
+        nodes.map(node => getComputedStyle(node).color));
+      assert.equal(eyes.length, 2);
       for (const selector of [TAB, RAIL]) {
         const target = page.locator(selector);
         const clearance = await target.evaluate(node => {
@@ -161,6 +164,7 @@ test("Ready strike remains visible on every theme", async () => {
           };
         });
         assert.equal(clearance.question, '"?"');
+        assert.deepEqual(eyes, [clearance.accent, clearance.accent], theme.id + ": read buttons");
         assert.equal(clearance.readyColor, clearance.accent, `${theme.id}/${selector}: ready color`);
         assert.equal(clearance.maintenanceColor, clearance.accent, `${theme.id}/${selector}: maintenance color`);
         assert.ok(clearance.gap >= 2, `${theme.id}/${selector}: ready line clearance ${clearance.gap}px`);
