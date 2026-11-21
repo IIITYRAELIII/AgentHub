@@ -259,7 +259,13 @@ export function createDesktopShellComposition({
       queuedValues: () => [...queuedInputs.values()],
       describeAttachments: desktopAttachmentDescriptors,
       receiptForMessage: (identity) => runtimeStateStore.projectMessageReceipt(desktopMessageReceipts.get(identity)),
-      receiptForCommand: (clientUserMessageId) => runtimeStateStore.projectMessageReceipt({ clientUserMessageId }),
+      receiptForCommand: (clientUserMessageId) => {
+        const identity = { clientUserMessageId };
+        // The ledger wins when it owns a command. A retained runtime receipt
+        // still represents a real result when no ledger row owns that ID.
+        const receipt = runtimeStateStore.projectMessageReceipt(desktopMessageReceipts.get(identity) ?? identity);
+        return receipt?.result ? receipt : null;
+      },
       recentReceipts: () => desktopMessageReceipts.snapshot().slice(-100)
         .map((receipt) => runtimeStateStore.projectMessageReceipt(receipt)),
       messagePinsSnapshot: () => streamMessagePins.snapshot(),

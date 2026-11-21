@@ -2,6 +2,13 @@
 
 ## Addressed queue receipts and deferred Task presentation
 
+An addressed lookup projects the same result as the recent window. The command
+ledger takes precedence when it owns the ID. An exact retained runtime receipt
+still participates while it has no ledger row, including after it leaves the
+recent window. A lookup without a result never replaces a complete receipt.
+The client can correlate the visible removal of a provider-accepted queue card
+with the existing receipt and paint traces under the original client ID.
+
 The recent receipt window is a bounded projection, not cancellation authority.
 The normal client snapshot includes the exact original client message IDs of
 unresolved outgoing projections. The snapshot owner reads those receipts from

@@ -7,7 +7,7 @@ const commandTrace = window.AgentHubCommandTrace;
 const traceIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
 // This marker identifies the executing client code path, not a file hash or
 // the release currently served by the Hub.
-const clientAssetRevision = "hub283.client.4";
+const clientAssetRevision = "hub489.client.1";
 const documentInstanceId = commandTrace.newId();
 let previousDocumentInstanceId = "";
 try {
@@ -1061,7 +1061,7 @@ function canonicalAcceptedEvidence(snapshot) {
   return true;
 }
 
-function applyMessageReceipts(snapshot) {
+function applyMessageReceipts(snapshot, onAcceptedQueue = null) {
   for (const receipt of snapshot?.messageReceipts ?? []) {
     const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
     const provider = String(receipt?.provider ?? "").trim();
@@ -1090,6 +1090,11 @@ function applyMessageReceipts(snapshot) {
       || (local.streamId && local.streamId !== streamId))) continue;
     const projection = queueHistoryReceiptProjection(receipt);
     if (!projection.ownsDeferredQueue) {
+      if (projection.providerAccepted && String(receipt.turnId ?? "").trim()
+        && (optimisticDeferredClientUserMessageIds.has(clientUserMessageId)
+          || deferredClientUserMessageIds.has(clientUserMessageId))) {
+        onAcceptedQueue?.(stableTaskId, clientUserMessageId, receipt.id);
+      }
       retireAcceptedOutgoingQueue({ clientUserMessageId, provider, threadId, streamId,
         providerAccepted: projection.providerAccepted, turnId: receipt.turnId });
       optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
@@ -2639,6 +2644,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
   if (requestTraceId) commandTrace.associate(snapshot, requestTraceId);
   if (observeServerIdentity(snapshot)) return;
   const priorSnapshotForTrace = lastSnapshot;
+  const acceptedQueuePaints = [];
   let effectiveSelectedId = "";
   let tasks = [];
   runBatchedMessageRenders(() => {
@@ -2714,7 +2720,11 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     ]);
     if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts
       || snapshot.tasks !== previousSnapshot?.tasks
-      || optimisticDeferredClientUserMessageIds.size) applyMessageReceipts(snapshot);
+      || optimisticDeferredClientUserMessageIds.size) {
+      applyMessageReceipts(snapshot, (taskId, clientId, intakeId) => {
+        acceptedQueuePaints.push({ taskId, clientId, intakeId, started: commandTrace.now() });
+      });
+    }
     const serverDeferredClientUserMessageIds = new Set(queuedCommandClientUserMessageIds(
       snapshot.deferredInputs,
       snapshot.messageReceipts,
@@ -2853,6 +2863,16 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       ));
     }
   });
+  for (const { taskId, clientId, intakeId, started } of acceptedQueuePaints) {
+    const showingQueue = () => selectedTaskId === taskId && document.documentElement.dataset.view === "chat";
+    if (!showingQueue()) continue;
+    commandTrace.afterPaint("ui-render", "message-receipt-queue-paint", started, clientId,
+      { clientAssetRevision, documentInstanceId }, () => {
+        const retained = [...document.querySelectorAll(".queue-item[data-queue-id]")]
+          .some(row => row.dataset.queueId === `local:${clientId}` || row.dataset.queueId === intakeId);
+        return { outcome: retained ? "failed" : "succeeded", metadata: { retained } };
+      }, showingQueue);
+  }
   traceSnapshotGate(snapshot, {
     decision: "applied", id: effectiveSelectedId, before: priorSnapshotForTrace,
   });
