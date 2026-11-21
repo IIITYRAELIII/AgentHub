@@ -6784,7 +6784,7 @@ window.AgentHubPruneComposerFiles = pruneComposerFiles;
 function syncMessageUploadActions(head, message) {
   const state = String(message.uploadState ?? "");
   let actions = head?.querySelector("[data-message-upload-actions]");
-  if (!state) { actions?.remove(); return; }
+  if (!state || state === "uploading") { actions?.remove(); return; }
   if (actions?.dataset.uploadState === state) return;
   actions?.remove();
   actions = el("span", { "data-message-upload-actions": "", "data-upload-state": state, class: "msg-upload-actions" });

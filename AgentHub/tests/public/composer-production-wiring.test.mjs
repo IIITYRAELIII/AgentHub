@@ -1326,7 +1326,9 @@ test("production cancelling held capability negotiation restores the unsent atta
   const page = await browser.newPage();
   let heldRoute;
   try {
-    await openFixture(page, { chunkedUpload: true });
+    const current = snapshot();
+    current.tasks[0].running = true;
+    await openFixture(page, { fixtureSnapshot: current, chunkedUpload: true });
     const requests = [];
     await page.route("**/api/attachment-upload**", (route) => {
       requests.push(route.request().method());
@@ -1336,9 +1338,9 @@ test("production cancelling held capability negotiation restores the unsent atta
     await page.locator("[data-file-input]").setInputFiles({ name: "cancel.png", mimeType: "image/png", buffer: Buffer.from([1]) });
     await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 1);
     const capabilityStarted = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/attachment-upload");
-    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await page.locator("[data-composer-input]").press("Meta+Enter");
     await capabilityStarted;
-    await page.locator("[data-upload-cancel]").click({ timeout: 3000 });
+    await page.locator("[data-queue] [data-upload-cancel]").click({ timeout: 3000 });
     await page.waitForFunction(() => document.querySelector("[data-composer-input]")?.value === "Cancel this preparation"
       && document.querySelectorAll("[data-attachment-index]").length === 1, null, { timeout: 3000 });
     assert.deepEqual(requests, ["GET"]);
