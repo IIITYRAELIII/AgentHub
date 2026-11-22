@@ -17,7 +17,9 @@
   const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
   const ACTIVITY_STREAM_DETAILED_CARDS_KEY = "agent-hub:activity-stream-detailed-cards:v1";
   const STREAM_STATUS_EFFECT_KEY = "agent-hub-stream-status-effect";
-  const STREAM_STATUS_STYLE_KEY = "agent-hub-stream-status-style";
+  function normalizeStatusEffect(value) {
+    return ["static", "off", "calm"].includes(value) ? "static" : "dynamic";
+  }
   const STREAM_CARD_SETTINGS_CHANGE_EVENT = "agenthub:stream-card-settings-change";
   const STREAM_VIEW_SETTINGS_CHANGE_EVENT = "agenthub:stream-view-settings-change";
   const QUICK_MESSAGE_MAX_SCOPES = 200;
@@ -343,7 +345,9 @@
     const active = [];
     const recent = [];
     for (const task of tasks ?? []) {
-      if (task?.running || task?.preparing || task?.activityUnknown || task?.unread) active.push(task);
+      if (task?.running || task?.preparing || task?.activityUnknown || task?.unread || task?.openQuestion
+        || task?.context?.compaction?.status === "running"
+        || ["manual-rotation", "automatic-rotation"].includes(task?.maintenance?.reason)) active.push(task);
       else recent.push(task);
     }
     return { active, recent };
@@ -1210,25 +1214,9 @@
               <span class="stream-card-settings-kicker">Эффект</span>
               <select data-stream-status-effect-select
                 aria-label="Эффект активности и готового ответа потока">
-                <option value="calm">Спокойный</option>
-                <option value="impulse">Импульс</option>
-                <option value="scanner">Сканер</option>
-                <option value="energy">Энергия</option>
-                <option value="breath">Дыхание</option>
-                <option value="thread">Нить</option>
-                <option value="sediment">Осадок</option>
-                <option value="echo">Эхо</option>
-                <option value="off">Выключено</option>
+                <option value="static">Статичный</option>
+                <option value="dynamic">Динамичный</option>
               </select>
-            </div>
-            <div class="stream-card-settings-section stream-card-settings-gap-section"
-              title="Использовать всю поверхность панели вместо одной границы.">
-              <span class="stream-card-settings-kicker">Подсвечивать целиком</span>
-              <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
-                role="switch" aria-checked="false" aria-label="Подсвечивать панели потоков целиком"
-                data-stream-status-fill-toggle>
-                <span class="switch-track" aria-hidden="true"></span>
-              </button>
             </div>
           </section>
           <section class="stream-card-settings-group" aria-labelledby="stream-settings-top-title">
@@ -1399,13 +1387,6 @@
         this.applyViewSetting("streamStatusEffect", event.currentTarget.value);
         this.update(wrapper);
       });
-      wrapper.querySelector("[data-stream-status-fill-toggle]").addEventListener("click", () => {
-        this.applyViewSetting(
-          "streamStatusStyle",
-          this.root.dataset.streamStatusStyle === "fill" ? "edge" : "fill",
-        );
-        this.update(wrapper);
-      });
       const range = wrapper.querySelector("[data-stream-card-width]");
       range.addEventListener("input", (event) => {
         this.fixedWidth = Math.min(
@@ -1471,14 +1452,9 @@
           this.window.localStorage.setItem(ACTIVITY_STREAM_DETAILED_CARDS_KEY, String(detailed));
         } catch {}
       } else if (key === "streamStatusEffect") {
-        this.root.dataset.streamStatusEffect = String(value || "impulse");
+        this.root.dataset.streamStatusEffect = normalizeStatusEffect(value);
         try {
           this.window.localStorage.setItem(STREAM_STATUS_EFFECT_KEY, this.root.dataset.streamStatusEffect);
-        } catch {}
-      } else if (key === "streamStatusStyle") {
-        this.root.dataset.streamStatusStyle = value === "fill" ? "fill" : "edge";
-        try {
-          this.window.localStorage.setItem(STREAM_STATUS_STYLE_KEY, this.root.dataset.streamStatusStyle);
         } catch {}
       }
       this.emitViewSetting(key, value);
@@ -1536,11 +1512,7 @@
         String(this.root.hasAttribute("data-activity-tasks-always-separate")),
       );
       const effectSelect = wrapper.querySelector("[data-stream-status-effect-select]");
-      if (effectSelect) effectSelect.value = this.root.dataset.streamStatusEffect || "impulse";
-      wrapper.querySelector("[data-stream-status-fill-toggle]")?.setAttribute(
-        "aria-checked",
-        String(this.root.dataset.streamStatusStyle === "fill"),
-      );
+      if (effectSelect) effectSelect.value = normalizeStatusEffect(this.root.dataset.streamStatusEffect);
       const rangeWrap = wrapper.querySelector("[data-stream-card-range]");
       if (rangeWrap) rangeWrap.hidden = this.widthMode !== STREAM_CARD_WIDTH_MODES.FIXED;
       this.updateCardPresentation();
@@ -1735,6 +1707,7 @@
     streamLastActivity,
     streamRotationTransitions,
     streamIsPinned,
+    normalizeStatusEffect,
     streamStatusPresentation,
     streamStatusState,
     streamsAreDraggable,

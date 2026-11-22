@@ -7,7 +7,6 @@ import { createRuntimeRestartWiring } from "./runtime-restart-wiring-composition
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
 import { TestContourJournalSyncService } from "../application/test-contour-journal-sync-service.mjs";
 import { testContourRuntimeAlive } from "../runtime/test-contour-manager.mjs";
-import { readMissingTestContourJournalRecords } from "../infrastructure/persistence/test-contour-journal-source.mjs";
 
 export function createRuntimeOrchestrationComposition({
   config,
@@ -161,7 +160,9 @@ export function createRuntimeOrchestrationComposition({
     sourceDatabaseFile: testContourJournalDatabaseFile,
     targetDatabaseFile: journalDatabaseFile,
     projectionProjectRoots: globalWorkLogProjectRoots,
-    readRecords: readMissingTestContourJournalRecords,
+    readRecords: (options) => workLogUsageStore.readTestContourJournalPage(options),
+    acknowledgePage: (options) => workLogUsageStore.acknowledgeTestContourJournalPage(options),
+    commandTrace: commandTrace?.service,
     sourceRuntimeAlive: () => testContourRuntimeAlive(),
     enabled: config.components?.testContour === true
       && process.env.AGENT_HUB_TEST_CONTOUR !== "1",

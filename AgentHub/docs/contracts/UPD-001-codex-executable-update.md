@@ -22,14 +22,18 @@ availability. See ADR-0138.
 - Automatic discovery is Windows-only and enumerates only the installed binary
   layouts of the official OpenAI Codex desktop application and official OpenAI
   VS Code extensions for the current user.
-- Every automatic candidate must have a valid Authenticode signature whose
-  signer subject is OpenAI, must remain inside its canonical allowed install
+- The main `codex.exe` of every automatic candidate must have a valid
+  Authenticode signature whose signer subject is OpenAI, must remain inside its canonical allowed install
   root, must report a parseable Codex version through a bounded `--version`
   invocation, and must have a SHA-256 digest computed from the same file.
 - Authenticode and version results are bound to the accepted bytes by hashing
   immediately before and after signature verification, then hashing again
-  after the bounded version process. Any transition between those observations
-  rejects the identity.
+  after the bounded version process. Verify the complete bundle first and hold
+  its exact files and directories through version and feature probes. Any
+  transition between those observations rejects the identity.
+- Adjacent executables, DLLs and other files carry names and observed hashes
+  for local identity and custody. Hub does not require their signature, publisher,
+  or reference hashes from a vendor. See ADR-HUB-496.
 - Those expensive observations are retained by the executable owner for that
   exact canonical path, source and SHA-256. Unchanged bytes reuse the recorded
   OpenAI signer and version, including after a Hub restart; a path, size or
@@ -86,16 +90,20 @@ availability. See ADR-0138.
   previously background-prepared candidate, including its complete bundle and
   effective features. Unchanged bytes reuse recorded publisher/version trust.
   Missing main/helper files are not usable recorded identities: existing
-  official discovery and canary may select a trusted replacement. Unknown trust
-  failures still refuse. A legacy main-only record is enriched once; an enabled
-  code-mode bundle without exact safe-tool canary evidence must pass that
+  official discovery and canary may select a trusted replacement. Before probing
+  a recorded bundle, compare the current file inventory and hashes with the
+  recorded identity. Prior manifests validate against their original digest;
+  publisher fields do not participate in comparison of names, hashes and
+  effective features. Unknown verification failures still refuse. A legacy
+  main-only record is enriched once; an enabled code-mode bundle without exact
+  safe-tool canary evidence must pass that
   strengthened check once before use. This migration ends when all retained
   identities carry their bundle and exact safe-tool proof.
 - Before spawn the selected bundle is held through read-only native file and
   directory handles that forbid writes/deletion/rename, validate canonical plain
-  paths, and hash the held files. Every binary member retains OpenAI signature
-  policy. The lifecycle re-reads exact durable selection and proves custody is
-  still live immediately before spawn. Custody lasts until that exact owned App
+  paths, and hash the held files. The lifecycle re-reads exact durable
+  selection and proves custody is still live immediately before spawn.
+  Custody lasts until that exact owned App
   Server's process `close`, including initialize-to-first-tool. Release frees the
   old bundle for the external updater. No files are copied into another bundle,
   patched, mixed or registered separately. A pre-spawn disappearance uses the
@@ -138,6 +146,19 @@ Runtime health exposes the configured policy, selected active identity,
 last-known-good identity, highest trusted candidate, canary result, deferred or
 blocked reason, and last error. It never exposes auth material or executable
 contents.
+A main executable signature refusal reports a bounded Authenticode status.
+Historical member-signature diagnostics in durable state and prior installer
+receipts remain readable. The autonomous Windows installer checks the recorded
+identity before stopping the old runtime. If its main executable is missing,
+the selector may check fresh candidates using the same automatic policy.
+If no eligible independently verified candidate remains under the
+existing pin and adoption policy after a complete inspection, the original
+installer receipt records a pre-stop refusal. Incomplete enumeration,
+signature timeouts and unavailable inspection do not establish absence. A positive preflight is availability evidence only; normal
+startup still verifies custody, canary requirements and Ready, with existing
+rollback. The preflight neither runs a compatibility canary nor updates
+the executable selection state (ADR-0017).
+
 Background progress/failure and the prepared identity are separate diagnostics;
 they do not masquerade as a provider initialization failure.
 Successful real initialize reconciles its failed provider startup operation and

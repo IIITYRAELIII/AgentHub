@@ -405,8 +405,12 @@ labelled lock wait. Only fixed phase/outcome and elapsed/UTC scalars are retaine
 without database paths, owner tokens or SQL content. Successful phase observations
 flush through the same trace worker; failure before that worker remains in the
 ordinary startup log. Diagnostic failure cannot change recovery or admission.
-Missing terminal phases and a passing private restart do not establish a
-historical holder or resolve the original stalled startup.
+Workspace catalog startup reports the existing asynchronous SQLite mutation
+queue's attempt count, queue wait, contention wait and SQL attempt duration
+under the same workspace-catalog-load startup identity. Contention retries
+only catalog SQLite work. Catalog schema changes commit atomically; an exhausted
+or unrelated SQLite failure remains a startup failure. Missing terminal phases
+and a passing private restart do not establish a historical lock holder.
 
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
@@ -758,6 +762,69 @@ another opening and newer revisions; closing releases the full history. See
 ADR-HUB-350-card-history-projection.
 
 Periodic Test Contour journal comparison and full Mini App journal publication
+use their existing ingestion/publication owners. Test Contour ingestion shares
+the existing usage worker and journal mutation lane; it adds no worker, timer,
+store or independent writer. Each read inspects at most 128 indexed metadata
+rows ordered by `(changed_revision, provider, thread_id, turn_id)`, hydrates at
+most 8 MiB of exact-row JSON and probes only eligible exact target identities.
+The original model/status/provisional/valid-JSON eligibility is classified by
+an exact primary-key SQLite lookup before the payload policy. Excluded rows
+advance the metadata cursor without JSON hydration or target lookup even when
+their payload exceeds 8 MiB; they cannot starve following eligible rows.
+SQLite may inspect that one addressed JSON to classify it, on the usage worker,
+not the Hub event loop; the policy bounds hydrated bytes, not arbitrary source
+JSON parsing cost. No complete-journal JSON predicate scan is introduced.
+The payload size check precedes JS materialization; an individual eligible
+record over 8 MiB fails visibly without advancing the checkpoint.
+It is neither truncated nor silently dropped. The owning data must be repaired
+or the explicit import policy revised before that page can continue.
+
+The durable checkpoint is one bounded (4 KiB) value in existing
+`journal_store_meta`, promoted with expected-value CAS only after successful
+canonical batch import and projection. A retry after imported rows but failed
+projection compares those exact target rows with the existing projection
+revision and repairs through the ordinary projection owner before ACK. Lost
+ACK is idempotent. No SQL transaction spans import, projection or worker RPC.
+Read/ACK worker spans and the import span retain the original cycle identity
+across retries and contain only counts, bytes, queue and elapsed measurements.
+
+A window is `(acknowledgedRevision, snapshotUpperRevision]`, with a tuple cursor
+inside it; initial paging includes revision zero. Completion timestamps are
+eligibility/clone-boundary data, never cursor authority. Late timestamps,
+updates that become eligible, and rows moving beyond a page's fixed upper bound
+are observed in the next window. Existing target identities remain authoritative
+and are not overwritten by a richer source. Unchanged cycles read only metadata
+and perform zero record/target-row hydration and no checkpoint mutation.
+Source file identity, clone timestamp, target file identity/reset revision,
+model policy and observed revision rollback fence checkpoint reuse. Canonical
+target ledger replacement/deletion invalidates the checkpoint in the same
+transaction. Reclone/replacement restarts bounded paging, not a full payload
+scan. An active worker observing target-file replacement fails explicitly and requires
+the ordinary worker reopen; it cannot acknowledge via a stale open SQLite handle.
+The canonical source must have its existing `changed_revision` migration
+and index; a legacy schema fails explicitly, with no permanent full-scan fallback.
+Unversioned direct SQL edits are not a supported source mutation protocol.
+The 3-second initial and 10-second idle-after-completion cadence and both-PID
+guard remain; backlog pages yield via the same timer after at most one second.
+Stopping prevents subsequent import/ACK dispatch; an already authorized import
+cannot be recalled, and an unacknowledged page is recovered idempotently.
+
+Owning validation: `node --test tests/infrastructure/persistence/test-contour-journal-source.test.mjs
+tests/application/test-contour-journal-sync-service.test.mjs
+tests/runtime/test-contour-journal-import.test.mjs
+tests/runtime/work-log-usage-sync-worker.test.mjs` (one command).
+The isolated scale helper is `node --expose-gc
+tests/perf/test-contour-journal-import.bench.mjs <exact-base-reader.mjs>`;
+`AGENT_HUB_TEST_TEMP_ROOT` selects disposable storage. It generates only synthetic
+100/20,000-row journals, measures original reader versus existing worker, asserts
+empty-import parity, reports materialized rows/bytes, elapsed request and timer
+gap, main heap and process RSS deltas, and removes its fixtures in `finally`.
+RSS/heap deltas are not peak allocation or physical disk usage. Cold worker
+startup, host timer floor and queue wait must not be attributed to SQL execution.
+It accepts a reader module, not paths to live databases, and supplies no evidence
+of the installed runtime's historical freezes or UI delivery latency.
+
+Periodic comparison and full Mini App journal publication
 must not scan, materialize, stringify or compress the journal on the Hub event
 loop. Test Contour comparison runs in an isolated worker. Production journal
 publication reads one SQLite snapshot and performs JSON encoding plus gzip in an

@@ -35,17 +35,31 @@ export class TaskObserverController {
 
   async poll(run) {
     if (!this.canObserve(run)) return;
+    const identity = Object.fromEntries(
+      ["id", "provider", "streamId", "threadId", "turnId"].map((key) => [key, run[key]]),
+    );
+    const stillCurrent = () => this.canObserve(run)
+      && Object.entries(identity).every(([key, value]) => run[key] === value);
     try {
       const snapshot = await this.readSnapshot(run);
       // Snapshot мог читаться дольше, чем переключалась/завершалась задача.
       // Устаревший результат нельзя применять к уже удалённому run.
-      if (!this.canObserve(run)) return;
-      // A nonterminal marker cannot turn a current UNKNOWN run into confirmed
-      // activity. Previous-process runs never enter this observation owner.
+      if (!stillCurrent()) {
+        this.schedule(run);
+        return;
+      }
+      // Managed observation never changes an accepted provider-turn binding.
+      // The provider's active contract confirms only this current execution;
+      // a retained start marker is returned with activityUnknown instead.
       const retainedUnknown = run.provider === "codex" && run.observer !== true
         && run.activityUnknown === true && Boolean(run.turnId)
         && snapshot?.turnId === run.turnId
-        && snapshot.completed !== true && snapshot.running !== true;
+        && snapshot.completed !== true && snapshot.active !== true;
+      if (run.observer !== true && run.turnId && snapshot?.turnId
+        && snapshot.turnId !== run.turnId) {
+        this.schedule(run);
+        return;
+      }
       if (snapshot?.activityUnknown || retainedUnknown) {
         run.activityUnknown = true;
         await this.onUnknown(run, retainedUnknown ? { ...snapshot, activityUnknown: true } : snapshot);
@@ -66,11 +80,14 @@ export class TaskObserverController {
         await this.onCompleted(run, snapshot);
         return;
       }
-      if (snapshot.running === true && snapshot.turnId === run.turnId) run.activityUnknown = false;
+      if (snapshot.active === true && snapshot.turnId === run.turnId) run.activityUnknown = false;
       await this.onActive(run, snapshot);
       this.schedule(run);
     } catch (error) {
-      if (!this.canObserve(run)) return;
+      if (!stillCurrent()) {
+        this.schedule(run);
+        return;
+      }
       run.activityUnknown = true;
       await this.onError(run, error);
       this.schedule(run);

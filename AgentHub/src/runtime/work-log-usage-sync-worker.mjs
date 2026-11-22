@@ -19,6 +19,10 @@ import { AsyncSqliteMutationQueue } from "../infrastructure/persistence/async-sq
 import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { readTurnMetadataCandidates, synchronizeTurnMetadata } from "./work-log-turn-metadata.mjs";
 import { projectUsageHistory } from "./usage-history-projection.mjs";
+import {
+  readMissingTestContourJournalRecords, validateTestContourJournalCheckpoint,
+  testContourJournalFileIdentity,
+} from "../infrastructure/persistence/test-contour-journal-source.mjs";
 
 const store = new WorkLogUsageSyncStore(workerData);
 const journal = new JournalDatabase(workerData.databaseFile);
@@ -29,6 +33,17 @@ const mutationRequests = new Map();
 // retains only hashes/scalars, not HTML/facts/records; SQLite remains authority.
 // Restart, a failed rendering or any changed dependency requires reconstruction.
 let journalReuse = null;
+let contourTargetIdentity = null;
+
+async function assertContourTargetIdentity() {
+  const current = await testContourJournalFileIdentity(workerData.databaseFile);
+  if (contourTargetIdentity && JSON.stringify(current) !== JSON.stringify(contourTargetIdentity)) {
+    const error = new Error("Test Contour target file changed; reopen the existing usage worker before import");
+    error.code = "TEST_CONTOUR_TARGET_REOPEN_REQUIRED";
+    throw error;
+  }
+  return current;
+}
 
 async function synchronizeTaskTitles(payload, measurements = {}) {
   const startedAt = performance.now();
@@ -390,6 +405,35 @@ async function usageSyncSnapshot(payload = {}) {
 async function handle(message) {
   switch (message.type) {
     case "events": return store.events();
+    case "read-test-contour-journal": {
+      const startedAt = performance.now();
+      const before = await assertContourTargetIdentity();
+      const checkpoint = await journalOperations.run(() => journal.testContourJournalCheckpoint());
+      const after = await assertContourTargetIdentity();
+      if (before && JSON.stringify(before) !== JSON.stringify(after)) throw new Error("Test Contour target changed during open");
+      contourTargetIdentity = after;
+      const result = await journalOperations.run(() => readMissingTestContourJournalRecords({
+        ...message.payload, targetDatabaseFile: workerData.databaseFile, checkpoint,
+      }), { requestId: message.payload.operationId });
+      return { ...result, durationMs: performance.now() - startedAt,
+        queueWaitMs: message.queueWaitMs, workerThreadId: threadId };
+    }
+    case "ack-test-contour-journal": {
+      await new Promise((resolve, reject) => {
+        mutationRequests.set(message.id, { resolve, reject });
+        parentPort.postMessage({ id: message.id, type: "journal-mutation" });
+      });
+      const startedAt = performance.now();
+      const result = await journalOperations.run(async () => {
+        await assertContourTargetIdentity();
+        await validateTestContourJournalCheckpoint({
+          ...message.payload, targetDatabaseFile: workerData.databaseFile,
+        });
+        return journal.acknowledgeTestContourJournalPage(message.payload);
+      }, { requestId: message.payload.operationId });
+      return { ...result, durationMs: performance.now() - startedAt,
+        queueWaitMs: message.queueWaitMs, workerThreadId: threadId };
+    }
     case "facts": return store.facts();
     case "usage-history": {
       const result = await projectUsageHistory({

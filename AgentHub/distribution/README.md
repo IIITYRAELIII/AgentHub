@@ -159,8 +159,15 @@ This recipient-specific boundary does not change RuntimeHost restart launching.
 
 The retained directory records `worker-create-intent.json`, the provider result,
 `worker-verified-suspended.json` and addressed dispatch failures before normal
-worker logging starts. Keep that directory and original operation ID after a
-lost reply. Repeating the same input reads the same original; it cannot create
+worker logging starts. A dispatch refusal also prints one
+`installer-worker-dispatch-failed` JSON record to stderr and exits nonzero.
+It reports the last stage and an allowlisted reason, WMI return codes, observed Job membership of the
+caller and worker, worker identity verification, resume attempt and joined
+cleanup. Unknown observations are null. It contains no local paths, commands
+or security tokens. The console record is available even if the scratch failure
+record cannot be written. An exact repeat surfaces a retained dispatch failure
+if no installation result or original exists. Keep the directory and original
+operation ID after a lost reply. Repeating the same input reads the same original; it cannot create
 another worker. A Job-related refusal alone does not identify the Job owner.
 
 Example: `python install_release.py --release <version> --runtime-root <Hub-directory> --scratch-root <separate-directory> --mode force`.

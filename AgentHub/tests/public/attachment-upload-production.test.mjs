@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { launchBrowser, openFixture, bridgeCalls, persistedRecovery } from "./composer-production.fixture.mjs";
+import { launchBrowser, openFixture, bridgeCalls, persistedRecovery, snapshot } from "./composer-production.fixture.mjs";
 
 const draftKey = "agent-hub:composer-drafts:v1:vscode";
 async function attach(page, size = 2 * 1024 * 1024 + 7) {
@@ -10,6 +10,81 @@ async function attach(page, size = 2 * 1024 * 1024 + 7) {
   await page.waitForFunction(() => document.querySelectorAll("[data-attachments] [data-attachment-index]").length === 1);
 }
 async function persisted(page) { return page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? "[]"), draftKey); }
+
+test("upload hides header actions only while active and keeps the separate queue", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  page.setDefaultTimeout(6000);
+  const firstChunk = Promise.withResolvers();
+  let heldFirstChunk = false;
+  try {
+    const current = snapshot();
+    current.deferredInputs = [{
+      id: "other-queue-item", provider: "codex", threadId: "thread-a", streamId: "stream-a",
+      clientUserMessageId: "other-queue-client", state: "queued", text: "Separate queued message",
+    }];
+    const diagnostics = await openFixture(page, { fixtureSnapshot: current, chunkedUpload: true });
+    await page.route("**/api/attachment-upload?*", async (route) => {
+      if (route.request().method() === "PUT" && !heldFirstChunk) {
+        heldFirstChunk = true;
+        await firstChunk.promise;
+      }
+      await route.fallback();
+    });
+    await page.evaluate(() => {
+      localStorage.setItem("fixture:send-mode", "accept");
+      localStorage.setItem("fixture:upload-mode", "fail-once");
+    });
+    const messageText = "Check image upload controls";
+    await page.locator("[data-composer-input]").fill(messageText);
+    await page.locator("[data-file-input]").setInputFiles({
+      name: "image.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/XuoAAAAASUVORK5CYII=", "base64"),
+    });
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachments] [data-attachment-index]").length === 1);
+    const chunkStarted = page.waitForRequest((request) => request.method() === "PUT"
+      && new URL(request.url()).pathname === "/api/attachment-upload");
+    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await chunkStarted;
+
+    const message = page.locator("article.msg", { hasText: messageText });
+    const delivery = message.locator(".msg-delivery");
+    const headerActions = message.locator("[data-message-upload-actions]");
+    const queueCancel = page.locator(".queue-item[data-queue-id='other-queue-item'] [data-action='queue-remove']");
+    await delivery.filter({ hasText: "Загрузка image.png" }).waitFor({ state: "visible" });
+    await message.locator(".attachment-image").waitFor({ state: "visible" });
+    await queueCancel.waitFor({ state: "visible" });
+    assert.match(await page.title(), /Agent Hub/iu);
+    assert.equal(new URL(page.url()).hostname, "agent-hub.test");
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    if (process.env.AGENT_HUB_UPLOAD_QA_DIR) {
+      await page.screenshot({ path: path.join(process.env.AGENT_HUB_UPLOAD_QA_DIR, "header-uploading.png") });
+    }
+    assert.equal(await headerActions.count(), 0, "active upload has no header controls");
+
+    firstChunk.resolve();
+    await delivery.filter({ hasText: "Загрузка приостановлена" }).waitFor({ state: "visible" });
+    await headerActions.locator("[data-upload-cancel]").waitFor({ state: "visible" });
+    await message.locator(".attachment-image").waitFor({ state: "visible" });
+    await queueCancel.waitFor({ state: "visible" });
+    if (process.env.AGENT_HUB_UPLOAD_QA_DIR) {
+      await page.screenshot({ path: path.join(process.env.AGENT_HUB_UPLOAD_QA_DIR, "header-paused.png") });
+    }
+    await headerActions.locator("[data-upload-resume]").click();
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]")
+      .some((entry) => entry.action === "send-message"));
+    await headerActions.waitFor({ state: "detached" });
+    await queueCancel.waitFor({ state: "visible" });
+    const sends = await bridgeCalls(page, "send-message");
+    assert.equal(sends.length, 1);
+    assert.match(sends[0].params.attachments[0], /-image\.png$/u);
+    assert.deepEqual(diagnostics.filter((message) => !message.includes("503")), []);
+  } finally {
+    firstChunk.resolve();
+    await browser.close();
+  }
+});
 
 test("production Blob draft reload resumes explicit upload and retains the exact rejected message identity", { timeout: 25_000 }, async () => {
   const browser = await launchBrowser();
@@ -186,14 +261,16 @@ test("production legacy upload completion after cancel cannot admit a message", 
   const page = await browser.newPage();
   page.setDefaultTimeout(6000);
   try {
-    await openFixture(page, { persistedDrafts: [persistedRecovery({
+    const current = snapshot();
+    current.tasks[0].running = true;
+    await openFixture(page, { fixtureSnapshot: current, persistedDrafts: [persistedRecovery({
       requestId: "legacy-original-id", text: "Legacy cancellation",
       attachments: [{ name: "legacy.png", type: "image/png", size: 3, dataUrl: "data:image/png;base64,AQID" }],
     })] });
     await page.evaluate(() => localStorage.setItem("fixture:upload-mode", "hold"));
-    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await page.locator("[data-composer-input]").press("Meta+Enter");
     await page.waitForFunction(() => Boolean(window.__agentHubFixture.heldUpload));
-    await page.locator("[data-upload-cancel]").click();
+    await page.locator("[data-queue] [data-upload-cancel]").click();
     await page.evaluate(() => window.__releaseHeldUpload());
     await page.waitForFunction(() => document.querySelector("[data-composer-input]")?.value === "Legacy cancellation");
     assert.equal((await bridgeCalls(page, "send-message")).length, 0);

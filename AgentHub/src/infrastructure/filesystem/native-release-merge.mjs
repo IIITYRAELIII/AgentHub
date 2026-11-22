@@ -1,16 +1,68 @@
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
-import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
+import { mkdir, readFile } from "node:fs/promises";
+import { createSelectedGitBundle, hasExactGitCommitObjects } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
   from "../../domain/task-selected-composition.mjs";
 import { nativeReuseContext, nativeReuseCandidates, verifiedNativePrefix, retainedNativeConflict } from "./native-merge-reuse.mjs";
 import { measureTaskOperation } from "../process/task-operation-timing.mjs";
+import { normalizedNativeResolutionReview, nativeResolutionReviewDeclaration } from "../../domain/native-resolution-input.mjs";
 
 // Internal Git sequencing of TaskIntegrationGitService. This has no Task,
 // publication or ref-promotion authority. The application retains those leases.
 export const NATIVE_RELEASE_POLICY = "main-selected-git-merge-v1";
+
+// Read-only evidence for the one existing manual post-delivery owner. This is
+// not acceptance: only a genuine independent inter-Stream receipt can accept it.
+export async function createManualDevResolutionBinding({ git, root, identity, commit, taskId, originalJournalSha256 }) {
+  if (identity?.policy !== "manual-main-dev-sync-v1" || !taskId || !/^[a-f0-9]{64}$/u.test(originalJournalSha256 ?? "")) {
+    throw failure("Manual compatibility requires its exact original context", "RELEASE_NATIVE_REVIEW_REQUIRED");
+  }
+  const parents = String(await git(["show", "-s", "--format=%P", commit])).split(" ");
+  if (JSON.stringify(parents) !== JSON.stringify([identity.devCommit, identity.publishedRevision])) {
+    throw failure("Manual compatibility parents changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  const bases = nativeMergeBaseFields(await git(["merge-base", "--all", ...parents]));
+  if (JSON.stringify(bases) !== JSON.stringify(Object.hasOwn(identity, "mergeBases")
+    ? { mergeBases: identity.mergeBases } : { mergeBase: identity.mergeBase })) throw failure("Manual compatibility bases changed");
+  const output = String(await git(["merge-tree", "--write-tree", "-z", ...parents], { acceptableExitCodes: [1] })).split("\0");
+  const automaticTree = output.shift(), stages = [], conflicts = new Set();
+  for (const row of output) {
+    if (!row) break;
+    const match = /^(\d{6}) ([a-f0-9]{40}) ([123])\t([^]*)$/u.exec(row);
+    if (!match) throw failure("Manual compatibility conflict inventory unavailable");
+    conflicts.add(match[4]); stages.push([match[4], `${match[1]} ${match[2]} ${match[3]}`]);
+  }
+  const automatic = new Map(await entries(git, ["ls-tree", "-r", "-z", automaticTree]));
+  const tree = String(await git(["rev-parse", `${commit}^{tree}`]));
+  const resolved = new Map(await entries(git, ["ls-tree", "-r", "-z", tree]));
+  const inventory = [...automatic].filter(([file]) => !conflicts.has(file)).map(([file, entry]) => [file, `${entry.split(" ")[0]} ${entry.split(" ").at(-1)} 0`]);
+  inventory.push(...stages);
+  inventory.sort((a, b) => Buffer.compare(Buffer.from(a[0]), Buffer.from(b[0])) || Number(a[1].at(-1)) - Number(b[1].at(-1)));
+  const changes = [...new Set([...automatic.keys(), ...resolved.keys()])].sort().filter(file => automatic.get(file) !== resolved.get(file))
+    .map(file => ({ path: file, before: automatic.get(file) ?? null, after: resolved.get(file) ?? null }));
+  const patch = await git(["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree], { rawOutput: true });
+  return { kind: "manual-dev-resolution-v1", taskId, workspaceId: identity.workspaceId,
+    operationId: identity.operationId, identityHash: taskGitIdentityHash(identity),
+    delivery: { revision: identity.manualDelivery?.revision, releaseId: identity.manualDelivery?.releaseId,
+      manifestSha256: identity.manualDelivery?.manifestSha256 },
+    nativeRoot: path.resolve(root), originalJournalSha256, issuedStagesSha256: taskGitIdentityHash(inventory),
+    parents, ...bases, commit, tree, automaticTree, automaticInventorySha256: taskGitIdentityHash([...automatic]),
+    conflictPaths: [...conflicts].sort(), changes,
+    diffSha256: createHash("sha256").update(patch).digest("hex") };
+}
+
+async function verifyManualCompatibility({ git, root, identity, head, proof, verifyReview }) {
+  if (!proof) return null;
+  if (typeof verifyReview !== "function") throw failure("Manual compatibility receipt owner is unavailable", "RELEASE_NATIVE_REVIEW_REQUIRED");
+  const review = normalizedNativeResolutionReview(proof.review);
+  const binding = await createManualDevResolutionBinding({ git, root, identity, commit: head,
+    taskId: proof.binding?.taskId, originalJournalSha256: proof.binding?.originalJournalSha256 });
+  if (taskGitIdentityHash(binding) !== taskGitIdentityHash(proof.binding)) throw failure("Manual compatibility binding changed", "RELEASE_NATIVE_REVIEW_REQUIRED");
+  await verifyReview(review, binding);
+  return binding;
+}
 
 // Preserve the exact scalar field for historical single-base captures. Git's
 // --all order is not authority; a multiple-base capture binds the complete set.
@@ -412,7 +464,7 @@ async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
   // new Task base or authority inferred from dev, a remote ref or merge output.
   const publication = identity.policy === "native-dev-merge-v1"
     ? identity.nativeHistoryAuthority?.publishedMetadata : null;
-  if (!publication) return null;
+  if (!publication) return { publishedBase: null, publication, commonBases: [] };
   const task = tasks[0];
   if (tasks.length !== 1 || identity.taskId !== task.taskId || identity.resultCommit !== task.resultCommit
       || identity.before !== baseCommit || !publication.generation || !publication.repositoryRoot
@@ -429,12 +481,15 @@ async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
   // supplies the replay boundary; the full own delta still has to survive.
   // Other histories, including multiple bases, keep their existing policy.
   const mergeBase = String(await git(["merge-base", "--all", baseCommit, task.resultCommit]));
+  const commonBases = mergeBase.split(/\r?\n/u);
   if (mergeBase !== publication.commit && (mergeBase !== task.resultCommit
-      || await maybe(git, ["merge-base", "--is-ancestor", publication.commit, task.resultCommit]) === null)) return null;
+      || await maybe(git, ["merge-base", "--is-ancestor", publication.commit, task.resultCommit]) === null)) {
+    return { publishedBase: null, publication, commonBases };
+  }
   if (await maybe(git, ["merge-base", "--is-ancestor", task.baseCommit || baseCommit, publication.commit]) === null) {
     throw failure("Native Test published content base is outside its agreed history", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
-  return publication.commit;
+  return { publishedBase: publication.commit, publication, commonBases };
 }
 
 // A replay can reinsert a complete block already present in the composition.
@@ -444,8 +499,9 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
   const patch = String(await git(["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv",
     "--no-renames", "--no-color", "--unified=0", head, replayTree, "--", file], { rawOutput: true }));
   if (/^(?:old mode|new mode|deleted file|new file|Binary files)/mu.test(patch)) return false;
-  const body = String(await git(["show", `${head}:${file}`], { rawOutput: true }));
-  let block = null, additions = 0;
+  const rawBody = await git(["show", `${head}:${file}`], { rawOutput: true });
+  const body = String(rawBody);
+  let block = null, additions = 0, removed = false;
   const retained = () => block !== null && block.length > 0 && body.includes(block.join("\n") + "\n");
   for (const line of patch.split("\n")) {
     if (line.startsWith("@@ ")) {
@@ -453,10 +509,30 @@ async function repeatsRetainedContent(git, head, replayTree, file) {
       block = []; additions += 1;
     } else if (block !== null) {
       if (line.startsWith("+")) block.push(line.slice(1));
-      else if (line.startsWith("-") && line.slice(1).trim() !== "" || line.startsWith("\\")) return false;
+      else if (line.startsWith("-")) {
+        removed = true;
+        if (line.slice(1).trim() !== "") return false;
+      } else if (line.startsWith("\\")) return false;
     }
   }
-  return additions > 0 && retained();
+  if (additions > 0 && retained()) return true;
+  if (additions !== 1 || removed) return false;
+  // Git can slide an insertion across an identical method header. Prove one
+  // literal insertion against the complete bytes, rather than its hunk layout.
+  const current = Buffer.from(rawBody);
+  const replay = Buffer.from(await git(["show", `${replayTree}:${file}`], { rawOutput: true }));
+  if (replay.length <= current.length || current.includes(0) || replay.includes(0)
+      || !Buffer.from(body).equals(current) || !Buffer.from(String(replay)).equals(replay)) return false;
+  const currentEntry = await metadataEntry(git, head, file);
+  const replayEntry = await metadataEntry(git, replayTree, file);
+  if (!/^100(?:644|755) [a-f0-9]{40}$/u.test(currentEntry ?? "")
+      || currentEntry.split(" ")[0] !== replayEntry?.split(" ")[0]) return false;
+  let suffix = 0;
+  while (suffix < current.length && current[current.length - 1 - suffix] === replay[replay.length - 1 - suffix]) suffix++;
+  const offset = current.length - suffix;
+  const insertion = replay.subarray(offset, offset + replay.length - current.length);
+  return current.includes(insertion)
+    && Buffer.concat([current.subarray(0, offset), insertion, current.subarray(offset)]).equals(replay);
 }
 
 // A later selected automatic edit can change a file whose earlier owned
@@ -504,15 +580,13 @@ async function retainsOrderedResolution({ git, baseCommit, merges, resolutions, 
 // Reachability alone does not prove content. Reproduce each selected delta, but
 // retain the actual automatic context and verified conflict resolutions instead
 // of requiring a message to authorize that same Git evidence.
-async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges }) {
+async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges,
+  manualCompatibilityReview = null, verifyManualReview = null, root = null }) {
+  const compatibility = await verifyManualCompatibility({ git, root, identity, head,
+    proof: manualCompatibilityReview, verifyReview: verifyManualReview });
   const virtualReplay = await publishedVirtualReplay({ git, identity, baseCommit, tasks });
-  const publishedBase = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
-  // The existing replay helper validates the original publication identity even
-  // when its unique-base rule supplies no new replay lower boundary.
-  const publication = identity.policy === "native-dev-merge-v1"
-    ? identity.nativeHistoryAuthority?.publishedMetadata : null;
-  const commonBases = publication
-    ? String(await git(["merge-base", "--all", baseCommit, tasks[0].resultCommit])).split(/\r?\n/u) : [];
+  // Read the same immutable base set once within this fresh content proof.
+  const { publishedBase, publication, commonBases } = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
   let inheritedPublication = commonBases.includes(publication?.commit);
   if (publication && !inheritedPublication && commonBases.length) {
     // Dependency tips can replace the publication itself as the real common
@@ -528,7 +602,8 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
   }
   const inherited = publication
     && inheritedPublication
-    && await maybe(git, ["merge-base", "--is-ancestor", tasks[0].baseCommit || baseCommit, publication.commit]) !== null
+    && (publishedBase !== null
+      || await maybe(git, ["merge-base", "--is-ancestor", tasks[0].baseCommit || baseCommit, publication.commit]) !== null)
     ? new Map(await entries(git, ["ls-tree", "-r", "-z", publication.commit])) : new Map();
   const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit
     && Array.isArray(identity.tasks) && taskGitIdentityHash(identity.tasks) === taskGitIdentityHash(tasks);
@@ -572,6 +647,11 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     for (const file of new Set([...expected.keys(), ...target.keys()])) {
       if (expected.get(file) === target.get(file) || resolvedPaths.has(file)
           || actual.get(file) === target.get(file) && actual.has(file)) continue;
+      // Only the complete independently authenticated candidate can account for
+      // its exact reviewed before/after delta. No path-name exemption survives a
+      // different tree, identity, receipt or additional unreviewed change.
+      if (compatibility && compatibility.changes.some(change => change.path === file
+          && change.before === (expected.get(file) ?? null) && change.after === (target.get(file) ?? null))) continue;
       // Absence is automatic evidence only for a whole unchanged published
       // entry. Own earlier/new edits and an already-contained result cannot
       // acquire deletion credit from an empty or unrelated automatic map.
@@ -669,9 +749,10 @@ export async function assertNativeMergeGraph({ git, baseCommit, tasks, merges, h
 }
 
 export async function assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree,
-  identity }) {
+  identity, manualCompatibilityReview = null, verifyManualReview = null, root = null }) {
   const resolutions = await assertNativeMergeGraph({ git, baseCommit, tasks, merges, head, tree, identity });
-  await assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges });
+  await assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges,
+    manualCompatibilityReview, verifyManualReview, root });
 }
 
 // Every accepted step is a real Git merge commit (or an already-contained
@@ -684,6 +765,7 @@ export async function mergeSelectedResults({
   reuseContext = null,
   readLegacyReuseBinding = null,
   provisionNativeObjects = null, verifyNativeObjects = null,
+  nativeResolutionReview = null, verifyManualReview = null,
 }) {
   const repository = path.join(root, "repository");
   const stateFile = path.join(root, "merge.json");
@@ -702,6 +784,9 @@ export async function mergeSelectedResults({
   await publishedVirtualReplay({ git: (args, options) => gitAt(sourceRoot, args, options), identity, baseCommit, tasks });
   const candidates = await nativeReuseCandidates({ root, identity, context: reuse, readLegacyBinding: readLegacyReuseBinding });
   let state = await readJson(stateFile);
+  if (nativeResolutionReview && (!state || identity.policy !== "manual-main-dev-sync-v1")) {
+    throw failure("Native compatibility requires an issued manual capture", "RELEASE_NATIVE_REVIEW_REQUIRED");
+  }
   if (state && JSON.stringify(state.identity) !== JSON.stringify(identity)) {
     throw failure("Native merge staging identity changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
@@ -722,8 +807,9 @@ export async function mergeSelectedResults({
       state.objectStorage = await provisionNativeObjects({ repository, sourceRoot,
         inputs: [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])], identityHash });
       assertCurrentInputs();
-      for (const commit of [baseCommit, ...tasks.map(task => task.resultCommit)]) {
-        await gitAt(repository, ["cat-file", "-e", commit + "^{commit}"]);
+      const inputs = [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])];
+      if (!await hasExactGitCommitObjects((args, options) => gitAt(repository, args, options), inputs)) {
+        throw failure("Native Git consumer is missing an exact input commit");
       }
       await gitAt(repository, ["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);
       delete state.provisioningObjects;
@@ -742,9 +828,9 @@ export async function mergeSelectedResults({
     // Private exact refs include that ancestry without a growing revision argv.
     await measureTaskOperation("native:bundle", () => createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt }));
     await measureTaskOperation("native:clone", () => gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", bundle, repository]));
-    const git = (args) => gitAt(repository, args);
-    for (const commit of inputs) {
-      await git(["cat-file", "-e", `${commit}^{commit}`]);
+    const git = (args, options) => gitAt(repository, args, options);
+    if (!await hasExactGitCommitObjects(git, inputs)) {
+      throw failure("Native Git checkout is missing an exact input commit");
     }
     await git(["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);
     state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null,
@@ -756,6 +842,32 @@ export async function mergeSelectedResults({
       inputs: [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])] });
   }
   const git = (args, options) => gitAt(repository, args, options);
+  // Proof is input to this existing journal, never to its immutable business
+  // identity. Reopen must carry and reauthenticate it even when no new argument
+  // is supplied. A caller cannot erase a stored review by omitting the field.
+  if (nativeResolutionReview || state.manualCompatibilityReview) {
+    const incoming = nativeResolutionReview && normalizedNativeResolutionReview(nativeResolutionReview);
+    const prior = state.manualCompatibilityReview;
+    if (prior && incoming && taskGitIdentityHash(prior.review) !== taskGitIdentityHash(incoming)) {
+      throw failure("Stored manual compatibility review changed", "RELEASE_NATIVE_REVIEW_REQUIRED");
+    }
+    const review = incoming ?? prior.review;
+    const declared = nativeResolutionReviewDeclaration(review).binding;
+    const proof = prior ?? { review, binding: declared };
+    if (!prior) {
+      const issued = state.next === 0 && state.conflict && state.merging;
+      const prepared = state.next === 1 && state.merges?.length === 1 && !state.conflict && !state.merging
+        && state.merges[0].resolved === true && state.merges[0].commit === state.head;
+      if (deliveredHead || state.delivery || !issued && !prepared
+          || createHash("sha256").update(await readFile(stateFile)).digest("hex") !== declared.originalJournalSha256
+          || issued && taskGitIdentityHash(state.conflict.stages) !== declared.issuedStagesSha256) {
+        throw failure("Manual compatibility original capture changed", "RELEASE_NATIVE_REVIEW_REQUIRED");
+      }
+    }
+    const head = String(await git(["rev-parse", "HEAD^{commit}"]));
+    await verifyManualCompatibility({ git, root, identity, head, proof, verifyReview: verifyManualReview });
+    if (!prior) { state.manualCompatibilityReview = proof; await writeJson(stateFile, state); }
+  }
   const beforeTransport = async binding => {
     assertCurrentInputs();
     state.reuseTransportIntent = { identityHash, ...binding };
@@ -963,7 +1075,8 @@ export async function mergeSelectedResults({
   await requireClean(git);
   if (String(await git(["rev-parse", "HEAD^{commit}"])) !== state.head) throw failure("Native final merge head changed");
   assertCurrentInputs();
-  await measureTaskOperation("native:selected-content", () => assertSelectedContent({ git, baseCommit, tasks, head: state.head, resolutions, identity, merges:state.merges }));
+  await measureTaskOperation("native:selected-content", () => assertSelectedContent({ git, baseCommit, tasks, head: state.head, resolutions, identity, merges:state.merges,
+    manualCompatibilityReview: state.manualCompatibilityReview ?? null, verifyManualReview, root }));
   return { root: repository, head: state.head,
     tree: String(await git(["rev-parse", "HEAD^{tree}"])), merges: state.merges };
 }

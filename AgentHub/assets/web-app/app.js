@@ -759,47 +759,17 @@ function applyActivityRailVisibility(value, { persist = false } = {}) {
   if (persist) activityRailPreference.persist(localStorage, selected);
 }
 
-function savedStreamStatusStyle() {
-  try {
-    const value = localStorage.getItem("agent-hub-stream-status-style")
-      ?? localStorage.getItem("agent-hub-context-flash-style");
-    return value === "fill" ? "fill" : "edge";
-  } catch {
-    return "edge";
-  }
-}
-
-function applyStreamStatusStyle(value, { persist = false } = {}) {
-  const style = value === "fill" ? "fill" : "edge";
-  root.dataset.streamStatusStyle = style;
-  if (persist) {
-    try {
-      localStorage.setItem("agent-hub-stream-status-style", style);
-      localStorage.removeItem("agent-hub-context-flash-style");
-    } catch {
-      // Настройка останется активной до закрытия WebView.
-    }
-  }
-}
-
-const STREAM_STATUS_EFFECTS = new Set([
-  "calm", "impulse", "scanner", "energy",
-  /* Наборы из stream-status.css: дыхание, нить, осадок и эхо. */
-  "breath", "thread", "sediment", "echo",
-  "off",
-]);
-
 function savedStreamStatusEffect() {
   try {
     const value = localStorage.getItem("agent-hub-stream-status-effect");
-    return STREAM_STATUS_EFFECTS.has(value) ? value : "impulse";
+    return window.AgentHubStreamTabs.normalizeStatusEffect(value);
   } catch {
-    return "impulse";
+    return "dynamic";
   }
 }
 
 function applyStreamStatusEffect(value, { persist = false } = {}) {
-  const effect = STREAM_STATUS_EFFECTS.has(value) ? value : "impulse";
+  const effect = window.AgentHubStreamTabs.normalizeStatusEffect(value);
   root.dataset.streamStatusEffect = effect;
   if (persist) {
     try {
@@ -975,7 +945,7 @@ applyActivityRailVisibility(activityRailPreference.stored(localStorage));
 const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
   document, storage: () => globalThis.localStorage, overlays: modalOverlays,
 });
-applyStreamStatusStyle(savedStreamStatusStyle());
+root.dataset.streamStatusStyle = "edge";
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
 applyStreamOrderMode("activity");
@@ -1340,11 +1310,11 @@ function el(tag, props = {}, children = []) {
   return node;
 }
 
-/* Анимации состояния живут на псевдоэлементах карточки, поэтому новый узел
+/* При обновлении карточки новый узел
    начинает их заново. Списки пересобираются целиком, и при частых обновлениях
    полоса активности не успевает пройти свой цикл. Узел с тем же ключом
    переиспользуется, а его анимации продолжаются с накопленного времени. */
-const STREAM_STATUS_LAYER_SELECTOR = ".stream-tab-status-layer";
+const STREAM_STATUS_LAYER_SELECTOR = ".stream-effect-layer";
 const STREAM_STATUS_ANIMATION_NAME = /(?:^|-)stream-/u;
 let reusableWorkspaceCards = new Map();
 let reusableStreamTabs = new Map();
@@ -1352,7 +1322,7 @@ let adoptedCardAnimations = [];
 const renderedCardAnswerIdentities = new WeakMap();
 
 function statusAnimationKey(animation) {
-  return `${animation.animationName} ${animation.effect?.pseudoElement ?? ""}`;
+  return `${animation.animationName} ${animation.effect?.target?.getAttribute("class") ?? ""} ${animation.effect?.pseudoElement ?? ""}`;
 }
 
 function statusAnimationSnapshot(node) {
@@ -1402,7 +1372,7 @@ function adoptRenderedCard(index, key, next, answerIdentity = "") {
   const sameAnswer = Boolean(answerIdentity) && previous.answerIdentity === answerIdentity;
   // Обновление той же непрочитанной ревизии не обрывает конечную вспышку.
   // После её завершения, чтения или смены final прежний эффект не переносится.
-  if (sameAnswer && previous.answerAnimating && !next.hasAttribute("data-running")
+  if (sameAnswer && previous.answerAnimating
     && (next.hasAttribute("data-unread") || next.hasAttribute("data-answer-ready"))) {
     next.setAttribute("data-answer-arrived", "");
   }
@@ -1420,9 +1390,6 @@ function adoptRenderedCard(index, key, next, answerIdentity = "") {
   }
   /* У вкладки Stream анимацию несёт собственный слой статуса, поэтому он
      переносится в обновлённое содержимое вместо заново созданного. */
-  const keptLayer = node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
-  const nextLayer = next.querySelector(STREAM_STATUS_LAYER_SELECTOR);
-  if (keptLayer && nextLayer) nextLayer.replaceWith(keptLayer);
   node.replaceChildren(...next.childNodes);
   const times = next.hasAttribute("data-answer-arrived") && !sameAnswer
     ? new Map([...previous.times].filter(([key]) => !previous.answerKeys.has(key)))
@@ -4091,6 +4058,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
     "data-answer-arrived": tasks.some((task) => transientAnswerArrivalTaskIds.has(task.id)) ? "" : null,
     "data-running": running ? "" : null,
     "data-maintenance": maintenance || null,
+    ...streamEffectAttributes(tasks),
     "data-folder-member": folderMember ? "" : null,
     role: "button",
     tabindex: "0",
@@ -4098,6 +4066,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
     "aria-label": folderMember ? name : null,
     title: "ПКМ — редактировать Workspace",
   }, [
+    streamEffectLayer(reusableWorkspaceCards.get(id)),
     el("span", { class: "task-workspace-name", text: name }),
     el("span", {
       class: "task-workspace-time",
@@ -4135,6 +4104,7 @@ function streamAttentionKind(task, now = Date.now()) {
   if (task?.activityUnknown) return "unknown";
   if (task?.unread && !task?.running) return "completed";
   if (task?.running) return "running";
+  if (task?.openQuestion || streamMaintenanceKind(task)) return "running";
   const activityTime = streamActivityTime(task);
   const recentWindow = activityRecentPeriodMinutes * 60_000;
   if (recentWindow > 0 && activityTime > 0 && Math.max(0, now - activityTime) <= recentWindow) {
@@ -4175,6 +4145,50 @@ function streamPresentation(task) {
     ? formatRunningDuration(task.startedAt)
     : formatRelativeTime(task?.lastActivity);
   return { provider, agentLabel, running, answerReady, time, statusLabel };
+}
+
+function streamEffectAttributes(tasks) {
+  const active = tasks.filter(task => task?.running);
+  const ready = tasks.filter(task => task?.unread);
+  return {
+    "data-interstream-run": active.length && active.every(task => task.interstreamRun) ? "" : null,
+    "data-interstream-ready": ready.length && ready.every(task => task.latestFinal?.interstreamOnly) ? "" : null,
+    "data-open-question": tasks.some(task => task?.openQuestion) ? "" : null,
+  };
+}
+
+let streamFrameId = 0;
+
+function streamEffectLayer(previousCard) {
+  const existing = previousCard?.node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
+  if (existing) return existing;
+  const outline = `stream-frame-${++streamFrameId}`;
+  const trail = [];
+  // Overlapping strokes end at the same head. The tail grows brighter along
+  // the path itself, including through corners and across the loop seam.
+  const steps = 16;
+  for (let i = 0; i < steps; i += 1) {
+    const start = i * 30 / steps;
+    trail.push(svgEl("use", {
+      href: "#" + outline, class: "stream-run-solid",
+      "stroke-dasharray": `0 ${start} ${30 - start} 70`,
+      "stroke-opacity": 1 / (steps - i),
+    }));
+  }
+  for (let i = 0; i < 6; i += 1) {
+    const start = i * 3;
+    trail.push(svgEl("use", {
+      href: "#" + outline, class: "stream-run-dot",
+      "stroke-dashoffset": `calc(-1px * (var(--stream-travel) + ${start}))`,
+      "stroke-opacity": (i + 1) / 6,
+    }));
+  }
+  return svgEl("svg", { class: "stream-effect-layer", "aria-hidden": "true" }, [
+    svgEl("defs", {}, [svgEl("path", { id: outline, class: "stream-frame-outline", pathLength: 100 })]),
+    svgEl("g", { class: "stream-run-track" }, trail),
+    svgEl("path", { class: "stream-maintenance-track", pathLength: 100 }),
+    svgEl("line", { class: "stream-ready-strike", x1: "4%", x2: "96%", y1: "calc(100% - 9px)", y2: "calc(100% - 9px)" }),
+  ]);
 }
 
 function renderStreamStatusCard(task, title, presentation) {
@@ -4294,6 +4308,7 @@ function renderActivityRail() {
       "data-stream-title": title,
       "data-current": task.id === state.selectedId ? "" : null,
       "data-running": presentation.running ? "" : null,
+      ...streamEffectAttributes([task]),
       "data-answer-ready": presentation.answerReady ? "" : null,
       "data-answer-arrived": transientAnswerArrivalTaskIds.has(task.id) ? "" : null,
       "data-recent": streamAttentionKind(task) === "recent" ? "" : null,
@@ -4303,7 +4318,7 @@ function renderActivityRail() {
         .filter(Boolean).join(". "),
       title,
     }, [
-      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      streamEffectLayer(reusableActivityCards.get(task.id)),
       renderStreamStatusCard(task, activityTitle, presentation),
     ]), cardAnswerIdentity([task]));
   };
@@ -4448,6 +4463,7 @@ function renderStreamTabs() {
       "aria-pressed": String(open.has(stream.id)),
       "data-current": task?.id === selected.id ? "" : null,
       "data-running": running ? "" : null,
+      ...streamEffectAttributes([task]),
       "data-answer-ready": answerReady ? "" : null,
       "data-answer-arrived": transientAnswerArrivalTaskIds.has(task?.id) ? "" : null,
       "data-state": statusState,
@@ -4479,7 +4495,7 @@ function renderStreamTabs() {
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
     }, [
-      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      streamEffectLayer(reusableStreamTabs.get(stream.id)),
       el("span", { class: "stream-tab-card" }, content()),
     ]), cardAnswerIdentity(task ? [task] : []));
     overflowItems.push(el("button", {
@@ -6794,7 +6810,7 @@ window.AgentHubPruneComposerFiles = pruneComposerFiles;
 function syncMessageUploadActions(head, message) {
   const state = String(message.uploadState ?? "");
   let actions = head?.querySelector("[data-message-upload-actions]");
-  if (!state) { actions?.remove(); return; }
+  if (!state || state === "uploading") { actions?.remove(); return; }
   if (actions?.dataset.uploadState === state) return;
   actions?.remove();
   actions = el("span", { "data-message-upload-actions": "", "data-upload-state": state, class: "msg-upload-actions" });
@@ -7429,6 +7445,8 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
   const disclosureState = MessageView.captureMarkdownDetailsState(target);
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  const headingPattern = /^\s*(#{1,6})\s+(.+)$/u;
+  const listItemPattern = /^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u;
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
@@ -7475,7 +7493,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(renderTechnicalRows(rows));
       continue;
     }
-    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/u);
+    const heading = line.match(headingPattern);
     if (heading) {
       const node = document.createElement(`h${heading[1].length}`);
       appendInlineMarkdown(node, heading[2], fileContext);
@@ -7489,13 +7507,13 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       index = table.nextIndex;
       continue;
     }
-    const list = line.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+    const list = line.match(listItemPattern);
     if (list) {
       const ordered = Boolean(list[2]);
       const node = document.createElement(ordered ? "ol" : "ul");
       if (ordered && Number(list[2]) !== 1) node.start = Number(list[2]);
       while (index < lines.length) {
-        const item = lines[index].match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+        const item = lines[index].match(listItemPattern);
         if (!item || Boolean(item[2]) !== ordered) break;
         const entry = el("li");
         appendInlineMarkdown(entry, item[3], fileContext);
@@ -7503,7 +7521,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
         index += 1;
         let nextIndex = index;
         while (nextIndex < lines.length && !lines[nextIndex].trim()) nextIndex += 1;
-        const nextItem = lines[nextIndex]?.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+        const nextItem = lines[nextIndex]?.match(listItemPattern);
         if (nextItem && Boolean(nextItem[2]) === ordered) index = nextIndex;
       }
       target.append(node);
@@ -7522,12 +7540,16 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(quote);
       continue;
     }
-    const paragraph = [];
+    // An unrecognized block marker is literal text. Consume the first line
+    // before looking for the next block so every pass advances the cursor.
+    const paragraph = [lines[index++]];
     while (index < lines.length
       && lines[index].trim()
       && !MessageView.markdownFenceStart(lines[index])
-      && !/^\s*(?:#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
-      && !(paragraph.length && detailsDepth < 32 && MessageView.markdownDetailsAt(lines, index))
+      && !headingPattern.test(lines[index])
+      && !listItemPattern.test(lines[index])
+      && !/^\s*>\s?/u.test(lines[index])
+      && !(detailsDepth < 32 && MessageView.markdownDetailsAt(lines, index))
       && !markdownTableAt(lines, index)) {
       paragraph.push(lines[index++]);
     }
@@ -8539,6 +8561,22 @@ function renderApprovals() {
   });
 }
 
+const queueIconPaths = {
+  steer: "M3 8l5-5 5 5 M3 13l5-5 5 5",
+  pause: "M5.5 3.5v9 M10.5 3.5v9",
+  cancel: "M4 4l8 8 M12 4l-8 8",
+};
+
+function queueActionButton(label, symbol, attributes) {
+  const path = queueIconPaths[symbol];
+  const icon = path ? svgEl("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" }, [
+    svgEl("path", { d: path, "stroke-width": symbol === "pause" ? 3 : 2 }),
+  ]) : symbol;
+  return el("button", {
+    type: "button", class: "queue-action", title: label, "aria-label": label, ...attributes,
+  }, [icon]);
+}
+
 function renderQueueForTask(taskId, container) {
   const queued = (state.queue.get(taskId) ?? [])
     .slice()
@@ -8575,9 +8613,9 @@ function renderQueueForTask(taskId, container) {
       }));
       if (entry.uploadState) {
         for (const action of entry.uploadState === "paused" ? ["resume", "cancel"] : ["cancel"]) {
-          const button = el("button", {
-            type: "button", class: "queue-accept", [`data-upload-${action}`]: "",
-            text: action === "resume" ? "Продолжить загрузку" : "Отменить отправку",
+          const resume = action === "resume";
+          const button = queueActionButton(resume ? "Продолжить загрузку" : "Отменить отправку", resume ? "▶" : "cancel", {
+            [`data-upload-${action}`]: "",
           });
           button.addEventListener("click", () => emit(`message:upload-${action}`, {
             taskId, clientUserMessageId: entry.clientUserMessageId,
@@ -8586,10 +8624,9 @@ function renderQueueForTask(taskId, container) {
         }
       }
       if (entry.admissionRetryAvailable) {
-        const retry = el("button", {
-          type: "button", class: "queue-accept", "data-message-retry-unconfirmed": "",
-          text: "Повторить отправку",
-          title: "Повторить исходный запрос с тем же идентификатором; приём Hub пока не подтверждён",
+        const retry = queueActionButton("Повторить отправку", "↻", {
+          "data-message-retry-unconfirmed": "",
+          "aria-description": "Повторить исходный запрос с тем же идентификатором; приём Hub пока не подтверждён",
         });
         retry.addEventListener("click", () => emit("message:retry-unconfirmed", {
           taskId, clientUserMessageId: entry.clientUserMessageId,
@@ -8597,9 +8634,9 @@ function renderQueueForTask(taskId, container) {
         actions.push(retry);
       }
       if (entry.cancellationAvailable) {
-        actions.push(el("button", {
-          type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-          title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
+        actions.push(queueActionButton("Отменить", "cancel", {
+          "data-action": "queue-remove", "data-queue-id": entry.id,
+          "aria-description": "Отменить отложенное сообщение",
         }));
       }
     } else {
@@ -8608,87 +8645,64 @@ function renderQueueForTask(taskId, container) {
         && entry.attentionRequired === true
         && entry.conflictKind === "message-steer";
       if (!exactSteerDecision) {
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-steer",
+        actions.push(queueActionButton("В текущий ход", "steer", {
           "data-action": "queue-steer",
           "data-queue-id": entry.id,
-          title: steerAvailable
+          "aria-description": steerAvailable
             ? (task.provider === "claude"
               ? "Прервать текущий ход и продолжить его этим сообщением"
               : "Добавить это сообщение в текущий ход")
             : "Доступно, пока эта задача выполняет ход",
           disabled: !steerAvailable,
-          text: "В текущий ход",
         }));
       }
-      actions.push(el("button", {
-        type: "button",
-        class: "queue-edit",
+      actions.push(queueActionButton("Изменить", "✎", {
         "data-action": "queue-edit",
         "data-queue-id": entry.id,
-        title: "Вернуть весь исходный черновик в основной композер",
-        text: "Изменить",
+        "aria-description": "Вернуть весь исходный черновик в основной композер",
       }));
       if (["queued", "paused"].includes(entry.state)) {
         const movableIndex = movable.findIndex((candidate) => candidate.id === entry.id);
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-move",
+        actions.push(queueActionButton("Поднять сообщение в очереди", "↑", {
           "data-action": "queue-move",
           "data-direction": "up",
           "data-queue-id": entry.id,
-          title: "Поднять сообщение в очереди",
-          "aria-label": "Поднять сообщение в очереди",
           disabled: movableIndex <= 0,
-          text: "↑",
         }));
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-move",
+        actions.push(queueActionButton("Опустить сообщение в очереди", "↓", {
           "data-action": "queue-move",
           "data-direction": "down",
           "data-queue-id": entry.id,
-          title: "Опустить сообщение в очереди",
-          "aria-label": "Опустить сообщение в очереди",
           disabled: movableIndex < 0 || movableIndex >= movable.length - 1,
-          text: "↓",
         }));
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-pause",
-          "data-action": entry.state === "paused" ? "queue-resume" : "queue-pause",
+        const paused = entry.state === "paused";
+        const recheck = paused && entry.waitReason === "provider-thread-active";
+        const pauseLabel = recheck ? "Проверить снова" : paused ? "Продолжить" : "Пауза";
+        const pauseIcon = recheck ? "↻" : paused ? "▶" : "pause";
+        actions.push(queueActionButton(pauseLabel, pauseIcon, {
+          "data-action": paused ? "queue-resume" : "queue-pause",
           "data-queue-id": entry.id,
-          text: entry.state === "paused"
-            ? entry.waitReason === "provider-thread-active" ? "Проверить снова" : "Продолжить"
-            : "Пауза",
         }));
       }
       if (entry.state === "pending") {
         if (entry.lastError) {
-          actions.push(el("button", {
-            type: "button",
-            class: "queue-accept",
+          actions.push(queueActionButton("Повторить", "↻", {
             "data-action": "queue-retry",
             "data-queue-id": entry.id,
-            title: "Повторить доставку в исходный ход с тем же идентификатором",
-            text: "Повторить",
+            "aria-description": "Повторить доставку в исходный ход с тем же идентификатором",
           }));
         }
         if (!entry.lastError || entry.queueAfterTurnAvailable === true) {
-          actions.push(el("button", {
-            type: "button",
-            class: "queue-accept",
+          actions.push(queueActionButton("После хода", "⇥", {
             "data-action": "queue-accept",
             "data-queue-id": entry.id,
-            title: "Явно разрешить отправку после завершения текущего хода",
-            text: "После хода",
+            "aria-description": "Явно разрешить отправку после завершения текущего хода",
           }));
         }
       }
-      actions.push(el("button", {
-        type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-        title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
+      actions.push(queueActionButton("Отменить", "cancel", {
+        "data-action": "queue-remove", "data-queue-id": entry.id,
+        "aria-description": "Отменить отложенное сообщение",
       }));
     }
     const entryAnnotations = Array.isArray(entry.annotations) ? entry.annotations : [];
@@ -11651,6 +11665,10 @@ async function handleAction(action, trigger) {
       });
       break;
     }
+    case "clear-ready-interstream":
+    case "clear-ready-all":
+      emit("activity:clear-ready", { interstreamOnly: action === "clear-ready-interstream" });
+      break;
     case "queue-remove":
       emit("queue:remove", { taskId, id: trigger.dataset.queueId });
       break;
@@ -12524,8 +12542,7 @@ document.addEventListener("agenthub:stream-view-settings-change", (event) => {
   const value = event.detail?.value;
   if (key === "streamStatusEffect") {
     applyStreamStatusEffect(value, { persist: true });
-  } else if (key === "streamStatusStyle") {
-    applyStreamStatusStyle(value, { persist: true });
+
   } else if (key === "activityStreamDetailedCards") {
     applyActivityStreamDetailedCards(value, { persist: true });
   } else if (key === "activityRailVisibility") {

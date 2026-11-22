@@ -202,6 +202,19 @@ test("production app returns the exact queued draft to the main composer and exp
 
     const first = page.locator("[data-queue-id='queued-1']");
     const second = page.locator("[data-queue-id='queued-2']");
+    assert.equal(await first.getByRole("button", { name: "Изменить" }).textContent(), "✎");
+    for (const label of ["В текущий ход", "Пауза", "Отменить"]) {
+      const button = first.getByRole("button", { name: label, exact: true });
+      assert.equal(await button.getAttribute("title"), label);
+      const frame = await button.boundingBox();
+      const ink = await button.locator("svg path").boundingBox();
+      assert.ok(ink.width > 0 && ink.height > 0, label);
+      assert.ok(Math.abs(ink.x + ink.width / 2 - frame.x - frame.width / 2) <= .6, label);
+      assert.ok(Math.abs(ink.y + ink.height / 2 - frame.y - frame.height / 2) <= .6, label);
+    }
+    assert.equal(await first.getByRole("button", { name: "Отменить" }).isEnabled(), true);
+    assert.equal(await first.getByRole("button", { name: "В текущий ход" }).isDisabled(), true);
+    assert.equal(await second.getByRole("button", { name: "Продолжить" }).textContent(), "▶");
     assert.equal(await first.locator("[data-direction='up']").isDisabled(), true);
     assert.equal(await first.locator("[data-direction='down']").isDisabled(), false);
     assert.equal(await second.locator("[data-direction='up']").isDisabled(), false);

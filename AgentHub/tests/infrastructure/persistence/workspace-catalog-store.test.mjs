@@ -35,6 +35,142 @@ async function fixture(t) {
   return store;
 }
 
+async function oldCatalogWithMissingFence(t) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-catalog-startup-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const previous = new WorkspaceCatalogStore({ databaseFile });
+  const startup = new WorkspaceCatalogStore({ databaseFile });
+  let writer;
+  t.after(async () => {
+    if (writer?.isTransaction) writer.exec("ROLLBACK");
+    writer?.close();
+    startup.close();
+    previous.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await previous.load();
+  const { workspace, stream } = previous.createWorkspaceWithStream({ name: "Existing Workspace" });
+  const thread = { provider: "codex", threadId: "existing-thread" };
+  previous.bindThread({ ...thread, streamId: stream.id, source: "created" });
+  const before = previous.hierarchy();
+  previous.close();
+  writer = new DatabaseSync(databaseFile);
+  writer.exec(`
+    DROP TRIGGER hub_preparation_forward_legacy_fence;
+    CREATE TABLE startup_writer_probe (value TEXT NOT NULL);
+  `);
+  assert.equal(writer.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
+  const hasFence = () => Boolean(writer.prepare(
+    "SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = 'hub_preparation_forward_legacy_fence'",
+  ).get());
+  assert.equal(hasFence(), false);
+  return { startup, databaseFile, writer, before, thread, hasFence };
+}
+
+test("Workspace catalog startup waits asynchronously for a WAL writer and preserves old data", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  f.writer.exec("BEGIN IMMEDIATE; INSERT INTO startup_writer_probe VALUES ('retained')");
+  const release = setTimeout(() => f.writer.exec("COMMIT"), 120);
+  t.after(() => clearTimeout(release));
+  const timings = [];
+  await f.startup.load({ onTiming: timing => timings.push(timing) });
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+  assert.ok(f.startup.thread(f.thread));
+  assert.equal(f.hasFence(), true);
+  assert.equal(f.writer.prepare("SELECT value FROM startup_writer_probe").get().value, "retained");
+  assert.equal(f.writer.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  assert.deepEqual(f.writer.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal(timings.length, 1);
+  assert.equal(timings[0].outcome, "ok");
+  assert.ok(timings[0].attempts > 1 && timings[0].contentionWaitMs > 0);
+
+  f.startup.close();
+  await f.startup.load();
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+  assert.equal(f.hasFence(), true);
+});
+
+test("Workspace catalog startup reports a persistent writer without admitting a partial migration", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  f.writer.exec("BEGIN IMMEDIATE");
+  const timings = [];
+  await assert.rejects(f.startup.load({ onTiming: timing => timings.push(timing) }),
+    error => error.errcode === 5 && /database is locked/u.test(error.message));
+  assert.equal(f.writer.isTransaction, true);
+  assert.equal(f.hasFence(), false);
+  assert.equal(timings.length, 1);
+  assert.equal(timings[0].outcome, "error");
+  assert.ok(timings[0].attempts > 1 && timings[0].contentionWaitMs > 0);
+  assert.equal(f.startup.mutationDiagnostics().exhausted, 1);
+
+  f.writer.exec("ROLLBACK");
+  await f.startup.load();
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+  assert.equal(f.hasFence(), true);
+});
+
+
+test("Workspace catalog startup rolls back schema work on a non-contention error", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  f.writer.exec(`
+    DROP TRIGGER hub_workspaces_no_reuse_after_permanent_delete;
+    CREATE TRIGGER fixture_refuses_catalog_version BEFORE UPDATE ON hub_workspace_catalog_meta
+    WHEN OLD.key = 'schema_version'
+    BEGIN SELECT RAISE(ABORT, 'fixture schema refusal'); END;
+  `);
+  const schema = () => f.writer.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY type,name").all();
+  const before = schema();
+  const timings = [];
+  await assert.rejects(f.startup.load({ onTiming: timing => timings.push(timing) }), /fixture schema refusal/u);
+  assert.deepEqual(schema(), before);
+  assert.equal(f.hasFence(), false);
+  assert.equal(timings.length, 1);
+  assert.equal(timings[0].attempts, 1);
+  assert.equal(timings[0].outcome, "error");
+  assert.equal(f.writer.prepare("PRAGMA quick_check").get().quick_check, "ok");
+});
+
+test("Workspace catalog startup preserves the SQLite error after automatic data rollback", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  f.writer.exec(`
+    UPDATE hub_workspaces SET name = 'Experiments' WHERE system_key = 'experiments';
+    CREATE TRIGGER fixture_refuses_legacy_name BEFORE UPDATE OF name ON hub_workspaces
+    WHEN OLD.system_key = 'experiments' AND NEW.name = 'Other'
+    BEGIN SELECT RAISE(ROLLBACK, 'fixture legacy name refusal'); END;
+  `);
+  const rows = () => f.writer.prepare("SELECT id, name FROM hub_workspaces ORDER BY id").all();
+  const before = rows();
+  const timings = [];
+  await assert.rejects(f.startup.load({ onTiming: timing => timings.push(timing) }),
+    error => error.errcode === 1811 && error.message === "fixture legacy name refusal");
+  assert.deepEqual(rows(), before);
+  assert.equal(timings[0]?.attempts, 1);
+  assert.equal(timings[0]?.outcome, "error");
+  assert.equal(f.writer.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  assert.deepEqual(f.writer.prepare("PRAGMA foreign_key_check").all(), []);
+  f.writer.exec("DROP TRIGGER fixture_refuses_legacy_name");
+  await f.startup.load();
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+});
+
+test("an automatic SQLite rollback unwinds nested catalog savepoints without masking the error", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  await f.startup.load();
+  const existing = f.startup.hierarchy().find(workspace => workspace.name === "Existing Workspace");
+  f.writer.exec(`
+    CREATE TRIGGER fixture_refuses_nested_name BEFORE UPDATE OF name ON hub_workspaces
+    WHEN NEW.name = 'Refused name'
+    BEGIN SELECT RAISE(ROLLBACK, 'fixture nested refusal'); END;
+  `);
+  assert.throws(() => f.startup.transaction(() => {
+    f.startup.createWorkspace({ name: "Uncommitted outer Workspace" });
+    f.startup.transaction(() => f.startup.renameWorkspace(existing.id, "Refused name"));
+  }), error => error.errcode === 1811 && error.message === "fixture nested refusal");
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+  f.startup.createWorkspace({ name: "After rollback" });
+  assert.ok(f.startup.hierarchy().some(workspace => workspace.name === "After rollback"));
+});
+
 test('exact Thread resolution retains current binding and bounded display semantics', async (t) => {
   const store = await fixture(t);
   const first = store.createWorkspaceWithStream({ name: 'First' });

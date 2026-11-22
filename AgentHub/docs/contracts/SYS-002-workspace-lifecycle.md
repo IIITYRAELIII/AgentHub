@@ -16,6 +16,15 @@ See [ADR-HUB-447](../decisions/ADR-HUB-447-local-file-location.md).
 
 ## Archive and deletion
 
+The Dashboard closes a Task card independently of its delivery workflow.
+The card moves to the closed archive and retains its workflow status, Git
+references, requirements, checklist, attachments, and activity history.
+When cleanup leaves paths or branches, the confirmation asks
+"Всё равно закрыть?" and lists the remaining items. A second confirmation is
+required if unexpected leftovers first appear after cleanup, and the user can
+cancel without closing the card. The agent instruction is emitted only through
+the MCP result adapter. The user interface never displays it.
+
 Native release membership references preserve the unique checklist decomposition
 owner and archived Task rows (ADR-HUB-415). Their nullable checklist columns are
 migrated by the existing schema owner without rebuilding Tasks or relinking history.

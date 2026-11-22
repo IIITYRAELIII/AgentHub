@@ -317,7 +317,14 @@ export async function createHubInfrastructure({
     databaseFile: journalDatabaseFile,
   }));
   const rawTaskBoardStore = await startupStep("task-board-open", () => new TaskBoardStore({ databaseFile: journalDatabaseFile }));
-  await startupStep("workspace-catalog-load", () => rawWorkspaceCatalogStore.load());
+  await startupStep("workspace-catalog-load", recordPhase => rawWorkspaceCatalogStore.load({
+    onTiming: ({ executionMs, persistenceMs, queueWaitMs, contentionWaitMs, attempts, outcome }) => recordPhase({
+      phase: "catalog-sqlite-mutation",
+      outcome: outcome === "ok" ? "succeeded" : "failed",
+      durationMs: executionMs,
+      persistenceMs, queueWaitMs, contentionWaitMs, attempts,
+    }),
+  }), { providePhaseRecorder: true });
   const preTurnInstructions = new PreTurnInstructionStore({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
