@@ -38,7 +38,7 @@ test("compatibility canary verifies MCP when the model completes without calling
 
   const result = await runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
     dataDir,
-    executableArgs: [FAKE_APP_SERVER, "--skip-model-mcp"],
+    executableArgs: [FAKE_APP_SERVER, "--skip-model-mcp", "--command-case=command"],
     environment: { ...process.env, CODEX_HOME: sourceHome },
     protectDirectory: async () => {},
     rpcTimeoutMs: 3_000,
@@ -51,6 +51,9 @@ test("compatibility canary verifies MCP when the model completes without calling
   assert.equal(result.evidence.mcpReadCount, 1);
   assert.equal(result.evidence.mcpReadMode, "rpc");
   assert.equal(result.evidence.safeToolCount, 1);
+  assert.equal(result.evidence.safeToolMode, "rpc");
+  assert.equal(result.evidence.safeToolApprovalCount, 0);
+  assert.equal(result.evidence.turnIds.tool, null);
   assert.equal(result.evidence.restartResume, true);
   assert.deepEqual(Object.keys(result.evidence.turnIds), [
     "ordinary", "mcp", "tool", "interrupted", "afterCancel", "afterResume",
@@ -133,6 +136,40 @@ test("compatibility canary refuses missing, duplicate or failed MCP read evidenc
       assert.equal(proof.successful, successes);
       assert.equal(proof.mode, "rpc");
       assert.equal(proof.response, response);
+    });
+  }
+});
+
+test("direct shell proof never retries a refusal, invalid result or lost response", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-exec-"));
+  const sourceHome = path.join(root, "source-codex-home");
+  await mkdir(sourceHome);
+  await writeFile(path.join(sourceHome, "auth.json"), "{}\n");
+  context.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  for (const [scenario, kind, effects] of [
+    ["rpc-error", "scenario-failure", []],
+    ["bad-exit", "safe-tool-unconfirmed", ["command/exec"]],
+    ["bad-output", "safe-tool-unconfirmed", ["command/exec"]],
+    ["bad-stderr", "safe-tool-unconfirmed", ["command/exec"]],
+    ["timeout-after-effect", "rpc-timeout", ["command/exec"]],
+  ]) {
+    await context.test(scenario, async () => {
+      const dataDir = path.join(root, scenario);
+      const ledger = path.join(root, `${scenario}.effects`);
+      await assert.rejects(runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
+        dataDir, executableArgs: [FAKE_APP_SERVER, `--exec-case=${scenario}`, `--tool-ledger=${ledger}`],
+        environment: { ...process.env, CODEX_HOME: sourceHome }, protectDirectory: async () => {},
+        rpcTimeoutMs: 3_000, totalTimeoutMs: 15_000, logger: { error() {} },
+      }), { message: `Codex compatibility canary failed during safe-tool (${kind})` });
+      const failure = JSON.parse(await readFile(path.join(dataDir, "codex-executable-canary", "last-failure.json"), "utf8"));
+      assert.deepEqual(failure.protocolEvents.filter(event => event.event === "safe-tool-outcome")
+        .map(({ mode, response }) => ({ mode, response })), [{ mode: "rpc", response: "unconfirmed" }]);
+      const ledgerText = await readFile(ledger, "utf8").catch(error => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      });
+      assert.deepEqual(ledgerText.trim().split("\n").filter(Boolean), effects);
+      assert.doesNotMatch(JSON.stringify(failure), /unrelated (?:output|stderr)|Safe probe refused/u);
     });
   }
 });
