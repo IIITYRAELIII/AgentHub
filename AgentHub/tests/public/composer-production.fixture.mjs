@@ -206,6 +206,7 @@ async function openFixture(page, {
   chunkedUpload = false,
   attachmentStorageOpenFailure = false,
   surface = "vscode",
+  localWeb = false,
   directTransport = false,
   webAppRoot = WEB_APP_ROOT,
   assetOverrides = {},
@@ -472,10 +473,15 @@ async function openFixture(page, {
     transportSurface: surface, direct: directTransport, followSelection,
   });
   const uploads = new Map();
+  const origin = localWeb ? "http://127.0.0.1" : "http://agent-hub.test";
   await page.route("**/*", async (route) => {
     const requestUrl = new URL(route.request().url());
-    if (requestUrl.hostname !== "agent-hub.test") {
+    if (requestUrl.origin !== origin) {
       await route.abort();
+      return;
+    }
+    if (localWeb && requestUrl.pathname === "/api/local-session") {
+      await route.fulfill({ status: 204 });
       return;
     }
     if (requestUrl.pathname === "/api/attachment-upload") {
@@ -617,7 +623,7 @@ async function openFixture(page, {
       await route.fulfill({ status: 404, body: "Not found" });
     }
   });
-  await page.goto(`http://agent-hub.test/${initialHash}`, { waitUntil: "load" });
+  await page.goto(`${origin}/${initialHash}`, { waitUntil: "load" });
   if (expectedTaskId) {
     try {
       await page.waitForFunction((taskId) => document.querySelector(`[data-stream-task-id='${taskId}']`), expectedTaskId, {

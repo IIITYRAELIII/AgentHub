@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { githubAccountFetch } from "../network/github-account-request.mjs";
 import { createReadStream } from "node:fs";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
@@ -31,7 +32,7 @@ export async function packageDirectory(directory) {
 }
 
 async function metadataFor(tag) {
-  const response = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases/tags/${tag}`, {
+  const response = await githubAccountFetch(`https://api.github.com/repos/${REPOSITORY}/releases/tags/${tag}`, {
     redirect: "error", signal: AbortSignal.timeout(30_000),
     headers: { Accept: "application/vnd.github+json", "User-Agent": "AgentHub-Package-Handoff",
       "X-GitHub-Api-Version": "2022-11-28" },

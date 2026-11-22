@@ -5658,6 +5658,16 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
   position: static;
 }
 
+.github-account-heading {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  position: relative;
+}
+
+.github-browser-login { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.github-browser-login[hidden] { display: none; }
+
 .workspace-task-workflow-help {
   align-items: center;
   background: transparent;
@@ -16705,3 +16715,7 @@ html:not([data-surface="mobile"]) .statistics-account-panel
 .statistics-aside .statistics-preferences-grid {
   grid-template-columns: minmax(0, 1fr);
 }
+.github-account { margin-top: 12px; min-width: 0; }
+.github-account small { overflow-wrap: anywhere; }
+.github-account label { display: grid; gap: 6px; min-width: 0; }
+.github-account input { width: 100%; min-width: 0; box-sizing: border-box; }
