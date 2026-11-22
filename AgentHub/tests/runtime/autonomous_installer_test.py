@@ -823,6 +823,9 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             bundle_module = SOURCE.parents[1] / 'src/infrastructure/process/codex-executable-bundle.mjs'
             module('src/infrastructure/process/codex-executable-bundle.mjs',
                    "export * from " + json.dumps(bundle_module.as_uri()))
+            executable_module = SOURCE.parents[1] / 'src/infrastructure/process/codex-executable.mjs'
+            module('src/infrastructure/process/codex-executable.mjs',
+                   "export * from " + json.dumps(executable_module.as_uri()))
             rejection = ("Codex bundle member signature is not trusted (member=helper.dll, status=Valid, "
                          "reason=publisher-not-openai, version=0.151.0)")
             module('src/runtime/publication-readiness.mjs',(SOURCE.parents[1]/'src/runtime/publication-readiness.mjs').read_text(encoding='utf-8'))
@@ -832,6 +835,8 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             (root/'data').mkdir(); (root/'data/bot.lock').write_text('{"pid":123}')
             (root/'config.json').write_text('{"miniApp":{"host":"127.0.0.1","port":8787}}')
             value=dict(releaseId='new',hostPid=456,hostCreated='789',python=sys.executable,installer=str(assertion))
+            preflight=dict(status='eligible', rejection='Codex executable signature is not trusted (NotSigned)')
+            value['codexPreflight']=preflight
             input_path=base/'input.json'; installer._write_record(input_path,value)
             for state in ['ready','failed','disabled']:
                 with self.subTest(state=state):
@@ -858,9 +863,11 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                         self.assertEqual(rolled_back.returncode,0,rolled_back.stderr)
                         op=installer._read_record(root/'data/operation.json')
                         self.assertEqual(op['outcome'],'rolled-back')
+                        self.assertEqual(installer.original_status('same-original',op).get('codexPreflight'),preflight)
                         self.assertEqual(op['metadata']['autonomousCodexStartupRejection'],rejection)
                     else:
                         self.assertEqual(result.returncode,0,result.stderr); self.assertEqual(op['status'],'succeeded')
+                        self.assertEqual(installer.original_status('same-original',op).get('codexPreflight'),preflight)
                         asserted=json.loads((root/'asserted.json').read_text(encoding='utf-8'))
                         self.assertEqual(asserted[:4],['--assert-launch',str(root),'456','789'])
                         self.assertEqual(len(asserted),4 if state=='disabled' else 5)

@@ -1968,8 +1968,10 @@ if(action==='wait-probe') {
   const unresolved=recovered && value.retirementUnknown===true;
   let codexPreflight;
   if(value.codexPreflight?.status==='eligible' && typeof value.codexPreflight.rejection==='string') {
+    const {isCodexPreflightRejectionMessage}=await load('src/infrastructure/process/codex-executable.mjs');
     const {isCodexBundleSignatureRejectionMessage}=await load('src/infrastructure/process/codex-executable-bundle.mjs');
-    if(isCodexBundleSignatureRejectionMessage(value.codexPreflight.rejection))
+    if(isCodexPreflightRejectionMessage(value.codexPreflight.rejection)
+       || isCodexBundleSignatureRejectionMessage(value.codexPreflight.rejection))
       codexPreflight={status:'eligible',rejection:value.codexPreflight.rejection};
   }
   const metadata={...await storageCheckpoint(),...(signatureRejection?{autonomousCodexStartupRejection:signatureRejection}:{}),
