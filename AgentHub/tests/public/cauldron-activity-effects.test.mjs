@@ -21,8 +21,8 @@ async function setting(page, key, value) {
   await frames(page);
 }
 
-async function publish(page, { tick = 0, running = true, unread = false, revision = 0, interstreamCompaction = false } = {}) {
-  await page.evaluate(({ tick, running, unread, revision, interstreamCompaction }) => {
+async function publish(page, { tick = 0, running = true, unread = false, revision = 0, interstreamCompaction = false, interstreamRun = false } = {}) {
+  await page.evaluate(({ tick, running, unread, revision, interstreamCompaction, interstreamRun }) => {
     window.AgentHub.setWorkspaces([{ id: "workspace-0", name: "Workspace", settings: {} }], ["workspace:workspace-0", "notes"]);
     window.AgentHub.setTasks([0, 1].map((index) => ({
       id: `task-${index}`, provider: "codex", agentLabel: "Codex",
@@ -30,16 +30,18 @@ async function publish(page, { tick = 0, running = true, unread = false, revisio
       streamName: index ? "Idle" : "Active", streamOrdinal: index + 1, selected: index === 0,
       status: index || !running ? "ready" : "running", running: index === 0 && running,
       unread: index === 0 && unread, openQuestion: index === 0 && unread,
+      interstreamRun: index === 0 && interstreamRun,
       streamSettings: {}, progressStage: `stage-${tick}`,
       lastActivity: new Date().toISOString(),
       context: index === 0 && interstreamCompaction ? { compaction: { status: "running" } } : undefined,
       latestFinal: index === 0 && revision ? { provider: "codex", threadId: "thread-0", turnId: "turn-0", revision, interstreamOnly: interstreamCompaction } : null,
     })));
-  }, { tick, running, unread, revision, interstreamCompaction });
+  }, { tick, running, unread, revision, interstreamCompaction, interstreamRun });
   await frames(page);
 }
 
 async function open(page) {
+  const nonce = "dHJhaWwtdGVzdA==";
   const snapshot = { apiVersion: 3, server: { status: "online" }, tasks: [], workspaces: [],
     archivedWorkspaces: [], boardTasks: [], boardLayout: { columnOrder: [] }, deferredInputs: [],
     messageReceipts: [], pendingApprovals: [], settings: { provider: "codex", models: [],
@@ -49,10 +51,12 @@ async function open(page) {
     const url = new URL(route.request().url());
     if (url.hostname !== "agent-hub.test") return route.abort();
     if (url.pathname === "/") {
-      const html = renderThemeHtml(await readFile(new URL("index.html", ROOT), "utf8"), registry)
+      const html = renderThemeHtml(await readFile(new URL("index.html", ROOT), "utf8"), registry, { nonce })
+        .replace("</head>", `<style nonce="${nonce}">.task-time, .provider-dot { visibility: hidden !important; }</style></head>`)
         .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
         .replace(/\s*<script src="\/(?:browser-device-auth|hub-client)\.js" defer><\/script>/gu, "");
-      return route.fulfill({ contentType: "text/html", body: html });
+      return route.fulfill({ contentType: "text/html", body: html,
+        headers: { "Content-Security-Policy": `style-src 'self' 'nonce-${nonce}'` } });
     }
     if (url.pathname === "/api/snapshot" || url.pathname === "/api/control") {
       return route.fulfill({ contentType: "application/json", body: JSON.stringify(url.pathname.endsWith("control") ? { ok: true, result: snapshot } : snapshot) });
@@ -67,8 +71,6 @@ async function open(page) {
   await page.goto("https://agent-hub.test/");
   await page.waitForFunction(() => typeof window.AgentHub === "object");
   await page.locator("[data-theme-select]").selectOption("cauldron", { force: true });
-  // Text clocks are not part of the status paint oracle.
-  await page.addStyleTag({ content: ".task-time, .provider-dot { visibility: hidden !important; }" });
   await publish(page);
 }
 
@@ -312,5 +314,30 @@ test("The head leads a fading trail and the lower ready line fades at both ends"
     const [tail, body, head, left, center, right] = samples;
     assert.ok(tail < body && body < head, `trail intensity: ${samples}`);
     assert.ok(center > 2 * Math.max(left, right) && center > 10, `ready intensity: ${samples}`);
+  } finally { await browser.close(); }
+});
+
+test("Inter-stream dots stay separated through a full lap under the server style policy", async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } });
+    await open(page);
+    await page.locator("[data-theme-select]").selectOption("nexus", { force: true });
+    await setting(page, "streamStatusEffect", "dynamic");
+    await publish(page, { interstreamRun: true });
+    for (const selector of [TAB, RAIL]) {
+      const card = page.locator(selector);
+      for (const time of [0, 250, 500, 750, 1000, 1250, 1500, 1750]) {
+        const offsets = await card.evaluate((node, time) => {
+          const track = node.querySelector(".stream-run-track");
+          const [animation] = track.getAnimations();
+          animation.pause();
+          animation.currentTime = time;
+          return [...track.querySelectorAll(".stream-run-dot")].map(dot =>
+            parseFloat(getComputedStyle(dot).strokeDashoffset));
+        }, time);
+        assert.equal(new Set(offsets).size, 6, selector + " at " + time + " ms: " + offsets);
+      }
+    }
   } finally { await browser.close(); }
 });

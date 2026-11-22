@@ -4177,7 +4177,7 @@ function streamEffectLayer(previousCard) {
     const start = i * 3;
     trail.push(svgEl("use", {
       href: "#" + outline, class: "stream-run-dot",
-      style: `--dot-position: ${start}`,
+      "stroke-dashoffset": `calc(-1px * (var(--stream-travel) + ${start}))`,
       "stroke-opacity": (i + 1) / 6,
     }));
   }
