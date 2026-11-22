@@ -53,6 +53,12 @@ function unavailableRecordedIdentity(error) {
   return [CODEX_CANDIDATE_MISSING, "ENOENT", "ENOTDIR", "CODEX_BUNDLE_UNAVAILABLE"].includes(error?.code);
 }
 
+function safeToolProof(canary, candidate) {
+  if (canary?.status !== "passed" || canary.evidence?.safeToolCount !== 1
+    || !sameIdentity(canary.identity, candidate)) return null;
+  return { identity: identity(candidate), status: "passed", evidence: { safeToolCount: 1 } };
+}
+
 function initialState() {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -65,6 +71,7 @@ function initialState() {
     background: null,
     failedIdentity: null,
     canary: null,
+    lastKnownGoodCanary: null,
     status: "uninitialized",
     reason: null,
     lastError: null,
@@ -78,6 +85,8 @@ export class CodexExecutableUpdateService {
   #loadPromise = null;
   #state = initialState();
   #selection = null;
+  #selectionCanary = null;
+  #startupSelection = null;
   #verifiedCandidates = [];
   #rollbackIdentity = null;
   #savePromise = Promise.resolve();
@@ -154,6 +163,8 @@ export class CodexExecutableUpdateService {
       if (parsed.trustedCandidates != null && (!Array.isArray(parsed.trustedCandidates)
         || parsed.trustedCandidates.some((entry) => !validIdentity(entry)))) throw new Error("invalid trusted identities");
       const state = { ...initialState(), ...parsed };
+      state.lastKnownGoodCanary = safeToolProof(state.lastKnownGoodCanary, state.lastKnownGood)
+        ?? safeToolProof(state.canary, state.lastKnownGood);
       if (!isCodexBundleSignatureRejectionMessage(state.recordedSignatureRejection)) {
         state.recordedSignatureRejection = null;
       }
@@ -250,45 +261,48 @@ export class CodexExecutableUpdateService {
     ));
   }
 
-  async #select(candidate, status, reason = null) {
+  async #select(candidate, status, reason = null, { measure, retainedCustody } = {}) {
     const previous = this.#selectionCustody;
     this.#selection = identity(candidate);
     const custody = candidate.bundle ? {
       identity: identity(candidate), bound: false,
-      lease: await this.acquireCustody(candidate.bundle),
+      lease: retainedCustody ?? await measure("selectionCustodyMs", () => this.acquireCustody(candidate.bundle)),
     } : null;
+    let proof = safeToolProof(this.#state.canary, candidate) ?? safeToolProof(this.#state.lastKnownGoodCanary, candidate);
     try {
-      if (candidate.bundle?.codeModeHost && !(this.#state.canary?.status === "passed"
-        && sameIdentity(this.#state.canary.identity, candidate) && this.#state.canary.evidence?.safeToolCount === 1)) {
+      custody?.lease.assertAlive();
+      if (candidate.bundle?.codeModeHost && !proof) {
         const startedAt = this.now().toISOString();
-        const result = await this.runCanary(candidate);
+        const result = await measure("canaryMs", () => this.runCanary(candidate));
         if (result?.ok !== true || result.evidence?.safeToolCount !== 1) {
           throw new Error("Codex compatibility canary did not confirm safe tool execution");
         }
         custody.lease.assertAlive();
         this.#state.canary = { identity: identity(candidate), status: "passed", startedAt,
           completedAt: this.now().toISOString(), evidence: result.evidence };
+        proof = safeToolProof(this.#state.canary, candidate);
       }
     } catch (error) { await custody?.lease.release(); throw error; }
     this.#state.selected = identity(candidate);
     this.#state.status = status;
     this.#state.reason = reason;
     this.#state.lastError = null;
-    try { await this.#save(); }
+    try { await measure("stateWriteMs", () => this.#save()); }
     catch (error) { await custody?.lease.release(); throw error; }
     this.#selectionCustody = custody;
+    this.#selectionCanary = proof;
     if (previous && !previous.bound) await previous.lease.release();
     return candidate.path;
   }
 
-  async #freshRecorded(candidate) {
-    const verified = await this.verifyRecorded(candidate, { executableArgs: this.executableArgs });
+  async #freshRecorded(candidate, inspection = {}) {
+    const verified = await this.verifyRecorded(candidate, { executableArgs: this.executableArgs, ...inspection });
     if (!sameCoreIdentity(candidate, verified)) throw new Error("Recorded Codex executable identity changed");
     return verified;
   }
 
-  async #usableRecorded(candidate, { prepared = false } = {}) {
-    try { return await this.#freshRecorded(candidate); }
+  async #usableRecorded(candidate, { prepared = false, ...inspection } = {}) {
+    try { return await this.#freshRecorded(candidate, inspection); }
     catch (error) {
       this.#state.lastError = codexExecutableRejectionMessage(error);
       if (!prepared && !unavailableRecordedIdentity(error)) {
@@ -325,13 +339,50 @@ export class CodexExecutableUpdateService {
   waitForCustodyRelease() { return this.#custodyReleased; }
 
   async selectForStart() {
+    const startedAt = performance.now();
+    const selection = { startedAtMs: Date.now(), phases: {} };
+    this.#startupSelection = selection;
+    const measure = async (phase, work) => {
+      const start = performance.now();
+      try { return await work(); }
+      finally { selection.phases[phase] = (selection.phases[phase] ?? 0) + Math.round(performance.now() - start); }
+    };
+    try {
+      const command = await this.#selectForStart(measure);
+      selection.outcome = "succeeded";
+      return command;
+    } catch (error) {
+      selection.outcome = "failed";
+      throw error;
+    } finally {
+      selection.durationMs = Math.round(performance.now() - startedAt);
+    }
+  }
+
+  async #selectRecorded(candidate, { status, reason, prepared, measure }) {
+    let held;
+    try {
+      const verified = await measure("recordedMs", () => this.#usableRecorded(candidate, {
+        prepared, measure, retainCustody: custody => { held = custody; },
+      }));
+      if (!verified) return null;
+      const outcome = typeof status === "function" ? status() : status;
+      const retainedCustody = held;
+      held = null;
+      return await this.#select(verified, outcome, reason, { measure, retainedCustody });
+    } finally {
+      if (held) await measure("inspectionReleaseMs", () => held.release());
+    }
+  }
+
+  async #selectForStart(measure) {
     if (this.requestedExecutable) {
       this.#selection = { path: this.requestedExecutable, version: null, sha256: null, source: "manual-override" };
       this.#state.status = "manual-override";
       this.#state.reason = "codexExecutable";
       return this.requestedExecutable;
     }
-    await this.#load();
+    await measure("stateReadMs", () => this.#load());
     if (this.platform !== "win32") {
       this.#selection = { path: "codex", version: null, sha256: null, source: "path-fallback" };
       this.#state.status = "path-fallback";
@@ -340,37 +391,47 @@ export class CodexExecutableUpdateService {
     }
     if (this.#rediscoverOnStart) {
       this.#rediscoverOnStart = false;
-      return this.#bootstrapSelection();
+      return this.#bootstrapSelection(measure);
     }
 
     if (this.#rollbackIdentity) {
       const rollback = this.#rollbackIdentity;
       this.#rollbackIdentity = null;
-      const verified = this.#matchesPin(rollback) ? await this.#usableRecorded(rollback) : null;
-      if (verified) return this.#select(verified, "rollback-starting", "candidate-startup-failed");
+      if (this.#matchesPin(rollback)) {
+        const command = await this.#selectRecorded(rollback, {
+          status: "rollback-starting", reason: "candidate-startup-failed", measure,
+        });
+        if (command) return command;
+      }
     }
     const prepared = this.#state.prepared;
     if (this.#usablePrepared(this.#state) && !this.#hasActiveCodexRuns()) {
-      const verified = await this.#usableRecorded(prepared, { prepared: true });
-      if (verified) return this.#select(verified, "candidate-starting", "background-verified");
+      const command = await this.#selectRecorded(prepared, {
+        prepared: true, status: "candidate-starting", reason: "background-verified", measure,
+      });
+      if (command) return command;
     }
     const lastKnownGood = this.#state.lastKnownGood;
     if (validIdentity(lastKnownGood) && this.#matchesPin(lastKnownGood)) {
-      const verified = await this.#usableRecorded(lastKnownGood);
-      if (verified) return this.#select(verified, !this.autoUpdateEnabled ? "disabled"
+      const command = await this.#selectRecorded(lastKnownGood, { measure, status: () => !this.autoUpdateEnabled ? "disabled"
         : this.#hasActiveCodexRuns() && prepared ? "deferred-active-runs"
-          : this.versionPin ? "pinned" : "current");
+          : this.versionPin ? "pinned" : "current" });
+      if (command) return command;
       this.#recoverUnavailable = this.canRecoverUnavailableSelection() === true;
     }
     if (this.#recoverUnavailable && this.#usablePrepared(this.#state)) {
-      const verified = await this.#usableRecorded(prepared, { prepared: true });
-      if (verified) return this.#select(verified, "candidate-starting", "unavailable-recorded-bundle-recovery");
+      const command = await this.#selectRecorded(prepared, {
+        prepared: true, status: "candidate-starting", reason: "unavailable-recorded-bundle-recovery", measure,
+      });
+      if (command) return command;
     }
-    return this.#bootstrapSelection();
+    return this.#bootstrapSelection(measure);
   }
 
-  async #bootstrapSelection() {
-    const discovery = await this.discover(this.#discoveryOptions());
+  async #bootstrapSelection(measure) {
+    const discover = () => measure("discoveryMs", () => this.discover({ ...this.#discoveryOptions(), measure }));
+    const select = (candidate, status, reason) => this.#select(candidate, status, reason, { measure });
+    const discovery = await discover();
     this.#verifiedCandidates = discovery.candidates ?? [];
     this.#state.trustedCandidates = this.#verifiedCandidates.map(identity);
     const { candidate, verifiedLkg, legacy } = this.#discoverySelection(this.#verifiedCandidates);
@@ -400,17 +461,17 @@ export class CodexExecutableUpdateService {
         await this.#save();
         throw new Error("Automatic Codex executable adoption is disabled and no trusted previous executable is available");
       }
-      return this.#select(fallback, "disabled", "automatic-update-disabled");
+      return select(fallback, "disabled", "automatic-update-disabled");
     }
     if (sameIdentity(candidate, verifiedLkg) || sameIdentity(candidate, this.#state.active)) {
-      return this.#select(candidate, this.versionPin ? "pinned" : "current");
+      return select(candidate, this.versionPin ? "pinned" : "current");
     }
     if (sameIdentity(candidate, this.#state.failedIdentity)) {
       const fallback = verifiedLkg ?? legacy;
       if (!fallback || sameIdentity(fallback, candidate)) {
         throw new Error(`Codex ${candidate.version} is blocked after a failed compatibility check`);
       }
-      return this.#select(fallback, "candidate-blocked", "failed-identity-unchanged");
+      return select(fallback, "candidate-blocked", "failed-identity-unchanged");
     }
     if (this.#hasActiveCodexRuns() && !this.#recoverUnavailable) {
       const fallback = verifiedLkg ?? legacy;
@@ -420,17 +481,17 @@ export class CodexExecutableUpdateService {
         await this.#save();
         throw new Error("Codex executable update is deferred while active runs require recovery");
       }
-      return this.#select(fallback, "deferred-active-runs", `candidate-${candidate.version}`);
+      return select(fallback, "deferred-active-runs", `candidate-${candidate.version}`);
     }
 
     const startedAt = this.now().toISOString();
     try {
-      const custody = candidate.bundle ? await this.acquireCustody(candidate.bundle) : null;
+      const custody = candidate.bundle ? await measure("selectionCustodyMs", () => this.acquireCustody(candidate.bundle)) : null;
       let result;
-      try { result = await this.runCanary(candidate); }
+      try { result = await measure("canaryMs", () => this.runCanary(candidate)); }
       finally { await custody?.release(); }
       if (result?.ok !== true) throw new Error(result?.error || "compatibility canary did not pass");
-      const confirmedDiscovery = await this.discover(this.#discoveryOptions());
+      const confirmedDiscovery = await discover();
       const confirmedCandidates = confirmedDiscovery.candidates ?? [];
       const confirmed = confirmedCandidates.find((entry) => sameIdentity(entry, candidate));
       if (!confirmed) throw new Error("Codex executable identity changed after compatibility canary");
@@ -448,7 +509,7 @@ export class CodexExecutableUpdateService {
         completedAt: this.now().toISOString(),
         evidence: result.evidence ?? null,
       };
-      return this.#select(confirmed, "candidate-starting", this.versionPin ? "version-pin" : "newest-installed");
+      return select(confirmed, "candidate-starting", this.versionPin ? "version-pin" : "newest-installed");
     } catch (error) {
       this.#state.canary = {
         identity: identity(candidate),
@@ -466,7 +527,7 @@ export class CodexExecutableUpdateService {
         await this.#save();
         throw new Error(`Codex ${candidate.version} compatibility canary failed: ${error.message}`);
       }
-      return this.#select(fallback, "canary-failed-using-last-known-good", `candidate-${candidate.version}`);
+      return select(fallback, "canary-failed-using-last-known-good", `candidate-${candidate.version}`);
     }
   }
 
@@ -595,6 +656,7 @@ export class CodexExecutableUpdateService {
     this.#state.active = identity(this.#selection);
     this.#state.selected = identity(this.#selection);
     this.#state.lastKnownGood = identity(this.#selection);
+    this.#state.lastKnownGoodCanary = this.#selectionCanary;
     if (sameIdentity(this.#state.prepared, this.#selection)) this.#state.prepared = null;
     this.#state.status = this.#state.status === "rollback-starting" ? "rolled-back" : "ready";
     this.#state.reason = null;
@@ -650,6 +712,7 @@ export class CodexExecutableUpdateService {
       rejected: this.#state.rejected ?? [],
       lastError: this.#state.lastError,
       recordedSignatureRejection: this.#state.recordedSignatureRejection,
+      startupSelection: this.#startupSelection ? { ...this.#startupSelection, phases: { ...this.#startupSelection.phases } } : null,
       updatedAt: this.#state.updatedAt,
     };
   }

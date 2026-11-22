@@ -361,3 +361,26 @@ test("Ready and existing startup trace do not depend on a never-resolving old-ru
   assert.equal(records.some(record => record.stage === "startup-runs"), false);
   assert.ok(records.some(record => record.stage === "startup-readiness" && record.outcome === "succeeded"));
 });
+
+test("failed selection retains its phase timing on the original provider startup trace", async () => {
+  const records = [];
+  const health = createRuntimeHealth();
+  const { service } = coordinator({
+    health,
+    initializeProvider: async () => {
+      health.setDiagnosticSource("codexExecutableUpdate", () => ({
+        startupSelection: { startedAtMs: Date.now(), durationMs: 11, outcome: "failed", phases: { inspectionCustodyMs: 9 } },
+      }));
+      throw new Error("fixture provider failed");
+    },
+    providerIsRunning: () => false,
+    commandTrace: new CommandTraceService({ store: {
+      appendBestEffort: span => { records.push(span); return true; },
+    } }), startupTraceId: "startup-selection-1",
+  });
+  await service.start();
+  const failure = records.find(row => row.stage === "startup-provider" && row.outcome === "failed");
+  assert.equal(failure.commandId, "startup:startup-selection-1");
+  assert.equal(failure.metadata.codexSelection.outcome, "failed");
+  assert.deepEqual(failure.metadata.codexSelection.phases, { inspectionCustodyMs: 9 });
+});

@@ -412,6 +412,12 @@ only catalog SQLite work. Catalog schema changes commit atomically; an exhausted
 or unrelated SQLite failure remains a startup failure. Missing terminal phases
 and a passing private restart do not establish a historical lock holder.
 
+The terminal provider startup span includes the Codex selection outcome and
+durations from the same attempt, including recorded identity, bundle inventory,
+signature and process probes, custody, canary and state persistence when used.
+These are bounded, content-free timings. Child phase durations can be inside
+the recorded or discovery duration and must not be added to their parent.
+
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
 startup, on writes and at most once per minute while idle. Limit maintenance
