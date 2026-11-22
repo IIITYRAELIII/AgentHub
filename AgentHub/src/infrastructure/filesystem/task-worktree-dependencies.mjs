@@ -745,9 +745,14 @@ async function seedFromInstalledMain({ mainProjectRoot, relativeProject, manifes
     const file = path.join(packageRoot, name);
     const expectedEntry = await optionalLstat(file);
     if (!expectedEntry?.isFile() || expectedEntry.isSymbolicLink()) return null;
-    return JSON.parse((await readBoundedFile(file, {
-      maxBytes, expectedEntry, label: "Main dependency source", fileSystem,
-    })).toString("utf8"));
+    try {
+      return JSON.parse((await readBoundedFile(file, {
+        maxBytes, expectedEntry, label: "Main dependency source", fileSystem,
+      })).toString("utf8"));
+    } catch (error) {
+      if (error instanceof SyntaxError || error.code === "ENOENT") return null;
+      throw error;
+    }
   };
   const mainManifest = await readMetadata("package.json", MAX_PACKAGE_METADATA_BYTES);
   const mainLock = await readMetadata("package-lock.json", limits.maxPackageLockBytes);
@@ -878,15 +883,16 @@ async function prepareNpmProjectTraced({
       assertSourceContext: async () => {
         if (await hasProjectNpmConfiguration(packageRoot, projectRoot)) throw new Error("Task npm configuration changed during shared input preparation");
       },
-      prepare: async (root, sharedLease) => {
-        const mainProjectRoot = await resolveMainProjectRoot?.();
-        if (mainProjectRoot && await seedFromInstalledMain({
+      prepareFromMain: resolveMainProjectRoot ? async (root, sharedLease) => {
+        const mainProjectRoot = await resolveMainProjectRoot();
+        return !!mainProjectRoot && seedFromInstalledMain({
           mainProjectRoot, relativeProject, manifest, lock, root, fingerprint, limits, fileSystem,
           expectedPackages, rootOptionalPackages, lease: sharedLease,
-        })) return;
-        await prepareNpmProject({ projectRoot: root, resolvedProjectRoot: root, lockfile: path.join(root, "package-lock.json"),
-          runNpm, limits, fileSystem, lease: sharedLease, verify: true });
-      } });
+        });
+      } : null,
+      prepare: (root, sharedLease) => prepareNpmProject({ projectRoot: root, resolvedProjectRoot: root,
+        lockfile: path.join(root, "package-lock.json"), runNpm, limits, fileSystem, lease: sharedLease, verify: true }),
+    });
     if (result.sharedStorage.kind === DIRECTORY_INPUT) {
       return { manager: "npm", project: relativeProject, lockfile: "package-lock.json", fingerprint, ...result };
     }

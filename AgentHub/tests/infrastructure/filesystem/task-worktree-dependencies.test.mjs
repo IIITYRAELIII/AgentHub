@@ -1096,6 +1096,63 @@ test("shared attachment checks ownership after its last source read", async cont
   await assert.rejects(lstat(path.join(task, "node_modules")), { code: "ENOENT" });
 });
 
+test("malformed optional main metadata cannot poison the compatible shared input", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-unusable-main-deps-"));
+  context.after(() => rmTree(parent));
+  const main = path.join(parent, "main");
+  const task = path.join(parent, "task");
+  const project = { dependencies: { tiny: "1.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "1.0.0" } } };
+  await writeNpmProject(main, project);
+  await writeNpmProject(task, project);
+  await materializeLockedState(main);
+  const mainLock = path.join(main, "package-lock.json");
+  const validLock = await readFile(mainLock);
+  await writeFile(mainLock, "{");
+  const lease = { async assertOwned() {} };
+  let installs = 0;
+  const inputs = { projectRoot: task, lockfiles: [path.join(task, "package-lock.json")], lease,
+    directoryReuse: true, verify: false, resolveMainProjectRoot: async () => main,
+    sharedDependencies: (key, run) => run({ root: path.join(parent, "inputs", key), lease, coveredLease: lease }),
+    runNpm: async (_, { cwd }) => { installs++; await materializeLockedState(cwd); },
+  };
+  const [first] = await prepareTaskWorktreeDependencies(inputs);
+  assert.equal(first.prepared, true);
+  assert.equal(installs, 1);
+  await writeFile(mainLock, validLock);
+  assert.equal((await prepareTaskWorktreeDependencies(inputs))[0].prepared, false);
+  assert.equal(installs, 1);
+});
+
+test("an interrupted copy from main leaves the canonical shared input available for retry", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-main-copy-retry-"));
+  context.after(() => rmTree(parent));
+  const task = path.join(parent, "task");
+  await writeNpmProject(task);
+  const fingerprint = "a".repeat(64);
+  const root = path.join(parent, "inputs", fingerprint);
+  const lease = { async assertOwned() {} };
+  const input = {
+    packageRoot: task, fingerprint, lease, directoryReuse: true, verify: false,
+    limits: { maxEntriesPerDirectory: 100, maxTotalDirectoryEntries: 100 },
+    withOwner: (_, run) => run({ root, lease, coveredLease: lease }),
+    manifestContent: await readFile(path.join(task, "package.json")),
+    lockfileContent: await readFile(path.join(task, "package-lock.json")),
+    prepare: () => assert.fail("npm started while reusing main"),
+  };
+  await assert.rejects(reuseTaskDependencyInputs({ ...input, prepareFromMain: async stage => {
+    await mkdir(path.join(stage, "node_modules"));
+    throw new Error("installed main became unavailable during copy");
+  } }), /installed main became unavailable/u);
+  await assert.rejects(lstat(root), { code: "ENOENT" });
+  const result = await reuseTaskDependencyInputs({ ...input, prepareFromMain: async stage => {
+    await mkdir(path.join(stage, "node_modules"));
+    await writeFile(path.join(stage, "node_modules/.agent-hub-task-dependencies.json"), "{}");
+    return true;
+  } });
+  assert.equal(result.prepared, true);
+});
+
 test("shared directory references include in-tree package aliases", async context => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "hub-aliased-package-"));
   context.after(() => rmTree(parent));

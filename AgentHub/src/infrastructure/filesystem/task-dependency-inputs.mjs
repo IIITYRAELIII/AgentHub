@@ -257,7 +257,7 @@ async function usableProjection(target, roots) {
 // Called only by prepareTaskWorktreeDependencies under its Task lock plus the
 // existing TaskGit durable process-tree owner for this exact compatibility key.
 export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, manifestContent, lockfileContent,
-  withOwner, lease, limits, prepare, directoryReuse = false, verify = true, previousDependencyMarker = null,
+  withOwner, lease, limits, prepare, prepareFromMain = null, directoryReuse = false, verify = true, previousDependencyMarker = null,
   assertSourceContext = async () => {} }) {
   return withOwner(fingerprint, async ({ root, lease: sharedLease, coveredLease }) => {
     const payloads = new Map();
@@ -275,25 +275,50 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
       sharedLease.signal?.throwIfAborted();
     };
     await assertCurrent();
-    const parent = path.dirname(root); await mkdir(parent, { recursive: true }); await plainRoot(parent);
-    const newSlot = await missing(root), slotFile = path.join(root, "input.json");
-    if (newSlot) {
-      await mkdir(root); await plainRoot(root);
-      await exclusive(path.join(root, "package.json"), manifestContent);
-      await exclusive(path.join(root, "package-lock.json"), lockfileContent);
-      await exclusive(path.join(root, "intent.json"), JSON.stringify({ fingerprint }));
-      await prepare(root, sharedLease);
+    const parent = path.dirname(root);
+    await mkdir(parent, { recursive: true });
+    await plainRoot(parent);
+    const writeInputs = async input => {
+      await exclusive(path.join(input, "package.json"), manifestContent);
+      await exclusive(path.join(input, "package-lock.json"), lockfileContent);
+    };
+    const seal = async input => {
       await assertCurrent();
-      const modules = path.join(root, "node_modules"), content = await inventory(modules, limits, payloads);
+      const modules = path.join(input, "node_modules"), content = await inventory(modules, limits, payloads);
       // Package payload is immutable. Every Task owns its own directory, stamp
       // and mutable .cache; package/bin aliases retain their relative layout.
       for (const file of content.files) if (!file.target) await chmod(path.join(modules, file.path), 0o444);
       const marker = await readFile(path.join(modules, MARKER));
-      const installed = { fingerprint, root: await plainRoot(root),
+      const installed = { fingerprint, root: await plainRoot(input),
         modules: await plainRoot(modules), manifestSha256: digest(manifestContent), lockSha256: digest(lockfileContent),
         markerSha256: digest(marker), content };
       await assertCurrent();
-      await exclusive(slotFile, JSON.stringify(installed));
+      await exclusive(path.join(input, "input.json"), JSON.stringify(installed));
+    };
+    const slotFile = path.join(root, "input.json");
+    if (prepareFromMain && await missing(root)) {
+      // A failed read or copy from main has no npm effects to recover. Keep it
+      // outside the canonical slot until the whole installation is proved.
+      const staging = await mkdtemp(path.join(parent, "seed-"));
+      try {
+        await writeInputs(staging);
+        if (await prepareFromMain(staging, sharedLease)) {
+          await seal(staging);
+          await assertCurrent();
+          await rename(staging, root);
+        }
+      } finally {
+        await rm(staging, { recursive: true, force: true });
+      }
+    }
+    if (await missing(root)) {
+      await assertCurrent();
+      await mkdir(root);
+      await plainRoot(root);
+      await writeInputs(root);
+      await exclusive(path.join(root, "intent.json"), JSON.stringify({ fingerprint }));
+      await prepare(root, sharedLease);
+      await seal(root);
     }
     if (await missing(slotFile)) throw fail("Unfinished dependency input requires its original owning recovery; retained");
     const slot = JSON.parse(await readFile(slotFile));
