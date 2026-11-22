@@ -44,6 +44,7 @@ const SAFE_FAILURE_CODES = new Set([
   "CODEX_CANARY_TURN_TIMEOUT",
   "CODEX_CANARY_PROCESS_EXIT",
   "CODEX_CANARY_PROTOCOL",
+  "CODEX_CANARY_MCP_READ",
 ]);
 
 function withTimeout(operation, timeoutMs, message) {
@@ -91,6 +92,7 @@ function failureKind(error) {
   if (error?.code === "CODEX_CANARY_TURN_TIMEOUT") return "turn-timeout";
   if (error?.code === "CODEX_CANARY_PROCESS_EXIT") return "process-exit";
   if (error?.code === "CODEX_CANARY_PROTOCOL") return "protocol-failure";
+  if (error?.code === "CODEX_CANARY_MCP_READ") return "mcp-read-unconfirmed";
   if (/^Codex RPC [a-z/]+ timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "rpc-timeout";
   if (/^Codex compatibility canary timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "total-timeout";
   return "scenario-failure";
@@ -161,6 +163,10 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
     await copyFile(path.join(sourceHome, "auth.json"), path.join(codexHome, "auth.json"));
 
     let mcpReadCount = 0;
+    let mcpReadRejected = 0;
+    let mcpReadMode = null;
+    const mcpContextCode = `CANARY_CONTEXT_${randomBytes(8).toString("hex")}`;
+    const mcpContextReplies = new Set();
     let safeToolCount = 0;
     const safeToolItems = new Map();
     const safeToolNonce = `HUB_CANARY_TOOL_${randomBytes(12).toString("hex")}`;
@@ -197,8 +203,11 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
           },
         }],
         call: async (name, args) => {
-          if (name !== "hub_canary_read") throw new Error(`Unknown canary tool ${name}`);
-          if (args?.context_token !== canaryContextToken) throw new Error("Invalid isolated canary context token");
+          if (phase !== "mcp-read" || !mcpReadMode || name !== "hub_canary_read"
+            || args?.context_token !== canaryContextToken) {
+            mcpReadRejected = Math.min(MAX_DIAGNOSTIC_COUNT, mcpReadRejected + 1);
+            throw new Error("Isolated canary read refused");
+          }
           mcpReadCount += 1;
           return { ok: true, isolated: true, version: 1 };
         },
@@ -223,6 +232,19 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         status: safeTurnStatus(message?.params?.turn?.status),
         request: message?.id != null,
       });
+      if (message?.method === "mcpServer/startupStatus/updated" && message.params?.name === "agent_hub") {
+        const state = message.params.status;
+        record("mcp-server-startup", {
+          state: ["starting", "ready", "failed", "cancelled"].includes(state) ? state : "unknown",
+        });
+      }
+      if (message?.method === "item/completed" && phase === "mcp-context"
+        && message.params?.threadId === canaryThreadId
+        && message.params.item?.type === "agentMessage"
+        && message.params.item.text?.trim() === mcpContextCode) {
+        const id = safeIdentifier(message.params.turnId);
+        if (id) mcpContextReplies.add(id);
+      }
       if (message?.id != null) {
         if (message.method === "item/commandExecution/requestApproval") {
           const p = message.params ?? {}, owner = transport;
@@ -267,7 +289,8 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
           });
         }
         const params = message.params ?? {};
-        if (String(params.serverName ?? "") !== "agent_hub"
+        if (phase !== "mcp-read" || mcpReadMode !== "legacy-turn"
+          || String(params.serverName ?? "") !== "agent_hub"
           || String(params.threadId ?? "") !== canaryThreadId
           || String(params.turnId ?? "") !== mcpTurnId
           || params.mode !== "form") {
@@ -447,7 +470,9 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         additionalContext: buildCodexApplicationContext(
           [
             "Synthetic Guide context. ".repeat(300),
-            `For the isolated hub_canary_read verification, use context_token ${canaryContextToken}.`,
+            ...(turnPhase === "mcp-context" ? [`The public verification code is ${mcpContextCode}.`] : []),
+            ...(turnPhase === "mcp-read"
+              ? [`For the isolated hub_canary_read verification, use context_token ${canaryContextToken}.`] : []),
             "Synthetic Workspace context. ".repeat(300),
           ].join("\n\n"),
           `${id}:${turnPhase}`,
@@ -485,14 +510,58 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
 
       const ordinary = await startTurn(createdThreadId, "Reply exactly CANARY_ORDINARY_OK. Do not use tools.", "ordinary");
       await expectSuccessfulTurn(ordinary);
-      const mcp = await startTurn(
+      let mcp = await startTurn(
         createdThreadId,
-        "Call the agent_hub MCP tool hub_canary_read exactly once using the context_token from the current application instructions, then reply exactly CANARY_MCP_OK.",
-        "mcp-read",
+        "Reply with only the public verification code starting with CANARY_CONTEXT_ from the current application instructions. Do not call tools.",
+        "mcp-context",
       );
-      mcpTurnId = mcp.id;
       await expectSuccessfulTurn(mcp);
-      if (mcpReadCount !== 1) throw new Error(`Canary expected one Agent Hub MCP read, observed ${mcpReadCount}`);
+      if (!mcpContextReplies.has(mcp.id)) throw new Error("Canary did not confirm application context");
+      phase = "mcp-read";
+      mcpReadMode = "rpc";
+      record("phase", { phase });
+      let mcpResponseConfirmed = false;
+      try {
+        let result;
+        try {
+          result = await transport.request("mcpServer/tool/call", {
+            threadId: createdThreadId,
+            server: "agent_hub",
+            tool: "hub_canary_read",
+            arguments: { context_token: canaryContextToken },
+          }, { timeoutMs: rpcTimeoutMs });
+        } catch (error) {
+          if (error?.code !== -32601 || mcpReadCount !== 0 || mcpReadRejected !== 0) throw error;
+          // Earlier App Servers have no direct call. A definite method-not-found
+          // with no server-side effect is the only safe legacy entry point.
+          mcpReadMode = "legacy-turn";
+          mcp = await startTurn(
+            createdThreadId,
+            "Call the agent_hub MCP tool hub_canary_read exactly once using the context_token from the current application instructions, then reply exactly CANARY_MCP_OK.",
+            "mcp-read",
+          );
+          mcpTurnId = mcp.id;
+          await expectSuccessfulTurn(mcp);
+          mcpResponseConfirmed = true;
+        }
+        if (mcpReadMode === "rpc") {
+          const response = result?.structuredContent;
+          mcpResponseConfirmed = result?.isError === false && response?.ok === true
+            && response.isolated === true && response.version === 1;
+        }
+        if (mcpReadCount !== 1 || !mcpResponseConfirmed) {
+          throw Object.assign(new Error("Canary did not confirm exactly one isolated MCP read"), {
+            code: "CODEX_CANARY_MCP_READ",
+          });
+        }
+      } finally {
+        record("mcp-read-outcome", {
+          mode: mcpReadMode,
+          successful: Math.min(mcpReadCount, MAX_DIAGNOSTIC_COUNT),
+          rejected: mcpReadRejected,
+          response: mcpResponseConfirmed ? "confirmed" : "unconfirmed",
+        });
+      }
 
       let tool;
       safeToolOpen = true;
@@ -551,6 +620,7 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
           afterResume: afterResume.id,
         },
         mcpReadCount,
+        mcpReadMode,
         safeToolCount,
         safeToolApprovalCount: approvedToolItem ? 1 : 0,
         healthRead: true,

@@ -58,9 +58,15 @@ availability. See ADR-0138.
   copies are removed after the result is recorded. Transport RPC acknowledgement,
   asynchronous model-turn completion, cancellation, and the whole scenario use
   separate bounded deadlines; an RPC deadline is never reused as a model SLA.
-  Because App Server mediates MCP permission through a client-side elicitation,
-  the canary answers only a safely auto-answerable request bound to its exact
-  isolated `agent_hub` server, Thread, and MCP turn. The synthetic safe-tool turn
+  The model proves application-context delivery with a public verification code
+  from the supplied context. The canary then calls its isolated `agent_hub` tool
+  through the same App Server and Thread, requiring both the successful
+  protocol response and exactly one authenticated read on its test server.
+  An earlier App Server that explicitly lacks this RPC may still use the
+  model-driven MCP turn, only after method-not-found with no observed read or
+  rejection. A timeout, transport refusal or incomplete read never falls back.
+  The legacy turn answers only a safely auto-answerable elicitation bound to
+  its exact isolated `agent_hub` server, Thread and MCP turn. The synthetic safe-tool turn
   also permits exactly one command-only approval after its exact accepted turn
   and observed command item are bound: the isolated cwd and local environment
   must execute only the generated literal `Write-Output` nonce through System32
@@ -179,7 +185,8 @@ timeline and stderr observation counters under
 `data/codex-executable-canary/last-failure.json`. It records
 only allowlisted phases, protocol methods, validated Thread/turn identifiers,
 statuses, exit code/signal, candidate identity, failure class/code, timestamps,
-bounded counts and fixed safe-command scope/refusal flags. Arbitrary child stderr, RPC errors, prompts, the isolated
+bounded counts, MCP startup status and read outcome, and fixed safe-command
+scope/refusal flags. Arbitrary child stderr, RPC errors, prompts, the isolated
 MCP capability, auth material, and response contents are never retained in the
 file, attached evidence, thrown error, or canary-owned logs. The isolated run
 directory is still always removed.
