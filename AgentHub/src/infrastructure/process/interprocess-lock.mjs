@@ -648,7 +648,7 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
       localReleases.push(await acquireInProcessLock(lockPath, options.signal));
     }
     for (const lockPath of lockPaths) {
-      acquired.push(await acquire(lockPath, options, publisher));
+      acquired.push(await measureTaskOperation("lock-native-acquire", () => acquire(lockPath, options, publisher)));
     }
     const staleMs = Math.max(500, Number(options.staleMs) || 60_000);
     const renew = typeof options.renewLease === "function" ? options.renewLease : renewLease;

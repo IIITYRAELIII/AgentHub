@@ -42,11 +42,14 @@ export async function assertPlainIsolationPath(value) {
 export const preparationGitIsolationActive = () => Boolean(contexts.getStore());
 export const assertPreparationProcessOwned = async () => contexts.getStore()?.lease?.assertOwned();
 export const preparationObjectStore = () => contexts.getStore()?.objects ?? null;
-export function withPreparationGitIsolation(dataDir, operation, lease = null, objects = null) {
+export function withPreparationGitIsolation(dataDir, operation, lease = null, objects = null, coveredLease = null) {
   const parent = contexts.getStore();
-  const owner = lease && parent?.lease ? { ...lease, assertOwned: async () => {
-    await parent.lease.assertOwned(); await lease.assertOwned();
-  } } : lease ?? parent?.lease ?? null;
+  const inherited = parent?.lease ?? null;
+  // A composed lease may already check this exact inherited lease. Distinct
+  // wrappers still run their own checks, even when their owner IDs match.
+  const owner = lease && inherited && inherited !== lease && inherited !== coveredLease
+    ? { ...lease, assertOwned: async () => { await inherited.assertOwned(); await lease.assertOwned(); } }
+    : lease ?? inherited;
   return contexts.run({ dataDir, lease: owner, objects: objects ?? parent?.objects ?? null, gitTail: Promise.resolve() }, operation);
 }
 export function guardedPreparationGit(operation) {

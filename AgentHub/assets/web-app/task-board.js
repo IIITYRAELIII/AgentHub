@@ -1882,8 +1882,9 @@
             hub_task_complete: "Закрытие задачи", hub_task_delete: "Удаление задачи" })[operation.toolName] ?? "Операция задачи";
       const phase = operation.cancellation ? "остановка запрошена"
         : operation.status === "unknown" ? "результат неизвестен" : "выполняется или ожидает";
-      const stage = ({ workflow: "подготовка", lock: "получение блокировки",
-        "lock-local-acquire": "ожидание ресурса", "prepare-task": "рабочая копия",
+      const stage = ({ workflow: "подготовка", "lock-native-acquire": "получение блокировки",
+        "lock-local-acquire": "ожидание ресурса", "release:await-owned": "сборка PreRelease",
+        "native:promotion-authority": "проверка состава PreRelease", "prepare-task": "рабочая копия",
         "prepare-dev": "проверка Git", "sparse-worktree": "состав рабочей копии",
         "dependency-project": "зависимости проекта", "dependency-inventory": "проверка файлов зависимостей",
         "dependency-full-proof": "полная проверка установки", "dependency-installed-lock-proof": "проверка lockfile",

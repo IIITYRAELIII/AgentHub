@@ -1,6 +1,6 @@
 import path from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
-import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
+import { createSelectedGitBundle, hasExactGitCommitObjects } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
@@ -464,7 +464,7 @@ async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
   // new Task base or authority inferred from dev, a remote ref or merge output.
   const publication = identity.policy === "native-dev-merge-v1"
     ? identity.nativeHistoryAuthority?.publishedMetadata : null;
-  if (!publication) return null;
+  if (!publication) return { publishedBase: null, publication, commonBases: [] };
   const task = tasks[0];
   if (tasks.length !== 1 || identity.taskId !== task.taskId || identity.resultCommit !== task.resultCommit
       || identity.before !== baseCommit || !publication.generation || !publication.repositoryRoot
@@ -481,12 +481,15 @@ async function publishedTaskReplayBase({ git, baseCommit, tasks, identity }) {
   // supplies the replay boundary; the full own delta still has to survive.
   // Other histories, including multiple bases, keep their existing policy.
   const mergeBase = String(await git(["merge-base", "--all", baseCommit, task.resultCommit]));
+  const commonBases = mergeBase.split(/\r?\n/u);
   if (mergeBase !== publication.commit && (mergeBase !== task.resultCommit
-      || await maybe(git, ["merge-base", "--is-ancestor", publication.commit, task.resultCommit]) === null)) return null;
+      || await maybe(git, ["merge-base", "--is-ancestor", publication.commit, task.resultCommit]) === null)) {
+    return { publishedBase: null, publication, commonBases };
+  }
   if (await maybe(git, ["merge-base", "--is-ancestor", task.baseCommit || baseCommit, publication.commit]) === null) {
     throw failure("Native Test published content base is outside its agreed history", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
-  return publication.commit;
+  return { publishedBase: publication.commit, publication, commonBases };
 }
 
 // A replay can reinsert a complete block already present in the composition.
@@ -582,13 +585,8 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
   const compatibility = await verifyManualCompatibility({ git, root, identity, head,
     proof: manualCompatibilityReview, verifyReview: verifyManualReview });
   const virtualReplay = await publishedVirtualReplay({ git, identity, baseCommit, tasks });
-  const publishedBase = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
-  // The existing replay helper validates the original publication identity even
-  // when its unique-base rule supplies no new replay lower boundary.
-  const publication = identity.policy === "native-dev-merge-v1"
-    ? identity.nativeHistoryAuthority?.publishedMetadata : null;
-  const commonBases = publication
-    ? String(await git(["merge-base", "--all", baseCommit, tasks[0].resultCommit])).split(/\r?\n/u) : [];
+  // Read the same immutable base set once within this fresh content proof.
+  const { publishedBase, publication, commonBases } = await publishedTaskReplayBase({ git, baseCommit, tasks, identity });
   let inheritedPublication = commonBases.includes(publication?.commit);
   if (publication && !inheritedPublication && commonBases.length) {
     // Dependency tips can replace the publication itself as the real common
@@ -604,7 +602,8 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
   }
   const inherited = publication
     && inheritedPublication
-    && await maybe(git, ["merge-base", "--is-ancestor", tasks[0].baseCommit || baseCommit, publication.commit]) !== null
+    && (publishedBase !== null
+      || await maybe(git, ["merge-base", "--is-ancestor", tasks[0].baseCommit || baseCommit, publication.commit]) !== null)
     ? new Map(await entries(git, ["ls-tree", "-r", "-z", publication.commit])) : new Map();
   const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit
     && Array.isArray(identity.tasks) && taskGitIdentityHash(identity.tasks) === taskGitIdentityHash(tasks);
@@ -808,8 +807,9 @@ export async function mergeSelectedResults({
       state.objectStorage = await provisionNativeObjects({ repository, sourceRoot,
         inputs: [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])], identityHash });
       assertCurrentInputs();
-      for (const commit of [baseCommit, ...tasks.map(task => task.resultCommit)]) {
-        await gitAt(repository, ["cat-file", "-e", commit + "^{commit}"]);
+      const inputs = [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])];
+      if (!await hasExactGitCommitObjects((args, options) => gitAt(repository, args, options), inputs)) {
+        throw failure("Native Git consumer is missing an exact input commit");
       }
       await gitAt(repository, ["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);
       delete state.provisioningObjects;
@@ -828,9 +828,9 @@ export async function mergeSelectedResults({
     // Private exact refs include that ancestry without a growing revision argv.
     await measureTaskOperation("native:bundle", () => createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt }));
     await measureTaskOperation("native:clone", () => gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", bundle, repository]));
-    const git = (args) => gitAt(repository, args);
-    for (const commit of inputs) {
-      await git(["cat-file", "-e", `${commit}^{commit}`]);
+    const git = (args, options) => gitAt(repository, args, options);
+    if (!await hasExactGitCommitObjects(git, inputs)) {
+      throw failure("Native Git checkout is missing an exact input commit");
     }
     await git(["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);
     state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null,

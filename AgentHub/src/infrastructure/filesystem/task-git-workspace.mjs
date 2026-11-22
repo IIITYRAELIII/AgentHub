@@ -195,7 +195,9 @@ function gitCommandKind(args, commandLabel) {
   if (commandLabel !== "git") return "external";
   const verbs = new Set(["rev-parse", "status", "log", "show", "diff", "merge-base", "merge",
     "worktree", "sparse-checkout", "config", "symbolic-ref", "update-ref", "for-each-ref",
-    "cat-file", "rev-list", "add", "commit", "reset", "read-tree", "checkout", "ls-files"]);
+    "cat-file", "rev-list", "add", "commit", "reset", "read-tree", "checkout", "ls-files",
+    "ls-tree", "merge-tree", "diff-files", "init", "fetch", "clone", "bundle", "ls-remote",
+    "fsck", "pack-objects", "index-pack", "show-index", "verify-pack", "hash-object"]);
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "-c" || args[index] === "-C") { index += 1; continue; }
     if (verbs.has(args[index])) return args[index] === "merge" && args[index + 1] === "--abort"
@@ -1427,13 +1429,13 @@ export class TaskGitWorkspaceService {
     const poolScope = "repository-native-object-store-sha1";
     let poolOwner = null;
     const objects = new OwnedNativeObjectStore({ dataDir: this.dataDir, ...(store ? { store } : {}),
-      assertCurrent: async () => { await lease.assertOwned(); await poolOwner?.assertOwned(); await assertCurrent(); },
+      assertCurrent: async () => { await (poolOwner ?? lease).assertOwned(); await assertCurrent(); },
       gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd,
         lease: poolOwner ?? lease, guardRepositoryRoot: repositoryRoot }),
       withLease: operation => withInterprocessLocks([path.join(this.dataDir, "native-git-objects")], async poolLease => {
         await this.#assertNoProcessTreeGuard(poolScope);
         poolOwner = this.#guardedLease(poolScope, combinedLease(lease, poolLease));
-        try { return await withPreparationGitIsolation(this.dataDir, operation, poolOwner, objects); }
+        try { return await withPreparationGitIsolation(this.dataDir, operation, poolOwner, objects, lease); }
         finally { poolOwner = null; }
       }, { signal: taskOperationExecution()?.signal }),
     });
@@ -4559,11 +4561,15 @@ export class TaskGitWorkspaceService {
           await this.#assertSelectedAbsorptionGit(nativeAbsorptionInput, snapshot.repositoryRoot, ownedLease);
         }
         await this.#assertNoProcessTreeGuard(snapshot.taskId);
-        if (await git(["rev-parse", "HEAD^{commit}"], snapshot.projectRoot) !== snapshot.headCommit
-            || await git(["symbolic-ref", "-q", "HEAD"], snapshot.projectRoot) !== `refs/heads/${snapshot.branch}`
-            || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], snapshot.projectRoot)
-            || await localMainCommit(snapshot.repositoryRoot) !== record.mainCommit
-            || await git(["rev-parse", `${this.#custodyBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot))}^{commit}`], snapshot.repositoryRoot) !== snapshot.baseCommit) {
+        const status = String(await git(["--no-optional-locks", "status", "--porcelain=v2", "--branch",
+          "--no-ahead-behind", "--no-show-stash", "-z", "--untracked-files=all"], snapshot.projectRoot, { rawOutput: true })).split("\0");
+        const [oidHeader, branchHeader, ...details] = status;
+        const clean = details.pop() === "" && details.every(line => /^# branch\.(?:upstream|ab) /u.test(line));
+        const baseRef = this.#custodyBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot));
+        if (!clean || oidHeader !== `# branch.oid ${snapshot.headCommit}`
+            || branchHeader !== `# branch.head ${snapshot.branch}`
+            || await git(["rev-parse", "--revs-only", "refs/heads/main^{commit}", `${baseRef}^{commit}`],
+              snapshot.repositoryRoot) !== `${record.mainCommit}\n${snapshot.baseCommit}`) {
           throw Object.assign(new Error("Native Test source/main changed; original remains unresolved"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
         }
         await this.#nativeHistoryOrigin(snapshot, record.nativeHistoryAuthority, ownedLease);
