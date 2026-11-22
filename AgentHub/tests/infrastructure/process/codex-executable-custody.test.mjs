@@ -1,12 +1,37 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { acquireCodexExecutableCustody } from "../../../src/infrastructure/process/codex-executable-custody.mjs";
+
+test("Windows PowerShell holds a bundle with Cyrillic paths and member names", { skip: process.platform !== "win32" }, async context => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "codex-custody-"));
+  context.after(() => rm(scratch, { recursive: true, force: true }));
+  const installRoot = path.join(scratch, "Профиль");
+  const root = path.join(installRoot, "Набор Codex");
+  const name = "Файлы/помощник.dll";
+  await mkdir(path.join(root, "Файлы"), { recursive: true });
+  const target = path.join(root, name);
+  const bytes = "inert fixture";
+  await writeFile(target, bytes);
+  const sha256 = createHash("sha256").update(bytes).digest("hex").toUpperCase();
+  const inputs = { root, installRoot, files: [{ name, sha256 }] };
+
+  const lease = await acquireCodexExecutableCustody(inputs);
+  try {
+    lease.assertAlive();
+    await assert.rejects(writeFile(target, "replacement"));
+    assert.equal(await readFile(target, "utf8"), bytes);
+  } finally { await lease.release(); }
+
+  await writeFile(target, "changed after release");
+  await assert.rejects(acquireCodexExecutableCustody(inputs), { code: "CODEX_BUNDLE_UNAVAILABLE" });
+  await unlink(target);
+});
 
 test("native lifetime custody prevents helper removal after initialize and permits real safe execution", { skip: process.platform !== "win32" }, async context => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub348-bundle-"));
