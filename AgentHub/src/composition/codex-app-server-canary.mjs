@@ -93,7 +93,7 @@ function failureKind(error) {
   if (error?.code === "CODEX_CANARY_PROCESS_EXIT") return "process-exit";
   if (error?.code === "CODEX_CANARY_PROTOCOL") return "protocol-failure";
   if (error?.code === "CODEX_CANARY_MCP_READ") return "mcp-read-unconfirmed";
-  if (/^Codex RPC [a-z/]+ timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "rpc-timeout";
+  if (/^Codex RPC [A-Za-z/]+ timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "rpc-timeout";
   if (/^Codex compatibility canary timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "total-timeout";
   return "scenario-failure";
 }
@@ -546,8 +546,9 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         }
         if (mcpReadMode === "rpc") {
           const response = result?.structuredContent;
-          mcpResponseConfirmed = result?.isError === false && response?.ok === true
-            && response.isolated === true && response.version === 1;
+          const isError = result?.isError;
+          mcpResponseConfirmed = (isError === undefined || isError === null || isError === false)
+            && response?.ok === true && response.isolated === true && response.version === 1;
         }
         if (mcpReadCount !== 1 || !mcpResponseConfirmed) {
           throw Object.assign(new Error("Canary did not confirm exactly one isolated MCP read"), {

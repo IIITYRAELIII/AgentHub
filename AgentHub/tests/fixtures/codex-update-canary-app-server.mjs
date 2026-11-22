@@ -136,6 +136,10 @@ async function handle(message) {
     }
     if (mcpRpcCase === "duplicate") await callCanaryRead(token);
     if (mcpRpcCase === "tool-error") result.isError = true;
+    if (mcpRpcCase === "invalid-error-flag") result.isError = "false";
+    if (mcpRpcCase === "omit-error-flag") delete result.isError;
+    if (mcpRpcCase === "null-error-flag") result.isError = null;
+    if (mcpRpcCase === "hang-after-read") return;
     write({ id: message.id, result });
     return;
   }

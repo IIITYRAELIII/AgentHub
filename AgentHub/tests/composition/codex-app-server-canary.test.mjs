@@ -58,6 +58,32 @@ test("compatibility canary verifies MCP when the model completes without calling
   assert.deepEqual(await readdir(path.join(dataDir, "codex-executable-canary")), []);
 });
 
+test("compatibility canary accepts a missing or null MCP error flag with an authenticated read", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-mcp-error-flag-"));
+  const sourceHome = path.join(root, "source-codex-home");
+  await mkdir(sourceHome);
+  await writeFile(path.join(sourceHome, "auth.json"), "{}\n");
+  context.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+
+  for (const scenario of ["omit-error-flag", "null-error-flag"]) {
+    await context.test(scenario, async () => {
+      const result = await runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
+        dataDir: path.join(root, scenario),
+        executableArgs: [FAKE_APP_SERVER, "--skip-model-mcp", `--mcp-rpc-case=${scenario}`],
+        environment: { ...process.env, CODEX_HOME: sourceHome },
+        protectDirectory: async () => {},
+        rpcTimeoutMs: 3_000,
+        totalTimeoutMs: 15_000,
+        logger: { error() {} },
+      });
+      assert.equal(result.ok, true);
+      assert.equal(result.evidence.mcpReadCount, 1);
+      assert.equal(result.evidence.mcpReadMode, "rpc");
+      assert.equal(result.evidence.safeToolCount, 1);
+    });
+  }
+});
+
 test("compatibility canary rejects an executable that ignores application context", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-context-test-"));
   const sourceHome = path.join(root, "source-codex-home");
@@ -85,7 +111,9 @@ test("compatibility canary refuses missing, duplicate or failed MCP read evidenc
     ["no-server-read", 0, "confirmed", "mcp-read-unconfirmed"],
     ["duplicate", 2, "confirmed", "mcp-read-unconfirmed"],
     ["tool-error", 1, "unconfirmed", "mcp-read-unconfirmed"],
+    ["invalid-error-flag", 1, "unconfirmed", "mcp-read-unconfirmed"],
     ["unsupported-after-read", 1, "unconfirmed", "scenario-failure"],
+    ["hang-after-read", 1, "unconfirmed", "rpc-timeout"],
   ];
   for (const [scenario, successes, response, kind] of cases) {
     await context.test(scenario, async () => {
@@ -101,6 +129,7 @@ test("compatibility canary refuses missing, duplicate or failed MCP read evidenc
       }), { message: `Codex compatibility canary failed during mcp-read (${kind})` });
       const failure = JSON.parse(await readFile(path.join(dataDir, "codex-executable-canary", "last-failure.json"), "utf8"));
       const proof = failure.protocolEvents.find(event => event.event === "mcp-read-outcome");
+      assert.equal(failure.failure.kind, kind);
       assert.equal(proof.successful, successes);
       assert.equal(proof.mode, "rpc");
       assert.equal(proof.response, response);
