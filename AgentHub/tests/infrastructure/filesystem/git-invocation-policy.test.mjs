@@ -66,6 +66,41 @@ test("nested preparation checks a covered lease once and still checks each disti
   }, inherited);
 });
 
+test("a preparation fence checks independent leases together and joins both on refusal", async () => {
+  const events = [];
+  let permitOuter;
+  let permitInner;
+  const outerHold = new Promise(resolve => { permitOuter = resolve; });
+  const innerHold = new Promise(resolve => { permitInner = resolve; });
+  const lost = new Error("candidate lease lost");
+  const outer = { async assertOwned() {
+    events.push("outer started");
+    await outerHold;
+    throw lost;
+  } };
+  const inner = { async assertOwned() {
+    events.push("inner started");
+    await innerHold;
+    events.push("inner finished");
+  } };
+  const finished = withPreparationGitIsolation("fixture", () =>
+    withPreparationGitIsolation("fixture", assertPreparationProcessOwned, inner), outer);
+  let settled = false;
+  const refusal = assert.rejects(finished, error => error === lost).then(() => { settled = true; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(events, ["outer started", "inner started"]);
+    permitOuter();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+  } finally {
+    permitOuter();
+    permitInner();
+    await refusal;
+  }
+  assert.equal(events.at(-1), "inner finished");
+});
+
 test("owned clone configuration survives server environment clearing without changing other Git verbs", () => {
   const args = ["--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "clone", "clone", "--no-local", "fixture.bundle", "owned"];
   const expected = ["-c", "core.longpaths=true", ...args.slice(0, 6), "--config=core.longpaths=true", ...args.slice(6)];

@@ -18,6 +18,43 @@ const absent = async file => lstat(file).then(() => false, e => { if (e.code ===
 const physical = s => ({ dev: String(s.dev), ino: String(s.ino), birthtimeNs: String(s.birthtimeNs) });
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+export function ownedPackIndexContains(bytes, packChecksum, required) {
+  // gitformat-pack: a v2 SHA-1 index puts its object names in one contiguous
+  // table. Older formats continue through Git's own parser.
+  if (bytes.length < 8 || bytes.readUInt32BE(0) !== 0xff744f63 || bytes.readUInt32BE(4) !== 2) return null;
+  const hashSize = 20;
+  const objectNames = 8 + 256 * 4;
+  const trailer = bytes.length - 2 * hashSize;
+  const invalid = () => fail("Owned pack index inventory is malformed");
+  if (trailer < objectNames) throw invalid();
+  const count = bytes.readUInt32BE(objectNames - 4);
+  const offsets = objectNames + (hashSize + 4) * count;
+  const extendedOffsets = offsets + 4 * count;
+  const extendedBytes = trailer - extendedOffsets;
+  if (!count || extendedBytes < 0 || extendedBytes % 8 !== 0 || extendedBytes / 8 > count) throw invalid();
+  if (bytes.toString("hex", trailer, trailer + hashSize) !== packChecksum
+      || !createHash("sha1").update(bytes.subarray(0, bytes.length - hashSize)).digest().equals(bytes.subarray(-hashSize))) {
+    throw invalid();
+  }
+  let index = 0;
+  let previous = null;
+  let found = false;
+  for (let prefix = 0; prefix < 256; prefix++) {
+    const end = bytes.readUInt32BE(8 + prefix * 4);
+    if (end < index || end > count) throw invalid();
+    for (; index < end; index++) {
+      const start = objectNames + index * hashSize;
+      const name = bytes.subarray(start, start + hashSize);
+      if (name[0] !== prefix || (previous && Buffer.compare(previous, name) > 0)) throw invalid();
+      previous = name;
+      const offset = bytes.readUInt32BE(offsets + index * 4);
+      if (offset >= 0x80000000 && offset - 0x80000000 >= extendedBytes / 8) throw invalid();
+      if (!found) found = required.has(name.toString("hex"));
+    }
+  }
+  return found;
+}
+
 async function plain(file, directory = false) {
   const s = await lstat(file, { bigint: true });
   if (s.isSymbolicLink() || (directory ? !s.isDirectory() : !s.isFile())) throw fail("Object storage path is not plain");
@@ -36,10 +73,11 @@ async function hashFile(file) {
     return { ...physical(after), bytes: String(after.size), sha256: hash.digest("hex") };
   } finally { await h.close(); }
 }
-async function immutableLink(source, destination) {
+async function immutableLink(source, destination, assertCurrent = null) {
   const parent = physical(await plain(path.dirname(destination), true));
   const sourceParent = physical(await plain(path.dirname(source), true));
   const before = await hashFile(source);
+  if (assertCurrent) await assertCurrent();
   try { await link(source, destination); }
   catch (e) { if (e.code !== "EEXIST") throw e; }
   const after = await hashFile(destination);
@@ -291,15 +329,21 @@ export class OwnedNativeObjectStore {
           // Read only the immutable index to select a pack family. Do not
           // decompress every unrelated archived pack for each consumer.
           const indexFile = path.join(from, file), indexIdentity = await hashFile(indexFile);
-          const inventory = String(await this.#git(this.repository, ["show-index"], { input: await readFile(indexFile) }));
+          const bytes = await readFile(indexFile);
+          if (digest(bytes) !== indexIdentity.sha256) throw fail("Owned pack index changed");
+          let selected = ownedPackIndexContains(bytes, stem.slice(5), required);
+          if (selected === null) {
+            const inventory = String(await this.#git(this.repository, ["show-index"], { input: bytes }));
+            const packed = inventory.split(/\r?\n/u).filter(Boolean).map(line => {
+              const match = /^\d+ ([a-f0-9]{40})(?: \([a-f0-9]{8}\))?$/u.exec(line);
+              if (!match) throw fail("Owned pack index inventory is malformed");
+              return match[1];
+            });
+            if (!packed.length) throw fail("Owned pack inventory is empty");
+            selected = packed.some(id => required.has(id));
+          }
           if (!equal(indexIdentity, await hashFile(indexFile))) throw fail("Owned pack index changed");
-          const packed = inventory.split(/\r?\n/u).filter(Boolean).map(line => {
-            const match = /^\d+ ([a-f0-9]{40})(?: \([a-f0-9]{8}\))?$/u.exec(line);
-            if (!match) throw fail("Owned pack index inventory is malformed");
-            return match[1];
-          });
-          if (!packed.length) throw fail("Owned pack inventory is empty");
-          if (packed.some(x => required.has(x))) selectedPacks.add(stem);
+          if (selected) selectedPacks.add(stem);
         }
       }
       for (const file of files) {
@@ -311,7 +355,7 @@ export class OwnedNativeObjectStore {
           if (!files.includes(stem + ".idx") || !files.includes(stem + ".pack")) throw fail("Owned pack pair is incomplete");
           if (!selectedPacks.has(stem)) continue;
         } else if (!required.has(directory.name + file)) continue;
-        await immutableLink(path.join(from, file), path.join(to, file));
+        await immutableLink(path.join(from, file), path.join(to, file), () => this.#guard());
         linked.add(path.relative(repository, path.join(to, file)).split(path.sep).join("/"));
       }
     }

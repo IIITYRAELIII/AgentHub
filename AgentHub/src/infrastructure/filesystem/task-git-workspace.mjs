@@ -41,7 +41,8 @@ import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mj
 import { readClaimCustodyWip, copyClaimCustodyWip } from "./claim-source-custody.mjs";
 import { claimCustodyHash } from "../../domain/claim-forward-custody.mjs";
 import { readDirectTaskPublication } from "./direct-task-publication.mjs";
-import { withInterprocessLocks as acquireInterprocessLocks, interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
+import { withInterprocessLocks as acquireInterprocessLocks, assertInterprocessLeasesOwned,
+  interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
 import {
   measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming, withTaskOperationTiming,
 } from "../process/task-operation-timing.mjs";
@@ -343,10 +344,7 @@ function combinedLease(primary, secondary, { repositoryKey = null } = {}) {
     ownerId: `${primary.ownerId}|${secondary.ownerId}`,
     repositoryLockKeys,
     signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] ?? null,
-    async assertOwned() {
-      await primary.assertOwned();
-      await secondary.assertOwned();
-    },
+    assertOwned: () => assertInterprocessLeasesOwned(primary, secondary),
   };
 }
 
@@ -3091,9 +3089,14 @@ export class TaskGitWorkspaceService {
       if (dependencyMode !== "skip") {
         const lockfiles = await trackedNpmLockfiles(custody.namespace.root, workspace.projectRoot);
         if (lockfiles.length) await withInterprocessLocks([path.join(this.dataDir, "locks", `task-dependencies-${id}-${custody.namespace.epoch}`)], async dependencyLease => {
+          const taskDependencyLease = combinedLease(lease, dependencyLease);
           await this.prepareDependencies({ projectRoot: workspace.projectRoot, lockfiles,
-            verify: dependencyMode === "verify", lease: combinedLease(lease, dependencyLease),
-            sharedDependencies: this.#sharedDependencies(workspace.projectRoot, combinedLease(lease, dependencyLease)),
+            verify: dependencyMode === "verify", lease: taskDependencyLease,
+            directoryReuse: true,
+            resolveMainProjectRoot: async () => await gitMaybe(["symbolic-ref", "--quiet", "HEAD"], {
+              cwd: custody.source.repositoryRoot,
+            }) === "refs/heads/main" ? custody.source.projectRoot : null,
+            sharedDependencies: this.#sharedDependencies(workspace.projectRoot, taskDependencyLease),
             runNpm: (args, options) => this.#runOwnedNpm(args, options) });
         });
       }
@@ -3222,6 +3225,10 @@ export class TaskGitWorkspaceService {
             lockfiles,
             verify: dependencyMode === "verify",
             lease: taskDependencyLease,
+            directoryReuse: true,
+            resolveMainProjectRoot: async () => await gitMaybe(["symbolic-ref", "--quiet", "HEAD"], {
+              cwd: repoRoot,
+            }) === "refs/heads/main" ? path.join(repoRoot, selection.relativePath) : null,
             sharedDependencies: this.#sharedDependencies(workspace.projectRoot, taskDependencyLease),
             runNpm: (args, options) => this.#runOwnedNpm(args, options),
           });

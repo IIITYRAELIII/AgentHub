@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import path from "node:path";
+import { assertInterprocessLeasesOwned } from "../process/interprocess-lock.mjs";
 
 import gitInvocationPolicy from "./git-invocation-policy.json" with { type: "json" };
 import { githubProfileFile } from "./github-git-profile.mjs";
@@ -57,7 +58,7 @@ export function withPreparationGitIsolation(dataDir, operation, lease = null, ob
   // A composed lease may already check this exact inherited lease. Distinct
   // wrappers still run their own checks, even when their owner IDs match.
   const owner = lease && inherited && inherited !== lease && inherited !== coveredLease
-    ? { ...lease, assertOwned: async () => { await inherited.assertOwned(); await lease.assertOwned(); } }
+    ? { ...lease, assertOwned: () => assertInterprocessLeasesOwned(inherited, lease) }
     : lease ?? inherited;
   return contexts.run({ dataDir, lease: owner, objects: objects ?? parent?.objects ?? null, gitTail: Promise.resolve() }, operation);
 }
