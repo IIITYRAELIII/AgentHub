@@ -505,6 +505,13 @@ measure local disposition and Ready/new input without message content.
   records are retained-only and create neither running/UNKNOWN occupancy nor a
   Stop target for a newly admitted input. Real provider terminal evidence remains
   distinct from local lifecycle disposition.
+  An existing current Codex run may regain its running display only after its
+  ordinary observer freshly confirms that same native turn as in progress and
+  its exact rollout remains nonterminal. The same fresh native Thread has its
+  exact requested ID and active status; idle, missing or foreign Thread metadata
+  cannot confirm a retained in-progress row. A retained start marker, absent or
+  interrupted native turn, failed read or changed identity
+  cannot clear uncertainty. This never creates or rebinds a run (ADR-HUB-373).
 - Before provider discovery finishes, the initial catalog resolves retained
   Threads against existing visible Workspace/Stream bindings read-only. It does
   not expose an unbound historical Thread as a synthetic Stream. Discovery
@@ -857,30 +864,54 @@ for exact-process, same-original positive idle. Unknown activity, changed
 identity or unavailable protocol refuses before native retirement; this refusal
 does not restore or stop the old Hub. Old versions lacking fenced drain retain
 the separately explicit force option. They are not reported as safely drained.
+If the verified old Host uses a junction to the selected installation, wait
+uses the running Hub's config-based admission key. The physical installation
+and data directory must match before registration and again before retirement.
+The same original retains the physical root for backup and retention.
 Force uses the existing selected native handles and remains independent of old
 API availability. Neither mode resumes/replays an old provider turn. History,
 queued inputs, native/foreign guards, backup/rollback and real Ready remain.
 
 The standalone recipient installer supersedes the legacy Enter/manual-stop
-window above. The requested update explicitly permits force stopping the
-selected installation and its active work. It first retains its input outside
+window above. Explicit force permits stopping the selected installation and
+its active work. The autonomous installer first retains its input outside
 the runtime and proves its worker is outside all old Jobs. Installed API/handoff
 availability and stdin are not admission requirements. Other installations and
 unrelated Node processes remain outside its authority.
+
+The same recipient entry also exposes explicit `--offline` for an installation
+already stopped by its user. It checks native process ownership before package
+fetch and holds the same per-runtime native mutex as the autonomous installer
+until the stopped-only installer returns. It passes the originally verified
+physical root and rechecks its identity and the selected path before writing. It
+does not run the autonomous worker or start or stop a runtime. A joined,
+never-resumed worker rejected for Job membership can advertise this mode in
+its diagnostic. Retrying the same autonomous original only reads its refusal.
 
 ADR-HUB-477 replaces only this recipient's desktop-parent creation with local
 Windows `Win32_Process.Create`, using explicit breakaway and suspended creation.
 Provider success, a shell PID or a scheduler acknowledgement is not independence
 proof. Fresh process birth/image/exact command, live retained process handle,
 same user/logon/session/elevation, absence of every Job and the single native
-thread's process binding are verified before Resume. The resumed worker checks
-Job absence again. Unavailable, changed or unproved creation refuses before
+thread's process binding are verified before Resume, except for the explicitly
+proved selected-runtime Job scope below. The resumed worker rechecks the proof.
+Unavailable, changed or unproved creation refuses before
 selected-Hub retirement; there is one creation attempt and no launch fallback.
 Only the positively bound new worker may be cleaned up, and its exit is joined.
 An unverified returned PID grants no termination authority. Intent, provider
 result, native proof and early refusal remain under the same retained request.
 A lost reply cannot bypass its existing same-original dispatch fence. The
 RuntimeHost cold-start/replacement native owner above is unchanged.
+
+ADR-HUB-487 allows an ordinary autonomous installer worker in a Windows Job
+only after the exact Ready Host and its Node are positively bound to the named
+Job of the selected runtime and the suspended worker is proved outside that
+Job. The selected runtime release/manifest and both process identities are
+retained and rechecked at entry and before retirement. A changed or unavailable
+scope refuses without retiring or relaunching a foreign Host. Recovery can
+retire only the previously bound Host or its own exact replacement, once its
+native identity is available. Historical continuation requests and proof of an
+already stopped installation are unchanged.
 
 Native handles, creation time, image and actual selected-tree ownership bind
 termination. The existing maintenance original, stopped backup, verified package

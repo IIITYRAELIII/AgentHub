@@ -128,3 +128,21 @@ test("TestContourJournalSyncService не читает журнал, пока к�
   assert.equal(synced.synced, true);
   assert.deepEqual(events, ["read"]);
 });
+
+test("contour backlog yields through the existing timer and down-source returns to idle cadence", async () => {
+  const scheduled = [];
+  let alive = true;
+  const service = new TestContourJournalSyncService({
+    timers: { schedule: (_name, _callback, delay) => scheduled.push(delay), clear: () => {} },
+    workLogUsageStore: { recordAutomaticBatchAndProject: async () => ({ recorded: 1, projected: true }) },
+    sourceRuntimeAlive: () => alive, logger: {},
+    readRecords: async () => ({ records: [{ provider: "codex", threadId: "t", turnId: "a" }],
+      sourceRecords: 1, eligibleRecords: 1, hasMore: true, expectedCheckpoint: "old", nextCheckpoint: "next" }),
+    acknowledgePage: async () => {},
+  });
+  service.scheduleInitial();
+  await service.sync();
+  alive = false;
+  await service.sync();
+  assert.deepEqual(scheduled, [3000, 1000, 10000]);
+});

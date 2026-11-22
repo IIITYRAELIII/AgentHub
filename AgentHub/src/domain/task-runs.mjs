@@ -546,13 +546,12 @@ export function persistedLocalExecutionIdentity(run) {
     || typeof run.id !== "string" || !run.id || run.id.length > 512) return null;
   const retirement = run.localExecutionRetirement;
   if (retirement?.proof?.kind === "previous-hub-local-execution") {
-    // Late exact provider telemetry may enrich acceptance times. It cannot
+    // Late provider telemetry may refine start and acceptance times. It cannot
     // redefine the previous process's already committed local custody.
     const original = retirement.identity;
     const binding = { runId: run.id, provider: run.provider,
       threadId: run.threadId ?? null, turnId: run.turnId ?? null,
-      commandId: run.clientUserMessageId ?? null, streamId: run.streamId ?? null,
-      startedAt: run.startedAt ?? null };
+      commandId: run.clientUserMessageId ?? null, streamId: run.streamId ?? null };
     if (!validLocalExecutionRetirement(retirement)
       || Object.keys(binding).some(key => binding[key] !== original?.[key])) {
       throw new Error("local execution retirement identity changed");

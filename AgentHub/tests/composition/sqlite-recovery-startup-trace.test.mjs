@@ -69,6 +69,51 @@ test("existing startup trace persists copy bytes, worker work and cleanup under 
   assert.deepEqual(await fs.readFile(databaseFile), original);
 });
 
+
+test("catalog SQL timing stays under the existing startup identity and excludes SQL content", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "startup-catalog-trace-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const logs = [];
+  const options = { providePhaseRecorder: true, logger: { info: (_prefix, body) => logs.push(JSON.parse(body)) } };
+  const phase = { phase: "catalog-sqlite-mutation", outcome: "succeeded", durationMs: 20,
+    persistenceMs: 3, queueWaitMs: 1, contentionWaitMs: 17, attempts: 2,
+    sql: "never log SQL", databaseFile: root };
+  const measured = await measureStartupBeforeTrace("workspace-catalog-load", record => {
+    record({ ...phase, phase: "not-a-catalog-phase" });
+    record(phase);
+  }, options);
+  const [start, marker, terminal] = logs;
+  assert.equal(logs.length, 3);
+  assert.equal(start.operationSpanId, terminal.operationSpanId);
+  assert.equal(start.operationSpanId, marker.operationSpanId);
+  const { phase: acceptedPhase, outcome, durationMs, observedAtMs, persistenceMs, queueWaitMs, contentionWaitMs, attempts } = marker;
+  const expected = { phase: acceptedPhase, outcome, durationMs, observedAtMs, persistenceMs, queueWaitMs, contentionWaitMs, attempts };
+  assert.deepEqual({ ...expected, observedAtMs: undefined },
+    { phase: phase.phase, outcome: phase.outcome, durationMs: phase.durationMs, observedAtMs: undefined,
+      persistenceMs: 3, queueWaitMs: 1, contentionWaitMs: 17, attempts: 2 });
+  assert.equal("sql" in marker, false);
+  assert.equal("databaseFile" in marker, false);
+  const store = new CommandTraceWorkerStore({ databaseFile: path.join(root, "traces.sqlite") });
+  try {
+    await store.initialize();
+    measured.record(new CommandTraceService({ store }));
+    const timeline = await store.readCommandTimeline(`startup:${start.operationSpanId}`);
+    assert.deepEqual(timeline.find(s => s.outcome === "succeeded").metadata.phaseMarkers, [expected]);
+  } finally { await store.close(); }
+
+  const failure = new Error("database is locked");
+  const before = logs.length;
+  await assert.rejects(measureStartupBeforeTrace("workspace-catalog-load", record => {
+    record({ ...phase, outcome: "failed" });
+    throw failure;
+  }, options), error => error === failure);
+  const [failedStart, failedPhase, failedTerminal] = logs.slice(before);
+  assert.equal(failedPhase.operationSpanId, failedStart.operationSpanId);
+  assert.equal(failedTerminal.operationSpanId, failedStart.operationSpanId);
+  assert.equal(failedPhase.outcome, "failed");
+  assert.equal(failedTerminal.error, failure.message);
+});
+
 test("copy failure retains its original error and content-free same-startup phase", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "startup-inspection-error-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

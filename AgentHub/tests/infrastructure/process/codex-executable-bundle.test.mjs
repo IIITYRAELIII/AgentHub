@@ -15,6 +15,7 @@ test("effective code-mode feature requires its own trusted helper, independent o
   const candidate = { path: executable, sha256: await hashFile(executable), publisher: "OpenAI", version: "same-version" };
   let enabled = true, signatureValid = true, seenArgs;
   const options = { hashFile, installRoot: root, executableArgs: ["--enable", "code_mode_host"],
+    acquireInspectionCustody: async () => ({ assertAlive() {}, async release() {} }),
     readFeatures: async (_path, args) => { seenArgs = args.executableArgs; return { codeModeHost: enabled }; },
     verifySignature: async () => ({ valid: signatureValid, publisher: "OpenAI" }) };
   await assert.rejects(inspectCodexExecutableBundle(candidate, options), { code: "CODEX_BUNDLE_UNAVAILABLE" });

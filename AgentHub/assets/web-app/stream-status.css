@@ -1,364 +1,139 @@
-/* Дополнительные эффекты активности Stream и готовности ответа.
-
-   Отдельная таблица, а не врезка в общий styles.css: набор эффектов растёт
-   независимо от оболочки, и держать их рядом дешевле для правок. Все состояния
-   строятся на --accent, поэтому работают в любой теме. */
-
-/* ============================================================== Дыхание ===
-   Ни полосы, ни точки: карточка едва заметно светлеет и гаснет. Замечается
-   боковым зрением и не мешает читать соседние строки. */
-:root[data-stream-status-effect="breath"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="breath"] .stream-tab[data-running] .stream-tab-status-layer::after,
-:root[data-stream-status-effect="breath"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-effect="breath"] .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  background: var(--accent);
-  border-radius: inherit;
-  content: "";
+.stream-effect-layer {
+  position: absolute;
   inset: 0;
-  opacity: 0;
-  pointer-events: none;
-  position: absolute;
-}
-
-:root[data-stream-status-effect="breath"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="breath"] .stream-tab[data-running] .stream-tab-status-layer::after {
-  animation: stream-breath 3.5s ease-in-out infinite;
-}
-
-/* Готовность — один глубокий вдох и остановка на светлом. */
-:root[data-stream-status-effect="breath"]
-  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
-:root[data-stream-status-effect="breath"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::after {
-  animation: stream-breath-ready 1.1s ease-out forwards;
-}
-
-:root[data-stream-status-effect="breath"]
-  .task-workspace-item[data-unread]:not([data-running], [data-answer-arrived])::after,
-:root[data-stream-status-effect="breath"]
-  .stream-tab[data-answer-ready]:not([data-answer-arrived]) .stream-tab-status-layer::after {
-  opacity: 0.28;
-}
-
-@keyframes stream-breath {
-  0%, 100% { opacity: 0.05; }
-  50% { opacity: 0.24; }
-}
-
-@keyframes stream-breath-ready {
-  0% { opacity: 0.06; }
-  55% { opacity: 0.46; }
-  100% { opacity: 0.28; }
-}
-
-/* ================================================================= Нить ===
-   По левой кромке наматывается тонкая нить, а готовность сматывает её в узел:
-   начало и конец работы связаны одной формой. */
-:root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="thread"] .stream-tab[data-running] .stream-tab-status-layer::after,
-:root[data-stream-status-effect="thread"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-effect="thread"] .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  background: linear-gradient(180deg, transparent, var(--accent) 24%, var(--accent) 76%, transparent);
-  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 62%, transparent),
-    18px 0 26px -12px color-mix(in srgb, var(--accent) 52%, transparent);
-  content: "";
-  inset: 0 auto 0 0;
-  pointer-events: none;
-  position: absolute;
-  width: 7px;
-}
-
-:root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="thread"] .stream-tab[data-running] .stream-tab-status-layer::after {
-  animation: stream-thread-wind 2.9s ease-in-out infinite;
-  transform-origin: top center;
-}
-
-:root[data-stream-status-effect="thread"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-effect="thread"] .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  background: var(--accent);
-  border-radius: 0 4px 4px 0;
-  inset: 18% auto 18% 0;
-  width: 8px;
-}
-
-@keyframes stream-thread-wind {
-  0% { transform: scaleY(0.05); }
-  55% { transform: scaleY(1); }
-  100% { transform: scaleY(0.05); }
-}
-
-/* ============================================================== Осадок ===
-   Заливка растёт снизу вверх, пока идёт ход, и остаётся полной у готового
-   ответа: карточка сама показывает, что работа была длинной. */
-:root[data-stream-status-effect="sediment"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="sediment"] .stream-tab[data-running] .stream-tab-status-layer::after,
-:root[data-stream-status-effect="sediment"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-effect="sediment"] .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  background:
-    linear-gradient(0deg, color-mix(in srgb, var(--accent) 92%, transparent) 0 62%, var(--accent) 82%, transparent);
+  width: 100%;
+  height: 100%;
   border-radius: inherit;
-  content: "";
-  inset: 0;
-  opacity: 0.34;
+  overflow: visible;
+  z-index: 3;
   pointer-events: none;
-  position: absolute;
-  transform-origin: bottom center;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2px;
 }
 
-:root[data-stream-status-effect="sediment"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="sediment"] .stream-tab[data-running] .stream-tab-status-layer::after {
-  animation: stream-sediment-rise 4.2s ease-in-out infinite;
+/* Let the overlay paint the border itself even on themes with thick frames. */
+:is(.stream-tab, .task-workspace-item):is([data-running], [data-maintenance]) {
+  overflow: clip;
+  overflow-clip-margin: border-box;
 }
 
-:root[data-stream-status-effect="sediment"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-effect="sediment"] .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  opacity: 0.5;
-  transform: scaleY(1);
+.stream-effect-layer > * { display: none; }
+
+@property --stream-travel {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
 }
 
-@keyframes stream-sediment-rise {
-  0% { transform: scaleY(0.08); }
-  70% { transform: scaleY(0.9); }
-  100% { transform: scaleY(0.08); }
+.stream-run-dot {
+  display: none;
+  stroke-width: 3.5px;
+  stroke-linecap: round;
+  stroke-dasharray: .1 99.9;
+  stroke-dashoffset: calc(-1px * (var(--stream-travel) + var(--dot-position)));
 }
 
-/* ================================================================ Эхо ===
-   Во время хода не движется ничего, только точка. Кольцо расходится ровно
-   тогда, когда появился ответ: движение означает новость, а не занятость. */
-:root[data-stream-status-effect="echo"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="echo"] .stream-tab[data-running] .stream-tab-status-layer::after {
-  animation: stream-echo-dot 2.6s ease-in-out infinite;
-  background: var(--accent);
+[data-interstream-run] .stream-run-dot { display: inline; }
+[data-interstream-run] .stream-run-solid { display: none; }
+
+[data-running] > .stream-effect-layer > .stream-run-track,
+[data-maintenance] > .stream-effect-layer > .stream-maintenance-track,
+:is([data-unread], [data-answer-ready]) > .stream-effect-layer > .stream-ready-strike {
+  display: inline;
+}
+
+.stream-maintenance-track { stroke-dasharray: 3 2; }
+
+.stream-ready-strike {
+  stroke-width: 2.5px;
+  mask-image: linear-gradient(to right, transparent 4%, black 35%, black 65%, transparent 96%);
+  mask-origin: view-box;
+  mask-clip: view-box;
+  filter: drop-shadow(0 1px 1px var(--bg));
+}
+
+/* Reserve a clear band inside the two perimeter tracks for either ready pattern. */
+:is([data-unread], [data-answer-ready]) > .stream-tab-card > *,
+.task-workspace-item[data-unread] > :is(.task-workspace-name, .task-workspace-time) {
+  margin-block-end: 12px;
+}
+
+[data-interstream-ready] > .stream-effect-layer > .stream-ready-strike {
+  stroke-linecap: round;
+  stroke-dasharray: .1 5;
+}
+
+[data-open-question] .stream-tab-title::before,
+[data-open-question] > .task-workspace-name::before {
+  content: "?";
+  display: inline-block;
+  margin-inline-end: .3em;
+  padding-inline: .28em;
   border-radius: 50%;
-  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 24%, transparent),
-    0 0 20px 4px color-mix(in srgb, var(--accent) 62%, transparent);
-  content: "";
-  height: 12px;
-  inset: auto 0.6rem 0.6rem auto;
+  color: var(--bg);
+  background: var(--text);
+  font-weight: bold;
+}
+
+@keyframes stream-answer-arrival {
+  from { transform: scaleX(.45); }
+  to { transform: scaleX(1); }
+}
+
+@keyframes stream-track-clockwise {
+  to { stroke-dashoffset: -100; --stream-travel: 100; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-stream-status-effect="dynamic"] [data-running] > .stream-effect-layer > .stream-run-track {
+    animation: stream-track-clockwise 2s linear infinite;
+  }
+  :root[data-stream-status-effect="dynamic"] [data-maintenance] > .stream-effect-layer > .stream-maintenance-track {
+    animation: stream-track-clockwise 10s linear infinite reverse;
+  }
+  :root[data-stream-status-effect="dynamic"] [data-answer-arrived] > .stream-effect-layer > .stream-ready-strike {
+    animation: stream-answer-arrival .72s ease-out 2;
+    transform-origin: center;
+  }
+  :root[data-stream-status-effect="dynamic"] [data-stream-offscreen] > .stream-effect-layer > :is(.stream-run-track, .stream-maintenance-track) {
+    animation-play-state: paused;
+  }
+}
+
+.activity-read-button {
+  display: inline-grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: .15rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  color: var(--accent);
+  cursor: pointer;
+}
+@supports (color: contrast-color(red)) {
+  .activity-read-button {
+    background: color-mix(in srgb, contrast-color(var(--accent)) 92%, var(--bg));
+  }
+}
+@supports not (color: contrast-color(red)) {
+  :is([data-theme="gothic"], [data-theme="bespin"], [data-theme="jedi-archives"]) .activity-read-button {
+    background: var(--text);
+  }
+}
+.activity-read-button svg { width: 100%; height: 100%; }
+.activity-section-head:has(.activity-read-button) { justify-content: flex-start; gap: .25rem; }
+
+.queue-action svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-linecap: round;
   pointer-events: none;
-  position: absolute;
-  width: 12px;
 }
-
-@keyframes stream-echo-dot {
-  0%, 100% { opacity: 0.55; transform: scale(0.86); }
-  50% { opacity: 1; transform: scale(1.06); }
-}
-
-:root[data-stream-status-effect="echo"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-effect="echo"] .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  border: 2px solid var(--accent);
-  border-radius: inherit;
-  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 40%, transparent);
-  content: "";
-  inset: 0;
-  pointer-events: none;
-  position: absolute;
-}
-
-:root[data-stream-status-effect="echo"]
-  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
-:root[data-stream-status-effect="echo"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::after {
-  animation: stream-echo-ring 1.15s ease-out 3;
-}
-
-@keyframes stream-echo-ring {
-  0% { opacity: 1; transform: scale(0.94); }
-  100% { opacity: 0; transform: scale(1.13); }
-}
-
-/* Карточки вне окна не анимируются: при двух десятках идущих потоков это
-   снимает всю фоновую отрисовку, не меняя вида видимой части списка. */
-.task-workspace-item[data-stream-offscreen]::before,
-.task-workspace-item[data-stream-offscreen]::after,
-.stream-tab[data-stream-offscreen] .stream-tab-status-layer::before,
-.stream-tab[data-stream-offscreen] .stream-tab-status-layer::after {
-  animation-play-state: paused;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  :root[data-stream-status-effect="breath"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="breath"] .stream-tab[data-running] .stream-tab-status-layer::after,
-  :root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="thread"] .stream-tab[data-running] .stream-tab-status-layer::after,
-  :root[data-stream-status-effect="sediment"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="sediment"] .stream-tab[data-running] .stream-tab-status-layer::after,
-  :root[data-stream-status-effect="echo"]
-    .task-workspace-item[data-unread]:not([data-running])::after,
-  :root[data-stream-status-effect="echo"] .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-    animation: none;
-  }
-
-  :root[data-stream-status-effect="breath"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="breath"] .stream-tab[data-running] .stream-tab-status-layer::after {
-    opacity: 0.2;
-  }
-
-  :root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="thread"] .stream-tab[data-running] .stream-tab-status-layer::after {
-    transform: scaleY(1);
-  }
-
-  :root[data-stream-status-effect="sediment"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="sediment"] .stream-tab[data-running] .stream-tab-status-layer::after {
-    transform: scaleY(0.55);
-  }
-}
-
-/* ============================== Свёртка и ротация контекста на карточке ===
-   Оба состояния статичные: ни одной анимации, только контур. Это надёжно
-   читается при любом выбранном эффекте, потому что эффекты занимают
-   псевдоэлементы, а контур — свойство самой карточки. */
-.task-workspace-item[data-maintenance],
-.stream-tab[data-maintenance] .stream-tab-status-layer {
-  outline-offset: -3px;
-}
-
-.task-workspace-item[data-maintenance="compaction"],
-.stream-tab[data-maintenance="compaction"] .stream-tab-status-layer {
-  outline: 1px dashed color-mix(in srgb, var(--accent) 52%, transparent);
-}
-
-/* Ротация заметнее: она меняет тред, а не только сжимает историю. */
-.task-workspace-item[data-maintenance="rotation"],
-.stream-tab[data-maintenance="rotation"] .stream-tab-status-layer {
-  outline: 2px double color-mix(in srgb, var(--accent) 78%, transparent);
-}
-
-/* ========================= «Подсвечивать панели Stream целиком» для новых ===
-   Переключатель заливки меняет носитель эффекта: вместо кромки или точки тот
-   же эффект занимает всю поверхность карточки. Формулы движения не меняются —
-   меняются только геометрия слоя и его плотность. */
-
-/* Дыхание и осадок уже занимают всю поверхность: в заливке они просто плотнее. */
-:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
-  .task-workspace-item[data-running]::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
-  .stream-tab[data-running] .stream-tab-status-layer::after {
-  animation-name: stream-breath-fill;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
-  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::after {
-  animation-name: stream-breath-ready-fill;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
-  .task-workspace-item[data-unread]:not([data-running], [data-answer-arrived])::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
-  .stream-tab[data-answer-ready]:not([data-answer-arrived]) .stream-tab-status-layer::after {
-  opacity: 0.38;
-}
-
-@keyframes stream-breath-fill {
-  0%, 100% { opacity: 0.09; }
-  50% { opacity: 0.36; }
-}
-
-@keyframes stream-breath-ready-fill {
-  0% { opacity: 0.12; }
-  55% { opacity: 0.58; }
-  100% { opacity: 0.38; }
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
-  .task-workspace-item[data-running]::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
-  .stream-tab[data-running] .stream-tab-status-layer::after {
-  opacity: 0.48;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  opacity: 0.6;
-}
-
-/* Нить в заливке разворачивается в занавес: та же анимация по вертикали, но
-   уже на всю ширину карточки. */
-:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
-  .task-workspace-item[data-running]::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
-  .stream-tab[data-running] .stream-tab-status-layer::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  background: linear-gradient(180deg, transparent, var(--accent) 34%, var(--accent) 66%, transparent);
-  border-radius: inherit;
-  box-shadow: none;
-  inset: 0;
-  opacity: 0.32;
-  width: auto;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  background: var(--accent);
-  opacity: 0.38;
-}
-
-/* Эхо в заливке: во время хода панель едва подсвечена ровным светом вместо
-   точки, а готовность даёт вспышку по всей поверхности вместо кольца. */
-:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
-  .task-workspace-item[data-running]::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
-  .stream-tab[data-running] .stream-tab-status-layer::after {
-  animation-name: stream-echo-dot-fill;
-  background: var(--accent);
-  border-radius: inherit;
-  box-shadow: none;
-  height: auto;
-  inset: 0;
-  width: auto;
-}
-
-@keyframes stream-echo-dot-fill {
-  0%, 100% { opacity: 0.1; }
-  50% { opacity: 0.26; }
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
-  .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-  background: var(--accent);
-  border: 0;
-  border-radius: inherit;
-  inset: 0;
-}
-
-:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
-  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
-:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::after {
-  animation: stream-echo-fill 1.15s ease-out 2;
-}
-
-@keyframes stream-echo-fill {
-  0% { opacity: 0.55; }
-  100% { opacity: 0.14; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  :root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
-    .task-workspace-item[data-unread]:not([data-running])::after,
-  :root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
-    .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
-    animation: none;
-    opacity: 0.3;
-  }
-}
+.queue-action[data-action="queue-pause"] svg { stroke-linecap: butt; }

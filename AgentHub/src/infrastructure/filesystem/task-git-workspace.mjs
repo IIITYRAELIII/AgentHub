@@ -23,7 +23,8 @@ import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
 import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, assertNativeMergeGraph, assertNativeMergedResults, nativeMergeBaseFields } from "./native-release-merge.mjs";
 import { synchronizePublishedDev } from "./published-dev-sync.mjs";
-import { readManualTaskDelivery } from "./manual-task-delivery.mjs";
+import { readManualTaskDelivery, readManualPublishedRepository } from "./manual-task-delivery.mjs";
+import { manualDeliveryReferenceSourceBinding } from "../../domain/task-checklist.mjs";
 import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { OwnedNativeObjectStore, nativeObjectStorageDescriptor } from "./owned-native-object-store.mjs";
 import { MaintenanceOperationStore } from "../persistence/maintenance-operation-store.mjs";
@@ -49,14 +50,16 @@ import {
   readTrustedSystemBootIdentity,
 } from "../process/system-boot-identity.mjs";
 import { publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
+import { verifyManualDevResolutionReview } from "../persistence/manual-dev-resolution-review.mjs";
 import { parseGitHubRemote, sourceOnlyGitPublication } from "../persistence/github-publication-baseline.mjs";
-import { readNativePublishedSelectedComposition, readOwnGitPublicationOrigin, readPublishedReleaseServiceGeneration } from "../persistence/task-publication-history.mjs";
+import { readAbandonedReleaseServiceGeneration, readNativePublishedSelectedComposition, readOwnGitPublicationOrigin, readPublishedReleaseServiceGeneration } from "../persistence/task-publication-history.mjs";
 import {
   normalizedTaskId,
   TASK_BRANCH_PREFIX,
   TaskGitHistoryRejectedError,
   taskBranchName,
   taskRepositoryKey,
+  taskGitIdentityHash,
 } from "../../domain/task-git-reference.mjs";
 import {
   exactCrLfToLfNormalization,
@@ -639,6 +642,7 @@ export class TaskGitWorkspaceService {
   #claimLockAdmissionErrors = new WeakMap();
   #claimSourceAdmissionErrors = new WeakMap();
   #publishedDeliveryProofs = new WeakMap();
+  #manualCleanupProofs = new WeakMap();
 
   constructor({
     dataDir,
@@ -1431,7 +1435,7 @@ export class TaskGitWorkspaceService {
       withLease: operation => withInterprocessLocks([path.join(this.dataDir, "native-git-objects")], async poolLease => {
         await this.#assertNoProcessTreeGuard(poolScope);
         poolOwner = this.#guardedLease(poolScope, combinedLease(lease, poolLease));
-        try { return await withPreparationGitIsolation(this.dataDir, operation, poolOwner, objects); }
+        try { return await withPreparationGitIsolation(this.dataDir, operation, poolOwner, objects, lease); }
         finally { poolOwner = null; }
       }, { signal: taskOperationExecution()?.signal }),
     });
@@ -2709,24 +2713,32 @@ export class TaskGitWorkspaceService {
   }
 
   async synchronizeMainIntoDev({ projectRoot, publishedRevision = null,
-    publishedSync = null, validatePublishedSync = null, manualSync = null } = {}) {
+    publishedSync = null, validatePublishedSync = null, manualSync = null, nativeResolutionReview = null } = {}) {
     this.#assertAvailable("synchronizeMainIntoDev");
     const expectedMainCommit = exactCommitId(publishedRevision, "published revision");
     const repoRoot = await repositoryRoot(projectRoot);
-    return this.#withClearDevLock(repoRoot, null, async (lease) => {
+    if (nativeResolutionReview && !manualSync) throw Error("Native compatibility review requires its original manual sync");
+    const synchronize = releaseLease => this.#withClearDevLock(repoRoot, null, async (lease) => {
       const currentLocalMain = await localMainCommit(repoRoot);
       if (manualSync) {
-        if (publishedSync || validatePublishedSync || currentLocalMain !== expectedMainCommit) throw Error("Manual sync authority differs");
-        const read = () => this.measureOperation("manual-delivery-proof", () => this.readManualDelivery({
-          runtimeRoot: this.runtimeRoot, input: manualSync.delivery,
-          git: (args, options = {}) => runGit(args, { ...options, cwd: repoRoot }) }));
+        if (publishedSync || validatePublishedSync) throw Error("Manual sync authority differs");
+        const read = async () => {
+          await releaseLease.assertOwned();
+          return this.#readManualDeliveryOwned(repoRoot, manualSync.delivery, [], lease);
+        };
         const delivery = await read();
         if (delivery.revision !== expectedMainCommit) throw Error("Manual sync revision differs from installed delivery");
-        return this.#synchronizePublishedMainOwned({ repoRoot, expectedMainCommit, currentLocalMain,
-          publishedSync: manualSync, manualDelivery: delivery, lease,
+        const sync = mathRoot => this.#synchronizePublishedMainOwned({ repoRoot, mathRoot, expectedMainCommit, currentLocalMain,
+          publishedSync: manualSync, manualDelivery: delivery, lease, nativeResolutionReview,
           validatePublishedSync: async () => {
             if (JSON.stringify(await read()) !== JSON.stringify(delivery)) throw Error("Manual sync delivery changed");
           } });
+        if (samePath(delivery.publishedRepository.root, repoRoot)) return sync(repoRoot);
+        const objects = this.createNativeObjectStore({ sourceRoot: repoRoot, lease });
+        return objects.withInputMath({ sources: [
+            { sourceRoot: repoRoot, inputs: [exactCommitId(manualSync.expectedDevCommit, "expected dev revision")] },
+            { sourceRoot: delivery.publishedRepository.root, inputs: [expectedMainCommit] },
+        ] }, ({ repository }) => sync(repository));
       }
       let verifySynchronization = null;
       if (currentLocalMain !== expectedMainCommit) {
@@ -2762,10 +2774,12 @@ export class TaskGitWorkspaceService {
         lease,
       });
     }, { publishedSyncRecovery: !!(publishedSync || manualSync) });
+    return manualSync ? withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${taskRepositoryKey(repoRoot)}`)],
+      synchronize, { signal: taskOperationExecution()?.signal }) : synchronize(null);
   }
 
-  async #synchronizePublishedMainOwned({ repoRoot, expectedMainCommit, currentLocalMain,
-    publishedSync, validatePublishedSync, verifySynchronization, manualDelivery = null, lease }) {
+  async #synchronizePublishedMainOwned({ repoRoot, mathRoot = repoRoot, expectedMainCommit, currentLocalMain,
+    publishedSync, validatePublishedSync, verifySynchronization, manualDelivery = null, lease, nativeResolutionReview = null }) {
     if (typeof validatePublishedSync !== "function" || !publishedSync.operationId
         || !publishedSync.workspaceId || !manualDelivery && (!Number.isSafeInteger(publishedSync.generation)
         || publishedSync.generation < 1 || !/^[a-f0-9]{64}$/u.test(publishedSync.candidateIdentity)
@@ -2789,7 +2803,7 @@ export class TaskGitWorkspaceService {
     if (!manualDelivery && (!publication?.generation || entry?.revision !== expectedMainCommit)) throw new Error("Published sync publication changed");
     const publicationIdentity = manualDelivery ? JSON.stringify(manualDelivery) : JSON.stringify({ generation: publication.generation, entry });
     const mergeBases = nativeMergeBaseFields(await this.#runOwned(
-      ["merge-base", "--all", devCommit, expectedMainCommit], { cwd: repoRoot, lease }));
+      ["merge-base", "--all", devCommit, expectedMainCommit], { cwd: mathRoot, lease, guardRepositoryRoot: repoRoot }));
     const identity = { policy: manualDelivery ? "manual-main-dev-sync-v1" : "published-main-dev-sync-v1", operationId: publishedSync.operationId,
       workspaceId: publishedSync.workspaceId, ...(manualDelivery ? { manualDelivery } : {
         generation: publishedSync.generation, candidateIdentity: publishedSync.candidateIdentity, tasks: publishedSync.tasks }),
@@ -2814,6 +2828,13 @@ export class TaskGitWorkspaceService {
     const fence = async () => {
       await lease.assertOwned();
       await validatePublishedSync();
+      const retainedReview = manualDelivery && (await readJson(path.join(root, "merge.json")))?.manualCompatibilityReview;
+      if (retainedReview) {
+        if (!manualDelivery || retainedReview.binding?.identityHash !== taskGitIdentityHash(identity)
+            || retainedReview.binding?.nativeRoot !== path.resolve(root)) throw Error("Manual review delivery context changed");
+        await this.measureOperation("native:review-receipt", () => verifyManualDevResolutionReview({ dataDir: this.dataDir,
+          review: retainedReview.review, binding: retainedReview.binding }));
+      }
       await verifySynchronization?.();
       const current = manualDelivery ? null : await this.readPublication();
       const currentEntry = publicationStateRepositories(current ?? {}).find(item => samePath(item.root, repoRoot));
@@ -2822,13 +2843,18 @@ export class TaskGitWorkspaceService {
           || await directoryIdentity(devRoot) !== devDirectory || await directoryIdentity(commonDir) !== commonDirectory) {
         throw new Error("Published sync publication, main or directory identity changed");
       }
-      const remote = await this.#runOwned(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], { cwd: repoRoot, lease });
-      await this.#runOwned(["merge-base", "--is-ancestor", expectedMainCommit, remote], { cwd: repoRoot, lease });
-      await this.#runOwned(["merge-base", "--is-ancestor", currentLocalMain, expectedMainCommit], { cwd: repoRoot, lease });
+      if (!manualDelivery?.publishedRepository || samePath(manualDelivery.publishedRepository.root, repoRoot)) {
+        const remote = await this.#runOwned(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], { cwd: repoRoot, lease });
+        await this.#runOwned(["merge-base", "--is-ancestor", expectedMainCommit, remote], { cwd: repoRoot, lease });
+      }
+      await this.#runOwned(["merge-base", "--is-ancestor", currentLocalMain, expectedMainCommit], { cwd: mathRoot, lease, guardRepositoryRoot: repoRoot });
     };
     return this.withOperationTrace({ operationId: publishedSync.operationId }, () =>
       measureTaskOperation("published-dev-sync", () => synchronizePublishedDev({
-        root, sourceRoot: repoRoot, devRoot, devBranch: this.devBranch, identity, readJson, writeJson,
+        root, sourceRoot: mathRoot, devRoot, devBranch: this.devBranch, identity, readJson, writeJson,
+        nativeResolutionReview,
+        verifyManualReview: (review, binding) => this.measureOperation("native:review-receipt", () =>
+          verifyManualDevResolutionReview({ dataDir: this.dataDir, review, binding })),
         fence,
         gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
           guardRepositoryRoot: repoRoot, timeoutMs: 300_000 }),
@@ -6273,6 +6299,52 @@ export class TaskGitWorkspaceService {
     return visit(0, lease);
   }
 
+  async abandonedReleaseServiceEvidenceOwned({ source, input, lease, actor } = {}) {
+    this.#assertAvailable("abandonedReleaseServiceEvidenceOwned");
+    await requiredGuardLease(lease).assertOwned();
+    if (!actor?.streamId || actor.workspaceId !== source.workspaceId
+        || (source.streamId != null && source.streamId !== actor.streamId)) {
+      throw new Error("Abandoned release service actor or assigned Stream differs");
+    }
+    if ((source.gitReferences ?? []).length || (source.gitAdoptions ?? []).length || source.squashTransfer || source.squashAbsorbedBy) {
+      throw new Error("Abandoned release service must not own implementation evidence");
+    }
+    const readOriginal = () => readAbandonedReleaseServiceGeneration({ dataDir: this.dataDir,
+      workspaceId: source.workspaceId, streamId: actor.streamId, input, checklist: source.checklist });
+    const original = readOriginal(), workspaces = await this.describe(source.id);
+    if (workspaces.length > 1 || workspaces.some(item => item.dirty)) throw new Error("Abandoned release source custody is not clean");
+    if (!workspaces.length) {
+      const unexpected = await lstat(path.join(this.taskWorktreesRoot, normalizedTaskId(source.id))).catch(error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (unexpected) throw new Error("Abandoned release has unregistered source custody");
+      for (const repositoryRoot of original.repositoryRoots) {
+        const refs = String(await runGit(["for-each-ref", "--format=%(refname)"], { cwd: repositoryRoot })).split(/\r?\n/u);
+        const branches = [taskBranchName(source.id, repositoryRoot), taskBranchName(source.id, repositoryRoot, source.taskNumber)];
+        if (refs.some(ref => branches.some(branch => ref === `refs/heads/${branch}`)
+            || ref.includes(`/${source.id}/`) || ref.endsWith(`/${source.id}`))) {
+          throw new Error("Abandoned release has unregistered source references");
+        }
+      }
+    }
+    for (const workspace of workspaces) {
+      if (!original.repositoryRoots.some(root => samePath(root, workspace.repositoryRoot))
+          || !samePath(await this.managedRepositoryRoot(workspace.projectRoot, { taskId: source.id, taskNumber: source.taskNumber }), workspace.repositoryRoot)
+          || workspace.headCommit !== await runGit(["rev-parse", `${this.#custodyBaseRef(source.id, workspace.repositoryKey)}^{commit}`], { cwd: workspace.repositoryRoot })) {
+        throw new Error("Abandoned release service has own source work");
+      }
+    }
+    if (JSON.stringify(await this.describe(source.id)) !== JSON.stringify(workspaces)
+        || JSON.stringify(readOriginal()) !== JSON.stringify(original)) throw new Error("Abandoned release custody changed");
+    await lease.assertOwned();
+    return { version: 1, mode: "abandoned_release_service", disposition: "abandoned",
+      source: { taskId: source.id, taskRevision: source.revision, workflowStatus: source.workflowStatus, streamId: source.streamId ?? null },
+      actor: { workspaceId: actor.workspaceId, streamId: actor.streamId },
+      original, cleanupPlan: { strategy: workspaces.length ? "preserve_managed_source" : "metadata_only", deleting: [] },
+      preserving: workspaces.map(item => ({ kind: "managed_source", projectRoot: item.projectRoot, headCommit: item.headCommit })) };
+  }
+
   async publishedReleaseServiceEvidenceOwned({ source, selectedTasks, lease } = {}) {
     this.#assertAvailable("publishedReleaseServiceEvidenceOwned");
     await requiredGuardLease(lease).assertOwned();
@@ -6597,6 +6669,69 @@ export class TaskGitWorkspaceService {
     return state;
   }
 
+  async #readManualDeliveryOwned(repoRoot, input, resultCommits, lease) {
+    return this.measureOperation("manual-delivery-proof", async () => {
+      // One process-tree guard owns one child at a time. The reader can request
+      // independent facts together; drain this invocation's children on refusal.
+      let gitTail = Promise.resolve();
+      const gitAt = (cwd, args, options = {}) => {
+        const next = gitTail.then(() => this.#runOwned(args, { ...options, cwd, lease,
+          guardRepositoryRoot: repoRoot }));
+        gitTail = next.catch(() => {});
+        return next;
+      };
+      const inspect = () => readManualPublishedRepository({ dataDir: this.dataDir,
+        repositoryRoot: repoRoot, revision: input?.revision, gitAt });
+      try {
+        await lease.assertOwned();
+        const publishedRepository = await inspect();
+        const delivery = await this.readManualDelivery({ runtimeRoot: this.runtimeRoot, input, resultCommits,
+          ...(!samePath(publishedRepository.root, repoRoot) ? { hostSourceRoot: path.join(publishedRepository.root, "AgentHub") } : {}),
+          git: (args, options) => gitAt(publishedRepository.root, args, options) });
+        if (JSON.stringify(await inspect()) !== JSON.stringify(publishedRepository)) {
+          throw Error("Manual published repository changed during verification");
+        }
+        await lease.assertOwned();
+        return { ...delivery, publishedRepository };
+      } finally { await gitTail; }
+    });
+  }
+
+  async verifyManualDeliveryReferenceSourceOwned({ task, accepted, lease }) {
+    return this.measureOperation("manual-release-reference-source", async () => {
+      await requiredGuardLease(lease).assertOwned();
+      if (task.id !== accepted?.taskId) throw Error("Manual release reference source Task changed");
+      const expected = manualDeliveryReferenceSourceBinding(accepted);
+      const workspaces = await this.describe(task.id);
+      if (!workspaces.length && accepted.completedCleanup && task.status === "done") {
+        // Canonical Complete has already verified and retired this exact source.
+        // A new branch/worktree is later work, never covered by that old outcome.
+        for (const w of accepted.workspaces) {
+          const present = await lstat(w.projectRoot).then(() => true, error => {
+            if (error.code === "ENOENT") return false;
+            throw error;
+          });
+          if (present || await branchExists(w.repositoryRoot, w.branch)) {
+            throw Error("Manual release reference current source or delivery changed");
+          }
+        }
+        await requiredGuardLease(lease).assertOwned();
+        return;
+      }
+      for (const w of workspaces) {
+        if (!samePath(await this.managedRepositoryRoot(w.projectRoot, { taskId: task.id, taskNumber: task.taskNumber }), w.repositoryRoot)) {
+          throw Error("Manual release reference source ownership changed");
+        }
+      }
+      const current = manualDeliveryReferenceSourceBinding({ ...accepted, workspaces,
+        gitReferences: task.gitReferences ?? [], dirty: workspaces.some(w => w.dirty) });
+      if (taskGitIdentityHash(current) !== taskGitIdentityHash(expected)) {
+        throw Error("Manual release reference current source or delivery changed");
+      }
+      await requiredGuardLease(lease).assertOwned();
+    });
+  }
+
   async manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories = [] }) {
     await requiredGuardLease(lease).assertOwned();
     const references = task.gitReferences ?? [];
@@ -6610,8 +6745,9 @@ export class TaskGitWorkspaceService {
         || extra.some(w => !retainedRepositories.some(r => samePath(r.project_root, w.projectRoot) && r.head_commit === w.headCommit))) {
       throw Error("Manual delivery has an unrepresented Task repository; exact preservation pins are required");
     }
-    for (const w of references.length ? extra : workspaces) {
-      if (!samePath(await this.managedRepositoryRoot(w.projectRoot, { taskId: task.id, taskNumber: task.taskNumber }), w.repositoryRoot)) {
+    for (const w of workspaces) {
+      const managedRoot = await this.managedRepositoryRoot(w.projectRoot, { taskId: task.id, taskNumber: task.taskNumber });
+      if (!managedRoot || !samePath(managedRoot, w.repositoryRoot)) {
         throw Error("Manual delivery managed source or retained repository ownership changed");
       }
     }
@@ -6619,9 +6755,11 @@ export class TaskGitWorkspaceService {
     for (const root of roots) {
       const results = references.filter(r => samePath(r.projectRoot, root)).map(r => r.resultCommit);
       const owned = workspaces.filter(w => samePath(w.repositoryRoot, root));
-      const delivery = await this.measureOperation("manual-delivery-proof", () => this.readManualDelivery({ runtimeRoot: this.runtimeRoot, input,
-        resultCommits: [...new Set([...results, ...owned.map(w => w.headCommit)])],
-        git: (args, options = {}) => runGit(args, { ...options, cwd: root }) }));
+      const delivery = await withInterprocessLocks([
+        path.join(this.dataDir, "locks", `release-git-${taskRepositoryKey(root)}`),
+      ], releaseLease => this.#readManualDeliveryOwned(root, input,
+        [...new Set([...results, ...owned.map(w => w.headCommit)])], combinedLease(lease, releaseLease)),
+      { signal: taskOperationExecution()?.signal });
       deliveries.push({ repositoryRoot: root, delivery, ...(!references.length ? { sourceKind: "owned-managed-source-without-test-ref" } : {}) });
     }
     for (const w of workspaces) w.ignoredPaths = String(await runGit([
@@ -6634,17 +6772,246 @@ export class TaskGitWorkspaceService {
         w.ignoredPaths.map(name => ({ projectRoot: w.projectRoot, path: name }))) };
   }
 
-  async cleanupPreview(taskId, { gitReferences = [], squashAbsorbedBy = null, publishedDelivery = null } = {}) {
+  async manualDeliveryCleanupPreviewOwned({ task, input, lease, retainedRepositories = [], admitted = null, acceptedSource = null }) {
+    await requiredGuardLease(lease).assertOwned();
+    let source = admitted?.source ?? acceptedSource
+      ?? await this.manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories });
+    if (source.taskId !== task.id || JSON.stringify(source.gitReferences) !== JSON.stringify(task.gitReferences ?? [])) {
+      throw Error("Manual cleanup Task results changed");
+    }
+    if (source.retainedUnrepresented?.length) return { ...source,
+      unpublished: source.retainedUnrepresented.map(w => ({ ...w, reason: "unrepresented historical repository must be retained" })) };
+    if (acceptedSource) {
+      const pin = w => JSON.stringify([w.projectRoot, w.repositoryRoot, w.branch, w.headCommit]);
+      const current = await this.describe(task.id);
+      if (current.some(w => !acceptedSource.workspaces.some(p => pin(p) === pin(w)))
+          || JSON.stringify(source.gitReferences) !== JSON.stringify(acceptedSource.gitReferences)) {
+        throw Error("Manual cleanup source differs from its original completed delivery");
+      }
+    }
+    if (admitted && (admitted.kind !== "verified-manual-task-cleanup-v1" || admitted.taskId !== task.id
+        || JSON.stringify(admitted.input) !== JSON.stringify(input)
+        || Boolean(admitted.historicalSource) !== Boolean(acceptedSource))) throw Error("Manual cleanup original delivery changed");
+    // Reopen re-proves the actual installation and published repository with the
+    // original source pins, even after a worktree or branch was already removed.
+    const deliveries = [];
+    for (const d of admitted || acceptedSource ? source.manualDelivery : []) {
+      const results = [...source.gitReferences.filter(r => samePath(r.projectRoot, d.repositoryRoot)).map(r => r.resultCommit),
+        ...source.workspaces.filter(w => samePath(w.repositoryRoot, d.repositoryRoot)).map(w => w.headCommit)];
+      const current = await withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${taskRepositoryKey(d.repositoryRoot)}`)],
+        releaseLease => this.#readManualDeliveryOwned(d.repositoryRoot, input, [...new Set(results)], combinedLease(lease, releaseLease)),
+        { signal: taskOperationExecution()?.signal });
+      if (admitted && JSON.stringify(current) !== JSON.stringify(d.delivery)) throw Error("Manual cleanup publication or runtime changed");
+      deliveries.push({ ...d, delivery: current });
+    }
+    if (!admitted && acceptedSource) source = { ...source, manualDelivery: deliveries };
+    const proof = admitted ?? { kind: "verified-manual-task-cleanup-v1", taskId: task.id, input, source,
+      ...(acceptedSource ? { historicalSource: true } : {}) };
+    this.#manualCleanupProofs.set(proof, { lease, taskNumber: task.taskNumber, allowMissing: Boolean(admitted || acceptedSource) });
+    return this.cleanupPreview(task.id, { gitReferences: task.gitReferences, manualCleanup: proof });
+  }
+
+  async #checkedManualCleanup(taskId, proof, workspaces, gitReferences) {
+    const state = this.#manualCleanupProofs.get(proof), source = proof?.source;
+    if (!state || proof.taskId !== taskId || source?.taskId !== taskId
+        || JSON.stringify(source.gitReferences) !== JSON.stringify(gitReferences)) throw Error("Missing manual cleanup owner or changed Task results");
+    await state.lease.assertOwned();
+    // Publication and retained source pins bind content, not ownership of a
+    // live checkout. Recheck even represented repositories and old outcomes.
+    for (const w of workspaces) {
+      const managedRoot = await this.managedRepositoryRoot(w.projectRoot, { taskId, taskNumber: state.taskNumber });
+      if (!managedRoot || !samePath(managedRoot, w.repositoryRoot)) {
+        throw Error("Manual cleanup live worktree ownership changed");
+      }
+    }
+    const pin = w => JSON.stringify([w.projectRoot, w.repositoryRoot, w.branch, w.headCommit]);
+    if (workspaces.some(w => !source.workspaces.some(p => pin(p) === pin(w)))
+        || !state.allowMissing && source.workspaces.some(p => !workspaces.some(w => pin(p) === pin(w)))) {
+      throw Error("Manual cleanup worktree changed or has later work");
+    }
+    for (const old of source.workspaces.filter(p => !workspaces.some(w => pin(p) === pin(w)))) {
+      const present = await lstat(old.projectRoot).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; });
+      if (present) throw Error("Manual cleanup worktree changed or has later work");
+    }
+    const references = [...gitReferences];
+    for (const w of source.workspaces) {
+      // Old Complete evidence could capture a foreign live branch. Once its
+      // directory is absent, neither the old pin nor a published HEAD owns it.
+      if (w.branch !== taskBranchName(taskId, w.repositoryRoot)
+          && !(isTaskNumberBranch(state.taskNumber) && w.branch === state.taskNumber)) {
+        throw Error("Manual cleanup historical branch ownership changed");
+      }
+      if (!references.some(r => samePath(r.projectRoot, w.repositoryRoot) && r.branch === w.branch)) {
+        references.push({ projectRoot: w.repositoryRoot, branch: w.branch, resultCommit: w.headCommit, artifactOnly: true });
+      }
+    }
+    const staleWorktrees = [];
+    for (const r of references) {
+      const head = await gitMaybe(["rev-parse", "--verify", `refs/heads/${r.branch}^{commit}`], { cwd: r.projectRoot });
+      const expected = source.workspaces.find(w => samePath(w.repositoryRoot, r.projectRoot) && w.branch === r.branch)?.headCommit ?? r.resultCommit;
+      if (head && (head !== expected || !proof.historicalSource && head !== r.resultCommit) || !head && !state.allowMissing) {
+        throw Error("Manual cleanup branch changed or has later work");
+      }
+      const checkedOut = await worktreeForBranch(r.projectRoot, r.branch);
+      if (checkedOut && !workspaces.some(w => samePath(w.projectRoot, checkedOut))) {
+        const taskRoot = path.join(this.taskWorktreesRoot, taskId);
+        const expectedRoot = path.join(taskRoot, taskRepositoryKey(r.projectRoot));
+        const absent = await lstat(checkedOut).then(() => false, error => {
+          if (error.code === "ENOENT") return true;
+          throw error;
+        });
+        const parent = await lstat(taskRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+        const anchor = parent ? taskRoot : this.taskWorktreesRoot;
+        const anchorInfo = parent ?? await lstat(anchor);
+        if (!absent || !samePath(checkedOut, expectedRoot) || !anchorInfo.isDirectory() || anchorInfo.isSymbolicLink()
+            || !samePath(await realpath(anchor), anchor)) throw Error("Manual cleanup branch is checked out in a foreign worktree");
+        // Only this Task's exact missing registered path. Native Git removes its
+        // registration; no global prune, force removal or guessed legacy path.
+        staleWorktrees.push({ projectRoot: checkedOut, repositoryRoot: r.projectRoot, branch: r.branch, headCommit: head });
+      }
+    }
+    return { references, staleWorktrees };
+  }
+
+  async archiveCleanupPreview(task, { retainArtifacts = false, registeredProjectRoot = null } = {}) {
+    const id = normalizedTaskId(task.id);
+    const root = path.join(this.taskWorktreesRoot, id);
+    const missing = error => { if (error.code === "ENOENT") return null; throw error; };
+    const rootStat = await lstat(root).catch(missing);
+    const opaqueRoot = rootStat && (!rootStat.isDirectory() || rootStat.isSymbolicLink());
+    const entries = rootStat && !opaqueRoot ? await readdir(root) : [];
+    const custody = this.#claimNamespace(id);
+    const workspaces = opaqueRoot ? [] : await this.describe(id);
+    const artifacts = [];
+    if (opaqueRoot) artifacts.push({ kind: "path", path: root });
+    for (const entry of entries.sort()) artifacts.push({ kind: "path", path: path.join(root, entry) });
+    const addBranch = (repositoryRoot, name, headCommit) => {
+      if (name && !artifacts.some(item => item.kind === "branch" && samePath(item.repositoryRoot, repositoryRoot) && item.name === name)) {
+        artifacts.push({ kind: "branch", repositoryRoot, name, headCommit });
+      }
+    };
+    for (const workspace of workspaces) {
+      if (!artifacts.some(item => item.path && samePath(item.path, workspace.projectRoot))) {
+        artifacts.push({ kind: "path", path: workspace.projectRoot });
+      }
+      addBranch(workspace.repositoryRoot, workspace.branch, workspace.headCommit);
+    }
+    let safe = !opaqueRoot && !custody && entries.length === workspaces.length;
+    const references = task.gitReferences ?? [];
+    const registered = registeredProjectRoot ? await repositoryRoot(registeredProjectRoot).catch(() => null) : null;
+    const repositories = new Set([registered, ...workspaces.map(w => w.repositoryRoot)].filter(Boolean));
+    for (const repository of repositories) {
+      const registrations = parseWorktrees(await runGit(["worktree", "list", "--porcelain"], { cwd: repository }));
+      const managedRoot = path.join(root, taskRepositoryKey(repository));
+      const missingRegistration = registrations.find(w => samePath(w.path, managedRoot)
+        && !workspaces.some(live => samePath(live.projectRoot, w.path)));
+      if (missingRegistration) {
+        const present = await lstat(missingRegistration.path).catch(missing);
+        artifacts.push({ kind: present ? "path" : "worktree_registration",
+          path: missingRegistration.path, repositoryRoot: repository });
+        if (missingRegistration.branchRef?.startsWith("refs/heads/")) {
+          const branch = missingRegistration.branchRef.slice("refs/heads/".length);
+          const head = await gitMaybe(["rev-parse", "--verify", missingRegistration.branchRef + "^{commit}"], { cwd: repository });
+          if (head) addBranch(repository, branch, head);
+        }
+        safe = false;
+      }
+      const ownedBranches = new Set([taskBranchName(id, repository), taskBranchName(id, repository, task.taskNumber)]);
+      for (const branch of ownedBranches) {
+        if (workspaces.some(w => samePath(w.repositoryRoot, repository) && w.branch === branch)
+            || references.some(r => samePath(r.projectRoot, repository) && r.branch === branch)) continue;
+        const head = await gitMaybe(["rev-parse", "--verify", "refs/heads/" + branch + "^{commit}"], { cwd: repository });
+        if (!head) continue;
+        addBranch(repository, branch, head);
+        const checkout = registrations.find(w => w.branchRef === "refs/heads/" + branch)?.path;
+        if (checkout) artifacts.push({ kind: await lstat(checkout).catch(missing) ? "path" : "worktree_registration",
+          path: checkout, repositoryRoot: repository });
+        safe = false;
+      }
+    }
+    for (const reference of references) {
+      const repository = canonicalPath(reference.projectRoot);
+      const branch = reference.branch;
+      const owner = await repositoryRoot(repository).catch(() => null);
+      if (!owner || !samePath(owner, repository)) {
+        artifacts.push({ kind: "unverified_repository", path: repository, name: branch ?? null });
+        safe = false;
+        continue;
+      }
+      const head = branch ? await gitMaybe(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], { cwd: repository }) : null;
+      if (head && head !== reference.resultCommit) safe = false;
+      if (head) {
+        addBranch(repository, branch, head);
+        const checkout = await worktreeForBranch(repository, branch);
+        if (checkout && !workspaces.some(w => samePath(checkout, w.projectRoot))) {
+          if (await lstat(checkout).catch(missing)) artifacts.push({ kind: "path", path: checkout });
+          else artifacts.push({ kind: "worktree_registration", path: checkout, repositoryRoot: repository });
+          safe = false;
+        }
+      }
+      if (branch !== taskBranchName(id, repository)
+          && !(isTaskNumberBranch(task.taskNumber) && branch === task.taskNumber)) safe = false;
+      const repoKey = taskRepositoryKey(repository);
+      const internalRefs = [this.#custodyBaseRef(id, repoKey), this.#custodyResultRef(id, repoKey),
+        taskLegacyAdoptionRef(id, repoKey), this.#releaseWaitRef(id, repository),
+        ...await taskUpstreamAdoptionRefs(repository, id, repoKey)];
+      for (const name of internalRefs) {
+        const headCommit = await gitMaybe(["rev-parse", "--verify", name], { cwd: repository });
+        if (headCommit) artifacts.push({ kind: "ref", repositoryRoot: repository, name, headCommit });
+      }
+    }
+    for (const workspace of workspaces) {
+      const owner = await this.managedRepositoryRoot(workspace.projectRoot, { taskId: id, taskNumber: task.taskNumber });
+      if (!owner || !samePath(owner, workspace.repositoryRoot)
+          || !references.some(r => samePath(r.projectRoot, owner) && r.branch === workspace.branch)) safe = false;
+    }
+    const options = { gitReferences: references, squashAbsorbedBy: task.squashAbsorbedBy, archiveTaskNumber: task.taskNumber ?? "" };
+    const cleanup = safe && references.length && !retainArtifacts ? await this.cleanupPreview(id, options) : null;
+    const allowed = cleanup && !cleanup.dirty && !cleanup.unpublished.length && !cleanup.retainedIgnored.length;
+    if (allowed) return { cleanup, remainingArtifacts: [] };
+    for (const workspace of workspaces) {
+      const status = await runGit(["diff", "--name-only", "-z", "HEAD"], { cwd: workspace.projectRoot });
+      const untracked = await runGit(["ls-files", "--others", "--exclude-standard", "--directory", "--no-empty-directory", "-z"],
+        { cwd: workspace.projectRoot });
+      const ignored = await runGit(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z"],
+        { cwd: workspace.projectRoot });
+      for (const relative of [status, untracked, ignored].flatMap(value => value.split("\0")).filter(Boolean).sort()) {
+        artifacts.push({ kind: "path", path: path.join(workspace.projectRoot, relative) });
+      }
+    }
+    const unique = new Map(artifacts.map(item => [JSON.stringify(item), item]));
+    return { cleanup: null, remainingArtifacts: [...unique.values()] };
+  }
+
+  async cleanupPreview(taskId, { gitReferences = [], squashAbsorbedBy = null, publishedDelivery = null, manualCleanup = null,
+    archiveTaskNumber = null } = {}) {
     this.#assertAvailable("cleanupPreview");
     const id = normalizedTaskId(taskId);
     if (this.#claimNamespace(id)) {
       throw new Error("Task cleanup blocked: independent custody history/WIP requires its artifact owner's verified retirement");
     }
     const workspaces = await this.describe(id);
+    if (archiveTaskNumber !== null) {
+      for (const reference of gitReferences) {
+        if (reference.branch !== taskBranchName(id, reference.projectRoot)
+            && !(isTaskNumberBranch(archiveTaskNumber) && reference.branch === archiveTaskNumber)) {
+          throw new Error("Archive branch ownership changed");
+        }
+      }
+      for (const workspace of workspaces) {
+        const owner = await this.managedRepositoryRoot(workspace.projectRoot, { taskId: id, taskNumber: archiveTaskNumber });
+        if (!owner || !samePath(owner, workspace.repositoryRoot)
+            || !gitReferences.some(ref => samePath(ref.projectRoot, owner) && ref.branch === workspace.branch)) {
+          throw new Error("Archive worktree ownership changed");
+        }
+      }
+    }
     const delivery = publishedDelivery ? await this.#checkedPublishedDelivery(id, publishedDelivery, workspaces, gitReferences) : null;
+    const manual = manualCleanup ? await this.#checkedManualCleanup(id, manualCleanup, workspaces, gitReferences) : null;
     // This is an artifact cleanup pin, never a fabricated Task/Test reference.
-    const cleanupReferences = delivery && !gitReferences.length ? [{ projectRoot: delivery.source.repositoryRoot,
-      branch: delivery.source.branch, resultCommit: delivery.source.headCommit, artifactOnly: true }] : [];
+    const cleanupReferences = manual ? manual.references.filter(r => r.artifactOnly)
+      : delivery && !gitReferences.length ? [{ projectRoot: delivery.source.repositoryRoot,
+        branch: delivery.source.branch, resultCommit: delivery.source.headCommit, artifactOnly: true }] : [];
     // A clean Git status excludes ignored data. Native worktree remove can
     // discard that data even without --force, so it is a separate cleanup pin.
     for (const workspace of workspaces) {
@@ -6675,7 +7042,7 @@ export class TaskGitWorkspaceService {
       const durableRevision = String(repositoryPublication?.revision
         ?? (publishedRepositories.length ? "" : publication?.revision) ?? "").trim();
       const durableGeneration = String(publication?.generation ?? "").trim();
-      const publishedRevision = delivery ? publishedDelivery.publication.revision
+      const publishedRevision = manual ? manualCleanup.input.revision : delivery ? publishedDelivery.publication.revision
         : (durableGeneration && durableRevision && remoteRevision
           && (durableRevision === remoteRevision || await gitMaybe([
             "merge-base", "--is-ancestor", durableRevision, remoteRevision,
@@ -6694,11 +7061,16 @@ export class TaskGitWorkspaceService {
       );
       if (transferredPublished) published = true;
       if (delivery && resultCommit === delivery.source.headCommit) published = true;
+      if (manual) published = true; // Exact result/head containment was verified in the bound published ODB.
       const branch = String(reference.branch ?? "").trim();
       const branchHeadCommit = branch ? await gitMaybe([
         "rev-parse", "--verify", `refs/heads/${branch}^{commit}`,
       ], { cwd: repoRoot }) : null;
+      if (archiveTaskNumber !== null && branchHeadCommit && branchHeadCommit !== resultCommit) {
+        throw new Error("Archive branch HEAD changed");
+      }
       const branchPublished = !branchHeadCommit
+        || Boolean(manual)
         || Boolean(delivery && branchHeadCommit === delivery.source.headCommit)
         || (transferredPublished && branchHeadCommit === squashTransfer.source.resultCommit)
         || Boolean(publishedRevision && await gitMaybe([
@@ -6710,7 +7082,7 @@ export class TaskGitWorkspaceService {
         resultCommit,
         published,
         publishedRevision,
-        publicationGeneration: delivery ? publishedDelivery.publication.generation : publishedRevision ? durableGeneration : null,
+        publicationGeneration: manual ? null : delivery ? publishedDelivery.publication.generation : publishedRevision ? durableGeneration : null,
         branchHeadCommit,
         branchPublished,
         ...(transferredPublished ? { publishedBySquashTransfer: squashTransfer.transferHash } : {}),
@@ -6722,7 +7094,7 @@ export class TaskGitWorkspaceService {
         && item.branch === workspace.branch);
       const transferredWorktree = reference?.publishedBySquashTransfer
         && workspace.headCommit === squashTransfer?.source.resultCommit;
-      if (!reference?.publishedRevision || (!delivery && !transferredWorktree && await gitMaybe([
+      if (!reference?.publishedRevision || (!manual && !delivery && !transferredWorktree && await gitMaybe([
         "merge-base", "--is-ancestor", workspace.headCommit, reference.publishedRevision,
       ], { cwd: workspace.repositoryRoot }) === null)) {
         unpublishedWorktrees.push({ ...workspace, reason: "current worktree head is not published" });
@@ -6761,6 +7133,7 @@ export class TaskGitWorkspaceService {
         deleting.push({ kind: "release_wait_ref", name: waitRef, repositoryRoot: reference.projectRoot });
       }
     }
+    for (const stale of manual?.staleWorktrees ?? []) deleting.push({ kind: "worktree_registration", ...stale });
     const uniqueDeleting = [...new Map(deleting.map((item) => [
       `${item.kind}\0${item.repositoryRoot ?? ""}\0${item.path ?? item.name ?? ""}`, item,
     ])).values()];
@@ -6769,6 +7142,8 @@ export class TaskGitWorkspaceService {
       workspaces,
       gitReferences: references.filter(r => !r.artifactOnly),
       ...(delivery ? { publishedCleanupReferences: references.filter(r => r.artifactOnly), publishedDelivery } : {}),
+      ...(manual ? { publishedCleanupReferences: references.filter(r => r.artifactOnly), manualCleanup,
+        manualDelivery: manualCleanup.source.manualDelivery, staleWorktrees: manual.staleWorktrees } : {}),
       dirty: workspaces.some((item) => item.dirty),
       retainedIgnored: workspaces.filter(item => item.ignoredPaths.length)
         .map(item => ({ projectRoot: item.projectRoot, paths: item.ignoredPaths })),
@@ -6809,7 +7184,8 @@ export class TaskGitWorkspaceService {
 
   async cleanupOwned(taskId, {
     allowDirty = false, requirePublished = false, gitReferences = [], squashAbsorbedBy = null,
-    expectedPreview = null, lease = null, publishedDelivery = null, preservation = null,
+    expectedPreview = null, lease = null, publishedDelivery = null, preservation = null, manualCleanup = null,
+    archiveTaskNumber = null,
   } = {}) {
     this.#assertAvailable("cleanupOwned");
     await requiredGuardLease(lease).assertOwned();
@@ -6822,7 +7198,12 @@ export class TaskGitWorkspaceService {
       if (!state || state.taskId !== id) throw Error("Missing direct cleanup owner");
       state.allowMissing = true; // Caller has durably admitted this exact cleanup.
     }
-    const preview = await this.cleanupPreview(id, { gitReferences, squashAbsorbedBy, publishedDelivery });
+    if (manualCleanup) {
+      const state = this.#manualCleanupProofs.get(manualCleanup);
+      if (!state) throw Error("Missing manual cleanup owner");
+      state.allowMissing = true; // Only after the caller persisted the original cleanup intent.
+    }
+    const preview = await this.cleanupPreview(id, { gitReferences, squashAbsorbedBy, publishedDelivery, manualCleanup, archiveTaskNumber });
     if (expectedPreview) {
       const expectedPublication = JSON.stringify((expectedPreview.gitReferences ?? []).map((item) => ({
         projectRoot: item.projectRoot,
@@ -6850,9 +7231,10 @@ export class TaskGitWorkspaceService {
       workspaces: value.workspaces.filter((item) => samePath(item.repositoryRoot, repoRoot)),
       gitReferences: value.gitReferences.filter((item) => samePath(item.projectRoot, repoRoot)),
       deleting: value.deleting.filter((item) => item.repositoryRoot && samePath(item.repositoryRoot, repoRoot)),
+      ...(manualCleanup ? { staleWorktrees: value.staleWorktrees.filter(item => samePath(item.repositoryRoot, repoRoot)) } : {}),
     });
     const assertCurrentRepository = async (repoRoot) => {
-      const current = await this.cleanupPreview(id, { gitReferences, squashAbsorbedBy, publishedDelivery });
+      const current = await this.cleanupPreview(id, { gitReferences, squashAbsorbedBy, publishedDelivery, manualCleanup, archiveTaskNumber });
       if (JSON.stringify(repositoryEvidence(current, repoRoot)) !== JSON.stringify(repositoryEvidence(preview, repoRoot))) {
         throw new Error("Task cleanup blocked: branch or worktree changed after confirmation");
       }
@@ -6902,6 +7284,8 @@ export class TaskGitWorkspaceService {
       const branch = String(reference.branch ?? "").trim();
       await this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
         await assertCurrentRepository(repoRoot);
+        const stale = preview.staleWorktrees?.find(item => samePath(item.repositoryRoot, repoRoot) && item.branch === branch);
+        if (stale) await this.#runOwned(["worktree", "remove", stale.projectRoot], { cwd: repoRoot, lease: ownedLease });
         if (branch && await branchExists(repoRoot, branch)) {
           if (await worktreeForBranch(repoRoot, branch)) throw new Error("Task cleanup blocked: branch is still checked out");
           const expectedHead = [...preview.gitReferences, ...(preview.publishedCleanupReferences ?? [])].find((item) => samePath(item.projectRoot, repoRoot) && item.branch === branch)?.branchHeadCommit;

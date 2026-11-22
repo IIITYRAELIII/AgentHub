@@ -10,6 +10,7 @@ import { isClaudeCompactionRun } from "../../domain/claude-context-maintenance.m
 import {
   confirmedInterstreamOrigin,
   interstreamOriginAuthor,
+  isInterstreamOnlyTurn,
   normalizeInterstreamOrigin,
   trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
@@ -444,6 +445,7 @@ export function createDesktopSnapshotFactory({
       reasoning: run.reasoning ?? null,
       stage: String(run.progressStage ?? "Выполняется…"),
       ...(run.providerStart ? { providerStart: structuredClone(run.providerStart) } : {}),
+      ...(isInterstreamOnlyTurn(run) ? { interstreamOnly: true } : {}),
       prompt: displayUserPrompt(promptInterstream?.text ?? promptDisplay),
       ...(promptOrigin ? {
         promptAuthor: interstreamOriginAuthor(promptOrigin),

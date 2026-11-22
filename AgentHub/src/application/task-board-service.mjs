@@ -233,6 +233,11 @@ export class TaskBoardService {
     return this.#deliverChecklistEvents();
   }
 
+  manualDeliveryReleaseReference(input) {
+    requiredMethod(this.store, "manualDeliveryReleaseReference");
+    return this.store.manualDeliveryReleaseReference(input);
+  }
+
   async updateChecklist(payload = {}) {
     requiredMethod(this.store, "updateChecklist");
     await this.#checklistEventRecovery;
@@ -435,6 +440,10 @@ export class TaskBoardService {
   resumeConfirmedDeleteTransition(operationId, payload) {
     requiredMethod(this.store, "resumeConfirmedDeleteTransition");
     return this.store.resumeConfirmedDeleteTransition(operationId, payload);
+  }
+
+  recordArchivePreview(taskId, operationId, result, evidence) {
+    return this.store.recordArchivePreview(taskId, operationId, result, evidence);
   }
 
   finalizeCleanupTransition(operationId, payload = {}) {

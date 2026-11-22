@@ -653,12 +653,17 @@ export class OwnedNativeObjectStore {
     }));
   }
 
-  async withInputMath({ sourceRoot, inputs }, verify) {
+  async withInputMath({ sourceRoot, inputs, sources = [{ sourceRoot, inputs }] }, verify) {
     return this.withLease(async () => {
       await this.#pool();
-      const imported = await this.#import(sourceRoot, [...new Set(inputs)]);
-      await this.#retireTransferAliases(imported);
-      return this.#withMath({ inputs }, verify);
+      const allInputs = [];
+      for (const source of sources) {
+        const selected = [...new Set(source.inputs)];
+        const imported = await this.#import(source.sourceRoot, selected);
+        await this.#retireTransferAliases(imported);
+        allInputs.push(...selected);
+      }
+      return this.#withMath({ inputs: inputs ?? [...new Set(allInputs)] }, verify);
     });
   }
 

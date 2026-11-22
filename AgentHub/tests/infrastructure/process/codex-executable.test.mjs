@@ -85,7 +85,7 @@ function installedCandidate(source, name) {
 
 function inspectionOptions(calls) {
   return {
-    inspectBundle: async () => null, // These cases isolate main-executable trust; bundle has its own native cases.
+    inspectBundle: async (_candidate, { beforeFeatures }) => { await beforeFeatures?.(); return null; },
     realpathImpl: async (value) => value,
     statImpl: async () => ({ isFile: () => true }),
     hashFile: async (file) => { calls.push(["hash", file]); return "A".repeat(64); },
@@ -115,6 +115,16 @@ test("selected canonical path inspects only its freshly enumerated installed can
   assert.deepEqual(calls, ["hash", "signature", "hash", "version", "hash"].map((step) => [step, canonicalPath]));
 });
 
+test("discovery completeness distinguishes absent layouts from enumeration refusal", async () => {
+  for (const [code, complete] of [["ENOENT", true], ["EACCES", false]]) {
+    const result = await discoverOfficialCodexExecutables({
+      platform: "win32", environment: { LOCALAPPDATA: "fixture-local" },
+      readdirImpl: async () => { throw Object.assign(new Error("fixture"), { code }); },
+    });
+    assert.deepEqual(result, { candidates: [], rejected: [], inspectionComplete: complete });
+  }
+});
+
 test("selected paths absent from installed enumeration are never inspected", async () => {
   const unrelated = installedCandidate("desktop", "other");
   const calls = [];
@@ -124,7 +134,7 @@ test("selected paths absent from installed enumeration are never inspected", asy
     selectedPath: path.resolve("unregistered", "codex.exe"),
     enumerateCandidates: async () => [unrelated],
   });
-  assert.deepEqual(result, { candidates: [], rejected: [] });
+  assert.deepEqual(result, { candidates: [], rejected: [], inspectionComplete: true });
   assert.deepEqual(calls, []);
 });
 
@@ -162,6 +172,7 @@ test("selected candidate rejections retain bounded reasons without inspecting al
   assert.deepEqual(result, {
     candidates: [],
     rejected: [{ path: selected.executable, source: "desktop", error: "Process timed out after 5000 ms" }],
+    inspectionComplete: false,
   });
 });
 
@@ -340,7 +351,7 @@ test("discovery reuses trusted canonical path, source and bytes without signatur
     ...inspectionOptions(calls), platform: "win32", trustedCandidates: [recorded],
     enumerateCandidates: async () => [descriptor],
   });
-  assert.deepEqual(result, { candidates: [recorded], rejected: [] });
+  assert.deepEqual(result, { candidates: [recorded], rejected: [], inspectionComplete: true });
   assert.deepEqual(calls, [["hash", recorded.path]]);
 });
 

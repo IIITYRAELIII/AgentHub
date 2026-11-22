@@ -2,6 +2,13 @@
 
 ## Addressed queue receipts and deferred Task presentation
 
+An addressed lookup projects the same result as the recent window. The command
+ledger takes precedence when it owns the ID. An exact retained runtime receipt
+still participates while it has no ledger row, including after it leaves the
+recent window. A lookup without a result never replaces a complete receipt.
+The client can correlate the visible removal of a provider-accepted queue card
+with the existing receipt and paint traces under the original client ID.
+
 The recent receipt window is a bounded projection, not cancellation authority.
 The normal client snapshot includes the exact original client message IDs of
 unresolved outgoing projections. The snapshot owner reads those receipts from
@@ -11,8 +18,14 @@ requested identity sets cannot reuse a cached response for another set.
 Explicit canonical cancellation removes the exact queue card and count while
 preserving command history and unknown past provider effects. A known canonical
 queued receipt keeps its public cancellation action when its RAM item is absent.
-Unknown/provider-accepted states do not gain that action. Existing snapshot
-generation fencing still rejects late responses.
+Unknown/provider-accepted states do not gain that action. One addressed cancel
+holds its queue action slot through the snapshot readback. A receipt-only
+card's local display alias requires a known canonical item in that Task.
+An exact positive cancel acknowledgement removes that local card immediately
+and suppresses another cancel until neither the queue rows nor the queued
+receipts retain the item, even if its first readback fails. An unknown cancel
+result does not create that suppression. Existing snapshot generation fencing
+still rejects late responses.
 
 Desktop snapshots carry Task titles and revisioned deferred presentation, with
 full raw text and descriptions available through the existing addressed Task
@@ -192,6 +205,20 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
 
 - Optimistic, queued, active and historical forms of one command are one entity
   keyed by `clientUserMessageId`, not separately appendable cards.
+- Exact provider acceptance with its original turn retires that command's local
+  optimistic queue membership, including after a cached receipt, Thread rotation
+  or a late intake response. A bounded snapshot may omit the old Thread: an
+  explicitly Stream-bound receipt may reconcile only an already-owned occurrence
+  with the same provider, source Thread and client ID while that Stream exists.
+  It cannot create an old occurrence or modify another Stream's local command.
+  Unknown receipts and unrelated drafts remain intact. Focused history preserves
+  its supplied client ID. Queue retirement tracing contains only those identities,
+  never message text, attachment contents or transport secrets.
+- A cancel action first reconciles a retained local queue card through the same
+  exact receipt owner. If that owner proves the original already cancelled,
+  the stale card retires without another cancellation command. An unknown or
+  foreign receipt cannot certify cancellation; ordinary live queue cancellation
+  still crosses the existing server owner.
 - Provider entities use `provider + threadId + turnId`; items additionally use
   `itemId + role`.
 - `clientUserMessageId` is the sole Hub ownership signal for a user message.
@@ -1036,3 +1063,17 @@ New Spark selection and Task retry controls/routing are removed. Historical
 Spark messages, Task records and accounting remain readable; ordinary available
 model actions are preserved. There is no replacement setting or silent model
 substitution. The provider owner also refuses new Spark dispatch.
+
+## Stream status and explicit read actions
+
+The two eye controls beside the activity heading acknowledge the exact displayed
+ready identities on explicit user action. One selects finals of purely
+inter-Stream turns and the other selects all ready finals. Both use the existing
+account-scoped read cursor and exact-revision receipt. Automatic acknowledgement
+continues to require a rendered final. A newer revision retains its own marker.
+
+Stream cards show running, compaction, unread final and outstanding question
+independently. The static and dynamic modes share their geometry. A verified
+inter-Stream root stays dotted only while every accepted user input in that turn
+has inter-Stream origin. Legacy finals without this evidence use the ordinary
+stroke. See ADR-HUB-420.
