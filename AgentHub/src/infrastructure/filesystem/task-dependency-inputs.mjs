@@ -1,19 +1,22 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, link, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, symlink } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rename, rm, symlink } from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 
 const MARKER = ".agent-hub-task-dependencies.json";
+export const DIRECTORY_INPUT = "owned-dependency-directories-v1";
 const FILE_BATCH_SIZE = 16;
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 const physical = stat => ({ dev: String(stat.dev), ino: String(stat.ino), birthtimeMs: stat.birthtimeMs });
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const samePath = (left, right) => left !== null && path.relative(left, right) === "";
 const missing = async file => lstat(file).then(() => false, e => { if (e.code === "ENOENT") return true; throw e; });
 const fail = message => Object.assign(new Error(message), { code: "TASK_DEPENDENCY_INPUT_UNPROVEN" });
 async function plainRoot(root) {
   const stat = await lstat(root);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || path.resolve(await realpath(root)).toLowerCase() !== path.resolve(root).toLowerCase()) {
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(await realpath(root), root)) {
     throw fail("Dependency input path is not an owned plain directory");
   }
   return physical(stat);
@@ -92,23 +95,81 @@ async function inventoryOwned(root, limits, payloads) {
   return { directories: directories.sort(), files: files.sort((a,b) => a.path.localeCompare(b.path)) };
 }
 
-export async function retainSharedTaskDependencies(packageRoot, previous) {
+export async function retainSharedTaskDependencies(packageRoot, previous, assertCurrent = async () => {}) {
   const target = path.join(packageRoot, "node_modules");
-if (!/^[a-f0-9]{64}$/u.test(previous.lockfileSha256 ?? "")
-            || previous.sharedStorage?.fingerprint !== previous.lockfileSha256
-            || previous.sharedStorage?.kind !== "owned-dependency-input-v1") throw fail("Prior dependency custody malformed; retained");
-        await plainRoot(target);
-        const retained = path.join(packageRoot, ".agent-hub-dependency-retained");
-        await mkdir(retained, { recursive: true }); await plainRoot(retained);
-        const destination = path.join(retained, String(previous.lockfileSha256));
-        if (!await missing(destination)) throw fail("Prior dependency retirement destination exists; retained");
-        await rename(target, destination);
+  const kind = previous.sharedStorage?.kind;
+  if (!/^[a-f0-9]{64}$/u.test(previous.lockfileSha256 ?? "")
+      || previous.sharedStorage?.fingerprint !== previous.lockfileSha256
+      || !["owned-dependency-input-v1", DIRECTORY_INPUT].includes(kind)) {
+    throw fail("Prior dependency custody malformed; retained");
+  }
+  await plainRoot(target);
+  const retained = path.join(packageRoot, ".agent-hub-dependency-retained");
+  await mkdir(retained, { recursive: true });
+  await plainRoot(retained);
+  const name = kind === DIRECTORY_INPUT ? `${previous.lockfileSha256}-${randomUUID()}` : previous.lockfileSha256;
+  const destination = path.join(retained, name);
+  if (!await missing(destination)) throw fail("Prior dependency retirement destination exists; retained");
+  await assertCurrent();
+  await rename(target, destination);
+}
+
+export async function attachTaskDependencyDirectories({ packageRoot, modules, fingerprint, previous, assertCurrent }) {
+  const identity = await plainRoot(modules);
+  const target = path.join(packageRoot, "node_modules");
+  const sharedStorage = { kind: DIRECTORY_INPUT, modules, identity, fingerprint };
+  const packageDirectories = (await readdir(modules, { withFileTypes: true }))
+    .filter(entry => entry.isDirectory() && entry.name !== ".cache").map(entry => entry.name).sort();
+
+  if (same(previous?.sharedStorage, sharedStorage) && await usableProjection(target, modules, packageDirectories)) {
+    await assertCurrent();
+    if (!same(identity, await plainRoot(modules))) throw fail("Dependency directory source changed");
+    return { prepared: false, reused: true, sharedStorage };
+  }
+
+  const retained = path.join(packageRoot, ".agent-hub-dependency-retained");
+  await mkdir(retained, { recursive: true });
+  await plainRoot(retained);
+  const staging = await mkdtemp(path.join(retained, "attach-"));
+  try {
+    // Publish the private root once. npm can unlink these directory entries
+    // without traversing a shared node_modules root, and .cache stays local.
+    for (const name of packageDirectories) {
+      const source = path.join(modules, name);
+      await symlink(source, path.join(staging, name), process.platform === "win32" ? "junction" : "dir");
+    }
+    await exclusive(path.join(staging, MARKER), JSON.stringify({ lockfileSha256: fingerprint, sharedStorage }));
+    if (!same(identity, await plainRoot(modules))) throw fail("Dependency directory source changed");
+    if (previous?.sharedStorage) await retainSharedTaskDependencies(packageRoot, previous, assertCurrent);
+    await assertCurrent();
+    await rename(staging, target);
+    return { prepared: true, reused: true, sharedStorage };
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
+}
+
+async function usableProjection(target, modules, packageDirectories) {
+  const entries = await readdir(target, { withFileTypes: true });
+  const aliases = entries.filter(entry => entry.name !== MARKER && entry.name !== ".cache");
+  if (aliases.length !== packageDirectories.length || !aliases.every(entry => entry.isSymbolicLink())) return false;
+  const expected = new Set(packageDirectories);
+  const resolved = await Promise.all(aliases.map(async ({ name }) => {
+    if (!expected.has(name)) return false;
+    const source = await realpath(path.join(target, name)).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    return samePath(source, path.join(modules, name));
+  }));
+  return resolved.every(Boolean);
 }
 
 // Called only by prepareTaskWorktreeDependencies under its Task lock plus the
 // existing TaskGit durable process-tree owner for this exact compatibility key.
 export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, manifestContent, lockfileContent,
-  withOwner, lease, limits, prepare, assertSourceContext = async () => {} }) {
+  withOwner, lease, limits, prepare, directoryReuse = false, verify = true, previousDependencyMarker = null,
+  assertSourceContext = async () => {} }) {
   return withOwner(fingerprint, async ({ root, lease: sharedLease, coveredLease }) => {
     const payloads = new Map();
     const assertOwners = async () => {
@@ -145,9 +206,13 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
     const modules = path.join(root, "node_modules");
     if (slot.fingerprint !== fingerprint || slot.manifestSha256 !== digest(manifestContent)
         || slot.lockSha256 !== digest(lockfileContent) || !same(slot.root, await plainRoot(root))
-        || !same(slot.modules, await plainRoot(modules)) || !same(slot.content, await inventory(modules, limits, payloads))
+        || !same(slot.modules, await plainRoot(modules))
+        || ((!directoryReuse || verify) && !same(slot.content, await inventory(modules, limits, payloads)))
         || slot.markerSha256 !== digest(await readFile(path.join(modules, MARKER)))) throw fail("Published dependency input custody changed");
     await assertCurrent();
+    if (directoryReuse) return measureTaskOperation("dependency-directory-attach", () => attachTaskDependencyDirectories({
+      packageRoot, modules, fingerprint, previous: previousDependencyMarker, assertCurrent,
+    }), { detail: true });
     const target = path.join(packageRoot, "node_modules"), stamp = path.join(target, MARKER);
     const sharedStorage = { kind: "owned-dependency-input-v1", root, fingerprint,
       inputSha256: digest(await readFile(slotFile)) };

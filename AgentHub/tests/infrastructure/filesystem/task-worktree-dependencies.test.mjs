@@ -18,7 +18,7 @@ import test from "node:test";
 
 import { prepareTaskWorktreeDependencies } from "../../../src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
-import { reuseTaskDependencyInputs } from "../../../src/infrastructure/filesystem/task-dependency-inputs.mjs";
+import { attachTaskDependencyDirectories, reuseTaskDependencyInputs } from "../../../src/infrastructure/filesystem/task-dependency-inputs.mjs";
 
 const NPM_CI_ARGS = ["ci", "--include=dev", "--include=optional", "--no-audit", "--no-fund"];
 
@@ -1008,6 +1008,62 @@ test("compatible Task dependency inputs install once and own local cache without
   assert.equal(failedInstalls, 1);
   context.diagnostic(JSON.stringify({ tasks: 2, packagePayloadB: 65536,
     compatibleInstalls: 1, copiedPackageBytes: 0, sharedPayloadLinks: 3, changedInputInstalls: 1 }));
+});
+
+test("ensure uses packages already installed in main with a private npm and cache directory", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-main-deps-"));
+  context.after(() => rmTree(parent));
+  const main = path.join(parent, "main");
+  const task = path.join(parent, "task");
+  const project = {
+    dependencies: { tiny: "1.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "1.0.0" } },
+  };
+  await writeNpmProject(main, project);
+  await writeNpmProject(task, project);
+  const taskLockPath = path.join(task, "package-lock.json");
+  const taskManifestPath = path.join(task, "package.json");
+  const taskManifest = JSON.parse(await readFile(taskManifestPath, "utf8"));
+  const taskLock = JSON.parse(await readFile(taskLockPath, "utf8"));
+  await writeFile(taskManifestPath, JSON.stringify({ ...taskManifest, version: "2.0.0" }));
+  await writeFile(taskLockPath, JSON.stringify({ ...taskLock, version: "2.0.0",
+    packages: { ...taskLock.packages, "": { ...taskLock.packages[""], version: "2.0.0" } } }));
+  await materializeLockedState(main);
+  await mkdir(path.join(main, "node_modules/.cache"));
+  await writeFile(path.join(main, "node_modules/.cache/keep"), "main cache");
+  await writeFile(path.join(main, "node_modules/tiny/payload.bin"), "from main");
+  const events = [];
+  const inputs = { projectRoot: task, lockfiles: [path.join(task, "package-lock.json")],
+    mainProjectRoot: main, directoryReuse: true, verify: false,
+    runNpm: () => assert.fail("npm started for compatible main"),
+    sharedDependencies: () => assert.fail("shared slot requested for compatible main") };
+  const ensure = () => withTaskOperationTiming({
+    operationId: "main-dependency-reuse", taskId: "task", record: event => events.push(event),
+  }, () => prepareTaskWorktreeDependencies(inputs));
+  assert.equal((await ensure())[0].prepared, true);
+  assert.equal((await ensure())[0].prepared, false);
+  assert.equal(events.filter(event => event.stage === "dependency-inventory").length, 0);
+  assert.equal((await lstat(path.join(task, "node_modules"))).isSymbolicLink(), false);
+  assert.equal(await readFile(path.join(task, "node_modules/tiny/payload.bin"), "utf8"), "from main");
+  await assert.rejects(readFile(path.join(task, "node_modules/.cache/keep")), { code: "ENOENT" });
+  await rmTree(path.join(task, "node_modules/tiny"));
+  assert.equal(await readFile(path.join(main, "node_modules/tiny/payload.bin"), "utf8"), "from main");
+  assert.equal((await ensure())[0].prepared, true);
+});
+
+test("dependency directory references are never published after owner loss", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-directory-owner-"));
+  context.after(() => rmTree(parent));
+  const packageRoot = path.join(parent, "task");
+  const modules = path.join(parent, "main", "node_modules");
+  await mkdir(packageRoot);
+  await mkdir(path.join(modules, "tiny"), { recursive: true });
+  await assert.rejects(attachTaskDependencyDirectories({
+    packageRoot, modules, fingerprint: "a".repeat(64),
+    assertCurrent: async () => { throw new Error("owner lost before publication"); },
+  }), /owner lost before publication/u);
+  await assert.rejects(lstat(path.join(packageRoot, "node_modules")), { code: "ENOENT" });
+  assert.equal((await lstat(path.join(modules, "tiny"))).isDirectory(), true);
 });
 
 test("shared dependency proof reads each unchanged physical payload once per lease and rechecks later changes", async context => {
