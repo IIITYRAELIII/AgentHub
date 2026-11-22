@@ -194,6 +194,13 @@ test("Ready strike remains visible on every theme", async () => {
         });
       });
       assert.ok(opaque, theme.id + ": opaque read button backgrounds");
+      const reachable = await page.locator(".activity-read-button").evaluateAll(buttons =>
+        buttons.every(button => {
+          const box = button.getBoundingClientRect();
+          return [box.left + 2, box.right - 2].every(x =>
+            button.contains(document.elementFromPoint(x, box.top + box.height / 2)));
+        }));
+      assert.ok(reachable, theme.id + ": both edges of each read button receive clicks");
       for (const selector of [TAB, RAIL]) {
         const target = page.locator(selector);
         const clearance = await target.evaluate(node => {

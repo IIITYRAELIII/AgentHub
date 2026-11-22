@@ -110,13 +110,17 @@
 
 .activity-read-pair {
   display: inline-flex;
+  flex: 1 0 3rem;
+  min-inline-size: 3rem;
+  max-inline-size: 3.9rem;
   border: 1px solid var(--accent-line);
   border-radius: .55rem;
 }
 .activity-read-button {
   display: inline-grid;
   place-items: center;
-  width: 1.9rem;
+  flex: 1 1 0;
+  min-inline-size: 0;
   height: 1.5rem;
   padding: .2rem .36rem;
   background: var(--bg);
@@ -143,7 +147,12 @@
 .activity-read-button:hover { box-shadow: inset 0 0 0 1px var(--accent); }
 .activity-read-button:focus-visible { z-index: 1; outline: 2px solid var(--accent); }
 .activity-read-button svg { width: 100%; height: 100%; }
-.activity-section-head:has(.activity-read-button) { justify-content: flex-start; gap: .25rem; }
+.activity-section-head:has(.activity-read-pair) {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: .25rem;
+  padding-inline: .375rem;
+}
 
 .queue-item:has(.queue-action) {
   align-items: center;
