@@ -806,7 +806,8 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                 "constructor({dataDir}){this.file=path.join(dataDir,'operation.json')}get(){return JSON.parse(fs.readFileSync(this.file))}"
                 "async runMaintenanceMutation(fn){return fn()}"
                 "transition(id,delta,{expectedRevision}){let op=this.get();if(op.revision!==expectedRevision)return {applied:false};"
-                "op={...op,...delta,revision:op.revision+1};fs.writeFileSync(this.file,JSON.stringify(op));return {applied:true,operation:op}}}")
+                "const metadata={...op.metadata,...delta.metadata};op={...op,...delta,metadata,revision:op.revision+1};"
+                "fs.writeFileSync(this.file,JSON.stringify(op));return {applied:true,operation:op}}}")
             module('src/infrastructure/process/desktop-control.mjs',
                 "import fs from 'node:fs';import path from 'node:path';let calls=0;"
                 "export async function readDesktopControlEndpoint(){return {endpointId:'same-endpoint'}}"
@@ -816,7 +817,14 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             module('src/infrastructure/process/process-liveness.mjs',"export const processIsAlive=()=>true;")
             module('src/infrastructure/filesystem/config.mjs',"export const miniAppSettings=value=>value;")
             module('src/runtime/runtime-manager.mjs',
-                "export async function runtimeStatus(){return {current:'new',runningRelease:'new',running:true,ready:true,pid:123}}")
+                "import fs from 'node:fs';import path from 'node:path';"
+                "export async function runtimeStatus({runtimeRoot}){const id=JSON.parse(fs.readFileSync(path.join(runtimeRoot,'health.json'))).process.releaseId;"
+                "return {current:id,runningRelease:id,running:true,ready:true,pid:123}}")
+            bundle_module = SOURCE.parents[1] / 'src/infrastructure/process/codex-executable-bundle.mjs'
+            module('src/infrastructure/process/codex-executable-bundle.mjs',
+                   "export * from " + json.dumps(bundle_module.as_uri()))
+            rejection = ("Codex bundle member signature is not trusted (member=helper.dll, status=Valid, "
+                         "reason=publisher-not-openai, version=0.151.0)")
             module('src/runtime/publication-readiness.mjs',(SOURCE.parents[1]/'src/runtime/publication-readiness.mjs').read_text(encoding='utf-8'))
             owner=base/'owner.mjs'; owner.write_text(installer.OWNER_MODULE,encoding='utf-8')
             assertion=base/'assert.py'; assertion.write_text(
@@ -830,12 +838,27 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                     original=dict(operationId='same-original',revision=6,status='reconciling',outcome='unknown')
                     (root/'data/operation.json').write_text(json.dumps(original),encoding='utf-8')
                     (root/'health.json').write_text(json.dumps(dict(live=True,ready=False,startingProbes=3,
-                        process=dict(releaseId='new',pid=123),capabilities=[dict(name='mini_app',state=state)])),encoding='utf-8')
+                        process=dict(releaseId='new',pid=123),capabilities=[dict(name='mini_app',state=state)],
+                        diagnostics=dict(codexExecutableUpdate=dict(recordedSignatureRejection=rejection)))),encoding='utf-8')
                     result=subprocess.run([shutil.which('node'),str(owner),str(pkg),str(root),'same-original','ready',str(input_path)],
                         capture_output=True,encoding='utf-8',timeout=15,creationflags=0x08000000)
                     op=installer._read_record(root/'data/operation.json')
+                    self.assertEqual(op['metadata']['autonomousCodexStartupRejection'], rejection)
                     if state=='failed':
-                        self.assertNotEqual(result.returncode,0); self.assertEqual(op,original)
+                        self.assertNotEqual(result.returncode,0)
+                        self.assertEqual(op['status'], original['status'])
+                        (root/'health.json').write_text(json.dumps(dict(live=True,ready=False,startingProbes=1,
+                            process=dict(releaseId='old',pid=123),
+                            capabilities=[dict(name='mini_app',state='disabled')])),encoding='utf-8')
+                        recovery_path=base/'recovery-input.json'
+                        installer._write_record(recovery_path,dict(value,releaseId='old'))
+                        rolled_back=subprocess.run([shutil.which('node'),str(owner),str(pkg),str(root),
+                            'same-original','recovered',str(recovery_path)],capture_output=True,
+                            encoding='utf-8',timeout=15,creationflags=0x08000000)
+                        self.assertEqual(rolled_back.returncode,0,rolled_back.stderr)
+                        op=installer._read_record(root/'data/operation.json')
+                        self.assertEqual(op['outcome'],'rolled-back')
+                        self.assertEqual(op['metadata']['autonomousCodexStartupRejection'],rejection)
                     else:
                         self.assertEqual(result.returncode,0,result.stderr); self.assertEqual(op['status'],'succeeded')
                         asserted=json.loads((root/'asserted.json').read_text(encoding='utf-8'))
@@ -1094,6 +1117,7 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                     else:
                         result = {
                             "previous": previous,
+                            "codex-preflight": dict(status="eligible"),
                             "wait-probe": dict(live=True, ready=True, installerCutover=dict(protocol=1), process=node),
                             "wait-complete": {},
                             "unknown": {},
@@ -1121,9 +1145,87 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                     stop.assert_called_once()
                     self.assertEqual(stop.call_args.kwargs["expected_host"], host)
                     launch.assert_not_called()
-                self.assertEqual(calls, ["previous","create","unknown"] if mode == "force"
-                                 else ["previous","wait-probe","create","wait-complete","unknown"])
+                self.assertEqual(calls, ["previous","create","codex-preflight","unknown"] if mode == "force"
+                                 else ["previous","wait-probe","create","codex-preflight","wait-complete","unknown"])
                 self.assertTrue((cache/"failure.json").exists())
+
+    @unittest.skipUnless(shutil.which("node"), "Node process fixture")
+    def test_rejected_codex_signature_preflight_records_terminal_refusal_without_stop(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root, cache, local = base / "hub", base / "scratch", base / "local"
+            data, runtime = root / "data", cache / "verified/runtime"
+            data.mkdir(parents=True)
+            runtime.mkdir(parents=True)
+            bundle = local / "OpenAI/Codex/bin/old"
+            bundle.mkdir(parents=True)
+            executable = bundle / "codex.exe"
+            executable.write_bytes(b"inert recorded executable fixture")
+            (bundle / "codex-code-mode-host.exe").write_bytes(b"inert unsigned helper fixture")
+            original = dict(schemaVersion=1, lastKnownGood=dict(
+                path=str(executable.resolve()), sha256=installer.file_hash(executable).upper(),
+                version="0.151.0", publisher='CN="OpenAI Opco, LLC", O=OpenAI', source="desktop"))
+            state = data / "codex-executable-state.json"
+            installer._write_record(state, original)
+            before = state.read_bytes()
+            source_root = SOURCE.parents[1]
+            for name in (
+                "src/infrastructure/filesystem/config.mjs",
+                "src/infrastructure/process/codex-executable-update-service.mjs",
+                "src/infrastructure/process/codex-executable-bundle.mjs",
+                "src/infrastructure/persistence/maintenance-operation-store.mjs",
+            ):
+                output = runtime / name
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text("export * from " + json.dumps((source_root / name).as_uri()),
+                                  encoding="utf-8")
+            installer._write_record(root / "config.json", dict(components={}, projectRoot=str(root)))
+            installer._write_record(root / "current.json", dict(current="old"))
+            installer._write_record(cache / "verified/package-manifest.json", dict(releaseId="new"))
+            archive = base / "archive.zip"
+            archive.touch()
+            request = cache / "request.json"
+            installer._write_record(request, dict(runtimeRoot=str(root),
+                runtimeIdentity=installer._directory_identity(root), archive=str(archive),
+                sha256=installer.file_hash(archive), operationId="codex-preflight-test",
+                installerSha256="a" * 64, mode="force"))
+
+            real_run = subprocess.run
+            calls = []
+
+            def run(args, **kwargs):
+                if args[1] == "-e":
+                    return real_run(args, **kwargs)
+                action = args[5]
+                calls.append(action)
+                if action == "previous":
+                    return subprocess.CompletedProcess(args, 0, json.dumps(
+                        dict(releaseId="old", manifestSha256="b" * 64)), "")
+                return real_run(args, **kwargs)
+
+            with ExitStack() as mocks:
+                mocks.enter_context(patch.dict(os.environ, {"LOCALAPPDATA": str(local),
+                                                            "USERPROFILE": str(base / "profile")}))
+                mocks.enter_context(patch.object(installer, "extract_verified", return_value=dict(releaseId="new")))
+                mocks.enter_context(patch.object(installer, "verified_worker_scope",
+                                                  return_value=dict(pid=os.getpid())))
+                mocks.enter_context(patch.object(installer.subprocess, "run", side_effect=run))
+                stop = mocks.enter_context(patch.object(installer, "stop_selected"))
+                installer.autonomous_worker(request)
+                stop.assert_not_called()
+            self.assertEqual(calls, ["previous", "create", "codex-preflight", "codex-preflight-blocked"])
+            original_readback = installer.read_update_original(root, "codex-preflight-test")
+            status = installer.original_status("codex-preflight-test", original_readback)
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(status["phase"], "codex-preflight-blocked")
+            self.assertRegex(status["codexPreflight"]["rejection"],
+                             r"member=codex-code-mode-host\.exe, status=\w+, reason=signature-invalid, version=0\.151\.0")
+            self.assertEqual(status["codexPreflight"]["reason"], "no-eligible-trusted-codex")
+            self.assertEqual(installer._read_record(cache / "result.json"), original_readback)
+            self.assertEqual(installer._read_record(root / "current.json")["current"], "old")
+            self.assertEqual(state.read_bytes(), before)
+            self.assertFalse((cache / "retired.json").exists())
+            self.assertFalse((cache / "backup").exists())
 
     def test_worker_does_not_require_an_interactive_desktop_shell(self):
         with tempfile.TemporaryDirectory() as temp:

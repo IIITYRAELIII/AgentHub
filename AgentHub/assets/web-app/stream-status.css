@@ -4,7 +4,7 @@
   width: 100%;
   height: 100%;
   border-radius: inherit;
-  overflow: hidden;
+  overflow: visible;
   z-index: 3;
   pointer-events: none;
   fill: none;
@@ -12,15 +12,30 @@
   stroke-width: 2px;
 }
 
+/* Let the overlay paint the border itself even on themes with thick frames. */
+:is(.stream-tab, .task-workspace-item):is([data-running], [data-maintenance]) {
+  overflow: clip;
+  overflow-clip-margin: border-box;
+}
+
 .stream-effect-layer > * { display: none; }
 
-.stream-run-track {
-  x: 1.5px;
-  y: 1.5px;
-  width: calc(100% - 3px);
-  height: calc(100% - 3px);
-  stroke-dasharray: 30 70;
+@property --stream-travel {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
 }
+
+.stream-run-dot {
+  display: none;
+  stroke-width: 3.5px;
+  stroke-linecap: round;
+  stroke-dasharray: .1 99.9;
+  stroke-dashoffset: calc(-1px * (var(--stream-travel) + var(--dot-position)));
+}
+
+[data-interstream-run] .stream-run-dot { display: inline; }
+[data-interstream-run] .stream-run-solid { display: none; }
 
 [data-running] > .stream-effect-layer > .stream-run-track,
 [data-maintenance] > .stream-effect-layer > .stream-maintenance-track,
@@ -28,21 +43,13 @@
   display: inline;
 }
 
-[data-interstream-run] > .stream-effect-layer > .stream-run-track {
-  stroke-linecap: round;
-  stroke-dasharray: .1 2.9 .1 2.9 .1 2.9 .1 2.9 .1 2.9 .1 84.9;
-}
-
-.stream-maintenance-track {
-  x: 4.5px;
-  y: 4.5px;
-  width: calc(100% - 9px);
-  height: calc(100% - 9px);
-  stroke-dasharray: 3 2;
-}
+.stream-maintenance-track { stroke-dasharray: 3 2; }
 
 .stream-ready-strike {
   stroke-width: 2.5px;
+  mask-image: linear-gradient(to right, transparent 4%, black 35%, black 65%, transparent 96%);
+  mask-origin: view-box;
+  mask-clip: view-box;
   filter: drop-shadow(0 1px 1px var(--bg));
 }
 
@@ -75,7 +82,7 @@
 }
 
 @keyframes stream-track-clockwise {
-  to { stroke-dashoffset: -100; }
+  to { stroke-dashoffset: -100; --stream-travel: 100; }
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -89,7 +96,7 @@
     animation: stream-answer-arrival .72s ease-out 2;
     transform-origin: center;
   }
-  :root[data-stream-status-effect="dynamic"] [data-stream-offscreen] > .stream-effect-layer > rect {
+  :root[data-stream-status-effect="dynamic"] [data-stream-offscreen] > .stream-effect-layer > :is(.stream-run-track, .stream-maintenance-track) {
     animation-play-state: paused;
   }
 }
@@ -118,3 +125,15 @@
 }
 .activity-read-button svg { width: 100%; height: 100%; }
 .activity-section-head:has(.activity-read-button) { justify-content: flex-start; gap: .25rem; }
+
+.queue-action svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+.queue-action[data-action="queue-pause"] svg { stroke-linecap: butt; }
