@@ -28,7 +28,7 @@ test("an ordinary MCP success is not evidence of actual safe tool execution", as
   assert.equal(evidence.phase, "safe-tool"); // Reached only after exactly one confirmed MCP read.
 });
 
-test("compatibility canary executes health, MCP, cancel, next-turn and restart/resume", async (context) => {
+test("compatibility canary verifies MCP when the model completes without calling a tool", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-canary-test-"));
   const dataDir = path.join(root, "data");
   const sourceHome = path.join(root, "source-codex-home");
@@ -38,7 +38,7 @@ test("compatibility canary executes health, MCP, cancel, next-turn and restart/r
 
   const result = await runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
     dataDir,
-    executableArgs: [FAKE_APP_SERVER],
+    executableArgs: [FAKE_APP_SERVER, "--skip-model-mcp"],
     environment: { ...process.env, CODEX_HOME: sourceHome },
     protectDirectory: async () => {},
     rpcTimeoutMs: 3_000,
@@ -49,12 +49,39 @@ test("compatibility canary executes health, MCP, cancel, next-turn and restart/r
   assert.equal(result.ok, true);
   assert.equal(result.evidence.healthRead, true);
   assert.equal(result.evidence.mcpReadCount, 1);
+  assert.equal(result.evidence.mcpReadMode, "rpc");
   assert.equal(result.evidence.safeToolCount, 1);
   assert.equal(result.evidence.restartResume, true);
   assert.deepEqual(Object.keys(result.evidence.turnIds), [
     "ordinary", "mcp", "tool", "interrupted", "afterCancel", "afterResume",
   ]);
   assert.deepEqual(await readdir(path.join(dataDir, "codex-executable-canary")), []);
+});
+
+test("compatibility canary accepts a missing or null MCP error flag with an authenticated read", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-mcp-error-flag-"));
+  const sourceHome = path.join(root, "source-codex-home");
+  await mkdir(sourceHome);
+  await writeFile(path.join(sourceHome, "auth.json"), "{}\n");
+  context.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+
+  for (const scenario of ["omit-error-flag", "null-error-flag"]) {
+    await context.test(scenario, async () => {
+      const result = await runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
+        dataDir: path.join(root, scenario),
+        executableArgs: [FAKE_APP_SERVER, "--skip-model-mcp", `--mcp-rpc-case=${scenario}`],
+        environment: { ...process.env, CODEX_HOME: sourceHome },
+        protectDirectory: async () => {},
+        rpcTimeoutMs: 3_000,
+        totalTimeoutMs: 15_000,
+        logger: { error() {} },
+      });
+      assert.equal(result.ok, true);
+      assert.equal(result.evidence.mcpReadCount, 1);
+      assert.equal(result.evidence.mcpReadMode, "rpc");
+      assert.equal(result.evidence.safeToolCount, 1);
+    });
+  }
 });
 
 test("compatibility canary rejects an executable that ignores application context", async (context) => {
@@ -71,7 +98,43 @@ test("compatibility canary rejects an executable that ignores application contex
     rpcTimeoutMs: 3_000,
     totalTimeoutMs: 15_000,
     logger: { error() {} },
-  }));
+  }), /mcp-context/u);
+});
+
+test("compatibility canary refuses missing, duplicate or failed MCP read evidence", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-mcp-proof-"));
+  const sourceHome = path.join(root, "source-codex-home");
+  await mkdir(sourceHome);
+  await writeFile(path.join(sourceHome, "auth.json"), "{}\n");
+  context.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const cases = [
+    ["no-server-read", 0, "confirmed", "mcp-read-unconfirmed"],
+    ["duplicate", 2, "confirmed", "mcp-read-unconfirmed"],
+    ["tool-error", 1, "unconfirmed", "mcp-read-unconfirmed"],
+    ["invalid-error-flag", 1, "unconfirmed", "mcp-read-unconfirmed"],
+    ["unsupported-after-read", 1, "unconfirmed", "scenario-failure"],
+    ["hang-after-read", 1, "unconfirmed", "rpc-timeout"],
+  ];
+  for (const [scenario, successes, response, kind] of cases) {
+    await context.test(scenario, async () => {
+      const dataDir = path.join(root, scenario);
+      await assert.rejects(runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
+        dataDir,
+        executableArgs: [FAKE_APP_SERVER, "--skip-model-mcp", `--mcp-rpc-case=${scenario}`],
+        environment: { ...process.env, CODEX_HOME: sourceHome },
+        protectDirectory: async () => {},
+        rpcTimeoutMs: 3_000,
+        totalTimeoutMs: 15_000,
+        logger: { error() {} },
+      }), { message: `Codex compatibility canary failed during mcp-read (${kind})` });
+      const failure = JSON.parse(await readFile(path.join(dataDir, "codex-executable-canary", "last-failure.json"), "utf8"));
+      const proof = failure.protocolEvents.find(event => event.event === "mcp-read-outcome");
+      assert.equal(failure.failure.kind, kind);
+      assert.equal(proof.successful, successes);
+      assert.equal(proof.mode, "rpc");
+      assert.equal(proof.response, response);
+    });
+  }
 });
 
 test("compatibility canary timeout is bounded and removes isolated runtime", async (context) => {
@@ -205,7 +268,7 @@ test("compatibility canary rejects an elicitation not bound to its isolated MCP 
 
   await assert.rejects(runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
     dataDir,
-    executableArgs: [FAKE_APP_SERVER, "--wrong-elicitation-server"],
+    executableArgs: [FAKE_APP_SERVER, "--mcp-rpc-case=unsupported", "--wrong-elicitation-server"],
     environment: { ...process.env, CODEX_HOME: sourceHome },
     protectDirectory: async () => {},
     rpcTimeoutMs: 500,
@@ -216,6 +279,25 @@ test("compatibility canary rejects an elicitation not bound to its isolated MCP 
 
   const entries = await readdir(path.join(dataDir, "codex-executable-canary"));
   assert.deepEqual(entries, ["last-failure.json"]);
+});
+
+test("compatibility canary uses its bound MCP turn only for a client without the direct method", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-legacy-mcp-"));
+  const sourceHome = path.join(root, "source-codex-home");
+  await mkdir(sourceHome);
+  await writeFile(path.join(sourceHome, "auth.json"), "{}\n");
+  context.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const result = await runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
+    dataDir: path.join(root, "data"),
+    executableArgs: [FAKE_APP_SERVER, "--mcp-rpc-case=unsupported"],
+    environment: { ...process.env, CODEX_HOME: sourceHome },
+    protectDirectory: async () => {},
+    rpcTimeoutMs: 3_000,
+    totalTimeoutMs: 15_000,
+    logger: { error() {} },
+  });
+  assert.equal(result.evidence.mcpReadCount, 1);
+  assert.equal(result.evidence.mcpReadMode, "legacy-turn");
 });
 
 test("compatibility canary rejects a terminal but unsuccessful ordinary turn", async (context) => {
