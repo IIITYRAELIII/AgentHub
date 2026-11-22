@@ -551,7 +551,8 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
 
     def test_batch_capture_137_descendants_and_budget_before_first_kill(self):
         c,w,_=installer.native_api(); root=Path(tempfile.gettempdir())/'selected-batch'
-        parent=dict(ProcessId=101,ParentProcessId=0,ExecutablePath=str(root/'AgentHub.RuntimeHost.exe'),Created='20000',CommandLine='host')
+        # Windows can reuse the Host's former parent's PID for its own child.
+        parent=dict(ProcessId=101,ParentProcessId=102,ExecutablePath=str(root/'AgentHub.RuntimeHost.exe'),Created='20000',CommandLine='host')
         rows=[parent]+[dict(ProcessId=pid,ParentProcessId=101,ExecutablePath=sys.executable,
                 Created=str(30000+pid),CommandLine='python worker') for pid in range(102,239)]
         class Kernel:
@@ -570,6 +571,8 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
         with patch.object(installer,'native_api',return_value=(c,w,kernel)),patch.object(installer,'process_identity',side_effect=identity),patch.object(installer,'process_birth',side_effect=lambda pid:identity(pid)['created']),patch.object(installer,'process_parent',side_effect=lambda pid:next(r['ParentProcessId'] for r in rows if r['ProcessId']==pid)),patch.object(installer,'process_snapshot',side_effect=snapshot):
             result=installer.stop_selected(root,trace=timings.append)
         self.assertEqual(len(result),138); self.assertEqual(len(calls),3)
+        self.assertEqual(kernel.killed[-1],101)
+        self.assertIn(102,kernel.killed[:-1])
         self.assertEqual(timings[-1]['snapshotCalls'],3)
         kernel=Kernel(); calls=[]
         def slow_snapshot():
