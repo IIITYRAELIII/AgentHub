@@ -45,6 +45,7 @@ const SAFE_FAILURE_CODES = new Set([
   "CODEX_CANARY_PROCESS_EXIT",
   "CODEX_CANARY_PROTOCOL",
   "CODEX_CANARY_MCP_READ",
+  "CODEX_CANARY_SAFE_TOOL",
 ]);
 
 function withTimeout(operation, timeoutMs, message) {
@@ -93,6 +94,7 @@ function failureKind(error) {
   if (error?.code === "CODEX_CANARY_PROCESS_EXIT") return "process-exit";
   if (error?.code === "CODEX_CANARY_PROTOCOL") return "protocol-failure";
   if (error?.code === "CODEX_CANARY_MCP_READ") return "mcp-read-unconfirmed";
+  if (error?.code === "CODEX_CANARY_SAFE_TOOL") return "safe-tool-unconfirmed";
   if (/^Codex RPC [A-Za-z/]+ timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "rpc-timeout";
   if (/^Codex compatibility canary timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "total-timeout";
   return "scenario-failure";
@@ -167,7 +169,7 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
     let mcpReadMode = null;
     const mcpContextCode = `CANARY_CONTEXT_${randomBytes(8).toString("hex")}`;
     const mcpContextReplies = new Set();
-    let safeToolCount = 0;
+    let safeToolCount = 0, safeToolMode = "rpc";
     const safeToolItems = new Map();
     const safeToolNonce = `HUB_CANARY_TOOL_${randomBytes(12).toString("hex")}`;
     const safeToolShell = process.platform === "win32" ? trustedWindowsPowerShellPath(environment) : null;
@@ -564,19 +566,48 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         });
       }
 
-      let tool;
-      safeToolOpen = true;
+      phase = "safe-tool";
+      record("phase", { phase });
+      let tool = null;
+      let execResult;
       try {
-        tool = await startTurn(createdThreadId,
-          `Use a shell execution tool exactly once. Use ${safeToolShell ?? "the standard shell"}${safeToolPwsh ? ` or Microsoft PowerShell at ${safeToolPwsh}` : ""} with -Command (optionally -NoProfile). The exact command body is on the next line:\nWrite-Output ${safeToolNonce}\nEnd of command body. Do not add quotes around the nonce, statements, redirection or other commands. Do not read or modify files, use MCP or call other tools. Then reply CANARY_TOOL_OK.`,
-          "safe-tool");
-        await expectSuccessfulTurn(tool);
-        // turn/completed may precede asynchronous fixed-shell verification.
-        // Settle the observed completion proof before closing this phase.
-        await Promise.all(safeToolChecks);
-      } finally { safeToolOpen = false; bindSafeToolTurn(null); }
-      safeToolCount = safeToolItems.get(tool.id)?.size ?? 0;
-      if (safeToolCount !== 1) throw new Error("Canary safe tool execution was not confirmed");
+        if (!safeToolShell) throw new Error("Trusted Windows PowerShell is unavailable");
+        execResult = await transport.request("command/exec", {
+          command: [safeToolShell, "-NoProfile", "-NonInteractive", "-Command", `Write-Output ${safeToolNonce}`],
+          cwd: projectRoot,
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
+          timeoutMs: Math.min(10_000, rpcTimeoutMs),
+          outputBytesCap: 1024,
+        }, { timeoutMs: rpcTimeoutMs });
+      } catch (error) {
+        if (error?.code !== -32601) {
+          record("safe-tool-outcome", { mode: safeToolMode, response: "unconfirmed" });
+          throw error;
+        }
+        // An explicit missing method is the only entry to the legacy turn.
+        // An unconfirmed execution never gets a second attempt.
+        safeToolMode = "legacy-turn";
+      }
+      if (safeToolMode === "rpc") {
+        const confirmed = execResult?.exitCode === 0 && typeof execResult.stdout === "string"
+          && execResult.stdout.trim() === safeToolNonce && execResult.stderr === "";
+        record("safe-tool-outcome", { mode: safeToolMode, response: confirmed ? "confirmed" : "unconfirmed" });
+        safeToolCount = confirmed ? 1 : 0;
+      } else {
+        safeToolOpen = true;
+        try {
+          tool = await startTurn(createdThreadId,
+            `Use a shell execution tool exactly once. Use ${safeToolShell ?? "the standard shell"}${safeToolPwsh ? ` or Microsoft PowerShell at ${safeToolPwsh}` : ""} with -Command (optionally -NoProfile). The exact command body is on the next line:\nWrite-Output ${safeToolNonce}\nEnd of command body. Do not add quotes around the nonce, statements, redirection or other commands. Do not read or modify files, use MCP or call other tools. Then reply CANARY_TOOL_OK.`,
+            "safe-tool");
+          await expectSuccessfulTurn(tool);
+          // turn/completed may precede asynchronous fixed-shell verification.
+          await Promise.all(safeToolChecks);
+        } finally { safeToolOpen = false; bindSafeToolTurn(null); }
+        safeToolCount = safeToolItems.get(tool.id)?.size ?? 0;
+      }
+      if (safeToolCount !== 1) {
+        throw Object.assign(new Error("Canary safe tool execution was not confirmed"), { code: "CODEX_CANARY_SAFE_TOOL" });
+      }
 
       const interrupted = await startTurn(
         createdThreadId,
@@ -615,7 +646,7 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         turnIds: {
           ordinary: ordinary.id,
           mcp: mcp.id,
-          tool: tool.id,
+          tool: tool?.id ?? null,
           interrupted: interrupted.id,
           afterCancel: afterCancel.id,
           afterResume: afterResume.id,
@@ -623,6 +654,7 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         mcpReadCount,
         mcpReadMode,
         safeToolCount,
+        safeToolMode,
         safeToolApprovalCount: approvedToolItem ? 1 : 0,
         healthRead: true,
         restartResume: true,

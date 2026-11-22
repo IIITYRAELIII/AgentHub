@@ -54,6 +54,7 @@ const pendingElicitations = new Map();
 const pendingCommands = new Map();
 let previousCommand = null;
 const commandCase = process.argv.find(arg => arg.startsWith("--command-case="))?.split("=")[1] ?? "normal";
+const execCase = process.argv.find(arg => arg.startsWith("--exec-case="))?.slice("--exec-case=".length) ?? "normal";
 const mcpRpcCase = process.argv.find(arg => arg.startsWith("--mcp-rpc-case="))?.split("=")[1] ?? "normal";
 const toolLedger = process.argv.find(arg => arg.startsWith("--tool-ledger="))?.slice("--tool-ledger=".length);
 const delayedTurnMs = Number(process.argv.find((argument) => argument.startsWith("--delay-turn-ms="))?.split("=")[1]) || 0;
@@ -141,6 +142,39 @@ async function handle(message) {
     if (mcpRpcCase === "null-error-flag") result.isError = null;
     if (mcpRpcCase === "hang-after-read") return;
     write({ id: message.id, result });
+    return;
+  }
+  if (message.method === "command/exec") {
+    if (execCase === "unsupported") {
+      write({ id: message.id, error: { code: -32601, message: "Method not found" } });
+      return;
+    }
+    const shell = path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows", "System32/WindowsPowerShell/v1.0/powershell.exe");
+    const [executable, noProfile, nonInteractive, commandFlag, command, ...extra] = params.command ?? [];
+    if (path.win32.normalize(executable ?? "").toLowerCase() !== shell.toLowerCase()
+      || noProfile !== "-NoProfile" || nonInteractive !== "-NonInteractive" || commandFlag !== "-Command"
+      || !/^Write-Output HUB_CANARY_TOOL_[a-f0-9]{24}$/u.test(command ?? "") || extra.length !== 0
+      || path.normalize(params.cwd ?? "") !== process.cwd()
+      || params.sandboxPolicy?.type !== "readOnly" || params.sandboxPolicy?.networkAccess !== false
+      || !Number.isInteger(params.timeoutMs) || params.timeoutMs <= 0 || params.timeoutMs > 10_000
+      || params.outputBytesCap !== 1024) throw new Error("Unexpected isolated command RPC");
+    if (execCase === "rpc-error") {
+      write({ id: message.id, error: { code: -32000, message: "Safe probe refused" } });
+      return;
+    }
+    if (process.argv.includes("--no-safe-tool")) {
+      write({ id: message.id, result: { exitCode: 0, stdout: "", stderr: "" } });
+      return;
+    }
+    const { stdout, stderr } = await promisify(execFile)(executable, [noProfile, nonInteractive, commandFlag, command],
+      { cwd: params.cwd, windowsHide: true });
+    if (toolLedger) await appendFile(toolLedger, "command/exec\n");
+    if (execCase === "timeout-after-effect") return;
+    write({ id: message.id, result: {
+      exitCode: execCase === "bad-exit" ? 1 : 0,
+      stdout: execCase === "bad-output" ? "unrelated output" : stdout,
+      stderr: execCase === "bad-stderr" ? "unrelated stderr" : stderr,
+    } });
     return;
   }
   if (message.method === "turn/start") {
