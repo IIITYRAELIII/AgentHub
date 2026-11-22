@@ -108,6 +108,33 @@ async function evidence(name, bytes) {
   if (directory) { await mkdir(directory, { recursive: true }); await writeFile(join(directory, name), bytes); }
 }
 
+test("Nexus: both outer rail edges stay visible beside the elapsed time", async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+    await open(page);
+    await page.locator("[data-theme-select]").selectOption("nexus", { force: true });
+    await setting(page, "streamStatusEffect", "static");
+    const card = page.locator(RAIL);
+    const box = await card.boundingBox();
+    const clips = [box.x, box.x + box.width - 3].map(x => ({
+      x, y: box.y + box.height / 2 - 4, width: 3, height: 8,
+    }));
+    const capture = async () => {
+      const images = [];
+      for (const clip of clips) images.push(await page.screenshot({ clip, scale: "device" }));
+      return images;
+    };
+    const visible = await capture();
+    await card.locator(".activity-run-frame use").first().evaluate(node => node.setAttribute("opacity", "0"));
+    const hidden = await capture();
+    for (const [i, side] of ["left", "right"].entries()) {
+      const pixels = await paintChange(page, visible[i], hidden[i], { inset: 0, minBrightContrast: 2.5 });
+      assert.ok(pixels >= 16, `${side} outer edge has only ${pixels} contrasting pixels`);
+    }
+  } finally { await browser.close(); }
+});
+
 test("Cauldron: solid and dotted paths follow the painted tile through its corner", async () => {
   const browser = await launch();
   try {
