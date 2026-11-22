@@ -3661,6 +3661,7 @@ function mergeHistoryLoadRequest(previous, next) {
     queuedAt: previous.queuedAt,
     refreshSource: previous.refreshSource || next.refreshSource,
     preserveScroll: previous.preserveScroll || next.preserveScroll,
+    onlyWhenSelected: previous.onlyWhenSelected && next.onlyWhenSelected,
   };
 }
 
